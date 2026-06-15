@@ -1247,421 +1247,432 @@ VALID_CORRECTION_TYPES: frozenset[str] = frozenset({
 def register_today_routes(app: FastAPI) -> None:
     """Attach /api/today/* routes for the v2 Today page."""
 
-    # -----------------------------------------------------------------
-    # GET /today
-    # -----------------------------------------------------------------
-    @app.get("/today")
-    async def get_today(request: Request) -> JSONResponse:
-        auth = _auth_or_none(request)
-        if auth is None:
-            return _unauth()
-        deps = _deps(request)
-        pool: asyncpg.Pool = deps.pool
+    app.add_api_route("/today", get_today, methods=["GET"])
+    app.add_api_route("/today/deltas/{delta_id}", get_delta, methods=["GET"])
+    app.add_api_route(
+        "/today/deltas/{delta_id}/evidence",
+        get_delta_evidence,
+        methods=["GET"],
+    )
+    app.add_api_route("/today/deltas/{delta_id}/apply", apply_delta, methods=["POST"])
+    app.add_api_route(
+        "/today/deltas/{delta_id}/delegate",
+        delegate_delta,
+        methods=["POST"],
+    )
+    app.add_api_route(
+        "/today/deltas/{delta_id}/correction",
+        correct_delta,
+        methods=["POST"],
+    )
 
-        now = datetime.now(timezone.utc)
-        since_param = request.query_params.get("since")
-        if since_param:
-            try:
-                since = datetime.fromisoformat(since_param.replace("Z", "+00:00"))
-                since = _as_aware(since)
-            except ValueError:
-                return _bad_request("invalid_since")
-        else:
-            since = await _last_review_at(
-                pool=pool,
-                tenant_id=auth.tenant_id,
-                actor_id=auth.actor_id,
-                now=now,
-            )
 
-        resolution_by_delta: dict[UUID, resolution_repo.ResolutionThread] = {}
-        async with pool.acquire() as conn:
-            # We list ALL non-archived deltas, then rank in Python.
-            views_proposed = await dd_repo.list_deltas(
-                conn,
-                tenant_id=auth.tenant_id,
-                status="proposed",
-                limit=200,
-            )
-            views_delegated = await dd_repo.list_deltas(
-                conn,
-                tenant_id=auth.tenant_id,
-                status="delegated",
-                limit=200,
-            )
-            views_contested = await dd_repo.list_deltas(
-                conn,
-                tenant_id=auth.tenant_id,
-                status="contested",
-                limit=200,
-            )
-            # Load evidence per delta (the list endpoint doesn't ship
-            # it). Bulk-load with a single query.
-            all_views = views_proposed + views_delegated + views_contested
-            if all_views:
-                ev_rows = await conn.fetch(
-                    """
-                    SELECT id, delta_id, source, title, ts, trust_tier,
-                           excerpt, weight, ordinal
-                    FROM decision_delta_evidence
-                    WHERE delta_id = ANY($1::uuid[])
-                    ORDER BY delta_id, ordinal ASC, ts ASC
-                    """,
-                    [v.id for v in all_views],
-                )
-                by_delta: dict[UUID, list[dd_repo.EvidenceItem]] = defaultdict(list)
-                for r in ev_rows:
-                    by_delta[r["delta_id"]].append(dd_repo.EvidenceItem(
-                        id=r["id"],
-                        delta_id=r["delta_id"],
-                        source=r["source"],
-                        title=r["title"],
-                        ts=r["ts"],
-                        trust_tier=r["trust_tier"],
-                        excerpt=r["excerpt"],
-                        weight=(
-                            float(r["weight"]) if r["weight"] is not None else None
-                        ),
-                        ordinal=int(r["ordinal"]),
-                    ))
-                for v in all_views:
-                    v.evidence = by_delta.get(v.id, [])
-                resolution_by_delta = await resolution_repo.get_threads_by_source_delta_ids(
-                    conn,
-                    tenant_id=auth.tenant_id,
-                    source_decision_delta_ids=[v.id for v in all_views],
-                )
+async def get_today(request: Request) -> JSONResponse:
+    auth = _auth_or_none(request)
+    if auth is None:
+        return _unauth()
+    deps = _deps(request)
+    pool: asyncpg.Pool = deps.pool
 
-        # Rank.
-        scored = sorted(
-            all_views,
-            key=lambda v: -_priority_score(v, now=now),
-        )
-
-        # Primary judgment = the highest-ranked actionable item.
-        # Spec §5.3: needs_authority preferred when present.
-        primary_view = None
-        for v in scored:
-            spec = _synth_status(
-                db_status=v.status, label=v.label, impact=(v.impact or {}),
-            )
-            if spec in ("needs_authority", "delegatable", "contested"):
-                primary_view = v
-                break
-
-        # Build wire DTOs with deterministic priorityRank.
-        wire: list[dict[str, Any]] = []
-        for i, v in enumerate(scored):
-            persisted_thread = resolution_by_delta.get(v.id)
-            wire.append(_delta_to_wire(
-                v,
-                priority_rank=i,
-                resolution_thread=(
-                    resolution_repo.thread_to_wire(persisted_thread)
-                    if persisted_thread is not None else None
-                ),
-            ))
-
-        primary = None
-        other_changes: list[dict[str, Any]] = []
-        for w, v in zip(wire, scored):
-            if primary is None and primary_view is not None and v.id == primary_view.id:
-                primary = w
-            else:
-                other_changes.append(w)
-
-        counts = await _summary_counts(
+    now = datetime.now(timezone.utc)
+    since_param = request.query_params.get("since")
+    if since_param:
+        try:
+            since = datetime.fromisoformat(since_param.replace("Z", "+00:00"))
+            since = _as_aware(since)
+        except ValueError:
+            return _bad_request("invalid_since")
+    else:
+        since = await _last_review_at(
             pool=pool,
             tenant_id=auth.tenant_id,
-            since=since,
+            actor_id=auth.actor_id,
             now=now,
         )
 
-        payload: dict[str, Any] = {
-            "viewer": {
-                "userId":   str(auth.actor_id),
-                "name":     getattr(auth, "actor_display_name", "") or "",
-                "role":     getattr(auth, "role", "") or "",
-                "tenantId": str(auth.tenant_id),
-            },
-            "lastReviewAt":      _isofmt(since),
-            "generatedAt":       _isofmt(now),
-            "summary":           counts["summary"],
-            "primaryJudgment":   primary,
-            "otherChanges":      other_changes,
-            "handledWithoutYou": counts["handledWithoutYou"],
-        }
-        return JSONResponse(payload)
-
-    # -----------------------------------------------------------------
-    # GET /today/deltas/{delta_id}
-    # -----------------------------------------------------------------
-    @app.get("/today/deltas/{delta_id}")
-    async def get_delta(delta_id: str, request: Request) -> JSONResponse:
-        auth = _auth_or_none(request)
-        if auth is None:
-            return _unauth()
-        try:
-            did = UUID(delta_id)
-        except (ValueError, TypeError):
-            return _bad_request("invalid_delta_id")
-        pool = _deps(request).pool
-        async with pool.acquire() as conn:
-            view = await dd_repo.get_delta(
-                conn, tenant_id=auth.tenant_id, delta_id=did,
+    resolution_by_delta: dict[UUID, resolution_repo.ResolutionThread] = {}
+    async with pool.acquire() as conn:
+        # We list ALL non-archived deltas, then rank in Python.
+        views_proposed = await dd_repo.list_deltas(
+            conn,
+            tenant_id=auth.tenant_id,
+            status="proposed",
+            limit=200,
+        )
+        views_delegated = await dd_repo.list_deltas(
+            conn,
+            tenant_id=auth.tenant_id,
+            status="delegated",
+            limit=200,
+        )
+        views_contested = await dd_repo.list_deltas(
+            conn,
+            tenant_id=auth.tenant_id,
+            status="contested",
+            limit=200,
+        )
+        # Load evidence per delta (the list endpoint doesn't ship
+        # it). Bulk-load with a single query.
+        all_views = views_proposed + views_delegated + views_contested
+        if all_views:
+            ev_rows = await conn.fetch(
+                """
+                SELECT id, delta_id, source, title, ts, trust_tier,
+                       excerpt, weight, ordinal
+                FROM decision_delta_evidence
+                WHERE delta_id = ANY($1::uuid[])
+                ORDER BY delta_id, ordinal ASC, ts ASC
+                """,
+                [v.id for v in all_views],
             )
-            thread = await resolution_repo.get_thread_by_source_delta(
+            by_delta: dict[UUID, list[dd_repo.EvidenceItem]] = defaultdict(list)
+            for r in ev_rows:
+                by_delta[r["delta_id"]].append(dd_repo.EvidenceItem(
+                    id=r["id"],
+                    delta_id=r["delta_id"],
+                    source=r["source"],
+                    title=r["title"],
+                    ts=r["ts"],
+                    trust_tier=r["trust_tier"],
+                    excerpt=r["excerpt"],
+                    weight=(
+                        float(r["weight"]) if r["weight"] is not None else None
+                    ),
+                    ordinal=int(r["ordinal"]),
+                ))
+            for v in all_views:
+                v.evidence = by_delta.get(v.id, [])
+            resolution_by_delta = await resolution_repo.get_threads_by_source_delta_ids(
                 conn,
                 tenant_id=auth.tenant_id,
-                source_decision_delta_id=did,
+                source_decision_delta_ids=[v.id for v in all_views],
             )
-        if view is None:
-            return _not_found()
-        return JSONResponse(_delta_to_wire(
-            view,
-            include_evidence=True,
+
+    # Rank.
+    scored = sorted(
+        all_views,
+        key=lambda v: -_priority_score(v, now=now),
+    )
+
+    # Primary judgment = the highest-ranked actionable item.
+    # Spec §5.3: needs_authority preferred when present.
+    primary_view = None
+    for v in scored:
+        spec = _synth_status(
+            db_status=v.status, label=v.label, impact=(v.impact or {}),
+        )
+        if spec in ("needs_authority", "delegatable", "contested"):
+            primary_view = v
+            break
+
+    # Build wire DTOs with deterministic priorityRank.
+    wire: list[dict[str, Any]] = []
+    for i, v in enumerate(scored):
+        persisted_thread = resolution_by_delta.get(v.id)
+        wire.append(_delta_to_wire(
+            v,
+            priority_rank=i,
             resolution_thread=(
-                resolution_repo.thread_to_wire(thread) if thread is not None else None
+                resolution_repo.thread_to_wire(persisted_thread)
+                if persisted_thread is not None else None
             ),
         ))
 
-    # -----------------------------------------------------------------
-    # GET /today/deltas/{delta_id}/evidence
-    # -----------------------------------------------------------------
-    @app.get("/today/deltas/{delta_id}/evidence")
-    async def get_delta_evidence(
-        delta_id: str, request: Request,
-    ) -> JSONResponse:
-        auth = _auth_or_none(request)
-        if auth is None:
-            return _unauth()
-        try:
-            did = UUID(delta_id)
-        except (ValueError, TypeError):
-            return _bad_request("invalid_delta_id")
-        pool = _deps(request).pool
+    primary = None
+    other_changes: list[dict[str, Any]] = []
+    for w, v in zip(wire, scored):
+        if primary is None and primary_view is not None and v.id == primary_view.id:
+            primary = w
+        else:
+            other_changes.append(w)
+
+    counts = await _summary_counts(
+        pool=pool,
+        tenant_id=auth.tenant_id,
+        since=since,
+        now=now,
+    )
+
+    payload: dict[str, Any] = {
+        "viewer": {
+            "userId":   str(auth.actor_id),
+            "name":     getattr(auth, "actor_display_name", "") or "",
+            "role":     getattr(auth, "role", "") or "",
+            "tenantId": str(auth.tenant_id),
+        },
+        "lastReviewAt":      _isofmt(since),
+        "generatedAt":       _isofmt(now),
+        "summary":           counts["summary"],
+        "primaryJudgment":   primary,
+        "otherChanges":      other_changes,
+        "handledWithoutYou": counts["handledWithoutYou"],
+    }
+    return JSONResponse(payload)
+
+# -----------------------------------------------------------------
+# GET /today/deltas/{delta_id}
+# -----------------------------------------------------------------
+async def get_delta(delta_id: str, request: Request) -> JSONResponse:
+    auth = _auth_or_none(request)
+    if auth is None:
+        return _unauth()
+    try:
+        did = UUID(delta_id)
+    except (ValueError, TypeError):
+        return _bad_request("invalid_delta_id")
+    pool = _deps(request).pool
+    async with pool.acquire() as conn:
+        view = await dd_repo.get_delta(
+            conn, tenant_id=auth.tenant_id, delta_id=did,
+        )
+        thread = await resolution_repo.get_thread_by_source_delta(
+            conn,
+            tenant_id=auth.tenant_id,
+            source_decision_delta_id=did,
+        )
+    if view is None:
+        return _not_found()
+    return JSONResponse(_delta_to_wire(
+        view,
+        include_evidence=True,
+        resolution_thread=(
+            resolution_repo.thread_to_wire(thread) if thread is not None else None
+        ),
+    ))
+
+# -----------------------------------------------------------------
+# GET /today/deltas/{delta_id}/evidence
+# -----------------------------------------------------------------
+async def get_delta_evidence(
+    delta_id: str, request: Request,
+) -> JSONResponse:
+    auth = _auth_or_none(request)
+    if auth is None:
+        return _unauth()
+    try:
+        did = UUID(delta_id)
+    except (ValueError, TypeError):
+        return _bad_request("invalid_delta_id")
+    pool = _deps(request).pool
+    async with pool.acquire() as conn:
+        view = await dd_repo.get_delta(
+            conn, tenant_id=auth.tenant_id, delta_id=did,
+        )
+    if view is None:
+        return _not_found()
+    return JSONResponse({
+        "deltaId":        str(did),
+        "totalSignals":   len(view.evidence),
+        "evidenceGroups": _synth_evidence_summary(view.evidence)["groups"],
+        "items":          [_evidence_to_wire(e) for e in view.evidence],
+    })
+
+# -----------------------------------------------------------------
+# POST /today/deltas/{delta_id}/apply
+# -----------------------------------------------------------------
+async def apply_delta(
+    delta_id: str, request: Request,
+) -> JSONResponse:
+    auth = _auth_or_none(request)
+    if auth is None:
+        return _unauth()
+    try:
+        did = UUID(delta_id)
+    except (ValueError, TypeError):
+        return _bad_request("invalid_delta_id")
+    pool = _deps(request).pool
+    try:
         async with pool.acquire() as conn:
-            view = await dd_repo.get_delta(
-                conn, tenant_id=auth.tenant_id, delta_id=did,
-            )
-        if view is None:
-            return _not_found()
+            async with conn.transaction():
+                view, triggered = await apply_mod.apply_acceptance(
+                    conn=conn,
+                    tenant_id=auth.tenant_id,
+                    delta_id=did,
+                    user_id=auth.actor_id,
+                )
+                thread = await resolution_repo.get_thread_by_source_delta(
+                    conn,
+                    tenant_id=auth.tenant_id,
+                    source_decision_delta_id=did,
+                )
+    except dd_repo.DeltaNotFoundError:
+        return _not_found()
+    except dd_repo.InvalidStatusTransitionError:
+        # Stale model — caller should refetch + retry.
         return JSONResponse({
-            "deltaId":        str(did),
-            "totalSignals":   len(view.evidence),
-            "evidenceGroups": _synth_evidence_summary(view.evidence)["groups"],
-            "items":          [_evidence_to_wire(e) for e in view.evidence],
-        })
-
-    # -----------------------------------------------------------------
-    # POST /today/deltas/{delta_id}/apply
-    # -----------------------------------------------------------------
-    @app.post("/today/deltas/{delta_id}/apply")
-    async def apply_delta(
-        delta_id: str, request: Request,
-    ) -> JSONResponse:
-        auth = _auth_or_none(request)
-        if auth is None:
-            return _unauth()
-        try:
-            did = UUID(delta_id)
-        except (ValueError, TypeError):
-            return _bad_request("invalid_delta_id")
-        pool = _deps(request).pool
-        try:
-            async with pool.acquire() as conn:
-                async with conn.transaction():
-                    view, triggered = await apply_mod.apply_acceptance(
-                        conn=conn,
-                        tenant_id=auth.tenant_id,
-                        delta_id=did,
-                        user_id=auth.actor_id,
-                    )
-                    thread = await resolution_repo.get_thread_by_source_delta(
-                        conn,
-                        tenant_id=auth.tenant_id,
-                        source_decision_delta_id=did,
-                    )
-        except dd_repo.DeltaNotFoundError:
-            return _not_found()
-        except dd_repo.InvalidStatusTransitionError:
-            # Stale model — caller should refetch + retry.
-            return JSONResponse({
-                "status":         "requires_refresh",
-                "resultMessage": (
-                    "The model changed while you were reviewing. "
-                    "Fyralis refreshed the proposed change."
-                ),
-            }, status_code=409)
-        # Pick next delta from the page list (excluding the one we just
-        # accepted) to streamline the focused-review flow.
-        next_id = await _next_delta_id(
-            pool=pool, tenant_id=auth.tenant_id, exclude=did,
-        )
-        ledger_event_id = triggered.get("target_event_id")
-        return JSONResponse({
-            "status":          "applied",
-            "resultMessage":   _result_message(view, triggered),
-            "updatedDelta":    _delta_to_wire(
-                view,
-                include_evidence=True,
-                resolution_thread=(
-                    resolution_repo.thread_to_wire(thread)
-                    if thread is not None else None
-                ),
-            ),
-            "nextDeltaId":     next_id,
-            "ledgerEventId":   (
-                str(ledger_event_id) if ledger_event_id else None
-            ),
-            "triggered":       _coerce_uuids(triggered),
-        })
-
-    # -----------------------------------------------------------------
-    # POST /today/deltas/{delta_id}/delegate
-    # -----------------------------------------------------------------
-    @app.post("/today/deltas/{delta_id}/delegate")
-    async def delegate_delta(
-        delta_id: str, request: Request,
-    ) -> JSONResponse:
-        auth = _auth_or_none(request)
-        if auth is None:
-            return _unauth()
-        try:
-            did = UUID(delta_id)
-        except (ValueError, TypeError):
-            return _bad_request("invalid_delta_id")
-        body = await _read_json(request)
-        owner_raw = body.get("delegateToActorId") or body.get("owner_id")
-        if not isinstance(owner_raw, str) or not owner_raw.strip():
-            return _bad_request("owner_required")
-        try:
-            owner_id = UUID(owner_raw)
-        except (ValueError, TypeError):
-            return _bad_request("invalid_owner_id")
-        due_at = body.get("dueAt")
-        message = body.get("message")
-        notify_now = bool(body.get("notifyNow", True))
-        monitor = bool(body.get("monitorConfirmation", True))
-
-        pool = _deps(request).pool
-        try:
-            async with pool.acquire() as conn:
-                async with conn.transaction():
-                    await dd_repo.update_status(
-                        conn,
-                        tenant_id=auth.tenant_id,
-                        delta_id=did,
-                        status="delegated",
-                        user_id=auth.actor_id,
-                    )
-                    await _annotate_delegation(
-                        conn,
-                        tenant_id=auth.tenant_id,
-                        delta_id=did,
-                        delegation={
-                            "owner_id":             str(owner_id),
-                            "due_at":               due_at,
-                            "message":              (
-                                str(message).strip()
-                                if isinstance(message, str) else None
-                            ),
-                            "notify_now":           notify_now,
-                            "monitor_confirmation": monitor,
-                            "at":                   _now_iso(),
-                            "by":                   str(auth.actor_id),
-                        },
-                    )
-                    view = await dd_repo.get_delta(
-                        conn, tenant_id=auth.tenant_id, delta_id=did,
-                    )
-        except dd_repo.DeltaNotFoundError:
-            return _not_found()
-        except dd_repo.InvalidStatusTransitionError:
-            return JSONResponse({
-                "status":         "requires_refresh",
-                "resultMessage": "Delta is no longer eligible for delegation.",
-            }, status_code=409)
-        assert view is not None
-        return JSONResponse({
-            "status":        "delegated",
-            "resultMessage": "Delegated. Fyralis will monitor for confirmation.",
-            "updatedDelta":  _delta_to_wire(view, include_evidence=True),
-        })
-
-    # -----------------------------------------------------------------
-    # POST /today/deltas/{delta_id}/correction
-    # -----------------------------------------------------------------
-    @app.post("/today/deltas/{delta_id}/correction")
-    async def correct_delta(
-        delta_id: str, request: Request,
-    ) -> JSONResponse:
-        auth = _auth_or_none(request)
-        if auth is None:
-            return _unauth()
-        try:
-            did = UUID(delta_id)
-        except (ValueError, TypeError):
-            return _bad_request("invalid_delta_id")
-        body = await _read_json(request)
-        ctype = body.get("correctionType") or body.get("correction_type")
-        if ctype not in VALID_CORRECTION_TYPES:
-            return _bad_request("invalid_correction_type")
-        explanation = body.get("explanation")
-        if not isinstance(explanation, str) or not explanation.strip():
-            return _bad_request("explanation_required")
-        supporting = body.get("supportingLink") or body.get("supporting_link")
-        apply_related = bool(
-            body.get("applyToRelatedItems")
-            or body.get("apply_to_related_items")
-            or False
-        )
-
-        pool = _deps(request).pool
-        try:
-            async with pool.acquire() as conn:
-                async with conn.transaction():
-                    # Promote contested-from-any-eligible-state in one
-                    # repo call. The repo enforces transition legality.
-                    await dd_repo.update_status(
-                        conn,
-                        tenant_id=auth.tenant_id,
-                        delta_id=did,
-                        status="contested",
-                        user_id=auth.actor_id,
-                    )
-                    await _annotate_correction(
-                        conn,
-                        tenant_id=auth.tenant_id,
-                        delta_id=did,
-                        correction={
-                            "type":               ctype,
-                            "explanation":        explanation.strip(),
-                            "supporting_link":    supporting,
-                            "apply_to_related":   apply_related,
-                            "by":                 str(auth.actor_id),
-                            "at":                 _now_iso(),
-                        },
-                    )
-                    view = await dd_repo.get_delta(
-                        conn, tenant_id=auth.tenant_id, delta_id=did,
-                    )
-        except dd_repo.DeltaNotFoundError:
-            return _not_found()
-        except dd_repo.InvalidStatusTransitionError:
-            return JSONResponse({
-                "status":         "requires_refresh",
-                "resultMessage": "Delta is no longer eligible for correction.",
-            }, status_code=409)
-        assert view is not None
-        return JSONResponse({
-            "status":        "correction_submitted",
+            "status":         "requires_refresh",
             "resultMessage": (
-                "Correction submitted. Fyralis will re-evaluate this change "
-                "and any dependent model items."
+                "The model changed while you were reviewing. "
+                "Fyralis refreshed the proposed change."
             ),
-            "updatedDelta":  _delta_to_wire(view, include_evidence=True),
-        })
+        }, status_code=409)
+    # Pick next delta from the page list (excluding the one we just
+    # accepted) to streamline the focused-review flow.
+    next_id = await _next_delta_id(
+        pool=pool, tenant_id=auth.tenant_id, exclude=did,
+    )
+    ledger_event_id = triggered.get("target_event_id")
+    return JSONResponse({
+        "status":          "applied",
+        "resultMessage":   _result_message(view, triggered),
+        "updatedDelta":    _delta_to_wire(
+            view,
+            include_evidence=True,
+            resolution_thread=(
+                resolution_repo.thread_to_wire(thread)
+                if thread is not None else None
+            ),
+        ),
+        "nextDeltaId":     next_id,
+        "ledgerEventId":   (
+            str(ledger_event_id) if ledger_event_id else None
+        ),
+        "triggered":       _coerce_uuids(triggered),
+    })
+
+# -----------------------------------------------------------------
+# POST /today/deltas/{delta_id}/delegate
+# -----------------------------------------------------------------
+async def delegate_delta(
+    delta_id: str, request: Request,
+) -> JSONResponse:
+    auth = _auth_or_none(request)
+    if auth is None:
+        return _unauth()
+    try:
+        did = UUID(delta_id)
+    except (ValueError, TypeError):
+        return _bad_request("invalid_delta_id")
+    body = await _read_json(request)
+    owner_raw = body.get("delegateToActorId") or body.get("owner_id")
+    if not isinstance(owner_raw, str) or not owner_raw.strip():
+        return _bad_request("owner_required")
+    try:
+        owner_id = UUID(owner_raw)
+    except (ValueError, TypeError):
+        return _bad_request("invalid_owner_id")
+    due_at = body.get("dueAt")
+    message = body.get("message")
+    notify_now = bool(body.get("notifyNow", True))
+    monitor = bool(body.get("monitorConfirmation", True))
+
+    pool = _deps(request).pool
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await dd_repo.update_status(
+                    conn,
+                    tenant_id=auth.tenant_id,
+                    delta_id=did,
+                    status="delegated",
+                    user_id=auth.actor_id,
+                )
+                await _annotate_delegation(
+                    conn,
+                    tenant_id=auth.tenant_id,
+                    delta_id=did,
+                    delegation={
+                        "owner_id":             str(owner_id),
+                        "due_at":               due_at,
+                        "message":              (
+                            str(message).strip()
+                            if isinstance(message, str) else None
+                        ),
+                        "notify_now":           notify_now,
+                        "monitor_confirmation": monitor,
+                        "at":                   _now_iso(),
+                        "by":                   str(auth.actor_id),
+                    },
+                )
+                view = await dd_repo.get_delta(
+                    conn, tenant_id=auth.tenant_id, delta_id=did,
+                )
+    except dd_repo.DeltaNotFoundError:
+        return _not_found()
+    except dd_repo.InvalidStatusTransitionError:
+        return JSONResponse({
+            "status":         "requires_refresh",
+            "resultMessage": "Delta is no longer eligible for delegation.",
+        }, status_code=409)
+    assert view is not None
+    return JSONResponse({
+        "status":        "delegated",
+        "resultMessage": "Delegated. Fyralis will monitor for confirmation.",
+        "updatedDelta":  _delta_to_wire(view, include_evidence=True),
+    })
+
+# -----------------------------------------------------------------
+# POST /today/deltas/{delta_id}/correction
+# -----------------------------------------------------------------
+async def correct_delta(
+    delta_id: str, request: Request,
+) -> JSONResponse:
+    auth = _auth_or_none(request)
+    if auth is None:
+        return _unauth()
+    try:
+        did = UUID(delta_id)
+    except (ValueError, TypeError):
+        return _bad_request("invalid_delta_id")
+    body = await _read_json(request)
+    ctype = body.get("correctionType") or body.get("correction_type")
+    if ctype not in VALID_CORRECTION_TYPES:
+        return _bad_request("invalid_correction_type")
+    explanation = body.get("explanation")
+    if not isinstance(explanation, str) or not explanation.strip():
+        return _bad_request("explanation_required")
+    supporting = body.get("supportingLink") or body.get("supporting_link")
+    apply_related = bool(
+        body.get("applyToRelatedItems")
+        or body.get("apply_to_related_items")
+        or False
+    )
+
+    pool = _deps(request).pool
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                # Promote contested-from-any-eligible-state in one
+                # repo call. The repo enforces transition legality.
+                await dd_repo.update_status(
+                    conn,
+                    tenant_id=auth.tenant_id,
+                    delta_id=did,
+                    status="contested",
+                    user_id=auth.actor_id,
+                )
+                await _annotate_correction(
+                    conn,
+                    tenant_id=auth.tenant_id,
+                    delta_id=did,
+                    correction={
+                        "type":               ctype,
+                        "explanation":        explanation.strip(),
+                        "supporting_link":    supporting,
+                        "apply_to_related":   apply_related,
+                        "by":                 str(auth.actor_id),
+                        "at":                 _now_iso(),
+                    },
+                )
+                view = await dd_repo.get_delta(
+                    conn, tenant_id=auth.tenant_id, delta_id=did,
+                )
+    except dd_repo.DeltaNotFoundError:
+        return _not_found()
+    except dd_repo.InvalidStatusTransitionError:
+        return JSONResponse({
+            "status":         "requires_refresh",
+            "resultMessage": "Delta is no longer eligible for correction.",
+        }, status_code=409)
+    assert view is not None
+    return JSONResponse({
+        "status":        "correction_submitted",
+        "resultMessage": (
+            "Correction submitted. Fyralis will re-evaluate this change "
+            "and any dependent model items."
+        ),
+        "updatedDelta":  _delta_to_wire(view, include_evidence=True),
+    })
 
 
 # =====================================================================

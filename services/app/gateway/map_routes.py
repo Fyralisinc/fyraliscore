@@ -239,22 +239,10 @@ def register_map_routes(app: FastAPI) -> None:
 # ---------------------------------------------------------------------
 
 
-async def _build_snapshot(
-    *,
+async def _read_projection_context(
     pool,
     tenant_id: UUID,
-    neighborhood_id: UUID | None,
-    edge_kinds: tuple[str, ...],
-    include_archived: bool,
-    since: datetime | None,
-    summary_since: datetime,
-    now: datetime,
-    lens: str | None = None,
-) -> MapSnapshotResponse:
-    # 1) UMAP projection (per-tenant). Returns {} when too small.
-    #    Replaced PCA on 2026-05-10 — see CODEBASE-ARCHITECTURE.md §13.13.
-    #    UMAP preserves *local* structure (the property CEOs actually
-    #    care about) at the cost of warping global distances.
+) -> tuple[dict[str, tuple[float, float]], datetime | None, float | None]:
     projector = UMAPProjector(pool)
     projection = await projector.project(tenant_id)
     cache_meta = await projector.read_cache_meta(tenant_id)
@@ -262,9 +250,7 @@ async def _build_snapshot(
     projection_trustworthiness: float | None = None
     if cache_meta and cache_meta.get("fitted_at"):
         try:
-            projection_fitted_at = datetime.fromisoformat(
-                cache_meta["fitted_at"]
-            )
+            projection_fitted_at = datetime.fromisoformat(cache_meta["fitted_at"])
         except (ValueError, TypeError):
             projection_fitted_at = None
         trust = cache_meta.get("trustworthiness")
@@ -273,11 +259,17 @@ async def _build_snapshot(
                 projection_trustworthiness = float(trust)
             except (ValueError, TypeError):
                 projection_trustworthiness = None
+    return projection, projection_fitted_at, projection_trustworthiness
 
-    # 2) Pull active models (and archived if requested) in one query.
-    #    `mnm` join surfaces the neighborhood id without forcing the
-    #    consumer to join again. Any `since` filter applies to
-    #    `created_at`.
+
+async def _fetch_snapshot_models(
+    *,
+    pool,
+    tenant_id: UUID,
+    neighborhood_id: UUID | None,
+    include_archived: bool,
+    since: datetime | None,
+) -> dict[UUID, dict[str, Any]]:
     status_filter = "" if include_archived else " AND m.status = 'active'"
     since_filter = ""
     args: list[Any] = [tenant_id]
@@ -289,7 +281,7 @@ async def _build_snapshot(
         args.append(neighborhood_id)
         nbh_filter = f" AND mnm.neighborhood_id = ${len(args)}"
 
-    model_rows = await pool.fetch(
+    rows = await pool.fetch(
         f"""
         SELECT
           m.id,
@@ -316,18 +308,20 @@ async def _build_snapshot(
         """,
         *args,
     )
+    return {row["id"]: dict(row) for row in rows}
 
-    model_by_id: dict[UUID, dict[str, Any]] = {
-        r["id"]: dict(r) for r in model_rows
-    }
-    model_ids = list(model_by_id.keys())
 
-    # 3) Edges — only those whose endpoints are in our model set.
-    #    Filter by `edge_kinds`. Active edges only (the snapshot is a
-    #    "live" view).
-    edge_rows: list[Any] = []
-    if model_ids:
-        edge_rows = await pool.fetch(
+async def _fetch_snapshot_edges(
+    *,
+    pool,
+    tenant_id: UUID,
+    edge_kinds: tuple[str, ...],
+    model_ids: list[UUID],
+) -> list[Any]:
+    if not model_ids:
+        return []
+    return list(
+        await pool.fetch(
             """
             SELECT
               e.source_model_id, e.target_model_id, e.edge_kind,
@@ -343,219 +337,205 @@ async def _build_snapshot(
             list(edge_kinds),
             model_ids,
         )
+    )
 
-    # 4) In/out degree (for the visible subgraph).
+
+def _degree_maps(edge_rows: list[Any]) -> tuple[dict[UUID, int], dict[UUID, int]]:
     in_deg: dict[UUID, int] = {}
     out_deg: dict[UUID, int] = {}
-    for er in edge_rows:
-        out_deg[er["source_model_id"]] = (
-            out_deg.get(er["source_model_id"], 0) + 1
-        )
-        in_deg[er["target_model_id"]] = (
-            in_deg.get(er["target_model_id"], 0) + 1
-        )
+    for row in edge_rows:
+        out_deg[row["source_model_id"]] = out_deg.get(row["source_model_id"], 0) + 1
+        in_deg[row["target_model_id"]] = in_deg.get(row["target_model_id"], 0) + 1
+    return in_deg, out_deg
 
-    # 5) Build MapNode list.
+
+def _build_snapshot_nodes(
+    *,
+    model_by_id: dict[UUID, dict[str, Any]],
+    projection: dict[str, tuple[float, float]],
+    in_deg: dict[UUID, int],
+    out_deg: dict[UUID, int],
+    now: datetime,
+) -> list[MapNode]:
     nodes: list[MapNode] = []
-    for mid, m in model_by_id.items():
+    for mid, model in model_by_id.items():
         coord = projection.get(str(mid))
-        topo_x = coord[0] if coord else None
-        topo_y = coord[1] if coord else None
-        natural = _truncate(m["natural"] or "", 100)
-        health = _classify_health(
-            status=m["status"],
-            created_at=m["created_at"],
-            contested=int(m["contested_count"] or 0),
-            confirmed=int(m["confirmed_count"] or 0),
-            confidence=float(m["confidence"] or 0.0),
-            activation=float(m["activation"] or 0.0),
-            last_confirmed_at=m["last_confirmed_at"],
-            now=now,
-        )
-        band = _classify_band(
-            proposition_kind=m["proposition_kind"] or "",
-            proposition=_coerce_jsonb(m["proposition"]),
-            natural=natural,
-        )
+        natural = _truncate(model["natural"] or "", 100)
         nodes.append(
             MapNode(
                 id=mid,
                 natural=natural,
-                proposition_kind=m["proposition_kind"] or "",
-                neighborhood_id=m["neighborhood_id"],
-                confidence=float(m["confidence"] or 0.0),
-                activation=float(m["activation"] or 0.0),
-                status=m["status"],
-                archive_reason=m["archive_reason"],
-                health=health,
-                band=band,
+                proposition_kind=model["proposition_kind"] or "",
+                neighborhood_id=model["neighborhood_id"],
+                confidence=float(model["confidence"] or 0.0),
+                activation=float(model["activation"] or 0.0),
+                status=model["status"],
+                archive_reason=model["archive_reason"],
+                health=_classify_health(
+                    status=model["status"],
+                    created_at=model["created_at"],
+                    contested=int(model["contested_count"] or 0),
+                    confirmed=int(model["confirmed_count"] or 0),
+                    confidence=float(model["confidence"] or 0.0),
+                    activation=float(model["activation"] or 0.0),
+                    last_confirmed_at=model["last_confirmed_at"],
+                    now=now,
+                ),
+                band=_classify_band(
+                    proposition_kind=model["proposition_kind"] or "",
+                    proposition=_coerce_jsonb(model["proposition"]),
+                    natural=natural,
+                ),
                 in_degree=in_deg.get(mid, 0),
                 out_degree=out_deg.get(mid, 0),
-                topo_x=topo_x,
-                topo_y=topo_y,
-                created_at=m["created_at"],
+                topo_x=coord[0] if coord else None,
+                topo_y=coord[1] if coord else None,
+                created_at=model["created_at"],
             )
         )
+    return nodes
 
-    # 5b) Per-band cap. Reference visual (spec §4.2): sparse goals at
-    #     the top, a handful of commitments / decisions / risks in the
-    #     middle, customers fanned at the bottom. Keep the top-K per
-    #     band ranked by activation × confidence, with a kind
-    #     tiebreaker that promotes recommendations / concerns /
-    #     patterns above plain state assertions. When a lens is set,
-    #     that band is expanded to up to 30 nodes while others stay
-    #     small so the eye locks onto the focused band.
-    _OVERVIEW_CAP: dict[str, int] = {
-        "goal": 2, "commitment": 3, "decision": 3, "risk": 3, "customer": 4,
+
+def _cap_snapshot_nodes(
+    nodes: list[MapNode],
+    lens: str | None,
+) -> tuple[list[MapNode], dict[str, int]]:
+    overview_cap = {
+        "goal": 2,
+        "commitment": 3,
+        "decision": 3,
+        "risk": 3,
+        "customer": 4,
     }
-    _LENS_CAP = 30
-    _KIND_RANK = {
-        "recommendation": 5, "concern": 4, "prediction": 3,
-        "situation": 4, "pattern": 3, "capability_assessment": 2,
-        "hypothesis": 2, "relation": 1, "state": 1,
-        "market_assessment": 2, "pattern_instance": 2,
+    kind_rank = {
+        "recommendation": 5,
+        "concern": 4,
+        "prediction": 3,
+        "situation": 4,
+        "pattern": 3,
+        "capability_assessment": 2,
+        "hypothesis": 2,
+        "relation": 1,
+        "state": 1,
+        "market_assessment": 2,
+        "pattern_instance": 2,
         "environmental_trend": 2,
     }
-    def _node_rank(n: MapNode) -> tuple[float, int]:
+
+    def node_rank(node: MapNode) -> tuple[float, int]:
         return (
-            n.activation * n.confidence,
-            _KIND_RANK.get(n.proposition_kind, 0),
+            node.activation * node.confidence,
+            kind_rank.get(node.proposition_kind, 0),
         )
+
     by_band: dict[str, list[MapNode]] = {}
-    for n in nodes:
-        by_band.setdefault(n.band, []).append(n)
-
-    # Total node counts per band BEFORE capping. The frontend turns
-    # the gap between this total and the visible count into a
-    # "+N more" overflow cluster card so the CEO can see scale.
-    band_totals: dict[str, int] = {
-        b: len(by_band.get(b, [])) for b in (
-            "goal", "commitment", "decision", "risk", "customer",
-        )
-    }
-
+    for node in nodes:
+        by_band.setdefault(node.band, []).append(node)
+    bands = ("goal", "commitment", "decision", "risk", "customer")
+    band_totals = {band: len(by_band.get(band, [])) for band in bands}
     capped: list[MapNode] = []
-    for b in ("goal", "commitment", "decision", "risk", "customer"):
-        items = sorted(by_band.get(b, []), key=_node_rank, reverse=True)
-        cap = _LENS_CAP if lens == b else _OVERVIEW_CAP[b]
-        capped.extend(items[:cap])
-    nodes = capped
+    for band in bands:
+        cap = 30 if lens == band else overview_cap[band]
+        capped.extend(sorted(by_band.get(band, []), key=node_rank, reverse=True)[:cap])
+    return capped, band_totals
 
-    # 5c) Synthesize the band-to-band hierarchy (spec §4.2 + §4.4).
-    #     Some tenants ship no model_edges; without explicit
-    #     edges the Model page is unreadable. We build the canonical
-    #     downward flow:
-    #         goal      --supports-->     commitment
-    #         commitment --depends-on--> decision
-    #         commitment --constrains--> risk
-    #         decision  --depends-on-->  risk
-    #         risk      --blocks-->      customer
-    #     Edges within a band are skipped. We also keep any real
-    #     model_edges that landed in the visible set so true
-    #     analytical edges still show through.
-    band_nodes: dict[str, list[MapNode]] = {b: [] for b in (
-        "goal", "commitment", "decision", "risk", "customer",
-    )}
-    for n in nodes:
-        if n.band in band_nodes:
-            band_nodes[n.band].append(n)
 
-    # Track which (src, tgt, kind) triples we've already emitted so
-    # synthesized edges don't duplicate real ones we pulled above.
-    have_edge: set[tuple[UUID, UUID, str]] = set()
-    for er in edge_rows:
-        have_edge.add((
-            er["source_model_id"], er["target_model_id"], er["edge_kind"],
-        ))
+def _with_band_hierarchy_edges(
+    edge_rows: list[Any],
+    nodes: list[MapNode],
+) -> list[Any]:
+    band_nodes: dict[str, list[MapNode]] = {
+        band: [] for band in ("goal", "commitment", "decision", "risk", "customer")
+    }
+    for node in nodes:
+        if node.band in band_nodes:
+            band_nodes[node.band].append(node)
 
+    have_edge = {
+        (row["source_model_id"], row["target_model_id"], row["edge_kind"])
+        for row in edge_rows
+    }
     synth: list[dict[str, Any]] = []
 
-    def _add(src: MapNode, tgt: MapNode, kind: str) -> None:
+    def add(src: MapNode, tgt: MapNode, kind: str) -> None:
         key = (src.id, tgt.id, kind)
         if key in have_edge:
             return
         have_edge.add(key)
-        synth.append({
-            "source_model_id": src.id,
-            "target_model_id": tgt.id,
-            "edge_kind": kind,
-            "weight": None,
-            "status": "active",
-            "detected_by": "band_hierarchy",
-        })
+        synth.append(
+            {
+                "source_model_id": src.id,
+                "target_model_id": tgt.id,
+                "edge_kind": kind,
+                "weight": None,
+                "status": "active",
+                "detected_by": "band_hierarchy",
+            }
+        )
 
-    # Single-edge spine: each upper-band node points to exactly one
-    # node in the band below, staggered so parents don't pile on the
-    # same child. This produces a readable downward flow (~9–12 edges
-    # for the curated 15-node set) instead of full fan-out spaghetti.
-    # When the user selects a node the inspector + trace endpoints
-    # surface richer relationships on demand.
-    def _pick(parent: MapNode, child_band: list[MapNode]) -> MapNode | None:
+    def pick(parent: MapNode, child_band: list[MapNode]) -> MapNode | None:
         if not child_band:
             return None
-        start = (parent.id.int) % len(child_band)
-        return child_band[start]
+        return child_band[parent.id.int % len(child_band)]
 
-    for g in band_nodes["goal"]:
-        target = _pick(g, band_nodes["commitment"])
-        if target:
-            _add(g, target, "supports")
+    for goal in band_nodes["goal"]:
+        if target := pick(goal, band_nodes["commitment"]):
+            add(goal, target, "supports")
+    for commitment in band_nodes["commitment"]:
+        if target := pick(commitment, band_nodes["decision"]):
+            add(commitment, target, "depends_on")
+    for decision in band_nodes["decision"]:
+        if target := pick(decision, band_nodes["risk"]):
+            add(decision, target, "depends_on")
+    for risk in band_nodes["risk"]:
+        if target := pick(risk, band_nodes["customer"]):
+            add(risk, target, "blocks")
 
-    for c in band_nodes["commitment"]:
-        target = _pick(c, band_nodes["decision"])
-        if target:
-            _add(c, target, "depends_on")
+    return [*edge_rows, *synth]
 
-    # Decisions point into risks (a decision either depends on a risk
-    # being resolved, or surfaces one). Skip if both bands are empty.
-    for d in band_nodes["decision"]:
-        target = _pick(d, band_nodes["risk"])
-        if target:
-            _add(d, target, "depends_on")
 
-    for r in band_nodes["risk"]:
-        target = _pick(r, band_nodes["customer"])
-        if target:
-            _add(r, target, "blocks")
-
-    # Append synthesized edges to whatever real ones were fetched.
-    edge_rows = list(edge_rows) + synth  # type: ignore[assignment]
-
-    # 6) Build MapEdge list with crosses_neighborhood flag.
-    nbh_by_model: dict[UUID, UUID | None] = {
-        mid: m["neighborhood_id"] for mid, m in model_by_id.items()
+def _build_snapshot_edges(
+    *,
+    edge_rows: list[Any],
+    model_by_id: dict[UUID, dict[str, Any]],
+) -> list[MapEdge]:
+    nbh_by_model = {
+        mid: model["neighborhood_id"] for mid, model in model_by_id.items()
     }
     edges: list[MapEdge] = []
-    for er in edge_rows:
-        src = er["source_model_id"]
-        tgt = er["target_model_id"]
-        src_nbh = nbh_by_model.get(src)
-        tgt_nbh = nbh_by_model.get(tgt)
-        crosses = _crosses_neighborhood(src_nbh, tgt_nbh)
+    for row in edge_rows:
+        src = row["source_model_id"]
+        tgt = row["target_model_id"]
         edges.append(
             MapEdge(
                 source=src,
                 target=tgt,
-                kind=er["edge_kind"],
-                weight=(
-                    float(er["weight"])
-                    if er["weight"] is not None
-                    else None
+                kind=row["edge_kind"],
+                weight=float(row["weight"]) if row["weight"] is not None else None,
+                status=row["status"],
+                detected_by=row["detected_by"],
+                crosses_neighborhood=_crosses_neighborhood(
+                    nbh_by_model.get(src),
+                    nbh_by_model.get(tgt),
                 ),
-                status=er["status"],
-                detected_by=er["detected_by"],
-                crosses_neighborhood=crosses,
             )
         )
+    return edges
 
-    # 7) Neighborhoods — active only. Filter to ones referenced by
-    #    visible models when neighborhood_id is set; otherwise all
-    #    active neighborhoods for the tenant.
-    nbh_filter_args: list[Any] = [tenant_id]
+
+async def _build_snapshot_neighborhoods(
+    *,
+    pool,
+    tenant_id: UUID,
+    neighborhood_id: UUID | None,
+    projection: dict[str, tuple[float, float]],
+    now: datetime,
+) -> list[MapNeighborhood]:
+    args: list[Any] = [tenant_id]
     nbh_extra = ""
     if neighborhood_id is not None:
-        nbh_filter_args.append(neighborhood_id)
-        nbh_extra = f" AND id = ${len(nbh_filter_args)}"
+        args.append(neighborhood_id)
+        nbh_extra = f" AND id = ${len(args)}"
     nbh_rows = await pool.fetch(
         f"""
         SELECT id, named_signature, member_model_ids, density,
@@ -565,11 +545,8 @@ async def _build_snapshot(
           AND status = 'active'
           {nbh_extra}
         """,
-        *nbh_filter_args,
+        *args,
     )
-
-    # Recent event counts per neighborhood (last 7 days).
-    seven_days_ago = now - timedelta(days=7)
     event_count_rows = await pool.fetch(
         """
         SELECT neighborhood_id, COUNT(*) AS n
@@ -580,47 +557,88 @@ async def _build_snapshot(
         GROUP BY neighborhood_id
         """,
         tenant_id,
-        seven_days_ago,
+        now - timedelta(days=7),
     )
-    event_count: dict[UUID, int] = {
-        r["neighborhood_id"]: int(r["n"]) for r in event_count_rows
+    event_count = {
+        row["neighborhood_id"]: int(row["n"]) for row in event_count_rows
     }
-
     neighborhoods: list[MapNeighborhood] = []
-    for nr in nbh_rows:
-        member_ids = nr["member_model_ids"] or []
-        # Centroid in 2D = mean of projected coords for members that
-        # actually have coords (some may be missing if topo_embedding
-        # is still null).
-        xs: list[float] = []
-        ys: list[float] = []
-        for m in member_ids:
-            coord = projection.get(str(m))
-            if coord is not None:
-                xs.append(coord[0])
-                ys.append(coord[1])
-        cx = sum(xs) / len(xs) if xs else None
-        cy = sum(ys) / len(ys) if ys else None
+    for row in nbh_rows:
+        member_ids = row["member_model_ids"] or []
+        coords = [
+            coord
+            for member_id in member_ids
+            if (coord := projection.get(str(member_id))) is not None
+        ]
         neighborhoods.append(
             MapNeighborhood(
-                id=nr["id"],
-                named_signature=nr["named_signature"],
+                id=row["id"],
+                named_signature=row["named_signature"],
                 member_count=len(member_ids),
-                density=(
-                    float(nr["density"])
-                    if nr["density"] is not None
-                    else None
-                ),
-                status=nr["status"],
-                last_recomputed_at=nr["last_recomputed_at"],
-                centroid_x=cx,
-                centroid_y=cy,
+                density=float(row["density"]) if row["density"] is not None else None,
+                status=row["status"],
+                last_recomputed_at=row["last_recomputed_at"],
+                centroid_x=sum(coord[0] for coord in coords) / len(coords)
+                if coords
+                else None,
+                centroid_y=sum(coord[1] for coord in coords) / len(coords)
+                if coords
+                else None,
                 hull_padding=60.0,
-                recent_event_count=event_count.get(nr["id"], 0),
+                recent_event_count=event_count.get(row["id"], 0),
             )
         )
+    return neighborhoods
 
-    # 8) change_summary — small aggregate over the period.
+
+async def _build_snapshot(
+    *,
+    pool,
+    tenant_id: UUID,
+    neighborhood_id: UUID | None,
+    edge_kinds: tuple[str, ...],
+    include_archived: bool,
+    since: datetime | None,
+    summary_since: datetime,
+    now: datetime,
+    lens: str | None = None,
+) -> MapSnapshotResponse:
+    projection, projection_fitted_at, projection_trustworthiness = (
+        await _read_projection_context(pool, tenant_id)
+    )
+    model_by_id = await _fetch_snapshot_models(
+        pool=pool,
+        tenant_id=tenant_id,
+        neighborhood_id=neighborhood_id,
+        include_archived=include_archived,
+        since=since,
+    )
+    edge_rows = await _fetch_snapshot_edges(
+        pool=pool,
+        tenant_id=tenant_id,
+        edge_kinds=edge_kinds,
+        model_ids=list(model_by_id.keys()),
+    )
+    in_deg, out_deg = _degree_maps(edge_rows)
+    all_nodes = _build_snapshot_nodes(
+        model_by_id=model_by_id,
+        projection=projection,
+        in_deg=in_deg,
+        out_deg=out_deg,
+        now=now,
+    )
+    nodes, band_totals = _cap_snapshot_nodes(all_nodes, lens)
+    edges = _build_snapshot_edges(
+        edge_rows=_with_band_hierarchy_edges(edge_rows, nodes),
+        model_by_id=model_by_id,
+    )
+    neighborhoods = await _build_snapshot_neighborhoods(
+        pool=pool,
+        tenant_id=tenant_id,
+        neighborhood_id=neighborhood_id,
+        projection=projection,
+        now=now,
+    )
     change_summary = await _build_change_summary(
         pool=pool,
         tenant_id=tenant_id,

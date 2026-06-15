@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -54,6 +55,19 @@ def _trim(s: str | None, n: int) -> str:
     return s[: n - 1].rstrip() + "…"
 
 
+@dataclass(frozen=True, slots=True)
+class _CommitmentOverlayRows:
+    commitment: Any
+    owner: Any | None
+    goals: list[Any]
+    customers: list[Any]
+    contributors: list[Any]
+    consumed_resources: list[Any]
+    decisions: list[Any]
+    pattern_models: list[Any]
+    state_changes: list[Any]
+
+
 async def fetch_commitment_overlay(
     cid: UUID, tenant_id: UUID, conn: asyncpg.Connection,
 ) -> dict[str, Any] | None:
@@ -61,6 +75,49 @@ async def fetch_commitment_overlay(
     the commitment row + its contributing goals + its customer link +
     its owner / contributors. Used by both the focus-by-id endpoint
     and the recent-commitments list endpoint."""
+    rows = await _fetch_commitment_overlay_rows(cid, tenant_id, conn)
+    if rows is None:
+        return None
+
+    activity_payload, substrate_insight = await _build_commitment_activity_payload(
+        rows.state_changes,
+        tenant_id,
+        conn,
+    )
+    customers_payload, customer_id_str, customer_label = _build_customer_payload(
+        rows.customers
+    )
+    resources_payload = _build_consumed_resources_payload(rows.consumed_resources)
+    learnings_payload = await _build_commitment_learnings_payload(
+        rows.pattern_models,
+        tenant_id,
+        conn,
+    )
+
+    commitment_payload = _build_commitment_overlay_payload(
+        rows=rows,
+        customer_id_str=customer_id_str,
+        customer_label=customer_label,
+        resources_payload=resources_payload,
+        substrate_insight=substrate_insight,
+        activity_payload=activity_payload,
+        learnings_payload=learnings_payload,
+    )
+    return {
+        "commitment": commitment_payload,
+        "goals": _build_goal_overlay_payload(rows.goals),
+        "people": _build_people_overlay_payload(rows.owner, rows.contributors),
+        "customers": customers_payload,
+        "decisions": _build_decision_overlay_payload(rows.decisions),
+        "resources": resources_payload,
+    }
+
+
+async def _fetch_commitment_overlay_rows(
+    cid: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+) -> _CommitmentOverlayRows | None:
     crow = await conn.fetchrow(
         "SELECT id, title, state, owner_id, due_date, priority, "
         "       is_maintenance "
@@ -78,31 +135,31 @@ async def fetch_commitment_overlay(
             crow["owner_id"], tenant_id,
         )
 
-    goal_rows = await conn.fetch(
+    goal_rows = list(await conn.fetch(
         "SELECT g.id, g.title, g.altitude, g.parent_goal_id FROM goals g "
         "JOIN contributes_to ct ON ct.goal_id = g.id "
         "WHERE ct.commitment_id = $1 AND g.tenant_id = $2",
         cid, tenant_id,
-    )
+    ))
 
-    customer_rows = await conn.fetch(
+    customer_rows = list(await conn.fetch(
         "SELECT r.id, r.identity, r.metadata FROM resources r "
         "JOIN customer_commitments cc ON cc.customer_resource_id = r.id "
         "WHERE cc.commitment_id = $1 AND r.tenant_id = $2",
         cid, tenant_id,
-    )
+    ))
 
-    contributor_rows = await conn.fetch(
+    contributor_rows = list(await conn.fetch(
         "SELECT a.id, a.display_name FROM actors a "
         "JOIN commitment_contributors cc ON cc.actor_id = a.id "
         "WHERE cc.commitment_id = $1 AND a.tenant_id = $2",
         cid, tenant_id,
-    )
+    ))
 
     # Capacity resources consumed by this commitment. We exclude the
     # `relational` kind so customer rows (also stored in `resources`)
     # don't double-count as capacity resources in the graph.
-    consumed_resource_rows = await conn.fetch(
+    consumed_resource_rows = list(await conn.fetch(
         "SELECT r.id, r.kind, r.identity, r.description, r.current_value, "
         "       r.utilization_state, r.metadata, "
         "       rd.deployed_quantity "
@@ -114,21 +171,21 @@ async def fetch_commitment_overlay(
         "  AND r.kind IN ('human', 'financial', 'technical', 'time') "
         "ORDER BY r.kind, r.identity",
         cid, tenant_id,
-    )
+    ))
 
-    decision_rows = await conn.fetch(
+    decision_rows = list(await conn.fetch(
         "SELECT d.id, d.title, d.decision_text, d.rationale, d.state "
         "FROM decisions d "
         "JOIN constrained_by cb ON cb.decision_id = d.id "
         "WHERE cb.commitment_id = $1 AND d.tenant_id = $2",
         cid, tenant_id,
-    )
+    ))
 
     # Models scoped to this commitment — surfaced as learned-pattern
     # bundles on the commitment card. Filter by scope_entities @>
     # [{type=commitment, id=cid}] using JSONB containment, then pick
     # top 6 by confidence so the card stays scannable.
-    pattern_model_rows = await conn.fetch(
+    pattern_model_rows = list(await conn.fetch(
         """
         SELECT id, "natural", proposition, confidence, falsifier,
                proposition_kind AS kind,
@@ -143,12 +200,12 @@ async def fetch_commitment_overlay(
         """,
         tenant_id,
         json.dumps([{"type": "commitment", "id": str(cid)}]),
-    )
+    ))
 
     # State-change history: most recent transition + the originating
     # signal that caused it. Used to render "why this is at risk" on
     # the Structure detail card.
-    state_change_rows = await conn.fetch(
+    state_change_rows = list(await conn.fetch(
         """
         SELECT id, occurred_at, cause_id, content
         FROM observations
@@ -160,8 +217,26 @@ async def fetch_commitment_overlay(
         LIMIT 5
         """,
         tenant_id, str(cid),
+    ))
+
+    return _CommitmentOverlayRows(
+        commitment=crow,
+        owner=owner_row,
+        goals=goal_rows,
+        customers=customer_rows,
+        contributors=contributor_rows,
+        consumed_resources=consumed_resource_rows,
+        decisions=decision_rows,
+        pattern_models=pattern_model_rows,
+        state_changes=state_change_rows,
     )
 
+
+async def _build_commitment_activity_payload(
+    state_change_rows: list[Any],
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+) -> tuple[list[dict[str, Any]], str | None]:
     activity_payload: list[dict[str, Any]] = []
     substrate_insight: str | None = None
     seen_cause_ids: set[UUID] = set()
@@ -224,34 +299,39 @@ async def fetch_commitment_overlay(
                 f"Moved to {to_state} after {attribution.lower()}: "
                 f"\u201c{truncated}\u201d"
             )
+    return activity_payload, substrate_insight
 
-    owner_id_str = str(owner_row["id"]) if owner_row else None
-    owner_label = owner_row["display_name"] if owner_row else None
 
-    state = crow["state"]
-    status_label = "on-track"
-    if state == "blocked":
-        status_label = "blocked"
-    elif state == "paused":
-        status_label = "at-risk"
-
+def _build_customer_payload(
+    customer_rows: list[Any],
+) -> tuple[list[dict[str, Any]], str | None, str | None]:
     customer_id_str: str | None = None
     customer_label: str | None = None
     if customer_rows:
         cr = customer_rows[0]
         customer_id_str = str(cr["id"])
-        md = cr["metadata"]
-        if isinstance(md, str):
-            try:
-                md = json.loads(md)
-            except json.JSONDecodeError:
-                md = {}
-        elif not isinstance(md, dict):
-            md = {}
-        customer_label = (
-            md.get("display_name") or cr["identity"] or "Customer"
-        )
+        md = _json_obj(cr["metadata"])
+        customer_label = md.get("display_name") or cr["identity"] or "Customer"
 
+    customers_payload: list[dict[str, Any]] = []
+    if customer_id_str and customer_label:
+        customers_payload.append({
+            "id": customer_id_str,
+            "label": customer_label,
+        })
+    return customers_payload, customer_id_str, customer_label
+
+
+def _build_status_label(state: str) -> str:
+    status_label = "on-track"
+    if state == "blocked":
+        status_label = "blocked"
+    elif state == "paused":
+        status_label = "at-risk"
+    return status_label
+
+
+def _build_goal_overlay_payload(goal_rows: list[Any]) -> list[dict[str, Any]]:
     goals_payload: list[dict[str, Any]] = []
     for g in goal_rows:
         altitude = (
@@ -266,7 +346,13 @@ async def fetch_commitment_overlay(
                 str(g["parent_goal_id"]) if g["parent_goal_id"] else None
             ),
         })
+    return goals_payload
 
+
+def _build_people_overlay_payload(
+    owner_row: Any | None,
+    contributor_rows: list[Any],
+) -> list[dict[str, Any]]:
     people_payload: list[dict[str, Any]] = []
     seen_actor_ids: set[str] = set()
     if owner_row is not None:
@@ -286,14 +372,10 @@ async def fetch_commitment_overlay(
             "label": c["display_name"],
             "role": "Contributor",
         })
+    return people_payload
 
-    customers_payload: list[dict[str, Any]] = []
-    if customer_id_str and customer_label:
-        customers_payload.append({
-            "id": customer_id_str,
-            "label": customer_label,
-        })
 
+def _build_decision_overlay_payload(decision_rows: list[Any]) -> list[dict[str, Any]]:
     decisions_payload: list[dict[str, Any]] = []
     for d in decision_rows:
         decisions_payload.append({
@@ -303,37 +385,21 @@ async def fetch_commitment_overlay(
                 "in-force", "drifting", "revisited",
             ) else "in-force",
         })
+    return decisions_payload
 
+
+def _build_consumed_resources_payload(
+    consumed_resource_rows: list[Any],
+) -> list[dict[str, Any]]:
     # Resources consumed by this commitment — used by the right quadrant
     # of the relational graph and the commitment side-panel "Resources"
     # block. Each entry carries the deployed quantity in the resource's
     # native unit (FTE, USD, engineer-weeks, GPU-hours).
     resources_payload: list[dict[str, Any]] = []
     for rr in consumed_resource_rows:
-        cv = rr["current_value"]
-        if isinstance(cv, str):
-            try:
-                cv = json.loads(cv)
-            except json.JSONDecodeError:
-                cv = {}
-        if not isinstance(cv, dict):
-            cv = {}
-        md = rr["metadata"]
-        if isinstance(md, str):
-            try:
-                md = json.loads(md)
-            except json.JSONDecodeError:
-                md = {}
-        if not isinstance(md, dict):
-            md = {}
-        dq = rr["deployed_quantity"]
-        if isinstance(dq, str):
-            try:
-                dq = json.loads(dq)
-            except json.JSONDecodeError:
-                dq = {}
-        if not isinstance(dq, dict):
-            dq = {}
+        cv = _json_obj(rr["current_value"])
+        md = _json_obj(rr["metadata"])
+        dq = _json_obj(rr["deployed_quantity"])
         resources_payload.append({
             "id": str(rr["id"]),
             "label": cv.get("label") or md.get("label") or rr["identity"] or "Resource",
@@ -341,7 +407,14 @@ async def fetch_commitment_overlay(
             "unit": cv.get("unit"),
             "deployed_quantity": dq.get("value"),
         })
+    return resources_payload
 
+
+async def _build_commitment_learnings_payload(
+    pattern_model_rows: list[Any],
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+) -> list[dict[str, Any]]:
     # Build LearnedPattern bundles from the scoped models. Each model's
     # natural-language statement becomes the pattern statement;
     # supporting_event_ids resolve to short evidence snippets via a
@@ -349,14 +422,6 @@ async def fetch_commitment_overlay(
     # the response).
     learnings_payload: list[dict[str, Any]] = []
     for m in pattern_model_rows:
-        prop = m["proposition"]
-        if isinstance(prop, str):
-            try:
-                prop = json.loads(prop)
-            except json.JSONDecodeError:
-                prop = {}
-        if not isinstance(prop, dict):
-            prop = {}
         statement = (m["natural"] or "").strip()
         if not statement:
             continue
@@ -387,8 +452,25 @@ async def fetch_commitment_overlay(
             "strength": float(m["confidence"] or 0.5),
             "evidence": evidence_payload,
         })
+    return learnings_payload
 
-    commitment_payload = {
+
+def _build_commitment_overlay_payload(
+    *,
+    rows: _CommitmentOverlayRows,
+    customer_id_str: str | None,
+    customer_label: str | None,
+    resources_payload: list[dict[str, Any]],
+    substrate_insight: str | None,
+    activity_payload: list[dict[str, Any]],
+    learnings_payload: list[dict[str, Any]],
+) -> dict[str, Any]:
+    crow = rows.commitment
+    owner_row = rows.owner
+    owner_id_str = str(owner_row["id"]) if owner_row else None
+    owner_label = owner_row["display_name"] if owner_row else None
+
+    return {
         "id": str(crow["id"]),
         "label": crow["title"],
         "owner": owner_id_str,
@@ -397,7 +479,7 @@ async def fetch_commitment_overlay(
             crow["due_date"].date().isoformat()
             if crow["due_date"] is not None else None
         ),
-        "status": status_label,
+        "status": _build_status_label(crow["state"]),
         "priority": (
             "high" if (crow["priority"] or 5) <= 3
             else "low" if (crow["priority"] or 5) >= 8
@@ -406,10 +488,10 @@ async def fetch_commitment_overlay(
         "customer": customer_id_str,
         "customer_label": customer_label,
         "edges": {
-            "contributes_to": [str(g["id"]) for g in goal_rows],
-            "constrained_by": [str(d["id"]) for d in decision_rows],
+            "contributes_to": [str(g["id"]) for g in rows.goals],
+            "constrained_by": [str(d["id"]) for d in rows.decisions],
             "consumes": [r["id"] for r in resources_payload],
-            "contributors": [str(c["id"]) for c in contributor_rows],
+            "contributors": [str(c["id"]) for c in rows.contributors],
         },
         # Per-commit slice of every consumed resource (label, unit,
         # deployed_quantity in the resource's native unit). Lets the
@@ -421,14 +503,16 @@ async def fetch_commitment_overlay(
         "learnings": learnings_payload,
     }
 
-    return {
-        "commitment": commitment_payload,
-        "goals": goals_payload,
-        "people": people_payload,
-        "customers": customers_payload,
-        "decisions": decisions_payload,
-        "resources": resources_payload,
-    }
+
+def _json_obj(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = {}
+    if not isinstance(value, dict):
+        return {}
+    return value
 
 
 async def fetch_artifact(
@@ -1395,4 +1479,3 @@ async def _resolve_entity_title(
     except Exception:
         return None
     return (row["title"] if row else None) or None
-

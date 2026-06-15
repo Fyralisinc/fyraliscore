@@ -29,6 +29,7 @@ Request flow:
        `PayloadMissing` → 400. On `Resolved`, hand off to
        `ingestion.core.ingest()` under the resolved tenant.
 """
+
 from __future__ import annotations
 
 import json
@@ -71,7 +72,11 @@ from services.app.webhooks.tenant_resolver import (
     Resolved,
     UnknownInstallation,
 )
-from services.app.webhooks.verifier import WebhookVerificationError
+from services.app.webhooks.verifier import (
+    VerifiedContext,
+    Verifier,
+    WebhookVerificationError,
+)
 
 
 log = structlog.get_logger("webhooks.router")
@@ -94,6 +99,20 @@ class WebhookRuntime:
     s3_raw_client: Any | None
     github_client: Any | None
     github_replay_cache: Any | None
+
+
+@dataclass(frozen=True, slots=True)
+class WebhookAuthContext:
+    runtime: WebhookRuntime
+    outcome: Any
+    tenant_id: Any | None
+    verified: VerifiedContext
+
+
+@dataclass(frozen=True, slots=True)
+class WebhookCutoverDecision:
+    flag_enabled: bool
+    response: JSONResponse | None
 
 
 def _webhook_runtime(request: Request) -> WebhookRuntime:
@@ -202,7 +221,9 @@ _DEFAULT_NUM_PARTITIONS = int(os.environ.get("KAFKA_TOPIC_PARTITIONS", "12"))
 
 
 def _kafka_partition_for_tenant(
-    tenant_id: Any, *, num_partitions: int | None = None,
+    tenant_id: Any,
+    *,
+    num_partitions: int | None = None,
 ) -> int:
     """M-Load: explicit murmur2 partition match with librdkafka.
 
@@ -223,11 +244,12 @@ def _kafka_partition_for_tenant(
     partitioners, that test catches the drift.
     """
     import mmh3
+
     if num_partitions is None:
         num_partitions = _DEFAULT_NUM_PARTITIONS
     key_bytes = str(tenant_id).encode("utf-8")
-    h = mmh3.hash(key_bytes, seed=0x9747b28c, signed=False)
-    return (h & 0x7fffffff) % num_partitions
+    h = mmh3.hash(key_bytes, seed=0x9747B28C, signed=False)
+    return (h & 0x7FFFFFFF) % num_partitions
 
 
 async def _attempt_kafka_path(
@@ -379,7 +401,9 @@ async def _maybe_shadow_write_webhook(
 
         if tenant_flags is not None:
             enabled = await tenant_flags.get_bool(
-                tenant_id, SHADOW_WRITE_ENABLED, default=True,
+                tenant_id,
+                SHADOW_WRITE_ENABLED,
+                default=True,
             )
             if not enabled:
                 return
@@ -387,7 +411,9 @@ async def _maybe_shadow_write_webhook(
         # Per-provider hints — populated lazily to keep the unwired
         # paths cheap. The hints are best-effort; the normalizer
         # treats them as advisory.
-        ingress_metadata: dict[str, Any] = {"event_type": _event_type_for(provider, request, payload)}
+        ingress_metadata: dict[str, Any] = {
+            "event_type": _event_type_for(provider, request, payload)
+        }
         if provider == "github":
             delivery_id = _github_delivery_id(request.headers)
             if delivery_id:
@@ -494,7 +520,9 @@ def _err_response(
     return JSONResponse(err.to_dict(), status_code=status_code)
 
 
-def _is_slack_url_verification(payload: Mapping[str, Any] | None) -> dict[str, Any] | None:
+def _is_slack_url_verification(
+    payload: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
     """Detect Slack's one-time `url_verification` handshake. Returns
     the payload when matched, else None."""
     if not isinstance(payload, dict):
@@ -521,10 +549,7 @@ def _github_event_type(headers: Mapping[str, str]) -> str | None:
 
 
 def _github_delivery_id(headers: Mapping[str, str]) -> str | None:
-    return (
-        headers.get("X-GitHub-Delivery")
-        or headers.get("x-github-delivery")
-    )
+    return headers.get("X-GitHub-Delivery") or headers.get("x-github-delivery")
 
 
 def _github_installation_id_from_payload(
@@ -559,12 +584,13 @@ def _github_repo_full_name(payload: Mapping[str, Any] | None) -> str | None:
 
 
 async def _load_github_selected_repositories(
-    pool: Any, installation_row_id: Any,
+    pool: Any,
+    installation_row_id: Any,
 ) -> list[str] | None:
     """Read `selected_repositories` for an installation. Returns:
-      - list[str]: explicit selection (delivery must match)
-      - None:       all-repositories mode (no filter)
-      - []:         empty selection (every delivery is filtered out)
+    - list[str]: explicit selection (delivery must match)
+    - None:       all-repositories mode (no filter)
+    - []:         empty selection (every delivery is filtered out)
     """
     if pool is None or installation_row_id is None:
         return None
@@ -587,6 +613,7 @@ async def _load_github_selected_repositories(
         return [str(x) for x in raw if isinstance(x, str)]
     try:
         import json as _json
+
         parsed = _json.loads(raw)
     except Exception:  # noqa: BLE001
         return None
@@ -642,6 +669,7 @@ async def _handle_github_lifecycle(
 
     try:
         from services.ingest.integrations.github.lifecycle import dispatch
+
         body = await dispatch(
             event_type=event_type,
             payload=payload,
@@ -680,11 +708,7 @@ async def _handle_slack_lifecycle(
     retry budget closes out cleanly."""
     from services.ingest.integrations.slack import uninstall as slack_uninstall
 
-    team_id = (
-        payload.get("team_id")
-        if isinstance(payload, dict)
-        else None
-    )
+    team_id = payload.get("team_id") if isinstance(payload, dict) else None
     if not isinstance(team_id, str):
         # The resolver already matched the team; this should never
         # happen, but defensively close the request out.
@@ -901,7 +925,9 @@ async def _ingest_quickbooks_fanout(
             # Resolve THIS realm to its own tenant. `_extract_quickbooks`
             # reads a top-level `realmId`, so a minimal `{realmId}` resolves.
             outcome = await resolver.resolve(
-                "quickbooks", {"realmId": realm_id}, headers,
+                "quickbooks",
+                {"realmId": realm_id},
+                headers,
             )
             if not isinstance(outcome, Resolved):
                 unknown_realms += 1
@@ -954,6 +980,536 @@ async def _ingest_quickbooks_fanout(
     )
 
 
+def _unknown_provider_response(provider: str) -> JSONResponse:
+    return JSONResponse(
+        {
+            "code": "unknown_provider",
+            "message": f"no webhook verifier registered for {provider!r}",
+            "context": {"provider": provider},
+        },
+        status_code=404,
+    )
+
+
+def _payload_too_large_response(provider: str) -> JSONResponse:
+    return JSONResponse(
+        {
+            "code": "payload_too_large",
+            "message": "payload exceeds maximum size",
+            "context": {
+                "provider": provider,
+                "max_bytes": MAX_PAYLOAD_BYTES,
+            },
+        },
+        status_code=413,
+    )
+
+
+def _tenant_resolver_missing_response(provider: str) -> JSONResponse:
+    log.error("webhook_router_tenant_resolver_missing", provider=provider)
+    return JSONResponse(
+        {
+            "code": "service_unavailable",
+            "message": "tenant resolver not initialized",
+            "context": {"provider": provider},
+        },
+        status_code=503,
+    )
+
+
+def _unexpected_verifier_error_response(provider: str, exc: Exception) -> JSONResponse:
+    log.error(
+        "webhook_verifier_unexpected_error",
+        provider=provider,
+        error_type=type(exc).__name__,
+    )
+    metrics.record_failure(provider, "signature_mismatch")
+    return JSONResponse(
+        {
+            "code": "webhook_verification_failed",
+            "message": "verifier raised unexpected error",
+            "context": {
+                "provider": provider,
+                "reason": "signature_mismatch",
+            },
+        },
+        status_code=401,
+    )
+
+
+async def _read_webhook_body(
+    request: Request,
+    *,
+    provider: str,
+) -> tuple[bytes | None, dict[str, Any] | None, JSONResponse | None]:
+    raw = await request.body()
+    if len(raw) > MAX_PAYLOAD_BYTES:
+        return None, None, _payload_too_large_response(provider)
+    return raw, _safe_json_loads(raw), None
+
+
+async def _resolve_and_verify_webhook(
+    request: Request,
+    *,
+    provider: str,
+    subpath: str,
+    payload: Mapping[str, Any] | None,
+    raw: bytes,
+    verifier: Verifier,
+) -> WebhookAuthContext | JSONResponse:
+    runtime = _webhook_runtime(request)
+
+    tenant_resolver = runtime.tenant_resolver
+    if tenant_resolver is None:
+        return _tenant_resolver_missing_response(provider)
+
+    # R3: pass the URL subpath so per-install-endpoint providers (Ashby)
+    # can resolve the tenant from `/webhooks/{provider}/{installId}`.
+    outcome = await tenant_resolver.resolve(
+        provider,
+        payload or {},
+        dict(request.headers),
+        subpath=subpath,
+    )
+    tenant_id = outcome.tenant_id if isinstance(outcome, Resolved) else None
+
+    secrets = await load_secrets(provider, tenant_id, app_state=request.app.state)
+    try:
+        verified = await verifier.verify(
+            body=raw,
+            headers=request.headers,
+            secrets=secrets,
+            now=time.time(),
+        )
+    except WebhookVerificationError as exc:
+        return _err_response(exc)
+    except Exception as exc:  # pragma: no cover — defensive
+        return _unexpected_verifier_error_response(provider, exc)
+
+    return WebhookAuthContext(
+        runtime=runtime,
+        outcome=outcome,
+        tenant_id=tenant_id,
+        verified=verified,
+    )
+
+
+async def _verified_pre_tenant_response(
+    request: Request,
+    *,
+    provider: str,
+    runtime: WebhookRuntime,
+    payload: Mapping[str, Any] | None,
+    slack_url_verification: Mapping[str, Any] | None,
+) -> JSONResponse | None:
+    if slack_url_verification is not None:
+        challenge = slack_url_verification.get("challenge", "")
+        return JSONResponse({"challenge": challenge}, status_code=200)
+    if provider == "discord" and _is_discord_ping(payload):
+        return JSONResponse({"type": 1}, status_code=200)
+
+    # IN-13 FR-022: GitHub bootstrap pings may arrive before installation rows.
+    if provider == "github" and _is_github_ping(request.headers):
+        try:
+            from services.ingest.integrations.github import metrics as gh_metrics
+
+            gh_metrics.record_webhook_verified(result="ok")
+        except Exception:  # noqa: BLE001
+            pass
+        log.info(
+            "github_webhook_ping",
+            event_type="ping",
+            delivery_id=_github_delivery_id(request.headers),
+        )
+        return JSONResponse({"handled": "ping"}, status_code=200)
+
+    if provider != "github":
+        return None
+
+    replay_cache = runtime.github_replay_cache
+    github_installation_id = _github_installation_id_from_payload(payload)
+    delivery_id = _github_delivery_id(request.headers)
+    if replay_cache is None or github_installation_id is None or delivery_id is None:
+        return None
+    if not replay_cache.seen(github_installation_id, delivery_id):
+        return None
+
+    try:
+        from services.ingest.integrations.github import metrics as gh_metrics
+
+        gh_metrics.record_replay_dropped()
+    except Exception:  # noqa: BLE001
+        pass
+    log.info("github_webhook_replay_dropped", delivery_id=delivery_id)
+    return JSONResponse({"handled": "replay"}, status_code=200)
+
+
+def _resolver_outcome_rejection(
+    outcome: Any,
+    *,
+    provider: str,
+    tenant_id: Any | None,
+) -> JSONResponse | None:
+    if isinstance(outcome, UnknownInstallation):
+        err = WebhookVerificationError(
+            "unknown_installation",
+            "no enabled installation matches the supplied identifier",
+            provider=outcome.provider,
+        )
+        return _err_response(err, status_code=401)
+    if isinstance(outcome, PayloadMissing):
+        metrics.record_failure(provider, "tenant_not_resolved")
+        log.info(
+            "webhook_payload_missing_identifier",
+            provider=outcome.provider,
+        )
+        return JSONResponse(
+            {
+                "code": "payload_missing",
+                "message": "request did not carry a parseable installation identifier",
+                "context": {"provider": outcome.provider},
+            },
+            status_code=400,
+        )
+    if tenant_id is None:  # pragma: no cover — defensive
+        err = WebhookVerificationError(
+            "tenant_not_resolved",
+            "verified webhook could not be mapped to a tenant",
+            provider=provider,
+        )
+        return _err_response(err)
+    return None
+
+
+async def _provider_verified_response(
+    request: Request,
+    *,
+    provider: str,
+    runtime: WebhookRuntime,
+    outcome: Any,
+    tenant_id: Any,
+    payload: Mapping[str, Any] | None,
+    verified: VerifiedContext,
+) -> JSONResponse | None:
+    if provider == "notion":
+        return await notion_webhook.handle_notion_event(
+            request=request,
+            outcome=outcome,
+            payload=payload or {},
+        )
+
+    if provider == "slack":
+        slack_lifecycle = _slack_lifecycle_event(payload)
+        if slack_lifecycle is not None:
+            return await _handle_slack_lifecycle(
+                request,
+                runtime,
+                outcome,
+                payload or {},
+                slack_lifecycle,
+            )
+
+    if provider == "github":
+        event_type = _github_event_type(request.headers)
+        github_installation_id = _github_installation_id_from_payload(payload)
+        if event_type in ("installation", "installation_repositories"):
+            return await _handle_github_lifecycle(
+                request=request,
+                runtime=runtime,
+                outcome=outcome,
+                payload=payload or {},
+                event_type=event_type,
+                installation_id=github_installation_id,
+            )
+
+        selected = await _load_github_selected_repositories(
+            runtime.pool,
+            outcome.installation_row_id,
+        )
+        if selected is not None:
+            repo_full = _github_repo_full_name(payload)
+            if repo_full is None or repo_full not in selected:
+                try:
+                    from services.ingest.integrations.github import (
+                        metrics as gh_metrics,
+                    )
+
+                    gh_metrics.record_filtered_repo(reason="not_selected")
+                except Exception:  # noqa: BLE001
+                    pass
+                log.info(
+                    "github_webhook_filtered_repo",
+                    event_type=event_type,
+                    repo_full_name=repo_full,
+                )
+                return JSONResponse(
+                    {"handled": "filtered_repo"},
+                    status_code=200,
+                )
+
+    if provider == "quickbooks" and isinstance(
+        (payload or {}).get("eventNotifications"),
+        list,
+    ):
+        return await _ingest_quickbooks_fanout(
+            request,
+            runtime=runtime,
+            payload=payload or {},
+            secret_label=verified.secret_label,
+        )
+
+    return None
+
+
+async def _kafka_cutover_response(
+    request: Request,
+    *,
+    provider: str,
+    runtime: WebhookRuntime,
+    tenant_id: Any,
+    raw: bytes,
+    payload: Mapping[str, Any] | None,
+    verified: VerifiedContext,
+) -> WebhookCutoverDecision:
+    flag_enabled = False
+    cutover_source = _CUTOVER_ENABLED_PROVIDERS.get(provider)
+    if cutover_source is not None and runtime.tenant_flags is not None:
+        flag_enabled = await runtime.tenant_flags.kafka_path_enabled(tenant_id)
+
+    if not flag_enabled or cutover_source is None:
+        return WebhookCutoverDecision(flag_enabled=flag_enabled, response=None)
+
+    succeeded = await _attempt_kafka_path(
+        request,
+        runtime=runtime,
+        provider=provider,
+        source=cutover_source,
+        tenant_id=tenant_id,
+        raw_body=raw,
+        payload=payload,
+    )
+    if succeeded:
+        metrics.record_kafka_path_outcome(provider, "success")
+        return WebhookCutoverDecision(
+            flag_enabled=True,
+            response=JSONResponse(
+                {
+                    "status": "accepted",
+                    "secret_label": verified.secret_label,
+                },
+                status_code=202,
+                headers={
+                    "X-Secret-Label": verified.secret_label or "",
+                },
+            ),
+        )
+
+    metrics.record_kafka_path_outcome(provider, "fallback")
+    log.warning(
+        "router.kafka_path_fallback_to_inline",
+        provider=provider,
+        tenant_id=str(tenant_id),
+    )
+    return WebhookCutoverDecision(flag_enabled=True, response=None)
+
+
+async def _inline_ingest_response(
+    request: Request,
+    *,
+    provider: str,
+    runtime: WebhookRuntime,
+    tenant_id: Any,
+    raw: bytes,
+    payload: Mapping[str, Any] | None,
+    verified: VerifiedContext,
+    suppress_shadow_write: bool,
+) -> JSONResponse:
+    channel = _PROVIDER_CHANNEL[provider]
+    if payload is None:
+        try:
+            payload = json.loads(verified.body)
+        except json.JSONDecodeError:
+            return JSONResponse(
+                {
+                    "code": "invalid_json",
+                    "message": "verified body is not valid JSON",
+                    "context": {"provider": provider},
+                },
+                status_code=400,
+            )
+
+    deps = _deps(request)
+    try:
+        result: IngestResult = await ingest(
+            channel,
+            payload,
+            pool=deps.pool,
+            tenant_id=tenant_id,
+            actor_repo=deps.actor_repo,
+            alias_repo=deps.alias_repo,
+            embedder=deps.embedder,
+            request_headers=safe_headers(request.headers),
+        )
+    except HandlerNotFound:
+        return JSONResponse(
+            {
+                "code": "handler_not_found",
+                "message": f"no ingestion handler for channel {channel!r}",
+                "context": {"provider": provider, "channel": channel},
+            },
+            status_code=501,
+        )
+    except PayloadTooLarge:
+        return JSONResponse(
+            {
+                "code": "payload_too_large",
+                "message": "payload exceeds maximum size",
+                "context": {"provider": provider},
+            },
+            status_code=413,
+        )
+    except ValidationError as exc:
+        return JSONResponse(
+            {"code": exc.code, "message": exc.message, "context": exc.context},
+            status_code=400,
+        )
+    except CompanyOSError as exc:
+        return JSONResponse(
+            {"code": exc.code, "message": exc.message, "context": exc.context},
+            status_code=400,
+        )
+
+    if not suppress_shadow_write:
+        await _maybe_shadow_write_webhook(
+            request,
+            runtime=runtime,
+            provider=provider,
+            tenant_id=tenant_id,
+            raw_body=raw,
+            payload=payload,
+        )
+
+    substrate_headers = {
+        "X-Observation-Id": str(result.observation.id),
+        "X-Deduped": "true" if result.deduped else "false",
+        "X-Secret-Label": verified.secret_label or "",
+    }
+    if result.trigger_queue_id is not None:
+        substrate_headers["X-Trigger-Queue-Id"] = str(result.trigger_queue_id)
+
+    if provider == "discord" and isinstance(payload, dict) and payload.get("type") == 2:
+        return JSONResponse(
+            {
+                "type": 4,
+                "data": {
+                    "content": "Got it — your question is recorded in Fyralis. (Follow-up content ships in IN-13.)",
+                    "flags": 64,  # EPHEMERAL — only the invoker sees this
+                },
+            },
+            status_code=200,
+            headers=substrate_headers,
+        )
+
+    return JSONResponse(
+        {
+            "observation_id": str(result.observation.id),
+            "deduped": result.deduped,
+            "trigger_queue_id": (
+                str(result.trigger_queue_id) if result.trigger_queue_id else None
+            ),
+            "secret_label": verified.secret_label,
+        },
+        status_code=200 if result.deduped else 201,
+    )
+
+
+async def _receive_webhook(
+    provider: str,
+    request: Request,
+    *,
+    subpath: str = "",
+) -> JSONResponse:
+    verifier = VERIFIERS.get(provider)
+    if verifier is None:
+        return _unknown_provider_response(provider)
+
+    raw, payload, read_error = await _read_webhook_body(request, provider=provider)
+    if read_error is not None:
+        return read_error
+    assert raw is not None  # for type checkers; read_error handled above.
+
+    slack_url_verification = (
+        _is_slack_url_verification(payload) if provider == "slack" else None
+    )
+
+    if provider == "notion" and notion_webhook.is_verification_handshake(payload):
+        return notion_webhook.handle_verification_handshake(payload)
+
+    auth = await _resolve_and_verify_webhook(
+        request,
+        provider=provider,
+        subpath=subpath,
+        payload=payload,
+        raw=raw,
+        verifier=verifier,
+    )
+    if isinstance(auth, JSONResponse):
+        return auth
+
+    response = await _verified_pre_tenant_response(
+        request,
+        provider=provider,
+        runtime=auth.runtime,
+        payload=payload,
+        slack_url_verification=slack_url_verification,
+    )
+    if response is not None:
+        return response
+
+    response = _resolver_outcome_rejection(
+        auth.outcome,
+        provider=provider,
+        tenant_id=auth.tenant_id,
+    )
+    if response is not None:
+        return response
+
+    response = await _provider_verified_response(
+        request,
+        provider=provider,
+        runtime=auth.runtime,
+        outcome=auth.outcome,
+        tenant_id=auth.tenant_id,
+        payload=payload,
+        verified=auth.verified,
+    )
+    if response is not None:
+        return response
+
+    cutover = await _kafka_cutover_response(
+        request,
+        provider=provider,
+        runtime=auth.runtime,
+        tenant_id=auth.tenant_id,
+        raw=raw,
+        payload=payload,
+        verified=auth.verified,
+    )
+    if cutover.response is not None:
+        return cutover.response
+
+    return await _inline_ingest_response(
+        request,
+        provider=provider,
+        runtime=auth.runtime,
+        tenant_id=auth.tenant_id,
+        raw=raw,
+        payload=payload,
+        verified=auth.verified,
+        suppress_shadow_write=cutover.flag_enabled,
+    )
+
+
 def build_webhooks_router() -> APIRouter:
     """Create the FastAPI router. Mounted at the app root by the
     gateway so paths read as `/webhooks/{provider}/{subpath:path}`.
@@ -981,520 +1537,7 @@ def build_webhooks_router() -> APIRouter:
         request: Request,
         subpath: str = "",
     ) -> JSONResponse:
-        verifier = VERIFIERS.get(provider)
-        if verifier is None:
-            return JSONResponse(
-                {
-                    "code": "unknown_provider",
-                    "message": f"no webhook verifier registered for {provider!r}",
-                    "context": {"provider": provider},
-                },
-                status_code=404,
-            )
-
-        # Step 1+2: capture raw body bytes; enforce size precheck.
-        raw = await request.body()
-        if len(raw) > MAX_PAYLOAD_BYTES:
-            return JSONResponse(
-                {
-                    "code": "payload_too_large",
-                    "message": "payload exceeds maximum size",
-                    "context": {
-                        "provider": provider,
-                        "max_bytes": MAX_PAYLOAD_BYTES,
-                    },
-                },
-                status_code=413,
-            )
-
-        # Step 3 + 4: best-effort JSON parse so the resolver and the
-        # Slack URL-verification handshake have a dict to inspect.
-        payload = _safe_json_loads(raw)
-        slack_uv = (
-            _is_slack_url_verification(payload) if provider == "slack" else None
-        )
-
-        # IN-14: Notion's one-time subscription verification POST is
-        # UNSIGNED (the verification_token it delivers is the very secret
-        # later events are signed with). Intercept it BEFORE tenant
-        # resolution + signature verification — there is nothing to verify
-        # against yet, and the handshake names no workspace.
-        if provider == "notion" and notion_webhook.is_verification_handshake(
-            payload,
-        ):
-            return notion_webhook.handle_verification_handshake(payload)
-
-        runtime = _webhook_runtime(request)
-
-        # Step 5: resolve tenant via the IN-07 DB-backed resolver.
-        # `payload or {}` keeps the API contract clean for Stripe
-        # (header-only id extraction) and for malformed bodies.
-        tenant_resolver = runtime.tenant_resolver
-        if tenant_resolver is None:
-            # Gateway misconfiguration — fail loud rather than silently
-            # falling back to a legacy resolver. Gateway lifespan
-            # integration wiring is the single chokepoint that
-            # populates this dependency.
-            log.error("webhook_router_tenant_resolver_missing", provider=provider)
-            return JSONResponse(
-                {
-                    "code": "service_unavailable",
-                    "message": "tenant resolver not initialized",
-                    "context": {"provider": provider},
-                },
-                status_code=503,
-            )
-        # R3: pass the URL subpath so per-install-endpoint providers (Ashby)
-        # can resolve the tenant from `/webhooks/{provider}/{installId}` — their
-        # real deliveries carry no tenant id in the body.
-        outcome = await tenant_resolver.resolve(
-            provider, payload or {}, dict(request.headers), subpath=subpath,
-        )
-        tenant_id_uuid = (
-            outcome.tenant_id if isinstance(outcome, Resolved) else None
-        )
-
-        # Step 6: load secrets — DB-backed via the IN-08 secret store.
-        # The verifier itself raises `secret_not_configured` when the
-        # list is empty, which keeps the rejection reason consistent.
-        secrets = await load_secrets(
-            provider, tenant_id_uuid, app_state=request.app.state,
-        )
-
-        # Step 7: verify.
-        try:
-            ctx = await verifier.verify(
-                body=raw,
-                headers=request.headers,
-                secrets=secrets,
-                now=time.time(),
-            )
-        except WebhookVerificationError as e:
-            return _err_response(e)
-        except Exception as e:  # pragma: no cover — defensive
-            log.error(
-                "webhook_verifier_unexpected_error",
-                provider=provider,
-                error_type=type(e).__name__,
-            )
-            metrics.record_failure(provider, "signature_mismatch")
-            return JSONResponse(
-                {
-                    "code": "webhook_verification_failed",
-                    "message": "verifier raised unexpected error",
-                    "context": {
-                        "provider": provider,
-                        "reason": "signature_mismatch",
-                    },
-                },
-                status_code=401,
-            )
-
-        # Step 8a: provider-specific verified-handshake responses.
-        # These bypass the tenant-rejection enforcement because the
-        # handshake itself does not name a tenant.
-        if slack_uv is not None:
-            challenge = slack_uv.get("challenge", "")
-            return JSONResponse({"challenge": challenge}, status_code=200)
-        if provider == "discord" and _is_discord_ping(payload):
-            return JSONResponse({"type": 1}, status_code=200)
-        # IN-13 FR-022: GitHub `ping` event. Handled BEFORE unknown-
-        # installation enforcement because the bootstrap ping may
-        # arrive before any customer has installed.
-        if provider == "github" and _is_github_ping(request.headers):
-            try:
-                from services.ingest.integrations.github import metrics as gh_metrics
-                gh_metrics.record_webhook_verified(result="ok")
-            except Exception:  # noqa: BLE001
-                pass
-            log.info(
-                "github_webhook_ping",
-                event_type="ping",
-                delivery_id=_github_delivery_id(request.headers),
-            )
-            return JSONResponse({"handled": "ping"}, status_code=200)
-
-        # IN-13 FR-008b + Clarifications Q4: replay-cache check runs
-        # AFTER signature verification AND BEFORE tenant-resolution
-        # outcome enforcement. Defense-in-depth — observation-layer
-        # dedup is the correctness backstop.
-        if provider == "github":
-            replay_cache = runtime.github_replay_cache
-            github_installation_id = _github_installation_id_from_payload(
-                payload,
-            )
-            delivery_id = _github_delivery_id(request.headers)
-            if (
-                replay_cache is not None
-                and github_installation_id is not None
-                and delivery_id is not None
-            ):
-                if replay_cache.seen(github_installation_id, delivery_id):
-                    try:
-                        from services.ingest.integrations.github import (
-                            metrics as gh_metrics,
-                        )
-                        gh_metrics.record_replay_dropped()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    log.info(
-                        "github_webhook_replay_dropped",
-                        delivery_id=delivery_id,
-                    )
-                    return JSONResponse(
-                        {"handled": "replay"}, status_code=200,
-                    )
-
-        # Step 8b: enforce resolver outcome — deferred until AFTER
-        # signature verification so an attacker probing tenant ids
-        # sees signature failures first (FR-023, IN-07 SC-008).
-        if isinstance(outcome, UnknownInstallation):
-            err = WebhookVerificationError(
-                "unknown_installation",
-                "no enabled installation matches the supplied identifier",
-                provider=outcome.provider,
-            )
-            return _err_response(err, status_code=401)
-        if isinstance(outcome, PayloadMissing):
-            # PayloadMissing is a client-side defect (bad request) rather
-            # than an auth failure — return 400, matching IN-07 mapping.
-            metrics.record_failure(provider, "tenant_not_resolved")
-            log.info(
-                "webhook_payload_missing_identifier",
-                provider=outcome.provider,
-            )
-            return JSONResponse(
-                {
-                    "code": "payload_missing",
-                    "message": "request did not carry a parseable installation identifier",
-                    "context": {"provider": outcome.provider},
-                },
-                status_code=400,
-            )
-
-        # outcome is Resolved at this point — tenant_id_uuid is set.
-        if tenant_id_uuid is None:  # pragma: no cover — defensive
-            err = WebhookVerificationError(
-                "tenant_not_resolved",
-                "verified webhook could not be mapped to a tenant",
-                provider=provider,
-            )
-            return _err_response(err)
-
-        # IN-14: Notion events are thin (entity.id + dotted type); there
-        # is no inline ingest path and no `_PROVIDER_CHANNEL` entry. The
-        # handler fetches the full page via the per-workspace bot token
-        # and shadow-writes it onto the data plane (ingress_kind=webhook),
-        # then returns 200. Returning here short-circuits the inline /
-        # cutover / `_PROVIDER_CHANNEL` block below (which has no notion
-        # key) entirely.
-        if provider == "notion":
-            return await notion_webhook.handle_notion_event(
-                request=request,
-                outcome=outcome,
-                payload=payload or {},
-            )
-
-        # IN-08 US4: dispatch Slack lifecycle events (app_uninstalled /
-        # tokens_revoked) to the uninstall handler BEFORE ingestion.
-        # These events disable the installation + zeroize secret
-        # material; they do NOT produce an Observation.
-        if provider == "slack":
-            slack_lifecycle = _slack_lifecycle_event(payload)
-            if slack_lifecycle is not None:
-                return await _handle_slack_lifecycle(
-                    request,
-                    runtime,
-                    outcome,
-                    payload,
-                    slack_lifecycle,
-                )
-
-        # IN-13 US4 + US5: dispatch GitHub lifecycle events
-        # (installation, installation_repositories) BEFORE ingestion;
-        # then enforce per-installation `selected_repositories` allowlist
-        # for non-lifecycle events.
-        if provider == "github":
-            event_type = _github_event_type(request.headers)
-            github_installation_id = _github_installation_id_from_payload(
-                payload,
-            )
-
-            if event_type in ("installation", "installation_repositories"):
-                return await _handle_github_lifecycle(
-                    request=request,
-                    runtime=runtime,
-                    outcome=outcome,
-                    payload=payload or {},
-                    event_type=event_type,
-                    installation_id=github_installation_id,
-                )
-
-            # Repo filter: only applies when the installation pinned an
-            # explicit list. NULL = "all repositories" (no filter).
-            selected = await _load_github_selected_repositories(
-                runtime.pool, outcome.installation_row_id,
-            )
-            if selected is not None:
-                repo_full = _github_repo_full_name(payload)
-                if repo_full is None or repo_full not in selected:
-                    try:
-                        from services.ingest.integrations.github import (
-                            metrics as gh_metrics,
-                        )
-                        gh_metrics.record_filtered_repo(reason="not_selected")
-                    except Exception:  # noqa: BLE001
-                        pass
-                    log.info(
-                        "github_webhook_filtered_repo",
-                        event_type=event_type,
-                        repo_full_name=repo_full,
-                    )
-                    return JSONResponse(
-                        {"handled": "filtered_repo"}, status_code=200,
-                    )
-
-        # ---- QuickBooks multi-tenant fan-out (R1, CRITICAL #7) ----
-        # A QBO `eventNotifications` delivery may batch multiple realms (each a
-        # distinct tenant) × multiple entities. The generic single-tenant tail
-        # below would drop all but the first. Intercept here — AFTER signature
-        # verification (intuit-signature is app-level, so the one verification
-        # covers the whole batch) and AFTER outcome enforcement (a Resolved
-        # first-realm proves at least one install exists) — and fan out into
-        # per-(realm, entity) ingests, each re-resolved to its own tenant.
-        # A single-realm/single-entity delivery yields exactly one unit, so the
-        # observation + 202 cutover status are identical to the prior path.
-        if provider == "quickbooks" and isinstance(
-            (payload or {}).get("eventNotifications"), list
-        ):
-            return await _ingest_quickbooks_fanout(
-                request,
-                runtime=runtime,
-                payload=payload or {},
-                secret_label=ctx.secret_label,
-            )
-
-        # ---- Kafka-first cutover branch --------------------------
-        # Inverted default (kafka-first): the resolved tenant is on the full
-        # pipeline UNLESS an operator / circuit-breaker explicitly set
-        # `ingestion.kafka_path_enabled=FALSE` (the kill-switch). The default
-        # lives in ONE place — `TenantFlags.kafka_path_enabled()` — shared with
-        # the observation writer so ingress and the writer can never drift.
-        #
-        # `flag_enabled` is also consulted below to skip the M2
-        # shadow-write-after-inline when the cutover path failed
-        # (graceful degradation; see _attempt_kafka_path docstring).
-        flag_enabled = False
-        cutover_source = _CUTOVER_ENABLED_PROVIDERS.get(provider)
-        if cutover_source is not None:
-            tenant_flags = runtime.tenant_flags
-            if tenant_flags is not None:
-                flag_enabled = await tenant_flags.kafka_path_enabled(
-                    tenant_id_uuid,
-                )
-
-        if flag_enabled and cutover_source is not None:
-            # Cutover path: publish to Kafka, return 202. Inline
-            # `ingest()` is SKIPPED — the writer pool picks up the
-            # published envelope and produces the observation via
-            # M5.2's full-mode path.
-            succeeded = await _attempt_kafka_path(
-                request,
-                runtime=runtime,
-                provider=provider,
-                source=cutover_source,
-                tenant_id=tenant_id_uuid,
-                raw_body=raw,
-                payload=payload,
-            )
-            if succeeded:
-                metrics.record_kafka_path_outcome(provider, "success")
-                return JSONResponse(
-                    {
-                        "status": "accepted",
-                        "secret_label": ctx.secret_label,
-                    },
-                    status_code=202,
-                    headers={
-                        "X-Secret-Label": ctx.secret_label or "",
-                    },
-                )
-            # Graceful-degradation fallback. The Kafka path just
-            # failed; falling through to inline ingest() preserves
-            # the user-visible 200/201 contract. This is NOT
-            # gate-relaxation — the cutover flag stays TRUE; the
-            # `fallback` metric is what tells the operator that
-            # cutover connectivity needs investigation. See three-
-            # place documentation:
-            #   [1] _attempt_kafka_path docstring (above).
-            #   [2] this comment (call-site decision).
-            #   [3] services/app/webhooks/metrics.py::_kafka_path_outcomes.
-            metrics.record_kafka_path_outcome(provider, "fallback")
-            log.warning(
-                "router.kafka_path_fallback_to_inline",
-                provider=provider,
-                tenant_id=str(tenant_id_uuid),
-            )
-            # Fall through to inline. The post-inline M2 shadow-write
-            # block is suppressed via `flag_enabled` below — retrying
-            # the same Kafka publish would almost certainly fail
-            # again.
-
-        # Step 9: ingest. Use the already-parsed payload when possible
-        # to save a re-decode; fall back to re-parse for paths where
-        # the payload didn't reach JSON earlier (shouldn't happen now).
-        channel = _PROVIDER_CHANNEL[provider]
-        if payload is None:
-            try:
-                payload = json.loads(ctx.body)
-            except json.JSONDecodeError:
-                return JSONResponse(
-                    {
-                        "code": "invalid_json",
-                        "message": "verified body is not valid JSON",
-                        "context": {"provider": provider},
-                    },
-                    status_code=400,
-                )
-
-        deps = _deps(request)
-        try:
-            result: IngestResult = await ingest(
-                channel,
-                payload,
-                pool=deps.pool,
-                tenant_id=tenant_id_uuid,
-                actor_repo=deps.actor_repo,
-                alias_repo=deps.alias_repo,
-                embedder=deps.embedder,
-                request_headers=safe_headers(request.headers),
-            )
-        except HandlerNotFound:
-            return JSONResponse(
-                {
-                    "code": "handler_not_found",
-                    "message": f"no ingestion handler for channel {channel!r}",
-                    "context": {"provider": provider, "channel": channel},
-                },
-                status_code=501,
-            )
-        except PayloadTooLarge:
-            return JSONResponse(
-                {
-                    "code": "payload_too_large",
-                    "message": "payload exceeds maximum size",
-                    "context": {"provider": provider},
-                },
-                status_code=413,
-            )
-        except ValidationError as e:
-            return JSONResponse(
-                {"code": e.code, "message": e.message, "context": e.context},
-                status_code=400,
-            )
-        except CompanyOSError as e:
-            return JSONResponse(
-                {"code": e.code, "message": e.message, "context": e.context},
-                status_code=400,
-            )
-
-        # ---- M2.1 Shadow path ----
-        # Ordering: AFTER successful inline ingest(), BEFORE the
-        # 200/201 response. Not before, not in parallel.
-        #
-        # Spec context: HLD "Migration Path" step 2 (line 510) says
-        # "webhook router writes to S3 + publishes to Kafka *in
-        # addition to* calling ingest() inline" — it does NOT
-        # mandate a relative order. No LLD section pins this either
-        # (LLD §5.4 is the embedding worker pool, unrelated). The
-        # choice below is M2.1's, documented here so reviewers and
-        # future readers can audit the reasoning.
-        #
-        # Why AFTER inline ingest():
-        #   (1) Inline is the source of truth during M2. Anything
-        #       that risks inline correctness is wrong. By running
-        #       shadow AFTER inline returns, no failure mode of the
-        #       shadow path can disturb the inline write — the DB
-        #       commit and post-commit triggers have already happened.
-        #   (2) Skips wasted shadow writes when inline rejected the
-        #       payload (PayloadTooLarge / ValidationError /
-        #       HandlerNotFound — all caught above this point and
-        #       returned as 4xx before reaching here).
-        #   (3) The observable divergence shape becomes "inline
-        #       observation exists, shadow record missing" — a
-        #       direction that M2.4's E2E test asserts against and
-        #       that an ops-side count comparison can detect cleanly.
-        #       The opposite ordering (shadow first) would let
-        #       transient inline crashes leave orphan shadow records
-        #       with no inline counterpart, which is harder to
-        #       reconcile.
-        #
-        # Best-effort; failures caught inside the helper (try/except)
-        # and logged. PRIME DIRECTIVE (M2 work-order §M2.1): never
-        # propagate to the inline response.
-        #
-        # M5.3: skip when `flag_enabled` is TRUE — that branch means
-        # we either succeeded on the Kafka path (early-returned above
-        # with 202) or just failed the cutover and fell through here.
-        # In the failure case, retrying the same Kafka publish via
-        # `_maybe_shadow_write_webhook` would almost certainly fail
-        # again. The next webhook re-tests Kafka path freshness.
-        if not flag_enabled:
-            await _maybe_shadow_write_webhook(
-                request,
-                runtime=runtime,
-                provider=provider,
-                tenant_id=tenant_id_uuid,
-                raw_body=raw,
-                payload=payload,
-            )
-
-        # Discord interactions require a specific response shape
-        # (https://discord.com/developers/docs/interactions/receiving-and-responding).
-        # The substrate's generic ingestion shape is invisible to Discord;
-        # without a recognised `type` field the client UI renders
-        # "The application didn't respond in time" even though we
-        # returned 200/201 within the deadline. For type=2
-        # ApplicationCommand we emit a CHANNEL_MESSAGE_WITH_SOURCE
-        # response with an ephemeral confirmation so the user sees an
-        # acknowledgement instead of an error. The real follow-up
-        # message with Fyralis content lands in IN-13.
-        # Headers expose the substrate metadata for tests / debugging
-        # without leaking it into Discord's channel.
-        substrate_headers = {
-            "X-Observation-Id": str(result.observation.id),
-            "X-Deduped": "true" if result.deduped else "false",
-            "X-Secret-Label": ctx.secret_label or "",
-        }
-        if result.trigger_queue_id is not None:
-            substrate_headers["X-Trigger-Queue-Id"] = str(result.trigger_queue_id)
-
-        if provider == "discord" and isinstance(payload, dict) and payload.get("type") == 2:
-            return JSONResponse(
-                {
-                    "type": 4,
-                    "data": {
-                        "content": "Got it — your question is recorded in Fyralis. (Follow-up content ships in IN-13.)",
-                        "flags": 64,  # EPHEMERAL — only the invoker sees this
-                    },
-                },
-                status_code=200,
-                headers=substrate_headers,
-            )
-
-        return JSONResponse(
-            {
-                "observation_id": str(result.observation.id),
-                "deduped": result.deduped,
-                "trigger_queue_id": (
-                    str(result.trigger_queue_id)
-                    if result.trigger_queue_id
-                    else None
-                ),
-                "secret_label": ctx.secret_label,
-            },
-            status_code=200 if result.deduped else 201,
-        )
+        return await _receive_webhook(provider, request, subpath=subpath)
 
     return router
 

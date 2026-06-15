@@ -313,259 +313,355 @@ async def _ingest_record(req: Request, tenant_id: UUID, record: dict) -> dict:
 def build_slack_router() -> APIRouter:
     router = APIRouter(prefix="/slack", tags=["slack"])
 
-    @router.post("/{user_id}/install")
-    async def install(user_id: str, req: Request) -> JSONResponse:
-        tenant_id = _resolve_tenant(req)
-        pool = _pool(req)
-        await _ensure_tenant(pool, tenant_id)
-        team_id = _team_id_for(tenant_id)
-
-        # Observation partitions for both the historical and live windows.
-        try:
-            from services.domain.observations.partitions import ensure_partitions
-            await ensure_partitions(pool, months_ahead=2)
-            old = _now() - timedelta(days=60)
-            await ensure_partitions(pool, as_of=old.date(), months_ahead=0)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("slack_dm_partition_ensure_failed", error=str(exc))
-
-        store = getattr(req.app.state, "secret_store", None)
-
-        # Signing secret for the live webhook path (env fallback is off in prod,
-        # so the verifier resolves provider_installations.secret_ref).
-        signing_secret = f"slackdmsig-{team_id}-{uuid4().hex[:8]}"
-        signing_ref: str | None = None
-        user_token_ref: str | None = None
-        if store is not None:
-            try:
-                signing_ref = await store.put(
-                    signing_secret, label=f"slack_signing_secret:dm:{team_id}",
-                    tenant_id=tenant_id,
-                )
-                user_token_ref = await store.put(
-                    f"xoxp-test-{user_id}",
-                    label=f"slack_user_token:{team_id}:{user_id}",
-                    tenant_id=tenant_id,
-                )
-            except Exception as exc:  # noqa: BLE001
-                log.warning("slack_dm_secret_put_failed", error=str(exc))
-
-        # Register the per-workspace live-webhook row so /webhooks/slack/events
-        # resolves this tenant by team_id and verifies with the signing secret.
-        await pool.execute(
-            """
-            INSERT INTO provider_installations
-                (id, tenant_id, provider, installation_id, secret_ref, enabled)
-            VALUES ($1, $2, 'slack', $3, $4, TRUE)
-            ON CONFLICT (provider, installation_id) DO UPDATE
-                SET secret_ref = EXCLUDED.secret_ref,
-                    enabled    = TRUE,
-                    tenant_id  = EXCLUDED.tenant_id
-            """,
-            uuid4(), tenant_id, team_id, signing_ref,
-        )
-
-        # Record the consenting user (per-user DM grain).
-        await pool.execute(
-            """
-            INSERT INTO slack_dm_installations
-                (id, tenant_id, team_id, user_id, base_url,
-                 user_token_secret_ref, granted_user_scopes)
-            VALUES ($1, $2, $3, $4, NULL, $5, $6)
-            ON CONFLICT (tenant_id, team_id, user_id) DO UPDATE
-                SET user_token_secret_ref = EXCLUDED.user_token_secret_ref,
-                    granted_user_scopes    = EXCLUDED.granted_user_scopes,
-                    disabled_at            = NULL
-            """,
-            uuid4(), tenant_id, team_id, user_id, user_token_ref, _SLACK_USER_SCOPES,
-        )
-
-        # Cache the plaintext signing secret so live/emit can sign without a
-        # second decrypt round-trip (per-process, dev-only).
-        cache = getattr(req.app.state, "_slack_dm_secrets", None)
-        if cache is None:
-            cache = {}
-            req.app.state._slack_dm_secrets = cache
-        cache[str(tenant_id)] = signing_secret
-
-        return JSONResponse({
-            "tenant_id": str(tenant_id),
-            "team_id": team_id,
-            "user_id": user_id,
-            "user_token_stored": user_token_ref is not None,
-            "webhook_secret_registered": signing_ref is not None,
-            "user_scopes": _SLACK_USER_SCOPES,
-            "message": f"slack DM install ready for user {user_id} "
-                       f"(workspace {team_id}); backfill + live DM ingestion enabled.",
-        }, status_code=201)
-
-    @router.post("/{user_id}/backfill")
-    async def backfill(user_id: str, req: Request) -> JSONResponse:
-        tenant_id = _resolve_tenant(req)
-        try:
-            body = await req.json()
-        except Exception:
-            body = {}
-        per = int(body.get("count", 6)) if isinstance(body, dict) else 6
-        per = max(1, min(50, per))
-        seed = int(body.get("seed", 0)) if isinstance(body, dict) else 0
-        team_id = _team_id_for(tenant_id)
-
-        results: list[dict] = []
-        for rec in _slack_dm_backfill_records(user_id, team_id, per, seed):
-            results.append(await _ingest_record(req, tenant_id, rec))
-
-        new = sum(1 for r in results if not r["deduped"])
-        deduped = sum(1 for r in results if r["deduped"])
-        by_type: dict[str, int] = {}
-        for r in results:
-            by_type[r.get("channel_type") or "?"] = by_type.get(r.get("channel_type") or "?", 0) + 1
-        return JSONResponse({
-            "user_id": user_id,
-            "records": len(results),
-            "ingested": new,
-            "deduped": deduped,
-            "by_channel_type": by_type,
-            "results": results[:50],
-            "message": f"backfill ingested {new} new DM/channel observations "
-                       f"({deduped} deduped).",
-        }, status_code=201)
-
-    @router.post("/{user_id}/live/emit")
-    async def live_emit(user_id: str, req: Request) -> JSONResponse:
-        """Synthesize one fresh DM/MPIM/edit event and POST it, Slack-v0-signed,
-        to the gateway's own webhook edge. Falls back to inline ingest."""
-        tenant_id = _resolve_tenant(req)
-        try:
-            body = await req.json()
-        except Exception:
-            body = {}
-        seq = int(body.get("seq", 0)) if isinstance(body, dict) else 0
-        team_id = _team_id_for(tenant_id)
-
-        payload = _slack_dm_live_event(user_id, team_id, seq)
-        raw = json.dumps(payload).encode("utf-8")
-        cache = getattr(req.app.state, "_slack_dm_secrets", {}) or {}
-        secret = cache.get(str(tenant_id))
-
-        delivered_via = None
-        webhook_status = None
-        webhook_body: Any = None
-        if secret:
-            ts_header = str(int(time.time()))
-            basestring = f"v0:{ts_header}:{raw.decode('utf-8')}".encode("utf-8")
-            signature = "v0=" + hmac.new(
-                secret.encode("utf-8"), basestring, hashlib.sha256,
-            ).hexdigest()
-            port = os.environ.get("GATEWAY_SELF_PORT", "8000")
-            url = f"http://127.0.0.1:{port}/webhooks/slack/events"
-            try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.post(
-                        url, content=raw,
-                        headers={
-                            "content-type": "application/json",
-                            "X-Slack-Signature": signature,
-                            "X-Slack-Request-Timestamp": ts_header,
-                            "X-Tenant-Id": str(tenant_id),
-                        },
-                    )
-                webhook_status = resp.status_code
-                try:
-                    webhook_body = resp.json()
-                except Exception:  # noqa: BLE001
-                    webhook_body = resp.text[:200]
-                if resp.status_code in (200, 201, 202):
-                    delivered_via = "webhook"
-            except Exception as exc:  # noqa: BLE001
-                log.warning("slack_dm_live_webhook_failed", error=str(exc))
-
-        inline_result = None
-        if delivered_via is None:
-            inline_result = await _ingest_record(req, tenant_id, payload)
-            delivered_via = "inline_fallback"
-
-        ev = payload["event"]
-        return JSONResponse({
-            "user_id": user_id,
-            "delivered_via": delivered_via,
-            "webhook_status": webhook_status,
-            "webhook_response": webhook_body,
-            "inline_result": inline_result,
-            "event": {
-                "channel": ev.get("channel"),
-                "channel_type": ev.get("channel_type"),
-                "subtype": ev.get("subtype"),
-            },
-        }, status_code=201)
-
-    @router.get("/{user_id}/status")
-    async def status(user_id: str, req: Request) -> dict[str, Any]:
-        tenant_id = _resolve_tenant(req)
-        pool = _pool(req)
-        team_id = _team_id_for(tenant_id)
-
-        # DM-vs-channel breakdown over the shared slack:message channel.
-        counts = await pool.fetch(
-            """
-            SELECT COALESCE(content->>'channel_type', 'unknown') AS channel_type,
-                   count(*) AS n
-              FROM observations
-             WHERE tenant_id = $1 AND source_channel = $2
-             GROUP BY 1
-             ORDER BY 1
-            """,
-            tenant_id, _CHANNEL,
-        )
-        dm_total = await pool.fetchval(
-            """
-            SELECT count(*) FROM observations
-             WHERE tenant_id = $1 AND source_channel = $2
-               AND (content->>'channel_type' IN ('im','mpim')
-                    OR left(external_id, 1) IN ('D','G'))
-            """,
-            tenant_id, _CHANNEL,
-        )
-        recent = await pool.fetch(
-            """
-            SELECT external_id, content->>'channel_type' AS channel_type,
-                   content->>'subtype' AS subtype, content_text,
-                   occurred_at, ingested_at
-              FROM observations
-             WHERE tenant_id = $1 AND source_channel = $2
-             ORDER BY ingested_at DESC
-             LIMIT 15
-            """,
-            tenant_id, _CHANNEL,
-        )
-        install = await pool.fetchrow(
-            "SELECT user_id, team_id, granted_user_scopes, created_at "
-            "FROM slack_dm_installations "
-            "WHERE tenant_id = $1 AND user_id = $2 AND disabled_at IS NULL LIMIT 1",
-            tenant_id, user_id,
-        )
-
-        return {
-            "user_id": user_id,
-            "team_id": team_id,
-            "channel": _CHANNEL,
-            "installed": install is not None,
-            "dm_observations": dm_total or 0,
-            "counts_by_channel_type": {r["channel_type"]: r["n"] for r in counts},
-            "recent": [
-                {
-                    "external_id": r["external_id"],
-                    "channel_type": r["channel_type"],
-                    "subtype": r["subtype"],
-                    "content_text": r["content_text"],
-                    "occurred_at": r["occurred_at"].isoformat() if r["occurred_at"] else None,
-                    "ingested_at": r["ingested_at"].isoformat() if r["ingested_at"] else None,
-                }
-                for r in recent
-            ],
-        }
+    router.add_api_route("/{user_id}/install", install, methods=["POST"])
+    router.add_api_route("/{user_id}/backfill", backfill, methods=["POST"])
+    router.add_api_route("/{user_id}/live/emit", live_emit, methods=["POST"])
+    router.add_api_route("/{user_id}/status", status, methods=["GET"])
 
     return router
+
+
+async def install(user_id: str, req: Request) -> JSONResponse:
+    tenant_id = _resolve_tenant(req)
+    pool = _pool(req)
+    await _ensure_tenant(pool, tenant_id)
+    team_id = _team_id_for(tenant_id)
+
+    await _ensure_slack_observation_partitions(pool)
+    signing_secret = f"slackdmsig-{team_id}-{uuid4().hex[:8]}"
+    signing_ref, user_token_ref = await _store_slack_dm_secrets(
+        req,
+        tenant_id=tenant_id,
+        team_id=team_id,
+        user_id=user_id,
+        signing_secret=signing_secret,
+    )
+    await _register_slack_provider_installation(
+        pool,
+        tenant_id=tenant_id,
+        team_id=team_id,
+        signing_ref=signing_ref,
+    )
+    await _record_slack_dm_installation(
+        pool,
+        tenant_id=tenant_id,
+        team_id=team_id,
+        user_id=user_id,
+        user_token_ref=user_token_ref,
+    )
+    _cache_slack_signing_secret(req, tenant_id, signing_secret)
+
+    return JSONResponse({
+        "tenant_id": str(tenant_id),
+        "team_id": team_id,
+        "user_id": user_id,
+        "user_token_stored": user_token_ref is not None,
+        "webhook_secret_registered": signing_ref is not None,
+        "user_scopes": _SLACK_USER_SCOPES,
+        "message": f"slack DM install ready for user {user_id} "
+                   f"(workspace {team_id}); backfill + live DM ingestion enabled.",
+    }, status_code=201)
+
+
+async def backfill(user_id: str, req: Request) -> JSONResponse:
+    tenant_id = _resolve_tenant(req)
+    body = await _json_body(req)
+    per = max(1, min(50, int(body.get("count", 6)))) if isinstance(body, dict) else 6
+    seed = int(body.get("seed", 0)) if isinstance(body, dict) else 0
+    team_id = _team_id_for(tenant_id)
+
+    results = [
+        await _ingest_record(req, tenant_id, rec)
+        for rec in _slack_dm_backfill_records(user_id, team_id, per, seed)
+    ]
+    new, deduped, by_type = _summarize_ingest_results(results)
+    return JSONResponse({
+        "user_id": user_id,
+        "records": len(results),
+        "ingested": new,
+        "deduped": deduped,
+        "by_channel_type": by_type,
+        "results": results[:50],
+        "message": f"backfill ingested {new} new DM/channel observations "
+                   f"({deduped} deduped).",
+    }, status_code=201)
+
+
+async def live_emit(user_id: str, req: Request) -> JSONResponse:
+    """Synthesize one fresh DM/MPIM/edit event and POST it, falling back inline."""
+    tenant_id = _resolve_tenant(req)
+    body = await _json_body(req)
+    seq = int(body.get("seq", 0)) if isinstance(body, dict) else 0
+    team_id = _team_id_for(tenant_id)
+
+    payload = _slack_dm_live_event(user_id, team_id, seq)
+    webhook_status, webhook_body, delivered_via = await _try_deliver_live_webhook(
+        req,
+        tenant_id=tenant_id,
+        payload=payload,
+    )
+
+    inline_result = None
+    if delivered_via is None:
+        inline_result = await _ingest_record(req, tenant_id, payload)
+        delivered_via = "inline_fallback"
+
+    ev = payload["event"]
+    return JSONResponse({
+        "user_id": user_id,
+        "delivered_via": delivered_via,
+        "webhook_status": webhook_status,
+        "webhook_response": webhook_body,
+        "inline_result": inline_result,
+        "event": {
+            "channel": ev.get("channel"),
+            "channel_type": ev.get("channel_type"),
+            "subtype": ev.get("subtype"),
+        },
+    }, status_code=201)
+
+
+async def status(user_id: str, req: Request) -> dict[str, Any]:
+    tenant_id = _resolve_tenant(req)
+    pool = _pool(req)
+    team_id = _team_id_for(tenant_id)
+
+    counts, dm_total, recent, install_row = await _load_slack_status_rows(
+        pool,
+        tenant_id=tenant_id,
+        user_id=user_id,
+    )
+    return {
+        "user_id": user_id,
+        "team_id": team_id,
+        "channel": _CHANNEL,
+        "installed": install_row is not None,
+        "dm_observations": dm_total or 0,
+        "counts_by_channel_type": {r["channel_type"]: r["n"] for r in counts},
+        "recent": [_status_observation_payload(r) for r in recent],
+    }
+
+
+async def _ensure_slack_observation_partitions(pool: asyncpg.Pool) -> None:
+    try:
+        from services.domain.observations.partitions import ensure_partitions
+        await ensure_partitions(pool, months_ahead=2)
+        old = _now() - timedelta(days=60)
+        await ensure_partitions(pool, as_of=old.date(), months_ahead=0)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("slack_dm_partition_ensure_failed", error=str(exc))
+
+
+async def _store_slack_dm_secrets(
+    req: Request,
+    *,
+    tenant_id: UUID,
+    team_id: str,
+    user_id: str,
+    signing_secret: str,
+) -> tuple[str | None, str | None]:
+    store = getattr(req.app.state, "secret_store", None)
+    if store is None:
+        return None, None
+    try:
+        signing_ref = await store.put(
+            signing_secret,
+            label=f"slack_signing_secret:dm:{team_id}",
+            tenant_id=tenant_id,
+        )
+        user_token_ref = await store.put(
+            f"xoxp-test-{user_id}",
+            label=f"slack_user_token:{team_id}:{user_id}",
+            tenant_id=tenant_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("slack_dm_secret_put_failed", error=str(exc))
+        return None, None
+    return signing_ref, user_token_ref
+
+
+async def _register_slack_provider_installation(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    team_id: str,
+    signing_ref: str | None,
+) -> None:
+    await pool.execute(
+        """
+        INSERT INTO provider_installations
+            (id, tenant_id, provider, installation_id, secret_ref, enabled)
+        VALUES ($1, $2, 'slack', $3, $4, TRUE)
+        ON CONFLICT (provider, installation_id) DO UPDATE
+            SET secret_ref = EXCLUDED.secret_ref,
+                enabled    = TRUE,
+                tenant_id  = EXCLUDED.tenant_id
+        """,
+        uuid4(), tenant_id, team_id, signing_ref,
+    )
+
+
+async def _record_slack_dm_installation(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    team_id: str,
+    user_id: str,
+    user_token_ref: str | None,
+) -> None:
+    await pool.execute(
+        """
+        INSERT INTO slack_dm_installations
+            (id, tenant_id, team_id, user_id, base_url,
+             user_token_secret_ref, granted_user_scopes)
+        VALUES ($1, $2, $3, $4, NULL, $5, $6)
+        ON CONFLICT (tenant_id, team_id, user_id) DO UPDATE
+            SET user_token_secret_ref = EXCLUDED.user_token_secret_ref,
+                granted_user_scopes    = EXCLUDED.granted_user_scopes,
+                disabled_at            = NULL
+        """,
+        uuid4(), tenant_id, team_id, user_id, user_token_ref, _SLACK_USER_SCOPES,
+    )
+
+
+def _cache_slack_signing_secret(
+    req: Request,
+    tenant_id: UUID,
+    signing_secret: str,
+) -> None:
+    cache = getattr(req.app.state, "_slack_dm_secrets", None)
+    if cache is None:
+        cache = {}
+        req.app.state._slack_dm_secrets = cache
+    cache[str(tenant_id)] = signing_secret
+
+
+async def _json_body(req: Request) -> Any:
+    try:
+        return await req.json()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _summarize_ingest_results(
+    results: list[dict],
+) -> tuple[int, int, dict[str, int]]:
+    new = sum(1 for r in results if not r["deduped"])
+    deduped = sum(1 for r in results if r["deduped"])
+    by_type: dict[str, int] = {}
+    for r in results:
+        channel_type = r.get("channel_type") or "?"
+        by_type[channel_type] = by_type.get(channel_type, 0) + 1
+    return new, deduped, by_type
+
+
+async def _try_deliver_live_webhook(
+    req: Request,
+    *,
+    tenant_id: UUID,
+    payload: dict,
+) -> tuple[int | None, Any, str | None]:
+    cache = getattr(req.app.state, "_slack_dm_secrets", {}) or {}
+    secret = cache.get(str(tenant_id))
+    if not secret:
+        return None, None, None
+
+    raw = json.dumps(payload).encode("utf-8")
+    ts_header = str(int(time.time()))
+    signature = _slack_signature(secret, ts_header, raw)
+    port = os.environ.get("GATEWAY_SELF_PORT", "8000")
+    url = f"http://127.0.0.1:{port}/webhooks/slack/events"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                url,
+                content=raw,
+                headers={
+                    "content-type": "application/json",
+                    "X-Slack-Signature": signature,
+                    "X-Slack-Request-Timestamp": ts_header,
+                    "X-Tenant-Id": str(tenant_id),
+                },
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("slack_dm_live_webhook_failed", error=str(exc))
+        return None, None, None
+
+    webhook_body = _webhook_response_body(resp)
+    delivered_via = "webhook" if resp.status_code in (200, 201, 202) else None
+    return resp.status_code, webhook_body, delivered_via
+
+
+def _slack_signature(secret: str, ts_header: str, raw: bytes) -> str:
+    basestring = f"v0:{ts_header}:{raw.decode('utf-8')}".encode("utf-8")
+    return "v0=" + hmac.new(
+        secret.encode("utf-8"), basestring, hashlib.sha256,
+    ).hexdigest()
+
+
+def _webhook_response_body(resp: httpx.Response) -> Any:
+    try:
+        return resp.json()
+    except Exception:  # noqa: BLE001
+        return resp.text[:200]
+
+
+async def _load_slack_status_rows(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    user_id: str,
+) -> tuple[list[Any], int | None, list[Any], Any]:
+    counts = await pool.fetch(
+        """
+        SELECT COALESCE(content->>'channel_type', 'unknown') AS channel_type,
+               count(*) AS n
+          FROM observations
+         WHERE tenant_id = $1 AND source_channel = $2
+         GROUP BY 1
+         ORDER BY 1
+        """,
+        tenant_id, _CHANNEL,
+    )
+    dm_total = await pool.fetchval(
+        """
+        SELECT count(*) FROM observations
+         WHERE tenant_id = $1 AND source_channel = $2
+           AND (content->>'channel_type' IN ('im','mpim')
+                OR left(external_id, 1) IN ('D','G'))
+        """,
+        tenant_id, _CHANNEL,
+    )
+    recent = await pool.fetch(
+        """
+        SELECT external_id, content->>'channel_type' AS channel_type,
+               content->>'subtype' AS subtype, content_text,
+               occurred_at, ingested_at
+          FROM observations
+         WHERE tenant_id = $1 AND source_channel = $2
+         ORDER BY ingested_at DESC
+         LIMIT 15
+        """,
+        tenant_id, _CHANNEL,
+    )
+    install_row = await pool.fetchrow(
+        "SELECT user_id, team_id, granted_user_scopes, created_at "
+        "FROM slack_dm_installations "
+        "WHERE tenant_id = $1 AND user_id = $2 AND disabled_at IS NULL LIMIT 1",
+        tenant_id, user_id,
+    )
+    return list(counts), dm_total, list(recent), install_row
+
+
+def _status_observation_payload(row: Any) -> dict[str, Any]:
+    return {
+        "external_id": row["external_id"],
+        "channel_type": row["channel_type"],
+        "subtype": row["subtype"],
+        "content_text": row["content_text"],
+        "occurred_at": row["occurred_at"].isoformat() if row["occurred_at"] else None,
+        "ingested_at": row["ingested_at"].isoformat() if row["ingested_at"] else None,
+    }
 
 
 __all__ = ["build_slack_router"]

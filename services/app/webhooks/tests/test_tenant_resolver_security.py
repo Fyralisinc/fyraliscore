@@ -174,8 +174,10 @@ async def test_rls_structural_correctness(
     with_check = (policy["with_check"] or "").lower()
     assert "app.current_tenant" in qual
     assert "tenant_id" in qual
+    assert "nullif" in qual
     assert "app.current_tenant" in with_check
     assert "tenant_id" in with_check
+    assert "nullif" in with_check
 
 
 async def test_resolver_select_never_returns_cross_tenant_rows(

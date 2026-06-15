@@ -620,433 +620,433 @@ async def _ingest_record(req: Request, tenant_id: UUID, channel: str, record: di
 
 def build_finance_router() -> APIRouter:
     router = APIRouter(prefix="/finance", tags=["finance"])
-
-    @router.get("/sources")
-    async def list_sources() -> dict[str, Any]:
-        return {
-            "sources": [
-                {"source": "mercury", "channel": "mercury:transaction",
-                 "label": "Mercury (banking / cash)"},
-                {"source": "quickbooks", "channel": "quickbooks:object",
-                 "label": "QuickBooks (accounting / AR-AP)"},
-                {"source": "brex", "channel": "brex:transaction",
-                 "label": "Brex (corporate cards / cash)"},
-                {"source": "ramp", "channel": "ramp:transaction",
-                 "label": "Ramp (corporate cards / spend)"},
-                {"source": "gusto", "channel": "gusto:object",
-                 "label": "Gusto (payroll / HR)"},
-                {"source": "deel", "channel": "deel:payment",
-                 "label": "Deel (contractor payments)"},
-            ],
-        }
-
-    @router.post("/{source}/install")
-    async def install(source: str, req: Request) -> JSONResponse:
-        _require_source(source)
-        tenant_id = _resolve_tenant(req)
-        pool = _pool(req)
-        await _ensure_tenant(pool, tenant_id)
-
-        # Ensure observation partitions cover the historical backfill window.
-        try:
-            from services.domain.observations.partitions import ensure_partitions
-            await ensure_partitions(pool, months_ahead=2)
-            old = _now() - timedelta(days=60)
-            await ensure_partitions(pool, as_of=old.date(), months_ahead=0)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("finance_partition_ensure_failed", error=str(exc))
-
-        # Store a webhook HMAC secret for the live path.
-        secret_value = f"fin-{source}-{uuid4().hex}"
-        secret_ref: str | None = None
-        try:
-            _deps(req)
-            store = getattr(req.app.state, "secret_store", None)
-            if store is not None:
-                secret_ref = await store.put(
-                    secret_value, label=f"{source}_webhook_secret", tenant_id=tenant_id,
-                )
-        except Exception as exc:  # noqa: BLE001
-            log.warning("finance_secret_put_failed", source=source, error=str(exc))
-
-        if source == "mercury":
-            from services.ingest.integrations.mercury.onboarding import (
-                finalize_install, register_webhook_installation,
-            )
-            install_id = await finalize_install(
-                pool, tenant_id=tenant_id, base_url=_MERCURY_BASE,
-                accounts=list(_MERCURY_ACCOUNTS),
-                organization_id=_org_id_for(""),
-                webhook_secret_ref=secret_ref,
-            )
-            await register_webhook_installation(
-                pool, tenant_id=tenant_id, organization_id=_org_id_for(""),
-                webhook_secret_ref=secret_ref,
-            )
-            sub_count = len(_MERCURY_ACCOUNTS)
-        elif source == "quickbooks":
-            realm_id = f"realm-{tenant_id.hex[:12]}"
-            from services.ingest.integrations.quickbooks.onboarding import (
-                finalize_install, register_webhook_installation,
-            )
-            install_id = await finalize_install(
-                pool, tenant_id=tenant_id, realm_id=realm_id, base_url=_QBO_BASE,
-                entities=list(_QBO_ENTITIES), webhook_secret_ref=secret_ref,
-            )
-            await register_webhook_installation(
-                pool, tenant_id=tenant_id, realm_id=realm_id,
-                webhook_secret_ref=secret_ref,
-            )
-            sub_count = len(_QBO_ENTITIES)
-        elif source == "brex":
-            from services.ingest.integrations.brex.onboarding import (
-                finalize_install, register_webhook_installation,
-            )
-            install_id = await finalize_install(
-                pool, tenant_id=tenant_id, base_url=_BREX_BASE,
-                accounts=list(_BREX_ACCOUNTS),
-                organization_id=_brex_org_id(),
-                webhook_secret_ref=secret_ref,
-            )
-            await register_webhook_installation(
-                pool, tenant_id=tenant_id, organization_id=_brex_org_id(),
-                webhook_secret_ref=secret_ref,
-            )
-            sub_count = len(_BREX_ACCOUNTS)
-        elif source == "ramp":
-            business_id = f"biz-{tenant_id.hex[:12]}"
-            from services.ingest.integrations.ramp.onboarding import (
-                finalize_install, register_webhook_installation,
-            )
-            install_id = await finalize_install(
-                pool, tenant_id=tenant_id, business_id=business_id,
-                base_url=_RAMP_BASE, entities=list(_RAMP_ENTITIES),
-                webhook_secret_ref=secret_ref,
-            )
-            await register_webhook_installation(
-                pool, tenant_id=tenant_id, business_id=business_id,
-                webhook_secret_ref=secret_ref,
-            )
-            sub_count = len(_RAMP_ENTITIES)
-        elif source == "gusto":
-            company_uuid = f"co-{tenant_id.hex[:12]}"
-            from services.ingest.integrations.gusto.onboarding import (
-                finalize_install, register_webhook_installation,
-            )
-            install_id = await finalize_install(
-                pool, tenant_id=tenant_id, company_uuid=company_uuid,
-                base_url=_GUSTO_BASE, entities=list(_GUSTO_ENTITIES),
-                webhook_secret_ref=secret_ref,
-            )
-            await register_webhook_installation(
-                pool, tenant_id=tenant_id, company_uuid=company_uuid,
-                webhook_secret_ref=secret_ref,
-            )
-            sub_count = len(_GUSTO_ENTITIES)
-        else:  # deel
-            from services.ingest.integrations.deel.onboarding import (
-                finalize_install, register_webhook_installation,
-            )
-            install_id = await finalize_install(
-                pool, tenant_id=tenant_id, base_url=_DEEL_BASE,
-                contracts=list(_DEEL_CONTRACTS),
-                organization_id=_deel_org_id(),
-                webhook_secret_ref=secret_ref,
-            )
-            await register_webhook_installation(
-                pool, tenant_id=tenant_id, organization_id=_deel_org_id(),
-                webhook_secret_ref=secret_ref,
-            )
-            sub_count = len(_DEEL_CONTRACTS)
-
-        # Stash the plaintext secret on app.state so live/emit can sign without a
-        # second decrypt round-trip (per-process, dev-only).
-        cache = getattr(req.app.state, "_finance_secrets", None)
-        if cache is None:
-            cache = {}
-            req.app.state._finance_secrets = cache
-        cache[(str(tenant_id), source)] = secret_value
-
-        return JSONResponse({
-            "source": source,
-            "installation_id": str(install_id),
-            "sub_resources": sub_count,
-            "webhook_secret_registered": secret_ref is not None,
-            "message": f"{source} installed with {sub_count} sub-resources; "
-                       "backfill + live ready.",
-        }, status_code=201)
-
-    @router.post("/{source}/backfill")
-    async def backfill(source: str, req: Request) -> JSONResponse:
-        _require_source(source)
-        tenant_id = _resolve_tenant(req)
-        try:
-            body = await req.json()
-        except Exception:
-            body = {}
-        per = int(body.get("count", 5)) if isinstance(body, dict) else 5
-        per = max(1, min(50, per))
-        seed = int(body.get("seed", 0)) if isinstance(body, dict) else 0
-        channel = _CHANNEL[source]
-
-        results: list[dict] = []
-        if source == "mercury":
-            for acct in _MERCURY_ACCOUNTS:
-                for rec in _mercury_backfill_records(acct["account_id"], per, seed):
-                    results.append(await _ingest_record(req, tenant_id, channel, rec))
-        elif source == "quickbooks":
-            realm_id = f"realm-{tenant_id.hex[:12]}"
-            for entity in _QBO_ENTITIES:
-                for rec in _qbo_backfill_records(entity, realm_id, per, seed):
-                    results.append(await _ingest_record(req, tenant_id, channel, rec))
-        elif source == "brex":
-            for acct in _BREX_ACCOUNTS:
-                for rec in _brex_backfill_records(acct["account_id"], per, seed):
-                    results.append(await _ingest_record(req, tenant_id, channel, rec))
-        elif source == "ramp":
-            business_id = f"biz-{tenant_id.hex[:12]}"
-            for entity in _RAMP_ENTITIES:
-                for rec in _ramp_backfill_records(entity, business_id, per, seed):
-                    results.append(await _ingest_record(req, tenant_id, channel, rec))
-        elif source == "gusto":
-            company_uuid = f"co-{tenant_id.hex[:12]}"
-            for entity in _GUSTO_ENTITIES:
-                for rec in _gusto_backfill_records(entity, company_uuid, per, seed):
-                    results.append(await _ingest_record(req, tenant_id, channel, rec))
-        else:  # deel
-            for ctr in _DEEL_CONTRACTS:
-                for rec in _deel_backfill_records(ctr["contract_id"], per, seed):
-                    results.append(await _ingest_record(req, tenant_id, channel, rec))
-
-        new = sum(1 for r in results if not r["deduped"])
-        deduped = sum(1 for r in results if r["deduped"])
-        return JSONResponse({
-            "source": source,
-            "records": len(results),
-            "ingested": new,
-            "deduped": deduped,
-            "results": results[:50],
-            "message": f"backfill ingested {new} new observations "
-                       f"({deduped} deduped) across {channel}.",
-        }, status_code=201)
-
-    @router.post("/{source}/live/emit")
-    async def live_emit(source: str, req: Request) -> JSONResponse:
-        """Synthesize one live event and POST it, HMAC-signed, to the gateway's
-        own webhook edge. Falls back to inline ingest if the self-call fails."""
-        _require_source(source)
-        tenant_id = _resolve_tenant(req)
-        try:
-            body = await req.json()
-        except Exception:
-            body = {}
-        seq = int(body.get("seq", 0)) if isinstance(body, dict) else 0
-
-        # Each source: (payload, header name, prefix, digest-encoding). The
-        # signature scheme mirrors signatures/{source}.py byte-for-byte (the
-        # finance handlers' UNVERIFIED knobs default to their archetype):
-        #   mercury/brex/deel = hex with `sha256=`; quickbooks/ramp/gusto = base64.
-        # TODO(human): confirm brex/ramp/gusto/deel webhook signature schemes
-        #   (header name, prefix, hex-vs-base64) against each provider's docs.
-        digest_encoding = "hex"
-        if source == "mercury":
-            payload, _org = _mercury_live_event("acc-checking", seq)
-            header_name = "Mercury-Signature"
-            sig_prefix = "sha256="
-        elif source == "quickbooks":
-            realm_id = f"realm-{tenant_id.hex[:12]}"
-            payload = _qbo_live_event(realm_id, seq)
-            header_name = "intuit-signature"
-            sig_prefix = ""  # QBO is base64, no prefix
-            digest_encoding = "base64"
-        elif source == "brex":
-            payload, _org = _brex_live_event("brex-cash", seq)
-            header_name = "Brex-Signature"
-            sig_prefix = "sha256="
-        elif source == "ramp":
-            business_id = f"biz-{tenant_id.hex[:12]}"
-            payload = _ramp_live_event(business_id, seq)
-            header_name = "x-ramp-signature"
-            sig_prefix = ""  # ramp default is base64, no prefix
-            digest_encoding = "base64"
-        elif source == "gusto":
-            company_uuid = f"co-{tenant_id.hex[:12]}"
-            payload = _gusto_live_event(company_uuid, seq)
-            header_name = "intuit-signature"
-            sig_prefix = ""  # gusto default mirrors QBO base64
-            digest_encoding = "base64"
-        else:  # deel
-            payload, _org = _deel_live_event("deel-ctr-eng", seq)
-            header_name = "Deel-Signature"
-            sig_prefix = "sha256="
-
-        raw = json.dumps(payload).encode("utf-8")
-        cache = getattr(req.app.state, "_finance_secrets", {}) or {}
-        secret = cache.get((str(tenant_id), source))
-
-        delivered_via = None
-        webhook_status = None
-        webhook_body: Any = None
-        if secret:
-            mac = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256)
-            if digest_encoding == "hex":
-                signature = sig_prefix + mac.hexdigest()
-            else:
-                import base64
-                signature = sig_prefix + base64.b64encode(mac.digest()).decode("ascii")
-            port = os.environ.get("GATEWAY_SELF_PORT", "8000")
-            url = f"http://127.0.0.1:{port}/webhooks/{source}/events"
-            try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.post(
-                        url, content=raw,
-                        headers={"content-type": "application/json",
-                                 header_name: signature,
-                                 "X-Tenant-Id": str(tenant_id)},
-                    )
-                webhook_status = resp.status_code
-                try:
-                    webhook_body = resp.json()
-                except Exception:  # noqa: BLE001
-                    webhook_body = resp.text[:200]
-                if resp.status_code in (200, 201, 202):
-                    delivered_via = "webhook"
-            except Exception as exc:  # noqa: BLE001
-                log.warning("finance_live_webhook_failed", source=source, error=str(exc))
-
-        # Fallback: inline-ingest the same webhook-shaped payload through the real
-        # handler (its live-webhook branch) so the demo never silently no-ops.
-        inline_result = None
-        if delivered_via is None:
-            inline_result = await _ingest_record(req, tenant_id, _CHANNEL[source], payload)
-            delivered_via = "inline_fallback"
-
-        return JSONResponse({
-            "source": source,
-            "delivered_via": delivered_via,
-            "webhook_status": webhook_status,
-            "webhook_response": webhook_body,
-            "inline_result": inline_result,
-            "payload_kind": payload.get("type") or (
-                "eventNotifications" if "eventNotifications" in payload
-                else "event"),
-        }, status_code=201)
-
-    @router.get("/{source}/status")
-    async def status(source: str, req: Request) -> dict[str, Any]:
-        _require_source(source)
-        tenant_id = _resolve_tenant(req)
-        pool = _pool(req)
-        channel = _CHANNEL[source]
-
-        counts = await pool.fetchrow(
-            """
-            SELECT count(*) AS total,
-                   count(*) FILTER (WHERE kind='signal') AS signal,
-                   count(*) FILTER (WHERE kind='state_change') AS state_change
-              FROM observations
-             WHERE tenant_id = $1 AND source_channel = $2
-            """,
-            tenant_id, channel,
-        )
-        recent = await pool.fetch(
-            """
-            SELECT id, kind, external_id, content_text, occurred_at, ingested_at
-              FROM observations
-             WHERE tenant_id = $1 AND source_channel = $2
-             ORDER BY ingested_at DESC
-             LIMIT 15
-            """,
-            tenant_id, channel,
-        )
-        # Install state.
-        if source == "mercury":
-            install = await pool.fetchrow(
-                "SELECT id, base_url, organization_id, created_at FROM mercury_installations "
-                "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
-            )
-            subs = await pool.fetch(
-                "SELECT account_id, account_name, state FROM mercury_accounts ma "
-                "JOIN mercury_installations mi ON ma.mercury_installation_id = mi.id "
-                "WHERE mi.tenant_id = $1", tenant_id,
-            ) if install else []
-        elif source == "quickbooks":
-            install = await pool.fetchrow(
-                "SELECT id, base_url, realm_id, created_at FROM quickbooks_installations "
-                "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
-            )
-            subs = await pool.fetch(
-                "SELECT entity_type, state FROM quickbooks_entities qe "
-                "JOIN quickbooks_installations qi ON qe.quickbooks_installation_id = qi.id "
-                "WHERE qi.tenant_id = $1", tenant_id,
-            ) if install else []
-        elif source == "brex":
-            install = await pool.fetchrow(
-                "SELECT id, base_url, organization_id, created_at FROM brex_installations "
-                "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
-            )
-            subs = await pool.fetch(
-                "SELECT account_id, account_name, state FROM brex_accounts ba "
-                "JOIN brex_installations bi ON ba.brex_installation_id = bi.id "
-                "WHERE bi.tenant_id = $1", tenant_id,
-            ) if install else []
-        elif source == "ramp":
-            install = await pool.fetchrow(
-                "SELECT id, base_url, business_id, created_at FROM ramp_installations "
-                "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
-            )
-            subs = await pool.fetch(
-                "SELECT entity_type, state FROM ramp_entities re "
-                "JOIN ramp_installations ri ON re.ramp_installation_id = ri.id "
-                "WHERE ri.tenant_id = $1", tenant_id,
-            ) if install else []
-        elif source == "gusto":
-            install = await pool.fetchrow(
-                "SELECT id, base_url, company_uuid, created_at FROM gusto_installations "
-                "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
-            )
-            subs = await pool.fetch(
-                "SELECT entity_type, state FROM gusto_entities ge "
-                "JOIN gusto_installations gi ON ge.gusto_installation_id = gi.id "
-                "WHERE gi.tenant_id = $1", tenant_id,
-            ) if install else []
-        else:  # deel
-            install = await pool.fetchrow(
-                "SELECT id, base_url, organization_id, created_at FROM deel_installations "
-                "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
-            )
-            subs = await pool.fetch(
-                "SELECT contract_id, contract_name, state FROM deel_contracts dc "
-                "JOIN deel_installations di ON dc.deel_installation_id = di.id "
-                "WHERE di.tenant_id = $1", tenant_id,
-            ) if install else []
-
-        return {
-            "source": source,
-            "channel": channel,
-            "installed": install is not None,
-            "install": {k: (str(v) if isinstance(v, (UUID, datetime)) else v)
-                        for k, v in dict(install).items()} if install else None,
-            "sub_resources": [dict(s) for s in subs],
-            "counts": {
-                "total": counts["total"] if counts else 0,
-                "signal": counts["signal"] if counts else 0,
-                "state_change": counts["state_change"] if counts else 0,
-            },
-            "recent": [
-                {
-                    "id": str(r["id"]),
-                    "kind": r["kind"],
-                    "external_id": r["external_id"],
-                    "content_text": r["content_text"],
-                    "occurred_at": r["occurred_at"].isoformat() if r["occurred_at"] else None,
-                    "ingested_at": r["ingested_at"].isoformat() if r["ingested_at"] else None,
-                }
-                for r in recent
-            ],
-        }
-
+    router.add_api_route("/sources", list_sources, methods=["GET"])
+    router.add_api_route("/{source}/install", install, methods=["POST"])
+    router.add_api_route("/{source}/backfill", backfill, methods=["POST"])
+    router.add_api_route("/{source}/live/emit", live_emit, methods=["POST"])
+    router.add_api_route("/{source}/status", status, methods=["GET"])
     return router
+
+
+async def list_sources() -> dict[str, Any]:
+    return {
+        "sources": [
+            {"source": "mercury", "channel": "mercury:transaction",
+             "label": "Mercury (banking / cash)"},
+            {"source": "quickbooks", "channel": "quickbooks:object",
+             "label": "QuickBooks (accounting / AR-AP)"},
+            {"source": "brex", "channel": "brex:transaction",
+             "label": "Brex (corporate cards / cash)"},
+            {"source": "ramp", "channel": "ramp:transaction",
+             "label": "Ramp (corporate cards / spend)"},
+            {"source": "gusto", "channel": "gusto:object",
+             "label": "Gusto (payroll / HR)"},
+            {"source": "deel", "channel": "deel:payment",
+             "label": "Deel (contractor payments)"},
+        ],
+    }
+
+async def install(source: str, req: Request) -> JSONResponse:
+    _require_source(source)
+    tenant_id = _resolve_tenant(req)
+    pool = _pool(req)
+    await _ensure_tenant(pool, tenant_id)
+
+    # Ensure observation partitions cover the historical backfill window.
+    try:
+        from services.domain.observations.partitions import ensure_partitions
+        await ensure_partitions(pool, months_ahead=2)
+        old = _now() - timedelta(days=60)
+        await ensure_partitions(pool, as_of=old.date(), months_ahead=0)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("finance_partition_ensure_failed", error=str(exc))
+
+    # Store a webhook HMAC secret for the live path.
+    secret_value = f"fin-{source}-{uuid4().hex}"
+    secret_ref: str | None = None
+    try:
+        _deps(req)
+        store = getattr(req.app.state, "secret_store", None)
+        if store is not None:
+            secret_ref = await store.put(
+                secret_value, label=f"{source}_webhook_secret", tenant_id=tenant_id,
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("finance_secret_put_failed", source=source, error=str(exc))
+
+    if source == "mercury":
+        from services.ingest.integrations.mercury.onboarding import (
+            finalize_install, register_webhook_installation,
+        )
+        install_id = await finalize_install(
+            pool, tenant_id=tenant_id, base_url=_MERCURY_BASE,
+            accounts=list(_MERCURY_ACCOUNTS),
+            organization_id=_org_id_for(""),
+            webhook_secret_ref=secret_ref,
+        )
+        await register_webhook_installation(
+            pool, tenant_id=tenant_id, organization_id=_org_id_for(""),
+            webhook_secret_ref=secret_ref,
+        )
+        sub_count = len(_MERCURY_ACCOUNTS)
+    elif source == "quickbooks":
+        realm_id = f"realm-{tenant_id.hex[:12]}"
+        from services.ingest.integrations.quickbooks.onboarding import (
+            finalize_install, register_webhook_installation,
+        )
+        install_id = await finalize_install(
+            pool, tenant_id=tenant_id, realm_id=realm_id, base_url=_QBO_BASE,
+            entities=list(_QBO_ENTITIES), webhook_secret_ref=secret_ref,
+        )
+        await register_webhook_installation(
+            pool, tenant_id=tenant_id, realm_id=realm_id,
+            webhook_secret_ref=secret_ref,
+        )
+        sub_count = len(_QBO_ENTITIES)
+    elif source == "brex":
+        from services.ingest.integrations.brex.onboarding import (
+            finalize_install, register_webhook_installation,
+        )
+        install_id = await finalize_install(
+            pool, tenant_id=tenant_id, base_url=_BREX_BASE,
+            accounts=list(_BREX_ACCOUNTS),
+            organization_id=_brex_org_id(),
+            webhook_secret_ref=secret_ref,
+        )
+        await register_webhook_installation(
+            pool, tenant_id=tenant_id, organization_id=_brex_org_id(),
+            webhook_secret_ref=secret_ref,
+        )
+        sub_count = len(_BREX_ACCOUNTS)
+    elif source == "ramp":
+        business_id = f"biz-{tenant_id.hex[:12]}"
+        from services.ingest.integrations.ramp.onboarding import (
+            finalize_install, register_webhook_installation,
+        )
+        install_id = await finalize_install(
+            pool, tenant_id=tenant_id, business_id=business_id,
+            base_url=_RAMP_BASE, entities=list(_RAMP_ENTITIES),
+            webhook_secret_ref=secret_ref,
+        )
+        await register_webhook_installation(
+            pool, tenant_id=tenant_id, business_id=business_id,
+            webhook_secret_ref=secret_ref,
+        )
+        sub_count = len(_RAMP_ENTITIES)
+    elif source == "gusto":
+        company_uuid = f"co-{tenant_id.hex[:12]}"
+        from services.ingest.integrations.gusto.onboarding import (
+            finalize_install, register_webhook_installation,
+        )
+        install_id = await finalize_install(
+            pool, tenant_id=tenant_id, company_uuid=company_uuid,
+            base_url=_GUSTO_BASE, entities=list(_GUSTO_ENTITIES),
+            webhook_secret_ref=secret_ref,
+        )
+        await register_webhook_installation(
+            pool, tenant_id=tenant_id, company_uuid=company_uuid,
+            webhook_secret_ref=secret_ref,
+        )
+        sub_count = len(_GUSTO_ENTITIES)
+    else:  # deel
+        from services.ingest.integrations.deel.onboarding import (
+            finalize_install, register_webhook_installation,
+        )
+        install_id = await finalize_install(
+            pool, tenant_id=tenant_id, base_url=_DEEL_BASE,
+            contracts=list(_DEEL_CONTRACTS),
+            organization_id=_deel_org_id(),
+            webhook_secret_ref=secret_ref,
+        )
+        await register_webhook_installation(
+            pool, tenant_id=tenant_id, organization_id=_deel_org_id(),
+            webhook_secret_ref=secret_ref,
+        )
+        sub_count = len(_DEEL_CONTRACTS)
+
+    # Stash the plaintext secret on app.state so live/emit can sign without a
+    # second decrypt round-trip (per-process, dev-only).
+    cache = getattr(req.app.state, "_finance_secrets", None)
+    if cache is None:
+        cache = {}
+        req.app.state._finance_secrets = cache
+    cache[(str(tenant_id), source)] = secret_value
+
+    return JSONResponse({
+        "source": source,
+        "installation_id": str(install_id),
+        "sub_resources": sub_count,
+        "webhook_secret_registered": secret_ref is not None,
+        "message": f"{source} installed with {sub_count} sub-resources; "
+                   "backfill + live ready.",
+    }, status_code=201)
+
+async def backfill(source: str, req: Request) -> JSONResponse:
+    _require_source(source)
+    tenant_id = _resolve_tenant(req)
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    per = int(body.get("count", 5)) if isinstance(body, dict) else 5
+    per = max(1, min(50, per))
+    seed = int(body.get("seed", 0)) if isinstance(body, dict) else 0
+    channel = _CHANNEL[source]
+
+    results: list[dict] = []
+    if source == "mercury":
+        for acct in _MERCURY_ACCOUNTS:
+            for rec in _mercury_backfill_records(acct["account_id"], per, seed):
+                results.append(await _ingest_record(req, tenant_id, channel, rec))
+    elif source == "quickbooks":
+        realm_id = f"realm-{tenant_id.hex[:12]}"
+        for entity in _QBO_ENTITIES:
+            for rec in _qbo_backfill_records(entity, realm_id, per, seed):
+                results.append(await _ingest_record(req, tenant_id, channel, rec))
+    elif source == "brex":
+        for acct in _BREX_ACCOUNTS:
+            for rec in _brex_backfill_records(acct["account_id"], per, seed):
+                results.append(await _ingest_record(req, tenant_id, channel, rec))
+    elif source == "ramp":
+        business_id = f"biz-{tenant_id.hex[:12]}"
+        for entity in _RAMP_ENTITIES:
+            for rec in _ramp_backfill_records(entity, business_id, per, seed):
+                results.append(await _ingest_record(req, tenant_id, channel, rec))
+    elif source == "gusto":
+        company_uuid = f"co-{tenant_id.hex[:12]}"
+        for entity in _GUSTO_ENTITIES:
+            for rec in _gusto_backfill_records(entity, company_uuid, per, seed):
+                results.append(await _ingest_record(req, tenant_id, channel, rec))
+    else:  # deel
+        for ctr in _DEEL_CONTRACTS:
+            for rec in _deel_backfill_records(ctr["contract_id"], per, seed):
+                results.append(await _ingest_record(req, tenant_id, channel, rec))
+
+    new = sum(1 for r in results if not r["deduped"])
+    deduped = sum(1 for r in results if r["deduped"])
+    return JSONResponse({
+        "source": source,
+        "records": len(results),
+        "ingested": new,
+        "deduped": deduped,
+        "results": results[:50],
+        "message": f"backfill ingested {new} new observations "
+                   f"({deduped} deduped) across {channel}.",
+    }, status_code=201)
+
+async def live_emit(source: str, req: Request) -> JSONResponse:
+    """Synthesize one live event and POST it, HMAC-signed, to the gateway's
+    own webhook edge. Falls back to inline ingest if the self-call fails."""
+    _require_source(source)
+    tenant_id = _resolve_tenant(req)
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    seq = int(body.get("seq", 0)) if isinstance(body, dict) else 0
+
+    # Each source: (payload, header name, prefix, digest-encoding). The
+    # signature scheme mirrors signatures/{source}.py byte-for-byte (the
+    # finance handlers' UNVERIFIED knobs default to their archetype):
+    #   mercury/brex/deel = hex with `sha256=`; quickbooks/ramp/gusto = base64.
+    # TODO(human): confirm brex/ramp/gusto/deel webhook signature schemes
+    #   (header name, prefix, hex-vs-base64) against each provider's docs.
+    digest_encoding = "hex"
+    if source == "mercury":
+        payload, _org = _mercury_live_event("acc-checking", seq)
+        header_name = "Mercury-Signature"
+        sig_prefix = "sha256="
+    elif source == "quickbooks":
+        realm_id = f"realm-{tenant_id.hex[:12]}"
+        payload = _qbo_live_event(realm_id, seq)
+        header_name = "intuit-signature"
+        sig_prefix = ""  # QBO is base64, no prefix
+        digest_encoding = "base64"
+    elif source == "brex":
+        payload, _org = _brex_live_event("brex-cash", seq)
+        header_name = "Brex-Signature"
+        sig_prefix = "sha256="
+    elif source == "ramp":
+        business_id = f"biz-{tenant_id.hex[:12]}"
+        payload = _ramp_live_event(business_id, seq)
+        header_name = "x-ramp-signature"
+        sig_prefix = ""  # ramp default is base64, no prefix
+        digest_encoding = "base64"
+    elif source == "gusto":
+        company_uuid = f"co-{tenant_id.hex[:12]}"
+        payload = _gusto_live_event(company_uuid, seq)
+        header_name = "intuit-signature"
+        sig_prefix = ""  # gusto default mirrors QBO base64
+        digest_encoding = "base64"
+    else:  # deel
+        payload, _org = _deel_live_event("deel-ctr-eng", seq)
+        header_name = "Deel-Signature"
+        sig_prefix = "sha256="
+
+    raw = json.dumps(payload).encode("utf-8")
+    cache = getattr(req.app.state, "_finance_secrets", {}) or {}
+    secret = cache.get((str(tenant_id), source))
+
+    delivered_via = None
+    webhook_status = None
+    webhook_body: Any = None
+    if secret:
+        mac = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256)
+        if digest_encoding == "hex":
+            signature = sig_prefix + mac.hexdigest()
+        else:
+            import base64
+            signature = sig_prefix + base64.b64encode(mac.digest()).decode("ascii")
+        port = os.environ.get("GATEWAY_SELF_PORT", "8000")
+        url = f"http://127.0.0.1:{port}/webhooks/{source}/events"
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(
+                    url, content=raw,
+                    headers={"content-type": "application/json",
+                             header_name: signature,
+                             "X-Tenant-Id": str(tenant_id)},
+                )
+            webhook_status = resp.status_code
+            try:
+                webhook_body = resp.json()
+            except Exception:  # noqa: BLE001
+                webhook_body = resp.text[:200]
+            if resp.status_code in (200, 201, 202):
+                delivered_via = "webhook"
+        except Exception as exc:  # noqa: BLE001
+            log.warning("finance_live_webhook_failed", source=source, error=str(exc))
+
+    # Fallback: inline-ingest the same webhook-shaped payload through the real
+    # handler (its live-webhook branch) so the demo never silently no-ops.
+    inline_result = None
+    if delivered_via is None:
+        inline_result = await _ingest_record(req, tenant_id, _CHANNEL[source], payload)
+        delivered_via = "inline_fallback"
+
+    return JSONResponse({
+        "source": source,
+        "delivered_via": delivered_via,
+        "webhook_status": webhook_status,
+        "webhook_response": webhook_body,
+        "inline_result": inline_result,
+        "payload_kind": payload.get("type") or (
+            "eventNotifications" if "eventNotifications" in payload
+            else "event"),
+    }, status_code=201)
+
+async def status(source: str, req: Request) -> dict[str, Any]:
+    _require_source(source)
+    tenant_id = _resolve_tenant(req)
+    pool = _pool(req)
+    channel = _CHANNEL[source]
+
+    counts = await pool.fetchrow(
+        """
+        SELECT count(*) AS total,
+               count(*) FILTER (WHERE kind='signal') AS signal,
+               count(*) FILTER (WHERE kind='state_change') AS state_change
+          FROM observations
+         WHERE tenant_id = $1 AND source_channel = $2
+        """,
+        tenant_id, channel,
+    )
+    recent = await pool.fetch(
+        """
+        SELECT id, kind, external_id, content_text, occurred_at, ingested_at
+          FROM observations
+         WHERE tenant_id = $1 AND source_channel = $2
+         ORDER BY ingested_at DESC
+         LIMIT 15
+        """,
+        tenant_id, channel,
+    )
+    # Install state.
+    if source == "mercury":
+        install = await pool.fetchrow(
+            "SELECT id, base_url, organization_id, created_at FROM mercury_installations "
+            "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
+        )
+        subs = await pool.fetch(
+            "SELECT account_id, account_name, state FROM mercury_accounts ma "
+            "JOIN mercury_installations mi ON ma.mercury_installation_id = mi.id "
+            "WHERE mi.tenant_id = $1", tenant_id,
+        ) if install else []
+    elif source == "quickbooks":
+        install = await pool.fetchrow(
+            "SELECT id, base_url, realm_id, created_at FROM quickbooks_installations "
+            "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
+        )
+        subs = await pool.fetch(
+            "SELECT entity_type, state FROM quickbooks_entities qe "
+            "JOIN quickbooks_installations qi ON qe.quickbooks_installation_id = qi.id "
+            "WHERE qi.tenant_id = $1", tenant_id,
+        ) if install else []
+    elif source == "brex":
+        install = await pool.fetchrow(
+            "SELECT id, base_url, organization_id, created_at FROM brex_installations "
+            "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
+        )
+        subs = await pool.fetch(
+            "SELECT account_id, account_name, state FROM brex_accounts ba "
+            "JOIN brex_installations bi ON ba.brex_installation_id = bi.id "
+            "WHERE bi.tenant_id = $1", tenant_id,
+        ) if install else []
+    elif source == "ramp":
+        install = await pool.fetchrow(
+            "SELECT id, base_url, business_id, created_at FROM ramp_installations "
+            "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
+        )
+        subs = await pool.fetch(
+            "SELECT entity_type, state FROM ramp_entities re "
+            "JOIN ramp_installations ri ON re.ramp_installation_id = ri.id "
+            "WHERE ri.tenant_id = $1", tenant_id,
+        ) if install else []
+    elif source == "gusto":
+        install = await pool.fetchrow(
+            "SELECT id, base_url, company_uuid, created_at FROM gusto_installations "
+            "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
+        )
+        subs = await pool.fetch(
+            "SELECT entity_type, state FROM gusto_entities ge "
+            "JOIN gusto_installations gi ON ge.gusto_installation_id = gi.id "
+            "WHERE gi.tenant_id = $1", tenant_id,
+        ) if install else []
+    else:  # deel
+        install = await pool.fetchrow(
+            "SELECT id, base_url, organization_id, created_at FROM deel_installations "
+            "WHERE tenant_id = $1 AND disabled_at IS NULL LIMIT 1", tenant_id,
+        )
+        subs = await pool.fetch(
+            "SELECT contract_id, contract_name, state FROM deel_contracts dc "
+            "JOIN deel_installations di ON dc.deel_installation_id = di.id "
+            "WHERE di.tenant_id = $1", tenant_id,
+        ) if install else []
+
+    return {
+        "source": source,
+        "channel": channel,
+        "installed": install is not None,
+        "install": {k: (str(v) if isinstance(v, (UUID, datetime)) else v)
+                    for k, v in dict(install).items()} if install else None,
+        "sub_resources": [dict(s) for s in subs],
+        "counts": {
+            "total": counts["total"] if counts else 0,
+            "signal": counts["signal"] if counts else 0,
+            "state_change": counts["state_change"] if counts else 0,
+        },
+        "recent": [
+            {
+                "id": str(r["id"]),
+                "kind": r["kind"],
+                "external_id": r["external_id"],
+                "content_text": r["content_text"],
+                "occurred_at": r["occurred_at"].isoformat() if r["occurred_at"] else None,
+                "ingested_at": r["ingested_at"].isoformat() if r["ingested_at"] else None,
+            }
+            for r in recent
+        ],
+    }
 
 
 __all__ = ["build_finance_router"]

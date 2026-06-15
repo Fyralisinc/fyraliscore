@@ -123,6 +123,13 @@ class GatewaySettings:
         auth_bootstrap_secret = source.get("AUTH_BOOTSTRAP_SECRET") or None
         if production and not auth_bootstrap_secret:
             raise ValueError("AUTH_BOOTSTRAP_SECRET must be set in production")
+        default_tenant_id = source.get("DEFAULT_TENANT_ID") or None
+        company_os_tenant_id = source.get("COMPANY_OS_TENANT_ID") or None
+        if production and (default_tenant_id or company_os_tenant_id):
+            raise ValueError(
+                "DEFAULT_TENANT_ID and COMPANY_OS_TENANT_ID must be unset "
+                "in production",
+            )
         return cls(
             log_level=source.get("LOG_LEVEL", "INFO"),
             environment=environment,
@@ -164,7 +171,7 @@ class GatewaySettings:
                 "SLACK_DM_PANEL_ENABLED",
                 production=production,
             ),
-            default_tenant_id=source.get("DEFAULT_TENANT_ID") or None,
+            default_tenant_id=default_tenant_id,
             view_ceo_token=source.get("VIEW_CEO_TOKEN") or "ceo-dogfood-token",
             view_ceo_display_name=source.get("VIEW_CEO_DISPLAY_NAME") or "Rachin",
             view_ceo_timezone=source.get("VIEW_CEO_TIMEZONE") or "Asia/Kathmandu",

@@ -14,6 +14,28 @@ def test_gateway_sensitive_panels_default_disabled() -> None:
     assert settings.slack_dm_panel_enabled is False
 
 
+def test_gateway_production_rejects_default_tenant_fallbacks() -> None:
+    base = {
+        "FYRALIS_ENV": "production",
+        "AUTH_BOOTSTRAP_SECRET": "secret",
+        "FINANCE_PANEL_ENABLED": "false",
+        "SLACK_DM_PANEL_ENABLED": "false",
+    }
+
+    with pytest.raises(ValueError, match="DEFAULT_TENANT_ID"):
+        GatewaySettings.from_env(
+            {**base, "DEFAULT_TENANT_ID": "00000000-0000-0000-0000-000000000001"}
+        )
+
+    with pytest.raises(ValueError, match="COMPANY_OS_TENANT_ID"):
+        GatewaySettings.from_env(
+            {
+                **base,
+                "COMPANY_OS_TENANT_ID": "00000000-0000-0000-0000-000000000001",
+            }
+        )
+
+
 def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> None:
     with pytest.raises(ValueError, match="AUTH_BOOTSTRAP_SECRET"):
         GatewaySettings.from_env({"FYRALIS_ENV": "production"})
