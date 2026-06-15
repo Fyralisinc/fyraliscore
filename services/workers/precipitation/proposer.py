@@ -21,6 +21,7 @@ import asyncpg
 
 from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
+from services.domain.triggers import enqueue_trigger
 
 from services.workers.precipitation.clustering import (
     ClusterResult,
@@ -117,16 +118,12 @@ async def enqueue_pattern_review_triggers(
             continue
         if row["promoted_at"] is not None or row["rejected_at"] is not None:
             continue
-        trig_id = uuid7()
-        await conn.execute(
-            """
-            INSERT INTO think_trigger_queue (
-                id, tenant_id, trigger_kind, trigger_subkind, payload
-            ) VALUES ($1, $2, 'T4', 'pattern_review', $3::jsonb)
-            """,
-            trig_id,
-            row["tenant_id"],
-            _jsonb({"pattern_candidate_id": str(cid)}),
+        trig_id = await enqueue_trigger(
+            conn,
+            tenant_id=row["tenant_id"],
+            trigger_kind="T4",
+            trigger_subkind="pattern_review",
+            payload={"pattern_candidate_id": str(cid)},
         )
         out.append(trig_id)
     return out

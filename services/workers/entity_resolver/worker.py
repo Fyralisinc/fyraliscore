@@ -56,6 +56,7 @@ from lib.llm.provider import (
     LLMTimeoutError,
 )
 from lib.shared.ids import uuid7
+from services.domain.triggers import enqueue_trigger
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.workers.entity_resolver.context import (
     ResolverContext,
@@ -617,23 +618,26 @@ class EntityResolverWorker:
                 observation_id=str(observation_id),
             )
             return
-        trigger_id = uuid7()
         try:
-            await self._execute(
-                conn,
-                """
-                INSERT INTO think_trigger_queue (
-                    id, tenant_id, trigger_kind, trigger_subkind,
-                    observation_id, payload
-                ) VALUES (
-                    $1, $2, 'T1', 'entity_resolved_late', $3, $4::jsonb
+            if conn is not None:
+                await enqueue_trigger(
+                    conn,
+                    tenant_id=tenant_id,
+                    trigger_kind="T1",
+                    trigger_subkind="entity_resolved_late",
+                    observation_id=observation_id,
+                    payload={"entity_ref": entity_ref},
                 )
-                """,
-                trigger_id,
-                tenant_id,
-                observation_id,
-                json.dumps({"entity_ref": entity_ref}),
-            )
+            else:
+                async with self._pool.acquire() as owned:
+                    await enqueue_trigger(
+                        owned,
+                        tenant_id=tenant_id,
+                        trigger_kind="T1",
+                        trigger_subkind="entity_resolved_late",
+                        observation_id=observation_id,
+                        payload={"entity_ref": entity_ref},
+                    )
         except asyncpg.exceptions.UndefinedTableError:
             self._log.warning(
                 "entity_resolver.trigger_skipped_no_table",

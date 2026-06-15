@@ -16,6 +16,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from services.reasoning.sage.outcome_evaluator import OutcomeEvaluator
 from services.reasoning.sage.topology_optimizer import optimize_topology
 
 
@@ -169,7 +170,11 @@ async def _mark_failed(
     )
 
 
-def _report_metrics(report: Any) -> dict[str, Any]:
+def _report_metrics(
+    report: Any,
+    *,
+    outcome_summary: Any | None = None,
+) -> dict[str, Any]:
     metrics = dict(getattr(report, "metrics", {}) or {})
     metrics.update(
         {
@@ -202,6 +207,17 @@ def _report_metrics(report: Any) -> dict[str, Any]:
             ),
         }
     )
+    if outcome_summary is not None:
+        metrics.update(
+            {
+                "outcome_events_emitted": getattr(
+                    outcome_summary, "events_emitted", 0
+                ),
+                "outcome_event_types": dict(
+                    getattr(outcome_summary, "events_by_type", {}) or {}
+                ),
+            }
+        )
     return metrics
 
 
@@ -227,13 +243,20 @@ async def run_once(
         tid: UUID = row["tenant_id"]
         session_id: UUID = row["inquiry_session_id"]
         try:
+            outcome_summary = await OutcomeEvaluator(
+                pool=pool,
+                tenant_id=tid,
+            ).evaluate(inquiry_session_id=session_id)
             opt_report = await optimize_topology(
                 pool=pool,
                 tenant_id=tid,
                 inquiry_session_id=session_id,
                 trigger_event="worker_poll",
             )
-            metrics = _report_metrics(opt_report)
+            metrics = _report_metrics(
+                opt_report,
+                outcome_summary=outcome_summary,
+            )
             async with pool.acquire() as conn:
                 await _mark_completed(
                     conn,

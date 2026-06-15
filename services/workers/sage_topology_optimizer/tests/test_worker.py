@@ -51,6 +51,38 @@ def test_report_metrics_flattens_optimizer_report() -> None:
     assert metrics["canonical_promote_candidates"] == 2
 
 
+def test_report_metrics_includes_outcome_evaluator_summary() -> None:
+    metrics = _report_metrics(
+        _OptimizerReport(
+            metrics={},
+            affordance_reinforces=0,
+            affordance_decays=0,
+            shortcut_creates_or_bumps=0,
+            shortcut_decays=0,
+            negative_memory_inserts=0,
+            region_refreshes=0,
+            question_policy_updates=0,
+            canonical_merge_candidates=(),
+            canonical_split_candidates=(),
+            canonical_promote_candidates=(),
+            canonical_demote_candidates=(),
+        ),
+        outcome_summary=type(
+            "OutcomeSummary",
+            (),
+            {
+                "events_emitted": 3,
+                "events_by_type": {"reader_decision_used_in_valid_diff": 2},
+            },
+        )(),
+    )
+
+    assert metrics["outcome_events_emitted"] == 3
+    assert metrics["outcome_event_types"] == {
+        "reader_decision_used_in_valid_diff": 2,
+    }
+
+
 def test_run_report_counts_completed_and_failed_sessions() -> None:
     tenant = uuid4()
     report = RunReport(
@@ -72,4 +104,3 @@ def test_run_report_counts_completed_and_failed_sessions() -> None:
     assert report.processed == 2
     assert report.completed == 1
     assert report.failed == 1
-

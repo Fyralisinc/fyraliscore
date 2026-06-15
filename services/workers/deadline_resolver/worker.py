@@ -58,7 +58,6 @@ Design notes
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -68,8 +67,7 @@ from uuid import UUID
 import asyncpg
 import structlog
 
-from lib.shared.db import transaction
-from lib.shared.ids import uuid7
+from services.domain.triggers import enqueue_trigger
 from services.domain.models.repo import ModelsRepo
 from services.workers.deadline_resolver.evaluators import (
     EvaluationContext,
@@ -419,7 +417,6 @@ class DeadlineResolver:
         transaction. When `conn` is provided and already in a
         transaction, we inherit it.
         """
-        trigger_id = uuid7()
         payload = {
             "prediction_id": str(prediction_id),
             "provisional_outcome": provisional_outcome,
@@ -427,33 +424,14 @@ class DeadlineResolver:
             "contributing_models": [str(m) for m in contributing_models],
         }
 
-        async def _do(c: asyncpg.Connection) -> None:
-            await c.execute(
-                """
-                INSERT INTO think_trigger_queue (
-                    id, tenant_id, trigger_kind, trigger_subkind,
-                    observation_id, model_id, payload
-                ) VALUES (
-                    $1, $2, 'T2', 'prediction_overdue',
-                    NULL, $3, $4::jsonb
-                )
-                """,
-                trigger_id,
-                tenant_id,
-                prediction_id,
-                json.dumps(payload),
-            )
-
-        # If the caller's connection is in a transaction, reuse it;
-        # otherwise open one with lib.shared.db.transaction() per the
-        # spec directive ("Use lib/shared/db.transaction() for the
-        # enqueue").
-        if conn.is_in_transaction():
-            await _do(conn)
-        else:
-            async with transaction(pool=self._pool) as tx:
-                await _do(tx)
-        return trigger_id
+        return await enqueue_trigger(
+            conn,
+            tenant_id=tenant_id,
+            trigger_kind="T2",
+            trigger_subkind="prediction_overdue",
+            model_id=prediction_id,
+            payload=payload,
+        )
 
 
 __all__ = [

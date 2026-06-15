@@ -42,6 +42,7 @@ import asyncpg
 import structlog
 
 from lib.shared.ids import uuid7
+from services.domain.triggers import enqueue_trigger
 
 from .debounce import (
     compute_region_hash,
@@ -184,19 +185,13 @@ async def enqueue_t3_trigger(
         "escalates": str(escalates_anomaly_id) if escalates_anomaly_id else None,
     }
 
-    trigger_id = uuid7()
-    await conn.execute(
-        """
-        INSERT INTO think_trigger_queue
-          (id, tenant_id, trigger_kind, trigger_subkind,
-           observation_id, model_id, payload)
-        VALUES ($1, $2, 'T3', $3, NULL, $4, $5::jsonb)
-        """,
-        trigger_id,
-        candidate.tenant_id,
-        candidate.kind,
-        candidate.entity_id if candidate.entity_type == "model" else None,
-        json.dumps(payload, default=str),
+    trigger_id = await enqueue_trigger(
+        conn,
+        tenant_id=candidate.tenant_id,
+        trigger_kind="T3",
+        trigger_subkind=candidate.kind,
+        model_id=candidate.entity_id if candidate.entity_type == "model" else None,
+        payload=payload,
     )
     return trigger_id
 
