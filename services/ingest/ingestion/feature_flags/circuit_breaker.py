@@ -195,6 +195,14 @@ class _TenantBreachState:
     last_tick_at: dt.datetime
 
 
+@dataclass(frozen=True)
+class _WorstLane:
+    source: str | None
+    partition: int | None
+    lag_seconds: float
+    active_lanes: int
+
+
 _LOAD_STATE_SQL = """
 SELECT tenant_id, consecutive_breach_ticks, tripped, tripped_at, last_tick_at
   FROM circuit_breaker_state
@@ -556,6 +564,248 @@ async def _default_alert(tenant_id: UUID, payload: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------
 # Tick logic — extracted for unit testability.
 # ---------------------------------------------------------------------
+async def _read_tick_inputs(
+    *,
+    config: BreakerConfig,
+    measure_lag_fn: LagPerSourceFn,
+    active_tenants_fn: ActiveTenantsFn,
+) -> tuple[dict[str, dict[int, float]], dict[UUID, dict[str, int]]] | None:
+    try:
+        lag_per_source = await measure_lag_fn(
+            bootstrap=config.kafka_bootstrap,
+            normalizer_group_base=config.normalizer_group_base,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _bump("breaker.lag_measurement_failures")
+        log.warning(
+            "circuit_breaker.lag_measurement_failed",
+            extra={"error_type": type(exc).__name__, "error": str(exc)[:200]},
+        )
+        return None
+
+    try:
+        active = await active_tenants_fn(
+            bootstrap=config.kafka_bootstrap,
+            signal_topic=config.signal_topic,
+            lookback_sec=config.signal_lookback_sec,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _bump("breaker.signal_read_failures")
+        log.warning(
+            "circuit_breaker.signal_read_failed",
+            extra={"error_type": type(exc).__name__, "error": str(exc)[:200]},
+        )
+        return None
+
+    _bump("breaker.active_tenants_sampled", float(len(active)))
+    return lag_per_source, active
+
+
+async def _handle_flag_disabled_tenant(
+    *,
+    pool: asyncpg.Pool,
+    config: BreakerConfig,
+    entry: _TenantBreachState | None,
+    now: dt.datetime,
+) -> None:
+    if entry is not None and entry.tripped:
+        _bump("breaker.skipped_already_tripped")
+        entry.last_tick_at = now
+        await _persist_state(pool, config.instance_name, entry)
+    else:
+        _bump("breaker.skipped_flag_disabled")
+
+
+def _reset_bookkeeping_on_operator_reenable(
+    *,
+    config: BreakerConfig,
+    tenant_id: UUID,
+    entry: _TenantBreachState,
+) -> None:
+    _bump("breaker.bookkeeping_reset_on_operator_reenable")
+    entry.consecutive_breach_ticks = 0
+    entry.tripped = False
+    entry.tripped_at = None
+    log.info(
+        "circuit_breaker.bookkeeping_reset_on_operator_reenable",
+        extra={
+            "tenant_id": str(tenant_id),
+            "instance_name": config.instance_name,
+        },
+    )
+
+
+def _entry_for_tenant(
+    state: dict[UUID, _TenantBreachState],
+    tenant_id: UUID,
+    *,
+    now: dt.datetime,
+) -> _TenantBreachState:
+    entry = state.get(tenant_id)
+    if entry is not None:
+        return entry
+    entry = _TenantBreachState(
+        tenant_id=tenant_id,
+        consecutive_breach_ticks=0,
+        tripped=False,
+        tripped_at=None,
+        last_tick_at=now,
+    )
+    state[tenant_id] = entry
+    return entry
+
+
+def _worst_lane_for_tenant(
+    *,
+    lag_per_source: dict[str, dict[int, float]],
+    source_partitions: dict[str, int],
+) -> _WorstLane:
+    worst = _WorstLane(
+        source=None,
+        partition=None,
+        lag_seconds=0.0,
+        active_lanes=len(source_partitions),
+    )
+    for src, part in source_partitions.items():
+        lane_lag = lag_per_source.get(src, {}).get(part, 0.0)
+        if worst.source is None or lane_lag > worst.lag_seconds:
+            worst = _WorstLane(
+                source=src,
+                partition=part,
+                lag_seconds=lane_lag,
+                active_lanes=len(source_partitions),
+            )
+    return worst
+
+
+def _update_breach_counter(
+    *,
+    entry: _TenantBreachState,
+    worst_lane: _WorstLane,
+    config: BreakerConfig,
+) -> None:
+    if worst_lane.lag_seconds > config.breach_threshold_sec:
+        entry.consecutive_breach_ticks += 1
+        _bump("breaker.breach_increments")
+        return
+    if entry.consecutive_breach_ticks > 0:
+        _bump("breaker.recovery_resets")
+    entry.consecutive_breach_ticks = 0
+
+
+async def _trip_tenant(
+    *,
+    config: BreakerConfig,
+    pool: asyncpg.Pool,
+    tenant_flags: TenantFlags,
+    alert_fn: AlertFn,
+    tenant_id: UUID,
+    entry: _TenantBreachState,
+    worst_lane: _WorstLane,
+    now: dt.datetime,
+) -> None:
+    try:
+        await tenant_flags.set_bool(
+            tenant_id,
+            KAFKA_PATH_ENABLED,
+            False,
+            set_by="auto:circuit_breaker",
+            note=(
+                f"lag>{config.breach_threshold_sec}s for "
+                f"{config.breach_window_ticks} consecutive ticks on "
+                f"worst lane source={worst_lane.source} "
+                f"partition={worst_lane.partition} "
+                f"({worst_lane.active_lanes} active lane(s))"
+            ),
+        )
+    except Exception:  # noqa: BLE001
+        _bump("breaker.flag_flip_failures")
+        log.exception(
+            "circuit_breaker.flag_flip_failed",
+            extra={"tenant_id": str(tenant_id)},
+        )
+        await _persist_state(pool, config.instance_name, entry)
+        return
+
+    entry.tripped = True
+    entry.tripped_at = now
+    await _persist_state(pool, config.instance_name, entry)
+    _bump("breaker.trips")
+    try:
+        await alert_fn(tenant_id, {
+            "source": worst_lane.source,
+            "partition": worst_lane.partition,
+            "lag_seconds": worst_lane.lag_seconds,
+            "threshold_seconds": config.breach_threshold_sec,
+            "window_ticks": config.breach_window_ticks,
+            "active_lanes": worst_lane.active_lanes,
+            "tripped_at": now.isoformat(),
+        })
+    except Exception:  # noqa: BLE001
+        log.exception(
+            "circuit_breaker.alert_failed",
+            extra={"tenant_id": str(tenant_id)},
+        )
+
+
+async def _process_active_tenant(
+    *,
+    config: BreakerConfig,
+    pool: asyncpg.Pool,
+    tenant_flags: TenantFlags,
+    state: dict[UUID, _TenantBreachState],
+    lag_per_source: dict[str, dict[int, float]],
+    tenant_id: UUID,
+    source_partitions: dict[str, int],
+    alert_fn: AlertFn,
+    now: dt.datetime,
+) -> None:
+    flag_value = await tenant_flags.kafka_path_enabled(tenant_id)
+    entry = state.get(tenant_id)
+
+    if flag_value is False:
+        await _handle_flag_disabled_tenant(
+            pool=pool,
+            config=config,
+            entry=entry,
+            now=now,
+        )
+        return
+
+    if entry is not None and entry.tripped:
+        _reset_bookkeeping_on_operator_reenable(
+            config=config,
+            tenant_id=tenant_id,
+            entry=entry,
+        )
+
+    entry = _entry_for_tenant(state, tenant_id, now=now)
+    worst_lane = _worst_lane_for_tenant(
+        lag_per_source=lag_per_source,
+        source_partitions=source_partitions,
+    )
+    _update_breach_counter(
+        entry=entry,
+        worst_lane=worst_lane,
+        config=config,
+    )
+    entry.last_tick_at = now
+
+    if entry.consecutive_breach_ticks >= config.breach_window_ticks:
+        await _trip_tenant(
+            config=config,
+            pool=pool,
+            tenant_flags=tenant_flags,
+            alert_fn=alert_fn,
+            tenant_id=tenant_id,
+            entry=entry,
+            worst_lane=worst_lane,
+            now=now,
+        )
+    else:
+        await _persist_state(pool, config.instance_name, entry)
+
+
 async def _process_tick(
     *,
     config: BreakerConfig,
@@ -577,187 +827,27 @@ async def _process_tick(
     now = now or dt.datetime.now(tz=dt.timezone.utc)
     _bump("breaker.ticks")
 
-    # Step 1: measure lag per (source, partition) across every raw lane.
-    try:
-        lag_per_source = await measure_lag_fn(
-            bootstrap=config.kafka_bootstrap,
-            normalizer_group_base=config.normalizer_group_base,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _bump("breaker.lag_measurement_failures")
-        log.warning(
-            "circuit_breaker.lag_measurement_failed",
-            extra={"error_type": type(exc).__name__, "error": str(exc)[:200]},
-        )
-        return  # skip this tick; do NOT touch state
+    tick_inputs = await _read_tick_inputs(
+        config=config,
+        measure_lag_fn=measure_lag_fn,
+        active_tenants_fn=active_tenants_fn,
+    )
+    if tick_inputs is None:
+        return
+    lag_per_source, active = tick_inputs
 
-    # Step 2: sample active tenants from signal topic.
-    try:
-        active = await active_tenants_fn(
-            bootstrap=config.kafka_bootstrap,
-            signal_topic=config.signal_topic,
-            lookback_sec=config.signal_lookback_sec,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _bump("breaker.signal_read_failures")
-        log.warning(
-            "circuit_breaker.signal_read_failed",
-            extra={"error_type": type(exc).__name__, "error": str(exc)[:200]},
-        )
-        return  # skip this tick
-
-    _bump("breaker.active_tenants_sampled", float(len(active)))
-
-    # Step 3 + 4: update per-tenant breach state.
     for tenant_id, source_partitions in active.items():
-        # Read the current cutover flag. Drives two behaviours:
-        #   (1) Filtering: tenants whose flag is already FALSE are not
-        #       candidates for breach detection — there's nothing to
-        #       flip, and re-flipping FALSE-on-FALSE would overwrite
-        #       the operator's audit field on set_by.
-        #   (2) Auto-reset on operator re-enable: if our state row says
-        #       tripped=TRUE but the flag is now TRUE, an operator must
-        #       have manually re-enabled the tenant. We reset our
-        #       bookkeeping (counter=0, tripped=FALSE) so the next sustained
-        #       breach can trip again — without this, a forgotten state-row
-        #       cleanup leaves the breaker permanently blind to the tenant.
-        # Reads the shared inverted default: a tenant with no row is
-        # kafka-first (a breach candidate); only an explicit FALSE — which
-        # THIS breaker or an operator set — takes it out of the running.
-        flag_value = await tenant_flags.kafka_path_enabled(tenant_id)
-        entry = state.get(tenant_id)
-
-        if flag_value is False:
-            if entry is not None and entry.tripped:
-                # Already tripped by this breaker; remain frozen. Keep
-                # last_tick_at fresh so stale-state GC doesn't drop the
-                # row while traffic is still flowing.
-                _bump("breaker.skipped_already_tripped")
-                entry.last_tick_at = now
-                await _persist_state(pool, config.instance_name, entry)
-            else:
-                # Killed tenant (operator-disabled). Nothing to flip; do
-                # not create a state row.
-                _bump("breaker.skipped_flag_disabled")
-            continue
-
-        # flag_value is True from here on.
-        if entry is not None and entry.tripped:
-            # Operator re-enabled the flag manually. Auto-reset our
-            # bookkeeping so future breaches can re-trip. This is
-            # auto-reset of BREAKER STATE, not auto-recovery of the
-            # FLAG (which remains operator-driven).
-            _bump("breaker.bookkeeping_reset_on_operator_reenable")
-            entry.consecutive_breach_ticks = 0
-            entry.tripped = False
-            entry.tripped_at = None
-            log.info(
-                "circuit_breaker.bookkeeping_reset_on_operator_reenable",
-                extra={
-                    "tenant_id": str(tenant_id),
-                    "instance_name": config.instance_name,
-                },
-            )
-
-        if entry is None:
-            entry = _TenantBreachState(
-                tenant_id=tenant_id,
-                consecutive_breach_ticks=0,
-                tripped=False,
-                tripped_at=None,
-                last_tick_at=now,
-            )
-            state[tenant_id] = entry
-
-        # Worst-case lane: take the maximum lag across every (source,
-        # partition) this tenant is active on. One lagging lane is enough to
-        # breach — the tenant's flag is a single per-tenant switch, so the
-        # breaker pulls the whole tenant back to inline on its worst lane.
-        worst_lag = 0.0
-        worst_source: str | None = None
-        worst_partition: int | None = None
-        for src, part in source_partitions.items():
-            lane_lag = lag_per_source.get(src, {}).get(part, 0.0)
-            if worst_source is None or lane_lag > worst_lag:
-                worst_lag = lane_lag
-                worst_source = src
-                worst_partition = part
-        breached = worst_lag > config.breach_threshold_sec
-
-        if breached:
-            entry.consecutive_breach_ticks += 1
-            _bump("breaker.breach_increments")
-        else:
-            # Recovery within window: reset to 0. Per the LLD's
-            # "5 CONSECUTIVE" requirement — one healthy tick breaks
-            # the streak.
-            if entry.consecutive_breach_ticks > 0:
-                _bump("breaker.recovery_resets")
-            entry.consecutive_breach_ticks = 0
-
-        entry.last_tick_at = now
-
-        # Step 5: trip if window reached.
-        if entry.consecutive_breach_ticks >= config.breach_window_ticks:
-            # Order: flip the flag FIRST, then record tripped=TRUE only on
-            # success. The flag flip is the load-bearing safety action; the
-            # state row is its audit record. If we marked tripped=TRUE before
-            # the flip and the flip then failed (e.g. a Postgres/TenantFlags
-            # outage), the NEXT tick would observe flag=TRUE + tripped=TRUE and
-            # misread it as an operator re-enable (the branch above), resetting
-            # the breach counter — letting a lagging tenant evade the breaker
-            # indefinitely for the duration of the outage. Flipping first and
-            # leaving the counter PINNED at the window on failure makes the
-            # next tick re-enter this branch and RETRY the flip instead.
-            try:
-                await tenant_flags.set_bool(
-                    tenant_id,
-                    KAFKA_PATH_ENABLED,
-                    False,
-                    set_by="auto:circuit_breaker",
-                    note=(
-                        f"lag>{config.breach_threshold_sec}s for "
-                        f"{config.breach_window_ticks} consecutive ticks on "
-                        f"worst lane source={worst_source} "
-                        f"partition={worst_partition} "
-                        f"({len(source_partitions)} active lane(s))"
-                    ),
-                )
-            except Exception:  # noqa: BLE001
-                # Flag flip failed. Do NOT mark tripped — keep the counter
-                # pinned at the window so the next tick retries the flip.
-                # Persist the (un-tripped, pinned-counter) state so a restart
-                # mid-outage resumes at the threshold rather than from zero.
-                _bump("breaker.flag_flip_failures")
-                log.exception(
-                    "circuit_breaker.flag_flip_failed",
-                    extra={"tenant_id": str(tenant_id)},
-                )
-                await _persist_state(pool, config.instance_name, entry)
-                continue
-            # Flip succeeded — record the trip (audit) and persist.
-            entry.tripped = True
-            entry.tripped_at = now
-            await _persist_state(pool, config.instance_name, entry)
-            _bump("breaker.trips")
-            try:
-                await alert_fn(tenant_id, {
-                    "source": worst_source,
-                    "partition": worst_partition,
-                    "lag_seconds": worst_lag,
-                    "threshold_seconds": config.breach_threshold_sec,
-                    "window_ticks": config.breach_window_ticks,
-                    "active_lanes": len(source_partitions),
-                    "tripped_at": now.isoformat(),
-                })
-            except Exception:  # noqa: BLE001
-                log.exception(
-                    "circuit_breaker.alert_failed",
-                    extra={"tenant_id": str(tenant_id)},
-                )
-        else:
-            # Not yet tripped — just persist the updated counter.
-            await _persist_state(pool, config.instance_name, entry)
+        await _process_active_tenant(
+            config=config,
+            pool=pool,
+            tenant_flags=tenant_flags,
+            state=state,
+            lag_per_source=lag_per_source,
+            tenant_id=tenant_id,
+            source_partitions=source_partitions,
+            alert_fn=alert_fn,
+            now=now,
+        )
 
 
 # ---------------------------------------------------------------------

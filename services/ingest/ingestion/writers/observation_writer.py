@@ -464,6 +464,150 @@ class WriterConfig:
     max_batch_concurrency: int = 1
 
 
+async def _publish_writer_dlq(
+    *,
+    producer: IdempotentProducer,
+    failure_kind: str,
+    error_summary: str,
+    msg_bytes: bytes,
+    tenant_id: Any = None,
+    source: str | None = None,
+    raw_s3_key: str | None = None,
+    error_context: dict[str, Any] | None = None,
+) -> None:
+    await publish_dlq(
+        producer=producer,
+        failure_kind=failure_kind,
+        error_summary=error_summary,
+        tenant_id=tenant_id,
+        source=source,
+        raw_s3_key=raw_s3_key,
+        msg_bytes=msg_bytes,
+        error_context=error_context,
+        on_success=lambda: _bump("writer.dlq_publish.success"),
+        on_failure=lambda: _bump("writer.dlq_publish.failure"),
+        on_skipped=lambda: _bump("writer.dlq_publish.skipped"),
+    )
+
+
+async def _handle_parse_failure(
+    exc: Exception,
+    *,
+    dlq_producer: IdempotentProducer,
+    msg_value: bytes,
+    msg_topic: str,
+    msg_partition: int,
+    msg_offset: int,
+) -> None:
+    _bump("writer.parse_failure")
+    log.warning(
+        "writer.parse_failed",
+        extra={
+            "topic": msg_topic,
+            "partition": msg_partition,
+            "offset": msg_offset,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:200],
+        },
+    )
+    await _publish_writer_dlq(
+        producer=dlq_producer,
+        failure_kind="writer.invariant_failure",
+        error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
+        msg_bytes=msg_value,
+    )
+
+
+async def _handle_full_mode_permanent_failure(
+    exc: Exception,
+    *,
+    env: NormalizedEnvelope,
+    dlq_producer: IdempotentProducer,
+    msg_value: bytes,
+    msg_topic: str,
+    msg_partition: int,
+    msg_offset: int,
+    include_env_fields: bool = False,
+) -> None:
+    _bump("writer.full_mode_failures")
+    log.warning(
+        "writer.full_mode_permanent_failure",
+        extra={
+            "topic": msg_topic,
+            "partition": msg_partition,
+            "offset": msg_offset,
+            "tenant_id": str(env.tenant_id),
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:200],
+        },
+    )
+    await _publish_writer_dlq(
+        producer=dlq_producer,
+        failure_kind="writer.full_mode_permanent_failure",
+        error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
+        tenant_id=env.tenant_id if include_env_fields else None,
+        source=env.source if include_env_fields else None,
+        raw_s3_key=env.raw_s3_key if include_env_fields else None,
+        msg_bytes=msg_value,
+    )
+
+
+async def _handle_partition_dlq(
+    *,
+    status: str,
+    occurred: str,
+    env: NormalizedEnvelope,
+    dlq_producer: IdempotentProducer,
+    msg_value: bytes,
+    msg_topic: str,
+    msg_partition: int,
+    msg_offset: int,
+) -> None:
+    if status == _HEAL_OUT_OF_BOUNDS:
+        _bump("writer.partition_out_of_bounds")
+        reason = "out_of_bounds_occurred_at"
+        summary = (
+            f"out_of_bounds_occurred_at: occurred_at={occurred} outside "
+            f"the partition auto-create window "
+            f"[-{_PARTITION_MAX_BACKFILL_LOOKBACK_DAYS}d, "
+            f"+{_PARTITION_FUTURE_SKEW_DAYS}d]; treated as corrupt "
+            f"source data (no partition created)"
+        )
+    else:
+        _bump("writer.partition_missing")
+        reason = "partition_missing"
+        summary = (
+            f"partition_missing: occurred_at={occurred} still outside "
+            f"partition range after auto-create; observations "
+            f"partitioning may need extension"
+        )
+    log.warning(
+        "writer.partition_dlq",
+        extra={
+            "topic": msg_topic,
+            "partition": msg_partition,
+            "offset": msg_offset,
+            "tenant_id": str(env.tenant_id),
+            "occurred_at": occurred,
+            "reason": reason,
+        },
+    )
+    await _publish_writer_dlq(
+        producer=dlq_producer,
+        failure_kind="writer.invariant_failure",
+        error_summary=summary,
+        tenant_id=env.tenant_id,
+        source=env.source,
+        raw_s3_key=env.raw_s3_key,
+        msg_bytes=msg_value,
+        error_context={
+            "reason": reason,
+            "occurred_at": occurred,
+            "table": "observations",
+        },
+    )
+
+
 async def _handle_message(
     msg_value: bytes,
     *,
@@ -487,25 +631,13 @@ async def _handle_message(
     try:
         env = NormalizedEnvelope.model_validate(json.loads(msg_value))
     except Exception as exc:  # noqa: BLE001
-        _bump("writer.parse_failure")
-        log.warning(
-            "writer.parse_failed",
-            extra={
-                "topic": msg_topic,
-                "partition": msg_partition,
-                "offset": msg_offset,
-                "error_type": type(exc).__name__,
-                "error": str(exc)[:200],
-            },
-        )
-        await publish_dlq(
-            producer=dlq_producer,
-            failure_kind="writer.invariant_failure",
-            error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
-            msg_bytes=msg_value,
-            on_success=lambda: _bump("writer.dlq_publish.success"),
-            on_failure=lambda: _bump("writer.dlq_publish.failure"),
-            on_skipped=lambda: _bump("writer.dlq_publish.skipped"),
+        await _handle_parse_failure(
+            exc,
+            dlq_producer=dlq_producer,
+            msg_value=msg_value,
+            msg_topic=msg_topic,
+            msg_partition=msg_partition,
+            msg_offset=msg_offset,
         )
         return
 
@@ -539,26 +671,14 @@ async def _handle_message(
     except (ValidationError, HandlerNotFound, PayloadTooLarge) as exc:
         # Permanent error — DLQ + commit. Same shape as the
         # parse-failure branch.
-        _bump("writer.full_mode_failures")
-        log.warning(
-            "writer.full_mode_permanent_failure",
-            extra={
-                "topic": msg_topic,
-                "partition": msg_partition,
-                "offset": msg_offset,
-                "tenant_id": str(env.tenant_id),
-                "error_type": type(exc).__name__,
-                "error": str(exc)[:200],
-            },
-        )
-        await publish_dlq(
-            producer=dlq_producer,
-            failure_kind="writer.full_mode_permanent_failure",
-            error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
-            msg_bytes=msg_value,
-            on_success=lambda: _bump("writer.dlq_publish.success"),
-            on_failure=lambda: _bump("writer.dlq_publish.failure"),
-            on_skipped=lambda: _bump("writer.dlq_publish.skipped"),
+        await _handle_full_mode_permanent_failure(
+            exc,
+            env=env,
+            dlq_producer=dlq_producer,
+            msg_value=msg_value,
+            msg_topic=msg_topic,
+            msg_partition=msg_partition,
+            msg_offset=msg_offset,
         )
     except asyncpg.exceptions.CheckViolationError as exc:
         # A28 / ticket #44: an *unnamed* CheckViolationError on the range-
@@ -585,29 +705,15 @@ async def _handle_message(
             # A permanent error surfaced only on the retry (not expected,
             # since validation precedes the INSERT in ingest_from_draft).
             # DLQ it like any other full-mode permanent failure.
-            _bump("writer.full_mode_failures")
-            log.warning(
-                "writer.full_mode_permanent_failure",
-                extra={
-                    "topic": msg_topic,
-                    "partition": msg_partition,
-                    "offset": msg_offset,
-                    "tenant_id": str(env.tenant_id),
-                    "error_type": type(exc2).__name__,
-                    "error": str(exc2)[:200],
-                },
-            )
-            await publish_dlq(
-                producer=dlq_producer,
-                failure_kind="writer.full_mode_permanent_failure",
-                error_summary=f"{type(exc2).__name__}: {str(exc2)[:200]}",
-                tenant_id=env.tenant_id,
-                source=env.source,
-                raw_s3_key=env.raw_s3_key,
-                msg_bytes=msg_value,
-                on_success=lambda: _bump("writer.dlq_publish.success"),
-                on_failure=lambda: _bump("writer.dlq_publish.failure"),
-                on_skipped=lambda: _bump("writer.dlq_publish.skipped"),
+            await _handle_full_mode_permanent_failure(
+                exc2,
+                env=env,
+                dlq_producer=dlq_producer,
+                msg_value=msg_value,
+                msg_topic=msg_topic,
+                msg_partition=msg_partition,
+                msg_offset=msg_offset,
+                include_env_fields=True,
             )
             return
 
@@ -628,51 +734,15 @@ async def _handle_message(
         # status is out_of_bounds (deliberate) or still_missing (residual
         # fallback) — DLQ with the matching reason/metric. No partition
         # was created for the out_of_bounds case.
-        if status == _HEAL_OUT_OF_BOUNDS:
-            _bump("writer.partition_out_of_bounds")
-            reason = "out_of_bounds_occurred_at"
-            summary = (
-                f"out_of_bounds_occurred_at: occurred_at={occurred} outside "
-                f"the partition auto-create window "
-                f"[-{_PARTITION_MAX_BACKFILL_LOOKBACK_DAYS}d, "
-                f"+{_PARTITION_FUTURE_SKEW_DAYS}d]; treated as corrupt "
-                f"source data (no partition created)"
-            )
-        else:
-            _bump("writer.partition_missing")
-            reason = "partition_missing"
-            summary = (
-                f"partition_missing: occurred_at={occurred} still outside "
-                f"partition range after auto-create; observations "
-                f"partitioning may need extension"
-            )
-        log.warning(
-            "writer.partition_dlq",
-            extra={
-                "topic": msg_topic,
-                "partition": msg_partition,
-                "offset": msg_offset,
-                "tenant_id": str(env.tenant_id),
-                "occurred_at": occurred,
-                "reason": reason,
-            },
-        )
-        await publish_dlq(
-            producer=dlq_producer,
-            failure_kind="writer.invariant_failure",
-            error_summary=summary,
-            tenant_id=env.tenant_id,
-            source=env.source,
-            raw_s3_key=env.raw_s3_key,
-            msg_bytes=msg_value,
-            error_context={
-                "reason": reason,
-                "occurred_at": occurred,
-                "table": "observations",
-            },
-            on_success=lambda: _bump("writer.dlq_publish.success"),
-            on_failure=lambda: _bump("writer.dlq_publish.failure"),
-            on_skipped=lambda: _bump("writer.dlq_publish.skipped"),
+        await _handle_partition_dlq(
+            status=status,
+            occurred=occurred,
+            env=env,
+            dlq_producer=dlq_producer,
+            msg_value=msg_value,
+            msg_topic=msg_topic,
+            msg_partition=msg_partition,
+            msg_offset=msg_offset,
         )
     # Transient errors propagate — consumer loop exits, supervisor
     # restarts, Kafka redelivers from last committed offset.

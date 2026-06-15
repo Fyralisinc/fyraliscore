@@ -820,6 +820,257 @@ async def _write_record_and_build_message(
     )
 
 
+@dataclass
+class _FetchLoopContext:
+    shard_id: UUID
+    tenant_id: UUID
+    source: str
+    shard_identifier: dict[str, Any]
+    loop_started_at: dt.datetime
+    records_fetched: int = 0
+
+    @classmethod
+    def from_shard(cls, shard: asyncpg.Record) -> "_FetchLoopContext":
+        ident_raw = shard["shard_identifier"]
+        shard_identifier = (
+            orjson.loads(ident_raw) if isinstance(ident_raw, (str, bytes))
+            else dict(ident_raw)
+        )
+        return cls(
+            shard_id=shard["id"],
+            tenant_id=shard["tenant_id"],
+            source=shard["source"],
+            shard_identifier=shard_identifier,
+            loop_started_at=dt.datetime.now(tz=dt.timezone.utc),
+        )
+
+    def fetched_in_seconds(self) -> float:
+        return (
+            dt.datetime.now(tz=dt.timezone.utc) - self.loop_started_at
+        ).total_seconds()
+
+
+async def _persist_initial_workflow_state(
+    conn: asyncpg.Connection, shard_id: UUID,
+) -> None:
+    state = WorkflowState(
+        workflow_kind=WORKFLOW_KIND,
+        workflow_id=str(shard_id),
+        tenant_id=None,
+        state_data={"cursor": None, "pages_fetched": 0},
+        last_advanced_at=dt.datetime.now(tz=dt.timezone.utc),
+    )
+    await persist_state(conn, state)
+
+
+def _log_fetch_install_unavailable(ctx: _FetchLoopContext) -> None:
+    log.warning(
+        "shard_fetch.install_unavailable_park",
+        extra={
+            "shard_id": str(ctx.shard_id),
+            "source": ctx.source,
+            "tenant_id": str(ctx.tenant_id),
+        },
+    )
+
+
+async def _ensure_fetch_loop_state(
+    pool: asyncpg.Pool, ctx: _FetchLoopContext,
+) -> None:
+    # Ensure the N1 home exists before the first advance. Two paths reach this
+    # point: signal-driven start bootstraps in the claim transaction;
+    # orphan-scan resume may see a shard whose previous owner crashed before
+    # first advance. Bootstrap defensively rather than rely on path (1).
+    initial_state = await load_state(pool, WORKFLOW_KIND, str(ctx.shard_id))
+    if initial_state is None:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await _persist_initial_workflow_state(conn, ctx.shard_id)
+        return
+    # Resume: carry forward the count from prior passes.
+    ctx.records_fetched = int(initial_state.state_data.get("records_fetched", 0))
+
+
+async def _load_fetch_cursor(
+    pool: asyncpg.Pool, ctx: _FetchLoopContext,
+) -> tuple[WorkflowState | None, dict[str, Any] | None]:
+    # Re-read N1 cursor each iteration. Robust against cross-replica handoffs
+    # where another replica may have advanced the cursor.
+    current_state = await load_state(pool, WORKFLOW_KIND, str(ctx.shard_id))
+    cursor = current_state.state_data.get("cursor") if current_state else None
+    return current_state, cursor
+
+
+async def _fetch_page(
+    rate_limiter: FetchRateLimiter | None,
+    ctx: _FetchLoopContext,
+    *,
+    install: asyncpg.Record,
+    cursor: dict[str, Any] | None,
+) -> Any:
+    # FetchPage rate-limit gate (LLD §13): acquire one token for the
+    # (source, method) bucket BEFORE the upstream page call. A bounded wait
+    # raises RateLimitWaitExceeded, caught by _run_fetch_loop as transient.
+    if rate_limiter is not None:
+        await rate_limiter.acquire(source=ctx.source, tenant_id=ctx.tenant_id)
+    fetcher = FETCHER_DISPATCH[ctx.source]
+    return await fetcher(install, ctx.shard_identifier, cursor)
+
+
+async def _write_fetch_page_messages(
+    s3_client: S3Client | None,
+    config: ShardFetchConfig,
+    ctx: _FetchLoopContext,
+    *,
+    cursor: dict[str, Any] | None,
+    records: list[dict[str, Any]],
+) -> list[KafkaMessage] | None:
+    if records and s3_client is None:
+        raise RuntimeError(
+            "shard_fetch backfill producer requires an "
+            "S3Client (A27.1) but none was wired; set "
+            "S3_ENDPOINT_URL / S3_RAW_BUCKET and pass "
+            "s3_client=… to ShardFetch."
+        )
+    try:
+        write_sem = asyncio.Semaphore(max(1, config.s3_write_concurrency))
+
+        async def _write_one(rec: dict[str, Any]) -> KafkaMessage:
+            async with write_sem:
+                return await _write_record_and_build_message(
+                    s3_client,
+                    tenant_id=ctx.tenant_id,
+                    source=ctx.source,
+                    shard_id=ctx.shard_id,
+                    cursor=cursor,
+                    record=rec,
+                    env=config.ingestion_env,
+                )
+
+        return await asyncio.gather(*(_write_one(rec) for rec in records))
+    except Exception as exc:  # noqa: BLE001
+        # Transient raw-tier (S3) write failure — missing bucket, 5xx, network.
+        # This is infra, not a poison shard: leave the shard in_progress so the
+        # orphan-scan retries it. Cursor not advanced.
+        log.warning(
+            "shard_fetch.s3_write_failure_exit_loop",
+            extra={
+                "shard_id": str(ctx.shard_id),
+                "source": ctx.source,
+                "error": f"{type(exc).__name__}: {exc}"[:200],
+            },
+        )
+        return None
+
+
+async def _advance_fetch_cursor(
+    pool: asyncpg.Pool,
+    kafka_producer: Any,
+    config: ShardFetchConfig,
+    ctx: _FetchLoopContext,
+    *,
+    current_state: WorkflowState | None,
+    result: Any,
+    messages: list[KafkaMessage],
+) -> bool:
+    try:
+        await advance_cursor_atomic_with_kafka_publish(
+            pool,
+            kafka_producer,
+            workflow_kind=WORKFLOW_KIND,
+            workflow_id=str(ctx.shard_id),
+            new_state_data={
+                "cursor": result.next_cursor,
+                "pages_fetched": (
+                    (current_state.state_data.get("pages_fetched", 0)
+                     if current_state else 0) + 1
+                ),
+                # Cumulative raw-record count, persisted so a resumed orphan
+                # reports the whole shard's count in `shard.fetched`.
+                "records_fetched": ctx.records_fetched,
+                "end_of_data": result.end_of_data,
+            },
+            kafka_messages=messages,
+            flush_timeout_seconds=config.flush_timeout_seconds,
+        )
+        return True
+    except (CursorAdvanceFlushFailure, CursorAdvancePublishFailure) as exc:
+        # Flush timeout OR produce-enqueue failure (broker down, unprovisioned
+        # topic, queue full). Both are transient infra.
+        log.warning(
+            "shard_fetch.publish_failure_exit_loop",
+            extra={
+                "shard_id": str(ctx.shard_id),
+                "source": ctx.source,
+                "failure_kind": type(exc).__name__,
+            },
+        )
+        return False
+
+
+async def _run_fetch_pages(
+    pool: asyncpg.Pool,
+    kafka_producer: Any,
+    s3_client: S3Client | None,
+    rate_limiter: FetchRateLimiter | None,
+    config: ShardFetchConfig,
+    ctx: _FetchLoopContext,
+    *,
+    install: asyncpg.Record,
+) -> bool:
+    while True:
+        current_state, cursor = await _load_fetch_cursor(pool, ctx)
+        result = await _fetch_page(
+            rate_limiter, ctx, install=install, cursor=cursor,
+        )
+        ctx.records_fetched += len(result.records)
+        messages = await _write_fetch_page_messages(
+            s3_client, config, ctx, cursor=cursor, records=result.records,
+        )
+        if messages is None:
+            return False
+        advanced = await _advance_fetch_cursor(
+            pool,
+            kafka_producer,
+            config,
+            ctx,
+            current_state=current_state,
+            result=result,
+            messages=messages,
+        )
+        if not advanced:
+            return False
+        if result.end_of_data:
+            return True
+
+
+def _log_fetch_rate_limited_exit(
+    ctx: _FetchLoopContext, exc: RateLimitWaitExceeded,
+) -> None:
+    log.warning(
+        "shard_fetch.rate_limited_exit_loop",
+        extra={
+            "shard_id": str(ctx.shard_id),
+            "source": ctx.source,
+            "bucket_key": exc.bucket_key,
+            "waited_seconds": exc.waited_seconds,
+        },
+    )
+
+
+def _log_recoverable_fetch_error(
+    ctx: _FetchLoopContext, exc: Exception,
+) -> None:
+    log.warning(
+        "shard_fetch.recoverable_fetch_error_park",
+        extra={
+            "shard_id": str(ctx.shard_id),
+            "source": ctx.source,
+            "error": f"{type(exc).__name__}: {exc}"[:200],
+        },
+    )
+
+
 # ---------------------------------------------------------------------
 # Service.
 # ---------------------------------------------------------------------
@@ -1009,14 +1260,7 @@ class ShardFetch(LongRunningService):
         (which raises `CursorAdvanceMissingState` if the row doesn't
         exist; the substrate refuses to silently create state).
         """
-        state = WorkflowState(
-            workflow_kind=WORKFLOW_KIND,
-            workflow_id=str(shard_id),
-            tenant_id=None,
-            state_data={"cursor": None, "pages_fetched": 0},
-            last_advanced_at=dt.datetime.now(tz=dt.timezone.utc),
-        )
-        await persist_state(conn, state)
+        await _persist_initial_workflow_state(conn, shard_id)
 
     async def _run_fetch_loop(self, shard: asyncpg.Record) -> None:
         """Run the fetch loop for one shard until end-of-data or
@@ -1045,27 +1289,11 @@ class ShardFetch(LongRunningService):
             + emit completion with failure_reason.
           - Other exception → mark 'failed' + emit with failure_reason.
         """
-        shard_id: UUID = shard["id"]
-        tenant_id: UUID = shard["tenant_id"]
-        source: str = shard["source"]
-        # shard_identifier is JSONB; asyncpg returns it as a string or dict.
-        ident_raw = shard["shard_identifier"]
-        shard_identifier = (
-            orjson.loads(ident_raw) if isinstance(ident_raw, (str, bytes))
-            else dict(ident_raw)
-        )
-
-        # Wall-clock start for the `shard.fetched` progress event's
-        # `fetched_in_seconds` (this fetch pass; a resumed orphan restarts
-        # the clock). `records_fetched` is seeded from the N1 state so it
-        # survives a cross-replica handoff and reports the cumulative
-        # raw-record count for the shard, not just the resuming pass.
-        loop_started_at = dt.datetime.now(tz=dt.timezone.utc)
-        records_fetched = 0
+        ctx = _FetchLoopContext.from_shard(shard)
 
         try:
             install = await _load_install(
-                self._pool, tenant_id=tenant_id, source=source,
+                self._pool, tenant_id=ctx.tenant_id, source=ctx.source,
             )
             if install is None:
                 # Install disabled mid-flight — suspended/revoked via the
@@ -1076,146 +1304,20 @@ class ShardFetch(LongRunningService):
                 # requeue). A genuinely-deleted install leaves the shard
                 # parked until an operator cleans up the onboarding run —
                 # the retry is one cheap query per lease interval.
-                log.warning(
-                    "shard_fetch.install_unavailable_park",
-                    extra={
-                        "shard_id": str(shard_id), "source": source,
-                        "tenant_id": str(tenant_id),
-                    },
-                )
+                _log_fetch_install_unavailable(ctx)
                 return  # stay in_progress; orphan-scan retries on re-enable
 
-            # Ensure the N1 home exists before the first advance.
-            # Two paths reach this point: (1) signal-driven start
-            # bootstraps in the claim transaction; (2) orphan-scan
-            # resume of a shard whose previous owner crashed before
-            # first advance — no workflow_states row exists yet.
-            # Bootstrap defensively rather than rely on path (1).
-            initial_state = await load_state(
-                self._pool, WORKFLOW_KIND, str(shard_id),
-            )
-            if initial_state is None:
-                async with self._pool.acquire() as conn:
-                    async with conn.transaction():
-                        await self._bootstrap_workflow_state(conn, shard_id)
-            else:
-                # Resume: carry forward the count from prior passes.
-                records_fetched = int(
-                    initial_state.state_data.get("records_fetched", 0)
-                )
-
-            while True:
-                # Re-read N1 cursor each iteration. Robust against
-                # cross-replica handoffs where another replica may
-                # have advanced the cursor in the interim.
-                current_state = await load_state(
-                    self._pool, WORKFLOW_KIND, str(shard_id),
-                )
-                cursor = (
-                    current_state.state_data.get("cursor")
-                    if current_state else None
-                )
-
-                # FetchPage rate-limit gate (LLD §13): acquire one token
-                # for the (source, method) bucket BEFORE the upstream page
-                # call. Pass-through for sources with no published budget.
-                # A bounded wait that's exceeded raises RateLimitWaitExceeded,
-                # caught below as a transient loop exit.
-                if self._rate_limiter is not None:
-                    await self._rate_limiter.acquire(
-                        source=source, tenant_id=tenant_id,
-                    )
-
-                fetcher = FETCHER_DISPATCH[source]
-                result = await fetcher(install, shard_identifier, cursor)
-                records_fetched += len(result.records)
-
-                # A27.1 — write each record's blob to S3 + build the
-                # RawEnvelope pointer BEFORE the N1 publish. S3 failures
-                # are tagged distinctly from Kafka/cursor failures for
-                # operator debugging (the broad except below records the
-                # message), then propagate to mark the shard 'failed'.
-                if result.records and self._s3_client is None:
-                    raise RuntimeError(
-                        "shard_fetch backfill producer requires an "
-                        "S3Client (A27.1) but none was wired; set "
-                        "S3_ENDPOINT_URL / S3_RAW_BUCKET and pass "
-                        "s3_client=… to ShardFetch."
-                    )
-                try:
-                    write_sem = asyncio.Semaphore(
-                        max(1, self._config.s3_write_concurrency)
-                    )
-
-                    async def _write_one(rec: dict[str, Any]) -> KafkaMessage:
-                        async with write_sem:
-                            return await _write_record_and_build_message(
-                                self._s3_client,
-                                tenant_id=tenant_id, source=source,
-                                shard_id=shard_id, cursor=cursor, record=rec,
-                                env=self._config.ingestion_env,
-                            )
-
-                    msgs = await asyncio.gather(
-                        *(_write_one(rec) for rec in result.records)
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    # Transient raw-tier (S3) write failure — missing bucket,
-                    # 5xx, network. This is infra, not a poison shard: leave
-                    # the shard in_progress so the orphan-scan retries it,
-                    # rather than terminal-failing (which is unrecoverable and
-                    # silently drops this shard's history). Cursor not advanced.
-                    log.warning(
-                        "shard_fetch.s3_write_failure_exit_loop",
-                        extra={
-                            "shard_id": str(shard_id), "source": source,
-                            "error": f"{type(exc).__name__}: {exc}"[:200],
-                        },
-                    )
-                    return  # shard stays in_progress; orphan-scan retries
-
-                try:
-                    await advance_cursor_atomic_with_kafka_publish(
-                        self._pool, self._kafka_producer,
-                        workflow_kind=WORKFLOW_KIND,
-                        workflow_id=str(shard_id),
-                        new_state_data={
-                            "cursor": result.next_cursor,
-                            "pages_fetched": (
-                                (current_state.state_data.get(
-                                    "pages_fetched", 0,
-                                ) if current_state else 0) + 1
-                            ),
-                            # Cumulative raw-record count, persisted so a
-                            # resumed orphan reports the whole shard's count
-                            # in its `shard.fetched` event.
-                            "records_fetched": records_fetched,
-                            "end_of_data": result.end_of_data,
-                        },
-                        kafka_messages=msgs,
-                        flush_timeout_seconds=(
-                            self._config.flush_timeout_seconds
-                        ),
-                    )
-                except (CursorAdvanceFlushFailure, CursorAdvancePublishFailure) as exc:
-                    # Flush timeout OR produce-enqueue failure (broker down,
-                    # unprovisioned topic, queue full). Both are transient infra
-                    # — leave the shard in_progress for the orphan-scan to retry
-                    # rather than terminal-failing on a hiccup. (Previously a
-                    # produce-enqueue KafkaException escaped to the terminal
-                    # boundary below and silently lost the shard's history.)
-                    log.warning(
-                        "shard_fetch.publish_failure_exit_loop",
-                        extra={
-                            "shard_id": str(shard_id),
-                            "source": source,
-                            "failure_kind": type(exc).__name__,
-                        },
-                    )
-                    return  # shard stays in_progress; orphan-scan retries
-
-                if result.end_of_data:
-                    break
+            await _ensure_fetch_loop_state(self._pool, ctx)
+            if not await _run_fetch_pages(
+                self._pool,
+                self._kafka_producer,
+                self._s3_client,
+                self._rate_limiter,
+                self._config,
+                ctx,
+                install=install,
+            ):
+                return
 
         except RateLimitWaitExceeded as exc:
             # Transient: the (source, method) bucket stayed empty past the
@@ -1223,20 +1325,12 @@ class ShardFetch(LongRunningService):
             # in_progress and the orphan scan resumes it once the bucket
             # refills (or the operator lifts the pause). Same recovery
             # shape as a CursorAdvanceFlushFailure.
-            log.warning(
-                "shard_fetch.rate_limited_exit_loop",
-                extra={
-                    "shard_id": str(shard_id),
-                    "source": source,
-                    "bucket_key": exc.bucket_key,
-                    "waited_seconds": exc.waited_seconds,
-                },
-            )
+            _log_fetch_rate_limited_exit(ctx, exc)
             return
 
         except NotImplementedError as exc:
             await self._terminate_shard(
-                shard_id=shard_id, state="failed",
+                shard_id=ctx.shard_id, state="failed",
                 failure_reason=str(exc),
             )
             return
@@ -1248,33 +1342,24 @@ class ShardFetch(LongRunningService):
                 # terminal-failing on a recoverable error (which would need a
                 # manual requeue). Same posture as the S3/Kafka transient
                 # handling above.
-                log.warning(
-                    "shard_fetch.recoverable_fetch_error_park",
-                    extra={
-                        "shard_id": str(shard_id), "source": source,
-                        "error": f"{type(exc).__name__}: {exc}"[:200],
-                    },
-                )
+                _log_recoverable_fetch_error(ctx, exc)
                 return  # stay in_progress; orphan-scan retries
             log.exception(
                 "shard_fetch.unexpected_exception",
-                extra={"shard_id": str(shard_id)},
+                extra={"shard_id": str(ctx.shard_id)},
             )
             await self._terminate_shard(
-                shard_id=shard_id, state="failed",
+                shard_id=ctx.shard_id, state="failed",
                 failure_reason=f"{type(exc).__name__}: {exc}",
             )
             return
 
         # Clean end-of-data exit. Pass the fetch metrics so the terminal
         # transition can emit the `shard.fetched` progress event.
-        fetched_in_seconds = (
-            dt.datetime.now(tz=dt.timezone.utc) - loop_started_at
-        ).total_seconds()
         await self._terminate_shard(
-            shard_id=shard_id, state="done", failure_reason=None,
-            observation_count=records_fetched,
-            fetched_in_seconds=fetched_in_seconds,
+            shard_id=ctx.shard_id, state="done", failure_reason=None,
+            observation_count=ctx.records_fetched,
+            fetched_in_seconds=ctx.fetched_in_seconds(),
         )
 
     async def _terminate_shard(

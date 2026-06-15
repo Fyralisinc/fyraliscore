@@ -38,6 +38,8 @@ import logging
 import os
 import pathlib
 import time
+from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -56,7 +58,6 @@ from services.ingest.synthetic.validation_runs.composition import (
     live_target_for,
     teardown_live_drivers,
 )
-from services.ingest.synthetic.validation_runs.moto_lifecycle import moto_s3
 from services.ingest.synthetic.validation_runs.preflight import run_preflight
 from services.ingest.synthetic.validation_runs.reports import (
     AssertionResult,
@@ -78,6 +79,13 @@ _LIVE_EVENTS_PER_TENANT = 5
 # #39-watched signal). Unconsumed by design — excluded from "working
 # backlog". Same as Run 3.
 _TERMINAL_SIGNAL = "tenant_onboarding_completed"
+
+
+@dataclass
+class _LiveCutoverRuntime:
+    producer: IdempotentProducer
+    s3: S3Client
+    drivers: Any
 
 
 def run4_scenarios(
@@ -185,6 +193,241 @@ async def _wait_for_total_drain(
         await asyncio.sleep(poll_interval_s)
 
 
+def _run4_report(*, scenarios: list[BackfillScenario], real_clients: bool) -> RunReport:
+    if real_clients:
+        run_name = (
+            "Concurrent backfill (REAL clients \u2192 spammer) + live-via-Kafka "
+            "(50 tenants, 4 sources)"
+        )
+        run_number = 5
+    else:
+        run_name = "Concurrent backfill + live-via-Kafka (50 tenants, 4 sources)"
+        run_number = 4
+    return RunReport(
+        run_name=run_name,
+        run_number=run_number,
+        tenant_count=len(scenarios),
+        started_at=dt.datetime.now(tz=dt.timezone.utc),
+        wall_seconds=0.0,
+    )
+
+
+def _live_targets_from_outcomes(outcomes: list[Any]) -> list[Any]:
+    return [
+        live_target_for(
+            outcome.tenant_id,
+            outcome.scenario.source,
+            outcome.scenario.tenant_slug,
+            outcome.scenario.fixture_params,
+        )
+        for outcome in outcomes
+    ]
+
+
+async def _start_live_cutover_runtime(
+    *,
+    pool: asyncpg.Pool,
+    targets: list[Any],
+    bootstrap_servers: str,
+    s3_endpoint_url: str,
+) -> _LiveCutoverRuntime:
+    secrets = SigningSecrets()
+    producer = IdempotentProducer(ProducerConfig(bootstrap_servers=bootstrap_servers))
+    await producer.start()
+    s3 = S3Client(
+        os.environ.get("S3_RAW_BUCKET", "fyralis-raw"),
+        endpoint_url=s3_endpoint_url,
+        region_name="us-east-1",
+    )
+    await s3.connect()
+    flags = TenantFlags(pool)
+    drivers = await build_live_drivers(
+        pool,
+        targets,
+        secrets,
+        kafka_producer=producer,
+        s3_raw_client=s3,
+        tenant_flags=flags,
+    )
+    return _LiveCutoverRuntime(producer=producer, s3=s3, drivers=drivers)
+
+
+async def _drive_concurrent_backfill_and_live(
+    *,
+    pool: asyncpg.Pool,
+    harness: BackfillHarness,
+    drivers: Any,
+    targets: list[Any],
+    peak: dict[str, int],
+) -> tuple[Any, float, float]:
+    harness.start_services()
+    stop = asyncio.Event()
+    monitor = asyncio.create_task(_monitor(pool, stop, peak))
+    backfill_done_at = {"t": 0.0}
+
+    async def _backfill_drive() -> None:
+        await harness.wait_for_backfill()
+        backfill_done_at["t"] = time.monotonic()
+
+    live_start = time.monotonic()
+    try:
+        live_result, _ = await asyncio.gather(
+            dispatch_live_concurrent(
+                drivers,
+                targets,
+                events_per_tenant=_LIVE_EVENTS_PER_TENANT,
+            ),
+            _backfill_drive(),
+        )
+    finally:
+        stop.set()
+        await monitor
+    return live_result, live_start, backfill_done_at["t"]
+
+
+def _expected_combined_observation_totals(outcomes: list[Any]) -> dict[UUID, int]:
+    return {
+        outcome.tenant_id: (
+            outcome.scenario.expected_observation_count + _LIVE_EVENTS_PER_TENANT
+        )
+        for outcome in outcomes
+    }
+
+
+async def _append_source_results(
+    report: RunReport,
+    *,
+    pool: asyncpg.Pool,
+    outcomes: list[Any],
+) -> None:
+    by_source: dict[str, list[Any]] = {}
+    for outcome in outcomes:
+        by_source.setdefault(outcome.scenario.source, []).append(outcome)
+    for source in ("gmail", "github", "slack", "discord"):
+        source_outcomes = by_source.get(source, [])
+        tenant_ids = [outcome.tenant_id for outcome in source_outcomes]
+        expected = sum(
+            outcome.scenario.expected_observation_count + _LIVE_EVENTS_PER_TENANT
+            for outcome in source_outcomes
+        )
+        actual = int(
+            await pool.fetchval(
+                "SELECT count(*) FROM observations WHERE tenant_id = ANY($1)",
+                tenant_ids,
+            )
+        )
+        report.source_results.append(
+            SourceResult(
+                source=source,
+                tenants=len(source_outcomes),
+                expected_observations=expected,
+                actual_observations=actual,
+            )
+        )
+
+
+async def _append_external_assertions(
+    report: RunReport,
+    *,
+    pool: asyncpg.Pool,
+    bootstrap_servers: str,
+    outcomes: list[Any],
+) -> None:
+    try:
+        total = await A.assert_external_id_unique_across_paths(pool)
+        report.assertions.append(
+            AssertionResult(
+                name="assert_no_duplicate_observations_under_concurrency",
+                passed=True,
+                detail=(
+                    f"{total} observations, zero duplicate "
+                    "(source_channel, external_id, occurred_at) groups"
+                ),
+            )
+        )
+    except A.PropertyViolation as exc:
+        report.assertions.append(
+            AssertionResult(
+                name="assert_no_duplicate_observations_under_concurrency",
+                passed=False,
+                detail=str(exc)[:200],
+            )
+        )
+
+    residual = int(
+        await pool.fetchval(
+            "SELECT count(*) FROM workflow_signals "
+            "WHERE consumed_at IS NULL AND signal_kind <> $1",
+            _TERMINAL_SIGNAL,
+        )
+    )
+    report.assertions.append(
+        AssertionResult(
+            name="assert_no_signal_leak(working drains to 0)",
+            passed=residual == 0,
+            detail=(
+                f"residual working signals={residual} "
+                f"(terminal {_TERMINAL_SIGNAL} excluded)"
+            ),
+        )
+    )
+
+    try:
+        await A.assert_zero_partition_missing(
+            bootstrap_servers=bootstrap_servers,
+            tenant_ids={outcome.tenant_id for outcome in outcomes},
+        )
+        report.assertions.append(
+            AssertionResult(
+                name="assert_dlq_empty(no partition_missing)",
+                passed=True,
+                detail="0 partition_missing DLQ envelopes",
+            )
+        )
+    except A.PropertyViolation as exc:
+        report.assertions.append(
+            AssertionResult(
+                name="assert_dlq_empty(no partition_missing)",
+                passed=False,
+                detail=str(exc)[:200],
+            )
+        )
+
+
+def _record_live_summary(
+    report: RunReport,
+    *,
+    concurrency: int,
+    peak: dict[str, int],
+    live_result: Any,
+    real_clients: bool,
+) -> None:
+    report.live_lines = [
+        f"concurrency={concurrency}; live={_LIVE_EVENTS_PER_TENANT} "
+        f"events/tenant via Kafka cutover",
+        f"peak simultaneous backfill in_progress: {peak['in_progress']}",
+        f"peak working signal backlog: {peak['backlog']}",
+        f"live dispatch wall: {live_result.wall_seconds:.1f}s; "
+        f"per-source HTTP statuses: "
+        f"{ {k: sorted(v) for k, v in live_result.http_status_by_source.items()} }",
+    ]
+    report.notes.append(
+        "Live routed through Kafka (slack/github via webhook-router "
+        "cutover \u2192 HTTP 202; discord via gateway cutover; gmail via "
+        "push-handler cutover). Consumer rc=-9/-15 expected per "
+        "ticket #45."
+    )
+    if real_clients:
+        report.notes.append(
+            "BACKFILL drove the REAL source clients "
+            "(Github/Slack/Discord/Gmail) over HTTP against the local "
+            "spammer (services/ingest/synthetic/spammer) — token exchange, "
+            "pagination, rate-limit backoff — instead of in-process "
+            "mock clients. Live ingestion remains inbound (webhook / "
+            "gateway / pubsub) routed via the Kafka cutover."
+        )
+
+
 async def run4(
     *,
     bootstrap_servers: str,
@@ -193,26 +436,11 @@ async def run4(
     drain_timeout_s: float = 180.0,
     real_clients: bool = False,
 ) -> RunReport:
-    started = dt.datetime.now(tz=dt.timezone.utc)
     t0 = time.monotonic()
     dsn = os.environ["DATABASE_URL"]
     scenarios = run4_scenarios(distribution)
-    if real_clients:
-        run_name = (
-            "Concurrent backfill (REAL clients → spammer) + live-via-Kafka "
-            "(50 tenants, 4 sources)"
-        )
-        run_number = 5
-    else:
-        run_name = (
-            "Concurrent backfill + live-via-Kafka (50 tenants, 4 sources)"
-        )
-        run_number = 4
-    report = RunReport(
-        run_name=run_name,
-        run_number=run_number, tenant_count=len(scenarios),
-        started_at=started, wall_seconds=0.0,
-    )
+    report = _run4_report(scenarios=scenarios, real_clients=real_clients)
+    from services.ingest.synthetic.validation_runs.moto_lifecycle import moto_s3
 
     with moto_s3() as endpoint:
         cleanup = await reset_state(
@@ -223,11 +451,8 @@ async def run4(
             f"{cleanup.s3_objects_deleted} stale S3 objects")
         pool = await asyncpg.create_pool(dsn, min_size=4, max_size=16)
         peak = {"in_progress": 0, "backlog": 0}
-        producer: IdempotentProducer | None = None
-        s3: S3Client | None = None
-        drivers = None
+        live_runtime: _LiveCutoverRuntime | None = None
         harness: BackfillHarness | None = None
-        backfill_done_at = {"t": 0.0}
         try:
             await _migrate_and_truncate(pool)
             pf = await run_preflight(pool)
@@ -244,145 +469,61 @@ async def run4(
 
             # Phase A: seed tenants + installs + kafka_path_enabled=TRUE.
             outcomes = await harness.setup()
-            targets = [
-                live_target_for(
-                    o.tenant_id, o.scenario.source, o.scenario.tenant_slug,
-                    o.scenario.fixture_params)
-                for o in outcomes
-            ]
+            targets = _live_targets_from_outcomes(outcomes)
 
             # Live-via-Kafka deps: ONE shared producer (→ ingestion.raw) +
             # the moto-backed raw S3 client + the flag reader. Wired into
             # the shared app / gmail app / discord deps so live publishes
             # to Kafka instead of inline.
-            secrets = SigningSecrets()
-            producer = IdempotentProducer(
-                ProducerConfig(bootstrap_servers=bootstrap_servers))
-            await producer.start()
-            s3 = S3Client(
-                os.environ.get("S3_RAW_BUCKET", "fyralis-raw"),
-                endpoint_url=endpoint, region_name="us-east-1")
-            await s3.connect()
-            flags = TenantFlags(pool)
-            drivers = await build_live_drivers(
-                pool, targets, secrets,
-                kafka_producer=producer, s3_raw_client=s3, tenant_flags=flags)
+            live_runtime = await _start_live_cutover_runtime(
+                pool=pool,
+                targets=targets,
+                bootstrap_servers=bootstrap_servers,
+                s3_endpoint_url=endpoint,
+            )
 
             # Phase B: start the shared consumer + producer subprocesses,
             # then run backfill drive + live dispatch CONCURRENTLY.
-            harness.start_services()
-            stop = asyncio.Event()
-            mon = asyncio.create_task(_monitor(pool, stop, peak))
-
-            async def _backfill_drive() -> None:
-                await harness.wait_for_backfill()
-                backfill_done_at["t"] = time.monotonic()
-
-            live_start = time.monotonic()
-            try:
-                live_result, _ = await asyncio.gather(
-                    dispatch_live_concurrent(
-                        drivers, targets,
-                        events_per_tenant=_LIVE_EVENTS_PER_TENANT),
-                    _backfill_drive(),
+            live_result, live_start, backfill_done_at = (
+                await _drive_concurrent_backfill_and_live(
+                    pool=pool,
+                    harness=harness,
+                    drivers=live_runtime.drivers,
+                    targets=targets,
+                    peak=peak,
                 )
-            finally:
-                stop.set()
-                await mon
+            )
 
             # Phase B(iii): drain the shared chain for the COMBINED total.
-            expected_total = {
-                o.tenant_id: (o.scenario.expected_observation_count
-                              + _LIVE_EVENTS_PER_TENANT)
-                for o in outcomes
-            }
+            expected_total = _expected_combined_observation_totals(outcomes)
             final_counts = await _wait_for_total_drain(
                 pool, expected_total, timeout_s=drain_timeout_s)
 
             await harness.collect()
 
-            # ---- Per-source counts ----
-            by_source: dict[str, list] = {}
-            for o in outcomes:
-                by_source.setdefault(o.scenario.source, []).append(o)
-            for source in ("gmail", "github", "slack", "discord"):
-                outs = by_source.get(source, [])
-                src_tids = [o.tenant_id for o in outs]
-                exp = sum(
-                    o.scenario.expected_observation_count
-                    + _LIVE_EVENTS_PER_TENANT for o in outs)
-                actual = int(await pool.fetchval(
-                    "SELECT count(*) FROM observations WHERE tenant_id = ANY($1)",
-                    src_tids))
-                report.source_results.append(SourceResult(
-                    source=source, tenants=len(outs),
-                    expected_observations=exp, actual_observations=actual))
+            await _append_source_results(report, pool=pool, outcomes=outcomes)
 
             # ====== Assertions ======
             _assert_run4(
                 report, outcomes, final_counts, live_result, peak,
-                live_start=live_start, backfill_done_at=backfill_done_at["t"],
+                live_start=live_start, backfill_done_at=backfill_done_at,
             )
-            # No-duplicate (cross-path dedup held under concurrent load).
-            try:
-                total = await A.assert_external_id_unique_across_paths(pool)
-                report.assertions.append(AssertionResult(
-                    name="assert_no_duplicate_observations_under_concurrency",
-                    passed=True,
-                    detail=f"{total} observations, zero duplicate "
-                           f"(source_channel, external_id, occurred_at) groups"))
-            except A.PropertyViolation as exc:
-                report.assertions.append(AssertionResult(
-                    name="assert_no_duplicate_observations_under_concurrency",
-                    passed=False, detail=str(exc)[:200]))
-            # No signal leak: working signals drain to 0 (terminal excluded).
-            residual = int(await pool.fetchval(
-                "SELECT count(*) FROM workflow_signals "
-                "WHERE consumed_at IS NULL AND signal_kind <> $1",
-                _TERMINAL_SIGNAL))
-            report.assertions.append(AssertionResult(
-                name="assert_no_signal_leak(working drains to 0)",
-                passed=residual == 0,
-                detail=f"residual working signals={residual} "
-                       f"(terminal {_TERMINAL_SIGNAL} excluded)"))
-            # DLQ empty (happy path → no partition_missing).
-            try:
-                await A.assert_zero_partition_missing(
-                    bootstrap_servers=bootstrap_servers,
-                    tenant_ids={o.tenant_id for o in outcomes})
-                report.assertions.append(AssertionResult(
-                    name="assert_dlq_empty(no partition_missing)",
-                    passed=True, detail="0 partition_missing DLQ envelopes"))
-            except A.PropertyViolation as exc:
-                report.assertions.append(AssertionResult(
-                    name="assert_dlq_empty(no partition_missing)",
-                    passed=False, detail=str(exc)[:200]))
-
-            report.live_lines = [
-                f"concurrency={concurrency}; live={_LIVE_EVENTS_PER_TENANT} "
-                f"events/tenant via Kafka cutover",
-                f"peak simultaneous backfill in_progress: {peak['in_progress']}",
-                f"peak working signal backlog: {peak['backlog']}",
-                f"live dispatch wall: {live_result.wall_seconds:.1f}s; "
-                f"per-source HTTP statuses: "
-                f"{ {k: sorted(v) for k, v in live_result.http_status_by_source.items()} }",
-            ]
-            report.notes.append(
-                "Live routed through Kafka (slack/github via webhook-router "
-                "cutover → HTTP 202; discord via gateway cutover; gmail via "
-                "push-handler cutover). Consumer rc=-9/-15 expected per "
-                "ticket #45.")
-            if real_clients:
-                report.notes.append(
-                    "BACKFILL drove the REAL source clients "
-                    "(Github/Slack/Discord/Gmail) over HTTP against the local "
-                    "spammer (services/ingest/synthetic/spammer) — token exchange, "
-                    "pagination, rate-limit backoff — instead of in-process "
-                    "mock clients. Live ingestion remains inbound (webhook / "
-                    "gateway / pubsub) routed via the Kafka cutover.")
+            await _append_external_assertions(
+                report,
+                pool=pool,
+                bootstrap_servers=bootstrap_servers,
+                outcomes=outcomes,
+            )
+            _record_live_summary(
+                report,
+                concurrency=concurrency,
+                peak=peak,
+                live_result=live_result,
+                real_clients=real_clients,
+            )
         finally:
-            if drivers is not None:
-                await teardown_live_drivers(drivers)
+            if live_runtime is not None:
+                await teardown_live_drivers(live_runtime.drivers)
             # Capture subprocess returncodes AFTER SIGTERM: framework
             # services exit 0; the normalizer/observation_writer consumers
             # show rc=-15/-9 (ticket #45, expected — the report's rc
@@ -391,10 +532,9 @@ async def run4(
                 harness_stderrs = harness.teardown()
                 report.subprocess_returncodes = (
                     harness.build_result(harness_stderrs).subprocess_returncodes)
-            if producer is not None:
-                await producer.stop()
-            if s3 is not None:
-                await s3.close()
+            if live_runtime is not None:
+                await live_runtime.producer.stop()
+                await live_runtime.s3.close()
             await pool.close()
 
     report.wall_seconds = time.monotonic() - t0

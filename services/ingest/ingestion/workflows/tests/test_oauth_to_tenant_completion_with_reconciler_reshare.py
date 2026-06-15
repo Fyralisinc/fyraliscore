@@ -40,6 +40,7 @@ M6.2a precedent).
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import os
 import signal
 import subprocess
@@ -213,22 +214,18 @@ def _env_for(
     return env
 
 
-# ---------------------------------------------------------------------
-# The test.
-# ---------------------------------------------------------------------
-async def test_oauth_trigger_to_tenant_completion_with_reconciler_reshare_path(
-    fresh_db: asyncpg.Pool,
-) -> None:
-    """The LOAD-BEARING re-share-path E2E. See module docstring for
-    the full chain narrative.
+@dataclass(frozen=True)
+class _ReshareFixture:
+    tenant_id: UUID
+    trigger_id: UUID
+    poll_instance: str
+    orch_instance: str
+    src_instance: str
+    shf_instance: str
+    rec_instance: str
 
-    Synchronization strategy: poll Postgres for each milestone
-    (reconciliation_pass_count increment, status transitions, final
-    `reconciled_at` stamp, `tenant_onboarding_completed` in Bridge
-    inbox). No `asyncio.sleep`-and-hope.
-    """
-    helpers_dir = _ensure_reshare_helpers()
 
+async def _seed_reshare_fixture(fresh_db: asyncpg.Pool) -> _ReshareFixture:
     tid = uuid4()
     await fresh_db.execute(
         "INSERT INTO tenants (id, name) VALUES ($1, $2)",
@@ -251,305 +248,399 @@ async def test_oauth_trigger_to_tenant_completion_with_reconciler_reshare_path(
         """,
         trigger_id, tid,
     )
+    return _ReshareFixture(
+        tenant_id=tid,
+        trigger_id=trigger_id,
+        poll_instance=f"e2b-poll-{tid.hex[:6]}",
+        orch_instance=f"e2b-orch-{tid.hex[:6]}",
+        src_instance=f"e2b-src-{tid.hex[:6]}",
+        shf_instance=f"e2b-shf-{tid.hex[:6]}",
+        rec_instance=f"e2b-rec-{tid.hex[:6]}",
+    )
 
-    poll_instance = f"e2b-poll-{tid.hex[:6]}"
-    orch_instance = f"e2b-orch-{tid.hex[:6]}"
-    src_instance = f"e2b-src-{tid.hex[:6]}"
-    shf_instance = f"e2b-shf-{tid.hex[:6]}"
-    rec_instance = f"e2b-rec-{tid.hex[:6]}"
 
-    # Bootstrap for the three services that need dispatch overrides
-    # (source_onboarding for planner, shard_fetch for fetcher,
-    # reconciler for the reshare-then-clean reconciler). The other
-    # two subprocesses (poller, orchestrator) don't read any of these
-    # dispatch tables.
+def _start_oauth_poller(
+    procs: dict[str, subprocess.Popen | None],
+    fixture: _ReshareFixture,
+    helpers_dir: str,
+) -> None:
+    procs["poller"] = subprocess.Popen(
+        [sys.executable, "-m", "services.ingest.ingestion.workflows.oauth_poller"],
+        env=_env_for(
+            instance_var="OAUTH_POLLER_INSTANCE",
+            instance_value=fixture.poll_instance,
+            helpers_dir=helpers_dir,
+            extra={
+                "OAUTH_POLLER_TICK_SEC": "0.1",
+                "OAUTH_POLLER_BATCH": "5",
+            },
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def _start_tenant_onboarding(
+    procs: dict[str, subprocess.Popen | None],
+    fixture: _ReshareFixture,
+    helpers_dir: str,
+) -> None:
+    procs["orch"] = subprocess.Popen(
+        [sys.executable, "-m", "services.ingest.ingestion.workflows.tenant_onboarding"],
+        env=_env_for(
+            instance_var="ORCHESTRATOR_INSTANCE",
+            instance_value=fixture.orch_instance,
+            helpers_dir=helpers_dir,
+            extra={
+                "ORCHESTRATOR_TICK_SEC": "0.1",
+                "ORCHESTRATOR_BATCH": "20",
+            },
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def _start_bootstrapped_worker(
+    procs: dict[str, subprocess.Popen | None],
+    *,
+    name: str,
+    service_main: str,
+    instance_var: str,
+    instance_value: str,
+    helpers_dir: str,
+    extra: dict[str, str],
+) -> None:
     bootstrap = (
         "import e2e_test_reshare_dispatch; "
         "from {svc_main} import main; main()"
     )
+    procs[name] = subprocess.Popen(
+        [sys.executable, "-c", bootstrap.format(svc_main=service_main)],
+        env=_env_for(
+            instance_var=instance_var,
+            instance_value=instance_value,
+            helpers_dir=helpers_dir,
+            extra=extra,
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
 
+
+def _start_source_onboarding(
+    procs: dict[str, subprocess.Popen | None],
+    fixture: _ReshareFixture,
+    helpers_dir: str,
+) -> None:
+    _start_bootstrapped_worker(
+        procs,
+        name="src",
+        service_main="services.ingest.ingestion.workflows.source_onboarding",
+        instance_var="SOURCE_ONBOARDING_INSTANCE",
+        instance_value=fixture.src_instance,
+        helpers_dir=helpers_dir,
+        extra={
+            "SOURCE_ONBOARDING_TICK_SEC": "0.1",
+            "SOURCE_ONBOARDING_BATCH": "20",
+        },
+    )
+
+
+def _start_shard_fetch(
+    procs: dict[str, subprocess.Popen | None],
+    fixture: _ReshareFixture,
+    helpers_dir: str,
+) -> None:
+    _start_bootstrapped_worker(
+        procs,
+        name="shf",
+        service_main="services.ingest.ingestion.workflows.shard_fetch",
+        instance_var="SHARD_FETCH_INSTANCE",
+        instance_value=fixture.shf_instance,
+        helpers_dir=helpers_dir,
+        extra={
+            "SHARD_FETCH_TICK_SEC": "0.1",
+            "SHARD_FETCH_BATCH": "5",
+            "SHARD_FETCH_LEASE_SEC": "30.0",
+            "SHARD_FETCH_FLUSH_SEC": "2.0",
+        },
+    )
+
+
+def _start_reconciler(
+    procs: dict[str, subprocess.Popen | None],
+    fixture: _ReshareFixture,
+    helpers_dir: str,
+) -> None:
+    _start_bootstrapped_worker(
+        procs,
+        name="rec",
+        service_main="services.ingest.ingestion.workflows.reconciler",
+        instance_var="RECONCILER_INSTANCE",
+        instance_value=fixture.rec_instance,
+        helpers_dir=helpers_dir,
+        extra={
+            "RECONCILER_TICK_SEC": "0.1",
+            "RECONCILER_BATCH": "20",
+        },
+    )
+
+
+def _stderr_preview(proc: subprocess.Popen | None, limit: int) -> str:
+    if proc is None or proc.stderr is None:
+        return ""
+    if proc.poll() is None:
+        return "<process still running>"
+    return proc.stderr.read().decode(errors="replace")[:limit]
+
+
+async def _wait_for_onboarding_run(
+    fresh_db: asyncpg.Pool,
+    tenant_id: UUID,
+) -> UUID:
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        row = await fresh_db.fetchrow(
+            "SELECT id FROM onboarding_runs WHERE tenant_id = $1",
+            tenant_id,
+        )
+        if row is not None:
+            return row["id"]
+        await asyncio.sleep(0.1)
+    raise AssertionError("oauth_poller did not create onboarding_run.")
+
+
+async def _wait_for_reshare_pass(
+    fresh_db: asyncpg.Pool,
+    procs: dict[str, subprocess.Popen | None],
+    run_id: UUID,
+) -> None:
+    pass_count = 0
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        pass_count = int(await fresh_db.fetchval(
+            "SELECT reconciliation_pass_count FROM source_onboarding_runs "
+            "WHERE onboarding_run_id = $1 AND source = 'slack'",
+            run_id,
+        ) or 0)
+        if pass_count >= 1:
+            return
+        await asyncio.sleep(0.2)
+    raise AssertionError(
+        f"Reconciler did not increment pass_count within 60s. "
+        f"pass_count={pass_count}. reconciler stderr: "
+        f"{_stderr_preview(procs.get('rec'), 1500)}"
+    )
+
+
+async def _assert_reshare_mid_cycle(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+) -> None:
+    mid_status = await fresh_db.fetchval(
+        "SELECT status FROM source_onboarding_runs "
+        "WHERE onboarding_run_id = $1 AND source = 'slack'",
+        run_id,
+    )
+    assert mid_status in ("in_progress", "completed")
+
+    n_resharded = int(await fresh_db.fetchval(
+        "SELECT count(*) FROM onboarding_shards "
+        "WHERE onboarding_run_id = $1 AND state = 'reconciliation_resharded'",
+        run_id,
+    ))
+    assert n_resharded >= 1, (
+        f"Reshare path: expected at least 1 original shard marked "
+        f"'reconciliation_resharded'; got {n_resharded}."
+    )
+
+    n_reshared = int(await fresh_db.fetchval(
+        "SELECT count(*) FROM onboarding_shards "
+        "WHERE onboarding_run_id = $1 AND parent_shard_id IS NOT NULL",
+        run_id,
+    ))
+    assert n_reshared >= 1
+
+
+async def _wait_for_parent_completion(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+) -> None:
+    run_status = None
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        run_status = await fresh_db.fetchval(
+            "SELECT status FROM onboarding_runs WHERE id = $1",
+            run_id,
+        )
+        if run_status == "complete":
+            return
+        await asyncio.sleep(0.2)
+    raise AssertionError(
+        f"Parent onboarding_runs did not reach 'complete' within 60s "
+        f"of reshare. final status={run_status!r}"
+    )
+
+
+async def _assert_source_run_final_state(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+) -> None:
+    sor_row = await fresh_db.fetchrow(
+        "SELECT status, reconciled_at, reconciliation_pass_count "
+        "FROM source_onboarding_runs "
+        "WHERE onboarding_run_id = $1 AND source = 'slack'",
+        run_id,
+    )
+    assert sor_row["status"] == "completed"
+    assert sor_row["reconciled_at"] is not None
+    assert sor_row["reconciliation_pass_count"] == 1, (
+        f"Expected exactly one reshare cycle (pass_count=1); "
+        f"got pass_count={sor_row['reconciliation_pass_count']}."
+    )
+
+
+async def _assert_shard_final_state(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+) -> None:
+    shard_rows = await fresh_db.fetch(
+        "SELECT id, state, parent_shard_id FROM onboarding_shards "
+        "WHERE onboarding_run_id = $1 ORDER BY created_at, id",
+        run_id,
+    )
+    states = sorted(row["state"] for row in shard_rows)
+    assert states.count("reconciliation_resharded") == 1, (
+        f"Expected exactly 1 reshared original; got states={states!r}"
+    )
+    assert states.count("done") == 2, (
+        f"Expected 2 'done' shards (one untouched original + the reshared "
+        f"gap-filler); got states={states!r}"
+    )
+
+
+async def _assert_cross_service_idempotency(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+) -> None:
+    n_src_completed = int(await fresh_db.fetchval(
+        "SELECT count(*) FROM workflow_signals "
+        "WHERE workflow_kind = $1 AND workflow_id = $2 "
+        "AND signal_kind = $3 AND idempotency_key = $4",
+        TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
+        SIGNAL_KIND_SOURCE_COMPLETED, f"{run_id}:slack",
+    ))
+    assert n_src_completed == 1, (
+        f"Cross-service idempotency broken across re-share cycles: "
+        f"TenantOnboarding's inbox has {n_src_completed} "
+        f"source_onboarding_completed signals. The Reconciler's "
+        f"emit key should be `{{run_id}}:{{source}}` (no "
+        f"pass_count suffix) so re-share-cycle replays dedup "
+        f"silently at emit time."
+    )
+
+
+async def _assert_reshare_signal_count(fresh_db: asyncpg.Pool) -> None:
+    n_shards_completed = int(await fresh_db.fetchval(
+        "SELECT count(*) FROM workflow_signals "
+        "WHERE workflow_kind = 'reconciler' "
+        "AND signal_kind = $1",
+        SIGNAL_KIND_SHARDS_COMPLETED,
+    ))
+    assert n_shards_completed == 2, (
+        f"Expected 2 source_shards_completed emits across the re-share "
+        f"cycle (pass_0 + pass_1); got {n_shards_completed}."
+    )
+
+
+async def _assert_bridge_completion(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+) -> None:
+    bridge_signal = await fresh_db.fetchrow(
+        "SELECT signal_data FROM workflow_signals "
+        "WHERE workflow_kind = $1 AND workflow_id = $2 "
+        "AND signal_kind = $3 AND idempotency_key = $4",
+        BRIDGE_INBOX_KIND, BRIDGE_INBOX_ID,
+        TENANT_ONBOARDING_COMPLETED, str(run_id),
+    )
+    assert bridge_signal is not None
+
+
+async def _assert_final_reshare_state(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+) -> None:
+    await _assert_source_run_final_state(fresh_db, run_id)
+    await _assert_shard_final_state(fresh_db, run_id)
+    await _assert_cross_service_idempotency(fresh_db, run_id)
+    await _assert_reshare_signal_count(fresh_db)
+    await _assert_bridge_completion(fresh_db, run_id)
+
+
+def _terminate_processes(procs: dict[str, subprocess.Popen | None]) -> None:
+    for name, proc in procs.items():
+        if proc is None:
+            continue
+        proc.send_signal(signal.SIGTERM)
+        try:
+            rc = proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+            raise AssertionError(
+                f"{name} subprocess did NOT exit within 15s of SIGTERM. "
+                f"stderr: {_stderr_preview(proc, 1000)}"
+            )
+        assert rc == 0, (
+            f"{name} subprocess exited rc={rc}. "
+            f"stderr: {_stderr_preview(proc, 1000)}"
+        )
+
+
+def _kill_processes(procs: dict[str, subprocess.Popen | None]) -> None:
+    for proc in procs.values():
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+# ---------------------------------------------------------------------
+# The test.
+# ---------------------------------------------------------------------
+async def test_oauth_trigger_to_tenant_completion_with_reconciler_reshare_path(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """The LOAD-BEARING re-share-path E2E. See module docstring for
+    the full chain narrative.
+
+    Synchronization strategy: poll Postgres for each milestone
+    (reconciliation_pass_count increment, status transitions, final
+    `reconciled_at` stamp, `tenant_onboarding_completed` in Bridge
+    inbox). No `asyncio.sleep`-and-hope.
+    """
+    helpers_dir = _ensure_reshare_helpers()
+    fixture = await _seed_reshare_fixture(fresh_db)
     procs: dict[str, subprocess.Popen | None] = {
         "poller": None, "orch": None, "src": None,
         "shf": None, "rec": None,
     }
 
     try:
-        # ----- Subprocess 1: oauth_poller (no dispatch needed). -----
-        procs["poller"] = subprocess.Popen(
-            [sys.executable, "-m", "services.ingest.ingestion.workflows.oauth_poller"],
-            env=_env_for(
-                instance_var="OAUTH_POLLER_INSTANCE",
-                instance_value=poll_instance,
-                helpers_dir=helpers_dir,
-                extra={
-                    "OAUTH_POLLER_TICK_SEC": "0.1",
-                    "OAUTH_POLLER_BATCH": "5",
-                },
-            ),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
+        _start_oauth_poller(procs, fixture, helpers_dir)
+        run_id = await _wait_for_onboarding_run(fresh_db, fixture.tenant_id)
 
-        # Wait for trigger consumed + onboarding_run_created emitted.
-        deadline = time.monotonic() + 30.0
-        run_id: UUID | None = None
-        while time.monotonic() < deadline:
-            row = await fresh_db.fetchrow(
-                "SELECT id FROM onboarding_runs WHERE tenant_id = $1",
-                tid,
-            )
-            if row is not None:
-                run_id = row["id"]
-                break
-            await asyncio.sleep(0.1)
-        assert run_id is not None, "oauth_poller did not create onboarding_run."
+        _start_tenant_onboarding(procs, fixture, helpers_dir)
+        _start_source_onboarding(procs, fixture, helpers_dir)
+        _start_shard_fetch(procs, fixture, helpers_dir)
+        _start_reconciler(procs, fixture, helpers_dir)
 
-        # ----- Subprocess 2: tenant_onboarding. -----
-        procs["orch"] = subprocess.Popen(
-            [sys.executable, "-m",
-             "services.ingest.ingestion.workflows.tenant_onboarding"],
-            env=_env_for(
-                instance_var="ORCHESTRATOR_INSTANCE",
-                instance_value=orch_instance,
-                helpers_dir=helpers_dir,
-                extra={
-                    "ORCHESTRATOR_TICK_SEC": "0.1",
-                    "ORCHESTRATOR_BATCH": "20",
-                },
-            ),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-
-        # ----- Subprocess 3: source_onboarding (with test planner). -----
-        procs["src"] = subprocess.Popen(
-            [sys.executable, "-c",
-             bootstrap.format(
-                 svc_main="services.ingest.ingestion.workflows.source_onboarding",
-             )],
-            env=_env_for(
-                instance_var="SOURCE_ONBOARDING_INSTANCE",
-                instance_value=src_instance,
-                helpers_dir=helpers_dir,
-                extra={
-                    "SOURCE_ONBOARDING_TICK_SEC": "0.1",
-                    "SOURCE_ONBOARDING_BATCH": "20",
-                },
-            ),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-
-        # ----- Subprocess 4: shard_fetch (with test fetcher). -----
-        procs["shf"] = subprocess.Popen(
-            [sys.executable, "-c",
-             bootstrap.format(
-                 svc_main="services.ingest.ingestion.workflows.shard_fetch",
-             )],
-            env=_env_for(
-                instance_var="SHARD_FETCH_INSTANCE",
-                instance_value=shf_instance,
-                helpers_dir=helpers_dir,
-                extra={
-                    "SHARD_FETCH_TICK_SEC": "0.1",
-                    "SHARD_FETCH_BATCH": "5",
-                    "SHARD_FETCH_LEASE_SEC": "30.0",
-                    "SHARD_FETCH_FLUSH_SEC": "2.0",
-                },
-            ),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-
-        # ----- Subprocess 5: reconciler (with reshare-then-clean stub). -----
-        procs["rec"] = subprocess.Popen(
-            [sys.executable, "-c",
-             bootstrap.format(
-                 svc_main="services.ingest.ingestion.workflows.reconciler",
-             )],
-            env=_env_for(
-                instance_var="RECONCILER_INSTANCE",
-                instance_value=rec_instance,
-                helpers_dir=helpers_dir,
-                extra={
-                    "RECONCILER_TICK_SEC": "0.1",
-                    "RECONCILER_BATCH": "20",
-                },
-            ),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-
-        # ----- WAIT: pass_count incremented (proof of reshare). -----
-        deadline = time.monotonic() + 60.0
-        pass_count = 0
-        while time.monotonic() < deadline:
-            pass_count = int(await fresh_db.fetchval(
-                "SELECT reconciliation_pass_count FROM source_onboarding_runs "
-                "WHERE onboarding_run_id = $1 AND source = 'slack'",
-                run_id,
-            ) or 0)
-            if pass_count >= 1:
-                break
-            await asyncio.sleep(0.2)
-        if pass_count < 1:
-            stderr = procs["rec"].stderr.read().decode() if procs["rec"].stderr else ""
-            raise AssertionError(
-                f"Reconciler did not increment pass_count within 60s. "
-                f"pass_count={pass_count}. reconciler stderr: "
-                f"{stderr[:1500]}"
-            )
-
-        # ----- Mid-cycle assertions: status flipped + originals resharded. -----
-        # The reconciler reshared; status is now 'in_progress' awaiting
-        # the new shard's completion.
-        mid_status = await fresh_db.fetchval(
-            "SELECT status FROM source_onboarding_runs "
-            "WHERE onboarding_run_id = $1 AND source = 'slack'",
-            run_id,
-        )
-        # mid_status MAY have already advanced back to 'completed' if
-        # the new shard finished fast (test fetcher is instant). Accept
-        # either; the load-bearing assertions are at the end.
-        assert mid_status in ("in_progress", "completed")
-
-        # At least one original shard is in 'reconciliation_resharded'.
-        n_resharded = int(await fresh_db.fetchval(
-            "SELECT count(*) FROM onboarding_shards "
-            "WHERE onboarding_run_id = $1 AND state = 'reconciliation_resharded'",
-            run_id,
-        ))
-        assert n_resharded >= 1, (
-            f"Reshare path: expected ≥1 original shard marked "
-            f"'reconciliation_resharded'; got {n_resharded}."
-        )
-
-        # At least one new shard with parent_shard_id linkage exists.
-        n_reshared = int(await fresh_db.fetchval(
-            "SELECT count(*) FROM onboarding_shards "
-            "WHERE onboarding_run_id = $1 AND parent_shard_id IS NOT NULL",
-            run_id,
-        ))
-        assert n_reshared >= 1
-
-        # ----- WAIT: full chain completes through Bridge. -----
-        deadline = time.monotonic() + 60.0
-        while time.monotonic() < deadline:
-            run_status = await fresh_db.fetchval(
-                "SELECT status FROM onboarding_runs WHERE id = $1",
-                run_id,
-            )
-            if run_status == "complete":
-                break
-            await asyncio.sleep(0.2)
-        else:
-            raise AssertionError(
-                f"Parent onboarding_runs did not reach 'complete' "
-                f"within 60s of reshare. final status={run_status!r}"
-            )
-
-        # ----- FINAL STATE ASSERTIONS -----
-
-        # source_onboarding_runs: 'completed' + reconciled_at stamped +
-        # pass_count = 1.
-        sor_row = await fresh_db.fetchrow(
-            "SELECT status, reconciled_at, reconciliation_pass_count "
-            "FROM source_onboarding_runs "
-            "WHERE onboarding_run_id = $1 AND source = 'slack'",
-            run_id,
-        )
-        assert sor_row["status"] == "completed"
-        assert sor_row["reconciled_at"] is not None
-        assert sor_row["reconciliation_pass_count"] == 1, (
-            f"Expected exactly one reshare cycle (pass_count=1); "
-            f"got pass_count={sor_row['reconciliation_pass_count']}."
-        )
-
-        # onboarding_shards: 2 originals resharded + 1 reshared 'done'.
-        shard_rows = await fresh_db.fetch(
-            "SELECT id, state, parent_shard_id FROM onboarding_shards "
-            "WHERE onboarding_run_id = $1 ORDER BY created_at, id",
-            run_id,
-        )
-        states = sorted(row["state"] for row in shard_rows)
-        # 2 originals → 'reconciliation_resharded'; 1 new → 'done'.
-        # (The reshare reconciler only reshares the first shard, so
-        # one original stays 'done' and one becomes resharded. The
-        # 1 new shard ends 'done'.) Wait — actually, looking at the
-        # test reconciler: only shards[0] is reshared, so only ONE
-        # original becomes 'reconciliation_resharded' (not two).
-        # The other original stays 'done'.
-        assert states.count("reconciliation_resharded") == 1, (
-            f"Expected exactly 1 reshared original; got states={states!r}"
-        )
-        assert states.count("done") == 2, (
-            f"Expected 2 'done' shards (one untouched original + the "
-            f"reshared gap-filler); got states={states!r}"
-        )
-
-        # LOAD-BEARING cross-service idempotency: exactly ONE
-        # source_onboarding_completed in TenantOnboarding's inbox
-        # despite TWO source_shards_completed cycles (pass_0 + pass_1).
-        # The Reconciler emits with key `{run_id}:{source}` (no
-        # pass_count) so the second clean-path emit collides on the
-        # UNIQUE constraint and dedups silently.
-        n_src_completed = int(await fresh_db.fetchval(
-            "SELECT count(*) FROM workflow_signals "
-            "WHERE workflow_kind = $1 AND workflow_id = $2 "
-            "AND signal_kind = $3 AND idempotency_key = $4",
-            TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
-            SIGNAL_KIND_SOURCE_COMPLETED, f"{run_id}:slack",
-        ))
-        assert n_src_completed == 1, (
-            f"Cross-service idempotency broken across re-share cycles: "
-            f"TenantOnboarding's inbox has {n_src_completed} "
-            f"source_onboarding_completed signals. The Reconciler's "
-            f"emit key should be `{{run_id}}:{{source}}` (no "
-            f"pass_count suffix) so re-share-cycle replays dedup "
-            f"silently at emit time."
-        )
-
-        # Two source_shards_completed signals (pass_0 + pass_1) BOTH
-        # landed at the Reconciler inbox (they have different keys).
-        n_shards_completed = int(await fresh_db.fetchval(
-            "SELECT count(*) FROM workflow_signals "
-            "WHERE workflow_kind = 'reconciler' "
-            "AND signal_kind = $1",
-            SIGNAL_KIND_SHARDS_COMPLETED,
-        ))
-        assert n_shards_completed == 2, (
-            f"Expected 2 source_shards_completed emits across the "
-            f"re-share cycle (pass_0 + pass_1); got {n_shards_completed}."
-        )
-
-        # tenant_onboarding_completed landed in Bridge inbox.
-        bridge_signal = await fresh_db.fetchrow(
-            "SELECT signal_data FROM workflow_signals "
-            "WHERE workflow_kind = $1 AND workflow_id = $2 "
-            "AND signal_kind = $3 AND idempotency_key = $4",
-            BRIDGE_INBOX_KIND, BRIDGE_INBOX_ID,
-            TENANT_ONBOARDING_COMPLETED, str(run_id),
-        )
-        assert bridge_signal is not None
-
-        # ----- SIGTERM all 5 subprocesses; require rc=0 within 15s. -----
-        for name, proc in procs.items():
-            if proc is None:
-                continue
-            proc.send_signal(signal.SIGTERM)
-            try:
-                rc = proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-                stderr = proc.stderr.read().decode() if proc.stderr else ""
-                raise AssertionError(
-                    f"{name} subprocess did NOT exit within 15s of "
-                    f"SIGTERM. stderr: {stderr[:1000]}"
-                )
-            stderr = proc.stderr.read().decode() if proc.stderr else ""
-            assert rc == 0, (
-                f"{name} subprocess exited rc={rc}. "
-                f"stderr: {stderr[:1000]}"
-            )
+        await _wait_for_reshare_pass(fresh_db, procs, run_id)
+        await _assert_reshare_mid_cycle(fresh_db, run_id)
+        await _wait_for_parent_completion(fresh_db, run_id)
+        await _assert_final_reshare_state(fresh_db, run_id)
+        _terminate_processes(procs)
 
     finally:
-        for proc in procs.values():
-            if proc is not None and proc.poll() is None:
-                proc.kill()
-                proc.wait(timeout=5)
+        _kill_processes(procs)

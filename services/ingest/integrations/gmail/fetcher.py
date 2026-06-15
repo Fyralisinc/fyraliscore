@@ -15,6 +15,7 @@ This module:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
@@ -38,6 +39,27 @@ SCOPE_ALIAS = {
     "gmail.metadata": GMAIL_METADATA_SCOPE,
     "gmail.readonly": GMAIL_READONLY_SCOPE,
 }
+
+
+@dataclass(frozen=True)
+class _GmailDrainContext:
+    pool: Any
+    gmail: GmailClient
+    tenant_id: UUID
+    gmail_installation_id: UUID
+    email_address: str
+    read_path: str
+    scope_alias: str
+    scope_long: str
+    cutover_enabled: bool
+    s3_raw_client: Any
+    kafka_producer: Any
+
+
+@dataclass
+class _GmailDrainCounters:
+    ingested: int = 0
+    deduped: int = 0
 
 
 async def _publish_gmail_message_raw(
@@ -97,6 +119,267 @@ async def _publish_gmail_message_raw(
         return False
 
 
+def _validate_read_path(read_path: str) -> None:
+    if read_path not in ("push", "poll"):
+        raise ValueError(f"read_path must be 'push' or 'poll', got {read_path!r}")
+
+
+async def _gmail_cutover_enabled(
+    *,
+    tenant_id: UUID,
+    s3_raw_client: Any,
+    kafka_producer: Any,
+    tenant_flags: Any,
+) -> bool:
+    if (
+        s3_raw_client is None
+        or kafka_producer is None
+        or tenant_flags is None
+    ):
+        return False
+    return bool(await tenant_flags.kafka_path_enabled(tenant_id))
+
+
+async def _load_mailbox_watch(
+    *,
+    pool: Any,
+    tenant_id: UUID,
+    gmail_installation_id: UUID,
+    email_address: str,
+) -> Any | None:
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            async with bind_tenant(conn, tenant_id) as tctx:
+                return await tctx.fetchrow(
+                    """
+                    SELECT mw.id, mw.history_id, mw.state, gi.scope
+                      FROM gmail_mailbox_watches mw
+                      JOIN gmail_installations gi
+                        ON gi.id = mw.gmail_installation_id
+                     WHERE mw.gmail_installation_id = $1
+                       AND mw.email_address = $2
+                    """,
+                    gmail_installation_id, email_address.lower(),
+                )
+
+
+def _skip_result_for_watch(watch_row: Any | None) -> dict[str, Any] | None:
+    if watch_row is None:
+        return {"status": "skipped", "reason": "no_watch_row"}
+    if watch_row["state"] in ("paused", "opted_out"):
+        return {
+            "status": "skipped",
+            "reason": "watch_inactive",
+            "state": watch_row["state"],
+        }
+    if not watch_row["history_id"]:
+        return {"status": "skipped", "reason": "no_history_bookmark"}
+    return None
+
+
+async def _collect_history_message_ids(
+    *,
+    gmail: GmailClient,
+    email_address: str,
+    scope_long: str,
+    start_history_id: str,
+) -> tuple[list[str], str | None]:
+    message_ids: list[str] = []
+    new_history_id: str | None = start_history_id
+    page_token: str | None = None
+    while True:
+        page = await gmail.history_list(
+            user_email=email_address,
+            scope=scope_long,
+            start_history_id=start_history_id,
+            page_token=page_token,
+        )
+        message_ids.extend(_message_ids_from_history_page(page))
+        latest = page.get("historyId")
+        if latest:
+            new_history_id = str(latest)
+        page_token = page.get("nextPageToken")
+        if not page_token:
+            return message_ids, new_history_id
+
+
+def _message_ids_from_history_page(page: dict[str, Any]) -> list[str]:
+    message_ids: list[str] = []
+    for entry in page.get("history") or []:
+        for added in entry.get("messagesAdded") or []:
+            msg = (added or {}).get("message") or {}
+            msg_id = msg.get("id")
+            if msg_id:
+                message_ids.append(msg_id)
+    return message_ids
+
+
+async def _write_gmail_read_audit(
+    *,
+    tenant_id: UUID,
+    gmail_installation_id: UUID,
+    email_address: str,
+    message_id: str,
+    scope_alias: str,
+    read_path: str,
+) -> None:
+    async with tenant_transaction(tenant_id) as tctx:
+        await write_read_audit(
+            tctx,
+            gmail_installation_id=gmail_installation_id,
+            email_address=email_address,
+            message_id=message_id,
+            scope_used=scope_alias,
+            read_path=read_path,
+        )
+
+
+async def _dispatch_gmail_resource_inline(
+    ctx: _GmailDrainContext,
+    message_resource: dict[str, Any],
+) -> dict[str, Any] | None:
+    # Local import to avoid module-load cycles via the handler registry.
+    from services.ingest.ingestion.handlers.gmail import dispatch_gmail_message_resource
+
+    return await dispatch_gmail_message_resource(
+        pool=ctx.pool,
+        tenant_id=ctx.tenant_id,
+        gmail_installation_id=ctx.gmail_installation_id,
+        email_address=ctx.email_address,
+        scope_alias=ctx.scope_alias,
+        message_resource=message_resource,
+        read_path=ctx.read_path,
+    )
+
+
+async def _drain_message_ids(
+    ctx: _GmailDrainContext,
+    message_ids: list[str],
+) -> _GmailDrainCounters:
+    counters = _GmailDrainCounters()
+    for message_id in message_ids:
+        await _drain_message_id(ctx, message_id, counters)
+    return counters
+
+
+async def _drain_message_id(
+    ctx: _GmailDrainContext,
+    message_id: str,
+    counters: _GmailDrainCounters,
+) -> None:
+    try:
+        resource = await ctx.gmail.get_message(
+            user_email=ctx.email_address,
+            scope=ctx.scope_long,
+            message_id=message_id,
+        )
+    except GoogleApiError as exc:
+        log.warning(
+            "gmail.fetcher.get_message_failed",
+            email=ctx.email_address,
+            message_id=message_id,
+            error=str(exc)[:200],
+        )
+        return
+
+    if await _publish_cutover_or_continue_inline(ctx, message_id, resource):
+        counters.ingested += 1
+        return
+
+    await _dispatch_inline_and_count(ctx, message_id, resource, counters)
+
+
+async def _publish_cutover_or_continue_inline(
+    ctx: _GmailDrainContext,
+    message_id: str,
+    resource: dict[str, Any],
+) -> bool:
+    if not ctx.cutover_enabled:
+        return False
+    published = await _publish_gmail_message_raw(
+        s3_raw_client=ctx.s3_raw_client,
+        kafka_producer=ctx.kafka_producer,
+        tenant_id=ctx.tenant_id,
+        gmail_installation_id=ctx.gmail_installation_id,
+        email_address=ctx.email_address,
+        scope_alias=ctx.scope_alias,
+        message_resource=resource,
+        read_path=ctx.read_path,
+    )
+    if published:
+        await _write_gmail_read_audit(
+            tenant_id=ctx.tenant_id,
+            gmail_installation_id=ctx.gmail_installation_id,
+            email_address=ctx.email_address,
+            message_id=message_id,
+            scope_alias=ctx.scope_alias,
+            read_path=ctx.read_path,
+        )
+        return True
+    log.warning(
+        "gmail.fetcher.kafka_path_fallback_to_inline",
+        email=ctx.email_address,
+        message_id=message_id,
+    )
+    return False
+
+
+async def _dispatch_inline_and_count(
+    ctx: _GmailDrainContext,
+    message_id: str,
+    resource: dict[str, Any],
+    counters: _GmailDrainCounters,
+) -> None:
+    try:
+        result = await _dispatch_gmail_resource_inline(ctx, resource)
+    except Exception as exc:  # noqa: BLE001 — handler errors should not stop the drain
+        log.warning(
+            "gmail.fetcher.ingest_failed",
+            email=ctx.email_address,
+            message_id=message_id,
+            error=str(exc)[:200],
+        )
+        return
+    if result is None:
+        return
+    if result.get("deduped"):
+        counters.deduped += 1
+    else:
+        counters.ingested += 1
+    await _write_gmail_read_audit(
+        tenant_id=ctx.tenant_id,
+        gmail_installation_id=ctx.gmail_installation_id,
+        email_address=ctx.email_address,
+        message_id=message_id,
+        scope_alias=ctx.scope_alias,
+        read_path=ctx.read_path,
+    )
+
+
+async def _advance_mailbox_bookmark(
+    *,
+    tenant_id: UUID,
+    gmail_installation_id: UUID,
+    email_address: str,
+    read_path: str,
+    new_history_id: str | None,
+) -> None:
+    timestamp_column = "last_push_at" if read_path == "push" else "last_poll_at"
+    async with tenant_transaction(tenant_id) as tctx:
+        await tctx.execute(
+            f"""
+            UPDATE gmail_mailbox_watches
+               SET history_id = COALESCE($3, history_id),
+                   {timestamp_column} = now(),
+                   consecutive_poll_failures = 0,
+                   last_error = NULL
+             WHERE gmail_installation_id = $1
+               AND email_address = $2
+            """,
+            gmail_installation_id, email_address.lower(), new_history_id,
+        )
+
+
 async def drain_mailbox_history(
     *,
     pool: Any,
@@ -128,191 +411,58 @@ async def drain_mailbox_history(
     On a per-message publish failure, that message falls back to inline
     dispatch (never dropped).
     """
-    if read_path not in ("push", "poll"):
-        raise ValueError(f"read_path must be 'push' or 'poll', got {read_path!r}")
-
-    # Resolve cutover mode once per drain (the flag read is cached).
-    # Inverted default: kafka-first unless explicitly killed for the tenant.
-    cutover_enabled = False
-    if (
-        s3_raw_client is not None
-        and kafka_producer is not None
-        and tenant_flags is not None
-    ):
-        cutover_enabled = await tenant_flags.kafka_path_enabled(tenant_id)
-
-    # --- step 1: load watch row + install scope (single tenant txn).
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            async with bind_tenant(conn, tenant_id) as tctx:
-                watch_row = await tctx.fetchrow(
-                    """
-                    SELECT mw.id, mw.history_id, mw.state, gi.scope
-                      FROM gmail_mailbox_watches mw
-                      JOIN gmail_installations gi
-                        ON gi.id = mw.gmail_installation_id
-                     WHERE mw.gmail_installation_id = $1
-                       AND mw.email_address = $2
-                    """,
-                    gmail_installation_id, email_address.lower(),
-                )
-    if watch_row is None:
-        return {"status": "skipped", "reason": "no_watch_row"}
-    if watch_row["state"] in ("paused", "opted_out"):
-        return {"status": "skipped", "reason": "watch_inactive", "state": watch_row["state"]}
-    if not watch_row["history_id"]:
-        return {"status": "skipped", "reason": "no_history_bookmark"}
+    _validate_read_path(read_path)
+    cutover_enabled = await _gmail_cutover_enabled(
+        tenant_id=tenant_id,
+        s3_raw_client=s3_raw_client,
+        kafka_producer=kafka_producer,
+        tenant_flags=tenant_flags,
+    )
+    watch_row = await _load_mailbox_watch(
+        pool=pool,
+        tenant_id=tenant_id,
+        gmail_installation_id=gmail_installation_id,
+        email_address=email_address,
+    )
+    if skip_result := _skip_result_for_watch(watch_row):
+        return skip_result
 
     scope_alias = watch_row["scope"]
     scope_long = SCOPE_ALIAS[scope_alias]
-
-    # --- step 2: page history.list, collecting new messageIds.
-    new_message_ids: list[str] = []
-    new_history_id: str | None = watch_row["history_id"]
-    page_token: str | None = None
-    while True:
-        page = await gmail.history_list(
-            user_email=email_address,
-            scope=scope_long,
-            start_history_id=watch_row["history_id"],
-            page_token=page_token,
-        )
-        for entry in page.get("history") or []:
-            for added in entry.get("messagesAdded") or []:
-                msg = (added or {}).get("message") or {}
-                msg_id = msg.get("id")
-                if msg_id:
-                    new_message_ids.append(msg_id)
-        # Gmail's historyId on the response is the canonical "you are
-        # caught up through this point" bookmark.
-        latest = page.get("historyId")
-        if latest:
-            new_history_id = str(latest)
-        page_token = page.get("nextPageToken")
-        if not page_token:
-            break
-
-    # --- step 3: for each new message: get + ingest.
-    ingested = 0
-    deduped = 0
-    if new_message_ids:
-        # Local import to avoid module-load cycles via the handler registry.
-        from services.ingest.ingestion.handlers.gmail import dispatch_gmail_message_resource
-
-        for msg_id in new_message_ids:
-            try:
-                resource = await gmail.get_message(
-                    user_email=email_address, scope=scope_long, message_id=msg_id,
-                )
-            except GoogleApiError as exc:
-                log.warning(
-                    "gmail.fetcher.get_message_failed",
-                    email=email_address, message_id=msg_id, error=str(exc)[:200],
-                )
-                continue
-
-            # ---- Cutover branch: publish to ingestion.raw, skip inline ----
-            if cutover_enabled:
-                published = await _publish_gmail_message_raw(
-                    s3_raw_client=s3_raw_client,
-                    kafka_producer=kafka_producer,
-                    tenant_id=tenant_id,
-                    gmail_installation_id=gmail_installation_id,
-                    email_address=email_address,
-                    scope_alias=scope_alias,
-                    message_resource=resource,
-                    read_path=read_path,
-                )
-                if published:
-                    # The observation is produced downstream by the writer;
-                    # count it as ingested for the drain's return shape.
-                    ingested += 1
-                    # Still record the read audit below (we DID read it).
-                    async with tenant_transaction(tenant_id) as tctx:
-                        await write_read_audit(
-                            tctx,
-                            gmail_installation_id=gmail_installation_id,
-                            email_address=email_address,
-                            message_id=msg_id,
-                            scope_used=scope_alias,
-                            read_path=read_path,
-                        )
-                    continue
-                # Publish failed → graceful fallback to inline dispatch
-                # (the message must not be dropped). NOT gate-relaxation.
-                log.warning(
-                    "gmail.fetcher.kafka_path_fallback_to_inline",
-                    email=email_address, message_id=msg_id,
-                )
-
-            try:
-                result = await dispatch_gmail_message_resource(
-                    pool=pool,
-                    tenant_id=tenant_id,
-                    gmail_installation_id=gmail_installation_id,
-                    email_address=email_address,
-                    scope_alias=scope_alias,
-                    message_resource=resource,
-                    read_path=read_path,
-                )
-            except Exception as exc:  # noqa: BLE001 — handler errors should not stop the drain
-                log.warning(
-                    "gmail.fetcher.ingest_failed",
-                    email=email_address, message_id=msg_id, error=str(exc)[:200],
-                )
-                continue
-
-            if result is None:
-                continue
-            if result.get("deduped"):
-                deduped += 1
-            else:
-                ingested += 1
-
-            # Append the per-message read audit (inside its own short txn).
-            async with tenant_transaction(tenant_id) as tctx:
-                await write_read_audit(
-                    tctx,
-                    gmail_installation_id=gmail_installation_id,
-                    email_address=email_address,
-                    message_id=msg_id,
-                    scope_used=scope_alias,
-                    read_path=read_path,
-                )
-
-    # --- step 4: advance bookmark + timestamp.
-    async with tenant_transaction(tenant_id) as tctx:
-        if read_path == "push":
-            await tctx.execute(
-                """
-                UPDATE gmail_mailbox_watches
-                   SET history_id = COALESCE($3, history_id),
-                       last_push_at = now(),
-                       consecutive_poll_failures = 0,
-                       last_error = NULL
-                 WHERE gmail_installation_id = $1
-                   AND email_address = $2
-                """,
-                gmail_installation_id, email_address.lower(), new_history_id,
-            )
-        else:
-            await tctx.execute(
-                """
-                UPDATE gmail_mailbox_watches
-                   SET history_id = COALESCE($3, history_id),
-                       last_poll_at = now(),
-                       consecutive_poll_failures = 0,
-                       last_error = NULL
-                 WHERE gmail_installation_id = $1
-                   AND email_address = $2
-                """,
-                gmail_installation_id, email_address.lower(), new_history_id,
-            )
+    new_message_ids, new_history_id = await _collect_history_message_ids(
+        gmail=gmail,
+        email_address=email_address,
+        scope_long=scope_long,
+        start_history_id=watch_row["history_id"],
+    )
+    counters = await _drain_message_ids(
+        _GmailDrainContext(
+            pool=pool,
+            gmail=gmail,
+            tenant_id=tenant_id,
+            gmail_installation_id=gmail_installation_id,
+            email_address=email_address,
+            read_path=read_path,
+            scope_alias=scope_alias,
+            scope_long=scope_long,
+            cutover_enabled=cutover_enabled,
+            s3_raw_client=s3_raw_client,
+            kafka_producer=kafka_producer,
+        ),
+        new_message_ids,
+    )
+    await _advance_mailbox_bookmark(
+        tenant_id=tenant_id,
+        gmail_installation_id=gmail_installation_id,
+        email_address=email_address,
+        read_path=read_path,
+        new_history_id=new_history_id,
+    )
 
     return {
         "status": "ok",
-        "ingested": ingested,
-        "deduped": deduped,
+        "ingested": counters.ingested,
+        "deduped": counters.deduped,
         "messages_seen": len(new_message_ids),
         "history_id": new_history_id,
     }

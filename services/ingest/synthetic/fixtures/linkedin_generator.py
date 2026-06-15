@@ -35,7 +35,7 @@ from `now - 12 months`, and the mock honours that floor like the wire does.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 

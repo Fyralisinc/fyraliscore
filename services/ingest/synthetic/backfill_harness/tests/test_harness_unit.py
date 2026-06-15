@@ -64,19 +64,26 @@ async def test_harness_writes_install_and_trigger_per_tenant_gmail(
     assert n_tenants == 1
 
     # Gmail install row exists.
-    install = await fresh_db.fetchrow(
-        "SELECT id FROM gmail_installations WHERE tenant_id = $1",
-        outcomes[0].tenant_id,
-    )
+    async with fresh_db.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.current_tenant', $1::text, true)",
+                str(outcomes[0].tenant_id),
+            )
+            install = await conn.fetchrow(
+                "SELECT id FROM gmail_installations WHERE tenant_id = $1",
+                outcomes[0].tenant_id,
+            )
+            trig = await conn.fetchrow(
+                "SELECT trigger_kind, installation_row_id, gmail_installation_id "
+                "FROM onboarding_triggers "
+                "WHERE tenant_id = $1 AND source = 'gmail'",
+                outcomes[0].tenant_id,
+            )
     assert install is not None
 
     # onboarding_triggers row with gmail_installation_id populated and
     # installation_row_id NULL.
-    trig = await fresh_db.fetchrow(
-        "SELECT trigger_kind, installation_row_id, gmail_installation_id "
-        "FROM onboarding_triggers WHERE tenant_id = $1 AND source = 'gmail'",
-        outcomes[0].tenant_id,
-    )
     assert trig is not None
     assert trig["trigger_kind"] == "install"
     assert trig["gmail_installation_id"] == install["id"]
@@ -102,18 +109,25 @@ async def test_harness_writes_install_and_trigger_per_tenant_slack(
     await harness._setup_tenants_and_fixtures(outcomes)
     await harness._invoke_oauth_callbacks(outcomes)
 
-    install = await fresh_db.fetchrow(
-        "SELECT id FROM provider_installations "
-        "WHERE tenant_id = $1 AND provider = 'slack'",
-        outcomes[0].tenant_id,
-    )
+    async with fresh_db.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT set_config('app.current_tenant', $1::text, true)",
+                str(outcomes[0].tenant_id),
+            )
+            install = await conn.fetchrow(
+                "SELECT id FROM provider_installations "
+                "WHERE tenant_id = $1 AND provider = 'slack'",
+                outcomes[0].tenant_id,
+            )
+            trig = await conn.fetchrow(
+                "SELECT trigger_kind, installation_row_id, gmail_installation_id "
+                "FROM onboarding_triggers "
+                "WHERE tenant_id = $1 AND source = 'slack'",
+                outcomes[0].tenant_id,
+            )
     assert install is not None
 
-    trig = await fresh_db.fetchrow(
-        "SELECT trigger_kind, installation_row_id, gmail_installation_id "
-        "FROM onboarding_triggers WHERE tenant_id = $1 AND source = 'slack'",
-        outcomes[0].tenant_id,
-    )
     assert trig is not None
     assert trig["installation_row_id"] == install["id"]
     assert trig["gmail_installation_id"] is None

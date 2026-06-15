@@ -59,12 +59,13 @@ verification — it's just unusually fast vs. production behavior.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import os
 import signal
 import subprocess
 import sys
 import time
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import asyncpg
 import orjson
@@ -209,28 +210,20 @@ def _env_for(
     return env
 
 
-# ---------------------------------------------------------------------
-# The test.
-# ---------------------------------------------------------------------
-async def test_oauth_trigger_to_source_completion_end_to_end(
+@dataclass(frozen=True)
+class _SourceCompletionFixture:
+    tenant_id: UUID
+    trigger_id: UUID
+    poller_instance: str
+    orch_instance: str
+    src_instance: str
+    shf_instance: str
+    rec_instance: str
+
+
+async def _seed_source_completion_fixture(
     fresh_db: asyncpg.Pool,
-) -> None:
-    """Four-subprocess full-chain integration test for M6.2a.
-
-    Setup:
-      - Tenant with slack provider install.
-      - One onboarding_triggers row (the OAuth callback's output).
-      - Test planner installed for slack: returns 2 shards.
-      - Test fetcher installed for slack: returns 5 records then EOD.
-
-    Run:
-      - Spawn 4 subprocesses (poller, orchestrator, source, shard).
-      - Poll Postgres for each milestone in the chain.
-      - SIGTERM all 4; require rc=0.
-    """
-    helpers_dir = _ensure_e2e_helpers()
-
-    # Seed.
+) -> _SourceCompletionFixture:
     tid = uuid4()
     await fresh_db.execute(
         "INSERT INTO tenants (id, name) VALUES ($1, $2)",
@@ -253,382 +246,504 @@ async def test_oauth_trigger_to_source_completion_end_to_end(
         """,
         trigger_id, tid,
     )
-
-    # Instance names — each subprocess writes a workflow_states row
-    # under its own name for ops introspection.
-    poller_instance = f"e2e-poll-{tid.hex[:6]}"
-    orch_instance = f"e2e-orch-{tid.hex[:6]}"
-    src_instance = f"e2e-src-{tid.hex[:6]}"
-    shf_instance = f"e2e-shf-{tid.hex[:6]}"
-    rec_instance = f"e2e-rec-{tid.hex[:6]}"
-
-    # Bootstrap for the two services that need monkeypatched dispatch.
-    # The other three subprocesses (poller, orchestrator, reconciler)
-    # don't use the planner/fetcher dispatch tables at all, so they
-    # don't need the import bootstrap. The reconciler uses its OWN
-    # dispatch (RECONCILER_DISPATCH); for this clean-path test, the
-    # default-clean stub is fine — no monkeypatching needed in the
-    # subprocess.
-    bootstrap_for_dispatch_services = (
-        "import e2e_test_dispatch; "
-        "from {svc_main} import main; main()"
+    return _SourceCompletionFixture(
+        tenant_id=tid,
+        trigger_id=trigger_id,
+        poller_instance=f"e2e-poll-{tid.hex[:6]}",
+        orch_instance=f"e2e-orch-{tid.hex[:6]}",
+        src_instance=f"e2e-src-{tid.hex[:6]}",
+        shf_instance=f"e2e-shf-{tid.hex[:6]}",
+        rec_instance=f"e2e-rec-{tid.hex[:6]}",
     )
 
+
+def _start_oauth_poller(
+    procs: dict[str, subprocess.Popen | None],
+    fixture: _SourceCompletionFixture,
+    helpers_dir: str,
+) -> None:
+    procs["poller"] = subprocess.Popen(
+        [sys.executable, "-m", "services.ingest.ingestion.workflows.oauth_poller"],
+        env=_env_for(
+            instance_var="OAUTH_POLLER_INSTANCE",
+            instance_value=fixture.poller_instance,
+            helpers_dir=helpers_dir,
+            extra={
+                "OAUTH_POLLER_TICK_SEC": "0.1",
+                "OAUTH_POLLER_BATCH": "5",
+            },
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def _start_tenant_onboarding(
+    procs: dict[str, subprocess.Popen | None],
+    fixture: _SourceCompletionFixture,
+    helpers_dir: str,
+) -> None:
+    procs["orch"] = subprocess.Popen(
+        [sys.executable, "-m", "services.ingest.ingestion.workflows.tenant_onboarding"],
+        env=_env_for(
+            instance_var="ORCHESTRATOR_INSTANCE",
+            instance_value=fixture.orch_instance,
+            helpers_dir=helpers_dir,
+            extra={
+                "ORCHESTRATOR_TICK_SEC": "0.1",
+                "ORCHESTRATOR_BATCH": "20",
+            },
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def _start_bootstrapped_worker(
+    procs: dict[str, subprocess.Popen | None],
+    *,
+    name: str,
+    service_main: str,
+    instance_var: str,
+    instance_value: str,
+    helpers_dir: str,
+    extra: dict[str, str],
+) -> None:
+    bootstrap = "import e2e_test_dispatch; from {svc_main} import main; main()"
+    procs[name] = subprocess.Popen(
+        [sys.executable, "-c", bootstrap.format(svc_main=service_main)],
+        env=_env_for(
+            instance_var=instance_var,
+            instance_value=instance_value,
+            helpers_dir=helpers_dir,
+            extra=extra,
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def _start_source_onboarding(
+    procs: dict[str, subprocess.Popen | None],
+    fixture: _SourceCompletionFixture,
+    helpers_dir: str,
+) -> None:
+    _start_bootstrapped_worker(
+        procs,
+        name="src",
+        service_main="services.ingest.ingestion.workflows.source_onboarding",
+        instance_var="SOURCE_ONBOARDING_INSTANCE",
+        instance_value=fixture.src_instance,
+        helpers_dir=helpers_dir,
+        extra={
+            "SOURCE_ONBOARDING_TICK_SEC": "0.1",
+            "SOURCE_ONBOARDING_BATCH": "20",
+        },
+    )
+
+
+def _start_shard_fetch(
+    procs: dict[str, subprocess.Popen | None],
+    fixture: _SourceCompletionFixture,
+    helpers_dir: str,
+) -> None:
+    _start_bootstrapped_worker(
+        procs,
+        name="shf",
+        service_main="services.ingest.ingestion.workflows.shard_fetch",
+        instance_var="SHARD_FETCH_INSTANCE",
+        instance_value=fixture.shf_instance,
+        helpers_dir=helpers_dir,
+        extra={
+            "SHARD_FETCH_TICK_SEC": "0.1",
+            "SHARD_FETCH_BATCH": "5",
+            "SHARD_FETCH_LEASE_SEC": "30.0",
+            "SHARD_FETCH_FLUSH_SEC": "2.0",
+        },
+    )
+
+
+def _start_reconciler(
+    procs: dict[str, subprocess.Popen | None],
+    fixture: _SourceCompletionFixture,
+    helpers_dir: str,
+) -> None:
+    _start_bootstrapped_worker(
+        procs,
+        name="rec",
+        service_main="services.ingest.ingestion.workflows.reconciler",
+        instance_var="RECONCILER_INSTANCE",
+        instance_value=fixture.rec_instance,
+        helpers_dir=helpers_dir,
+        extra={
+            "RECONCILER_TICK_SEC": "0.1",
+            "RECONCILER_BATCH": "20",
+        },
+    )
+
+
+def _stderr_preview(proc: subprocess.Popen | None, limit: int) -> str:
+    if proc is None or proc.stderr is None:
+        return ""
+    if proc.poll() is None:
+        return "<process still running>"
+    return proc.stderr.read().decode(errors="replace")[:limit]
+
+
+async def _wait_for_trigger_consumed(
+    fresh_db: asyncpg.Pool,
+    trigger_id: UUID,
+) -> None:
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        consumed = await fresh_db.fetchval(
+            "SELECT consumed_at FROM onboarding_triggers WHERE id = $1",
+            trigger_id,
+        )
+        if consumed is not None:
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError("Poller did not consume trigger within 30s.")
+
+
+async def _assert_onboarding_run_created(
+    fresh_db: asyncpg.Pool,
+    tenant_id: UUID,
+) -> UUID:
+    run_id = await fresh_db.fetchval(
+        "SELECT id FROM onboarding_runs WHERE tenant_id = $1", tenant_id,
+    )
+    assert run_id is not None
+    n_run_created = int(await fresh_db.fetchval(
+        "SELECT count(*) FROM workflow_signals "
+        "WHERE signal_kind = $1 AND idempotency_key = $2",
+        ONBOARDING_RUN_CREATED, str(run_id),
+    ))
+    assert n_run_created == 1
+    return run_id
+
+
+async def _wait_for_source_onboarding_request(fresh_db: asyncpg.Pool) -> None:
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        n_req = int(await fresh_db.fetchval(
+            "SELECT count(*) FROM workflow_signals "
+            "WHERE workflow_kind = $1 AND workflow_id = $2 "
+            "AND signal_kind = $3",
+            "source_onboarding", "source_onboarding",
+            SOURCE_ONBOARDING_REQUESTED,
+        ))
+        if n_req >= 1:
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError(
+        "tenant_onboarding did not emit source_onboarding_requested "
+        "within 30s of poller completing."
+    )
+
+
+async def _assert_parent_run_status(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+    expected: str,
+) -> None:
+    parent_status = await fresh_db.fetchval(
+        "SELECT status FROM onboarding_runs WHERE id = $1", run_id,
+    )
+    assert parent_status == expected
+
+
+async def _wait_for_source_fanout(
+    fresh_db: asyncpg.Pool,
+    procs: dict[str, subprocess.Popen | None],
+    run_id: UUID,
+) -> None:
+    n_shards = 0
+    n_shard_req = 0
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        n_shards = int(await fresh_db.fetchval(
+            "SELECT count(*) FROM onboarding_shards "
+            "WHERE onboarding_run_id = $1",
+            run_id,
+        ))
+        n_shard_req = int(await fresh_db.fetchval(
+            "SELECT count(*) FROM workflow_signals "
+            "WHERE workflow_kind = $1 AND workflow_id = $2 "
+            "AND signal_kind = $3",
+            SHARD_FETCH_INBOX_KIND, SHARD_FETCH_INBOX_ID,
+            SHARD_FETCH_REQUESTED,
+        ))
+        if n_shards == 2 and n_shard_req == 2:
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError(
+        f"source_onboarding did not fan out to 2 shards within 30s. "
+        f"n_shards={n_shards}, n_shard_req={n_shard_req}. "
+        f"stderr: {_stderr_preview(procs.get('src'), 1000)}"
+    )
+
+
+async def _assert_source_status(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+    expected: str,
+) -> None:
+    src_status = await fresh_db.fetchval(
+        "SELECT status FROM source_onboarding_runs "
+        "WHERE onboarding_run_id = $1 AND source = 'slack'",
+        run_id,
+    )
+    assert src_status == expected
+
+
+async def _wait_for_shards_done(
+    fresh_db: asyncpg.Pool,
+    procs: dict[str, subprocess.Popen | None],
+    run_id: UUID,
+) -> None:
+    n_done = 0
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        n_done = int(await fresh_db.fetchval(
+            "SELECT count(*) FROM onboarding_shards "
+            "WHERE onboarding_run_id = $1 AND state = 'done'",
+            run_id,
+        ))
+        if n_done == 2:
+            return
+        await asyncio.sleep(0.2)
+    raise AssertionError(
+        f"shard_fetch did not complete both shards within 60s. "
+        f"n_done={n_done}. stderr: {_stderr_preview(procs.get('shf'), 1500)}"
+    )
+
+
+async def _assert_shard_fetch_completed_signals(fresh_db: asyncpg.Pool) -> None:
+    n_shard_completed = int(await fresh_db.fetchval(
+        "SELECT count(*) FROM workflow_signals "
+        "WHERE workflow_kind = 'source_onboarding' "
+        "AND signal_kind = $1",
+        SHARD_FETCH_COMPLETED,
+    ))
+    assert n_shard_completed == 2
+
+
+async def _wait_for_source_rollup(fresh_db: asyncpg.Pool, run_id: UUID) -> None:
+    src_status = None
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        src_status = await fresh_db.fetchval(
+            "SELECT status FROM source_onboarding_runs "
+            "WHERE onboarding_run_id = $1 AND source = 'slack'",
+            run_id,
+        )
+        if src_status == "completed":
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError(
+        f"source_onboarding_runs did not reach 'completed' within 30s "
+        f"of both shards done. status={src_status!r}"
+    )
+
+
+async def _assert_source_shards_completed_signal(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+) -> None:
+    n_shards_completed = int(await fresh_db.fetchval(
+        "SELECT count(*) FROM workflow_signals "
+        "WHERE workflow_kind = 'reconciler' "
+        "AND signal_kind = 'source_shards_completed' "
+        "AND idempotency_key = $1",
+        f"{run_id}:slack:pass_0",
+    ))
+    assert n_shards_completed == 1, (
+        f"Expected source_shards_completed emit to Reconciler inbox "
+        f"post-M6.2a-rollup; got {n_shards_completed}."
+    )
+
+
+async def _wait_for_reconciler_stamp(
+    fresh_db: asyncpg.Pool,
+    procs: dict[str, subprocess.Popen | None],
+    run_id: UUID,
+) -> None:
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        reconciled = await fresh_db.fetchval(
+            "SELECT reconciled_at FROM source_onboarding_runs "
+            "WHERE onboarding_run_id = $1 AND source = 'slack'",
+            run_id,
+        )
+        if reconciled is not None:
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError(
+        f"Reconciler did not stamp reconciled_at within 30s. "
+        f"stderr: {_stderr_preview(procs.get('rec'), 1000)}"
+    )
+
+
+async def _assert_source_onboarding_completed_signal(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+) -> None:
+    n_src_completed = int(await fresh_db.fetchval(
+        "SELECT count(*) FROM workflow_signals "
+        "WHERE workflow_kind = $1 AND workflow_id = $2 "
+        "AND signal_kind = $3 AND idempotency_key = $4",
+        TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
+        SOURCE_ONBOARDING_COMPLETED, f"{run_id}:slack",
+    ))
+    assert n_src_completed == 1
+
+
+async def _wait_for_parent_completion(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+) -> None:
+    run_status = None
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        run_status = await fresh_db.fetchval(
+            "SELECT status FROM onboarding_runs WHERE id = $1",
+            run_id,
+        )
+        if run_status == "complete":
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError(
+        f"Parent onboarding_runs did not reach 'complete' within 30s. "
+        f"status={run_status!r}"
+    )
+
+
+async def _assert_bridge_completion_signal(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+) -> None:
+    bridge_signal = await fresh_db.fetchrow(
+        "SELECT signal_data FROM workflow_signals "
+        "WHERE workflow_kind = $1 AND workflow_id = $2 "
+        "AND signal_kind = $3 AND idempotency_key = $4",
+        BRIDGE_INBOX_KIND, BRIDGE_INBOX_ID,
+        TENANT_ONBOARDING_COMPLETED, str(run_id),
+    )
+    assert bridge_signal is not None, (
+        "tenant_onboarding_completed did not land in Bridge inbox. "
+        "The full M6 chain (oauth_poller -> tenant_onboarding -> "
+        "source_onboarding -> shard_fetch -> back up the chain) is "
+        "broken."
+    )
+
+
+async def _assert_shard_fetch_state(
+    fresh_db: asyncpg.Pool,
+    run_id: UUID,
+) -> None:
+    for shard_id in await fresh_db.fetch(
+        "SELECT id FROM onboarding_shards WHERE onboarding_run_id = $1",
+        run_id,
+    ):
+        ws = await fresh_db.fetchrow(
+            "SELECT state_data FROM workflow_states "
+            "WHERE workflow_kind = 'shard_fetch' AND workflow_id = $1",
+            str(shard_id["id"]),
+        )
+        assert ws is not None
+        data_raw = ws["state_data"]
+        data = (
+            orjson.loads(data_raw) if isinstance(data_raw, (str, bytes))
+            else dict(data_raw)
+        )
+        assert data.get("pages_fetched") == 2, (
+            f"Shard {shard_id['id']} workflow_states pages_fetched="
+            f"{data.get('pages_fetched')}; expected 2."
+        )
+        assert data.get("end_of_data") is True
+
+
+def _terminate_processes(procs: dict[str, subprocess.Popen | None]) -> None:
+    for name, proc in procs.items():
+        if proc is None:
+            continue
+        proc.send_signal(signal.SIGTERM)
+        try:
+            rc = proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+            raise AssertionError(
+                f"{name} subprocess did NOT exit within 15s of SIGTERM. "
+                f"stderr: {_stderr_preview(proc, 1000)}"
+            )
+        assert rc == 0, (
+            f"{name} subprocess exited with rc={rc}. "
+            f"stderr: {_stderr_preview(proc, 1000)}"
+        )
+
+
+def _kill_processes(procs: dict[str, subprocess.Popen | None]) -> None:
+    for proc in procs.values():
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+
+
+# ---------------------------------------------------------------------
+# The test.
+# ---------------------------------------------------------------------
+async def test_oauth_trigger_to_source_completion_end_to_end(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Five-subprocess full-chain integration test for M6.2a.
+
+    Setup:
+      - Tenant with slack provider install.
+      - One onboarding_triggers row (the OAuth callback's output).
+      - Test planner installed for slack: returns 2 shards.
+      - Test fetcher installed for slack: returns 5 records then EOD.
+
+    Run:
+      - Spawn 5 subprocesses (poller, orchestrator, source, shard, reconciler).
+      - Poll Postgres for each milestone in the chain.
+      - SIGTERM all 5; require rc=0.
+    """
+    helpers_dir = _ensure_e2e_helpers()
+    fixture = await _seed_source_completion_fixture(fresh_db)
     procs: dict[str, subprocess.Popen | None] = {
         "poller": None, "orch": None, "src": None,
         "shf": None, "rec": None,
     }
 
     try:
-        # ----- Start subprocess 1: oauth_poller -----
-        procs["poller"] = subprocess.Popen(
-            [sys.executable, "-m", "services.ingest.ingestion.workflows.oauth_poller"],
-            env=_env_for(
-                instance_var="OAUTH_POLLER_INSTANCE",
-                instance_value=poller_instance,
-                helpers_dir=helpers_dir,
-                extra={
-                    "OAUTH_POLLER_TICK_SEC": "0.1",
-                    "OAUTH_POLLER_BATCH": "5",
-                },
-            ),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
+        _start_oauth_poller(procs, fixture, helpers_dir)
+        await _wait_for_trigger_consumed(fresh_db, fixture.trigger_id)
+        run_id = await _assert_onboarding_run_created(fresh_db, fixture.tenant_id)
 
-        # Wait for trigger to be consumed.
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline:
-            consumed = await fresh_db.fetchval(
-                "SELECT consumed_at FROM onboarding_triggers WHERE id = $1",
-                trigger_id,
-            )
-            if consumed is not None:
-                break
-            await asyncio.sleep(0.1)
-        else:
-            raise AssertionError("Poller did not consume trigger within 30s.")
+        _start_tenant_onboarding(procs, fixture, helpers_dir)
+        await _wait_for_source_onboarding_request(fresh_db)
+        await _assert_parent_run_status(fresh_db, run_id, "running")
 
-        # Confirm onboarding_run_created signal exists (M6.1 invariant).
-        run_id = await fresh_db.fetchval(
-            "SELECT id FROM onboarding_runs WHERE tenant_id = $1", tid,
-        )
-        assert run_id is not None
-        n_run_created = int(await fresh_db.fetchval(
-            "SELECT count(*) FROM workflow_signals "
-            "WHERE signal_kind = $1 AND idempotency_key = $2",
-            ONBOARDING_RUN_CREATED, str(run_id),
-        ))
-        assert n_run_created == 1
+        _start_source_onboarding(procs, fixture, helpers_dir)
+        await _wait_for_source_fanout(fresh_db, procs, run_id)
+        await _assert_source_status(fresh_db, run_id, "in_progress")
 
-        # ----- Start subprocess 2: tenant_onboarding -----
-        procs["orch"] = subprocess.Popen(
-            [sys.executable, "-m",
-             "services.ingest.ingestion.workflows.tenant_onboarding"],
-            env=_env_for(
-                instance_var="ORCHESTRATOR_INSTANCE",
-                instance_value=orch_instance,
-                helpers_dir=helpers_dir,
-                extra={
-                    "ORCHESTRATOR_TICK_SEC": "0.1",
-                    "ORCHESTRATOR_BATCH": "20",
-                },
-            ),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
+        _start_shard_fetch(procs, fixture, helpers_dir)
+        await _wait_for_shards_done(fresh_db, procs, run_id)
+        await _assert_shard_fetch_completed_signals(fresh_db)
+        await _wait_for_source_rollup(fresh_db, run_id)
+        await _assert_source_shards_completed_signal(fresh_db, run_id)
 
-        # Wait for source_onboarding_requested signal (1 per
-        # active install — we seeded only slack).
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline:
-            n_req = int(await fresh_db.fetchval(
-                "SELECT count(*) FROM workflow_signals "
-                "WHERE workflow_kind = $1 AND workflow_id = $2 "
-                "AND signal_kind = $3",
-                "source_onboarding", "source_onboarding",
-                SOURCE_ONBOARDING_REQUESTED,
-            ))
-            if n_req >= 1:
-                break
-            await asyncio.sleep(0.1)
-        else:
-            raise AssertionError(
-                "tenant_onboarding did not emit source_onboarding_requested "
-                "within 30s of poller completing."
-            )
+        _start_reconciler(procs, fixture, helpers_dir)
+        await _wait_for_reconciler_stamp(fresh_db, procs, run_id)
+        await _assert_source_onboarding_completed_signal(fresh_db, run_id)
+        await _wait_for_parent_completion(fresh_db, run_id)
+        await _assert_bridge_completion_signal(fresh_db, run_id)
+        await _assert_shard_fetch_state(fresh_db, run_id)
 
-        # Parent run should be 'running' now.
-        parent_status = await fresh_db.fetchval(
-            "SELECT status FROM onboarding_runs WHERE id = $1", run_id,
-        )
-        assert parent_status == "running"
-
-        # ----- Start subprocess 3: source_onboarding (with test planner) -----
-        procs["src"] = subprocess.Popen(
-            [sys.executable, "-c",
-             bootstrap_for_dispatch_services.format(
-                 svc_main="services.ingest.ingestion.workflows.source_onboarding",
-             )],
-            env=_env_for(
-                instance_var="SOURCE_ONBOARDING_INSTANCE",
-                instance_value=src_instance,
-                helpers_dir=helpers_dir,
-                extra={
-                    "SOURCE_ONBOARDING_TICK_SEC": "0.1",
-                    "SOURCE_ONBOARDING_BATCH": "20",
-                },
-            ),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-
-        # Wait for 2 shards created + 2 shard_fetch_requested emitted.
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline:
-            n_shards = int(await fresh_db.fetchval(
-                "SELECT count(*) FROM onboarding_shards "
-                "WHERE onboarding_run_id = $1",
-                run_id,
-            ))
-            n_shard_req = int(await fresh_db.fetchval(
-                "SELECT count(*) FROM workflow_signals "
-                "WHERE workflow_kind = $1 AND workflow_id = $2 "
-                "AND signal_kind = $3",
-                SHARD_FETCH_INBOX_KIND, SHARD_FETCH_INBOX_ID,
-                SHARD_FETCH_REQUESTED,
-            ))
-            if n_shards == 2 and n_shard_req == 2:
-                break
-            await asyncio.sleep(0.1)
-        else:
-            stderr = procs["src"].stderr.read().decode() if procs["src"].stderr else ""
-            raise AssertionError(
-                f"source_onboarding did not fan out to 2 shards within "
-                f"30s. n_shards={n_shards}, n_shard_req={n_shard_req}. "
-                f"stderr: {stderr[:1000]}"
-            )
-
-        # source_onboarding_runs row in_progress.
-        src_status = await fresh_db.fetchval(
-            "SELECT status FROM source_onboarding_runs "
-            "WHERE onboarding_run_id = $1 AND source = 'slack'",
-            run_id,
-        )
-        assert src_status == "in_progress"
-
-        # ----- Start subprocess 4: shard_fetch (with test fetcher) -----
-        procs["shf"] = subprocess.Popen(
-            [sys.executable, "-c",
-             bootstrap_for_dispatch_services.format(
-                 svc_main="services.ingest.ingestion.workflows.shard_fetch",
-             )],
-            env=_env_for(
-                instance_var="SHARD_FETCH_INSTANCE",
-                instance_value=shf_instance,
-                helpers_dir=helpers_dir,
-                extra={
-                    "SHARD_FETCH_TICK_SEC": "0.1",
-                    "SHARD_FETCH_BATCH": "5",
-                    "SHARD_FETCH_LEASE_SEC": "30.0",
-                    "SHARD_FETCH_FLUSH_SEC": "2.0",
-                },
-            ),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-
-        # Wait for both shards to reach 'done' state.
-        deadline = time.monotonic() + 60.0  # fetch loop + Kafka + signals
-        while time.monotonic() < deadline:
-            n_done = int(await fresh_db.fetchval(
-                "SELECT count(*) FROM onboarding_shards "
-                "WHERE onboarding_run_id = $1 AND state = 'done'",
-                run_id,
-            ))
-            if n_done == 2:
-                break
-            await asyncio.sleep(0.2)
-        else:
-            stderr = procs["shf"].stderr.read().decode() if procs["shf"].stderr else ""
-            raise AssertionError(
-                f"shard_fetch did not complete both shards within 60s. "
-                f"n_done={n_done}. stderr: {stderr[:1500]}"
-            )
-
-        # 2 shard_fetch_completed signals emitted to source_onboarding.
-        n_shard_completed = int(await fresh_db.fetchval(
-            "SELECT count(*) FROM workflow_signals "
-            "WHERE workflow_kind = 'source_onboarding' "
-            "AND signal_kind = $1",
-            SHARD_FETCH_COMPLETED,
-        ))
-        assert n_shard_completed == 2
-
-        # Wait for source_onboarding to roll up completions.
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline:
-            src_status = await fresh_db.fetchval(
-                "SELECT status FROM source_onboarding_runs "
-                "WHERE onboarding_run_id = $1 AND source = 'slack'",
-                run_id,
-            )
-            if src_status == "completed":
-                break
-            await asyncio.sleep(0.1)
-        else:
-            raise AssertionError(
-                f"source_onboarding_runs did not reach 'completed' "
-                f"within 30s of both shards done. status={src_status!r}"
-            )
-
-        # M6.2b chain change: SourceOnboarding emits source_shards_completed
-        # to Reconciler (not source_onboarding_completed direct to
-        # TenantOnboarding). Verify the emit landed before starting
-        # Reconciler.
-        n_shards_completed = int(await fresh_db.fetchval(
-            "SELECT count(*) FROM workflow_signals "
-            "WHERE workflow_kind = 'reconciler' "
-            "AND signal_kind = 'source_shards_completed' "
-            "AND idempotency_key = $1",
-            f"{run_id}:slack:pass_0",
-        ))
-        assert n_shards_completed == 1, (
-            f"Expected source_shards_completed emit to Reconciler "
-            f"inbox post-M6.2a-rollup; got {n_shards_completed}."
-        )
-
-        # ----- Start subprocess 5: reconciler -----
-        # Post-M6.5: slack reconciler is real and needs a Slack client.
-        # Bootstrap via e2e_test_dispatch which installs a clean
-        # RECONCILER_DISPATCH override before main() runs.
-        procs["rec"] = subprocess.Popen(
-            [sys.executable, "-c", bootstrap_for_dispatch_services.format(
-                svc_main="services.ingest.ingestion.workflows.reconciler",
-            )],
-            env=_env_for(
-                instance_var="RECONCILER_INSTANCE",
-                instance_value=rec_instance,
-                helpers_dir=helpers_dir,
-                extra={
-                    "RECONCILER_TICK_SEC": "0.1",
-                    "RECONCILER_BATCH": "20",
-                },
-            ),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-
-        # Wait for Reconciler to stamp reconciled_at + emit
-        # source_onboarding_completed to TenantOnboarding.
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline:
-            reconciled = await fresh_db.fetchval(
-                "SELECT reconciled_at FROM source_onboarding_runs "
-                "WHERE onboarding_run_id = $1 AND source = 'slack'",
-                run_id,
-            )
-            if reconciled is not None:
-                break
-            await asyncio.sleep(0.1)
-        else:
-            stderr = procs["rec"].stderr.read().decode() if procs["rec"].stderr else ""
-            raise AssertionError(
-                f"Reconciler did not stamp reconciled_at within 30s. "
-                f"stderr: {stderr[:1000]}"
-            )
-
-        # source_onboarding_completed emitted to tenant_onboarding by
-        # Reconciler (the M6.2b chain change — this emit now comes
-        # from Reconciler on the CLEAN path, not from SourceOnboarding).
-        n_src_completed = int(await fresh_db.fetchval(
-            "SELECT count(*) FROM workflow_signals "
-            "WHERE workflow_kind = $1 AND workflow_id = $2 "
-            "AND signal_kind = $3 AND idempotency_key = $4",
-            TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
-            SOURCE_ONBOARDING_COMPLETED, f"{run_id}:slack",
-        ))
-        assert n_src_completed == 1
-
-        # Wait for tenant_onboarding to complete the parent run +
-        # emit tenant_onboarding_completed to Bridge.
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline:
-            run_status = await fresh_db.fetchval(
-                "SELECT status FROM onboarding_runs WHERE id = $1",
-                run_id,
-            )
-            if run_status == "complete":
-                break
-            await asyncio.sleep(0.1)
-        else:
-            raise AssertionError(
-                f"Parent onboarding_runs did not reach 'complete' "
-                f"within 30s. status={run_status!r}"
-            )
-
-        # LOAD-BEARING — final chain output: tenant_onboarding_completed
-        # in Bridge inbox.
-        bridge_signal = await fresh_db.fetchrow(
-            "SELECT signal_data FROM workflow_signals "
-            "WHERE workflow_kind = $1 AND workflow_id = $2 "
-            "AND signal_kind = $3 AND idempotency_key = $4",
-            BRIDGE_INBOX_KIND, BRIDGE_INBOX_ID,
-            TENANT_ONBOARDING_COMPLETED, str(run_id),
-        )
-        assert bridge_signal is not None, (
-            "tenant_onboarding_completed did not land in Bridge inbox. "
-            "The full M6 chain (oauth_poller → tenant_onboarding → "
-            "source_onboarding → shard_fetch → back up the chain) is "
-            "broken."
-        )
-
-        # Optional: 10 records published to ingestion.raw across 2 shards
-        # × 5 records each. We don't have a Kafka consumer in this test,
-        # but we can verify the shards' workflow_states show pages_fetched
-        # advanced past their initial state.
-        for shard_id in await fresh_db.fetch(
-            "SELECT id FROM onboarding_shards WHERE onboarding_run_id = $1",
-            run_id,
-        ):
-            ws = await fresh_db.fetchrow(
-                "SELECT state_data FROM workflow_states "
-                "WHERE workflow_kind = 'shard_fetch' AND workflow_id = $1",
-                str(shard_id["id"]),
-            )
-            assert ws is not None
-            data_raw = ws["state_data"]
-            data = (
-                orjson.loads(data_raw) if isinstance(data_raw, (str, bytes))
-                else dict(data_raw)
-            )
-            # Two fetcher calls per shard: first returns 5 records +
-            # cursor; second returns end_of_data. Both advance the N1
-            # state. pages_fetched should be 2.
-            assert data.get("pages_fetched") == 2, (
-                f"Shard {shard_id['id']} workflow_states pages_fetched="
-                f"{data.get('pages_fetched')}; expected 2."
-            )
-            assert data.get("end_of_data") is True
-
-        # ----- SIGTERM all 4 subprocesses; require rc=0 within 15s. -----
-        for name, proc in procs.items():
-            if proc is None:
-                continue
-            proc.send_signal(signal.SIGTERM)
-            try:
-                rc = proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=5)
-                stderr = proc.stderr.read().decode() if proc.stderr else ""
-                raise AssertionError(
-                    f"{name} subprocess did NOT exit within 15s of "
-                    f"SIGTERM. stderr: {stderr[:1000]}"
-                )
-            stderr = proc.stderr.read().decode() if proc.stderr else ""
-            assert rc == 0, (
-                f"{name} subprocess exited with rc={rc}. "
-                f"stderr: {stderr[:1000]}"
-            )
+        _terminate_processes(procs)
 
     finally:
-        for proc in procs.values():
-            if proc is not None and proc.poll() is None:
-                proc.kill()
-                proc.wait(timeout=5)
+        _kill_processes(procs)

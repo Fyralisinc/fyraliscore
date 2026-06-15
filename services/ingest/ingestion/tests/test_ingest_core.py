@@ -28,6 +28,7 @@ from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.ingest.ingestion.core import (
     MAX_PAYLOAD_BYTES,
     PayloadTooLarge,
+    _dedup_lock_key,
     candidate_phrases,
     ingest,
 )
@@ -152,6 +153,13 @@ def test_candidate_phrases_normalizes_in_dedup():
     # After normalization "foo" appears once.
     normalized = {p.lower() for p in phrases}
     assert "foo" in normalized
+
+
+def test_dedup_lock_key_is_stable_and_scoped():
+    key = _dedup_lock_key("slack:message", "T:C:1.0")
+    assert key == _dedup_lock_key("slack:message", "T:C:1.0")
+    assert key != _dedup_lock_key("github:issue", "T:C:1.0")
+    assert 0 <= key <= 0x7FFFFFFFFFFFFFFF
 
 
 # =========================================================================

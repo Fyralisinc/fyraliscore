@@ -460,6 +460,1168 @@ def _write_helper(workdir: str, helper_module: str) -> str:
     return helpers_dir
 
 
+async def _write_gmail_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO gmail_installations (
+          id, tenant_id, workspace_domain,
+          service_account_email, scope
+        ) VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (tenant_id, workspace_domain)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id,
+        f"x3-{outcome.scenario.tenant_slug}.example",
+        "sa@x3-test.iam.gserviceaccount.com",
+        "gmail.metadata",
+    )
+    # Seed one active mailbox watch so the planner's
+    # S1-amended loader (_LOAD_GMAIL_INSTALL_SQL) returns
+    # a non-empty `mailboxes` aggregate → one shard. Without
+    # this the gmail planner emits zero shards (clean run,
+    # zero records). `history_id` = starting_history_id so
+    # clean scenarios show no gap and reshare scenarios
+    # (history_events>0 → current_history_id advances)
+    # still trigger the reconciler gap-fill.
+    fp = outcome.scenario.fixture_params
+    await conn.execute(
+        """
+        INSERT INTO gmail_mailbox_watches (
+            id, tenant_id, gmail_installation_id,
+            email_address, google_user_id, history_id,
+            state
+        ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+        fp["email"],
+        f"x3-{outcome.tenant_id.hex[:12]}",
+        str(fp.get("starting_history_id", 1000)),
+    )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            gmail_installation_id, payload
+        ) VALUES ($1, $2, 'gmail', 'install', $3,
+                  '{}'::jsonb)
+        ON CONFLICT (tenant_id, source,
+                     gmail_installation_id)
+            WHERE gmail_installation_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_google_calendar_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # DWD source (like gmail): workspace install + one
+    # google_calendar_calendars row per calendar so the
+    # planner's loader (_LOAD_GCAL_INSTALL_SQL) aggregates a
+    # non-empty `calendars` list → one shard each. Trigger
+    # carries installation_row_id (no FK; dedup-index only).
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO google_calendar_installations (
+          id, tenant_id, workspace_domain,
+          service_account_email, scope
+        ) VALUES ($1, $2, $3, $4, 'calendar.readonly')
+        ON CONFLICT (tenant_id, workspace_domain)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id,
+        f"x3-{outcome.scenario.tenant_slug}.example",
+        "sa@x3-test.iam.gserviceaccount.com",
+    )
+    for cal in outcome.scenario.fixture_params.get(
+        "calendars", ["alice@acme.com", "bob@acme.com"],
+    ):
+        await conn.execute(
+            """
+            INSERT INTO google_calendar_calendars (
+                id, tenant_id, google_calendar_installation_id,
+                calendar_id, owner_email, state
+            ) VALUES ($1, $2, $3, $4, $5, 'active')
+            ON CONFLICT (google_calendar_installation_id,
+                         calendar_id) DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id, cal, cal,
+        )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'google_calendar', 'install', $3,
+                  '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_google_drive_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # DWD source (IN-16): workspace install + one
+    # google_drive_targets row per fixture target so the
+    # planner's loader aggregates a non-empty `targets` list →
+    # one shard each. start_page_token left NULL → FULL backfill
+    # (list_files) on first fetch.
+    fixture = _build_fixture(
+        "google_drive", outcome.scenario.fixture_params,
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO google_drive_installations (
+          id, tenant_id, workspace_domain,
+          service_account_email, scope
+        ) VALUES ($1, $2, $3, $4, 'drive.readonly')
+        ON CONFLICT (tenant_id, workspace_domain)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id,
+        f"x3-{outcome.scenario.tenant_slug}.example",
+        "sa@x3-test.iam.gserviceaccount.com",
+    )
+    for tgt in fixture.get("targets", []):
+        await conn.execute(
+            """
+            INSERT INTO google_drive_targets (
+                id, tenant_id, google_drive_installation_id,
+                drive_kind, drive_id, owner_email, state
+            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
+            ON CONFLICT (google_drive_installation_id,
+                         drive_kind, drive_id, owner_email)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id,
+            tgt["drive_kind"], tgt["drive_id"],
+            tgt["owner_email"],
+        )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'google_drive', 'install', $3,
+                  '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_jira_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # IN-17: site install + one jira_projects row per fixture
+    # project so the planner emits one shard per project.
+    # base_url host must equal the fixture's site_host so the
+    # fetcher's `_fyralis_site` (→ external_id namespace) matches.
+    fixture = _build_fixture(
+        "jira", outcome.scenario.fixture_params,
+    )
+    site_host = fixture.get("site_host", "acme.atlassian.net")
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO jira_installations (
+          id, tenant_id, base_url, account_email
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, base_url)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id,
+        f"https://{site_host}",
+        "sa@x3-test.example",
+    )
+    for proj in fixture.get("projects", []):
+        await conn.execute(
+            """
+            INSERT INTO jira_projects (
+                id, tenant_id, jira_installation_id,
+                project_key, project_id, state
+            ) VALUES ($1, $2, $3, $4, $5, 'active')
+            ON CONFLICT (jira_installation_id, project_key)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id,
+            proj["project_key"], proj.get("project_id"),
+        )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'jira', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_mercury_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # Finance: install + one mercury_accounts row per fixture
+    # account so the planner emits one shard per account.
+    fixture = _build_fixture(
+        "mercury", outcome.scenario.fixture_params,
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO mercury_installations (
+          id, tenant_id, base_url, organization_id
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, base_url)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id,
+        "https://api.mercury.com/api/v1",
+        f"x3-{outcome.scenario.tenant_slug}-org",
+    )
+    accounts = fixture.get("accounts", {})
+    for acct_id in fixture.get("account_order", []):
+        acct = accounts.get(acct_id, {})
+        await conn.execute(
+            """
+            INSERT INTO mercury_accounts (
+                id, tenant_id, mercury_installation_id,
+                account_id, account_name, account_kind, state
+            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
+            ON CONFLICT (mercury_installation_id, account_id)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id,
+            acct_id, acct.get("name"), acct.get("type"),
+        )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'mercury', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_quickbooks_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # Finance: realm install + one quickbooks_entities row per
+    # fixture entity type so the planner emits one shard per
+    # (realm, entity_type).
+    fixture = _build_fixture(
+        "quickbooks", outcome.scenario.fixture_params,
+    )
+    realm_id = fixture.get("realm_id", "9341452000000001")
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO quickbooks_installations (
+          id, tenant_id, realm_id, base_url
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, realm_id)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id, realm_id,
+        "https://quickbooks.api.intuit.com",
+    )
+    for entity_type in fixture.get("entities", {}):
+        await conn.execute(
+            """
+            INSERT INTO quickbooks_entities (
+                id, tenant_id, quickbooks_installation_id,
+                entity_type, state
+            ) VALUES ($1, $2, $3, $4, 'active')
+            ON CONFLICT (quickbooks_installation_id, entity_type)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id, entity_type,
+        )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'quickbooks', 'install', $3,
+                  '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_grafana_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # IN-GRAFANA: org-wide install (no child table) → planner
+    # emits exactly one shard. base_url matches the fixture so
+    # the fetcher's instance derivation is consistent.
+    fixture = _build_fixture(
+        "grafana", outcome.scenario.fixture_params,
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO grafana_installations (
+          id, tenant_id, base_url, org_id
+        ) VALUES ($1, $2, $3, '1')
+        ON CONFLICT (tenant_id, base_url)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id,
+        fixture.get("base_url", "https://acme.grafana.net"),
+    )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'grafana', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_telegram_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # IN-TELEGRAM: account install + one telegram_dialogs row per
+    # fixture dialog so the planner's loader aggregates a non-empty
+    # `dialogs` list → one shard each. The MTProto session refs are
+    # NULL: the backfill client seam (_open_telegram_client) is
+    # monkeypatched to the mock, so the real Telethon client is
+    # never built. offset_id_cursor left NULL → FULL backward
+    # sweep on first fetch.
+    fixture = _build_fixture(
+        "telegram", outcome.scenario.fixture_params,
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO telegram_installations (
+          id, tenant_id, account_label
+        ) VALUES ($1, $2, $3)
+        ON CONFLICT (tenant_id, account_label)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id,
+        f"x3-{outcome.scenario.tenant_slug}-telegram",
+    )
+    dialogs = fixture.get("dialogs", {})
+    for did in fixture.get("dialog_order", []):
+        d = dialogs.get(str(did), {})
+        await conn.execute(
+            """
+            INSERT INTO telegram_dialogs (
+                id, tenant_id, telegram_installation_id,
+                dialog_id, dialog_kind, access_hash, title, state
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
+            ON CONFLICT (telegram_installation_id, dialog_id)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id,
+            int(did), d.get("dialog_kind", "chat"),
+            d.get("access_hash"), d.get("title"),
+        )
+    await conn.execute(
+        """
+        INSERT INTO telegram_update_state (
+            id, tenant_id, telegram_installation_id
+        ) VALUES ($1, $2, $3)
+        ON CONFLICT (telegram_installation_id) DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'telegram', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_brex_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # IN-FIN2: Bearer finance source (Mercury-shaped). Install +
+    # one brex_accounts row per fixture account → one shard per
+    # account.
+    fixture = _build_fixture(
+        "brex", outcome.scenario.fixture_params,
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO brex_installations (
+          id, tenant_id, base_url, organization_id
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, base_url)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id,
+        "https://platform.brexapis.com",
+        f"x3-{outcome.scenario.tenant_slug}-org",
+    )
+    accounts = fixture.get("accounts", {})
+    for acct_id in fixture.get("account_order", []):
+        acct = accounts.get(acct_id, {})
+        await conn.execute(
+            """
+            INSERT INTO brex_accounts (
+                id, tenant_id, brex_installation_id,
+                account_id, account_name, account_kind, state
+            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
+            ON CONFLICT (brex_installation_id, account_id)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id,
+            acct_id, acct.get("name"), acct.get("type"),
+        )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'brex', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_deel_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # IN-FIN2: Bearer finance source (Mercury-shaped); shard target
+    # is a CONTRACT. Install + one deel_contracts row per contract.
+    fixture = _build_fixture(
+        "deel", outcome.scenario.fixture_params,
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO deel_installations (
+          id, tenant_id, base_url, organization_id
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, base_url)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id,
+        "https://api.letsdeel.com",
+        f"x3-{outcome.scenario.tenant_slug}-org",
+    )
+    for contract_id in fixture.get("contract_order", []):
+        await conn.execute(
+            """
+            INSERT INTO deel_contracts (
+                id, tenant_id, deel_installation_id,
+                contract_id, state
+            ) VALUES ($1, $2, $3, $4, 'active')
+            ON CONFLICT (deel_installation_id, contract_id)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id, contract_id,
+        )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'deel', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_ramp_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # IN-FIN2: OAuth finance source (QuickBooks-shaped). business_id
+    # is the scope id; one ramp_entities row per entity type.
+    fixture = _build_fixture(
+        "ramp", outcome.scenario.fixture_params,
+    )
+    business_id = fixture.get("business_id", "ramp-biz-0001")
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO ramp_installations (
+          id, tenant_id, business_id, base_url
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, business_id)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id, business_id,
+        "https://api.ramp.com/developer/v1",
+    )
+    for entity_type in fixture.get("entities", {}):
+        await conn.execute(
+            """
+            INSERT INTO ramp_entities (
+                id, tenant_id, ramp_installation_id,
+                entity_type, state
+            ) VALUES ($1, $2, $3, $4, 'active')
+            ON CONFLICT (ramp_installation_id, entity_type)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id, entity_type,
+        )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'ramp', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_gusto_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # IN-FIN2: OAuth payroll REST source (real /v1 contract —
+    # employee/payroll taxonomy). company_uuid is the scope id;
+    # one gusto_entities row per entity type.
+    fixture = _build_fixture(
+        "gusto", outcome.scenario.fixture_params,
+    )
+    company_uuid = fixture.get(
+        "company_uuid", "gusto-co-0001",
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO gusto_installations (
+          id, tenant_id, company_uuid, base_url
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, company_uuid)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id, company_uuid,
+        "https://api.gusto.com",
+    )
+    for entity_type in fixture.get("entities", {}):
+        await conn.execute(
+            """
+            INSERT INTO gusto_entities (
+                id, tenant_id, gusto_installation_id,
+                entity_type, state
+            ) VALUES ($1, $2, $3, $4, 'active')
+            ON CONFLICT (gusto_installation_id, entity_type)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id, entity_type,
+        )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'gusto', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_fireflies_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # IN-FIN2-style HMAC webhook source (Brex-shaped). SINGLE
+    # install table — workspace_id lives ON the install row;
+    # NO child table (planner emits ONE transcript shard). A
+    # provider_installations row (installation_id=workspace_id)
+    # is seeded so the webhook tenant_resolver._extract_fireflies
+    # maps the live HMAC payload back to this tenant.
+    fixture = _build_fixture(
+        "fireflies", outcome.scenario.fixture_params,
+    )
+    workspace_id = fixture.get(
+        "workspace_id",
+        f"x3-{outcome.scenario.tenant_slug}-ws",
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO fireflies_installations (
+          id, tenant_id, base_url, workspace_id
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, base_url)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id,
+        "https://api.fireflies.ai",
+        workspace_id,
+    )
+    await conn.execute(
+        """
+        INSERT INTO provider_installations
+            (id, tenant_id, provider, installation_id,
+             secret_ref, enabled)
+        VALUES ($1, $2, 'fireflies', $3, NULL, TRUE)
+        ON CONFLICT (provider, installation_id) DO UPDATE
+            SET enabled = TRUE
+        """,
+        uuid7(), outcome.tenant_id, workspace_id,
+    )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'fireflies', 'install', $3,
+                  '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_miro_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # HMAC webhook source (Brex-shaped). org_id lives ON the
+    # install row; one miro_boards row per fixture board → one
+    # shard each. provider_installations.installation_id=org_id
+    # for tenant_resolver._extract_miro.
+    fixture = _build_fixture(
+        "miro", outcome.scenario.fixture_params,
+    )
+    org_id = fixture.get(
+        "org_id", f"x3-{outcome.scenario.tenant_slug}-org",
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO miro_installations (
+          id, tenant_id, base_url, org_id
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, base_url)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id,
+        "https://api.miro.com/v2",
+        org_id,
+    )
+    boards = fixture.get("boards", {})
+    for board_id in fixture.get("board_order", []):
+        board = boards.get(board_id, {})
+        await conn.execute(
+            """
+            INSERT INTO miro_boards (
+                id, tenant_id, miro_installation_id,
+                board_id, board_name, board_kind, state
+            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
+            ON CONFLICT (miro_installation_id, board_id)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id,
+            board_id, board.get("name"), board.get("type"),
+        )
+    await conn.execute(
+        """
+        INSERT INTO provider_installations
+            (id, tenant_id, provider, installation_id,
+             secret_ref, enabled)
+        VALUES ($1, $2, 'miro', $3, NULL, TRUE)
+        ON CONFLICT (provider, installation_id) DO UPDATE
+            SET enabled = TRUE
+        """,
+        uuid7(), outcome.tenant_id, org_id,
+    )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'miro', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_figma_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # HMAC webhook source (Brex-shaped). team_id lives ON the
+    # install row; one figma_files row per fixture file → one
+    # shard each. provider_installations.installation_id=team_id
+    # for tenant_resolver._extract_figma.
+    fixture = _build_fixture(
+        "figma", outcome.scenario.fixture_params,
+    )
+    team_id = fixture.get(
+        "team_id", f"x3-{outcome.scenario.tenant_slug}-team",
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO figma_installations (
+          id, tenant_id, base_url, team_id
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, base_url)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id,
+        "https://api.figma.com",
+        team_id,
+    )
+    files = fixture.get("files", {})
+    for file_key in fixture.get("file_order", []):
+        f_meta = files.get(file_key, {})
+        await conn.execute(
+            """
+            INSERT INTO figma_files (
+                id, tenant_id, figma_installation_id,
+                file_key, file_name, project_name, state
+            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
+            ON CONFLICT (figma_installation_id, file_key)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id,
+            file_key, f_meta.get("name"),
+            f_meta.get("project_name"),
+        )
+    await conn.execute(
+        """
+        INSERT INTO provider_installations
+            (id, tenant_id, provider, installation_id,
+             secret_ref, enabled)
+        VALUES ($1, $2, 'figma', $3, NULL, TRUE)
+        ON CONFLICT (provider, installation_id) DO UPDATE
+            SET enabled = TRUE
+        """,
+        uuid7(), outcome.tenant_id, team_id,
+    )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'figma', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_signal_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # Gateway-session source (Telegram-shaped). Direct-dispatch
+    # live edge → NO provider_installations / webhook secret.
+    # Install + one signal_threads row per fixture thread → one
+    # shard each, plus the signal_update_state singleton. The
+    # linked-device session refs are NULL: _open_signal_client is
+    # monkeypatched to the mock.
+    fixture = _build_fixture(
+        "signal", outcome.scenario.fixture_params,
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO signal_installations (
+          id, tenant_id, account_label
+        ) VALUES ($1, $2, $3)
+        ON CONFLICT (tenant_id, account_label)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id,
+        f"x3-{outcome.scenario.tenant_slug}-signal",
+    )
+    threads = fixture.get("threads", {})
+    for tid in fixture.get("thread_order", []):
+        t = threads.get(str(tid), {})
+        await conn.execute(
+            """
+            INSERT INTO signal_threads (
+                id, tenant_id, signal_installation_id,
+                thread_id, thread_kind, title, state
+            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
+            ON CONFLICT (signal_installation_id, thread_id)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id,
+            int(tid), t.get("thread_kind", "direct"),
+            t.get("title"),
+        )
+    await conn.execute(
+        """
+        INSERT INTO signal_update_state (
+            id, tenant_id, signal_installation_id
+        ) VALUES ($1, $2, $3)
+        ON CONFLICT (signal_installation_id) DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'signal', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_aws_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # Poll live-edge source (Grafana backfill shape, direct-
+    # dispatch live). Direct-dispatch → NO provider_installations
+    # / webhook secret. SINGLE install table — account_id+region
+    # ON the install row; planner emits ONE event shard.
+    fixture = _build_fixture(
+        "aws", outcome.scenario.fixture_params,
+    )
+    account_id = fixture.get("account_id", "123456789012")
+    region = fixture.get("region", "us-east-1")
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO aws_installations (
+          id, tenant_id, account_id, region, credential_kind
+        ) VALUES ($1, $2, $3, $4, 'assume_role')
+        ON CONFLICT (tenant_id, account_id, region)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id, account_id, region,
+    )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'aws', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_carta_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # Poll live-edge source (Gusto OAuth backfill shape, direct-
+    # dispatch live). Direct-dispatch → NO provider_installations
+    # / webhook secret. firm_id is the scope id; one carta_entities
+    # row per fixture entity type → one shard each.
+    fixture = _build_fixture(
+        "carta", outcome.scenario.fixture_params,
+    )
+    firm_id = fixture.get(
+        "firm_id", "firm_9341452000000001",
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO carta_installations (
+          id, tenant_id, firm_id, base_url
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, firm_id)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id, firm_id,
+        "https://api.carta.com",
+    )
+    for entity_type in fixture.get("entities", {}):
+        await conn.execute(
+            """
+            INSERT INTO carta_entities (
+                id, tenant_id, carta_installation_id,
+                entity_type, state
+            ) VALUES ($1, $2, $3, $4, 'active')
+            ON CONFLICT (carta_installation_id, entity_type)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id, entity_type,
+        )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'carta', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_hibob_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # People/HR source: Gusto entity-model STRUCTURE (one
+    # hibob_entities row per entity_type → one shard each) +
+    # Figma-shaped HMAC webhook live edge. company_id is the
+    # scope-id; provider_installations.installation_id=company_id
+    # for tenant_resolver._extract_hibob (payload "companyId").
+    fixture = _build_fixture(
+        "hibob", outcome.scenario.fixture_params,
+    )
+    company_id = fixture.get(
+        "company_id",
+        f"x3-{outcome.scenario.tenant_slug}-co",
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO hibob_installations (
+          id, tenant_id, company_id, service_user_id, base_url
+        ) VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (tenant_id, company_id)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id, company_id,
+        f"svc-{outcome.scenario.tenant_slug}",
+        "https://api.hibob.com",
+    )
+    for entity_type in fixture.get("entities", {}):
+        await conn.execute(
+            """
+            INSERT INTO hibob_entities (
+                id, tenant_id, hibob_installation_id,
+                entity_type, state
+            ) VALUES ($1, $2, $3, $4, 'active')
+            ON CONFLICT (hibob_installation_id, entity_type)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id, entity_type,
+        )
+    await conn.execute(
+        """
+        INSERT INTO provider_installations
+            (id, tenant_id, provider, installation_id,
+             secret_ref, enabled)
+        VALUES ($1, $2, 'hibob', $3, NULL, TRUE)
+        ON CONFLICT (provider, installation_id) DO UPDATE
+            SET enabled = TRUE
+        """,
+        uuid7(), outcome.tenant_id, company_id,
+    )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'hibob', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_ashby_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # Recruiting-ATS source: Gusto entity-model STRUCTURE (one
+    # ashby_entities row per entity_type → one shard each) +
+    # Figma-shaped HMAC webhook live edge. org_id is the scope-id;
+    # provider_installations.installation_id=org_id for
+    # tenant_resolver._extract_ashby (payload "organizationId").
+    fixture = _build_fixture(
+        "ashby", outcome.scenario.fixture_params,
+    )
+    org_id = fixture.get(
+        "org_id", f"x3-{outcome.scenario.tenant_slug}-org",
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO ashby_installations (
+          id, tenant_id, org_id, base_url
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, org_id)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id, org_id,
+        "https://api.ashbyhq.com",
+    )
+    for entity_type in fixture.get("entities", {}):
+        await conn.execute(
+            """
+            INSERT INTO ashby_entities (
+                id, tenant_id, ashby_installation_id,
+                entity_type, state
+            ) VALUES ($1, $2, $3, $4, 'active')
+            ON CONFLICT (ashby_installation_id, entity_type)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id, entity_type,
+        )
+    await conn.execute(
+        """
+        INSERT INTO provider_installations
+            (id, tenant_id, provider, installation_id,
+             secret_ref, enabled)
+        VALUES ($1, $2, 'ashby', $3, NULL, TRUE)
+        ON CONFLICT (provider, installation_id) DO UPDATE
+            SET enabled = TRUE
+        """,
+        uuid7(), outcome.tenant_id, org_id,
+    )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'ashby', 'install', $3, '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_linkedin_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    # Recruiting source (partner-gated): Carta OAuth backfill
+    # shape, direct-dispatch POLL live edge. Direct-dispatch →
+    # NO provider_installations / webhook secret. organization_urn
+    # is the scope-id; one linkedin_entities row per fixture entity
+    # type → one shard each.
+    fixture = _build_fixture(
+        "linkedin", outcome.scenario.fixture_params,
+    )
+    organization_urn = fixture.get(
+        "organization_urn",
+        f"x3-{outcome.scenario.tenant_slug}-org",
+    )
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO linkedin_installations (
+          id, tenant_id, organization_urn, base_url
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (tenant_id, organization_urn)
+            DO UPDATE SET disabled_at = NULL
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id, organization_urn,
+        "https://api.linkedin.com/rest",
+    )
+    for entity_type in fixture.get("entities", {}):
+        await conn.execute(
+            """
+            INSERT INTO linkedin_entities (
+                id, tenant_id, linkedin_installation_id,
+                entity_type, state
+            ) VALUES ($1, $2, $3, $4, 'active')
+            ON CONFLICT (linkedin_installation_id, entity_type)
+                DO NOTHING
+            """,
+            uuid7(), outcome.tenant_id, install_id, entity_type,
+        )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, 'linkedin', 'install', $3,
+                  '{}'::jsonb)
+        ON CONFLICT (tenant_id, source, installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, install_id,
+    )
+
+async def _write_generic_install_and_trigger(
+    conn: Any,
+    outcome: TenantOutcome,
+) -> None:
+    source = outcome.scenario.source
+    install_id = await conn.fetchval(
+        """
+        INSERT INTO provider_installations
+            (id, tenant_id, provider, installation_id,
+             secret_ref, enabled)
+        VALUES ($1, $2, $3, $4, NULL, TRUE)
+        ON CONFLICT (provider, installation_id) DO UPDATE
+            SET enabled = TRUE
+        RETURNING id
+        """,
+        uuid7(), outcome.tenant_id, source,
+        f"x3-{outcome.scenario.tenant_slug}-{source}",
+    )
+    await conn.execute(
+        """
+        INSERT INTO onboarding_triggers (
+            id, tenant_id, source, trigger_kind,
+            installation_row_id, payload
+        ) VALUES ($1, $2, $3, 'install', $4,
+                  '{}'::jsonb)
+        ON CONFLICT (tenant_id, source,
+                     installation_row_id)
+            WHERE installation_row_id IS NOT NULL
+            DO NOTHING
+        """,
+        uuid7(), outcome.tenant_id, source, install_id,
+    )
+
+
+
 # =====================================================================
 # Harness.
 # =====================================================================
@@ -800,1079 +1962,44 @@ class BackfillHarness:
     ) -> None:
         source = outcome.scenario.source
         async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                if source == "gmail":
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO gmail_installations (
-                          id, tenant_id, workspace_domain,
-                          service_account_email, scope
-                        ) VALUES ($1, $2, $3, $4, $5)
-                        ON CONFLICT (tenant_id, workspace_domain)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id,
-                        f"x3-{outcome.scenario.tenant_slug}.example",
-                        "sa@x3-test.iam.gserviceaccount.com",
-                        "gmail.metadata",
-                    )
-                    # Seed one active mailbox watch so the planner's
-                    # S1-amended loader (_LOAD_GMAIL_INSTALL_SQL) returns
-                    # a non-empty `mailboxes` aggregate → one shard. Without
-                    # this the gmail planner emits zero shards (clean run,
-                    # zero records). `history_id` = starting_history_id so
-                    # clean scenarios show no gap and reshare scenarios
-                    # (history_events>0 → current_history_id advances)
-                    # still trigger the reconciler gap-fill.
-                    fp = outcome.scenario.fixture_params
+            try:
+                async with conn.transaction():
                     await conn.execute(
-                        """
-                        INSERT INTO gmail_mailbox_watches (
-                            id, tenant_id, gmail_installation_id,
-                            email_address, google_user_id, history_id,
-                            state
-                        ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                        fp["email"],
-                        f"x3-{outcome.tenant_id.hex[:12]}",
-                        str(fp.get("starting_history_id", 1000)),
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            gmail_installation_id, payload
-                        ) VALUES ($1, $2, 'gmail', 'install', $3,
-                                  '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source,
-                                     gmail_installation_id)
-                            WHERE gmail_installation_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "google_calendar":
-                    # DWD source (like gmail): workspace install + one
-                    # google_calendar_calendars row per calendar so the
-                    # planner's loader (_LOAD_GCAL_INSTALL_SQL) aggregates a
-                    # non-empty `calendars` list → one shard each. Trigger
-                    # carries installation_row_id (no FK; dedup-index only).
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO google_calendar_installations (
-                          id, tenant_id, workspace_domain,
-                          service_account_email, scope
-                        ) VALUES ($1, $2, $3, $4, 'calendar.readonly')
-                        ON CONFLICT (tenant_id, workspace_domain)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id,
-                        f"x3-{outcome.scenario.tenant_slug}.example",
-                        "sa@x3-test.iam.gserviceaccount.com",
-                    )
-                    for cal in outcome.scenario.fixture_params.get(
-                        "calendars", ["alice@acme.com", "bob@acme.com"],
-                    ):
-                        await conn.execute(
-                            """
-                            INSERT INTO google_calendar_calendars (
-                                id, tenant_id, google_calendar_installation_id,
-                                calendar_id, owner_email, state
-                            ) VALUES ($1, $2, $3, $4, $5, 'active')
-                            ON CONFLICT (google_calendar_installation_id,
-                                         calendar_id) DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id, cal, cal,
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'google_calendar', 'install', $3,
-                                  '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "google_drive":
-                    # DWD source (IN-16): workspace install + one
-                    # google_drive_targets row per fixture target so the
-                    # planner's loader aggregates a non-empty `targets` list →
-                    # one shard each. start_page_token left NULL → FULL backfill
-                    # (list_files) on first fetch.
-                    fixture = _build_fixture(
-                        "google_drive", outcome.scenario.fixture_params,
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO google_drive_installations (
-                          id, tenant_id, workspace_domain,
-                          service_account_email, scope
-                        ) VALUES ($1, $2, $3, $4, 'drive.readonly')
-                        ON CONFLICT (tenant_id, workspace_domain)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id,
-                        f"x3-{outcome.scenario.tenant_slug}.example",
-                        "sa@x3-test.iam.gserviceaccount.com",
-                    )
-                    for tgt in fixture.get("targets", []):
-                        await conn.execute(
-                            """
-                            INSERT INTO google_drive_targets (
-                                id, tenant_id, google_drive_installation_id,
-                                drive_kind, drive_id, owner_email, state
-                            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
-                            ON CONFLICT (google_drive_installation_id,
-                                         drive_kind, drive_id, owner_email)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id,
-                            tgt["drive_kind"], tgt["drive_id"],
-                            tgt["owner_email"],
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'google_drive', 'install', $3,
-                                  '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "jira":
-                    # IN-17: site install + one jira_projects row per fixture
-                    # project so the planner emits one shard per project.
-                    # base_url host must equal the fixture's site_host so the
-                    # fetcher's `_fyralis_site` (→ external_id namespace) matches.
-                    fixture = _build_fixture(
-                        "jira", outcome.scenario.fixture_params,
-                    )
-                    site_host = fixture.get("site_host", "acme.atlassian.net")
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO jira_installations (
-                          id, tenant_id, base_url, account_email
-                        ) VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (tenant_id, base_url)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id,
-                        f"https://{site_host}",
-                        "sa@x3-test.example",
-                    )
-                    for proj in fixture.get("projects", []):
-                        await conn.execute(
-                            """
-                            INSERT INTO jira_projects (
-                                id, tenant_id, jira_installation_id,
-                                project_key, project_id, state
-                            ) VALUES ($1, $2, $3, $4, $5, 'active')
-                            ON CONFLICT (jira_installation_id, project_key)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id,
-                            proj["project_key"], proj.get("project_id"),
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'jira', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "mercury":
-                    # Finance: install + one mercury_accounts row per fixture
-                    # account so the planner emits one shard per account.
-                    fixture = _build_fixture(
-                        "mercury", outcome.scenario.fixture_params,
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO mercury_installations (
-                          id, tenant_id, base_url, organization_id
-                        ) VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (tenant_id, base_url)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id,
-                        "https://api.mercury.com/api/v1",
-                        f"x3-{outcome.scenario.tenant_slug}-org",
-                    )
-                    accounts = fixture.get("accounts", {})
-                    for acct_id in fixture.get("account_order", []):
-                        acct = accounts.get(acct_id, {})
-                        await conn.execute(
-                            """
-                            INSERT INTO mercury_accounts (
-                                id, tenant_id, mercury_installation_id,
-                                account_id, account_name, account_kind, state
-                            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
-                            ON CONFLICT (mercury_installation_id, account_id)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id,
-                            acct_id, acct.get("name"), acct.get("type"),
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'mercury', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "quickbooks":
-                    # Finance: realm install + one quickbooks_entities row per
-                    # fixture entity type so the planner emits one shard per
-                    # (realm, entity_type).
-                    fixture = _build_fixture(
-                        "quickbooks", outcome.scenario.fixture_params,
-                    )
-                    realm_id = fixture.get("realm_id", "9341452000000001")
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO quickbooks_installations (
-                          id, tenant_id, realm_id, base_url
-                        ) VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (tenant_id, realm_id)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id, realm_id,
-                        "https://quickbooks.api.intuit.com",
-                    )
-                    for entity_type in fixture.get("entities", {}):
-                        await conn.execute(
-                            """
-                            INSERT INTO quickbooks_entities (
-                                id, tenant_id, quickbooks_installation_id,
-                                entity_type, state
-                            ) VALUES ($1, $2, $3, $4, 'active')
-                            ON CONFLICT (quickbooks_installation_id, entity_type)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id, entity_type,
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'quickbooks', 'install', $3,
-                                  '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "grafana":
-                    # IN-GRAFANA: org-wide install (no child table) → planner
-                    # emits exactly one shard. base_url matches the fixture so
-                    # the fetcher's instance derivation is consistent.
-                    fixture = _build_fixture(
-                        "grafana", outcome.scenario.fixture_params,
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO grafana_installations (
-                          id, tenant_id, base_url, org_id
-                        ) VALUES ($1, $2, $3, '1')
-                        ON CONFLICT (tenant_id, base_url)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id,
-                        fixture.get("base_url", "https://acme.grafana.net"),
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'grafana', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "telegram":
-                    # IN-TELEGRAM: account install + one telegram_dialogs row per
-                    # fixture dialog so the planner's loader aggregates a non-empty
-                    # `dialogs` list → one shard each. The MTProto session refs are
-                    # NULL: the backfill client seam (_open_telegram_client) is
-                    # monkeypatched to the mock, so the real Telethon client is
-                    # never built. offset_id_cursor left NULL → FULL backward
-                    # sweep on first fetch.
-                    fixture = _build_fixture(
-                        "telegram", outcome.scenario.fixture_params,
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO telegram_installations (
-                          id, tenant_id, account_label
-                        ) VALUES ($1, $2, $3)
-                        ON CONFLICT (tenant_id, account_label)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id,
-                        f"x3-{outcome.scenario.tenant_slug}-telegram",
-                    )
-                    dialogs = fixture.get("dialogs", {})
-                    for did in fixture.get("dialog_order", []):
-                        d = dialogs.get(str(did), {})
-                        await conn.execute(
-                            """
-                            INSERT INTO telegram_dialogs (
-                                id, tenant_id, telegram_installation_id,
-                                dialog_id, dialog_kind, access_hash, title, state
-                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
-                            ON CONFLICT (telegram_installation_id, dialog_id)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id,
-                            int(did), d.get("dialog_kind", "chat"),
-                            d.get("access_hash"), d.get("title"),
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO telegram_update_state (
-                            id, tenant_id, telegram_installation_id
-                        ) VALUES ($1, $2, $3)
-                        ON CONFLICT (telegram_installation_id) DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'telegram', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "brex":
-                    # IN-FIN2: Bearer finance source (Mercury-shaped). Install +
-                    # one brex_accounts row per fixture account → one shard per
-                    # account.
-                    fixture = _build_fixture(
-                        "brex", outcome.scenario.fixture_params,
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO brex_installations (
-                          id, tenant_id, base_url, organization_id
-                        ) VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (tenant_id, base_url)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id,
-                        "https://platform.brexapis.com",
-                        f"x3-{outcome.scenario.tenant_slug}-org",
-                    )
-                    accounts = fixture.get("accounts", {})
-                    for acct_id in fixture.get("account_order", []):
-                        acct = accounts.get(acct_id, {})
-                        await conn.execute(
-                            """
-                            INSERT INTO brex_accounts (
-                                id, tenant_id, brex_installation_id,
-                                account_id, account_name, account_kind, state
-                            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
-                            ON CONFLICT (brex_installation_id, account_id)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id,
-                            acct_id, acct.get("name"), acct.get("type"),
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'brex', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "deel":
-                    # IN-FIN2: Bearer finance source (Mercury-shaped); shard target
-                    # is a CONTRACT. Install + one deel_contracts row per contract.
-                    fixture = _build_fixture(
-                        "deel", outcome.scenario.fixture_params,
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO deel_installations (
-                          id, tenant_id, base_url, organization_id
-                        ) VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (tenant_id, base_url)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id,
-                        "https://api.letsdeel.com",
-                        f"x3-{outcome.scenario.tenant_slug}-org",
-                    )
-                    contracts = fixture.get("contracts", {})
-                    for contract_id in fixture.get("contract_order", []):
-                        await conn.execute(
-                            """
-                            INSERT INTO deel_contracts (
-                                id, tenant_id, deel_installation_id,
-                                contract_id, state
-                            ) VALUES ($1, $2, $3, $4, 'active')
-                            ON CONFLICT (deel_installation_id, contract_id)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id, contract_id,
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'deel', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "ramp":
-                    # IN-FIN2: OAuth finance source (QuickBooks-shaped). business_id
-                    # is the scope id; one ramp_entities row per entity type.
-                    fixture = _build_fixture(
-                        "ramp", outcome.scenario.fixture_params,
-                    )
-                    business_id = fixture.get("business_id", "ramp-biz-0001")
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO ramp_installations (
-                          id, tenant_id, business_id, base_url
-                        ) VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (tenant_id, business_id)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id, business_id,
-                        "https://api.ramp.com/developer/v1",
-                    )
-                    for entity_type in fixture.get("entities", {}):
-                        await conn.execute(
-                            """
-                            INSERT INTO ramp_entities (
-                                id, tenant_id, ramp_installation_id,
-                                entity_type, state
-                            ) VALUES ($1, $2, $3, $4, 'active')
-                            ON CONFLICT (ramp_installation_id, entity_type)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id, entity_type,
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'ramp', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "gusto":
-                    # IN-FIN2: OAuth payroll REST source (real /v1 contract —
-                    # employee/payroll taxonomy). company_uuid is the scope id;
-                    # one gusto_entities row per entity type.
-                    fixture = _build_fixture(
-                        "gusto", outcome.scenario.fixture_params,
-                    )
-                    company_uuid = fixture.get(
-                        "company_uuid", "gusto-co-0001",
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO gusto_installations (
-                          id, tenant_id, company_uuid, base_url
-                        ) VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (tenant_id, company_uuid)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id, company_uuid,
-                        "https://api.gusto.com",
-                    )
-                    for entity_type in fixture.get("entities", {}):
-                        await conn.execute(
-                            """
-                            INSERT INTO gusto_entities (
-                                id, tenant_id, gusto_installation_id,
-                                entity_type, state
-                            ) VALUES ($1, $2, $3, $4, 'active')
-                            ON CONFLICT (gusto_installation_id, entity_type)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id, entity_type,
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'gusto', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "fireflies":
-                    # IN-FIN2-style HMAC webhook source (Brex-shaped). SINGLE
-                    # install table — workspace_id lives ON the install row;
-                    # NO child table (planner emits ONE transcript shard). A
-                    # provider_installations row (installation_id=workspace_id)
-                    # is seeded so the webhook tenant_resolver._extract_fireflies
-                    # maps the live HMAC payload back to this tenant.
-                    fixture = _build_fixture(
-                        "fireflies", outcome.scenario.fixture_params,
-                    )
-                    workspace_id = fixture.get(
-                        "workspace_id",
-                        f"x3-{outcome.scenario.tenant_slug}-ws",
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO fireflies_installations (
-                          id, tenant_id, base_url, workspace_id
-                        ) VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (tenant_id, base_url)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id,
-                        "https://api.fireflies.ai",
-                        workspace_id,
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO provider_installations
-                            (id, tenant_id, provider, installation_id,
-                             secret_ref, enabled)
-                        VALUES ($1, $2, 'fireflies', $3, NULL, TRUE)
-                        ON CONFLICT (provider, installation_id) DO UPDATE
-                            SET enabled = TRUE
-                        """,
-                        uuid7(), outcome.tenant_id, workspace_id,
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'fireflies', 'install', $3,
-                                  '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "miro":
-                    # HMAC webhook source (Brex-shaped). org_id lives ON the
-                    # install row; one miro_boards row per fixture board → one
-                    # shard each. provider_installations.installation_id=org_id
-                    # for tenant_resolver._extract_miro.
-                    fixture = _build_fixture(
-                        "miro", outcome.scenario.fixture_params,
-                    )
-                    org_id = fixture.get(
-                        "org_id", f"x3-{outcome.scenario.tenant_slug}-org",
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO miro_installations (
-                          id, tenant_id, base_url, org_id
-                        ) VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (tenant_id, base_url)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id,
-                        "https://api.miro.com/v2",
-                        org_id,
-                    )
-                    boards = fixture.get("boards", {})
-                    for board_id in fixture.get("board_order", []):
-                        board = boards.get(board_id, {})
-                        await conn.execute(
-                            """
-                            INSERT INTO miro_boards (
-                                id, tenant_id, miro_installation_id,
-                                board_id, board_name, board_kind, state
-                            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
-                            ON CONFLICT (miro_installation_id, board_id)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id,
-                            board_id, board.get("name"), board.get("type"),
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO provider_installations
-                            (id, tenant_id, provider, installation_id,
-                             secret_ref, enabled)
-                        VALUES ($1, $2, 'miro', $3, NULL, TRUE)
-                        ON CONFLICT (provider, installation_id) DO UPDATE
-                            SET enabled = TRUE
-                        """,
-                        uuid7(), outcome.tenant_id, org_id,
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'miro', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "figma":
-                    # HMAC webhook source (Brex-shaped). team_id lives ON the
-                    # install row; one figma_files row per fixture file → one
-                    # shard each. provider_installations.installation_id=team_id
-                    # for tenant_resolver._extract_figma.
-                    fixture = _build_fixture(
-                        "figma", outcome.scenario.fixture_params,
-                    )
-                    team_id = fixture.get(
-                        "team_id", f"x3-{outcome.scenario.tenant_slug}-team",
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO figma_installations (
-                          id, tenant_id, base_url, team_id
-                        ) VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (tenant_id, base_url)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id,
-                        "https://api.figma.com",
-                        team_id,
-                    )
-                    files = fixture.get("files", {})
-                    for file_key in fixture.get("file_order", []):
-                        f_meta = files.get(file_key, {})
-                        await conn.execute(
-                            """
-                            INSERT INTO figma_files (
-                                id, tenant_id, figma_installation_id,
-                                file_key, file_name, project_name, state
-                            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
-                            ON CONFLICT (figma_installation_id, file_key)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id,
-                            file_key, f_meta.get("name"),
-                            f_meta.get("project_name"),
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO provider_installations
-                            (id, tenant_id, provider, installation_id,
-                             secret_ref, enabled)
-                        VALUES ($1, $2, 'figma', $3, NULL, TRUE)
-                        ON CONFLICT (provider, installation_id) DO UPDATE
-                            SET enabled = TRUE
-                        """,
-                        uuid7(), outcome.tenant_id, team_id,
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'figma', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "signal":
-                    # Gateway-session source (Telegram-shaped). Direct-dispatch
-                    # live edge → NO provider_installations / webhook secret.
-                    # Install + one signal_threads row per fixture thread → one
-                    # shard each, plus the signal_update_state singleton. The
-                    # linked-device session refs are NULL: _open_signal_client is
-                    # monkeypatched to the mock.
-                    fixture = _build_fixture(
-                        "signal", outcome.scenario.fixture_params,
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO signal_installations (
-                          id, tenant_id, account_label
-                        ) VALUES ($1, $2, $3)
-                        ON CONFLICT (tenant_id, account_label)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id,
-                        f"x3-{outcome.scenario.tenant_slug}-signal",
-                    )
-                    threads = fixture.get("threads", {})
-                    for tid in fixture.get("thread_order", []):
-                        t = threads.get(str(tid), {})
-                        await conn.execute(
-                            """
-                            INSERT INTO signal_threads (
-                                id, tenant_id, signal_installation_id,
-                                thread_id, thread_kind, title, state
-                            ) VALUES ($1, $2, $3, $4, $5, $6, 'active')
-                            ON CONFLICT (signal_installation_id, thread_id)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id,
-                            int(tid), t.get("thread_kind", "direct"),
-                            t.get("title"),
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO signal_update_state (
-                            id, tenant_id, signal_installation_id
-                        ) VALUES ($1, $2, $3)
-                        ON CONFLICT (signal_installation_id) DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'signal', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "aws":
-                    # Poll live-edge source (Grafana backfill shape, direct-
-                    # dispatch live). Direct-dispatch → NO provider_installations
-                    # / webhook secret. SINGLE install table — account_id+region
-                    # ON the install row; planner emits ONE event shard.
-                    fixture = _build_fixture(
-                        "aws", outcome.scenario.fixture_params,
-                    )
-                    account_id = fixture.get("account_id", "123456789012")
-                    region = fixture.get("region", "us-east-1")
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO aws_installations (
-                          id, tenant_id, account_id, region, credential_kind
-                        ) VALUES ($1, $2, $3, $4, 'assume_role')
-                        ON CONFLICT (tenant_id, account_id, region)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id, account_id, region,
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'aws', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "carta":
-                    # Poll live-edge source (Gusto OAuth backfill shape, direct-
-                    # dispatch live). Direct-dispatch → NO provider_installations
-                    # / webhook secret. firm_id is the scope id; one carta_entities
-                    # row per fixture entity type → one shard each.
-                    fixture = _build_fixture(
-                        "carta", outcome.scenario.fixture_params,
-                    )
-                    firm_id = fixture.get(
-                        "firm_id", "firm_9341452000000001",
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO carta_installations (
-                          id, tenant_id, firm_id, base_url
-                        ) VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (tenant_id, firm_id)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id, firm_id,
-                        "https://api.carta.com",
-                    )
-                    for entity_type in fixture.get("entities", {}):
-                        await conn.execute(
-                            """
-                            INSERT INTO carta_entities (
-                                id, tenant_id, carta_installation_id,
-                                entity_type, state
-                            ) VALUES ($1, $2, $3, $4, 'active')
-                            ON CONFLICT (carta_installation_id, entity_type)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id, entity_type,
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'carta', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "hibob":
-                    # People/HR source: Gusto entity-model STRUCTURE (one
-                    # hibob_entities row per entity_type → one shard each) +
-                    # Figma-shaped HMAC webhook live edge. company_id is the
-                    # scope-id; provider_installations.installation_id=company_id
-                    # for tenant_resolver._extract_hibob (payload "companyId").
-                    fixture = _build_fixture(
-                        "hibob", outcome.scenario.fixture_params,
-                    )
-                    company_id = fixture.get(
-                        "company_id",
-                        f"x3-{outcome.scenario.tenant_slug}-co",
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO hibob_installations (
-                          id, tenant_id, company_id, service_user_id, base_url
-                        ) VALUES ($1, $2, $3, $4, $5)
-                        ON CONFLICT (tenant_id, company_id)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id, company_id,
-                        f"svc-{outcome.scenario.tenant_slug}",
-                        "https://api.hibob.com",
-                    )
-                    for entity_type in fixture.get("entities", {}):
-                        await conn.execute(
-                            """
-                            INSERT INTO hibob_entities (
-                                id, tenant_id, hibob_installation_id,
-                                entity_type, state
-                            ) VALUES ($1, $2, $3, $4, 'active')
-                            ON CONFLICT (hibob_installation_id, entity_type)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id, entity_type,
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO provider_installations
-                            (id, tenant_id, provider, installation_id,
-                             secret_ref, enabled)
-                        VALUES ($1, $2, 'hibob', $3, NULL, TRUE)
-                        ON CONFLICT (provider, installation_id) DO UPDATE
-                            SET enabled = TRUE
-                        """,
-                        uuid7(), outcome.tenant_id, company_id,
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'hibob', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "ashby":
-                    # Recruiting-ATS source: Gusto entity-model STRUCTURE (one
-                    # ashby_entities row per entity_type → one shard each) +
-                    # Figma-shaped HMAC webhook live edge. org_id is the scope-id;
-                    # provider_installations.installation_id=org_id for
-                    # tenant_resolver._extract_ashby (payload "organizationId").
-                    fixture = _build_fixture(
-                        "ashby", outcome.scenario.fixture_params,
-                    )
-                    org_id = fixture.get(
-                        "org_id", f"x3-{outcome.scenario.tenant_slug}-org",
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO ashby_installations (
-                          id, tenant_id, org_id, base_url
-                        ) VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (tenant_id, org_id)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id, org_id,
-                        "https://api.ashbyhq.com",
-                    )
-                    for entity_type in fixture.get("entities", {}):
-                        await conn.execute(
-                            """
-                            INSERT INTO ashby_entities (
-                                id, tenant_id, ashby_installation_id,
-                                entity_type, state
-                            ) VALUES ($1, $2, $3, $4, 'active')
-                            ON CONFLICT (ashby_installation_id, entity_type)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id, entity_type,
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO provider_installations
-                            (id, tenant_id, provider, installation_id,
-                             secret_ref, enabled)
-                        VALUES ($1, $2, 'ashby', $3, NULL, TRUE)
-                        ON CONFLICT (provider, installation_id) DO UPDATE
-                            SET enabled = TRUE
-                        """,
-                        uuid7(), outcome.tenant_id, org_id,
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'ashby', 'install', $3, '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                elif source == "linkedin":
-                    # Recruiting source (partner-gated): Carta OAuth backfill
-                    # shape, direct-dispatch POLL live edge. Direct-dispatch →
-                    # NO provider_installations / webhook secret. organization_urn
-                    # is the scope-id; one linkedin_entities row per fixture entity
-                    # type → one shard each.
-                    fixture = _build_fixture(
-                        "linkedin", outcome.scenario.fixture_params,
-                    )
-                    organization_urn = fixture.get(
-                        "organization_urn",
-                        f"x3-{outcome.scenario.tenant_slug}-org",
-                    )
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO linkedin_installations (
-                          id, tenant_id, organization_urn, base_url
-                        ) VALUES ($1, $2, $3, $4)
-                        ON CONFLICT (tenant_id, organization_urn)
-                            DO UPDATE SET disabled_at = NULL
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id, organization_urn,
-                        "https://api.linkedin.com/rest",
-                    )
-                    for entity_type in fixture.get("entities", {}):
-                        await conn.execute(
-                            """
-                            INSERT INTO linkedin_entities (
-                                id, tenant_id, linkedin_installation_id,
-                                entity_type, state
-                            ) VALUES ($1, $2, $3, $4, 'active')
-                            ON CONFLICT (linkedin_installation_id, entity_type)
-                                DO NOTHING
-                            """,
-                            uuid7(), outcome.tenant_id, install_id, entity_type,
-                        )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, 'linkedin', 'install', $3,
-                                  '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source, installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, install_id,
-                    )
-                else:
-                    install_id = await conn.fetchval(
-                        """
-                        INSERT INTO provider_installations
-                            (id, tenant_id, provider, installation_id,
-                             secret_ref, enabled)
-                        VALUES ($1, $2, $3, $4, NULL, TRUE)
-                        ON CONFLICT (provider, installation_id) DO UPDATE
-                            SET enabled = TRUE
-                        RETURNING id
-                        """,
-                        uuid7(), outcome.tenant_id, source,
-                        f"x3-{outcome.scenario.tenant_slug}-{source}",
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO onboarding_triggers (
-                            id, tenant_id, source, trigger_kind,
-                            installation_row_id, payload
-                        ) VALUES ($1, $2, $3, 'install', $4,
-                                  '{}'::jsonb)
-                        ON CONFLICT (tenant_id, source,
-                                     installation_row_id)
-                            WHERE installation_row_id IS NOT NULL
-                            DO NOTHING
-                        """,
-                        uuid7(), outcome.tenant_id, source, install_id,
-                    )
+                        "SELECT set_config('app.current_tenant', $1::text, true)",
+                        str(outcome.tenant_id),
+                    )
+                    handlers = {
+                        "gmail": _write_gmail_install_and_trigger,
+                        "google_calendar": (
+                            _write_google_calendar_install_and_trigger
+                        ),
+                        "google_drive": _write_google_drive_install_and_trigger,
+                        "jira": _write_jira_install_and_trigger,
+                        "mercury": _write_mercury_install_and_trigger,
+                        "quickbooks": _write_quickbooks_install_and_trigger,
+                        "grafana": _write_grafana_install_and_trigger,
+                        "telegram": _write_telegram_install_and_trigger,
+                        "brex": _write_brex_install_and_trigger,
+                        "deel": _write_deel_install_and_trigger,
+                        "ramp": _write_ramp_install_and_trigger,
+                        "gusto": _write_gusto_install_and_trigger,
+                        "fireflies": _write_fireflies_install_and_trigger,
+                        "miro": _write_miro_install_and_trigger,
+                        "figma": _write_figma_install_and_trigger,
+                        "signal": _write_signal_install_and_trigger,
+                        "aws": _write_aws_install_and_trigger,
+                        "carta": _write_carta_install_and_trigger,
+                        "hibob": _write_hibob_install_and_trigger,
+                        "ashby": _write_ashby_install_and_trigger,
+                        "linkedin": _write_linkedin_install_and_trigger,
+                    }
+                    handler = handlers.get(source)
+                    if handler is None:
+                        await _write_generic_install_and_trigger(conn, outcome)
+                    else:
+                        await handler(conn, outcome)
+            finally:
+                await conn.execute("RESET app.current_tenant")
 
     # ---- Phase B: Run ----
     def _base_env(self) -> dict[str, str]:

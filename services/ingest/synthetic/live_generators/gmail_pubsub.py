@@ -54,6 +54,7 @@ import httpx
 from fastapi import FastAPI
 
 from lib.shared.ids import uuid7
+from lib.shared.tenant_context import bind_tenant
 from services.ingest.synthetic.fixtures.gmail_generator import _digest
 from services.ingest.synthetic.mock_clients import MockGmailClient
 from services.ingest.synthetic.scenarios import (
@@ -135,6 +136,7 @@ class GmailPubSubGenerator:
         pool: asyncpg.Pool,
         mailboxes: dict[str, MockGmailClient],
         tenant_slugs: dict[str, str] | None = None,
+        tenant_ids_by_email: dict[str, UUID] | None = None,
         replay_probability: float = 0.0,
         rng_seed: int = 0,
         s3_raw_client: Any = None,
@@ -155,6 +157,10 @@ class GmailPubSubGenerator:
             email.lower(): client for email, client in mailboxes.items()
         }
         self._tenant_slugs = tenant_slugs or {}
+        self._tenant_ids_by_email = {
+            email.lower(): tenant_id
+            for email, tenant_id in (tenant_ids_by_email or {}).items()
+        }
         self._replay_probability = replay_probability
         self._rng = random.Random(rng_seed)
         self._bindings: dict[str, _MailboxBinding] = {}
@@ -198,19 +204,9 @@ class GmailPubSubGenerator:
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 for email, client in self._mock_clients.items():
-                    existing = await conn.fetchrow(
-                        """
-                        SELECT w.tenant_id,
-                               w.gmail_installation_id,
-                               t.subscription_name
-                          FROM gmail_mailbox_watches w
-                     LEFT JOIN gmail_pubsub_topics t
-                            ON t.gmail_installation_id
-                               = w.gmail_installation_id
-                         WHERE lower(w.email_address) = $1
-                         LIMIT 1
-                        """,
-                        email,
+                    tenant_hint = self._tenant_ids_by_email.get(email)
+                    existing = await self._find_existing_binding(
+                        conn, email=email, tenant_id=tenant_hint,
                     )
                     if existing is not None:
                         tenant_id = existing["tenant_id"]
@@ -221,18 +217,19 @@ class GmailPubSubGenerator:
                                 f"projects/y1-test/subscriptions/"
                                 f"gmail-{tenant_id.hex[:8]}-sub"
                             )
-                            await conn.execute(
-                                """
-                                INSERT INTO gmail_pubsub_topics (
-                                    id, tenant_id, gmail_installation_id,
-                                    topic_name, subscription_name
-                                ) VALUES ($1, $2, $3, $4, $5)
-                                """,
-                                uuid7(), tenant_id, install_id,
-                                f"projects/y1-test/topics/"
-                                f"gmail-{tenant_id.hex[:8]}",
-                                sub_name,
-                            )
+                            async with bind_tenant(conn, tenant_id) as tctx:
+                                await tctx.execute(
+                                    """
+                                    INSERT INTO gmail_pubsub_topics (
+                                        id, tenant_id, gmail_installation_id,
+                                        topic_name, subscription_name
+                                    ) VALUES ($1, $2, $3, $4, $5)
+                                    """,
+                                    uuid7(), tenant_id, install_id,
+                                    f"projects/y1-test/topics/"
+                                    f"gmail-{tenant_id.hex[:8]}",
+                                    sub_name,
+                                )
                         self._bindings[email] = _MailboxBinding(
                             tenant_id=tenant_id,
                             gmail_installation_id=install_id,
@@ -242,55 +239,81 @@ class GmailPubSubGenerator:
                         continue
 
                     slug = self._tenant_slugs.get(email, f"y1-{email}")
-                    tenant_id = uuid4()
+                    tenant_id = tenant_hint or uuid4()
                     await conn.execute(
                         "INSERT INTO tenants (id, name) VALUES ($1, $2) "
                         "ON CONFLICT (id) DO NOTHING",
                         tenant_id, slug,
                     )
                     install_id = uuid7()
-                    await conn.execute(
-                        """
-                        INSERT INTO gmail_installations (
-                            id, tenant_id, workspace_domain,
-                            service_account_email, scope
-                        ) VALUES ($1, $2, $3, $4, 'gmail.metadata')
-                        """,
-                        install_id, tenant_id,
-                        email.split("@", 1)[1] if "@" in email else "x.com",
-                        "sa@y1-test.iam.gserviceaccount.com",
-                    )
-                    await conn.execute(
-                        """
-                        INSERT INTO gmail_mailbox_watches (
-                            id, tenant_id, gmail_installation_id,
-                            email_address, history_id, state
-                        ) VALUES ($1, $2, $3, $4, $5, 'active')
-                        """,
-                        uuid7(), tenant_id, install_id, email,
-                        client._fixture["current_history_id"],
-                    )
                     sub_name = (
                         f"projects/y1-test/subscriptions/"
                         f"gmail-{tenant_id.hex[:8]}-sub"
                     )
-                    await conn.execute(
-                        """
-                        INSERT INTO gmail_pubsub_topics (
-                            id, tenant_id, gmail_installation_id,
-                            topic_name, subscription_name
-                        ) VALUES ($1, $2, $3, $4, $5)
-                        """,
-                        uuid7(), tenant_id, install_id,
-                        f"projects/y1-test/topics/gmail-{tenant_id.hex[:8]}",
-                        sub_name,
-                    )
+                    async with bind_tenant(conn, tenant_id) as tctx:
+                        await tctx.execute(
+                            """
+                            INSERT INTO gmail_installations (
+                                id, tenant_id, workspace_domain,
+                                service_account_email, scope
+                            ) VALUES ($1, $2, $3, $4, 'gmail.metadata')
+                            """,
+                            install_id, tenant_id,
+                            email.split("@", 1)[1] if "@" in email else "x.com",
+                            "sa@y1-test.iam.gserviceaccount.com",
+                        )
+                        await tctx.execute(
+                            """
+                            INSERT INTO gmail_mailbox_watches (
+                                id, tenant_id, gmail_installation_id,
+                                email_address, history_id, state
+                            ) VALUES ($1, $2, $3, $4, $5, 'active')
+                            """,
+                            uuid7(), tenant_id, install_id, email,
+                            client._fixture["current_history_id"],
+                        )
+                        await tctx.execute(
+                            """
+                            INSERT INTO gmail_pubsub_topics (
+                                id, tenant_id, gmail_installation_id,
+                                topic_name, subscription_name
+                            ) VALUES ($1, $2, $3, $4, $5)
+                            """,
+                            uuid7(), tenant_id, install_id,
+                            f"projects/y1-test/topics/gmail-{tenant_id.hex[:8]}",
+                            sub_name,
+                        )
                     self._bindings[email] = _MailboxBinding(
                         tenant_id=tenant_id,
                         gmail_installation_id=install_id,
                         subscription_name=sub_name,
                         mock_client=client,
                     )
+
+    async def _find_existing_binding(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        email: str,
+        tenant_id: UUID | None,
+    ) -> asyncpg.Record | None:
+        query = """
+            SELECT w.tenant_id,
+                   w.gmail_installation_id,
+                   t.subscription_name
+              FROM gmail_mailbox_watches w
+         LEFT JOIN gmail_pubsub_topics t
+                ON t.gmail_installation_id = w.gmail_installation_id
+             WHERE lower(w.email_address) = $1
+        """
+        if tenant_id is None:
+            return await conn.fetchrow(f"{query} LIMIT 1", email)
+        async with bind_tenant(conn, tenant_id) as tctx:
+            return await tctx.fetchrow(
+                f"{query} AND w.tenant_id = $2 LIMIT 1",
+                email,
+                tenant_id,
+            )
 
     def _install_patches(self) -> None:
         """Install module-level patches for OIDC validation, the

@@ -27,12 +27,13 @@ works.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import os
 import signal
 import subprocess
 import sys
 import time
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import asyncpg
 import orjson
@@ -275,40 +276,16 @@ async def test_shard_fetch_sigterm_subprocess(
 # 2. LOAD-BEARING — resume from persisted cursor after restart.
 # =====================================================================
 
-async def test_shard_fetch_resumes_from_persisted_cursor_after_restart(
-    fresh_db: asyncpg.Pool,
-) -> None:
-    """The resume contract test.
+@dataclass(frozen=True)
+class _ResumeFixture:
+    tenant_id: UUID
+    run_id: UUID
+    shard_id: UUID
+    instance_a: str
+    instance_b: str
 
-    Process A: starts ShardFetch with test fetcher returning 3 pages.
-      Wait until workflow_states.state_data.cursor == {"page": 0}
-      (proof: page-0 was successfully advanced via N1 primitive).
-      SIGTERM process A.
 
-    Process B: starts ShardFetch fresh.
-      Wait for the orphan-scan to pick up the in-progress shard.
-      Wait until shard.state == 'done' (proof: pages 1 + 2 ran).
-      Assert: cursor == {"page": 2}; end_of_data == True; the
-      fetcher was called from cursor={"page": 0} onward (i.e., the
-      resume used the persisted cursor, not started over).
-
-    The test fetcher logic (test_helpers/shard_fetch_resume_fetcher.py)
-    emits one record per page; the record carries `{"page": N}` so
-    a downstream consumer could verify, but our load-bearing
-    assertion is workflow_states.state_data["cursor"].
-
-    PYTHONPATH gymnastics: the test fetcher needs to be importable
-    in the subprocess. We materialize it into tests/_helpers/ and
-    add that dir to PYTHONPATH so the subprocess can import
-    `shard_fetch_resume_fetcher` (importing it installs the
-    FETCHER_DISPATCH override). The subprocess's entry module
-    (services/ingest/ingestion/workflows/shard_fetch.py) doesn't import
-    the test fetcher itself; we use PYTHONSTARTUP-style trickery
-    via a small bootstrap module.
-    """
-    helpers_dir = _ensure_test_fetcher_module()
-
-    # Seed tenant, install, run, shard.
+async def _seed_resume_fixture(fresh_db: asyncpg.Pool) -> _ResumeFixture:
     tid = uuid4()
     await fresh_db.execute(
         "INSERT INTO tenants (id, name) VALUES ($1, $2)",
@@ -357,33 +334,36 @@ async def test_shard_fetch_resumes_from_persisted_cursor_after_restart(
             "source": "github",
         },
     )
+    return _ResumeFixture(
+        tenant_id=tid,
+        run_id=run_id,
+        shard_id=shard_id,
+        instance_a=f"shf-resA-{tid.hex[:6]}",
+        instance_b=f"shf-resB-{tid.hex[:6]}",
+    )
 
-    instance_a = f"shf-resA-{tid.hex[:6]}"
-    instance_b = f"shf-resB-{tid.hex[:6]}"
 
-    def _env_for(instance: str, lease_sec: str = "0.3") -> dict[str, str]:
-        env = os.environ.copy()
-        env["DATABASE_URL"] = os.environ["DATABASE_URL"]
-        env["SHARD_FETCH_TICK_SEC"] = "0.1"
-        env["SHARD_FETCH_BATCH"] = "5"
-        env["SHARD_FETCH_LEASE_SEC"] = lease_sec
-        env["SHARD_FETCH_FLUSH_SEC"] = "2.0"
-        env["SHARD_FETCH_INSTANCE"] = instance
-        env["WORKFLOWS_LOG_LEVEL"] = "INFO"
-        # Resume/cursor test — keep it independent of the FetchPage gate.
-        env["SHARD_FETCH_RATE_LIMIT"] = "0"
-        # Make the test fetcher importable + install it before
-        # ShardFetch reads FETCHER_DISPATCH. We use the
-        # PYTHONSTARTUP-style mechanism: -X importtime won't do it;
-        # use the -c wrapper.
-        env["PYTHONPATH"] = helpers_dir + os.pathsep + env.get("PYTHONPATH", "")
-        return env
+def _resume_env(
+    *,
+    instance: str,
+    helpers_dir: str,
+    lease_sec: str = "0.3",
+) -> dict[str, str]:
+    env = os.environ.copy()
+    env["DATABASE_URL"] = os.environ["DATABASE_URL"]
+    env["SHARD_FETCH_TICK_SEC"] = "0.1"
+    env["SHARD_FETCH_BATCH"] = "5"
+    env["SHARD_FETCH_LEASE_SEC"] = lease_sec
+    env["SHARD_FETCH_FLUSH_SEC"] = "2.0"
+    env["SHARD_FETCH_INSTANCE"] = instance
+    env["WORKFLOWS_LOG_LEVEL"] = "INFO"
+    env["SHARD_FETCH_RATE_LIMIT"] = "0"
+    env["PYTHONPATH"] = helpers_dir + os.pathsep + env.get("PYTHONPATH", "")
+    return env
 
-    # We can't directly run `python -m services.ingest.ingestion.workflows.shard_fetch`
-    # because that wouldn't import our test fetcher module. Instead,
-    # use python -c to (a) import the test fetcher (installs the
-    # dispatch override), (b) then call shard_fetch.main().
-    bootstrap_code = """
+
+def _resume_bootstrap_code() -> str:
+    return """
 import services.ingest.ingestion.kafka.producer as kafka_producer
 
 
@@ -415,65 +395,75 @@ from services.ingest.ingestion.workflows.shard_fetch import main
 main()
 """
 
-    # ----- Process A: start, wait for page-0 cursor, SIGTERM. -----
-    proc_a = subprocess.Popen(
+
+def _start_resume_process(
+    *,
+    instance: str,
+    helpers_dir: str,
+    bootstrap_code: str,
+) -> subprocess.Popen:
+    return subprocess.Popen(
         [sys.executable, "-c", bootstrap_code],
-        env=_env_for(instance_a),
+        env=_resume_env(instance=instance, helpers_dir=helpers_dir),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+
+
+def _decode_state_data(value: object) -> dict:
+    if isinstance(value, (str, bytes)):
+        return orjson.loads(value)
+    return dict(value)  # type: ignore[arg-type]
+
+
+async def _wait_for_page_zero_cursor(
+    fresh_db: asyncpg.Pool,
+    proc_a: subprocess.Popen,
+    shard_id: UUID,
+) -> None:
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        ws = await _read_workflow_state(fresh_db, workflow_id=str(shard_id))
+        if ws is not None:
+            cursor = _decode_state_data(ws["state_data"])
+            if cursor.get("cursor") == {"page": 0}:
+                return
+        await asyncio.sleep(0.05)
+
+    proc_a.kill()
+    proc_a.wait(timeout=5)
+    stderr = proc_a.stderr.read().decode() if proc_a.stderr else ""
+    stdout = proc_a.stdout.read().decode() if proc_a.stdout else ""
+    sig_state = await fresh_db.fetchrow(
+        "SELECT consumed_at, consumed_by FROM workflow_signals "
+        "WHERE idempotency_key = $1 AND signal_kind = $2",
+        str(shard_id), SIGNAL_KIND_REQUESTED,
+    )
+    shard_state = await fresh_db.fetchval(
+        "SELECT state FROM onboarding_shards WHERE id = $1",
+        shard_id,
+    )
+    ws_now = await _read_workflow_state(fresh_db, workflow_id=str(shard_id))
+    ws_state_data = ws_now and ws_now["state_data"]
+    if isinstance(ws_state_data, (str, bytes)):
+        ws_state_data = orjson.loads(ws_state_data)
+    raise AssertionError(
+        f"Process A did not advance past page 0 within 30s. "
+        f"signal consumed_at={sig_state and sig_state['consumed_at']!r}, "
+        f"consumed_by={sig_state and sig_state['consumed_by']!r}; "
+        f"shard.state={shard_state!r}; "
+        f"workflow_states.state_data={ws_state_data!r}; "
+        f"stderr: {stderr[:2000]} | stdout: {stdout[:500]}"
+    )
+
+
+async def _kill_process_a_after_page_zero(
+    fresh_db: asyncpg.Pool,
+    proc_a: subprocess.Popen,
+    shard_id: UUID,
+) -> None:
     try:
-        # Wait until page-0 advance lands.
-        deadline = time.monotonic() + 30.0
-        page_zero_seen = False
-        while time.monotonic() < deadline:
-            ws = await _read_workflow_state(
-                fresh_db, workflow_id=str(shard_id),
-            )
-            if ws is not None:
-                cursor = ws["state_data"]
-                if isinstance(cursor, (str, bytes)):
-                    cursor = orjson.loads(cursor)
-                if cursor.get("cursor") == {"page": 0}:
-                    page_zero_seen = True
-                    break
-            await asyncio.sleep(0.05)
-
-        if not page_zero_seen:
-            proc_a.kill()
-            proc_a.wait(timeout=5)
-            stderr = proc_a.stderr.read().decode() if proc_a.stderr else ""
-            stdout = proc_a.stdout.read().decode() if proc_a.stdout else ""
-            # Snapshot DB state for diagnostics.
-            sig_state = await fresh_db.fetchrow(
-                "SELECT consumed_at, consumed_by FROM workflow_signals "
-                "WHERE idempotency_key = $1 AND signal_kind = $2",
-                str(shard_id), SIGNAL_KIND_REQUESTED,
-            )
-            shard_state = await fresh_db.fetchval(
-                "SELECT state FROM onboarding_shards WHERE id = $1",
-                shard_id,
-            )
-            ws_now = await _read_workflow_state(
-                fresh_db, workflow_id=str(shard_id),
-            )
-            ws_state_data = ws_now and ws_now["state_data"]
-            if isinstance(ws_state_data, (str, bytes)):
-                ws_state_data = orjson.loads(ws_state_data)
-            raise AssertionError(
-                f"Process A did not advance past page 0 within 30s. "
-                f"signal consumed_at={sig_state and sig_state['consumed_at']!r}, "
-                f"consumed_by={sig_state and sig_state['consumed_by']!r}; "
-                f"shard.state={shard_state!r}; "
-                f"workflow_states.state_data={ws_state_data!r}; "
-                f"stderr: {stderr[:2000]} | stdout: {stdout[:500]}"
-            )
-
-        # SIGTERM A. We want A to exit BEFORE it finishes pages 1 + 2.
-        # Since each fetcher call is fast, A might run all three pages
-        # before our signal arrives. To enforce mid-flight SIGTERM,
-        # we hard-kill: SIGKILL leaves the shard in_progress with
-        # cursor={"page": 0}.
+        await _wait_for_page_zero_cursor(fresh_db, proc_a, shard_id)
         proc_a.kill()
         proc_a.wait(timeout=5)
     finally:
@@ -481,26 +471,18 @@ main()
             proc_a.kill()
             proc_a.wait(timeout=5)
 
-    # Confirm pre-restart state: cursor={"page": 0}, shard still
-    # in_progress, NOT done.
-    ws_pre = await _read_workflow_state(
-        fresh_db, workflow_id=str(shard_id),
-    )
+
+async def _assert_resume_pre_restart_state(
+    fresh_db: asyncpg.Pool,
+    shard_id: UUID,
+) -> None:
+    ws_pre = await _read_workflow_state(fresh_db, workflow_id=str(shard_id))
     assert ws_pre is not None
-    cursor_pre = ws_pre["state_data"]
-    if isinstance(cursor_pre, (str, bytes)):
-        cursor_pre = orjson.loads(cursor_pre)
-    # The cursor MIGHT have advanced to {"page": 1} or {"page": 2}
-    # if process A managed to fetch more pages before SIGKILL. The
-    # resume property only requires that wherever it left off,
-    # process B resumes from THAT cursor.
+    _decode_state_data(ws_pre["state_data"])
+
     state_pre = await fresh_db.fetchval(
         "SELECT state FROM onboarding_shards WHERE id = $1", shard_id,
     )
-
-    # If process A managed to finish all 3 pages before SIGKILL,
-    # the resume test is vacuous (nothing to resume). Skip in that
-    # case rather than declare a flake.
     if state_pre == "done":
         pytest.skip(
             "Process A finished all pages before SIGKILL — too fast "
@@ -508,73 +490,126 @@ main()
             "rerun is the answer. Not a service correctness concern."
         )
 
+
+async def _wait_for_shard_done(
+    fresh_db: asyncpg.Pool,
+    proc_b: subprocess.Popen,
+    shard_id: UUID,
+) -> None:
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        state = await fresh_db.fetchval(
+            "SELECT state FROM onboarding_shards WHERE id = $1",
+            shard_id,
+        )
+        if state == "done":
+            return
+        await asyncio.sleep(0.1)
+
+    proc_b.kill()
+    proc_b.wait(timeout=5)
+    stderr = proc_b.stderr.read().decode() if proc_b.stderr else ""
+    final_state = await fresh_db.fetchval(
+        "SELECT state FROM onboarding_shards WHERE id = $1",
+        shard_id,
+    )
+    ws_now = await _read_workflow_state(fresh_db, workflow_id=str(shard_id))
+    state_data = ws_now and _decode_state_data(ws_now["state_data"])
+    raise AssertionError(
+        f"Process B did not drive shard to 'done' within 30s. "
+        f"final state={final_state!r}; workflow_states={state_data!r}; "
+        f"stderr: {stderr[:1000]}"
+    )
+
+
+async def _assert_final_resume_cursor(
+    fresh_db: asyncpg.Pool,
+    shard_id: UUID,
+) -> None:
+    ws_post = await _read_workflow_state(fresh_db, workflow_id=str(shard_id))
+    assert ws_post is not None
+    cursor_post = _decode_state_data(ws_post["state_data"])
+    assert cursor_post.get("cursor") == {"page": 2}, (
+        f"Final cursor should be {{'page': 2}}; got {cursor_post}."
+    )
+    assert cursor_post.get("end_of_data") is True
+
+
+def _terminate_process_b(proc_b: subprocess.Popen) -> None:
+    proc_b.send_signal(signal.SIGTERM)
+    try:
+        rc = proc_b.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        proc_b.kill()
+        proc_b.wait(timeout=5)
+        stderr = proc_b.stderr.read().decode() if proc_b.stderr else ""
+        raise AssertionError(
+            f"Process B did NOT exit within 15s of SIGTERM. "
+            f"stderr: {stderr[:1000]}"
+        )
+    stderr = proc_b.stderr.read().decode() if proc_b.stderr else ""
+    assert rc == 0, f"Process B exited rc={rc}. stderr: {stderr[:1000]}"
+
+
+def _kill_process(proc: subprocess.Popen) -> None:
+    if proc.poll() is None:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+async def test_shard_fetch_resumes_from_persisted_cursor_after_restart(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """The resume contract test.
+
+    Process A: starts ShardFetch with test fetcher returning 3 pages.
+      Wait until workflow_states.state_data.cursor == {"page": 0}
+      (proof: page-0 was successfully advanced via N1 primitive).
+      SIGTERM process A.
+
+    Process B: starts ShardFetch fresh.
+      Wait for the orphan-scan to pick up the in-progress shard.
+      Wait until shard.state == 'done' (proof: pages 1 + 2 ran).
+      Assert: cursor == {"page": 2}; end_of_data == True; the
+      fetcher was called from cursor={"page": 0} onward (i.e., the
+      resume used the persisted cursor, not started over).
+
+    The test fetcher logic (test_helpers/shard_fetch_resume_fetcher.py)
+    emits one record per page; the record carries `{"page": N}` so
+    a downstream consumer could verify, but our load-bearing
+    assertion is workflow_states.state_data["cursor"].
+
+    PYTHONPATH gymnastics: the test fetcher needs to be importable
+    in the subprocess. We materialize it into tests/_helpers/ and
+    add that dir to PYTHONPATH so the subprocess can import
+    `shard_fetch_resume_fetcher` (importing it installs the
+    FETCHER_DISPATCH override). The subprocess's entry module
+    (services/ingest/ingestion/workflows/shard_fetch.py) doesn't import
+    the test fetcher itself; we use PYTHONSTARTUP-style trickery
+    via a small bootstrap module.
+    """
+    helpers_dir = _ensure_test_fetcher_module()
+    fixture = await _seed_resume_fixture(fresh_db)
+    bootstrap_code = _resume_bootstrap_code()
+
+    # ----- Process A: start, wait for page-0 cursor, SIGTERM. -----
+    proc_a = _start_resume_process(
+        instance=fixture.instance_a,
+        helpers_dir=helpers_dir,
+        bootstrap_code=bootstrap_code,
+    )
+    await _kill_process_a_after_page_zero(fresh_db, proc_a, fixture.shard_id)
+    await _assert_resume_pre_restart_state(fresh_db, fixture.shard_id)
+
     # ----- Process B: start, wait for shard 'done'. -----
-    proc_b = subprocess.Popen(
-        [sys.executable, "-c", bootstrap_code],
-        env=_env_for(instance_b),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+    proc_b = _start_resume_process(
+        instance=fixture.instance_b,
+        helpers_dir=helpers_dir,
+        bootstrap_code=bootstrap_code,
     )
     try:
-        deadline = time.monotonic() + 30.0
-        shard_done = False
-        while time.monotonic() < deadline:
-            state = await fresh_db.fetchval(
-                "SELECT state FROM onboarding_shards WHERE id = $1",
-                shard_id,
-            )
-            if state == "done":
-                shard_done = True
-                break
-            await asyncio.sleep(0.1)
-
-        if not shard_done:
-            proc_b.kill()
-            proc_b.wait(timeout=5)
-            stderr = proc_b.stderr.read().decode() if proc_b.stderr else ""
-            final_state = await fresh_db.fetchval(
-                "SELECT state FROM onboarding_shards WHERE id = $1",
-                shard_id,
-            )
-            ws_now = await _read_workflow_state(
-                fresh_db, workflow_id=str(shard_id),
-            )
-            raise AssertionError(
-                f"Process B did not drive shard to 'done' within 30s. "
-                f"final state={final_state!r}; workflow_states={ws_now and dict(ws_now['state_data'])!r}; "
-                f"stderr: {stderr[:1000]}"
-            )
-
-        # LOAD-BEARING: final cursor = {"page": 2}, end_of_data = True.
-        ws_post = await _read_workflow_state(
-            fresh_db, workflow_id=str(shard_id),
-        )
-        assert ws_post is not None
-        cursor_post = ws_post["state_data"]
-        if isinstance(cursor_post, (str, bytes)):
-            cursor_post = orjson.loads(cursor_post)
-        assert cursor_post.get("cursor") == {"page": 2}, (
-            f"Final cursor should be {{'page': 2}}; got {cursor_post}."
-        )
-        assert cursor_post.get("end_of_data") is True
-
-        # Shut down B cleanly.
-        proc_b.send_signal(signal.SIGTERM)
-        try:
-            rc = proc_b.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            proc_b.kill()
-            proc_b.wait(timeout=5)
-            stderr = proc_b.stderr.read().decode() if proc_b.stderr else ""
-            raise AssertionError(
-                f"Process B did NOT exit within 15s of SIGTERM. "
-                f"stderr: {stderr[:1000]}"
-            )
-        stderr = proc_b.stderr.read().decode() if proc_b.stderr else ""
-        assert rc == 0, (
-            f"Process B exited rc={rc}. stderr: {stderr[:1000]}"
-        )
+        await _wait_for_shard_done(fresh_db, proc_b, fixture.shard_id)
+        await _assert_final_resume_cursor(fresh_db, fixture.shard_id)
+        _terminate_process_b(proc_b)
     finally:
-        if proc_b.poll() is None:
-            proc_b.kill()
-            proc_b.wait(timeout=5)
+        _kill_process(proc_b)

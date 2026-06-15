@@ -64,6 +64,7 @@ handler reads to derive `external_id` + `occurred_at`.
 from __future__ import annotations
 
 import base64
+import datetime as _dt
 import hashlib
 import hmac
 import json
@@ -105,6 +106,334 @@ class HmacWebhookResult:
 
 def _host_of(url: str) -> str:
     return url.replace("https://", "").replace("http://", "").rstrip("/").split("/")[0]
+
+
+def _build_jira_payload(
+    target: Any,
+    content: str,
+    suffix: str,
+    iso: str,
+    secret: str,
+) -> tuple[dict[str, Any], str]:
+    site = target.jira_site
+    issue_id = f"live-{target.slug}-{suffix}"
+    payload = {
+        "webhookEvent": "jira:issue_updated",
+        "issue": {
+            "id": issue_id,
+            "key": f"LIVE-{suffix}",
+            "self": f"https://{site}/rest/api/2/issue/{issue_id}",
+            "fields": {"summary": content, "updated": iso},
+        },
+    }
+    return payload, f"jira:{site}:issue:{issue_id}:{iso}"
+
+
+def _build_mercury_payload(
+    target: Any,
+    content: str,
+    suffix: str,
+    iso: str,
+    secret: str,
+) -> tuple[dict[str, Any], str]:
+    org, acct = target.mercury_org, target.mercury_account
+    txn_id = f"live-{target.slug}-{suffix}"
+    payload = {
+        "type": "transaction.created",
+        "organizationId": org,
+        "transaction": {
+            "id": txn_id,
+            "accountId": acct,
+            "status": "sent",
+            "amount": -1000.0,
+            "counterpartyName": content,
+            "createdAt": iso,
+        },
+    }
+    return payload, f"mercury:{acct}:txn:{txn_id}:sent"
+
+
+def _build_quickbooks_payload(
+    target: Any,
+    content: str,
+    suffix: str,
+    iso: str,
+    secret: str,
+) -> tuple[dict[str, Any], str]:
+    realm, kind = target.qbo_realm, target.qbo_entity
+    ent_id = f"live-{target.slug}-{suffix}"
+    payload = {
+        "eventNotifications": [
+            {
+                "realmId": realm,
+                "dataChangeEvent": {
+                    "entities": [
+                        {
+                            "name": kind,
+                            "id": ent_id,
+                            "operation": "Update",
+                            "lastUpdated": iso,
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    return payload, f"qbo:{realm}:{kind.lower()}:{ent_id}:chg:{iso}"
+
+
+def _build_brex_payload(
+    target: Any,
+    content: str,
+    suffix: str,
+    iso: str,
+    secret: str,
+) -> tuple[dict[str, Any], str]:
+    org, acct = target.brex_org, target.brex_account
+    txn_id = f"live-{target.slug}-{suffix}"
+    payload = {
+        "type": "transaction.created",
+        "organizationId": org,
+        "accountId": acct,
+        "transaction": {
+            "id": txn_id,
+            "accountId": acct,
+            "status": "posted",
+            "amount": -1000.0,
+            "counterpartyName": content,
+            "createdAt": iso,
+        },
+    }
+    return payload, f"brex:{acct}:txn:{txn_id}:posted"
+
+
+def _build_ramp_payload(
+    target: Any,
+    content: str,
+    suffix: str,
+    iso: str,
+    secret: str,
+) -> tuple[dict[str, Any], str]:
+    biz = target.ramp_business
+    ent_id = f"live-{target.slug}-{suffix}"
+    event_id = f"evt-{target.slug}-{suffix}"
+    payload = {
+        "id": event_id,
+        "type": "transactions.cleared",
+        "created_at": iso,
+        "business_id": biz,
+        "object": {"id": ent_id},
+    }
+    return payload, f"ramp:{biz}:txn:{ent_id}:chg:{event_id}"
+
+
+def _build_gusto_payload(
+    target: Any,
+    content: str,
+    suffix: str,
+    iso: str,
+    secret: str,
+) -> tuple[dict[str, Any], str]:
+    company = target.gusto_company
+    ent_id = f"live-{target.slug}-{suffix}"
+    event_uuid = f"evt-{target.slug}-{suffix}"
+    ts_epoch = int(_dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
+    payload = {
+        "uuid": event_uuid,
+        "event_type": "employee.updated",
+        "resource_type": "Company",
+        "resource_uuid": company,
+        "entity_type": "Employee",
+        "entity_uuid": ent_id,
+        "timestamp": ts_epoch,
+    }
+    return payload, f"gusto:{company}:employee:{ent_id}:chg:{event_uuid}"
+
+
+def _build_deel_payload(
+    target: Any,
+    content: str,
+    suffix: str,
+    iso: str,
+    secret: str,
+) -> tuple[dict[str, Any], str]:
+    org = target.deel_org
+    ctr = f"ctr-{target.slug}"
+    pay_id = f"live-{target.slug}-{suffix}"
+    payload = {
+        "type": "payment.created",
+        "organizationId": org,
+        "contractId": ctr,
+        "payment": {
+            "id": pay_id,
+            "contractId": ctr,
+            "status": "paid",
+            "amount": -1000.0,
+            "counterpartyName": content,
+            "createdAt": iso,
+        },
+    }
+    return payload, f"deel:{ctr}:payment:{pay_id}:paid"
+
+
+def _build_fireflies_payload(
+    target: Any,
+    content: str,
+    suffix: str,
+    iso: str,
+    secret: str,
+) -> tuple[dict[str, Any], str]:
+    ws = target.fireflies_workspace
+    tid = f"live-{target.slug}-{suffix}"
+    payload = {
+        "type": "transcript.completed",
+        "workspaceId": ws,
+        "transcript": {
+            "id": tid,
+            "title": content,
+            "dateTime": iso,
+            "version": iso,
+        },
+    }
+    return payload, f"fireflies:{ws}:transcript:{tid}:{iso}"
+
+
+def _build_miro_payload(
+    target: Any,
+    content: str,
+    suffix: str,
+    iso: str,
+    secret: str,
+) -> tuple[dict[str, Any], str]:
+    org = target.miro_org
+    board = target.miro_board
+    item_id = f"live-{target.slug}-{suffix}"
+    payload = {
+        "event": "board_item.created",
+        "organizationId": org,
+        "item": {
+            "id": item_id,
+            "boardId": board,
+            "version": iso,
+            "modifiedAt": iso,
+            "type": "sticky_note",
+            "data": {"content": content},
+        },
+    }
+    return payload, f"miro:{org}:item:{item_id}:{iso}"
+
+
+def _build_figma_payload(
+    target: Any,
+    content: str,
+    suffix: str,
+    iso: str,
+    secret: str,
+) -> tuple[dict[str, Any], str]:
+    webhook_id = target.figma_webhook_id
+    file_key = target.figma_file
+    payload = {
+        "event_type": "FILE_VERSION_UPDATE",
+        "passcode": secret,
+        "webhook_id": webhook_id,
+        "file_key": file_key,
+        "file_name": content,
+        "timestamp": iso,
+        "triggered_by": {"id": f"user-{target.slug}", "handle": content},
+    }
+    return payload, f"figma:{webhook_id}:event:{file_key}:{iso}"
+
+
+def _build_hibob_payload(
+    target: Any,
+    content: str,
+    suffix: str,
+    iso: str,
+    secret: str,
+) -> tuple[dict[str, Any], str]:
+    company = target.hibob_company
+    emp_id = f"live-{target.slug}-{suffix}"
+    payload = {
+        "companyId": company,
+        "type": "employee.updated",
+        "entity": {
+            "id": emp_id,
+            "displayName": content,
+            "status": "active",
+            "modified": iso,
+        },
+    }
+    return payload, f"hibob:{company}:employee:{emp_id}:{iso}"
+
+
+def _build_ashby_payload(
+    target: Any,
+    content: str,
+    suffix: str,
+    iso: str,
+    secret: str,
+) -> tuple[dict[str, Any], str]:
+    org = target.ashby_org
+    app_id = f"live-{target.slug}-{suffix}"
+    payload = {
+        "action": "applicationUpdate",
+        "organizationId": org,
+        "data": {
+            "id": app_id,
+            "resourceType": "application",
+            "name": content,
+            "status": "active",
+            "updatedAt": iso,
+        },
+    }
+    return payload, f"ashby:{org}:application:{app_id}"
+
+
+def _build_grafana_payload(
+    target: Any,
+    content: str,
+    suffix: str,
+    iso: str,
+    secret: str,
+) -> tuple[dict[str, Any], str]:
+    inst = target.grafana_instance
+    fp = f"live-{target.slug}-{suffix}"
+    payload = {
+        "status": "firing",
+        "externalURL": f"https://{inst}",
+        "orgId": 1,
+        "groupKey": "{}:{alertname=\"" + fp + "\"}",
+        "commonLabels": {"alertname": fp, "service": content},
+        "commonAnnotations": {"summary": content},
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {"alertname": fp},
+                "annotations": {"summary": content},
+                "startsAt": iso,
+                "endsAt": "0001-01-01T00:00:00Z",
+                "fingerprint": fp,
+            }
+        ],
+    }
+    return payload, f"grafana:{inst}:alert:{fp}:firing"
+
+
+_PAYLOAD_BUILDERS = {
+    "jira": _build_jira_payload,
+    "mercury": _build_mercury_payload,
+    "quickbooks": _build_quickbooks_payload,
+    "grafana": _build_grafana_payload,
+    "brex": _build_brex_payload,
+    "ramp": _build_ramp_payload,
+    "gusto": _build_gusto_payload,
+    "deel": _build_deel_payload,
+    "fireflies": _build_fireflies_payload,
+    "miro": _build_miro_payload,
+    "figma": _build_figma_payload,
+    "hibob": _build_hibob_payload,
+    "ashby": _build_ashby_payload,
+}
 
 
 class HmacWebhookGenerator:
@@ -202,257 +531,8 @@ class HmacWebhookGenerator:
         self, target: "Any", content: str,
     ) -> tuple[dict[str, Any], str]:
         suffix, iso = self._next_iso()
-        if self._provider == "jira":
-            site = target.jira_site
-            issue_id = f"live-{target.slug}-{suffix}"
-            payload = {
-                "webhookEvent": "jira:issue_updated",
-                "issue": {
-                    "id": issue_id,
-                    "key": f"LIVE-{suffix}",
-                    "self": f"https://{site}/rest/api/2/issue/{issue_id}",
-                    "fields": {"summary": content, "updated": iso},
-                },
-            }
-            return payload, f"jira:{site}:issue:{issue_id}:{iso}"
-        if self._provider == "mercury":
-            org, acct = target.mercury_org, target.mercury_account
-            txn_id = f"live-{target.slug}-{suffix}"
-            payload = {
-                "type": "transaction.created",
-                "organizationId": org,
-                "transaction": {
-                    "id": txn_id,
-                    "accountId": acct,
-                    "status": "sent",
-                    "amount": -1000.0,
-                    "counterpartyName": content,
-                    "createdAt": iso,
-                },
-            }
-            return payload, f"mercury:{acct}:txn:{txn_id}:sent"
-        if self._provider == "quickbooks":
-            realm, kind = target.qbo_realm, target.qbo_entity
-            ent_id = f"live-{target.slug}-{suffix}"
-            payload = {
-                "eventNotifications": [{
-                    "realmId": realm,
-                    "dataChangeEvent": {"entities": [{
-                        "name": kind, "id": ent_id,
-                        "operation": "Update", "lastUpdated": iso,
-                    }]},
-                }],
-            }
-            return payload, f"qbo:{realm}:{kind.lower()}:{ent_id}:chg:{iso}"
-        if self._provider == "brex":
-            # Brex transaction.created webhook (Bearer/Mercury archetype). Body
-            # matches handlers/brex.py: top-level `type` + `accountId` +
-            # `transaction`. `organizationId` keys tenant_resolver._extract_brex.
-            org, acct = target.brex_org, target.brex_account
-            txn_id = f"live-{target.slug}-{suffix}"
-            payload = {
-                "type": "transaction.created",
-                "organizationId": org,
-                "accountId": acct,
-                "transaction": {
-                    "id": txn_id,
-                    "accountId": acct,
-                    "status": "posted",
-                    "amount": -1000.0,
-                    "counterpartyName": content,
-                    "createdAt": iso,
-                },
-            }
-            return payload, f"brex:{acct}:txn:{txn_id}:posted"
-        if self._provider == "ramp":
-            # REAL Ramp flat event (VERIFIED against docs.ramp.com): root-level
-            # business_id is the tenant; `type` is dot.notation; `object.id` is
-            # the affected resource; `id` is the stable event id (dedup key). No
-            # eventNotifications wrapper. Signature header x-ramp-signature,
-            # HMAC-SHA256 base64 (encoding still UNCONFIRMED upstream — see
-            # signatures/ramp.py; generator+verifier stay in lockstep).
-            biz = target.ramp_business
-            ent_id = f"live-{target.slug}-{suffix}"
-            event_id = f"evt-{target.slug}-{suffix}"
-            payload = {
-                "id": event_id,
-                "type": "transactions.cleared",
-                "created_at": iso,
-                "business_id": biz,
-                "object": {"id": ent_id},
-            }
-            return payload, f"ramp:{biz}:txn:{ent_id}:chg:{event_id}"
-        if self._provider == "gusto":
-            # REAL Gusto thin notification (flat snake_case, VERIFIED against
-            # docs.gusto.com): resource_uuid is ALWAYS the company; entity_*
-            # names the changed resource; the body has no entity payload (poll
-            # re-fetch fills it). Signed as bare lowercase hex HMAC-SHA256 over
-            # the raw body in X-Gusto-Signature; versioned by the delivery uuid.
-            import datetime as _dt
-
-            company = target.gusto_company
-            ent_id = f"live-{target.slug}-{suffix}"
-            event_uuid = f"evt-{target.slug}-{suffix}"
-            ts_epoch = int(
-                _dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
-            )
-            payload = {
-                "uuid": event_uuid,
-                "event_type": "employee.updated",
-                "resource_type": "Company",
-                "resource_uuid": company,
-                "entity_type": "Employee",
-                "entity_uuid": ent_id,
-                "timestamp": ts_epoch,
-            }
-            return payload, f"gusto:{company}:employee:{ent_id}:chg:{event_uuid}"
-        if self._provider == "deel":
-            # Deel payment.created webhook (Bearer/Mercury archetype). Body
-            # matches handlers/deel.py: top-level `type` + `contractId` +
-            # `payment`. `organizationId` keys tenant_resolver._extract_deel.
-            org = target.deel_org
-            ctr = f"ctr-{target.slug}"
-            pay_id = f"live-{target.slug}-{suffix}"
-            payload = {
-                "type": "payment.created",
-                "organizationId": org,
-                "contractId": ctr,
-                "payment": {
-                    "id": pay_id,
-                    "contractId": ctr,
-                    "status": "paid",
-                    "amount": -1000.0,
-                    "counterpartyName": content,
-                    "createdAt": iso,
-                },
-            }
-            return payload, f"deel:{ctr}:payment:{pay_id}:paid"
-        if self._provider == "fireflies":
-            # Fireflies transcript.completed webhook (Brex/HMAC archetype). Body
-            # matches handlers/fireflies.py: top-level `type` + `workspaceId` +
-            # `transcript`. `workspaceId` keys tenant_resolver._extract_fireflies.
-            # The handler versions external_id by the transcript `version`; use
-            # the live ISO so it is fresh (never dedups against backfill).
-            ws = target.fireflies_workspace
-            tid = f"live-{target.slug}-{suffix}"
-            payload = {
-                "type": "transcript.completed",
-                "workspaceId": ws,
-                "transcript": {
-                    "id": tid,
-                    "title": content,
-                    "dateTime": iso,
-                    "version": iso,
-                },
-            }
-            return payload, f"fireflies:{ws}:transcript:{tid}:{iso}"
-        if self._provider == "miro":
-            # Miro board_item.created webhook (Brex/HMAC archetype). Body matches
-            # handlers/miro.py: top-level `event` + `organizationId` + `item`.
-            # `organizationId` keys tenant_resolver._extract_miro. The handler
-            # versions external_id by the item `version`; use the live ISO.
-            org = target.miro_org
-            board = target.miro_board
-            item_id = f"live-{target.slug}-{suffix}"
-            payload = {
-                "event": "board_item.created",
-                "organizationId": org,
-                "item": {
-                    "id": item_id,
-                    "boardId": board,
-                    "version": iso,
-                    "modifiedAt": iso,
-                    "type": "sticky_note",
-                    "data": {"content": content},
-                },
-            }
-            return payload, f"miro:{org}:item:{item_id}:{iso}"
-        if self._provider == "figma":
-            # REAL Figma Webhooks V2 (VERIFIED against figma.com developers docs,
-            # R2): PASSCODE-IN-BODY (no HMAC, no signature header) — the body
-            # echoes the shared `passcode` (== signing secret) which the verifier
-            # compares. The delivery carries a Figma-assigned `webhook_id` (the
-            # install scope — keys tenant_resolver._extract_figma + the seeded
-            # provider_installations row) and NO `team_id`, and has NO stable
-            # event id, so the handler discriminates by (file_key, timestamp).
-            webhook_id = target.figma_webhook_id
-            file_key = target.figma_file
-            payload = {
-                "event_type": "FILE_VERSION_UPDATE",
-                "passcode": self._secret,
-                "webhook_id": webhook_id,
-                "file_key": file_key,
-                "file_name": content,
-                "timestamp": iso,
-                "triggered_by": {"id": f"user-{target.slug}", "handle": content},
-            }
-            return payload, f"figma:{webhook_id}:event:{file_key}:{iso}"
-        if self._provider == "hibob":
-            # HiBob employee.updated webhook (gusto-structure / Basic-service-user
-            # archetype). Body matches handlers/hibob.py LIVE WEBHOOK path:
-            # top-level `companyId` + `type` (`<kind>.<event>`) + a full `entity`
-            # body. `companyId` keys tenant_resolver._extract_hibob. external_id is
-            # versioned by the entity's `modified` field — use the live ISO so it
-            # is fresh (never dedups against backfill).
-            company = target.hibob_company
-            emp_id = f"live-{target.slug}-{suffix}"
-            payload = {
-                "companyId": company,
-                "type": "employee.updated",
-                "entity": {
-                    "id": emp_id,
-                    "displayName": content,
-                    "status": "active",
-                    "modified": iso,
-                },
-            }
-            # entity_kind="employee"; external_id = hibob:{co}:employee:{id}:{ver}.
-            return payload, f"hibob:{company}:employee:{emp_id}:{iso}"
-        if self._provider == "ashby":
-            # Ashby applicationUpdate webhook (gusto-structure / API-key-as-Basic
-            # archetype). Body matches handlers/ashby.py LIVE WEBHOOK path:
-            # top-level `action` + `organizationId` + a `data` entity body.
-            # `organizationId` keys tenant_resolver._extract_ashby. The entity's
-            # `resourceType` resolves entity_kind; external_id is NOT versioned
-            # (ashby:{org}:{kind}:{id}) — the live ISO `updatedAt` only sets
-            # occurred_at, keeping the live row a fresh observation via its
-            # globally-unique id.
-            org = target.ashby_org
-            app_id = f"live-{target.slug}-{suffix}"
-            payload = {
-                "action": "applicationUpdate",
-                "organizationId": org,
-                "data": {
-                    "id": app_id,
-                    "resourceType": "application",
-                    "name": content,
-                    "status": "active",
-                    "updatedAt": iso,
-                },
-            }
-            # entity_kind="application"; external_id = ashby:{org}:application:{id}.
-            return payload, f"ashby:{org}:application:{app_id}"
-        # grafana alert (the `grafana:alert` channel — distinct from the
-        # backfill `grafana:annotation` channel).
-        inst = target.grafana_instance
-        fp = f"live-{target.slug}-{suffix}"
-        payload = {
-            "status": "firing",
-            "externalURL": f"https://{inst}",
-            "orgId": 1,
-            "groupKey": "{}:{alertname=\"" + fp + "\"}",
-            "commonLabels": {"alertname": fp, "service": content},
-            "commonAnnotations": {"summary": content},
-            "alerts": [{
-                "status": "firing",
-                "labels": {"alertname": fp},
-                "annotations": {"summary": content},
-                "startsAt": iso,
-                "endsAt": "0001-01-01T00:00:00Z",
-                "fingerprint": fp,
-            }],
-        }
-        return payload, f"grafana:{inst}:alert:{fp}:firing"
+        builder = _PAYLOAD_BUILDERS[self._provider]
+        return builder(target, content, suffix, iso, self._secret)
 
     async def simulate_event(
         self,

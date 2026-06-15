@@ -45,6 +45,7 @@ from uuid import UUID
 import asyncpg
 from fastapi import FastAPI
 
+from lib.shared.tenant_context import tenant_transaction
 from services.ingest.synthetic.fixtures import (
     make_discord_guild,
     make_figma,
@@ -391,6 +392,41 @@ class LiveDrivers:
     linkedin_poll: Any = None        # LinkedinPollGenerator (poll live edge)
 
 
+@dataclass(frozen=True)
+class _LiveCutoverDeps:
+    kafka_producer: Any = None
+    s3_raw_client: Any = None
+    tenant_flags: Any = None
+
+
+@dataclass(frozen=True)
+class _LiveTargetGroups:
+    gmail: list[LiveTarget]
+    discord: list[LiveTarget]
+    present: set[str]
+
+
+@dataclass(frozen=True)
+class _CoreLiveGenerators:
+    gmail_pubsub: GmailPubSubGenerator
+    discord_gateway: DiscordGatewayGenerator
+    slack_webhook: SlackWebhookGenerator
+    github_webhook: GithubWebhookGenerator
+
+
+@dataclass(frozen=True)
+class _OptionalLiveGenerators:
+    hmac: dict[str, Any]
+    google_push: Any = None
+    notion_webhook: Any = None
+    google_app: FastAPI | None = None
+    telegram_gateway: Any = None
+    signal_gateway: Any = None
+    aws_poll: Any = None
+    carta_poll: Any = None
+    linkedin_poll: Any = None
+
+
 async def build_live_drivers(
     pool: asyncpg.Pool,
     targets: list[LiveTarget],
@@ -418,22 +454,67 @@ async def build_live_drivers(
     (no behavioural change for the existing runs)."""
     from contextlib import AsyncExitStack
 
-    from services.domain.actors.repo import ActorRepo
-    from services.domain.entity_aliases.repo import EntityAliasRepo
-    from services.app.gateway.main import build_app
-    from services.app.gateway.rate_limit import RateLimiter
-    from services.ingest.integrations.discord.gateway.dispatch import DispatchDeps
-    from services.app.webhooks.tenant_resolver import (
-        InstallationCache,
-        TenantResolverDeps,
-        build_tenant_resolver,
-        noop_metrics,
+    secrets.apply_to_env()
+    cutover = _LiveCutoverDeps(
+        kafka_producer=kafka_producer,
+        s3_raw_client=s3_raw_client,
+        tenant_flags=tenant_flags,
+    )
+    target_groups = _split_live_targets(targets)
+    shared_app = _build_shared_live_app(pool, cutover)
+    gmail_app = _build_gmail_live_app(pool, cutover)
+    stack = AsyncExitStack()
+    core = await _enter_core_live_generators(
+        stack=stack,
+        pool=pool,
+        target_groups=target_groups,
+        shared_app=shared_app,
+        gmail_app=gmail_app,
+        secrets=secrets,
+        cutover=cutover,
+    )
+    optional = await _enter_optional_live_generators(
+        stack=stack,
+        pool=pool,
+        present=target_groups.present,
+        shared_app=shared_app,
+        secrets=secrets,
+        cutover=cutover,
     )
 
-    secrets.apply_to_env()
+    return LiveDrivers(
+        gmail_pubsub=core.gmail_pubsub, discord_gateway=core.discord_gateway,
+        slack_webhook=core.slack_webhook, github_webhook=core.github_webhook,
+        fastapi_app=shared_app, gmail_app=gmail_app, _exit_stack=stack,
+        hmac=optional.hmac, google_push=optional.google_push,
+        notion_webhook=optional.notion_webhook, google_app=optional.google_app,
+        telegram_gateway=optional.telegram_gateway,
+        signal_gateway=optional.signal_gateway, aws_poll=optional.aws_poll,
+        carta_poll=optional.carta_poll, linkedin_poll=optional.linkedin_poll,
+    )
 
-    # ---- Shared FastAPI app for slack + github webhooks ----
-    shared_app = build_app(
+
+def _split_live_targets(targets: list[LiveTarget]) -> _LiveTargetGroups:
+    return _LiveTargetGroups(
+        gmail=[t for t in targets if t.source == "gmail"],
+        discord=[t for t in targets if t.source == "discord"],
+        present={t.source for t in targets},
+    )
+
+
+def _attach_cutover_state(app: FastAPI, cutover: _LiveCutoverDeps) -> None:
+    app.state.kafka_producer = cutover.kafka_producer
+    app.state.s3_raw_client = cutover.s3_raw_client
+    app.state.tenant_flags = cutover.tenant_flags
+
+
+def _build_shared_live_app(pool: asyncpg.Pool, cutover: _LiveCutoverDeps) -> FastAPI:
+    from services.app.gateway.main import build_app
+    from services.app.gateway.rate_limit import RateLimiter
+    from services.domain.actors.repo import ActorRepo
+    from services.domain.entity_aliases.repo import EntityAliasRepo
+
+    app = build_app(
         pool=pool,
         actor_repo=ActorRepo(pool),
         alias_repo=EntityAliasRepo(pool),
@@ -441,34 +522,29 @@ async def build_live_drivers(
         rate_limiter=RateLimiter(),
         configure_logging=False,
     )
-    # Live-via-Kafka cutover deps on the shared app's state — the
-    # slack/github webhook router reads these for `_attempt_kafka_path`.
-    # Absent (Run 1) → cutover stays off, inline path runs.
-    shared_app.state.kafka_producer = kafka_producer
-    shared_app.state.s3_raw_client = s3_raw_client
-    shared_app.state.tenant_flags = tenant_flags
+    _attach_cutover_state(app, cutover)
+    return app
 
-    # ---- Gmail's own minimal app (router not mounted by build_app) ----
+
+def _build_gmail_live_app(pool: asyncpg.Pool, cutover: _LiveCutoverDeps) -> FastAPI:
     from services.app.webhooks.gmail_pubsub import router as gmail_router
-    gmail_app = FastAPI()
-    gmail_app.include_router(gmail_router)
 
     class _GmailDeps:
         pass
-    _deps = _GmailDeps()
-    _deps.pool = pool  # type: ignore[attr-defined]
-    gmail_app.state.deps = _deps
-    # Gmail push cutover deps (read by the pubsub router; the generator's
-    # monkeypatched drain also threads them straight into the fetcher).
-    gmail_app.state.kafka_producer = kafka_producer
-    gmail_app.state.s3_raw_client = s3_raw_client
-    gmail_app.state.tenant_flags = tenant_flags
 
-    # ---- Per-source mock clients ----
-    gmail_targets = [t for t in targets if t.source == "gmail"]
-    discord_targets = [t for t in targets if t.source == "discord"]
+    app = FastAPI()
+    app.include_router(gmail_router)
+    deps = _GmailDeps()
+    deps.pool = pool  # type: ignore[attr-defined]
+    app.state.deps = deps
+    _attach_cutover_state(app, cutover)
+    return app
 
-    mailboxes = {
+
+def _build_gmail_mailboxes(
+    gmail_targets: list[LiveTarget],
+) -> dict[str | None, MockGmailClient]:
+    return {
         t.email: MockGmailClient(
             fixture=make_gmail_mailbox(
                 email=t.email, messages=0, starting_history_id=1000,
@@ -477,83 +553,126 @@ async def build_live_drivers(
         for t in gmail_targets
     }
 
-    # slack/github: a single mock per source for state fidelity (tenant
-    # resolution is by team_id/installation_id in the DB, not the mock).
-    slack_mock = MockSlackClient(
+
+def _gmail_tenant_ids_by_email(gmail_targets: list[LiveTarget]) -> dict[str, UUID]:
+    return {
+        t.email.lower(): t.tenant_id
+        for t in gmail_targets
+        if t.email is not None
+    }
+
+
+def _build_shared_slack_mock() -> MockSlackClient:
+    return MockSlackClient(
         fixture=make_slack_workspace(
             team_id="LIVE_SHARED", channels=1, messages_per_channel=0,
         ),
     )
-    github_mock = MockGithubClient(
+
+
+def _build_shared_github_mock() -> MockGithubClient:
+    return MockGithubClient(
         fixture=make_github_repos(
             org_or_user="live", repos=1, events_per_repo=0,
             installation_id="live-shared",
         ),
     )
 
-    # discord: a guild binding per discord tenant. The mock fixture must
-    # declare the channel the dispatcher appends to.
-    guild_bindings: dict[str, GuildBinding] = {}
-    for t in discord_targets:
+
+def _build_discord_guild_bindings(
+    discord_targets: list[LiveTarget],
+) -> dict[str | None, GuildBinding]:
+    bindings: dict[str | None, GuildBinding] = {}
+    for target in discord_targets:
         fixture = make_discord_guild(
-            guild_id=t.guild_id, channels=1, messages_per_channel=0,
+            guild_id=target.guild_id, channels=1, messages_per_channel=0,
         )
-        fixture["channels"][0]["id"] = t.channel_id
-        guild_bindings[t.guild_id] = GuildBinding(
-            guild_id=t.guild_id,
+        fixture["channels"][0]["id"] = target.channel_id
+        bindings[target.guild_id] = GuildBinding(
+            guild_id=target.guild_id,
             mock_client=MockDiscordClient(fixture=fixture),
         )
+    return bindings
 
-    discord_resolver = build_tenant_resolver(
+
+def _build_discord_dispatch_deps(
+    pool: asyncpg.Pool,
+    cutover: _LiveCutoverDeps,
+) -> Any:
+    from services.app.webhooks.tenant_resolver import (
+        InstallationCache,
+        TenantResolverDeps,
+        build_tenant_resolver,
+        noop_metrics,
+    )
+    from services.domain.actors.repo import ActorRepo
+    from services.domain.entity_aliases.repo import EntityAliasRepo
+    from services.ingest.integrations.discord.gateway.dispatch import DispatchDeps
+
+    resolver = build_tenant_resolver(
         TenantResolverDeps(
             pool=pool, cache=InstallationCache(),
             clock=time.monotonic, metrics=noop_metrics(),
         ),
     )
-    discord_deps = DispatchDeps(
-        pool=pool, tenant_resolver=discord_resolver,
+    return DispatchDeps(
+        pool=pool, tenant_resolver=resolver,
         actor_repo=ActorRepo(pool), alias_repo=EntityAliasRepo(pool),
         embedder=None, application_id="v-discord-app",
-        # Gateway cutover deps (Run 4): when wired + flag TRUE, the
-        # MESSAGE_CREATE frame publishes to ingestion.raw instead of inline.
-        s3_raw_client=s3_raw_client,
-        kafka_producer=kafka_producer,
-        tenant_flags=tenant_flags,
+        s3_raw_client=cutover.s3_raw_client,
+        kafka_producer=cutover.kafka_producer,
+        tenant_flags=cutover.tenant_flags,
     )
 
-    # ---- Instantiate + enter the generators ----
-    stack = AsyncExitStack()
+
+async def _enter_core_live_generators(
+    *,
+    stack: Any,
+    pool: asyncpg.Pool,
+    target_groups: _LiveTargetGroups,
+    shared_app: FastAPI,
+    gmail_app: FastAPI,
+    secrets: SigningSecrets,
+    cutover: _LiveCutoverDeps,
+) -> _CoreLiveGenerators:
     gmail_gen = await stack.enter_async_context(
         GmailPubSubGenerator(
-            app=gmail_app, pool=pool, mailboxes=mailboxes,
-            s3_raw_client=s3_raw_client, kafka_producer=kafka_producer,
-            tenant_flags=tenant_flags,
+            app=gmail_app, pool=pool,
+            mailboxes=_build_gmail_mailboxes(target_groups.gmail),
+            tenant_ids_by_email=_gmail_tenant_ids_by_email(target_groups.gmail),
+            s3_raw_client=cutover.s3_raw_client,
+            kafka_producer=cutover.kafka_producer,
+            tenant_flags=cutover.tenant_flags,
         ),
     )
     discord_gen = await stack.enter_async_context(
         DiscordGatewayGenerator(
-            dispatch_deps=discord_deps, guild_bindings=guild_bindings,
+            dispatch_deps=_build_discord_dispatch_deps(pool, cutover),
+            guild_bindings=_build_discord_guild_bindings(target_groups.discord),
         ),
     )
     slack_gen = await stack.enter_async_context(
         SlackWebhookGenerator(
-            app=shared_app, mock_client=slack_mock,
+            app=shared_app, mock_client=_build_shared_slack_mock(),
             signing_secret=secrets.slack,
         ),
     )
     github_gen = await stack.enter_async_context(
         GithubWebhookGenerator(
-            app=shared_app, mock_client=github_mock,
+            app=shared_app, mock_client=_build_shared_github_mock(),
             signing_secret=secrets.github,
         ),
     )
+    return _CoreLiveGenerators(
+        gmail_pubsub=gmail_gen,
+        discord_gateway=discord_gen,
+        slack_webhook=slack_gen,
+        github_webhook=github_gen,
+    )
 
-    # ---- HMAC providers added after the original 4 (jira/mercury/quickbooks/
-    # grafana). Same shared app + same M5.3 cutover deps as slack/github; only
-    # built when a target needs them. ----
-    present = {t.source for t in targets}
-    hmac_gens: dict[str, Any] = {}
-    _hmac_secret = {
+
+def _hmac_secret_map(secrets: SigningSecrets) -> dict[str, str]:
+    return {
         "jira": secrets.jira, "mercury": secrets.mercury,
         "quickbooks": secrets.quickbooks, "grafana": secrets.grafana,
         "brex": secrets.brex, "ramp": secrets.ramp,
@@ -562,99 +681,122 @@ async def build_live_drivers(
         "figma": secrets.figma,
         "hibob": secrets.hibob, "ashby": secrets.ashby,
     }
+
+
+async def _enter_hmac_generators(
+    *,
+    stack: Any,
+    present: set[str],
+    shared_app: FastAPI,
+    secrets: SigningSecrets,
+) -> dict[str, Any]:
+    hmac_gens: dict[str, Any] = {}
+    secret_by_provider = _hmac_secret_map(secrets)
     for provider in HMAC_PROVIDERS:
         if provider in present:
             hmac_gens[provider] = await stack.enter_async_context(
                 HmacWebhookGenerator(
                     app=shared_app, provider=provider,
-                    signing_secret=_hmac_secret[provider],
+                    signing_secret=secret_by_provider[provider],
                 ),
             )
+    return hmac_gens
 
-    # ---- Notion (shared app; shadow-write to ingestion.raw.notion). ----
-    notion_gen = None
-    if "notion" in present:
-        notion_gen = await stack.enter_async_context(
-            NotionWebhookGenerator(
-                app=shared_app, kafka_producer=kafka_producer,
-                s3_raw_client=s3_raw_client, verification_token=secrets.notion,
-            ),
-        )
 
-    # ---- Google push (gcal + gdrive) on a dedicated app (the push router is
-    # not mounted by build_app). Inline drain → core.ingest. ----
-    google_app: FastAPI | None = None
-    google_push_gen = None
-    if "google_calendar" in present or "google_drive" in present:
-        from services.app.webhooks.google_push import router as google_push_router
-        google_app = FastAPI()
-        google_app.include_router(google_push_router)
-        google_app.state.pool = pool
-        google_push_gen = await stack.enter_async_context(
-            GooglePushGenerator(app=google_app, pool=pool),
-        )
+async def _enter_google_push_generator(
+    *,
+    stack: Any,
+    pool: asyncpg.Pool,
+    present: set[str],
+) -> tuple[FastAPI | None, Any]:
+    if "google_calendar" not in present and "google_drive" not in present:
+        return None, None
+    from services.app.webhooks.google_push import router as google_push_router
 
-    # ---- Telegram (gateway-style; no HTTP). Direct dispatch to handle_update
-    # with the SAME M5.3 cutover deps as slack/github, so a live update
-    # shadow-writes to ingestion.raw.telegram and flows through the consumer
-    # chain — like Discord's gateway. installation_id is resolved per tenant
-    # from telegram_installations by the generator. ----
-    telegram_gen = None
-    if "telegram" in present:
-        telegram_gen = await stack.enter_async_context(
-            TelegramGatewayGenerator(
-                pool=pool, kafka_producer=kafka_producer,
-                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
-            ),
-        )
+    google_app = FastAPI()
+    google_app.include_router(google_push_router)
+    google_app.state.pool = pool
+    return google_app, await stack.enter_async_context(
+        GooglePushGenerator(app=google_app, pool=pool),
+    )
 
-    # ---- Vertical-2 direct-dispatch generators (gateway/poll; no HTTP). Same
-    # M5.3 cutover deps as telegram, so a live event shadow-writes to
-    # ingestion.raw.<source> and flows through the consumer chain. Installs are
-    # resolved per tenant from each source's own install table by the generator,
-    # so the live external_id matches backfill. ----
-    signal_gen = None
-    if "signal" in present:
-        signal_gen = await stack.enter_async_context(
-            SignalGatewayGenerator(
-                pool=pool, kafka_producer=kafka_producer,
-                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
-            ),
-        )
-    aws_gen = None
-    if "aws" in present:
-        aws_gen = await stack.enter_async_context(
-            AwsPollGenerator(
-                pool=pool, kafka_producer=kafka_producer,
-                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
-            ),
-        )
-    carta_gen = None
-    if "carta" in present:
-        carta_gen = await stack.enter_async_context(
-            CartaPollGenerator(
-                pool=pool, kafka_producer=kafka_producer,
-                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
-            ),
-        )
-    linkedin_gen = None
-    if "linkedin" in present:
-        linkedin_gen = await stack.enter_async_context(
-            LinkedinPollGenerator(
-                pool=pool, kafka_producer=kafka_producer,
-                s3_raw_client=s3_raw_client, tenant_flags=tenant_flags,
-            ),
-        )
 
-    return LiveDrivers(
-        gmail_pubsub=gmail_gen, discord_gateway=discord_gen,
-        slack_webhook=slack_gen, github_webhook=github_gen,
-        fastapi_app=shared_app, gmail_app=gmail_app, _exit_stack=stack,
-        hmac=hmac_gens, google_push=google_push_gen,
-        notion_webhook=notion_gen, google_app=google_app,
-        telegram_gateway=telegram_gen,
-        signal_gateway=signal_gen, aws_poll=aws_gen, carta_poll=carta_gen,
-        linkedin_poll=linkedin_gen,
+async def _enter_optional_live_generators(
+    *,
+    stack: Any,
+    pool: asyncpg.Pool,
+    present: set[str],
+    shared_app: FastAPI,
+    secrets: SigningSecrets,
+    cutover: _LiveCutoverDeps,
+) -> _OptionalLiveGenerators:
+    hmac = await _enter_hmac_generators(
+        stack=stack, present=present, shared_app=shared_app, secrets=secrets,
+    )
+    google_app, google_push = await _enter_google_push_generator(
+        stack=stack, pool=pool, present=present,
+    )
+    return _OptionalLiveGenerators(
+        hmac=hmac,
+        google_push=google_push,
+        notion_webhook=await _enter_notion_generator(
+            stack, present, shared_app, secrets, cutover,
+        ),
+        google_app=google_app,
+        telegram_gateway=await _enter_direct_generator(
+            "telegram", TelegramGatewayGenerator, stack, pool, present, cutover,
+        ),
+        signal_gateway=await _enter_direct_generator(
+            "signal", SignalGatewayGenerator, stack, pool, present, cutover,
+        ),
+        aws_poll=await _enter_direct_generator(
+            "aws", AwsPollGenerator, stack, pool, present, cutover,
+        ),
+        carta_poll=await _enter_direct_generator(
+            "carta", CartaPollGenerator, stack, pool, present, cutover,
+        ),
+        linkedin_poll=await _enter_direct_generator(
+            "linkedin", LinkedinPollGenerator, stack, pool, present, cutover,
+        ),
+    )
+
+
+async def _enter_notion_generator(
+    stack: Any,
+    present: set[str],
+    shared_app: FastAPI,
+    secrets: SigningSecrets,
+    cutover: _LiveCutoverDeps,
+) -> Any:
+    if "notion" not in present:
+        return None
+    return await stack.enter_async_context(
+        NotionWebhookGenerator(
+            app=shared_app,
+            kafka_producer=cutover.kafka_producer,
+            s3_raw_client=cutover.s3_raw_client,
+            verification_token=secrets.notion,
+        ),
+    )
+
+
+async def _enter_direct_generator(
+    source: str,
+    generator_cls: Any,
+    stack: Any,
+    pool: asyncpg.Pool,
+    present: set[str],
+    cutover: _LiveCutoverDeps,
+) -> Any:
+    if source not in present:
+        return None
+    return await stack.enter_async_context(
+        generator_cls(
+            pool=pool,
+            kafka_producer=cutover.kafka_producer,
+            s3_raw_client=cutover.s3_raw_client,
+            tenant_flags=cutover.tenant_flags,
+        ),
     )
 
 
@@ -820,14 +962,15 @@ async def capture_twin_identities(
         if not cand:
             continue
         twin_tenant = cand[0]
-        row = await pool.fetchrow(
-            """
-            SELECT external_id, occurred_at FROM observations
-             WHERE tenant_id = $1 AND external_id IS NOT NULL
-             ORDER BY occurred_at ASC LIMIT 1
-            """,
-            twin_tenant.tenant_id,
-        )
+        async with tenant_transaction(twin_tenant.tenant_id, pool=pool) as tctx:
+            row = await tctx.fetchrow(
+                """
+                SELECT external_id, occurred_at FROM observations
+                 WHERE tenant_id = $1 AND external_id IS NOT NULL
+                 ORDER BY occurred_at ASC LIMIT 1
+                """,
+                twin_tenant.tenant_id,
+            )
         if row is None:
             log.warning("twin.no_backfill_obs", extra={"source": source})
             continue
@@ -854,9 +997,10 @@ class LivePhaseResult:
 
 
 async def _count_obs(pool: asyncpg.Pool, tenant_id: UUID) -> int:
-    return int(await pool.fetchval(
-        "SELECT count(*) FROM observations WHERE tenant_id = $1", tenant_id,
-    ))
+    async with tenant_transaction(tenant_id, pool=pool) as tctx:
+        return int(await tctx.fetchval(
+            "SELECT count(*) FROM observations WHERE tenant_id = $1", tenant_id,
+        ))
 
 
 async def _dispatch_regular(
@@ -1278,10 +1422,7 @@ async def wait_for_live_consumer_drain(
     stable_since = None
     ids = list(tenant_ids)
     while time.monotonic() < deadline:
-        cur = int(await pool.fetchval(
-            "SELECT count(*) FROM observations WHERE tenant_id = ANY($1)",
-            ids,
-        ))
+        cur = sum([await _count_obs(pool, tenant_id) for tenant_id in ids])
         now = time.monotonic()
         if cur == last:
             if stable_since is None:

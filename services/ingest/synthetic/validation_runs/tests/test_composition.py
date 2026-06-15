@@ -14,6 +14,7 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
+from lib.shared.tenant_context import tenant_transaction
 from services.ingest.synthetic.validation_runs.composition import (
     LiveTarget,
     SigningSecrets,
@@ -46,27 +47,29 @@ async def _seed_install(
         email = f"{slug}@val.example"
         fixture_params = {"email": email}
         install_id = uuid7()
-        await pool.execute(
-            "INSERT INTO gmail_installations "
-            "(id, tenant_id, workspace_domain, service_account_email, scope) "
-            "VALUES ($1, $2, $3, $4, 'gmail.metadata')",
-            install_id, tenant_id, f"{slug}.example",
-            "sa@v-test.iam.gserviceaccount.com",
-        )
-        await pool.execute(
-            "INSERT INTO gmail_mailbox_watches "
-            "(id, tenant_id, gmail_installation_id, email_address, "
-            " history_id, state) VALUES ($1, $2, $3, $4, $5, 'active')",
-            uuid7(), tenant_id, install_id, email, "1000",
-        )
+        async with tenant_transaction(tenant_id, pool=pool) as tctx:
+            await tctx.execute(
+                "INSERT INTO gmail_installations "
+                "(id, tenant_id, workspace_domain, service_account_email, scope) "
+                "VALUES ($1, $2, $3, $4, 'gmail.metadata')",
+                install_id, tenant_id, f"{slug}.example",
+                "sa@v-test.iam.gserviceaccount.com",
+            )
+            await tctx.execute(
+                "INSERT INTO gmail_mailbox_watches "
+                "(id, tenant_id, gmail_installation_id, email_address, "
+                " history_id, state) VALUES ($1, $2, $3, $4, $5, 'active')",
+                uuid7(), tenant_id, install_id, email, "1000",
+            )
     else:
         fixture_params = {"org_or_user": slug}
-        await pool.execute(
-            "INSERT INTO provider_installations "
-            "(id, tenant_id, provider, installation_id, secret_ref, enabled) "
-            "VALUES ($1, $2, $3, $4, NULL, TRUE)",
-            uuid7(), tenant_id, source, f"x3-{slug}-{source}",
-        )
+        async with tenant_transaction(tenant_id, pool=pool) as tctx:
+            await tctx.execute(
+                "INSERT INTO provider_installations "
+                "(id, tenant_id, provider, installation_id, secret_ref, enabled) "
+                "VALUES ($1, $2, $3, $4, NULL, TRUE)",
+                uuid7(), tenant_id, source, f"x3-{slug}-{source}",
+            )
     return live_target_for(tenant_id, source, slug, fixture_params)
 
 
@@ -163,16 +166,18 @@ async def test_twin_pair_identity_capture_returns_real_backfill_identity(
         "gmail": ("gmail:", "gmail:install-x:y1-backfill-0@example.com"),
     }
     for src, (channel, ext) in fixtures.items():
-        await fresh_db.execute(
-            """
-            INSERT INTO observations (
-                id, tenant_id, occurred_at, kind, source_channel,
-                external_id, content, content_text, trust_tier
-            ) VALUES ($1, $2, '2026-01-01T00:00:00+00:00', 'message',
-                      $3, $4, '{}'::jsonb, 'bf', 'trusted')
-            """,
-            uuid.uuid4(), by_source[src].tenant_id, channel, ext,
-        )
+        tenant_id = by_source[src].tenant_id
+        async with tenant_transaction(tenant_id, pool=fresh_db) as tctx:
+            await tctx.execute(
+                """
+                INSERT INTO observations (
+                    id, tenant_id, occurred_at, kind, source_channel,
+                    external_id, content, content_text, trust_tier
+                ) VALUES ($1, $2, '2026-01-01T00:00:00+00:00', 'message',
+                          $3, $4, '{}'::jsonb, 'bf', 'trusted')
+                """,
+                uuid.uuid4(), tenant_id, channel, ext,
+            )
 
     twins = await capture_twin_identities(fresh_db, targets)
     assert set(twins.keys()) == {"slack", "github", "gmail"}

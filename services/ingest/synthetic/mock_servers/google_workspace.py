@@ -157,281 +157,288 @@ def _bearer_user(headers: Any) -> str | None:
 # ---------------------------------------------------------------------
 # Request handler.
 # ---------------------------------------------------------------------
-def _make_handler(org: WorkspaceOrg, hits: dict[str, int]):
-    def bump(key: str, n: int = 1) -> None:
-        hits[key] = hits.get(key, 0) + n
+class _WorkspaceHandler(BaseHTTPRequestHandler):
+    org: WorkspaceOrg
+    hits: dict[str, int]
 
-    class _Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args: Any) -> None:  # noqa: D401 — silence stderr
+    def _bump(self, key: str, n: int = 1) -> None:
+        self.hits[key] = self.hits.get(key, 0) + n
+
+    def log_message(self, *args: Any) -> None:  # noqa: D401 — silence stderr
+        return
+
+    # -- response helpers -----------------------------------------
+    def _json(self, status: int, body: dict[str, Any]) -> None:
+        payload = json.dumps(body).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _raw(self, status: int, body: bytes, content_type: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _err(self, status: int, message: str) -> None:
+        self._json(status, {"error": {"code": status, "message": message}})
+
+    # -- POST ------------------------------------------------------
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path.rstrip("/").endswith("/token") or path == "/token":
+            self._handle_token()
             return
-
-        # -- response helpers -----------------------------------------
-        def _json(self, status: int, body: dict[str, Any]) -> None:
-            payload = json.dumps(body).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def _raw(self, status: int, body: bytes, content_type: str) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def _err(self, status: int, message: str) -> None:
-            self._json(status, {"error": {"code": status, "message": message}})
-
-        # -- POST ------------------------------------------------------
-        def do_POST(self) -> None:  # noqa: N802
-            parsed = urlparse(self.path)
-            path = parsed.path
-            if path.rstrip("/").endswith("/token") or path == "/token":
-                self._handle_token()
-                return
-            # Gmail watch/stop (push lifecycle). Not exercised by backfill but
-            # supported so the watch path can drive this mock too.
-            if "/gmail/v1/" in path and path.rstrip("/").endswith("/watch"):
-                bump("gmail.watch")
-                self._drain_body()
-                user = _bearer_user(self.headers) or ""
-                hid = (org.gmail.get(user, {}) or {}).get("history_id", "1")
-                self._json(200, {"historyId": hid, "expiration": "9999999999999"})
-                return
-            if "/gmail/v1/" in path and path.rstrip("/").endswith("/stop"):
-                bump("gmail.stop")
-                self._drain_body()
-                self._json(204, {})
-                return
-            self._err(404, f"no POST route {path}")
-
-        def _drain_body(self) -> bytes:
-            length = int(self.headers.get("Content-Length", "0") or "0")
-            return self.rfile.read(length) if length else b""
-
-        def _handle_token(self) -> None:
-            body = self._drain_body().decode("utf-8", errors="replace")
-            params = {k: v[0] for k, v in parse_qs(body).items()}
-            sub = _decode_jwt_sub(params.get("assertion", ""))
-            bump("token")
-            if sub:
-                bump(f"token:{sub}")
-            # Bind the access token to the impersonated user so data endpoints
-            # that address the caller as `me` (Gmail, Drive My Drive) can route.
-            self._json(200, {
-                "access_token": f"{_TOKEN_PREFIX}{sub or 'unknown'}",
-                "expires_in": 3600,
-                "token_type": "Bearer",
-            })
-
-        # -- GET -------------------------------------------------------
-        def do_GET(self) -> None:  # noqa: N802
-            parsed = urlparse(self.path)
-            path = parsed.path
-            params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
-            try:
-                if "/admin/directory/v1/" in path:
-                    self._route_directory(path, params)
-                elif "/gmail/v1/" in path:
-                    self._route_gmail(path, params)
-                elif "/calendar/v3/" in path:
-                    self._route_calendar(path, params)
-                elif "/drive/v3/" in path:
-                    self._route_drive(path, params)
-                else:
-                    self._err(404, f"no GET route {path}")
-            except BrokenPipeError:  # pragma: no cover — client gave up
-                pass
-
-        # -- Admin SDK Directory --------------------------------------
-        def _route_directory(self, path: str, params: dict[str, str]) -> None:
-            parts = [p for p in path.split("/") if p]
-            # /customer/{cid}/orgunits
-            if "orgunits" in parts:
-                bump("dir.orgunits")
-                self._json(200, {"organizationUnits": org.org_units})
-                return
-            # /groups/{key}/members
-            if len(parts) >= 2 and parts[-1] == "members" and "groups" in parts:
-                group_key = unquote(parts[-2])
-                bump(f"dir.members:{group_key}")
-                members = org.group_members.get(group_key, [])
-                self._json(200, {"members": members})
-                return
-            # /groups
-            if parts[-1] == "groups":
-                bump("dir.groups")
-                self._json(200, {"groups": org.groups})
-                return
-            # /users (by domain, or filtered by orgUnitPath query)
-            if parts[-1] == "users":
-                query = params.get("query", "")
-                if query.startswith("orgUnitPath="):
-                    ou = query[len("orgUnitPath="):]
-                    bump(f"dir.users.ou:{ou}")
-                    matched = [u for u in org.users if u.get("orgUnitPath") == ou]
-                    self._json(200, {"users": matched})
-                    return
-                bump("dir.users")
-                self._json(200, {"users": org.users})
-                return
-            self._err(404, f"no directory route {path}")
-
-        # -- Gmail v1 --------------------------------------------------
-        def _route_gmail(self, path: str, params: dict[str, str]) -> None:
-            user = _bearer_user(self.headers)
-            if not user:
-                self._err(401, "gmail: missing/!bound bearer")
-                return
-            mailbox = org.gmail.get(user, {})
-            parts = [p for p in path.split("/") if p]
-
-            # /users/me/profile
-            if parts[-1] == "profile":
-                bump(f"gmail.profile:{user}")
-                self._json(200, {
-                    "emailAddress": user,
-                    "historyId": str(mailbox.get("history_id", "1")),
-                    "messagesTotal": len(mailbox.get("messages", [])),
-                })
-                return
-            # /users/me/history
-            if parts[-1] == "history":
-                bump(f"gmail.history:{user}")
-                self._json(200, {
-                    "history": mailbox.get("history", []),
-                    "historyId": str(mailbox.get("history_id", "1")),
-                })
-                return
-            # /users/me/messages/{id}
-            if len(parts) >= 2 and parts[-2] == "messages":
-                msg_id = unquote(parts[-1])
-                bump(f"gmail.get:{user}")
-                for m in mailbox.get("messages", []):
-                    if str(m.get("id")) == msg_id:
-                        self._json(200, m)
-                        return
-                self._err(404, f"gmail message not found: {msg_id}")
-                return
-            # /users/me/messages  (list -> id/threadId stubs, single page)
-            if parts[-1] == "messages":
-                bump(f"gmail.list:{user}")
-                stubs = [
-                    {"id": str(m.get("id")), "threadId": m.get("threadId")}
-                    for m in mailbox.get("messages", [])
-                ]
-                self._json(200, {
-                    "messages": stubs,
-                    "resultSizeEstimate": len(stubs),
-                })
-                return
-            self._err(404, f"no gmail route {path}")
-
-        # -- Calendar v3 ----------------------------------------------
-        def _route_calendar(self, path: str, params: dict[str, str]) -> None:
-            parts = [p for p in path.split("/") if p]
-            if len(parts) >= 3 and parts[-3] == "calendars" and parts[-1] == "events":
-                calendar_id = unquote(parts[-2])
-                self._calendar_events(calendar_id, params)
-                return
-            self._err(404, f"no calendar route {path}")
-
-        def _calendar_events(self, calendar_id: str, params: dict[str, str]) -> None:
-            bump(f"cal.events:{calendar_id}")
-            fx = org.calendar.get(calendar_id)
-            if fx is None:
-                self._json(200, {"items": [], "nextSyncToken": "sync-empty"})
-                return
-            events = list(fx.get("events", []))
-            delta = list(fx.get("delta", []))
-            if "syncToken" in params:
-                if params["syncToken"] == "EXPIRED":
-                    self._err(410, "Sync token is no longer valid.")
-                    return
-                self._json(200, {"items": delta, "nextSyncToken": "sync-2"})
-                return
-            if "updatedMin" in params:
-                bound = params["updatedMin"]
-                hit = [e for e in (events + delta) if str(e.get("updated", "")) > bound]
-                self._json(200, {"items": hit[: int(params.get("maxResults", "250"))]})
-                return
-            self._json(200, {"items": events, "nextSyncToken": "sync-1"})
-
-        # -- Drive v3 --------------------------------------------------
-        def _drive_fixture(self, params: dict[str, str]) -> dict[str, Any]:
-            """Pick the drive fixture: a Shared Drive (driveId param) or the
-            bearer user's My Drive."""
-            drive_id = params.get("driveId")
-            if drive_id and drive_id in org.drive_shared:
-                return org.drive_shared[drive_id]
+        # Gmail watch/stop (push lifecycle). Not exercised by backfill but
+        # supported so the watch path can drive this mock too.
+        if "/gmail/v1/" in path and path.rstrip("/").endswith("/watch"):
+            self._bump("gmail.watch")
+            self._drain_body()
             user = _bearer_user(self.headers) or ""
-            return org.drive_my.get(user, {})
+            hid = (self.org.gmail.get(user, {}) or {}).get("history_id", "1")
+            self._json(200, {"historyId": hid, "expiration": "9999999999999"})
+            return
+        if "/gmail/v1/" in path and path.rstrip("/").endswith("/stop"):
+            self._bump("gmail.stop")
+            self._drain_body()
+            self._json(204, {})
+            return
+        self._err(404, f"no POST route {path}")
 
-        def _route_drive(self, path: str, params: dict[str, str]) -> None:
-            parts = [p for p in path.split("/") if p]
-            # /changes/startPageToken
-            if parts[-2:] == ["changes", "startPageToken"]:
-                bump("drive.startPageToken")
-                self._json(200, {"startPageToken": org.start_page_token})
-                return
-            # /changes
-            if parts[-1] == "changes":
-                self._drive_changes(params)
-                return
-            # /drives
-            if parts[-1] == "drives":
-                bump("drive.drives")
-                self._json(200, {"drives": org.shared_drives})
-                return
-            # /files/{id}/export
-            if len(parts) >= 3 and parts[-3] == "files" and parts[-1] == "export":
-                self._drive_body(unquote(parts[-2]), params, "export")
-                return
-            # /files/{id}/comments
-            if len(parts) >= 3 and parts[-3] == "files" and parts[-1] == "comments":
-                fid = unquote(parts[-2])
-                bump(f"drive.comments:{fid}")
-                self._json(200, {"comments": self._drive_fixture(params).get("comments", {}).get(fid, [])})
-                return
-            # /files/{id}/revisions
-            if len(parts) >= 3 and parts[-3] == "files" and parts[-1] == "revisions":
-                fid = unquote(parts[-2])
-                bump(f"drive.revisions:{fid}")
-                self._json(200, {"revisions": self._drive_fixture(params).get("revisions", {}).get(fid, [])})
-                return
-            # /files/{id}?alt=media
-            if len(parts) >= 2 and parts[-2] == "files" and params.get("alt") == "media":
-                self._drive_body(unquote(parts[-1]), params, "media")
-                return
-            # /files  (list)
-            if parts[-1] == "files":
-                bump("drive.files")
-                self._json(200, {"files": list(self._drive_fixture(params).get("files", []))})
-                return
-            self._err(404, f"no drive route {path}")
+    def _drain_body(self) -> bytes:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        return self.rfile.read(length) if length else b""
 
-        def _drive_changes(self, params: dict[str, str]) -> None:
-            bump("drive.changes")
-            if params.get("pageToken") == "EXPIRED":
-                self._err(410, "Page token expired.")
-                return
-            fx = self._drive_fixture(params)
-            self._json(200, {
-                "changes": list(fx.get("changes", [])),
-                "newStartPageToken": org.new_start_page_token,
-            })
+    def _handle_token(self) -> None:
+        body = self._drain_body().decode("utf-8", errors="replace")
+        params = {k: v[0] for k, v in parse_qs(body).items()}
+        sub = _decode_jwt_sub(params.get("assertion", ""))
+        self._bump("token")
+        if sub:
+            self._bump(f"token:{sub}")
+        # Bind the access token to the impersonated user so data endpoints
+        # that address the caller as `me` (Gmail, Drive My Drive) can route.
+        self._json(200, {
+            "access_token": f"{_TOKEN_PREFIX}{sub or 'unknown'}",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        })
 
-        def _drive_body(self, file_id: str, params: dict[str, str], kind: str) -> None:
-            bump(f"drive.{kind}:{file_id}")
-            body = self._drive_fixture(params).get("exports", {}).get(file_id, "")
-            if isinstance(body, bytes):
-                self._raw(200, body, "application/pdf")
+    # -- GET -------------------------------------------------------
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        path = parsed.path
+        params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+        try:
+            if "/admin/directory/v1/" in path:
+                self._route_directory(path, params)
+            elif "/gmail/v1/" in path:
+                self._route_gmail(path, params)
+            elif "/calendar/v3/" in path:
+                self._route_calendar(path, params)
+            elif "/drive/v3/" in path:
+                self._route_drive(path, params)
             else:
-                self._raw(200, body.encode("utf-8"), "text/plain; charset=UTF-8")
+                self._err(404, f"no GET route {path}")
+        except BrokenPipeError:  # pragma: no cover — client gave up
+            pass
 
-    return _Handler
+    # -- Admin SDK Directory --------------------------------------
+    def _route_directory(self, path: str, params: dict[str, str]) -> None:
+        parts = [p for p in path.split("/") if p]
+        # /customer/{cid}/orgunits
+        if "orgunits" in parts:
+            self._bump("dir.orgunits")
+            self._json(200, {"organizationUnits": self.org.org_units})
+            return
+        # /groups/{key}/members
+        if len(parts) >= 2 and parts[-1] == "members" and "groups" in parts:
+            group_key = unquote(parts[-2])
+            self._bump(f"dir.members:{group_key}")
+            members = self.org.group_members.get(group_key, [])
+            self._json(200, {"members": members})
+            return
+        # /groups
+        if parts[-1] == "groups":
+            self._bump("dir.groups")
+            self._json(200, {"groups": self.org.groups})
+            return
+        # /users (by domain, or filtered by orgUnitPath query)
+        if parts[-1] == "users":
+            query = params.get("query", "")
+            if query.startswith("orgUnitPath="):
+                ou = query[len("orgUnitPath="):]
+                self._bump(f"dir.users.ou:{ou}")
+                matched = [u for u in self.org.users if u.get("orgUnitPath") == ou]
+                self._json(200, {"users": matched})
+                return
+            self._bump("dir.users")
+            self._json(200, {"users": self.org.users})
+            return
+        self._err(404, f"no directory route {path}")
+
+    # -- Gmail v1 --------------------------------------------------
+    def _route_gmail(self, path: str, params: dict[str, str]) -> None:
+        user = _bearer_user(self.headers)
+        if not user:
+            self._err(401, "gmail: missing/!bound bearer")
+            return
+        mailbox = self.org.gmail.get(user, {})
+        parts = [p for p in path.split("/") if p]
+
+        # /users/me/profile
+        if parts[-1] == "profile":
+            self._bump(f"gmail.profile:{user}")
+            self._json(200, {
+                "emailAddress": user,
+                "historyId": str(mailbox.get("history_id", "1")),
+                "messagesTotal": len(mailbox.get("messages", [])),
+            })
+            return
+        # /users/me/history
+        if parts[-1] == "history":
+            self._bump(f"gmail.history:{user}")
+            self._json(200, {
+                "history": mailbox.get("history", []),
+                "historyId": str(mailbox.get("history_id", "1")),
+            })
+            return
+        # /users/me/messages/{id}
+        if len(parts) >= 2 and parts[-2] == "messages":
+            msg_id = unquote(parts[-1])
+            self._bump(f"gmail.get:{user}")
+            for m in mailbox.get("messages", []):
+                if str(m.get("id")) == msg_id:
+                    self._json(200, m)
+                    return
+            self._err(404, f"gmail message not found: {msg_id}")
+            return
+        # /users/me/messages  (list -> id/threadId stubs, single page)
+        if parts[-1] == "messages":
+            self._bump(f"gmail.list:{user}")
+            stubs = [
+                {"id": str(m.get("id")), "threadId": m.get("threadId")}
+                for m in mailbox.get("messages", [])
+            ]
+            self._json(200, {
+                "messages": stubs,
+                "resultSizeEstimate": len(stubs),
+            })
+            return
+        self._err(404, f"no gmail route {path}")
+
+    # -- Calendar v3 ----------------------------------------------
+    def _route_calendar(self, path: str, params: dict[str, str]) -> None:
+        parts = [p for p in path.split("/") if p]
+        if len(parts) >= 3 and parts[-3] == "calendars" and parts[-1] == "events":
+            calendar_id = unquote(parts[-2])
+            self._calendar_events(calendar_id, params)
+            return
+        self._err(404, f"no calendar route {path}")
+
+    def _calendar_events(self, calendar_id: str, params: dict[str, str]) -> None:
+        self._bump(f"cal.events:{calendar_id}")
+        fx = self.org.calendar.get(calendar_id)
+        if fx is None:
+            self._json(200, {"items": [], "nextSyncToken": "sync-empty"})
+            return
+        events = list(fx.get("events", []))
+        delta = list(fx.get("delta", []))
+        if "syncToken" in params:
+            if params["syncToken"] == "EXPIRED":
+                self._err(410, "Sync token is no longer valid.")
+                return
+            self._json(200, {"items": delta, "nextSyncToken": "sync-2"})
+            return
+        if "updatedMin" in params:
+            bound = params["updatedMin"]
+            hit = [e for e in (events + delta) if str(e.get("updated", "")) > bound]
+            self._json(200, {"items": hit[: int(params.get("maxResults", "250"))]})
+            return
+        self._json(200, {"items": events, "nextSyncToken": "sync-1"})
+
+    # -- Drive v3 --------------------------------------------------
+    def _drive_fixture(self, params: dict[str, str]) -> dict[str, Any]:
+        """Pick the drive fixture: a Shared Drive (driveId param) or the
+        bearer user's My Drive."""
+        drive_id = params.get("driveId")
+        if drive_id and drive_id in self.org.drive_shared:
+            return self.org.drive_shared[drive_id]
+        user = _bearer_user(self.headers) or ""
+        return self.org.drive_my.get(user, {})
+
+    def _route_drive(self, path: str, params: dict[str, str]) -> None:
+        parts = [p for p in path.split("/") if p]
+        # /changes/startPageToken
+        if parts[-2:] == ["changes", "startPageToken"]:
+            self._bump("drive.startPageToken")
+            self._json(200, {"startPageToken": self.org.start_page_token})
+            return
+        # /changes
+        if parts[-1] == "changes":
+            self._drive_changes(params)
+            return
+        # /drives
+        if parts[-1] == "drives":
+            self._bump("drive.drives")
+            self._json(200, {"drives": self.org.shared_drives})
+            return
+        # /files/{id}/export
+        if len(parts) >= 3 and parts[-3] == "files" and parts[-1] == "export":
+            self._drive_body(unquote(parts[-2]), params, "export")
+            return
+        # /files/{id}/comments
+        if len(parts) >= 3 and parts[-3] == "files" and parts[-1] == "comments":
+            fid = unquote(parts[-2])
+            self._bump(f"drive.comments:{fid}")
+            self._json(200, {"comments": self._drive_fixture(params).get("comments", {}).get(fid, [])})
+            return
+        # /files/{id}/revisions
+        if len(parts) >= 3 and parts[-3] == "files" and parts[-1] == "revisions":
+            fid = unquote(parts[-2])
+            self._bump(f"drive.revisions:{fid}")
+            self._json(200, {"revisions": self._drive_fixture(params).get("revisions", {}).get(fid, [])})
+            return
+        # /files/{id}?alt=media
+        if len(parts) >= 2 and parts[-2] == "files" and params.get("alt") == "media":
+            self._drive_body(unquote(parts[-1]), params, "media")
+            return
+        # /files  (list)
+        if parts[-1] == "files":
+            self._bump("drive.files")
+            self._json(200, {"files": list(self._drive_fixture(params).get("files", []))})
+            return
+        self._err(404, f"no drive route {path}")
+
+    def _drive_changes(self, params: dict[str, str]) -> None:
+        self._bump("drive.changes")
+        if params.get("pageToken") == "EXPIRED":
+            self._err(410, "Page token expired.")
+            return
+        fx = self._drive_fixture(params)
+        self._json(200, {
+            "changes": list(fx.get("changes", [])),
+            "newStartPageToken": self.org.new_start_page_token,
+        })
+
+    def _drive_body(self, file_id: str, params: dict[str, str], kind: str) -> None:
+        self._bump(f"drive.{kind}:{file_id}")
+        body = self._drive_fixture(params).get("exports", {}).get(file_id, "")
+        if isinstance(body, bytes):
+            self._raw(200, body, "application/pdf")
+        else:
+            self._raw(200, body.encode("utf-8"), "text/plain; charset=UTF-8")
+
+
+def _make_handler(
+    org: WorkspaceOrg,
+    hits: dict[str, int],
+) -> type[BaseHTTPRequestHandler]:
+    return type("_Handler", (_WorkspaceHandler,), {"org": org, "hits": hits})
 
 
 def start_mock_workspace(
