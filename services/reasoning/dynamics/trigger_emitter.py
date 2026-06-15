@@ -31,7 +31,6 @@ Design constraints:
 """
 from __future__ import annotations
 
-import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
@@ -40,6 +39,7 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
+from services.domain.triggers import enqueue_trigger
 
 from .detectors import (
     DynamicSignal,
@@ -196,18 +196,14 @@ async def emit_missing_transition_triggers(
         # Cost-plan §3.2: carry cross-trigger lineage depth onto the T3.
         from services.reasoning.think.cascade import propagate_cascade_depth
         payload.update(propagate_cascade_depth(parent_payload))
-        await conn.execute(
-            """
-            INSERT INTO think_trigger_queue (
-              id, tenant_id, trigger_kind, trigger_subkind,
-              observation_id, model_id, payload
-            ) VALUES ($1, $2, 'T3', $3, NULL, $4, $5::jsonb)
-            """,
-            trig_id,
-            tenant_id,
-            T3_MISSING_TRANSITION_SUBKIND,
-            model_id,
-            json.dumps(payload, default=str),
+        await enqueue_trigger(
+            conn,
+            tenant_id=tenant_id,
+            trigger_kind="T3",
+            trigger_subkind=T3_MISSING_TRANSITION_SUBKIND,
+            model_id=model_id,
+            payload=payload,
+            trigger_id=trig_id,
         )
         out.append(trig_id)
 

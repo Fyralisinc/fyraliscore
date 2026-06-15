@@ -513,225 +513,58 @@ class EvidenceProjector:
         now = datetime.now(timezone.utc)
         fresh_cutoff = now - timedelta(days=self._budget.fresh_window_days)
 
-        # ---- 1. decisive_counterevidence (cap 2 per model) ----------
-        counter_picks: list[_Pick] = []
-        for sr in model.signal_readings:
-            kind = (sr.get("kind") or "").lower()
-            weight = sr.get("weight")
-            try:
-                weight_f = float(weight) if weight is not None else 0.0
-            except (TypeError, ValueError):
-                weight_f = 0.0
-            is_counter = (kind == "contradiction") or (weight_f < 0)
-            if not is_counter:
-                continue
-            oid = _coerce_uuid(sr.get("event_id"))
-            if oid is None or oid in seen_evidence:
-                continue
-            obs = obs_map.get(oid)
-            if obs is None:
-                omitted.append((oid, "counterevidence_obs_missing"))
-                continue
-            # Score: stronger magnitude = higher score. Bounded to 1.0.
-            magnitude = min(1.0, abs(weight_f) if weight_f else 0.6)
-            score = 0.75 + 0.25 * magnitude
-            level: IncludeLevel = (
-                "raw_excerpt"
-                if question_primitive in _RAW_EXCERPT_QUESTION_PRIMITIVES
-                else "evidence_card"
-            )
-            falsification_relevant = _obs_matches_falsifier(obs, model.falsifier)
-            counter_picks.append(
-                _Pick(
-                    node_id=model.id,
-                    evidence_id=oid,
-                    evidence_kind="observation",
-                    reason="decisive_counterevidence",
-                    include_level=level,
-                    trust_tier=obs.trust_tier,
-                    occurred_at=obs.occurred_at,
-                    score=min(1.0, score),
-                    counterevidence=True,
-                    fresh=obs.occurred_at >= fresh_cutoff,
-                    falsification_relevant=falsification_relevant,
-                )
-            )
-        counter_picks.sort(key=lambda p: p.score, reverse=True)
-        for p in counter_picks[:2]:
-            picks.append(p)
-            seen_evidence.add(p.evidence_id)
-        for p in counter_picks[2:]:
-            omitted.append((p.evidence_id, "counterevidence_cap_reached"))
-
-        # ---- 2a. falsification_relevant (BEFORE decisive_support) ---
-        # Run the falsifier-pattern match before decisive_support so a
-        # supporting obs that matches the falsifier pattern is picked
-        # with reason='falsification_relevant', not consumed silently
-        # by decisive_support. Otherwise, with N<=2 supporting events,
-        # decisive_support would grab everything and falsification_
-        # relevant would never fire.
-        falsifier_kind = (model.falsifier.get("kind") or "").lower()
-        if falsifier_kind in {"observation_pattern", "prediction_deadline"}:
-            for oid in model.supporting_event_ids:
-                if oid in seen_evidence:
-                    continue
-                obs = obs_map.get(oid)
-                if obs is None:
-                    continue
-                if not _obs_matches_falsifier(obs, model.falsifier):
-                    continue
-                chosen = obs
-                picks.append(
-                    _Pick(
-                        node_id=model.id,
-                        evidence_id=chosen.id,
-                        evidence_kind="observation",
-                        reason="falsification_relevant",
-                        include_level="evidence_card",
-                        trust_tier=chosen.trust_tier,
-                        occurred_at=chosen.occurred_at,
-                        score=0.7,
-                        fresh=chosen.occurred_at >= fresh_cutoff,
-                        falsification_relevant=True,
-                    )
-                )
-                seen_evidence.add(chosen.id)
-                break  # one falsification pick per model
-
-        # ---- 2b. decisive_support (top-2 recent + highest tier) -----
-        support_candidates: list[_Pick] = []
-        for oid in model.supporting_event_ids:
-            if oid in seen_evidence:
-                continue
-            obs = obs_map.get(oid)
-            if obs is None:
-                omitted.append((oid, "supporting_obs_missing"))
-                continue
-            tier = _tier_score(obs.trust_tier)
-            age_days = max(
-                0.0, (now - obs.occurred_at).total_seconds() / 86400.0
-            )
-            recency = 1.0 / (1.0 + age_days / 14.0)  # half-life ~14d
-            score = 0.5 + 0.3 * tier + 0.2 * recency
-            level = (
-                "evidence_card"
-                if question_primitive in _RAW_EXCERPT_QUESTION_PRIMITIVES
-                or question_primitive == "DEPENDENCY"
-                else "summary_only"
-            )
-            support_candidates.append(
-                _Pick(
-                    node_id=model.id,
-                    evidence_id=oid,
-                    evidence_kind="observation",
-                    reason="decisive_support",
-                    include_level=level,
-                    trust_tier=obs.trust_tier,
-                    occurred_at=obs.occurred_at,
-                    score=min(1.0, score),
-                    fresh=obs.occurred_at >= fresh_cutoff,
-                )
-            )
-        # Sort: tier first, then recency.
-        support_candidates.sort(
-            key=lambda p: (
-                _tier_score(p.trust_tier),
-                p.occurred_at or datetime.min.replace(tzinfo=timezone.utc),
-            ),
-            reverse=True,
+        counter_picks, counter_omitted = _counterevidence_picks(
+            model=model,
+            obs_map=obs_map,
+            question_primitive=question_primitive,
+            seen_evidence=seen_evidence,
+            fresh_cutoff=fresh_cutoff,
         )
-        for p in support_candidates[:2]:
-            picks.append(p)
-            seen_evidence.add(p.evidence_id)
+        picks.extend(counter_picks)
+        omitted.extend(counter_omitted)
 
-        # ---- 3. freshest_confirmation -------------------------------
-        # Pick the single freshest supporting observation that we have
-        # NOT already selected.
-        freshest: _ObsRow | None = None
-        for oid in model.supporting_event_ids:
-            if oid in seen_evidence:
-                continue
-            obs = obs_map.get(oid)
-            if obs is None:
-                continue
-            if freshest is None or obs.occurred_at > freshest.occurred_at:
-                freshest = obs
+        falsification_pick = _falsification_relevant_pick(
+            model=model,
+            obs_map=obs_map,
+            seen_evidence=seen_evidence,
+            fresh_cutoff=fresh_cutoff,
+        )
+        if falsification_pick is not None:
+            picks.append(falsification_pick)
+            seen_evidence.add(falsification_pick.evidence_id)
+
+        support_picks, support_omitted = _support_picks(
+            model=model,
+            obs_map=obs_map,
+            question_primitive=question_primitive,
+            seen_evidence=seen_evidence,
+            now=now,
+            fresh_cutoff=fresh_cutoff,
+        )
+        picks.extend(support_picks)
+        omitted.extend(support_omitted)
+
+        freshest = _freshest_confirmation_pick(
+            model=model,
+            obs_map=obs_map,
+            seen_evidence=seen_evidence,
+            fresh_cutoff=fresh_cutoff,
+        )
         if freshest is not None:
-            picks.append(
-                _Pick(
-                    node_id=model.id,
-                    evidence_id=freshest.id,
-                    evidence_kind="observation",
-                    reason="freshest_confirmation",
-                    include_level="summary_only",
-                    trust_tier=freshest.trust_tier,
-                    occurred_at=freshest.occurred_at,
-                    score=0.55,
-                    fresh=freshest.occurred_at >= fresh_cutoff,
-                )
-            )
-            seen_evidence.add(freshest.id)
+            picks.append(freshest)
+            seen_evidence.add(freshest.evidence_id)
 
-        # ---- 4. falsification_relevant ------------------------------
-        # Moved to stage 2a above (runs before decisive_support so the
-        # falsifier-matching observation isn't silently consumed under
-        # reason='decisive_support').
+        confidence_pick = _explains_confidence_pick(
+            model=model,
+            obs_map=obs_map,
+            seen_evidence=seen_evidence,
+            fresh_cutoff=fresh_cutoff,
+        )
+        if confidence_pick is not None:
+            picks.append(confidence_pick)
+            seen_evidence.add(confidence_pick.evidence_id)
 
-        # ---- 5. explains_confidence --------------------------------
-        # Observation referenced by the signal_reading with the largest
-        # |weight| (already-seen ids are skipped).
-        best_sr: dict[str, Any] | None = None
-        best_mag = 0.0
-        for sr in model.signal_readings:
-            try:
-                w = abs(float(sr.get("weight") or 0.0))
-            except (TypeError, ValueError):
-                w = 0.0
-            if w <= best_mag:
-                continue
-            oid = _coerce_uuid(sr.get("event_id"))
-            if oid is None or oid in seen_evidence:
-                continue
-            if oid not in obs_map:
-                continue
-            best_mag = w
-            best_sr = sr
-        if best_sr is not None:
-            oid = _coerce_uuid(best_sr.get("event_id"))
-            assert oid is not None
-            obs = obs_map[oid]
-            picks.append(
-                _Pick(
-                    node_id=model.id,
-                    evidence_id=oid,
-                    evidence_kind="observation",
-                    reason="explains_confidence",
-                    include_level="summary_only",
-                    trust_tier=obs.trust_tier,
-                    occurred_at=obs.occurred_at,
-                    score=min(1.0, 0.4 + 0.4 * best_mag),
-                    fresh=obs.occurred_at >= fresh_cutoff,
-                )
-            )
-            seen_evidence.add(oid)
-
-        # ---- per-node cap ------------------------------------------
-        cap = self._budget.max_evidence_per_node
-        if len(picks) > cap:
-            # Keep all counterevidence (per acceptance: always at least
-            # one piece of counterevidence when any exists), then fill
-            # remaining slots by score.
-            picks.sort(
-                key=lambda p: (p.counterevidence, p.score),
-                reverse=True,
-            )
-            kept = picks[:cap]
-            dropped = picks[cap:]
-            for p in dropped:
-                omitted.append((p.evidence_id, "per_node_cap"))
-            picks = kept
-
-        return picks, omitted
+        return _apply_per_node_cap(picks, omitted, max_evidence_per_node=self._budget.max_evidence_per_node)
 
     # ----- token budget enforcement ----------------------------------
 
@@ -890,6 +723,239 @@ class EvidenceProjector:
             "freshness_share": fresh / total,
             "falsification_share": falsif / total,
         }
+
+
+def _counterevidence_picks(
+    *,
+    model: _ModelRow,
+    obs_map: dict[UUID, _ObsRow],
+    question_primitive: str,
+    seen_evidence: set[UUID],
+    fresh_cutoff: datetime,
+) -> tuple[list[_Pick], list[tuple[UUID, str]]]:
+    counter_picks: list[_Pick] = []
+    omitted: list[tuple[UUID, str]] = []
+    for sr in model.signal_readings:
+        kind = (sr.get("kind") or "").lower()
+        weight = sr.get("weight")
+        try:
+            weight_f = float(weight) if weight is not None else 0.0
+        except (TypeError, ValueError):
+            weight_f = 0.0
+        is_counter = (kind == "contradiction") or (weight_f < 0)
+        if not is_counter:
+            continue
+        oid = _coerce_uuid(sr.get("event_id"))
+        if oid is None or oid in seen_evidence:
+            continue
+        obs = obs_map.get(oid)
+        if obs is None:
+            omitted.append((oid, "counterevidence_obs_missing"))
+            continue
+        magnitude = min(1.0, abs(weight_f) if weight_f else 0.6)
+        score = 0.75 + 0.25 * magnitude
+        level: IncludeLevel = (
+            "raw_excerpt"
+            if question_primitive in _RAW_EXCERPT_QUESTION_PRIMITIVES
+            else "evidence_card"
+        )
+        counter_picks.append(
+            _Pick(
+                node_id=model.id,
+                evidence_id=oid,
+                evidence_kind="observation",
+                reason="decisive_counterevidence",
+                include_level=level,
+                trust_tier=obs.trust_tier,
+                occurred_at=obs.occurred_at,
+                score=min(1.0, score),
+                counterevidence=True,
+                fresh=obs.occurred_at >= fresh_cutoff,
+                falsification_relevant=_obs_matches_falsifier(obs, model.falsifier),
+            )
+        )
+    counter_picks.sort(key=lambda p: p.score, reverse=True)
+    picked = counter_picks[:2]
+    for p in picked:
+        seen_evidence.add(p.evidence_id)
+    for p in counter_picks[2:]:
+        omitted.append((p.evidence_id, "counterevidence_cap_reached"))
+    return picked, omitted
+
+
+def _falsification_relevant_pick(
+    *,
+    model: _ModelRow,
+    obs_map: dict[UUID, _ObsRow],
+    seen_evidence: set[UUID],
+    fresh_cutoff: datetime,
+) -> _Pick | None:
+    falsifier_kind = (model.falsifier.get("kind") or "").lower()
+    if falsifier_kind not in {"observation_pattern", "prediction_deadline"}:
+        return None
+    for oid in model.supporting_event_ids:
+        if oid in seen_evidence:
+            continue
+        obs = obs_map.get(oid)
+        if obs is None:
+            continue
+        if not _obs_matches_falsifier(obs, model.falsifier):
+            continue
+        return _Pick(
+            node_id=model.id,
+            evidence_id=obs.id,
+            evidence_kind="observation",
+            reason="falsification_relevant",
+            include_level="evidence_card",
+            trust_tier=obs.trust_tier,
+            occurred_at=obs.occurred_at,
+            score=0.7,
+            fresh=obs.occurred_at >= fresh_cutoff,
+            falsification_relevant=True,
+        )
+    return None
+
+
+def _support_picks(
+    *,
+    model: _ModelRow,
+    obs_map: dict[UUID, _ObsRow],
+    question_primitive: str,
+    seen_evidence: set[UUID],
+    now: datetime,
+    fresh_cutoff: datetime,
+) -> tuple[list[_Pick], list[tuple[UUID, str]]]:
+    support_candidates: list[_Pick] = []
+    omitted: list[tuple[UUID, str]] = []
+    for oid in model.supporting_event_ids:
+        if oid in seen_evidence:
+            continue
+        obs = obs_map.get(oid)
+        if obs is None:
+            omitted.append((oid, "supporting_obs_missing"))
+            continue
+        tier = _tier_score(obs.trust_tier)
+        age_days = max(0.0, (now - obs.occurred_at).total_seconds() / 86400.0)
+        recency = 1.0 / (1.0 + age_days / 14.0)
+        level = (
+            "evidence_card"
+            if question_primitive in _RAW_EXCERPT_QUESTION_PRIMITIVES
+            or question_primitive == "DEPENDENCY"
+            else "summary_only"
+        )
+        support_candidates.append(
+            _Pick(
+                node_id=model.id,
+                evidence_id=oid,
+                evidence_kind="observation",
+                reason="decisive_support",
+                include_level=level,
+                trust_tier=obs.trust_tier,
+                occurred_at=obs.occurred_at,
+                score=min(1.0, 0.5 + 0.3 * tier + 0.2 * recency),
+                fresh=obs.occurred_at >= fresh_cutoff,
+            )
+        )
+    support_candidates.sort(
+        key=lambda p: (
+            _tier_score(p.trust_tier),
+            p.occurred_at or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )
+    picked = support_candidates[:2]
+    for p in picked:
+        seen_evidence.add(p.evidence_id)
+    return picked, omitted
+
+
+def _freshest_confirmation_pick(
+    *,
+    model: _ModelRow,
+    obs_map: dict[UUID, _ObsRow],
+    seen_evidence: set[UUID],
+    fresh_cutoff: datetime,
+) -> _Pick | None:
+    freshest: _ObsRow | None = None
+    for oid in model.supporting_event_ids:
+        if oid in seen_evidence:
+            continue
+        obs = obs_map.get(oid)
+        if obs is None:
+            continue
+        if freshest is None or obs.occurred_at > freshest.occurred_at:
+            freshest = obs
+    if freshest is None:
+        return None
+    return _Pick(
+        node_id=model.id,
+        evidence_id=freshest.id,
+        evidence_kind="observation",
+        reason="freshest_confirmation",
+        include_level="summary_only",
+        trust_tier=freshest.trust_tier,
+        occurred_at=freshest.occurred_at,
+        score=0.55,
+        fresh=freshest.occurred_at >= fresh_cutoff,
+    )
+
+
+def _explains_confidence_pick(
+    *,
+    model: _ModelRow,
+    obs_map: dict[UUID, _ObsRow],
+    seen_evidence: set[UUID],
+    fresh_cutoff: datetime,
+) -> _Pick | None:
+    best_sr: dict[str, Any] | None = None
+    best_mag = 0.0
+    for sr in model.signal_readings:
+        try:
+            weight = abs(float(sr.get("weight") or 0.0))
+        except (TypeError, ValueError):
+            weight = 0.0
+        if weight <= best_mag:
+            continue
+        oid = _coerce_uuid(sr.get("event_id"))
+        if oid is None or oid in seen_evidence or oid not in obs_map:
+            continue
+        best_mag = weight
+        best_sr = sr
+    if best_sr is None:
+        return None
+    oid = _coerce_uuid(best_sr.get("event_id"))
+    assert oid is not None
+    obs = obs_map[oid]
+    return _Pick(
+        node_id=model.id,
+        evidence_id=oid,
+        evidence_kind="observation",
+        reason="explains_confidence",
+        include_level="summary_only",
+        trust_tier=obs.trust_tier,
+        occurred_at=obs.occurred_at,
+        score=min(1.0, 0.4 + 0.4 * best_mag),
+        fresh=obs.occurred_at >= fresh_cutoff,
+    )
+
+
+def _apply_per_node_cap(
+    picks: list[_Pick],
+    omitted: list[tuple[UUID, str]],
+    *,
+    max_evidence_per_node: int,
+) -> tuple[list[_Pick], list[tuple[UUID, str]]]:
+    if len(picks) <= max_evidence_per_node:
+        return picks, omitted
+    picks.sort(
+        key=lambda p: (p.counterevidence, p.score),
+        reverse=True,
+    )
+    kept = picks[:max_evidence_per_node]
+    dropped = picks[max_evidence_per_node:]
+    for p in dropped:
+        omitted.append((p.evidence_id, "per_node_cap"))
+    return kept, omitted
 
 
 __all__ = [

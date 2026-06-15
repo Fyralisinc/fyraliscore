@@ -6,11 +6,13 @@ from lib.shared.ids import uuid7
 from services.reasoning.relationships.candidates import (
     JudgmentScores,
     ModelSignal,
+    candidate_lifecycle_metadata,
     candidate_rules,
     generate_scope_overlap_candidates,
     make_edge_candidate,
     make_edge_type_candidate,
     make_situation_candidate,
+    make_topology_candidate_metadata,
     rank_candidates,
 )
 
@@ -120,6 +122,52 @@ def test_edge_type_candidate_carries_ontology_gap_payload() -> None:
     assert candidate.proposed_proposition["parent_kind"] == "blocks"
     assert candidate.metadata["ontology_gap"]["retrieval_fallback_kind"] == "blocks"
     assert candidate.review_status == "needs_review"
+
+
+def test_candidate_record_carries_single_lifecycle_metadata() -> None:
+    candidate = make_edge_candidate(
+        tenant_id=uuid7(),
+        source_model_id=uuid7(),
+        target_model_id=uuid7(),
+        edge_kind="supports",
+        basis="topology_suggested",
+        explanation="Topology surfaced a possible support relation.",
+        scores=JudgmentScores(impact=0.7, confidence=0.7),
+        source="latent_topology",
+        metadata=make_topology_candidate_metadata(
+            proposal_kind="edge",
+            pattern_kind="pair",
+            selection_sources=("latent", "surface"),
+            score_components={"total": 0.72},
+            impact_signatures=(),
+        ),
+    )
+
+    metadata = candidate.to_record()["metadata"]
+
+    assert metadata["candidate_lifecycle"] == {
+        "stage": "memory_proposal",
+        "origin": "latent_topology",
+        "origin_stage": "pattern_discovery",
+        "proposal_kind": "edge",
+        "discovery_pattern_kind": "pair",
+    }
+    assert metadata["topology"]["object_type"] == "pair_candidate"
+
+
+def test_candidate_lifecycle_metadata_defaults_direct_proposals() -> None:
+    metadata = candidate_lifecycle_metadata(
+        None,
+        candidate_kind="situation",
+        source="relationship_candidate_service",
+    )
+
+    assert metadata["candidate_lifecycle"] == {
+        "stage": "memory_proposal",
+        "proposal_kind": "situation",
+        "origin": "relationship_candidate_service",
+        "origin_stage": "direct_proposal",
+    }
 
 
 def test_edge_type_candidate_rejects_partial_example_pair() -> None:
@@ -483,6 +531,138 @@ def test_contradicts_rejects_when_polarities_match() -> None:
     assert result is None
 
 
+def test_weakens_fires_on_partial_counterevidence_same_scope() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural="New sponsor evidence weakens the renewal-on-track claim",
+        proposition_kind="belief",
+        polarity="negative",
+        confidence=0.82,
+        scope_entities=_scope(("customer", customer)),
+    )
+    target = ModelSignal(
+        id=uuid7(),
+        natural="Renewal is on track",
+        proposition_kind="belief",
+        polarity="positive",
+        confidence=0.62,
+        scope_entities=_scope(("customer", customer)),
+    )
+
+    result = _rule("weakens")(tenant_id, _scope_meta(), source, target)
+
+    assert result is not None
+    assert result.edge_kind == "weakens"
+    assert result.source_model_id == source.id
+    assert result.target_model_id == target.id
+
+
+def test_explains_fires_on_explanatory_phrasing_same_scope() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural="The implementation slipped because security review ownership changed",
+        proposition_kind="belief",
+        confidence=0.76,
+        scope_entities=_scope(("customer", customer)),
+    )
+    target = ModelSignal(
+        id=uuid7(),
+        natural="Implementation slipped this week",
+        proposition_kind="state",
+        confidence=0.7,
+        scope_entities=_scope(("customer", customer)),
+    )
+
+    result = _rule("explains")(tenant_id, _scope_meta(), source, target)
+
+    assert result is not None
+    assert result.edge_kind == "explains"
+    assert result.metadata.get("mechanism")
+
+
+def test_causes_fires_on_causal_phrasing_same_scope() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural="The missing data residency signoff causes procurement delay",
+        proposition_kind="belief",
+        confidence=0.78,
+        scope_entities=_scope(("customer", customer)),
+    )
+    target = ModelSignal(
+        id=uuid7(),
+        natural="Procurement delay is active",
+        proposition_kind="state",
+        confidence=0.7,
+        scope_entities=_scope(("customer", customer)),
+    )
+
+    result = _rule("causes")(tenant_id, _scope_meta(), source, target)
+
+    assert result is not None
+    assert result.edge_kind == "causes"
+    assert result.metadata.get("mechanism")
+
+
+def test_contributes_to_resolution_fires_on_resolution_evidence() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural="Audit evidence is now available and unblocked the exception",
+        proposition_kind="state",
+        confidence=0.8,
+        scope_entities=_scope(("customer", customer)),
+    )
+    target = ModelSignal(
+        id=uuid7(),
+        natural="Procurement is blocked waiting on the audit exception",
+        proposition_kind="concern",
+        confidence=0.7,
+        scope_entities=_scope(("customer", customer)),
+    )
+
+    result = _rule("contributes_to_resolution")(tenant_id, _scope_meta(), source, target)
+
+    assert result is not None
+    assert result.edge_kind == "contributes_to_resolution"
+    assert result.source_model_id == source.id
+    assert result.target_model_id == target.id
+
+
+def test_predicts_fires_from_prediction_claim_to_outcome_scope() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural="Prediction: the renewal will slip by Friday",
+        proposition_kind="prediction",
+        confidence=0.68,
+        time_shape="future",
+        proposition={"kind": "prediction", "claim_role": "prediction"},
+        scope_entities=_scope(("customer", customer)),
+    )
+    target = ModelSignal(
+        id=uuid7(),
+        natural="Renewal slipped on Friday",
+        proposition_kind="state",
+        confidence=0.74,
+        scope_entities=_scope(("customer", customer)),
+    )
+
+    result = _rule("predicts")(tenant_id, _scope_meta(), source, target)
+
+    assert result is not None
+    assert result.edge_kind == "predicts"
+    assert result.source_model_id == source.id
+    assert result.target_model_id == target.id
+
+
 def test_enables_fires_on_capability_surface_and_capability_assessment() -> None:
     tenant_id = uuid7()
     source = ModelSignal(
@@ -581,3 +761,31 @@ def test_generate_scope_overlap_runs_blocks_rule_in_pipeline() -> None:
         "type": "commitment",
         "id": str(commitment),
     }
+
+
+def test_generate_scope_overlap_runs_precise_resolution_rule_in_pipeline() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    resolution = ModelSignal(
+        id=uuid7(),
+        natural="Compliance artifact approved and unblocked the exception",
+        proposition_kind="state",
+        confidence=0.82,
+        activation=0.8,
+        scope_entities=_scope(("customer", customer)),
+    )
+    pressure = ModelSignal(
+        id=uuid7(),
+        natural="Renewal is blocked by the compliance exception",
+        proposition_kind="concern",
+        confidence=0.72,
+        activation=0.7,
+        scope_entities=_scope(("customer", customer)),
+    )
+
+    out = generate_scope_overlap_candidates(
+        tenant_id=tenant_id,
+        models=[resolution, pressure],
+    )
+
+    assert any(c.edge_kind == "contributes_to_resolution" for c in out)

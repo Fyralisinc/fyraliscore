@@ -6,16 +6,20 @@ these JSON-schema features: object, string, number, integer, boolean,
 array, enum, anyOf, const.
 
 This schema is a deliberate SUBSET of `RawDiff`: it constrains
-`claim_ops` and first-class `edge_ops`. `act_ops`, `resource_ops`, and
-`new_predictions` are omitted from the schema — Pydantic defaults them
-to empty lists at parse time. Acts/resource generation can be added back
-when specific shapes need to be enforced.
+`claim_ops`, first-class `edge_ops`, ontology gaps, resource operations,
+and first-class prediction inserts. `act_ops` remain omitted from the
+strict schema — Pydantic defaults them to an empty list at parse time.
+Acts can be added back when specific shapes need to be enforced.
 """
 from __future__ import annotations
 
 
 _UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 _UUID_STR = {"type": "string", "pattern": _UUID_PATTERN}
+_NULLABLE_STRING = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+_NULLABLE_NUMBER = {"anyOf": [{"type": "number"}, {"type": "null"}]}
+_NULLABLE_INTEGER = {"anyOf": [{"type": "integer"}, {"type": "null"}]}
+_NULLABLE_BOOLEAN = {"anyOf": [{"type": "boolean"}, {"type": "null"}]}
 
 
 def _proposition_variant(kind: str, fields: list[str], *, claim_role: str | None = None) -> dict:
@@ -398,7 +402,7 @@ _EDGE_OP = {
         "op": {"type": "string", "enum": ["add", "retire"]},
         "source_model_id": _UUID_STR,
         "target_model_id": _UUID_STR,
-        "edge_kind": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$"},
+        "edge_kind": {"type": "string", "enum": _EDGE_KIND_ENUM},
         "weight": {"anyOf": [{"type": "number"}, {"type": "null"}]},
         "confidence": {"type": "number"},
         "evidence_event_ids": {"type": "array", "items": _UUID_STR},
@@ -473,6 +477,227 @@ _ONTOLOGY_GAP_OP = {
 }
 
 
+_RESOURCE_TRANSACTION_KIND_ENUM = [
+    "acquire",
+    "deploy",
+    "release",
+    "spend",
+    "strengthen",
+    "weaken",
+    "expire",
+]
+
+
+_RESOURCE_SCALAR_OBJECT_FIELDS = [
+    "amount_cents",
+    "arr_cents",
+    "available_units",
+    "contract_state",
+    "currency",
+    "deployed_units",
+    "description",
+    "metric",
+    "notes",
+    "reason",
+    "region",
+    "renewal_date",
+    "strength",
+    "strength_delta",
+    "total_units",
+    "unit",
+    "units",
+    "value",
+]
+
+
+_RESOURCE_SCALAR_OBJECT = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": _RESOURCE_SCALAR_OBJECT_FIELDS,
+    "properties": {
+        "amount_cents": _NULLABLE_INTEGER,
+        "arr_cents": _NULLABLE_INTEGER,
+        "available_units": _NULLABLE_INTEGER,
+        "contract_state": _NULLABLE_STRING,
+        "currency": _NULLABLE_STRING,
+        "deployed_units": _NULLABLE_INTEGER,
+        "description": _NULLABLE_STRING,
+        "metric": _NULLABLE_STRING,
+        "notes": _NULLABLE_STRING,
+        "reason": _NULLABLE_STRING,
+        "region": _NULLABLE_STRING,
+        "renewal_date": _NULLABLE_STRING,
+        "strength": _NULLABLE_STRING,
+        "strength_delta": _NULLABLE_INTEGER,
+        "total_units": _NULLABLE_INTEGER,
+        "unit": _NULLABLE_STRING,
+        "units": _NULLABLE_INTEGER,
+        "value": {
+            "anyOf": [{"type": "string"}, {"type": "number"}, {"type": "null"}],
+        },
+    },
+}
+
+
+_NULLABLE_RESOURCE_SCALAR_OBJECT = {
+    "anyOf": [_RESOURCE_SCALAR_OBJECT, {"type": "null"}],
+}
+
+
+_RESOURCE_PAYLOAD_OBJECT = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "kind",
+        "identity",
+        "description",
+        "current_value",
+        "metadata",
+        "metadata_patch",
+        "utilization_state",
+        "controllability",
+        "temporal_character",
+        "valuation_confidence",
+        "created_by_event_id",
+        "last_updated_by_event_id",
+        "occurred_at",
+        "source_event_id",
+        "started_at",
+        "released_at",
+    ],
+    "properties": {
+        "kind": _NULLABLE_STRING,
+        "identity": _NULLABLE_STRING,
+        "description": _NULLABLE_STRING,
+        "current_value": _NULLABLE_RESOURCE_SCALAR_OBJECT,
+        "metadata": _NULLABLE_RESOURCE_SCALAR_OBJECT,
+        "metadata_patch": _NULLABLE_RESOURCE_SCALAR_OBJECT,
+        "utilization_state": {
+            "anyOf": [
+                {
+                    "type": "string",
+                    "enum": ["available", "deployed", "committed", "depleted", "expired"],
+                },
+                {"type": "null"},
+            ],
+        },
+        "controllability": {
+            "anyOf": [
+                {
+                    "type": "string",
+                    "enum": ["owned", "joint", "borrowed", "leased", "limited"],
+                },
+                {"type": "null"},
+            ],
+        },
+        "temporal_character": {
+            "anyOf": [
+                {
+                    "type": "string",
+                    "enum": ["permanent", "time_limited", "renewable", "consumable"],
+                },
+                {"type": "null"},
+            ],
+        },
+        "valuation_confidence": _NULLABLE_NUMBER,
+        "created_by_event_id": {"anyOf": [_UUID_STR, {"type": "null"}]},
+        "last_updated_by_event_id": {"anyOf": [_UUID_STR, {"type": "null"}]},
+        "occurred_at": _NULLABLE_STRING,
+        "source_event_id": {"anyOf": [_UUID_STR, {"type": "null"}]},
+        "started_at": _NULLABLE_STRING,
+        "released_at": _NULLABLE_STRING,
+    },
+}
+
+
+_NULLABLE_RESOURCE_PAYLOAD = {
+    "anyOf": [_RESOURCE_PAYLOAD_OBJECT, {"type": "null"}],
+}
+
+
+_RESOURCE_PATCH_OBJECT = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "current_value",
+        "utilization_state",
+        "controllability",
+        "temporal_character",
+        "valuation_confidence",
+    ],
+    "properties": {
+        "current_value": _NULLABLE_RESOURCE_SCALAR_OBJECT,
+        "utilization_state": {
+            "anyOf": [
+                {
+                    "type": "string",
+                    "enum": ["available", "deployed", "committed", "depleted", "expired"],
+                },
+                {"type": "null"},
+            ],
+        },
+        "controllability": {
+            "anyOf": [
+                {
+                    "type": "string",
+                    "enum": ["owned", "joint", "borrowed", "leased", "limited"],
+                },
+                {"type": "null"},
+            ],
+        },
+        "temporal_character": {
+            "anyOf": [
+                {
+                    "type": "string",
+                    "enum": ["permanent", "time_limited", "renewable", "consumable"],
+                },
+                {"type": "null"},
+            ],
+        },
+        "valuation_confidence": _NULLABLE_NUMBER,
+    },
+}
+
+
+_NULLABLE_RESOURCE_PATCH = {"anyOf": [_RESOURCE_PATCH_OBJECT, {"type": "null"}]}
+
+
+_RESOURCE_OP = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "op",
+        "resource_id",
+        "commitment_id",
+        "payload",
+        "patch",
+        "kind",
+        "delta",
+        "quantity",
+        "actual_quantity",
+    ],
+    "properties": {
+        "op": {
+            "type": "string",
+            "enum": ["create", "transaction", "deploy", "release", "update"],
+        },
+        "resource_id": {"anyOf": [_UUID_STR, {"type": "null"}]},
+        "commitment_id": {"anyOf": [_UUID_STR, {"type": "null"}]},
+        "payload": _NULLABLE_RESOURCE_PAYLOAD,
+        "patch": _NULLABLE_RESOURCE_PATCH,
+        "kind": {
+            "anyOf": [
+                {"type": "string", "enum": _RESOURCE_TRANSACTION_KIND_ENUM},
+                {"type": "null"},
+            ],
+        },
+        "delta": _NULLABLE_RESOURCE_SCALAR_OBJECT,
+        "quantity": _NULLABLE_RESOURCE_SCALAR_OBJECT,
+        "actual_quantity": _NULLABLE_RESOURCE_SCALAR_OBJECT,
+    },
+}
+
+
 RAW_DIFF_STRICT_SCHEMA: dict = {
     "type": "object",
     "additionalProperties": False,
@@ -482,6 +707,8 @@ RAW_DIFF_STRICT_SCHEMA: dict = {
         "claim_ops",
         "edge_ops",
         "ontology_gap_ops",
+        "resource_ops",
+        "new_predictions",
         "reasoning_trace",
     ],
     "properties": {
@@ -490,6 +717,8 @@ RAW_DIFF_STRICT_SCHEMA: dict = {
         "claim_ops": {"type": "array", "items": _CLAIM_OP_INSERT},
         "edge_ops": {"type": "array", "items": _EDGE_OP},
         "ontology_gap_ops": {"type": "array", "items": _ONTOLOGY_GAP_OP},
+        "resource_ops": {"type": "array", "items": _RESOURCE_OP},
+        "new_predictions": {"type": "array", "items": _CLAIM_OP_INSERT},
         "reasoning_trace": {"type": "string"},
     },
 }

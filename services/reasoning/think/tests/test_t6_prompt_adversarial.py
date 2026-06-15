@@ -155,7 +155,7 @@ def test_topology_context_with_dict_keys_missing_logs_no_crash():
 
 
 def test_t6_instruction_block_includes_kind_specific_guidance():
-    user = build_prompt(
+    system = build_prompt(
         TriggerContext(
             kind="T6",
             tenant_id=uuid4(),
@@ -163,9 +163,9 @@ def test_t6_instruction_block_includes_kind_specific_guidance():
             neighborhood_id=uuid4(),
         ),
         _bundle(),
-    ).user
-    assert "legacy accepted-memory graph phase event" in user
-    assert "Naming the neighborhood" in user
-    assert "Surfacing the shift to the CEO" in user
-    assert "No-op" in user
-    assert "STRICT CONSTRAINTS" in user
+    ).system
+    assert "legacy accepted-memory graph phase event" in system
+    assert "Naming the neighborhood" in system
+    assert "Surfacing the shift to the CEO" in system
+    assert "No-op" in system
+    assert "STRICT CONSTRAINTS" in system

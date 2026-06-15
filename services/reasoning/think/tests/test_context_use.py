@@ -409,6 +409,7 @@ def test_context_use_accepts_explicit_no_edge_rationale_for_graph_context():
     assert report["graph_selected_without_relation_ops"] is True
     assert report["graph_no_edge_rationale_present"] is True
     assert report["graph_relation_contract_satisfied"] is True
+    assert report["graph_relation_contract_basis"] == "no_edge_rationale"
 
 
 @pytest.mark.asyncio

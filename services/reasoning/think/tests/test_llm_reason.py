@@ -71,9 +71,9 @@ async def test_build_prompt_emits_all_sections():
     assert "<acts>" in user and "</acts>" in user
     assert "<resources>" in user and "</resources>" in user
 
-    # Operating instructions
-    assert "<operating_instructions>" in user
-    assert "</operating_instructions>" in user
+    # Operating instructions live in the stable system prefix.
+    assert "<operating_instructions>" in pair.system
+    assert "</operating_instructions>" in pair.system
 
     # System prompt carries the falsifier schema + diff schema.
     assert "Falsifier schema" in pair.system
@@ -95,7 +95,7 @@ async def test_build_prompt_triggering_kind_instructions():
     ]:
         t = TriggerContext(kind=kind, tenant_id=uuid7())
         pair = build_prompt(t, bundle)
-        assert needle in pair.user, f"T-kind {kind} missing '{needle}'"
+        assert needle in pair.system, f"T-kind {kind} missing '{needle}'"
 
 
 async def test_build_prompt_adds_source_tuned_reasoning_profile():
@@ -113,10 +113,10 @@ async def test_build_prompt_adds_source_tuned_reasoning_profile():
     )
     pair = build_prompt(trigger, ContextBundle(), claims_only=True)
 
-    assert "Reasoning profile for this call" in pair.system
-    assert "Working personality: ledger clerk" in pair.system
-    assert "Model surface: claim triage" in pair.system
-    assert "Abstraction level: low and exact" in pair.system
+    assert "Reasoning profile for this call" in pair.user
+    assert "Working personality: ledger clerk" in pair.user
+    assert "Model surface: claim triage" in pair.user
+    assert "Abstraction level: low and exact" in pair.user
     assert "source_channel: github:webhook" in pair.user
     assert "signal_type: github:webhook/pull_request.closed" in pair.user
     assert "trust_tier: authoritative" in pair.user
@@ -148,9 +148,9 @@ async def test_build_prompt_profiles_graph_aware_surface():
 
     pair = build_prompt(trigger, bundle)
 
-    assert "Working personality: contextual listener" in pair.system
-    assert "Model surface: graph cartographer" in pair.system
-    assert "Abstraction level: relationship level" in pair.system
+    assert "Working personality: contextual listener" in pair.user
+    assert "Model surface: graph cartographer" in pair.user
+    assert "Abstraction level: relationship level" in pair.user
 
 
 async def test_build_prompt_respects_char_truncation():
@@ -247,6 +247,28 @@ async def test_build_prompt_surfaces_inquiry_context_packet():
                     },
                     {"id": "H0", "claim": "No update needed."},
                 ],
+                "memory_decision_candidates": [
+                    {
+                        "candidate_id": "MDC_H1",
+                        "op_family": "edge_insert",
+                        "proposed_text": (
+                            "Decide whether SSO blocks the Acme launch model."
+                        ),
+                        "target_model_ids": ["model-a", "model-b"],
+                        "source_observation_ids": ["obs-a"],
+                        "supporting_evidence_ids": ["ev1"],
+                        "uncertainty_slots": [
+                            "whether the relationship is explicit enough to store"
+                        ],
+                        "suggested_edge_kinds": ["blocks", "explains", "supports"],
+                        "write_preconditions": [
+                            "Use blocks only when source evidence gates target progress."
+                        ],
+                        "answer_summary": "Q1:DEPENDENCY=supported support=2 counter=0",
+                        "confidence": 0.66,
+                        "reason": "Dependency question implies a possible edge op",
+                    }
+                ],
                 "question_path": [
                     {
                         "question_id": "Q1",
@@ -274,7 +296,241 @@ async def test_build_prompt_surfaces_inquiry_context_packet():
     assert "<inquiry_context_packet>" in pair.user
     assert "Acme cannot launch without SSO" in pair.user
     assert "sufficient_for_reasoning" in pair.user
+    assert "memory_decision_candidates are advisory" in pair.user
+    assert "id=MDC_H1 op=edge_insert" in pair.user
+    assert "whether the relationship is explicit enough to store" in pair.user
+    assert "suggested_edge_kinds" in pair.user
+    assert "Q1:DEPENDENCY=supported" in pair.user
     assert "Q1 [DEPENDENCY]" in pair.user
+
+
+async def test_build_prompt_suppresses_t1_batch_raw_text_for_model_only_packet():
+    tenant_id = uuid7()
+    observation_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        observation_ids=[observation_id, uuid7()],
+        seed_natural_text="RAW_BATCH_SEED_MARKER " + ("raw observation text " * 80),
+        seed_signature={
+            "batch": True,
+            "batch_observation_ids": [str(observation_id), str(uuid7())],
+        },
+    )
+    bundle = ContextBundle(
+        observations=[
+            SimpleNamespace(
+                id=uuid7(),
+                actor_id=uuid7(),
+                trust_tier="verified",
+                source_channel="slack",
+                occurred_at=datetime.now(timezone.utc),
+                content_text=(
+                    "RAW_CONTEXT_OBSERVATION_BODY_MARKER "
+                    + ("retrieved observation body " * 40)
+                ),
+            )
+        ],
+        notes={
+            "inquiry_context_packet": {
+                "signal_summary": (
+                    "RAW_PACKET_SIGNAL_SUMMARY_MARKER "
+                    + ("raw signal summary " * 40)
+                ),
+                "source_metadata": {"trigger_kind": "T1"},
+                "budget": {
+                    "evidence_policy": {
+                        "mode": "models_only",
+                        "fallback_reason": None,
+                    }
+                },
+                "tiers": {
+                    "decisive_evidence": [],
+                    "supporting_evidence_groups": [],
+                    "omission_ledger": [],
+                },
+            }
+        }
+    )
+
+    pair = build_prompt(
+        trigger,
+        bundle,
+        triggering_content="TRIGGERING_RAW_BATCH_MARKER " + ("signal " * 80),
+    )
+
+    assert "RAW_BATCH_SEED_MARKER" not in pair.user
+    assert "RAW_PACKET_SIGNAL_SUMMARY_MARKER" not in pair.user
+    assert "TRIGGERING_RAW_BATCH_MARKER" not in pair.user
+    assert "RAW_CONTEXT_OBSERVATION_BODY_MARKER" not in pair.user
+    assert "raw batch text suppressed by model-only Think evidence policy" in pair.user
+    assert "raw observation bodies omitted by model-only Think evidence policy" in pair.user
+    assert "retrieved_observation_count: 1" in pair.user
+    assert "batch_observation_count: 2" in pair.user
+
+
+async def test_build_prompt_compiles_batch_memory_decision_packet(monkeypatch):
+    monkeypatch.setenv("THINK_COMPILED_MEMORY_DECISION_PROMPT", "1")
+    tenant_id = uuid7()
+    observation_id = uuid7()
+    second_observation_id = uuid7()
+    actor_id = uuid7()
+    target_model_id = uuid7()
+    background_model_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        observation_ids=[observation_id, second_observation_id],
+        seed_natural_text="RAW_BATCH_SEED_MARKER " + ("raw batch text " * 80),
+    )
+    notes = {
+        "model_selection": {
+            "selected_count": 2,
+            "selected_model_ids": [str(target_model_id), str(background_model_id)],
+            "pathway_survival": {
+                "G": {"selected_model_ids": [str(target_model_id)]}
+            },
+        },
+        "inquiry_context_packet": {
+            "signal_summary": "Acme has a repeat SSO launch blocker.",
+            "sufficiency_verdict": {
+                "status": "sufficient_for_reasoning",
+                "reason": "candidate evidence is enough",
+            },
+            "hypotheses": [
+                {
+                    "id": "H1",
+                    "claim": "VERBOSE_HYPOTHESIS_MARKER Acme is blocked by SSO.",
+                    "confidence": 0.78,
+                }
+            ],
+            "memory_decision_candidates": [
+                {
+                    "candidate_id": "MDC_H1",
+                    "op_family": "edge_insert",
+                    "proposed_text": "SSO readiness blocks Acme launch.",
+                    "target_model_ids": [str(target_model_id)],
+                    "evidence_model_ids": [str(target_model_id)],
+                    "source_observation_ids": [str(observation_id)],
+                    "supporting_evidence_ids": ["ev1"],
+                    "uncertainty_slots": ["new edge versus no-op"],
+                    "confidence": 0.72,
+                    "reason": "Dependency evidence implies a possible edge.",
+                }
+            ],
+            "question_path": [
+                {
+                    "question_id": "Q1",
+                    "primitive": "DEPENDENCY",
+                    "question": "QUESTION_PATH_MARKER Is SSO on the path?",
+                }
+            ],
+            "tiers": {
+                "decisive_evidence": [
+                    {
+                        "evidence_id": "ev1",
+                        "source_type": "model",
+                        "source_ref": f"model:{target_model_id}",
+                        "summary": "CANDIDATE_EVIDENCE_SUMMARY SSO is launch-critical.",
+                        "supports_hypotheses": ["H1"],
+                        "weakens_hypotheses": [],
+                        "contradicts_hypotheses": [],
+                    }
+                ],
+                "supporting_evidence_groups": [
+                    {
+                        "claim_supported": "H1",
+                        "evidence_count": 1,
+                        "sources": ["model"],
+                        "summary": "SUPPORTING_GROUP_MARKER additional planner text.",
+                        "evidence_ids": ["ev1"],
+                        "source_refs": [f"model:{target_model_id}"],
+                    }
+                ],
+                "omission_ledger": [
+                    {"reason": "OMISSION_LEDGER_MARKER redundant evidence"}
+                ],
+            },
+            "budget": {
+                "reservoir_evidence_count": 12,
+                "packet_evidence_count": 3,
+                "evidence_policy": {"mode": "model_first"},
+            },
+        },
+    }
+    bundle = ContextBundle(
+        observations=[
+            SimpleNamespace(
+                id=observation_id,
+                actor_id=actor_id,
+                trust_tier="authoritative",
+                source_channel="slack",
+                occurred_at=datetime.now(timezone.utc),
+                content_text="FULL_OBSERVATION_BODY_MARKER " + ("body " * 200),
+            )
+        ],
+        models=[
+            SimpleNamespace(
+                id=background_model_id,
+                proposition_kind="state",
+                confidence=0.7,
+                activation=0.4,
+                falsifier={"kind": "observation_pattern"},
+                status="active",
+                scope_actors=[],
+                scope_entities=[],
+                natural=(
+                    "Background compact intro "
+                    + ("background " * 120)
+                    + "BACKGROUND_MODEL_TAIL_MARKER"
+                ),
+            ),
+            SimpleNamespace(
+                id=target_model_id,
+                proposition_kind="concern",
+                confidence=0.86,
+                activation=0.9,
+                falsifier={"kind": "observation_pattern"},
+                status="active",
+                scope_actors=[],
+                scope_entities=[],
+                natural="TARGET_MODEL_DETAIL_MARKER SSO blocks Acme launch.",
+            ),
+        ],
+        notes=notes,
+    )
+
+    compact = build_prompt(
+        trigger,
+        bundle,
+        triggering_content="TRIGGERING_BATCH_FULL_MARKER " + ("signal " * 200),
+    )
+    monkeypatch.setenv("THINK_COMPILED_MEMORY_DECISION_PROMPT", "0")
+    full = build_prompt(
+        trigger,
+        bundle,
+        triggering_content="TRIGGERING_BATCH_FULL_MARKER " + ("signal " * 200),
+    )
+
+    assert "mode: compiled_memory_decision_boundary" in compact.user
+    assert "planner_artifacts: omitted from prompt" in compact.user
+    assert "id=MDC_H1 op=edge_insert" in compact.user
+    assert "CANDIDATE_EVIDENCE_SUMMARY" in compact.user
+    assert "candidate_source_observation_ids" in compact.user
+    assert "FULL_OBSERVATION_BODY_MARKER" not in compact.user
+    assert "VERBOSE_HYPOTHESIS_MARKER" not in compact.user
+    assert "QUESTION_PATH_MARKER" not in compact.user
+    assert "OMISSION_LEDGER_MARKER" not in compact.user
+    assert "TARGET_MODEL_DETAIL_MARKER" in compact.user
+    assert "BACKGROUND_MODEL_TAIL_MARKER" not in compact.user
+
+    assert "VERBOSE_HYPOTHESIS_MARKER" in full.user
+    assert "QUESTION_PATH_MARKER" in full.user
+    assert "FULL_OBSERVATION_BODY_MARKER" in full.user
+    assert len(compact.user) < len(full.user) * 0.75
 
 
 async def test_build_prompt_uses_compact_model_manifest_with_inquiry_packet():
@@ -474,6 +730,516 @@ async def test_llm_reason_keeps_edge_schema_when_models_are_available():
     assert "edge_ops" in provider.calls[0]["schema_hint"]
     assert "This compact pass can only emit" not in provider.calls[0]["system"]
     assert provider.calls[0]["max_tokens"] == 2048
+
+
+async def test_llm_reason_compiled_batch_memory_emits_code_built_ops(monkeypatch):
+    monkeypatch.setenv("THINK_COMPILED_BATCH_MEMORY_REASONING", "1")
+    tid = uuid7()
+    trig_id = uuid7()
+    obs_id = uuid7()
+    target_model_id = uuid7()
+    commitment_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tid,
+        observation_id=obs_id,
+        observation_ids=[obs_id],
+        seed_signature={"trigger_id": str(trig_id)},
+        seed_natural_text="Acme is waiting on SSO readiness before launch.",
+        seed_entity_ids=[{"type": "customer_resource", "id": str(uuid7())}],
+    )
+    bundle = ContextBundle(
+        models=[
+            SimpleNamespace(
+                id=target_model_id,
+                proposition_kind="belief",
+                confidence=0.82,
+                activation=0.7,
+                status="active",
+                natural="Acme launch depends on SSO readiness.",
+                proposition={
+                    "kind": "belief",
+                    "claim_role": "fact",
+                    "subject": "Acme launch",
+                    "assertion": "Acme launch depends on SSO readiness",
+                },
+            )
+        ],
+        acts_summary={
+            "goals": [],
+            "commitments": [
+                SimpleNamespace(
+                    id=commitment_id,
+                    state="active",
+                    title="Launch Acme SSO",
+                )
+            ],
+            "decisions": [],
+        },
+        notes={
+            "inquiry_context_packet": {
+                "signal_summary": "Acme is waiting on SSO readiness.",
+                "sufficiency_verdict": {
+                    "status": "sufficient_for_reasoning",
+                    "reason": "candidate evidence is enough",
+                },
+                "memory_decision_candidates": [
+                    {
+                        "candidate_id": "MDC_H1",
+                        "op_family": "claim_update",
+                        "proposed_text": "Acme launch is blocked by SSO readiness.",
+                        "target_model_ids": [str(target_model_id)],
+                        "evidence_model_ids": [str(target_model_id)],
+                        "source_observation_ids": [str(obs_id)],
+                        "supporting_evidence_ids": ["ev1"],
+                        "confidence": 0.72,
+                        "reason": "Batch-level dependency evidence.",
+                    },
+                    {
+                        "candidate_id": "MDC_ACT_H1",
+                        "op_family": "act_update",
+                        "proposed_text": "Pause the Acme launch commitment while SSO is not ready.",
+                        "target_act_ids": [str(commitment_id)],
+                        "source_observation_ids": [str(obs_id)],
+                        "supporting_evidence_ids": ["ev2"],
+                        "confidence": 0.7,
+                        "reason": "Commitment is waiting on external readiness.",
+                    },
+                ],
+                "tiers": {
+                    "decisive_evidence": [
+                        {
+                            "evidence_id": "ev1",
+                            "source_type": "model",
+                            "source_ref": f"model:{target_model_id}",
+                            "summary": "SSO readiness is on the launch path.",
+                            "supports_hypotheses": ["H1"],
+                        },
+                        {
+                            "evidence_id": "ev2",
+                            "source_type": "commitment",
+                            "source_ref": f"commitment:{commitment_id}",
+                            "summary": "The launch commitment is still active.",
+                            "supports_hypotheses": ["H1"],
+                        },
+                    ]
+                },
+            }
+        },
+    )
+    provider = ScriptedProvider(
+        responses=[
+            json.dumps(
+                {
+                    "decisions": [
+                        {
+                            "candidate_id": "MDC_H1",
+                            "decision": "accept",
+                            "operation": "claim_and_edge",
+                            "confidence": 0.74,
+                            "claim_role": "concern",
+                            "claim_text": "Acme launch is blocked by SSO readiness.",
+                            "edge_kind": "blocks",
+                            "target_model_id": str(target_model_id),
+                            "reason": "The batch states a concrete launch dependency.",
+                        },
+                        {
+                            "candidate_id": "MDC_ACT_H1",
+                            "decision": "accept",
+                            "operation": "claim_and_act",
+                            "confidence": 0.71,
+                            "claim_role": "concern",
+                            "claim_text": "The Acme launch commitment is waiting on SSO readiness.",
+                            "act_type": "commitment",
+                            "act_target_id": str(commitment_id),
+                            "act_new_state": "paused",
+                            "reason": "The active launch commitment should pause until SSO is ready.",
+                        },
+                    ],
+                    "reasoning_trace": "Accepted two closed-world candidates.",
+                }
+            )
+        ]
+    )
+
+    diff, _ = await llm_reason(trigger, bundle, provider, max_tokens=2048)
+
+    assert provider.calls[0]["max_tokens"] == 1200
+    assert "<compiled_batch_memory_task>" in provider.calls[0]["user"]
+    assert "claim_and_edge" in provider.calls[0]["schema_hint"]
+    assert "claim_ops" not in provider.calls[0]["schema_hint"]
+    assert len(diff.claim_ops) == 2
+    assert len(diff.edge_ops) == 1
+    assert len(diff.act_ops) == 1
+    first_claim = diff.claim_ops[0]
+    assert first_claim.entry["proposition"]["claim_role"] == "concern"
+    assert first_claim.entry["confidence"] == 0.69
+    assert "compiled_memory_candidate_id" not in first_claim.entry
+    edge = diff.edge_ops[0]
+    assert str(edge.source_model_id) == first_claim.entry["born_from_event_id"]
+    assert edge.target_model_id == target_model_id
+    assert edge.edge_kind == "blocks"
+    assert edge.detected_by == "think_compiled_batch_memory_candidate"
+    act = diff.act_ops[0]
+    assert act.op == "transition_commitment"
+    assert act.entity["id"] == commitment_id
+    assert act.entity["new_state"] == "paused"
+    assert "compiled_memory_candidate_id" not in act.entity
+    assert str(act.confidence_basis) == diff.claim_ops[1].entry["born_from_event_id"]
+
+
+async def test_llm_reason_compiled_batch_memory_falls_back_for_open_writer_surfaces(
+    monkeypatch,
+):
+    monkeypatch.setenv("THINK_COMPILED_BATCH_MEMORY_REASONING", "1")
+    tid = uuid7()
+    trig_id = uuid7()
+    obs_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tid,
+        observation_id=obs_id,
+        observation_ids=[obs_id],
+        seed_signature={"trigger_id": str(trig_id)},
+        seed_natural_text="Future validation says the forecast should resolve today.",
+    )
+    bundle = ContextBundle(
+        notes={
+            "inquiry_context_packet": {
+                "signal_summary": (
+                    "future_validation evidence should update a prediction lifecycle"
+                ),
+                "sufficiency_verdict": {"status": "sufficient_for_reasoning"},
+                "memory_decision_candidates": [
+                    {
+                        "candidate_id": "MDC_PREDICTION",
+                        "op_family": "claim_update",
+                        "proposed_text": "The forecast prediction resolved today.",
+                        "source_observation_ids": [str(obs_id)],
+                        "confidence": 0.72,
+                    },
+                ],
+            }
+        },
+    )
+    provider = ScriptedProvider(
+        responses=[_minimal_raw_diff_json(str(trig_id), str(tid))],
+    )
+
+    diff, _ = await llm_reason(trigger, bundle, provider, max_tokens=2048)
+
+    assert "<compiled_batch_memory_task>" not in provider.calls[0]["user"]
+    assert "claim_ops" in provider.calls[0]["schema_hint"]
+    assert diff.reasoning_trace == "test scripted diff"
+
+
+async def test_llm_reason_compiled_batch_memory_supports_updates_situations_and_default_edges(
+    monkeypatch,
+):
+    monkeypatch.setenv("THINK_COMPILED_BATCH_MEMORY_REASONING", "1")
+    tid = uuid7()
+    trig_id = uuid7()
+    obs_id = uuid7()
+    model_a = uuid7()
+    model_b = uuid7()
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tid,
+        observation_id=obs_id,
+        observation_ids=[obs_id],
+        seed_signature={"trigger_id": str(trig_id)},
+        seed_natural_text=(
+            "DeltaFleet onboarding is blocked by owner handoff and capacity."
+        ),
+        seed_entity_ids=[{"type": "customer_resource", "id": str(uuid7())}],
+    )
+    bundle = ContextBundle(
+        models=[
+            SimpleNamespace(
+                id=model_a,
+                proposition_kind="belief",
+                confidence=0.72,
+                activation=0.9,
+                status="active",
+                natural="DeltaFleet onboarding capacity is already tight.",
+                proposition={"kind": "belief", "claim_role": "concern"},
+            ),
+            SimpleNamespace(
+                id=model_b,
+                proposition_kind="belief",
+                confidence=0.7,
+                activation=0.8,
+                status="active",
+                natural="DeltaFleet owner handoff has slipped.",
+                proposition={"kind": "belief", "claim_role": "concern"},
+            ),
+        ],
+        notes={
+            "inquiry_context_packet": {
+                "signal_summary": "DeltaFleet has capacity and owner-handoff pressure.",
+                "sufficiency_verdict": {"status": "sufficient_for_reasoning"},
+                "memory_decision_candidates": [
+                    {
+                        "candidate_id": "MDC_UPDATE",
+                        "op_family": "claim_update",
+                        "proposed_text": "Capacity pressure is reinforced.",
+                        "target_model_ids": [str(model_a)],
+                        "evidence_model_ids": [str(model_a), str(model_b)],
+                        "source_observation_ids": [str(obs_id)],
+                        "supporting_evidence_ids": ["ev1"],
+                        "confidence": 0.66,
+                    },
+                    {
+                        "candidate_id": "MDC_SIT",
+                        "op_family": "claim_update",
+                        "proposed_text": (
+                            "DeltaFleet onboarding is blocked by capacity and "
+                            "handoff pressure."
+                        ),
+                        "target_model_ids": [str(model_a), str(model_b)],
+                        "evidence_model_ids": [str(model_a), str(model_b)],
+                        "source_observation_ids": [str(obs_id)],
+                        "supporting_evidence_ids": ["ev1"],
+                        "confidence": 0.68,
+                    },
+                ],
+                "tiers": {
+                    "decisive_evidence": [
+                        {
+                            "evidence_id": "ev1",
+                            "source_type": "model",
+                            "source_ref": f"model:{model_a}",
+                            "summary": "Capacity and handoff pressure jointly block onboarding.",
+                            "supports_hypotheses": ["H1"],
+                        }
+                    ]
+                },
+            }
+        },
+    )
+    provider = ScriptedProvider(
+        responses=[
+            json.dumps(
+                {
+                    "decisions": [
+                        {
+                            "candidate_id": "MDC_UPDATE",
+                            "decision": "accept",
+                            "operation": "claim_update",
+                            "confidence": 0.66,
+                            "reason": "The new batch reinforces the existing capacity model.",
+                        },
+                        {
+                            "candidate_id": "MDC_SIT",
+                            "decision": "accept",
+                            "operation": "situation_and_edge",
+                            "confidence": 0.68,
+                            "claim_role": "situation",
+                            "claim_text": (
+                                "DeltaFleet onboarding is blocked by capacity and "
+                                "handoff pressure."
+                            ),
+                            "situation_member_model_ids": [str(model_a), str(model_b)],
+                            "reason": "The two selected models are symptoms of one blocker.",
+                        },
+                    ],
+                    "reasoning_trace": "Accepted update and situation.",
+                }
+            )
+        ]
+    )
+
+    diff, _ = await llm_reason(trigger, bundle, provider, max_tokens=2048)
+
+    assert "claim_update" in provider.calls[0]["user"]
+    assert "situation_and_edge" in provider.calls[0]["schema_hint"]
+    assert provider.calls[0]["max_tokens"] == 1200
+    assert len(diff.claim_ops) == 2
+    update = diff.claim_ops[0]
+    situation = diff.claim_ops[1]
+    assert update.op == "update"
+    assert update.model_id == model_a
+    assert update.changes["supporting_event_ids"] == [obs_id]
+    assert "supporting_model_ids" not in update.changes
+    assert situation.op == "insert"
+    assert situation.entry["proposition"]["claim_role"] == "situation"
+    assert situation.entry["proposition"]["member_model_ids"] == [
+        str(model_a),
+        str(model_b),
+    ]
+    assert len(diff.edge_ops) == 1
+    edge = diff.edge_ops[0]
+    assert edge.edge_kind == "blocks"
+    assert str(edge.source_model_id) == situation.entry["born_from_event_id"]
+    assert edge.target_model_id == model_a
+
+
+async def test_llm_reason_compiled_relationship_candidate_accepts_edge(monkeypatch):
+    monkeypatch.setenv("THINK_COMPILED_RELATIONSHIP_REASONING", "1")
+    tid = uuid7()
+    trig_id = uuid7()
+    candidate_id = uuid7()
+    source_id = uuid7()
+    target_id = uuid7()
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="latent_relationship_candidate",
+        tenant_id=tid,
+        seed_signature={
+            "trigger_id": str(trig_id),
+            "relationship_candidate_id": str(candidate_id),
+            "relationship_candidate": {
+                "id": str(candidate_id),
+                "candidate_kind": "edge",
+                "basis": "topology",
+                "edge_kind": "blocks",
+                "source_model_id": str(source_id),
+                "target_model_id": str(target_id),
+                "member_model_ids": [str(source_id), str(target_id)],
+                "evidence_model_ids": [str(source_id), str(target_id)],
+                "judgment_leverage_score": 0.91,
+                "explanation": "The integration gap blocks the launch plan.",
+                "metadata": {"mechanism": "Launch requires the integration."},
+            },
+        },
+    )
+    bundle = ContextBundle(
+        models=[
+            SimpleNamespace(
+                id=source_id,
+                proposition_kind="state",
+                confidence=0.84,
+                activation=0.5,
+                status="active",
+                natural="The SSO integration is still incomplete.",
+                proposition={"kind": "state", "assertion": "SSO incomplete"},
+            ),
+            SimpleNamespace(
+                id=target_id,
+                proposition_kind="commitment_outcome",
+                confidence=0.79,
+                activation=0.5,
+                status="active",
+                natural="Acme launch depends on SSO being ready.",
+                proposition={"kind": "state", "assertion": "Launch depends on SSO"},
+            ),
+        ]
+    )
+    provider = ScriptedProvider(
+        responses=[
+            json.dumps(
+                {
+                    "decisions": [
+                        {
+                            "candidate_id": str(candidate_id),
+                            "decision": "accept",
+                            "confidence": 0.82,
+                            "reason": "The dependency is concrete and durable.",
+                        }
+                    ],
+                    "reasoning_trace": "Accepted one concrete relationship.",
+                }
+            )
+        ],
+    )
+
+    diff, _ = await llm_reason(trigger, bundle, provider, max_tokens=2048)
+
+    assert provider.calls[0]["max_tokens"] == 768
+    assert "decisions" in provider.calls[0]["schema_hint"]
+    assert "claim_ops" not in provider.calls[0]["schema_hint"]
+    assert "<compiled_relationship_candidate_task>" in provider.calls[0]["user"]
+    assert len(diff.edge_ops) == 1
+    edge = diff.edge_ops[0]
+    assert edge.source_model_id == source_id
+    assert edge.target_model_id == target_id
+    assert edge.edge_kind == "blocks"
+    assert edge.review_status == "accepted"
+    assert edge.detected_by == "think_compiled_relationship_candidate"
+    assert edge.metadata["relationship_candidate_id"] == str(candidate_id)
+
+
+async def test_llm_reason_compiled_candidate_requires_structural_evidence(
+    monkeypatch,
+):
+    monkeypatch.setenv("THINK_COMPILED_RELATIONSHIP_REASONING", "1")
+    tid = uuid7()
+    trig_id = uuid7()
+    candidate_id = uuid7()
+    source_id = uuid7()
+    target_id = uuid7()
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="latent_relationship_candidate",
+        tenant_id=tid,
+        seed_signature={
+            "trigger_id": str(trig_id),
+            "relationship_candidate": {
+                "id": str(candidate_id),
+                "candidate_kind": "edge",
+                "basis": "topology",
+                "edge_kind": "blocks",
+                "source_model_id": str(source_id),
+                "target_model_id": str(target_id),
+                "explanation": "The same customer appears in both memories.",
+                "metadata": {},
+            },
+        },
+    )
+    provider = ScriptedProvider(
+        responses=[
+            json.dumps(
+                {
+                    "decisions": [
+                        {
+                            "candidate_id": str(candidate_id),
+                            "decision": "accept",
+                            "confidence": 0.91,
+                            "reason": "Looks related.",
+                        }
+                    ],
+                    "reasoning_trace": "LLM wanted to accept.",
+                }
+            )
+        ],
+    )
+
+    diff, _ = await llm_reason(trigger, ContextBundle(), provider)
+
+    assert diff.edge_ops == []
+    assert "missing structural evidence" in (diff.reasoning_trace or "")
+
+
+async def test_llm_reason_compiled_relationship_candidate_skips_situations(
+    monkeypatch,
+):
+    monkeypatch.setenv("THINK_COMPILED_RELATIONSHIP_REASONING", "1")
+    tid = uuid7()
+    trig_id = uuid7()
+    candidate_id = uuid7()
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="latent_relationship_candidate",
+        tenant_id=tid,
+        seed_signature={
+            "trigger_id": str(trig_id),
+            "relationship_candidate": {
+                "id": str(candidate_id),
+                "candidate_kind": "situation",
+                "basis": "topology",
+                "member_model_ids": [str(uuid7()), str(uuid7())],
+                "explanation": "Composite pressure candidate.",
+            },
+        },
+    )
+    provider = ScriptedProvider(
+        responses=[_minimal_raw_diff_json(str(trig_id), str(tid))],
+    )
+
+    await llm_reason(trigger, ContextBundle(), provider)
+
+    assert "<compiled_relationship_candidate_task>" not in provider.calls[0]["user"]
+    assert "claim_ops" in provider.calls[0]["schema_hint"]
 
 
 async def test_llm_reason_keeps_full_schema_when_acts_are_available():

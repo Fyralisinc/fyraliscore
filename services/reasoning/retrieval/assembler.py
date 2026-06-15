@@ -715,136 +715,21 @@ async def assemble_context(
     Default False — count-cap path is unchanged.
     """
     cfg = config or CONFIG
-    explicit_observation_budget = budget_observations is not None
-    budget_observations = (
-        int(budget_observations)
-        if budget_observations is not None
-        else int(cfg.assembler_budget_observations)
+    budgets = _resolve_assembler_budgets(
+        cfg,
+        budget_observations=budget_observations,
+        budget_models=budget_models,
+        budget_acts=budget_acts,
+        budget_resources=budget_resources,
     )
-    budget_models = (
-        int(budget_models)
-        if budget_models is not None
-        else int(cfg.assembler_budget_models)
-    )
-    budget_acts = (
-        int(budget_acts)
-        if budget_acts is not None
-        else int(cfg.assembler_budget_acts_total)
-    )
-    budget_resources = (
-        int(budget_resources)
-        if budget_resources is not None
-        else int(cfg.assembler_budget_resources)
-    )
-    # --- Access control on Models ---
-    # Tenant-scoped first pass (belt + braces — primary_retrieve
-    # already did this, but enforce at the edge). Then delegate the
-    # full §26 rule-set to the Wave-5-A filter.
-    tenant_scoped: list[ModelRow] = []
-    cross_tenant_redactions = 0
-    for m in retrieval_result.models:
-        if m.tenant_id != access_context.tenant_id:
-            cross_tenant_redactions += 1
-            continue
-        tenant_scoped.append(m)
-
-    visible_models, redactions_inner, reason_counts = await _filter_models_via_db(
-        tenant_scoped, access_context, conn,
-    )
-    redactions = cross_tenant_redactions + redactions_inner
-
-    # --- Rank Models by score (already sorted in retrieval_result.models
-    #     but we re-sort in case caller did second_pass which appends) ---
-    scores = retrieval_result.model_scores
-    visible_models.sort(
-        key=lambda m: (
-            -scores.get(m.id, 0.0),
-            -m.activation,
-            str(m.id),
-        )
+    model_selection = await _select_context_models(
+        retrieval_result,
+        access_context,
+        conn,
+        cfg=cfg,
+        budget_models=budgets["models"],
     )
 
-    mmr_notes: dict[str, Any] = {"used": False}
-    if cfg.assembler_use_mmr and visible_models:
-        # Token-budgeted MMR path (FU-1). Keeps the count cap as a hard
-        # upper bound even when the token budget would otherwise let
-        # more items through — callers care about both budgets.
-        wrappers = [
-            _MMRModelWrapper(
-                model=m,
-                score=float(scores.get(m.id, 0.0)),
-                tokens=_estimate_model_tokens(m),
-                embedding=(list(m.embedding) if m.embedding is not None else None),
-            )
-            for m in visible_models
-        ]
-        token_budget = int(cfg.context_budget_tokens)
-        wrappers_by_id = {w.model.id: w for w in wrappers}
-        anchor_limit = min(
-            _MMR_RELEVANCE_ANCHOR_COUNT,
-            budget_models,
-            len(wrappers),
-        )
-        relevance_anchor_candidate_ids = {
-            w.model.id for w in wrappers[:anchor_limit]
-        }
-        graph_anchor_ids = _top_pathway_model_ids(
-            retrieval_result,
-            "G",
-            limit=_MMR_GRAPH_ANCHOR_COUNT,
-        )
-        anchor_candidates = [*wrappers[:anchor_limit]]
-        anchor_candidates.extend(
-            wrappers_by_id[mid]
-            for mid in graph_anchor_ids
-            if mid in wrappers_by_id
-        )
-        anchors: list[_MMRModelWrapper] = []
-        anchored_ids: set[UUID] = set()
-        used_anchor_tokens = 0
-        for wrapper in anchor_candidates:
-            if len(anchors) >= budget_models:
-                break
-            if wrapper.model.id in anchored_ids:
-                continue
-            if used_anchor_tokens + wrapper.tokens > token_budget:
-                continue
-            anchors.append(wrapper)
-            anchored_ids.add(wrapper.model.id)
-            used_anchor_tokens += wrapper.tokens
-
-        remaining_wrappers = [w for w in wrappers if w.model.id not in anchored_ids]
-        remaining_slots = max(0, budget_models - len(anchors))
-        remaining_budget = max(0, token_budget - used_anchor_tokens)
-        diverse_tail = (
-            mmr_select(
-                remaining_wrappers,
-                budget_tokens=remaining_budget,
-                lambda_diversity=float(cfg.mmr_lambda_diversity),
-            )[:remaining_slots]
-            if remaining_slots > 0 and remaining_budget > 0
-            else []
-        )
-        mmr_selected = [*anchors, *diverse_tail]
-        models_cap = [w.model for w in mmr_selected][:budget_models]
-        mmr_notes = {
-            "used": True,
-            "lambda_diversity": float(cfg.mmr_lambda_diversity),
-            "budget_tokens": token_budget,
-            "relevance_anchor_count": len(
-                {w.model.id for w in anchors} & relevance_anchor_candidate_ids
-            ),
-            "graph_anchor_count": len(
-                {w.model.id for w in anchors} & set(graph_anchor_ids)
-            ),
-            "relevance_anchor_tokens": used_anchor_tokens,
-            "selected_count": len(models_cap),
-            "candidate_count": len(visible_models),
-        }
-    else:
-        models_cap = visible_models[:budget_models]
-
-    # --- Observations: current trigger input + tiny historical evidence tail ---
     obs_tenant = [
         o for o in retrieval_result.observations
         if o.tenant_id == access_context.tenant_id
@@ -853,103 +738,343 @@ async def assemble_context(
         retrieval_result,
         obs_tenant,
         cfg=cfg,
-        budget_observations=budget_observations,
-        explicit_budget=explicit_observation_budget,
-        selected_model_count=len(models_cap),
+        budget_observations=budgets["observations"],
+        explicit_budget=budgets["explicit_observation_budget"],
+        selected_model_count=len(model_selection["models"]),
     )
-
-    # --- Acts: combined cap of `budget_acts` across all three kinds ---
-    # Build a unified (kind, row, timestamp) list. Sort by timestamp
-    # DESC and then take the top N, regrouping by kind for the final
-    # dict. This honors the "10 across all three" language.
-    flat_acts: list[tuple[str, Any, Any]] = []
-    for g in retrieval_result.acts.get("goals", []):
-        if g.tenant_id != access_context.tenant_id:
-            continue
-        flat_acts.append(("goals", g, g.last_state_change_at or g.created_at))
-    for c in retrieval_result.acts.get("commitments", []):
-        if c.tenant_id != access_context.tenant_id:
-            continue
-        flat_acts.append(("commitments", c, c.last_state_change_at or c.created_at))
-    for d in retrieval_result.acts.get("decisions", []):
-        if d.tenant_id != access_context.tenant_id:
-            continue
-        flat_acts.append(("decisions", d, d.last_state_change_at or d.created_at))
-    flat_acts.sort(key=lambda x: x[2], reverse=True)
-    flat_acts = flat_acts[:budget_acts]
-    acts_cap: dict[str, list] = {"goals": [], "commitments": [], "decisions": []}
-    for kind, row, _ts in flat_acts:
-        acts_cap[kind].append(row)
-
-    # --- Resources: prefer those with customer_commitments linkage ---
-    res_tenant = [
-        r for r in retrieval_result.resources
-        if r.tenant_id == access_context.tenant_id
-    ]
-    if res_tenant:
-        # Check linkage in one query.
-        rids = [r.id for r in res_tenant]
-        linked = set()
-        if rids:
-            link_rows = await conn.fetch(
-                """
-                SELECT DISTINCT customer_resource_id
-                FROM customer_commitments
-                WHERE customer_resource_id = ANY($1::uuid[])
-                """,
-                rids,
-            )
-            linked = {r["customer_resource_id"] for r in link_rows}
-        res_tenant.sort(
-            key=lambda r: (
-                0 if r.id in linked else 1,
-                -(r.last_updated_at.timestamp() if r.last_updated_at else 0),
-            )
-        )
-    resources_cap = res_tenant[:budget_resources]
-
-    # --- Customer context ---
+    acts_cap = _select_context_acts(
+        retrieval_result,
+        tenant_id=access_context.tenant_id,
+        budget_acts=budgets["acts"],
+    )
+    resources_cap = await _select_context_resources(
+        retrieval_result,
+        conn,
+        tenant_id=access_context.tenant_id,
+        budget_resources=budgets["resources"],
+    )
     customer_context = await _compute_customer_context(
         conn,
         access_context.tenant_id,
         acts_cap["commitments"],
     )
-
-    # Active topology is the latent relationship field and reaches
-    # Think through relationship_candidates + trigger member_model_ids.
-    # The old accepted-memory neighborhood prompt context is retired.
     topology_context = None
+    notes = _build_context_notes(
+        retrieval_result,
+        cfg=cfg,
+        budgets=budgets,
+        observations_cap=observations_cap,
+        observation_selection=observation_selection,
+        model_selection=model_selection,
+        acts_cap=acts_cap,
+        resources_cap=resources_cap,
+    )
 
+    return ContextBundle(
+        observations=observations_cap,
+        models=model_selection["models"],
+        acts_summary=acts_cap,
+        resources_summary=resources_cap,
+        customer_context=customer_context,
+        topology_context=topology_context,
+        access_redactions=model_selection["redactions"],
+        notes=notes,
+    )
+
+
+def _resolve_assembler_budgets(
+    cfg: RetrievalConfig,
+    *,
+    budget_observations: int | None,
+    budget_models: int | None,
+    budget_acts: int | None,
+    budget_resources: int | None,
+) -> dict[str, Any]:
+    return {
+        "explicit_observation_budget": budget_observations is not None,
+        "observations": int(
+            budget_observations
+            if budget_observations is not None
+            else cfg.assembler_budget_observations
+        ),
+        "models": int(
+            budget_models
+            if budget_models is not None
+            else cfg.assembler_budget_models
+        ),
+        "acts": int(
+            budget_acts
+            if budget_acts is not None
+            else cfg.assembler_budget_acts_total
+        ),
+        "resources": int(
+            budget_resources
+            if budget_resources is not None
+            else cfg.assembler_budget_resources
+        ),
+    }
+
+
+async def _select_context_models(
+    retrieval_result: RetrievalResult,
+    access_context: AccessContext,
+    conn: asyncpg.Connection,
+    *,
+    cfg: RetrievalConfig,
+    budget_models: int,
+) -> dict[str, Any]:
+    tenant_scoped, cross_tenant_redactions = _tenant_scope_models(
+        retrieval_result.models, access_context.tenant_id
+    )
+    visible_models, redactions_inner, reason_counts = await _filter_models_via_db(
+        tenant_scoped,
+        access_context,
+        conn,
+    )
+    _sort_models_by_retrieval_score(visible_models, retrieval_result)
+    models_cap, mmr_notes = _select_ranked_models(
+        retrieval_result,
+        visible_models,
+        cfg=cfg,
+        budget_models=budget_models,
+    )
+    return {
+        "models": models_cap,
+        "visible_models": visible_models,
+        "redactions": cross_tenant_redactions + redactions_inner,
+        "redaction_reasons": reason_counts,
+        "cross_tenant_redactions": cross_tenant_redactions,
+        "mmr": mmr_notes,
+    }
+
+
+def _tenant_scope_models(
+    models: list[ModelRow],
+    tenant_id: UUID,
+) -> tuple[list[ModelRow], int]:
+    tenant_scoped: list[ModelRow] = []
+    cross_tenant_redactions = 0
+    for model in models:
+        if model.tenant_id != tenant_id:
+            cross_tenant_redactions += 1
+            continue
+        tenant_scoped.append(model)
+    return tenant_scoped, cross_tenant_redactions
+
+
+def _sort_models_by_retrieval_score(
+    models: list[ModelRow],
+    retrieval_result: RetrievalResult,
+) -> None:
+    scores = retrieval_result.model_scores
+    models.sort(
+        key=lambda m: (
+            -scores.get(m.id, 0.0),
+            -m.activation,
+            str(m.id),
+        )
+    )
+
+
+def _select_ranked_models(
+    retrieval_result: RetrievalResult,
+    visible_models: list[ModelRow],
+    *,
+    cfg: RetrievalConfig,
+    budget_models: int,
+) -> tuple[list[ModelRow], dict[str, Any]]:
+    if not cfg.assembler_use_mmr or not visible_models:
+        return visible_models[:budget_models], {"used": False}
+    wrappers = _wrap_models_for_mmr(visible_models, retrieval_result.model_scores)
+    anchors, used_anchor_tokens, relevance_anchor_candidate_ids, graph_anchor_ids = (
+        _select_mmr_anchors(
+            retrieval_result,
+            wrappers,
+            budget_models=budget_models,
+            token_budget=int(cfg.context_budget_tokens),
+        )
+    )
+    anchored_ids = {wrapper.model.id for wrapper in anchors}
+    remaining_wrappers = [w for w in wrappers if w.model.id not in anchored_ids]
+    remaining_slots = max(0, budget_models - len(anchors))
+    remaining_budget = max(0, int(cfg.context_budget_tokens) - used_anchor_tokens)
+    diverse_tail = (
+        mmr_select(
+            remaining_wrappers,
+            budget_tokens=remaining_budget,
+            lambda_diversity=float(cfg.mmr_lambda_diversity),
+        )[:remaining_slots]
+        if remaining_slots > 0 and remaining_budget > 0
+        else []
+    )
+    selected = [w.model for w in [*anchors, *diverse_tail]][:budget_models]
+    return selected, {
+        "used": True,
+        "lambda_diversity": float(cfg.mmr_lambda_diversity),
+        "budget_tokens": int(cfg.context_budget_tokens),
+        "relevance_anchor_count": len(
+            {w.model.id for w in anchors} & relevance_anchor_candidate_ids
+        ),
+        "graph_anchor_count": len({w.model.id for w in anchors} & set(graph_anchor_ids)),
+        "relevance_anchor_tokens": used_anchor_tokens,
+        "selected_count": len(selected),
+        "candidate_count": len(visible_models),
+    }
+
+
+def _wrap_models_for_mmr(
+    models: list[ModelRow],
+    scores: dict[UUID, float],
+) -> list[_MMRModelWrapper]:
+    return [
+        _MMRModelWrapper(
+            model=model,
+            score=float(scores.get(model.id, 0.0)),
+            tokens=_estimate_model_tokens(model),
+            embedding=(list(model.embedding) if model.embedding is not None else None),
+        )
+        for model in models
+    ]
+
+
+def _select_mmr_anchors(
+    retrieval_result: RetrievalResult,
+    wrappers: list[_MMRModelWrapper],
+    *,
+    budget_models: int,
+    token_budget: int,
+) -> tuple[list[_MMRModelWrapper], int, set[UUID], list[UUID]]:
+    wrappers_by_id = {w.model.id: w for w in wrappers}
+    anchor_limit = min(_MMR_RELEVANCE_ANCHOR_COUNT, budget_models, len(wrappers))
+    relevance_anchor_candidate_ids = {w.model.id for w in wrappers[:anchor_limit]}
+    graph_anchor_ids = _top_pathway_model_ids(
+        retrieval_result,
+        "G",
+        limit=_MMR_GRAPH_ANCHOR_COUNT,
+    )
+    anchor_candidates = [*wrappers[:anchor_limit]]
+    anchor_candidates.extend(
+        wrappers_by_id[mid] for mid in graph_anchor_ids if mid in wrappers_by_id
+    )
+    anchors: list[_MMRModelWrapper] = []
+    anchored_ids: set[UUID] = set()
+    used_anchor_tokens = 0
+    for wrapper in anchor_candidates:
+        if len(anchors) >= budget_models:
+            break
+        if wrapper.model.id in anchored_ids:
+            continue
+        if used_anchor_tokens + wrapper.tokens > token_budget:
+            continue
+        anchors.append(wrapper)
+        anchored_ids.add(wrapper.model.id)
+        used_anchor_tokens += wrapper.tokens
+    return anchors, used_anchor_tokens, relevance_anchor_candidate_ids, graph_anchor_ids
+
+
+def _select_context_acts(
+    retrieval_result: RetrievalResult,
+    *,
+    tenant_id: UUID,
+    budget_acts: int,
+) -> dict[str, list]:
+    flat_acts: list[tuple[str, Any, Any]] = []
+    for goal in retrieval_result.acts.get("goals", []):
+        if goal.tenant_id == tenant_id:
+            flat_acts.append(("goals", goal, goal.last_state_change_at or goal.created_at))
+    for commitment in retrieval_result.acts.get("commitments", []):
+        if commitment.tenant_id == tenant_id:
+            flat_acts.append((
+                "commitments",
+                commitment,
+                commitment.last_state_change_at or commitment.created_at,
+            ))
+    for decision in retrieval_result.acts.get("decisions", []):
+        if decision.tenant_id == tenant_id:
+            flat_acts.append((
+                "decisions",
+                decision,
+                decision.last_state_change_at or decision.created_at,
+            ))
+    flat_acts.sort(key=lambda item: item[2], reverse=True)
+    acts_cap: dict[str, list] = {"goals": [], "commitments": [], "decisions": []}
+    for kind, row, _ts in flat_acts[:budget_acts]:
+        acts_cap[kind].append(row)
+    return acts_cap
+
+
+async def _select_context_resources(
+    retrieval_result: RetrievalResult,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    budget_resources: int,
+) -> list[ResourceRow]:
+    resources = [
+        resource
+        for resource in retrieval_result.resources
+        if resource.tenant_id == tenant_id
+    ]
+    if not resources:
+        return []
+    linked = await _load_customer_linked_resource_ids(conn, resources)
+    resources.sort(
+        key=lambda resource: (
+            0 if resource.id in linked else 1,
+            -(resource.last_updated_at.timestamp() if resource.last_updated_at else 0),
+        )
+    )
+    return resources[:budget_resources]
+
+
+async def _load_customer_linked_resource_ids(
+    conn: asyncpg.Connection,
+    resources: list[ResourceRow],
+) -> set[UUID]:
+    resource_ids = [resource.id for resource in resources]
+    if not resource_ids:
+        return set()
+    link_rows = await conn.fetch(
+        """
+        SELECT DISTINCT customer_resource_id
+        FROM customer_commitments
+        WHERE customer_resource_id = ANY($1::uuid[])
+        """,
+        resource_ids,
+    )
+    return {row["customer_resource_id"] for row in link_rows}
+
+
+def _build_context_notes(
+    retrieval_result: RetrievalResult,
+    *,
+    cfg: RetrievalConfig,
+    budgets: dict[str, Any],
+    observations_cap: list[ObservationRow],
+    observation_selection: dict[str, Any],
+    model_selection: dict[str, Any],
+    acts_cap: dict[str, list],
+    resources_cap: list[ResourceRow],
+) -> dict[str, Any]:
     notes: dict[str, Any] = {
-        "budgets": {
-            "observations": budget_observations,
-            "trigger_observations": int(observation_selection["trigger_cap"]),
-            "historical_observations": (
-                int(observation_selection["historical_cap"])
-                if cfg.model_first_context_enabled
-                else budget_observations
-            ),
-            "models": budget_models,
-            "acts_total": budget_acts,
-            "resources": budget_resources,
-        },
+        "budgets": _context_budget_notes(cfg, budgets, observation_selection),
         "budget_overflow": {
             "observations": len(retrieval_result.observations) - len(observations_cap),
-            "models": len(retrieval_result.models) - len(models_cap),
+            "models": len(retrieval_result.models) - len(model_selection["models"]),
             "acts": sum(len(v) for v in retrieval_result.acts.values())
             - sum(len(v) for v in acts_cap.values()),
             "resources": len(retrieval_result.resources) - len(resources_cap),
         },
-        "access_redactions": redactions,
-        "access_redaction_reasons": reason_counts,
-        "access_redactions_cross_tenant": cross_tenant_redactions,
+        "access_redactions": model_selection["redactions"],
+        "access_redaction_reasons": model_selection["redaction_reasons"],
+        "access_redactions_cross_tenant": model_selection["cross_tenant_redactions"],
         "retrieval_trigger_kind": retrieval_result.trigger.kind,
         "observation_selection": observation_selection,
-        "mmr": mmr_notes,
+        "mmr": model_selection["mmr"],
         "model_selection": _model_selection_notes(
             retrieval_result,
-            visible_models=visible_models,
-            selected_models=models_cap,
+            visible_models=model_selection["visible_models"],
+            selected_models=model_selection["models"],
         ),
     }
     if isinstance(retrieval_result.notes, dict):
@@ -958,17 +1083,26 @@ async def assemble_context(
             notes["inquiry"] = inquiry_notes
             if isinstance(inquiry_notes.get("context_packet"), dict):
                 notes["inquiry_context_packet"] = inquiry_notes["context_packet"]
+    return notes
 
-    return ContextBundle(
-        observations=observations_cap,
-        models=models_cap,
-        acts_summary=acts_cap,
-        resources_summary=resources_cap,
-        customer_context=customer_context,
-        topology_context=topology_context,
-        access_redactions=redactions,
-        notes=notes,
-    )
+
+def _context_budget_notes(
+    cfg: RetrievalConfig,
+    budgets: dict[str, Any],
+    observation_selection: dict[str, Any],
+) -> dict[str, int]:
+    return {
+        "observations": int(budgets["observations"]),
+        "trigger_observations": int(observation_selection["trigger_cap"]),
+        "historical_observations": (
+            int(observation_selection["historical_cap"])
+            if cfg.model_first_context_enabled
+            else int(budgets["observations"])
+        ),
+        "models": int(budgets["models"]),
+        "acts_total": int(budgets["acts"]),
+        "resources": int(budgets["resources"]),
+    }
 
 
 __all__ = [

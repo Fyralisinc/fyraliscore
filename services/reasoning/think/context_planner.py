@@ -25,7 +25,11 @@ from services.reasoning.dynamics import (
     detect_dynamic_signals,
     emit_missing_transition_triggers,
 )
-from services.platform.execution.inquiry import InquiryResult, retrieve_for_execution
+from services.platform.execution.inquiry import (
+    InquiryConfig,
+    InquiryResult,
+    retrieve_for_execution,
+)
 from services.platform.execution.question_planning_provider import (
     select_question_planning_provider,
 )
@@ -165,6 +169,26 @@ def _retrieval_config_for_trigger(trigger: TriggerContext):
     )
 
 
+def _think_inquiry_config() -> InquiryConfig:
+    """Think consumes Models as its memory substrate.
+
+    Product inquiry/Ask can keep the broader default. Think is a write path:
+    raw observation evidence should enter the prompt only as the existing
+    ``models_only`` fallback when no Model evidence exists.
+    """
+
+    mode = os.environ.get(
+        "THINK_INQUIRY_CONTEXT_PACKET_EVIDENCE_MODE",
+        "models_only",
+    ).strip().lower()
+    if mode not in {"models_only", "model_first", "all"}:
+        mode = "models_only"
+    return replace(
+        InquiryConfig.from_env(),
+        context_packet_evidence_mode=mode,
+    )
+
+
 async def plan_context(
     trigger: TriggerContext,
     conn: asyncpg.Connection,
@@ -186,6 +210,7 @@ async def plan_context(
         embedder=embedder,
         llm_provider=retrieval_question_planning_provider(llm_provider),
         mode=_plan_mode_for_trigger(trigger),
+        config=_think_inquiry_config(),
     )
     inquiry_result = (
         active_retrieval

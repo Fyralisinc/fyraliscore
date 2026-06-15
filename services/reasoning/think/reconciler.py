@@ -61,6 +61,7 @@ from lib.shared.memory_grammar import derive_memory_grammar
 from services.domain.models.propositions import canonicalize_proposition
 
 from .diff_schema import ClaimOp
+from .reconciler_situation_merge import build_situation_merge_payload
 from .text_embedding import deterministic_text_embedding, is_zero_embedding
 
 
@@ -162,6 +163,29 @@ class ReconcileResult:
     decision_reason: DecisionReason = "no_match"
     signal_breakdown: dict[str, float] = field(default_factory=dict)
     same_issue_candidate_id: UUID | None = None
+
+
+@dataclass(frozen=True)
+class _ReconcileContext:
+    entry: dict[str, Any]
+    candidate_embedding: list[float]
+    proposition: dict[str, Any]
+    prop_kind: str | None
+    grammar: Any
+    kind_rule: "KindRule"
+    auto_merge_threshold: float
+    human_review_threshold: float
+    candidate_scope_actors: list[str]
+    candidate_scope_entities: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class _BestCandidate:
+    row: dict[str, Any] | None
+    cosine: float
+    adjusted: float
+    breakdown: dict[str, float]
+    member_overlap: float
 
 
 # =====================================================================
@@ -744,233 +768,383 @@ async def _reconcile_inner(
     config: ReconcilerConfig,
 ) -> ReconcileResult:
     entry = op.entry or {}
-    candidate_embedding = _candidate_embedding(entry)
+    context = _build_reconcile_context(entry, config)
+    rows = await _load_reconcile_candidates(conn, tenant_id, context, config)
+    best = _select_best_candidate(rows, context)
 
-    proposition = entry.get("proposition") or {}
-    if isinstance(proposition, dict):
-        try:
-            proposition = canonicalize_proposition(proposition)
-        except Exception:
-            pass
+    if _should_record_no_match(best, context):
+        return await _record_no_match_result(
+            conn,
+            op=op,
+            tenant_id=tenant_id,
+            trigger_id=trigger_id,
+            think_run_id=think_run_id,
+            config=config,
+            context=context,
+            best=best,
+        )
+    if _can_auto_merge(best, context):
+        return await _record_auto_merge_result(
+            conn,
+            op=op,
+            tenant_id=tenant_id,
+            trigger_id=trigger_id,
+            think_run_id=think_run_id,
+            config=config,
+            context=context,
+            best=best,
+        )
+    return await _record_human_review_result(
+        conn,
+        op=op,
+        tenant_id=tenant_id,
+        trigger_id=trigger_id,
+        think_run_id=think_run_id,
+        context=context,
+        best=best,
+    )
+
+
+def _build_reconcile_context(
+    entry: dict[str, Any],
+    config: ReconcilerConfig,
+) -> _ReconcileContext:
+    candidate_embedding = _candidate_embedding(entry)
+    proposition = _canonical_proposition(entry.get("proposition") or {})
     prop_kind = proposition.get("kind") if isinstance(proposition, dict) else None
     grammar = derive_memory_grammar(proposition if isinstance(proposition, dict) else {})
     rule_key = _semantic_rule_key(proposition if isinstance(proposition, dict) else None)
     kind_rule = _kind_rule(rule_key)
-
-    # Per-kind threshold overrides; otherwise use global defaults.
-    auto_merge_threshold = (
-        kind_rule.auto_merge_cosine
-        if kind_rule.auto_merge_cosine is not None
-        else config.auto_merge_cosine
-    )
-    human_review_threshold = (
-        kind_rule.human_review_cosine
-        if kind_rule.human_review_cosine is not None
-        else config.human_review_cosine
-    )
-
-    # scope_actors come in as either UUID strings or UUID objects.
     raw_actors = entry.get("scope_actors") or []
-    candidate_scope_actors = [str(a) for a in raw_actors]
-    candidate_scope_entities = [
-        e for e in (entry.get("scope_entities") or []) if isinstance(e, dict)
-    ]
+    return _ReconcileContext(
+        entry=entry,
+        candidate_embedding=candidate_embedding,
+        proposition=proposition if isinstance(proposition, dict) else {},
+        prop_kind=prop_kind,
+        grammar=grammar,
+        kind_rule=kind_rule,
+        auto_merge_threshold=_auto_merge_threshold(kind_rule, config),
+        human_review_threshold=_human_review_threshold(kind_rule, config),
+        candidate_scope_actors=[str(a) for a in raw_actors],
+        candidate_scope_entities=[
+            e for e in (entry.get("scope_entities") or []) if isinstance(e, dict)
+        ],
+    )
 
-    rows = await _find_candidates(
+
+def _canonical_proposition(proposition: Any) -> dict[str, Any]:
+    if not isinstance(proposition, dict):
+        return {}
+    try:
+        canonical = canonicalize_proposition(proposition)
+    except Exception:
+        return proposition
+    return canonical if isinstance(canonical, dict) else proposition
+
+
+def _auto_merge_threshold(
+    kind_rule: "KindRule",
+    config: ReconcilerConfig,
+) -> float:
+    if kind_rule.auto_merge_cosine is not None:
+        return kind_rule.auto_merge_cosine
+    return config.auto_merge_cosine
+
+
+def _human_review_threshold(
+    kind_rule: "KindRule",
+    config: ReconcilerConfig,
+) -> float:
+    if kind_rule.human_review_cosine is not None:
+        return kind_rule.human_review_cosine
+    return config.human_review_cosine
+
+
+async def _load_reconcile_candidates(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    context: _ReconcileContext,
+    config: ReconcilerConfig,
+) -> list[dict[str, Any]]:
+    return await _find_candidates(
         conn,
         tenant_id=tenant_id,
-        candidate_embedding=candidate_embedding,
-        candidate_scope_actors=candidate_scope_actors,
-        candidate_scope_entities=candidate_scope_entities,
-        proposition_kind=prop_kind,
-        claim_role=grammar.claim_role,
+        candidate_embedding=context.candidate_embedding,
+        candidate_scope_actors=context.candidate_scope_actors,
+        candidate_scope_entities=context.candidate_scope_entities,
+        proposition_kind=context.prop_kind,
+        claim_role=context.grammar.claim_role,
         recency_window_days=config.recency_window_days,
     )
 
-    # Score each row and pick the best, applying graph-structural
-    # boosts on top of the raw cosine. We track both the raw cosine
-    # (for audit trail / `cosine_similarity` on the result) and the
-    # adjusted score (used for threshold decisions).
-    best_row: dict[str, Any] | None = None
-    best_cosine: float = -1.0
-    best_adjusted: float = -1.0
-    best_breakdown: dict[str, float] = {}
-    candidate_member_ids = _member_model_ids(entry.get("proposition"))
-    candidate_pattern_id = _pattern_id(entry.get("proposition"))
-    best_member_overlap: float = 0.0
 
-    for r in rows:
-        existing_emb = r.get("embedding")
-        # Embedding may come back as numpy array (codec-registered)
-        # or list. Normalize.
-        if existing_emb is None:
-            continue
-        if hasattr(existing_emb, "tolist"):
-            existing_emb = existing_emb.tolist()
-        if not isinstance(existing_emb, list):
-            continue
+def _select_best_candidate(
+    rows: list[dict[str, Any]],
+    context: _ReconcileContext,
+) -> _BestCandidate:
+    best = _BestCandidate(
+        row=None,
+        cosine=-1.0,
+        adjusted=-1.0,
+        breakdown={},
+        member_overlap=0.0,
+    )
+    for row in rows:
+        scored = _score_candidate_row(row, context)
+        if scored is not None and scored.adjusted > best.adjusted:
+            best = scored
+    return best
 
-        # pattern_instance: require matching parent pattern_id.
-        if kind_rule.require_matching_pattern_id:
-            row_pattern_id = _pattern_id(r.get("proposition"))
-            if (
-                candidate_pattern_id is None
-                or row_pattern_id is None
-                or candidate_pattern_id != row_pattern_id
-            ):
-                continue
 
-        cos = _cosine(candidate_embedding, list(existing_emb))
-        adjusted, breakdown = _compute_signal_breakdown(entry, r, cos)
+def _score_candidate_row(
+    row: dict[str, Any],
+    context: _ReconcileContext,
+) -> _BestCandidate | None:
+    existing_embedding = _embedding_list(row.get("embedding"))
+    if existing_embedding is None:
+        return None
+    if not _pattern_instance_matches(row, context):
+        return None
 
-        # situation: factor member-overlap into the adjusted score.
-        member_overlap = 0.0
-        if grammar.claim_role == "situation" and candidate_member_ids:
-            row_member_ids = _member_model_ids(r.get("proposition"))
-            member_overlap = _member_overlap_fraction(
-                candidate_member_ids, row_member_ids,
-            )
-            if member_overlap > 0:
-                breakdown["situation_member_overlap"] = float(member_overlap)
-                # Promote overlap into the adjusted score so the
-                # decision branch can short-circuit. We cap at 1.0.
-                adjusted = max(adjusted, min(1.0, member_overlap))
-                breakdown["adjusted_score"] = float(adjusted)
-
-        if adjusted > best_adjusted:
-            best_adjusted = adjusted
-            best_cosine = cos
-            best_row = r
-            best_breakdown = breakdown
-            best_member_overlap = member_overlap
-
-    if best_row is None or best_adjusted < human_review_threshold:
-        # Situation may still cross the same_issue floor on member
-        # overlap alone even when adjusted score is sub-threshold.
-        situation_floor = kind_rule.same_issue_member_overlap_floor
-        if (
-            best_row is not None
-            and situation_floor is not None
-            and best_member_overlap >= situation_floor
-        ):
-            # Fall through to the borderline branch below — overlap
-            # alone qualifies for same_issue_as emission.
-            pass
-        else:
-            event_id: UUID | None = None
-            if config.log_no_match:
-                event_id = await _record_event(
-                    conn,
-                    tenant_id=tenant_id,
-                    decision="no_match",
-                    original_claim_op=op,
-                    matched_model_id=None,
-                    cosine_similarity=(
-                        best_cosine if best_cosine >= 0.0 else None
-                    ),
-                    proposition_kind=prop_kind,
-                    trigger_id=trigger_id,
-                    think_run_id=think_run_id,
-                )
-            _emit_metric("no_match")
-            _log.info(
-                "reconcile.decision",
-                decision="no_match",
-                cosine=best_cosine if best_cosine >= 0.0 else None,
-                trigger_id=str(trigger_id),
-            )
-            return ReconcileResult(
-                decision="no_match",
-                matched_model_id=None,
-                cosine_similarity=(
-                    best_cosine if best_cosine >= 0.0 else None
-                ),
-                replacement_op=None,
-                event_id=event_id,
-                decision_reason="no_match",
-                signal_breakdown=best_breakdown,
-            )
-
-    matched_id: UUID = best_row["id"]
-    used_threshold = auto_merge_threshold
-
-    # ---- Situation member-overlap shortcut -------------------------
-    member_overlap_auto = (
-        grammar.claim_role == "situation"
-        and kind_rule.auto_member_overlap is not None
-        and best_member_overlap >= kind_rule.auto_member_overlap
+    cosine = _cosine(context.candidate_embedding, existing_embedding)
+    adjusted, breakdown = _compute_signal_breakdown(context.entry, row, cosine)
+    adjusted, breakdown, member_overlap = _apply_situation_member_overlap(
+        row,
+        context,
+        adjusted,
+        breakdown,
+    )
+    return _BestCandidate(
+        row=row,
+        cosine=cosine,
+        adjusted=adjusted,
+        breakdown=breakdown,
+        member_overlap=member_overlap,
     )
 
-    # ---- Auto-merge branch -----------------------------------------
-    can_auto_merge = (
-        not kind_rule.never_auto_merge
-        and not kind_rule.require_human_review
-        and (best_adjusted >= used_threshold or member_overlap_auto)
+
+def _embedding_list(raw: Any) -> list[float] | None:
+    if raw is None:
+        return None
+    if hasattr(raw, "tolist"):
+        raw = raw.tolist()
+    if not isinstance(raw, list):
+        return None
+    return list(raw)
+
+
+def _pattern_instance_matches(
+    row: dict[str, Any],
+    context: _ReconcileContext,
+) -> bool:
+    if not context.kind_rule.require_matching_pattern_id:
+        return True
+    candidate_pattern_id = _pattern_id(context.entry.get("proposition"))
+    row_pattern_id = _pattern_id(row.get("proposition"))
+    return (
+        candidate_pattern_id is not None
+        and row_pattern_id is not None
+        and candidate_pattern_id == row_pattern_id
     )
-    if can_auto_merge:
-        replacement = _build_auto_merge_replacement(
-            entry, best_row, matched_id,
-        )
+
+
+def _apply_situation_member_overlap(
+    row: dict[str, Any],
+    context: _ReconcileContext,
+    adjusted: float,
+    breakdown: dict[str, float],
+) -> tuple[float, dict[str, float], float]:
+    candidate_member_ids = _member_model_ids(context.entry.get("proposition"))
+    if context.grammar.claim_role != "situation" or not candidate_member_ids:
+        return adjusted, breakdown, 0.0
+
+    member_overlap = _member_overlap_fraction(
+        candidate_member_ids,
+        _member_model_ids(row.get("proposition")),
+    )
+    if member_overlap <= 0:
+        return adjusted, breakdown, member_overlap
+    breakdown = dict(breakdown)
+    breakdown["situation_member_overlap"] = float(member_overlap)
+    adjusted = max(adjusted, min(1.0, member_overlap))
+    breakdown["adjusted_score"] = float(adjusted)
+    return adjusted, breakdown, member_overlap
+
+
+def _should_record_no_match(
+    best: _BestCandidate,
+    context: _ReconcileContext,
+) -> bool:
+    if best.row is None:
+        return True
+    if best.adjusted >= context.human_review_threshold:
+        return False
+    situation_floor = context.kind_rule.same_issue_member_overlap_floor
+    return situation_floor is None or best.member_overlap < situation_floor
+
+
+async def _record_no_match_result(
+    conn: asyncpg.Connection,
+    *,
+    op: ClaimOp,
+    tenant_id: UUID,
+    trigger_id: UUID,
+    think_run_id: UUID | None,
+    config: ReconcilerConfig,
+    context: _ReconcileContext,
+    best: _BestCandidate,
+) -> ReconcileResult:
+    event_id: UUID | None = None
+    if config.log_no_match:
         event_id = await _record_event(
             conn,
             tenant_id=tenant_id,
-            decision="auto_merge",
+            decision="no_match",
             original_claim_op=op,
-            matched_model_id=matched_id,
-            cosine_similarity=best_cosine,
-            proposition_kind=prop_kind,
+            matched_model_id=None,
+            cosine_similarity=_result_cosine(best),
+            proposition_kind=context.prop_kind,
             trigger_id=trigger_id,
             think_run_id=think_run_id,
         )
-        _emit_metric("auto_merge")
-        _log.info(
-            "reconcile.decision",
-            decision="auto_merge",
-            cosine=best_cosine,
-            adjusted=best_adjusted,
-            matched_model_id=str(matched_id),
-            trigger_id=str(trigger_id),
-        )
-        # Distinguish "graph signals pushed us over" vs "kind-specific
-        # threshold did" vs "default high-cosine path".
-        if member_overlap_auto:
-            decision_reason: DecisionReason = "kind_specific_auto_merge"
-        elif (
-            best_breakdown.get("graph_boost", 0.0) > 0.0
-            and best_cosine < used_threshold
-        ):
-            decision_reason = "graph_signal_boost"
-        elif (
-            kind_rule.auto_merge_cosine is not None
-            and best_cosine < config.auto_merge_cosine
-        ):
-            decision_reason = "kind_specific_auto_merge"
-        elif best_cosine >= 0.999:
-            decision_reason = "exact_match"
-        else:
-            decision_reason = "high_cosine_auto_merge"
-        return ReconcileResult(
-            decision="auto_merge",
-            matched_model_id=matched_id,
-            cosine_similarity=best_cosine,
-            replacement_op=replacement,
-            event_id=event_id,
-            decision_reason=decision_reason,
-            signal_breakdown=best_breakdown,
-        )
+    _emit_metric("no_match")
+    _log.info(
+        "reconcile.decision",
+        decision="no_match",
+        cosine=_result_cosine(best),
+        trigger_id=str(trigger_id),
+    )
+    return ReconcileResult(
+        decision="no_match",
+        matched_model_id=None,
+        cosine_similarity=_result_cosine(best),
+        replacement_op=None,
+        event_id=event_id,
+        decision_reason="no_match",
+        signal_breakdown=best.breakdown,
+    )
 
-    # ---- Borderline / human-review branch --------------------------
-    # Log to the human-review queue, proceed with the original insert.
-    # NEW: also emit a `same_issue_as` RelationshipCandidate so the
-    # duplicate suspicion is visible to T4 / adjudication.
+
+def _result_cosine(best: _BestCandidate) -> float | None:
+    return best.cosine if best.cosine >= 0.0 else None
+
+
+def _can_auto_merge(
+    best: _BestCandidate,
+    context: _ReconcileContext,
+) -> bool:
+    if best.row is None:
+        return False
+    if context.kind_rule.never_auto_merge or context.kind_rule.require_human_review:
+        return False
+    return best.adjusted >= context.auto_merge_threshold or _member_overlap_auto(
+        best,
+        context,
+    )
+
+
+def _member_overlap_auto(
+    best: _BestCandidate,
+    context: _ReconcileContext,
+) -> bool:
+    return (
+        context.grammar.claim_role == "situation"
+        and context.kind_rule.auto_member_overlap is not None
+        and best.member_overlap >= context.kind_rule.auto_member_overlap
+    )
+
+
+async def _record_auto_merge_result(
+    conn: asyncpg.Connection,
+    *,
+    op: ClaimOp,
+    tenant_id: UUID,
+    trigger_id: UUID,
+    think_run_id: UUID | None,
+    config: ReconcilerConfig,
+    context: _ReconcileContext,
+    best: _BestCandidate,
+) -> ReconcileResult:
+    assert best.row is not None
+    matched_id: UUID = best.row["id"]
+    replacement = _build_auto_merge_replacement(
+        context.entry,
+        best.row,
+        matched_id,
+    )
+    event_id = await _record_event(
+        conn,
+        tenant_id=tenant_id,
+        decision="auto_merge",
+        original_claim_op=op,
+        matched_model_id=matched_id,
+        cosine_similarity=best.cosine,
+        proposition_kind=context.prop_kind,
+        trigger_id=trigger_id,
+        think_run_id=think_run_id,
+    )
+    _emit_metric("auto_merge")
+    _log.info(
+        "reconcile.decision",
+        decision="auto_merge",
+        cosine=best.cosine,
+        adjusted=best.adjusted,
+        matched_model_id=str(matched_id),
+        trigger_id=str(trigger_id),
+    )
+    return ReconcileResult(
+        decision="auto_merge",
+        matched_model_id=matched_id,
+        cosine_similarity=best.cosine,
+        replacement_op=replacement,
+        event_id=event_id,
+        decision_reason=_auto_merge_decision_reason(best, context, config),
+        signal_breakdown=best.breakdown,
+    )
+
+
+def _auto_merge_decision_reason(
+    best: _BestCandidate,
+    context: _ReconcileContext,
+    config: ReconcilerConfig,
+) -> DecisionReason:
+    if _member_overlap_auto(best, context):
+        return "kind_specific_auto_merge"
+    if (
+        best.breakdown.get("graph_boost", 0.0) > 0.0
+        and best.cosine < context.auto_merge_threshold
+    ):
+        return "graph_signal_boost"
+    if (
+        context.kind_rule.auto_merge_cosine is not None
+        and best.cosine < config.auto_merge_cosine
+    ):
+        return "kind_specific_auto_merge"
+    if best.cosine >= 0.999:
+        return "exact_match"
+    return "high_cosine_auto_merge"
+
+
+async def _record_human_review_result(
+    conn: asyncpg.Connection,
+    *,
+    op: ClaimOp,
+    tenant_id: UUID,
+    trigger_id: UUID,
+    think_run_id: UUID | None,
+    context: _ReconcileContext,
+    best: _BestCandidate,
+) -> ReconcileResult:
+    assert best.row is not None
+    matched_id: UUID = best.row["id"]
     event_id = await _record_event(
         conn,
         tenant_id=tenant_id,
         decision="human_review",
         original_claim_op=op,
         matched_model_id=matched_id,
-        cosine_similarity=best_cosine,
-        proposition_kind=prop_kind,
+        cosine_similarity=best.cosine,
+        proposition_kind=context.prop_kind,
         trigger_id=trigger_id,
         think_run_id=think_run_id,
     )
@@ -980,27 +1154,23 @@ async def _reconcile_inner(
         conn,
         tenant_id=tenant_id,
         matched_model_id=matched_id,
-        cosine=best_cosine,
-        adjusted=best_adjusted,
-        breakdown=best_breakdown,
-        prop_kind=prop_kind,
-        candidate_entry=entry,
-        kind_rule=kind_rule,
+        cosine=best.cosine,
+        adjusted=best.adjusted,
+        breakdown=best.breakdown,
+        prop_kind=context.prop_kind,
+        candidate_entry=context.entry,
+        kind_rule=context.kind_rule,
     )
 
-    # Which reason wins?
-    if kind_rule.never_auto_merge or kind_rule.require_human_review:
-        decision_reason = "kind_blocked_auto_merge"
-    elif same_issue_candidate_id is not None:
-        decision_reason = "same_issue_candidate_emitted"
-    else:
-        decision_reason = "near_duplicate_review"
-
+    decision_reason = _human_review_decision_reason(
+        context.kind_rule,
+        same_issue_candidate_id,
+    )
     _log.info(
         "reconcile.decision",
         decision="human_review",
-        cosine=best_cosine,
-        adjusted=best_adjusted,
+        cosine=best.cosine,
+        adjusted=best.adjusted,
         matched_model_id=str(matched_id),
         trigger_id=str(trigger_id),
         decision_reason=decision_reason,
@@ -1013,13 +1183,24 @@ async def _reconcile_inner(
     return ReconcileResult(
         decision="human_review",
         matched_model_id=matched_id,
-        cosine_similarity=best_cosine,
+        cosine_similarity=best.cosine,
         replacement_op=None,
         event_id=event_id,
         decision_reason=decision_reason,
-        signal_breakdown=best_breakdown,
+        signal_breakdown=best.breakdown,
         same_issue_candidate_id=same_issue_candidate_id,
     )
+
+
+def _human_review_decision_reason(
+    kind_rule: "KindRule",
+    same_issue_candidate_id: UUID | None,
+) -> DecisionReason:
+    if kind_rule.never_auto_merge or kind_rule.require_human_review:
+        return "kind_blocked_auto_merge"
+    if same_issue_candidate_id is not None:
+        return "same_issue_candidate_emitted"
+    return "near_duplicate_review"
 
 
 def _build_auto_merge_replacement(
@@ -1058,7 +1239,7 @@ def _build_auto_merge_replacement(
             *existing_readings,
             _confirmation_reading(entry, source_event_id, now),
         ]
-    situation_merge = _build_situation_merge_payload(
+    situation_merge = build_situation_merge_payload(
         entry=entry,
         best_row=best_row,
         source_event_id=source_event_id,
@@ -1070,140 +1251,6 @@ def _build_auto_merge_replacement(
         model_id=matched_id,
         changes=changes,
     )
-
-
-def _build_situation_merge_payload(
-    *,
-    entry: dict[str, Any],
-    best_row: dict[str, Any],
-    source_event_id: UUID | None,
-) -> dict[str, Any] | None:
-    """Return internal applier payload for evolving an existing situation.
-
-    A situation auto-merge should absorb the new composite structure, not just
-    bump confidence. The public LLM diff surface still only sees normal
-    claim_ops; this private payload is emitted by the reconciler and consumed
-    by the applier under the reconciliation_merge audit path.
-    """
-    candidate_prop = _normalize_jsonish(entry.get("proposition"))
-    existing_prop = _normalize_jsonish(best_row.get("proposition"))
-    if not isinstance(candidate_prop, dict) or not isinstance(existing_prop, dict):
-        return None
-    candidate_grammar = derive_memory_grammar(candidate_prop)
-    existing_grammar = derive_memory_grammar(existing_prop)
-    if (
-        candidate_grammar.claim_role != "situation"
-        or existing_grammar.claim_role != "situation"
-    ):
-        return None
-
-    merged = dict(existing_prop)
-    old_members = _member_model_ids(existing_prop)
-    candidate_members = _member_model_ids(candidate_prop)
-    if not candidate_members:
-        return None
-
-    member_ids = _merge_uuid_lists(
-        existing_prop.get("member_model_ids"),
-        candidate_prop.get("member_model_ids"),
-    )
-    if len(member_ids) < 2:
-        return None
-    merged["member_model_ids"] = member_ids
-
-    event_ids = _merge_uuid_lists(
-        existing_prop.get("evidence_event_ids"),
-        candidate_prop.get("evidence_event_ids"),
-        [str(source_event_id)] if source_event_id is not None else [],
-    )
-    if event_ids:
-        merged["evidence_event_ids"] = event_ids
-
-    for key in ("affected_decisions", "affected_customers", "affected_teams"):
-        merged_values = _merge_string_lists(
-            existing_prop.get(key),
-            candidate_prop.get(key),
-        )
-        if merged_values:
-            merged[key] = merged_values
-
-    for key in (
-        "summary",
-        "relationship_summary",
-        "shared_mechanism",
-        "judgment_change",
-        "open_falsifier",
-    ):
-        candidate_value = candidate_prop.get(key)
-        existing_value = merged.get(key)
-        if (
-            isinstance(candidate_value, str)
-            and candidate_value.strip()
-            and (
-                not isinstance(existing_value, str)
-                or len(candidate_value) > len(existing_value)
-            )
-        ):
-            merged[key] = candidate_value
-
-    candidate_status = candidate_prop.get("status")
-    if candidate_status in {"forming", "active", "contested", "resolved"}:
-        existing_status = merged.get("status")
-        if existing_status in {None, "", "forming"} or candidate_status in {
-            "active",
-            "contested",
-            "resolved",
-        }:
-            merged["status"] = candidate_status
-
-    candidate_tags = set(candidate_grammar.domain_tags)
-    candidate_tags.update(str(tag) for tag in (entry.get("domain_tags") or []))
-    candidate_tags.update(
-        str(tag)
-        for tag in candidate_prop.get("domain_tags", [])
-        if isinstance(tag, str)
-    )
-    return {
-        "proposition": merged,
-        "added_member_model_ids": [
-            str(uid) for uid in (candidate_members - old_members)
-        ],
-        "candidate_domain_tags": sorted(tag for tag in candidate_tags if tag),
-        "candidate_natural": str(entry.get("natural") or "")[:1000],
-    }
-
-
-def _merge_uuid_lists(*values: Any) -> list[str]:
-    out: list[str] = []
-    seen: set[UUID] = set()
-    for value in values:
-        if not isinstance(value, (list, tuple)):
-            continue
-        for raw in value:
-            uid = _coerce_uuid(raw)
-            if uid is None or uid in seen:
-                continue
-            seen.add(uid)
-            out.append(str(uid))
-    return out
-
-
-def _merge_string_lists(*values: Any) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        if not isinstance(value, (list, tuple)):
-            continue
-        for raw in value:
-            text = str(raw).strip()
-            if not text:
-                continue
-            key = text.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(text)
-    return out
 
 
 async def _emit_same_issue_candidate(

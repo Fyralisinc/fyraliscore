@@ -37,7 +37,11 @@ from services.reasoning.sage.affordances.repo import AffordanceProfilesRepo
 from services.reasoning.sage.cue_extractor import CueExtractor, StructuredCues
 from services.reasoning.sage.discovery.negative_memory_repo import NegativeMemoryRepo
 from services.reasoning.sage.discovery.shortcuts_repo import DiscoveryShortcutsRepo
-from services.reasoning.sage.evidence_projection import EvidenceProjector, ProjectionBudget
+from services.reasoning.sage.evidence_projection import (
+    EvidenceProjector,
+    ProjectionBudget,
+    ProjectionResult,
+)
 from services.reasoning.sage.intent_inferer import RetrievalIntent, RetrievalIntentInferer
 from services.reasoning.sage.structural_features.types import (
     EdgeStructuralFeatures,
@@ -164,6 +168,45 @@ class _LearnedReadPlan:
 class _NegativeMemorySignal:
     count: int = 0
     suppressed_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _ReaderGraphRows:
+    candidate_count_before_edge_seed: int
+    edge_seed_limit: int
+    seed_ids: list[UUID]
+    edges: list[dict[str, Any]]
+    models: dict[UUID, ModelRow]
+    features: dict[UUID, ModelStructuralFeatures]
+    edge_features: dict[UUID, EdgeStructuralFeatures]
+
+
+@dataclass(frozen=True, slots=True)
+class _ReaderScoredGraph:
+    gate_edges: list[CandidateEdge]
+    gate_debug: dict[str, dict[str, Any]]
+    activated_nodes: list[ActivatedNode]
+    activation_details: dict[UUID, "_CandidateScore"]
+
+
+@dataclass(frozen=True, slots=True)
+class _ReaderProjectedSelection:
+    selection: SubgraphSelection
+    selected_model_ids: list[UUID]
+    projection_budget: ProjectionBudget
+    projection: ProjectionResult
+    projected_dicts: tuple[dict[str, Any], ...]
+    observations: list[ObservationRow]
+
+
+def _mark_reader_stage(
+    timings: dict[str, int],
+    stage: str,
+    started: float,
+) -> float:
+    now = time.perf_counter()
+    timings[stage] = int((now - started) * 1000)
+    return now
 
 
 class SynthesisReader:
@@ -325,11 +368,6 @@ class SynthesisReader:
         cache_stats_started = Counter(self._cache_stats)
         read_started = time.perf_counter()
 
-        def mark(stage: str, started: float) -> float:
-            now = time.perf_counter()
-            timings[stage] = int((now - started) * 1000)
-            return now
-
         stage_started = time.perf_counter()
         cues = await CueExtractor(
             pool=self._pool,
@@ -343,7 +381,9 @@ class SynthesisReader:
             hypotheses=[_hypothesis_text(h) for h in hypotheses],
             evidence_state=None,
         )
-        stage_started = mark("cue_extraction_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "cue_extraction_ms", stage_started
+        )
         intents = tuple(self._intent_inferer.infer(
             cues=cues,
             evidence_state=None,
@@ -352,24 +392,34 @@ class SynthesisReader:
         ))
         primitive = _coarse_primitive(question_primitive, intents)
         signature = _signature_for(trigger, primitive, cues)
-        stage_started = mark("intent_signature_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "intent_signature_ms", stage_started
+        )
 
         candidates = _CandidateAccumulator()
         _add_explicit_trigger_models(candidates, trigger)
         _add_substrate_seed_models(candidates, substrate, self._budget)
-        stage_started = mark("explicit_seed_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "explicit_seed_ms", stage_started
+        )
         shortcut_hits = await self._activate_from_shortcuts(
             conn, tenant_id, signature, candidates, degraded_sources,
         )
-        stage_started = mark("shortcut_activation_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "shortcut_activation_ms", stage_started
+        )
         contextual_affordance_hits = await self._activate_from_affordances(
             conn, tenant_id, primitive, signature, candidates, degraded_sources,
         )
-        stage_started = mark("affordance_activation_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "affordance_activation_ms", stage_started
+        )
         negative_memory = await self._suppress_from_negative_memory(
             conn, tenant_id, signature, candidates, degraded_sources,
         )
-        stage_started = mark("negative_memory_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "negative_memory_ms", stage_started
+        )
 
         learned_plan = _learned_read_plan(
             budget=self._budget,
@@ -404,7 +454,9 @@ class SynthesisReader:
             candidates,
             limit=learned_plan.lexical_candidates,
         )
-        stage_started = mark("lexical_activation_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "lexical_activation_ms", stage_started
+        )
         if learned_plan.skip_broad_discovery:
             timings["belief_address_activation_ms"] = 0
             timings["operational_facet_activation_ms"] = 0
@@ -413,16 +465,84 @@ class SynthesisReader:
             await self._activate_from_belief_addresses(
                 conn, tenant_id, primitive, question, trigger, cues, candidates,
             )
-            stage_started = mark("belief_address_activation_ms", stage_started)
+            stage_started = _mark_reader_stage(
+                timings, "belief_address_activation_ms", stage_started
+            )
             await self._activate_from_operational_facets(
                 conn, tenant_id, question, candidates,
             )
-            stage_started = mark("operational_facet_activation_ms", stage_started)
+            stage_started = _mark_reader_stage(
+                timings, "operational_facet_activation_ms", stage_started
+            )
             await self._activate_from_alternative_scan(
                 conn, tenant_id, question, candidates,
             )
-            stage_started = mark("alternative_activation_ms", stage_started)
+            stage_started = _mark_reader_stage(
+                timings, "alternative_activation_ms", stage_started
+            )
 
+        graph, stage_started = await self._load_reader_graph_rows(
+            conn=conn,
+            tenant_id=tenant_id,
+            trigger=trigger,
+            candidates=candidates,
+            learned_plan=learned_plan,
+            substrate=substrate,
+            timings=timings,
+            stage_started=stage_started,
+        )
+        scored, stage_started = self._score_reader_graph(
+            graph=graph,
+            candidates=candidates,
+            primitive=primitive,
+            intents=intents,
+            question=question,
+            trigger=trigger,
+            cues=cues,
+            timings=timings,
+            stage_started=stage_started,
+        )
+        projected = await self._select_and_project_reader_graph(
+            conn=conn,
+            tenant_id=tenant_id,
+            primitive=primitive,
+            learned_plan=learned_plan,
+            scored=scored,
+            timings=timings,
+            stage_started=stage_started,
+        )
+
+        return _build_reader_result(
+            budget=self._budget,
+            question_id=question_id,
+            primitive=primitive,
+            signature=signature,
+            cues=cues,
+            intents=intents,
+            graph=graph,
+            scored=scored,
+            projected=projected,
+            substrate=substrate,
+            lexical_activation_stats=lexical_activation_stats,
+            degraded_sources=degraded_sources,
+            cache_stats_delta=_counter_delta(self._cache_stats, cache_stats_started),
+            timings=timings,
+            read_started=read_started,
+            learned_plan=learned_plan,
+        )
+
+    async def _load_reader_graph_rows(
+        self,
+        *,
+        conn: asyncpg.Connection,
+        tenant_id: UUID,
+        trigger: TriggerContext,
+        candidates: "_CandidateAccumulator",
+        learned_plan: _LearnedReadPlan,
+        substrate: SageReadSubstrate | None,
+        timings: dict[str, int],
+        stage_started: float,
+    ) -> tuple[_ReaderGraphRows, float]:
         candidate_count_before_edge_seed = len(candidates.model_ids)
         edge_seed_limit = _edge_seed_limit(self._budget, learned_plan)
         seed_ids = candidates.ranked_model_ids(
@@ -437,7 +557,9 @@ class SynthesisReader:
             or self._budget.propagation_neighbors,
             substrate=substrate,
         )
-        stage_started = mark("load_candidate_edges_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "load_candidate_edges_ms", stage_started
+        )
         model_ids = set(seed_ids)
         for edge in edges:
             model_ids.add(edge["source_model_id"])
@@ -446,19 +568,49 @@ class SynthesisReader:
         models = await self._load_models_cached(
             conn, tenant_id, sorted(model_ids, key=str)
         )
-        stage_started = mark("load_models_ms", stage_started)
+        stage_started = _mark_reader_stage(timings, "load_models_ms", stage_started)
         features = await self._load_model_features_cached(
             conn, tenant_id, list(models)
         )
-        stage_started = mark("load_model_features_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "load_model_features_ms", stage_started
+        )
         edge_features = await self._load_edge_features_cached(
             conn, tenant_id, [r["id"] for r in edges],
         )
-        stage_started = mark("load_edge_features_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "load_edge_features_ms", stage_started
+        )
 
+        return (
+            _ReaderGraphRows(
+                candidate_count_before_edge_seed=candidate_count_before_edge_seed,
+                edge_seed_limit=edge_seed_limit,
+                seed_ids=seed_ids,
+                edges=edges,
+                models=models,
+                features=features,
+                edge_features=edge_features,
+            ),
+            stage_started,
+        )
+
+    def _score_reader_graph(
+        self,
+        *,
+        graph: _ReaderGraphRows,
+        candidates: "_CandidateAccumulator",
+        primitive: str,
+        intents: tuple[RetrievalIntent, ...],
+        question: str,
+        trigger: TriggerContext,
+        cues: StructuredCues,
+        timings: dict[str, int],
+        stage_started: float,
+    ) -> tuple[_ReaderScoredGraph, float]:
         gate_edges: list[CandidateEdge] = []
         gate_debug: dict[str, dict[str, Any]] = {}
-        for edge in edges:
+        for edge in graph.edges:
             source_id = edge["source_model_id"]
             target_id = edge["target_model_id"]
             gate = self._gate_scorer.score(
@@ -466,9 +618,9 @@ class SynthesisReader:
                     edge_type=str(edge["edge_kind"]),
                     edge_confidence=float(edge["weight"] or 0.65),
                     edge_updated_at=edge["created_at"] or datetime.now(timezone.utc),
-                    source_features=features.get(source_id),
-                    target_features=features.get(target_id),
-                    edge_features=edge_features.get(edge["id"]),
+                    source_features=graph.features.get(source_id),
+                    target_features=graph.features.get(target_id),
+                    edge_features=graph.edge_features.get(edge["id"]),
                     source_trust_tier=None,
                     access_allowed=True,
                 ),
@@ -501,12 +653,14 @@ class SynthesisReader:
                 gate_score=gate.score * 0.85,
                 edge_kind=str(edge["edge_kind"]),
             )
-        stage_started = mark("gate_propagation_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "gate_propagation_ms", stage_started
+        )
 
         activated_nodes: list[ActivatedNode] = []
         activation_details: dict[UUID, _CandidateScore] = {}
         for mid, model in sorted(
-            models.items(),
+            graph.models.items(),
             key=lambda item: _model_stable_sort_key(item[1]),
         ):
             score = candidates.score_for(mid)
@@ -528,11 +682,33 @@ class SynthesisReader:
                     model_id=mid,
                     activation_score=score,
                     activation_reasons=tuple(detail.reasons[:12]),
-                    structural_features=features.get(mid),
+                    structural_features=graph.features.get(mid),
                 )
             )
-        stage_started = mark("activation_scoring_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "activation_scoring_ms", stage_started
+        )
+        return (
+            _ReaderScoredGraph(
+                gate_edges=gate_edges,
+                gate_debug=gate_debug,
+                activated_nodes=activated_nodes,
+                activation_details=activation_details,
+            ),
+            stage_started,
+        )
 
+    async def _select_and_project_reader_graph(
+        self,
+        *,
+        conn: asyncpg.Connection,
+        tenant_id: UUID,
+        primitive: str,
+        learned_plan: _LearnedReadPlan,
+        scored: _ReaderScoredGraph,
+        timings: dict[str, int],
+        stage_started: float,
+    ) -> _ReaderProjectedSelection:
         selector = self._selector
         if learned_plan.max_nodes is not None or learned_plan.max_edges is not None:
             selector = SubgraphSelector(
@@ -544,17 +720,19 @@ class SynthesisReader:
             )
 
         selection = selector.select(
-            activated_nodes=activated_nodes,
-            candidate_edges=gate_edges,
+            activated_nodes=scored.activated_nodes,
+            candidate_edges=scored.gate_edges,
             question_primitive=primitive,
             required_evidence_roles=_required_roles_for(primitive),
             known_counterevidence_node_ids=tuple(
                 n.model_id
-                for n in activated_nodes
+                for n in scored.activated_nodes
                 if any("counterevidence" in r for r in n.activation_reasons)
             ),
         )
-        stage_started = mark("subgraph_selection_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "subgraph_selection_ms", stage_started
+        )
         selected_model_ids = list(selection.selected_nodes)
         projection_budget = _projection_budget_for(
             self._budget,
@@ -568,7 +746,9 @@ class SynthesisReader:
             question_primitive=primitive,
             conn=conn,
         )
-        stage_started = mark("evidence_projection_ms", stage_started)
+        stage_started = _mark_reader_stage(
+            timings, "evidence_projection_ms", stage_started
+        )
         projected_dicts = tuple(
             _jsonable(asdict(candidate)) for candidate in projection.projected
         )
@@ -580,111 +760,14 @@ class SynthesisReader:
         observations = await self._load_observations_cached(
             conn, tenant_id, observation_ids
         )
-        stage_started = mark("load_observations_ms", stage_started)
-
-        selection_rank = {mid: idx for idx, mid in enumerate(selected_model_ids)}
-        traces: list[ReaderActivationTrace] = []
-        for node in sorted(
-            activated_nodes,
-            key=lambda n: (
-                -n.activation_score,
-                selection_rank.get(n.model_id, len(selection_rank)),
-                str(n.model_id),
-            ),
-        )[: self._budget.max_nodes * 3]:
-            detail = activation_details[node.model_id]
-            selected = node.model_id in selection_rank
-            traces.append(
-                ReaderActivationTrace(
-                    question_id=question_id,
-                    model_id=node.model_id,
-                    activation_score=node.activation_score,
-                    activation_reasons=node.activation_reasons,
-                    selected=selected,
-                    selection_rank=selection_rank.get(node.model_id),
-                    source_breakdown=dict(detail.sources),
-                )
-            )
-
-        selected_models = tuple(
-            models[mid] for mid in selected_model_ids if mid in models
-        )
-        model_scores = {
-            mid: activation_details.get(mid, _CandidateScore()).score
-            for mid in selected_model_ids
-        }
-        pathway = PathwayResult(
-            models=list(selected_models),
-            observations=list(observations),
-            source_pathway="SAGE",  # type: ignore[arg-type]
-            notes={
-                "sage_reader": True,
-                "question_id": question_id,
-                "question_primitive": primitive,
-                "signature": signature,
-                "selected_model_ids": [str(mid) for mid in selected_model_ids],
-                "projected_evidence_count": len(projected_dicts),
-                "degraded_sources": list(degraded_sources),
-            },
-        )
-        debug = {
-            "cue_extraction": _jsonable(asdict(cues)),
-            "intents": [_jsonable(asdict(intent)) for intent in intents],
-            "activation_reasons": {
-                str(trace.model_id): list(trace.activation_reasons)
-                for trace in traces
-            },
-            "gate_scores": gate_debug,
-            "selector": {
-                "selected_nodes": [str(mid) for mid in selection.selected_nodes],
-                "selected_edges": [str(eid) for eid in selection.selected_edges],
-                "bridge_nodes": [str(mid) for mid in selection.bridge_nodes],
-                "coverage_metrics": selection.coverage_metrics,
-            },
-            "projection_coverage": projection.coverage,
-            "degraded_sources": list(degraded_sources),
-            "projection_budget": _jsonable(asdict(projection_budget)),
-            "learned_read_plan": _jsonable(asdict(learned_plan)),
-            "candidate_pool": {
-                "substrate_model_count": substrate.model_count if substrate else 0,
-                "substrate_counters": (
-                    dict(sorted(substrate.counters.items())) if substrate else {}
-                ),
-                "substrate_timings_ms": (
-                    dict(substrate.timings_ms) if substrate else {}
-                ),
-                "before_edge_seed_count": candidate_count_before_edge_seed,
-                "edge_seed_limit": edge_seed_limit,
-                "edge_seed_count": len(seed_ids),
-                "edge_seed_pruned_count": max(
-                    0,
-                    candidate_count_before_edge_seed - len(seed_ids),
-                ),
-                "candidate_edge_count": len(edges),
-                "loaded_model_count": len(models),
-                "lexical_activation": lexical_activation_stats,
-            },
-            "row_cache": _counter_delta(self._cache_stats, cache_stats_started),
-            "stage_timings_ms": {
-                **timings,
-                "reader_total_ms": int((time.perf_counter() - read_started) * 1000),
-            },
-        }
-        return SynthesisReaderResult(
-            question_id=question_id,
-            question_primitive=primitive,
-            signature=signature,
-            cues=cues,
-            intents=intents,
-            activations=tuple(traces),
+        _mark_reader_stage(timings, "load_observations_ms", stage_started)
+        return _ReaderProjectedSelection(
             selection=selection,
-            projected_evidence=projected_dicts,
-            omitted_projection=tuple((str(mid), reason) for mid, reason in projection.omitted),
-            models=selected_models,
-            observations=tuple(observations),
-            model_scores=model_scores,
-            pathway_result=pathway,
-            debug=debug,
+            selected_model_ids=selected_model_ids,
+            projection_budget=projection_budget,
+            projection=projection,
+            projected_dicts=projected_dicts,
+            observations=observations,
         )
 
     async def _load_aliases_cached(
@@ -1296,6 +1379,181 @@ class _CandidateAccumulator:
             f"propagated:{edge_kind}",
             source="propagation",
         )
+
+
+def _build_reader_result(
+    *,
+    budget: ReaderBudget,
+    question_id: str,
+    primitive: str,
+    signature: dict[str, Any],
+    cues: StructuredCues,
+    intents: tuple[RetrievalIntent, ...],
+    graph: _ReaderGraphRows,
+    scored: _ReaderScoredGraph,
+    projected: _ReaderProjectedSelection,
+    substrate: SageReadSubstrate | None,
+    lexical_activation_stats: dict[str, int],
+    degraded_sources: list[dict[str, Any]],
+    cache_stats_delta: dict[str, int],
+    timings: dict[str, int],
+    read_started: float,
+    learned_plan: _LearnedReadPlan,
+) -> SynthesisReaderResult:
+    selection_rank = {
+        mid: idx for idx, mid in enumerate(projected.selected_model_ids)
+    }
+    traces = _build_activation_traces(
+        question_id=question_id,
+        activated_nodes=scored.activated_nodes,
+        activation_details=scored.activation_details,
+        selection_rank=selection_rank,
+        max_nodes=budget.max_nodes,
+    )
+    selected_models = tuple(
+        graph.models[mid] for mid in projected.selected_model_ids if mid in graph.models
+    )
+    model_scores = {
+        mid: scored.activation_details.get(mid, _CandidateScore()).score
+        for mid in projected.selected_model_ids
+    }
+    pathway = PathwayResult(
+        models=list(selected_models),
+        observations=list(projected.observations),
+        source_pathway="SAGE",  # type: ignore[arg-type]
+        notes={
+            "sage_reader": True,
+            "question_id": question_id,
+            "question_primitive": primitive,
+            "signature": signature,
+            "selected_model_ids": [str(mid) for mid in projected.selected_model_ids],
+            "projected_evidence_count": len(projected.projected_dicts),
+            "degraded_sources": list(degraded_sources),
+        },
+    )
+    debug = _build_reader_debug_payload(
+        cues=cues,
+        intents=intents,
+        traces=traces,
+        scored=scored,
+        projected=projected,
+        substrate=substrate,
+        graph=graph,
+        lexical_activation_stats=lexical_activation_stats,
+        degraded_sources=degraded_sources,
+        cache_stats_delta=cache_stats_delta,
+        timings=timings,
+        read_started=read_started,
+        learned_plan=learned_plan,
+    )
+    return SynthesisReaderResult(
+        question_id=question_id,
+        question_primitive=primitive,
+        signature=signature,
+        cues=cues,
+        intents=intents,
+        activations=tuple(traces),
+        selection=projected.selection,
+        projected_evidence=projected.projected_dicts,
+        omitted_projection=tuple(
+            (str(mid), reason) for mid, reason in projected.projection.omitted
+        ),
+        models=selected_models,
+        observations=tuple(projected.observations),
+        model_scores=model_scores,
+        pathway_result=pathway,
+        debug=debug,
+    )
+
+
+def _build_activation_traces(
+    *,
+    question_id: str,
+    activated_nodes: list[ActivatedNode],
+    activation_details: dict[UUID, _CandidateScore],
+    selection_rank: dict[UUID, int],
+    max_nodes: int,
+) -> list[ReaderActivationTrace]:
+    traces: list[ReaderActivationTrace] = []
+    for node in sorted(
+        activated_nodes,
+        key=lambda n: (
+            -n.activation_score,
+            selection_rank.get(n.model_id, len(selection_rank)),
+            str(n.model_id),
+        ),
+    )[: max_nodes * 3]:
+        detail = activation_details[node.model_id]
+        traces.append(
+            ReaderActivationTrace(
+                question_id=question_id,
+                model_id=node.model_id,
+                activation_score=node.activation_score,
+                activation_reasons=node.activation_reasons,
+                selected=node.model_id in selection_rank,
+                selection_rank=selection_rank.get(node.model_id),
+                source_breakdown=dict(detail.sources),
+            )
+        )
+    return traces
+
+
+def _build_reader_debug_payload(
+    *,
+    cues: StructuredCues,
+    intents: tuple[RetrievalIntent, ...],
+    traces: list[ReaderActivationTrace],
+    scored: _ReaderScoredGraph,
+    projected: _ReaderProjectedSelection,
+    substrate: SageReadSubstrate | None,
+    graph: _ReaderGraphRows,
+    lexical_activation_stats: dict[str, int],
+    degraded_sources: list[dict[str, Any]],
+    cache_stats_delta: dict[str, int],
+    timings: dict[str, int],
+    read_started: float,
+    learned_plan: _LearnedReadPlan,
+) -> dict[str, Any]:
+    return {
+        "cue_extraction": _jsonable(asdict(cues)),
+        "intents": [_jsonable(asdict(intent)) for intent in intents],
+        "activation_reasons": {
+            str(trace.model_id): list(trace.activation_reasons) for trace in traces
+        },
+        "gate_scores": scored.gate_debug,
+        "selector": {
+            "selected_nodes": [str(mid) for mid in projected.selection.selected_nodes],
+            "selected_edges": [str(eid) for eid in projected.selection.selected_edges],
+            "bridge_nodes": [str(mid) for mid in projected.selection.bridge_nodes],
+            "coverage_metrics": projected.selection.coverage_metrics,
+        },
+        "projection_coverage": projected.projection.coverage,
+        "degraded_sources": list(degraded_sources),
+        "projection_budget": _jsonable(asdict(projected.projection_budget)),
+        "learned_read_plan": _jsonable(asdict(learned_plan)),
+        "candidate_pool": {
+            "substrate_model_count": substrate.model_count if substrate else 0,
+            "substrate_counters": (
+                dict(sorted(substrate.counters.items())) if substrate else {}
+            ),
+            "substrate_timings_ms": dict(substrate.timings_ms) if substrate else {},
+            "before_edge_seed_count": graph.candidate_count_before_edge_seed,
+            "edge_seed_limit": graph.edge_seed_limit,
+            "edge_seed_count": len(graph.seed_ids),
+            "edge_seed_pruned_count": max(
+                0,
+                graph.candidate_count_before_edge_seed - len(graph.seed_ids),
+            ),
+            "candidate_edge_count": len(graph.edges),
+            "loaded_model_count": len(graph.models),
+            "lexical_activation": lexical_activation_stats,
+        },
+        "row_cache": cache_stats_delta,
+        "stage_timings_ms": {
+            **timings,
+            "reader_total_ms": int((time.perf_counter() - read_started) * 1000),
+        },
+    }
 
 
 def _edge_seed_limit(budget: ReaderBudget, learned_plan: _LearnedReadPlan) -> int:
@@ -2469,12 +2727,26 @@ async def _fetch_bounded_lookup_rows(
     *args: Any,
     label: str = "lookup",
 ) -> list[asyncpg.Record]:
+    in_outer_transaction = bool(
+        getattr(conn, "is_in_transaction", lambda: False)()
+    )
+    previous_timeout: str | None = None
+    if in_outer_transaction:
+        previous_timeout = await conn.fetchval(
+            "SELECT current_setting('statement_timeout')"
+        )
     try:
         async with conn.transaction():
-            await conn.execute(
-                "SET LOCAL statement_timeout = "
-                f"{_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS}"
-            )
+            if in_outer_transaction:
+                await conn.fetchval(
+                    "SELECT set_config('statement_timeout', $1, true)",
+                    str(_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS),
+                )
+            else:
+                await conn.execute(
+                    "SET LOCAL statement_timeout = "
+                    f"{_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS}"
+                )
             return list(await conn.fetch(query, *args))
     except asyncpg.QueryCanceledError:
         _log.warning(
@@ -2483,6 +2755,23 @@ async def _fetch_bounded_lookup_rows(
             timeout_ms=_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS,
         )
         return []
+    finally:
+        if (
+            in_outer_transaction
+            and previous_timeout is not None
+            and bool(getattr(conn, "is_in_transaction", lambda: False)())
+        ):
+            try:
+                await conn.fetchval(
+                    "SELECT set_config('statement_timeout', $1, true)",
+                    previous_timeout,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "sage.reader.bounded_lookup_timeout_restore_failed",
+                    label=label,
+                    error=str(exc),
+                )
 
 
 async def _fetch_lexical_fallback_rows(

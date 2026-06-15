@@ -26,6 +26,7 @@ caller's transaction. Think will open one transaction for retrieve +
 reason + apply + state_change emission, and we must be on that same
 connection so pre-commit state is visible.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -142,32 +143,70 @@ def _append_timing(
 # against the columns list. Wave 5 could refactor this into a thin
 # public method on ModelsRepo.
 _MODEL_SELECT_COLS = (
-    "id", "tenant_id", "born_from_event_id",
-    "proposition", '"natural" AS natural', "embedding",
-    "scope_actors", "scope_entities", "scope_temporal",
-    "confidence", "activation", "falsifier",
-    "signal_readings", "reading_contestable",
-    "supporting_event_ids", "supporting_model_ids", "evidential_weight",
-    "status", "archived_at", "archive_reason",
-    "created_at", "last_retrieved_at", "retrieval_count",
-    "evaluate_at", "resolution_criteria", "contributing_models",
+    "id",
+    "tenant_id",
+    "born_from_event_id",
+    "proposition",
+    '"natural" AS natural',
+    "embedding",
+    "scope_actors",
+    "scope_entities",
+    "scope_temporal",
+    "confidence",
+    "activation",
+    "falsifier",
+    "signal_readings",
+    "reading_contestable",
+    "supporting_event_ids",
+    "supporting_model_ids",
+    "evidential_weight",
+    "status",
+    "archived_at",
+    "archive_reason",
+    "created_at",
+    "last_retrieved_at",
+    "retrieval_count",
+    "evaluate_at",
+    "resolution_criteria",
+    "contributing_models",
     "visible_to_subjects",
     "proposition_kind",
-    "claim_role", "abstraction_level", "time_mode", "modality", "polarity",
-    "domain_tags", "memory_grammar_version",
-    "confirmed_count", "contested_count", "last_confirmed_at",
+    "claim_role",
+    "abstraction_level",
+    "time_mode",
+    "modality",
+    "polarity",
+    "domain_tags",
+    "memory_grammar_version",
+    "confirmed_count",
+    "contested_count",
+    "last_confirmed_at",
     "confidence_at_assertion",
-    "resolved_at", "resolution_outcome",
+    "resolved_at",
+    "resolution_outcome",
     "activation_coefficient",
-    "target_actor_id", "caused_act_change_id",
+    "target_actor_id",
+    "caused_act_change_id",
 )
 _MODEL_SELECT_SQL = ", ".join(_MODEL_SELECT_COLS)
 
 _OBS_SELECT_COLS = (
-    "id", "tenant_id", "occurred_at", "ingested_at", "kind",
-    "source_channel", "source_actor_ref", "actor_id",
-    "content", "content_text", "embedding", "embedding_pending",
-    "trust_tier", "external_id", "cause_id", "sequence_num",
+    "id",
+    "tenant_id",
+    "occurred_at",
+    "ingested_at",
+    "kind",
+    "source_channel",
+    "source_actor_ref",
+    "actor_id",
+    "content",
+    "content_text",
+    "embedding",
+    "embedding_pending",
+    "trust_tier",
+    "external_id",
+    "cause_id",
+    "sequence_num",
     "entities_mentioned",
 )
 _OBS_SELECT_SQL = ", ".join(_OBS_SELECT_COLS)
@@ -393,7 +432,7 @@ def _cosine_distance(a: Sequence[float] | None, b: Sequence[float] | None) -> fl
         nb += fy * fy
     if na <= 0.0 or nb <= 0.0:
         return float("inf")
-    return 1.0 - (dot / ((na ** 0.5) * (nb ** 0.5)))
+    return 1.0 - (dot / ((na**0.5) * (nb**0.5)))
 
 
 def _hydrate_many(
@@ -436,7 +475,15 @@ def _hydrate_many(
 
 
 _SEED_ENTITY_TYPES = frozenset(
-    {"commitment", "goal", "decision", "actor", "customer", "customer_resource", "resource"}
+    {
+        "commitment",
+        "goal",
+        "decision",
+        "actor",
+        "customer",
+        "customer_resource",
+        "resource",
+    }
 )
 
 
@@ -451,9 +498,79 @@ def _canonical_seed_type(raw_type: Any) -> str | None:
     return None
 
 
+@dataclass(slots=True)
+class _PathwayASeeds:
+    seeds: dict[str, set[UUID]]
+    direct_seed_entity_pairs: set[tuple[str, UUID]]
+    accepted_count: int
+
+
+@dataclass(slots=True)
+class _PathwayAWalkResult:
+    visited_commits: set[UUID]
+    visited_goals: set[UUID]
+    visited_decisions: set[UUID]
+    visited_actors: set[UUID]
+    visited_customers: set[UUID]
+    visited_resources: set[UUID]
+    hops_executed: int
+
+
+@dataclass(slots=True)
+class _PathwayAEntityRows:
+    goals: list[GoalRow]
+    commitments: list[CommitmentRow]
+    decisions: list[DecisionRow]
+    resources: list[ResourceRow]
+
+
+@dataclass(slots=True)
+class _PathwayAHopExpansion:
+    commits: set[UUID] = field(default_factory=set)
+    goals: set[UUID] = field(default_factory=set)
+    decisions: set[UUID] = field(default_factory=set)
+    customers: set[UUID] = field(default_factory=set)
+
+
+def _parse_pathway_a_seeds(
+    seed_entity_ids: Sequence[dict[str, Any]],
+    notes: dict[str, Any],
+) -> _PathwayASeeds:
+    seeds: dict[str, set[UUID]] = {k: set() for k in _SEED_ENTITY_TYPES}
+    for raw in seed_entity_ids:
+        if not isinstance(raw, dict):
+            continue
+        seed_type = _canonical_seed_type(raw.get("type"))
+        raw_id = raw.get("id")
+        if seed_type is None or raw_id is None:
+            continue
+        try:
+            seeds[seed_type].add(UUID(str(raw_id)))
+        except (ValueError, TypeError):
+            continue
+
+    direct_pairs: set[tuple[str, UUID]] = set()
+    for direct_type in ("commitment", "goal", "decision", "resource"):
+        for direct_id in seeds[direct_type]:
+            direct_pairs.add((direct_type, direct_id))
+    for direct_id in seeds["customer_resource"]:
+        direct_pairs.add(("customer", direct_id))
+        direct_pairs.add(("customer_resource", direct_id))
+        direct_pairs.add(("resource", direct_id))
+
+    notes["seeds_by_type"] = {k: len(v) for k, v in seeds.items() if v}
+    accepted_count = sum(len(v) for v in seeds.values())
+    notes["seeds_accepted"] = accepted_count
+    return _PathwayASeeds(
+        seeds=seeds,
+        direct_seed_entity_pairs=direct_pairs,
+        accepted_count=accepted_count,
+    )
+
+
 def _chunked(values: Sequence[Any], size: int) -> list[list[Any]]:
     chunk_size = max(1, int(size))
-    return [list(values[i:i + chunk_size]) for i in range(0, len(values), chunk_size)]
+    return [list(values[i : i + chunk_size]) for i in range(0, len(values), chunk_size)]
 
 
 def _scope_filter_key(entry: dict[str, Any]) -> tuple[str, UUID] | None:
@@ -485,571 +602,31 @@ def _cap_scope_entity_filters(
     return capped, len(filters) - len(capped)
 
 
-def _record_value(row: asyncpg.Record, key: str, default: Any = None) -> Any:
-    try:
-        return row[key]
-    except (KeyError, TypeError):
-        return default
+def _dedupe_scope_entity_filters(
+    filters: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in filters:
+        key = _jsonb(entry)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(entry)
+    return deduped
 
 
-def _rank_sidecar_records(
-    rows: Sequence[asyncpg.Record],
-    *,
-    limit: int,
-) -> list[asyncpg.Record]:
-    ranked = sorted(
-        rows,
-        key=lambda row: (
-            int(_record_value(row, "_seed_priority", 1) or 1),
-            int(_record_value(row, "_local_rank", 0) or 0),
-            int(_record_value(row, "_seed_order", 0) or 0),
-            -float(_record_value(row, "activation", 0.0) or 0.0),
-            str(_record_value(row, "id", "") or ""),
-        ),
-    )
-    return ranked[:max(1, int(limit))]
-
-
-async def _fetch_pathway_a_entity_sidecar_rows(
+async def _build_pathway_a_scope_entity_filters(
     conn: asyncpg.Connection,
     *,
     tenant_id: UUID,
-    entity_types: Sequence[str],
-    entity_ids: Sequence[UUID],
-    entity_orders: Sequence[int],
-    entity_priorities: Sequence[int],
-    per_seed_limit: int,
-    global_limit: int,
-) -> list[asyncpg.Record]:
-    if not entity_ids:
-        return []
-    rows: list[asyncpg.Record] = []
-    per_seed_cap = max(1, int(per_seed_limit))
-    for entity_type, entity_id, seed_order, seed_priority in zip(
-        entity_types,
-        entity_ids,
-        entity_orders,
-        entity_priorities,
-        strict=False,
-    ):
-        model_id_rows = await conn.fetch(
-            """
-            SELECT model_id
-            FROM model_scope_entities
-            WHERE tenant_id = $1
-              AND entity_type = $2
-              AND entity_id = $3
-            """,
-            tenant_id,
-            str(entity_type),
-            entity_id,
-        )
-        model_ids = [row["model_id"] for row in model_id_rows]
-        if not model_ids:
-            continue
-        seed_rows = await conn.fetch(
-            f"""
-            SELECT $2::int AS _seed_priority,
-                   $3::int AS _seed_order,
-                   0::int AS _local_rank,
-                   {_MODEL_SELECT_SQL}
-            FROM models
-            WHERE tenant_id = $1
-              AND status = 'active'
-              AND id = ANY($4::uuid[])
-            ORDER BY activation DESC, created_at DESC
-            LIMIT $5
-            """,
-            tenant_id,
-            int(seed_priority),
-            int(seed_order),
-            model_ids,
-            per_seed_cap,
-        )
-        rows.extend(seed_rows)
-    return _rank_sidecar_records(rows, limit=global_limit)
-
-async def _fetch_pathway_a_actor_sidecar_rows(
-    conn: asyncpg.Connection,
-    *,
-    tenant_id: UUID,
-    actor_ids: Sequence[UUID],
-    actor_orders: Sequence[int],
-    per_seed_limit: int,
-    global_limit: int,
-) -> list[asyncpg.Record]:
-    if not actor_ids:
-        return []
-    rows: list[asyncpg.Record] = []
-    per_seed_cap = max(1, int(per_seed_limit))
-    for actor_id, seed_order in zip(actor_ids, actor_orders, strict=False):
-        model_id_rows = await conn.fetch(
-            """
-            SELECT model_id
-            FROM model_scope_actors
-            WHERE tenant_id = $1
-              AND actor_id = $2
-            """,
-            tenant_id,
-            actor_id,
-        )
-        model_ids = [row["model_id"] for row in model_id_rows]
-        if not model_ids:
-            continue
-        seed_rows = await conn.fetch(
-            f"""
-            SELECT $2::int AS _seed_order,
-                   0::int AS _local_rank,
-                   {_MODEL_SELECT_SQL}
-            FROM models
-            WHERE tenant_id = $1
-              AND status = 'active'
-              AND id = ANY($3::uuid[])
-            ORDER BY activation DESC, created_at DESC
-            LIMIT $4
-            """,
-            tenant_id,
-            int(seed_order),
-            model_ids,
-            per_seed_cap,
-        )
-        rows.extend(seed_rows)
-    ranked = sorted(
-        rows,
-        key=lambda row: (
-            int(_record_value(row, "_local_rank", 0) or 0),
-            int(_record_value(row, "_seed_order", 0) or 0),
-            -float(_record_value(row, "activation", 0.0) or 0.0),
-            str(_record_value(row, "id", "") or ""),
-        ),
-    )
-    return ranked[:max(1, int(global_limit))]
-
-
-async def _fetch_pathway_a_entity_sidecar_rows_fanout(
-    read_pool: asyncpg.Pool,
-    *,
-    tenant_id: UUID,
-    entity_types: Sequence[str],
-    entity_ids: Sequence[UUID],
-    entity_orders: Sequence[int],
-    entity_priorities: Sequence[int],
-    per_seed_limit: int,
-    global_limit: int,
-    chunk_size: int,
-) -> list[asyncpg.Record]:
-    type_chunks = _chunked(entity_types, chunk_size)
-    id_chunks = _chunked(entity_ids, chunk_size)
-    order_chunks = _chunked(entity_orders, chunk_size)
-    priority_chunks = _chunked(entity_priorities, chunk_size)
-
-    async def fetch_chunk(
-        types: list[str],
-        ids: list[UUID],
-        orders: list[int],
-        priorities: list[int],
-    ) -> list[asyncpg.Record]:
-        async with read_pool.acquire() as fanout_conn:
-            return await _fetch_pathway_a_entity_sidecar_rows(
-                fanout_conn,
-                tenant_id=tenant_id,
-                entity_types=types,
-                entity_ids=ids,
-                entity_orders=orders,
-                entity_priorities=priorities,
-                per_seed_limit=per_seed_limit,
-                global_limit=min(global_limit, per_seed_limit * max(1, len(ids))),
-            )
-
-    chunks = await asyncio.gather(*[
-        fetch_chunk(types, ids, orders, priorities)
-        for types, ids, orders, priorities in zip(
-            type_chunks,
-            id_chunks,
-            order_chunks,
-            priority_chunks,
-        )
-    ])
-    return _rank_sidecar_records(
-        [row for chunk in chunks for row in chunk],
-        limit=global_limit,
-    )
-
-
-async def _fetch_pathway_a_actor_sidecar_rows_fanout(
-    read_pool: asyncpg.Pool,
-    *,
-    tenant_id: UUID,
-    actor_ids: Sequence[UUID],
-    actor_orders: Sequence[int],
-    per_seed_limit: int,
-    global_limit: int,
-    chunk_size: int,
-) -> list[asyncpg.Record]:
-    id_chunks = _chunked(actor_ids, chunk_size)
-    order_chunks = _chunked(actor_orders, chunk_size)
-
-    async def fetch_chunk(
-        ids: list[UUID],
-        orders: list[int],
-    ) -> list[asyncpg.Record]:
-        async with read_pool.acquire() as fanout_conn:
-            return await _fetch_pathway_a_actor_sidecar_rows(
-                fanout_conn,
-                tenant_id=tenant_id,
-                actor_ids=ids,
-                actor_orders=orders,
-                per_seed_limit=per_seed_limit,
-                global_limit=min(global_limit, per_seed_limit * max(1, len(ids))),
-            )
-
-    chunks = await asyncio.gather(*[
-        fetch_chunk(ids, orders)
-        for ids, orders in zip(id_chunks, order_chunks)
-    ])
-    return _rank_sidecar_records(
-        [row for chunk in chunks for row in chunk],
-        limit=global_limit,
-    )
-
-
-async def pathway_a_structural(
-    seed_entity_ids: Sequence[dict[str, Any]],
-    tenant_id: UUID,
-    conn: asyncpg.Connection,
-    *,
-    max_hops: int = _DEFAULT_STRUCTURAL_MAX_HOPS,
-    read_pool: asyncpg.Pool | None = None,
-    read_fanout_enabled: bool = False,
-    read_fanout_min_seeds: int = 16,
-    read_fanout_chunk_size: int = 8,
-) -> PathwayResult:
-    """
-    Walk the Acts graph (contributes_to / depends_on / constrained_by /
-    commitment_contributors / customer_commitments) up to `max_hops`
-    from each seed. Collect the touched entity set. Then fetch Models
-    scoped to any of those entities.
-
-    Seed shape: `[{'type': 'commitment', 'id': UUID}, ...]`. Types are
-    one of {commitment, goal, decision, actor, customer_resource,
-    resource}. Unknown types are skipped with a note.
-
-    Returns:
-      - `models`: Models whose `scope_entities` overlaps the touched
-        entity set, or whose `scope_actors` overlaps any actor seed.
-      - `acts`: dict of {goals, commitments, decisions} — every entity
-        encountered during the walk, for assembler use.
-      - `resources`: Customer and Capacity resources touched on the way.
-      - `notes`: hops_executed, seeds_by_type, entities_touched counts.
-    """
-    notes: dict[str, Any] = {
-        "seeds_by_type": {},
-        "hops_executed": 0,
-        "entities_touched": {},
-        "seeds_accepted": 0,
-        "timings": [],
-    }
-    if not seed_entity_ids:
-        return PathwayResult(source_pathway="A", notes={**notes, "reason": "empty_seed"})
-    if max_hops < 0:
-        raise ValidationError("max_hops must be >= 0", max_hops=max_hops)
-
-    # Bucket seeds by type.
-    seeds: dict[str, set[UUID]] = {k: set() for k in _SEED_ENTITY_TYPES}
-    for raw in seed_entity_ids:
-        if not isinstance(raw, dict):
-            continue
-        t = _canonical_seed_type(raw.get("type"))
-        rid = raw.get("id")
-        if t is None:
-            continue
-        if rid is None:
-            continue
-        try:
-            seeds[t].add(UUID(str(rid)))
-        except (ValueError, TypeError):
-            continue
-    notes["seeds_by_type"] = {k: len(v) for k, v in seeds.items() if v}
-    notes["seeds_accepted"] = sum(len(v) for v in seeds.values())
-    if notes["seeds_accepted"] == 0:
-        return PathwayResult(source_pathway="A", notes={**notes, "reason": "no_valid_seed"})
-    direct_seed_entity_pairs: set[tuple[str, UUID]] = set()
-    for direct_type in ("commitment", "goal", "decision", "resource"):
-        for direct_id in seeds[direct_type]:
-            direct_seed_entity_pairs.add((direct_type, direct_id))
-    for direct_id in seeds["customer_resource"]:
-        direct_seed_entity_pairs.add(("customer", direct_id))
-        direct_seed_entity_pairs.add(("customer_resource", direct_id))
-        direct_seed_entity_pairs.add(("resource", direct_id))
-
-    # Visited sets per type. Start from the seeds themselves (hop 0).
-    visited_commits: set[UUID] = set(seeds["commitment"])
-    visited_goals: set[UUID] = set(seeds["goal"])
-    visited_decisions: set[UUID] = set(seeds["decision"])
-    visited_actors: set[UUID] = set(seeds["actor"])
-    visited_customers: set[UUID] = set(seeds["customer_resource"])
-    visited_resources: set[UUID] = set(seeds["resource"])
-
-    # Frontier set for the next hop (entity additions discovered since
-    # the last hop); used to limit per-hop cost.
-    frontier_commits: set[UUID] = set(seeds["commitment"])
-    frontier_goals: set[UUID] = set(seeds["goal"])
-    frontier_decisions: set[UUID] = set(seeds["decision"])
-    frontier_customers: set[UUID] = set(seeds["customer_resource"])
-    frontier_actors: set[UUID] = set(seeds["actor"])
-
-    stage_started = time.perf_counter()
-    for hop in range(max_hops):
-        new_commits: set[UUID] = set()
-        new_goals: set[UUID] = set()
-        new_decisions: set[UUID] = set()
-        new_customers: set[UUID] = set()
-
-        # From commitments: contributes_to (Goals), depends_on (both
-        # directions), constrained_by (Decisions), customer_commitments
-        # (Customer Resources).
-        if frontier_commits:
-            commit_list = list(frontier_commits)
-            # Goals via contributes_to
-            goal_rows = await conn.fetch(
-                """
-                SELECT DISTINCT goal_id FROM contributes_to
-                WHERE commitment_id = ANY($1::uuid[])
-                """,
-                commit_list,
-            )
-            for r in goal_rows:
-                gid = r["goal_id"]
-                if gid not in visited_goals:
-                    new_goals.add(gid)
-            # Dependency commitments (both directions)
-            dep_rows = await conn.fetch(
-                """
-                SELECT dependency_commitment_id AS d, dependent_commitment_id AS t
-                FROM depends_on
-                WHERE dependent_commitment_id = ANY($1::uuid[])
-                   OR dependency_commitment_id = ANY($1::uuid[])
-                """,
-                commit_list,
-            )
-            for r in dep_rows:
-                for cid in (r["d"], r["t"]):
-                    if cid is not None and cid not in visited_commits:
-                        new_commits.add(cid)
-            # Decisions via constrained_by
-            dec_rows = await conn.fetch(
-                """
-                SELECT DISTINCT decision_id FROM constrained_by
-                WHERE commitment_id = ANY($1::uuid[])
-                """,
-                commit_list,
-            )
-            for r in dec_rows:
-                did = r["decision_id"]
-                if did not in visited_decisions:
-                    new_decisions.add(did)
-            # Customer resources via customer_commitments
-            cust_rows = await conn.fetch(
-                """
-                SELECT DISTINCT customer_resource_id FROM customer_commitments
-                WHERE commitment_id = ANY($1::uuid[])
-                """,
-                commit_list,
-            )
-            for r in cust_rows:
-                crid = r["customer_resource_id"]
-                if crid not in visited_customers:
-                    new_customers.add(crid)
-
-        # From goals: parent_goal_id (upward), child goals, and
-        # contributes_to (Commitments).
-        if frontier_goals:
-            goal_list = list(frontier_goals)
-            parent_rows = await conn.fetch(
-                """
-                SELECT DISTINCT parent_goal_id FROM goals
-                WHERE id = ANY($1::uuid[]) AND parent_goal_id IS NOT NULL
-                """,
-                goal_list,
-            )
-            for r in parent_rows:
-                pid = r["parent_goal_id"]
-                if pid is not None and pid not in visited_goals:
-                    new_goals.add(pid)
-            child_rows = await conn.fetch(
-                """
-                SELECT DISTINCT id FROM goals
-                WHERE parent_goal_id = ANY($1::uuid[])
-                """,
-                goal_list,
-            )
-            for r in child_rows:
-                cid = r["id"]
-                if cid not in visited_goals:
-                    new_goals.add(cid)
-            commit_from_goals = await conn.fetch(
-                """
-                SELECT DISTINCT commitment_id FROM contributes_to
-                WHERE goal_id = ANY($1::uuid[])
-                """,
-                goal_list,
-            )
-            for r in commit_from_goals:
-                cid = r["commitment_id"]
-                if cid not in visited_commits:
-                    new_commits.add(cid)
-
-        # From decisions: walk back to the commitments constrained by
-        # the decision. This makes decision-seeded signals useful for
-        # operating-memory retrieval instead of only supporting the
-        # commitment -> decision direction.
-        if frontier_decisions:
-            decision_list = list(frontier_decisions)
-            commit_from_decisions = await conn.fetch(
-                """
-                SELECT DISTINCT commitment_id FROM constrained_by
-                WHERE decision_id = ANY($1::uuid[])
-                """,
-                decision_list,
-            )
-            for r in commit_from_decisions:
-                cid = r["commitment_id"]
-                if cid not in visited_commits:
-                    new_commits.add(cid)
-
-        # From customer resources: follow customer_commitments to
-        # Commitments → their Goals (the spine).
-        if frontier_customers:
-            customer_list = list(frontier_customers)
-            cust_commits = await conn.fetch(
-                """
-                SELECT DISTINCT commitment_id FROM customer_commitments
-                WHERE customer_resource_id = ANY($1::uuid[])
-                """,
-                customer_list,
-            )
-            for r in cust_commits:
-                cid = r["commitment_id"]
-                if cid not in visited_commits:
-                    new_commits.add(cid)
-
-        # From actors: find owner commitments + contributor commitments.
-        if frontier_actors:
-            actor_list = list(frontier_actors)
-            owner_rows = await conn.fetch(
-                """
-                SELECT id FROM commitments
-                WHERE owner_id = ANY($1::uuid[])
-                  AND tenant_id = $2
-                """,
-                actor_list,
-                tenant_id,
-            )
-            for r in owner_rows:
-                cid = r["id"]
-                if cid not in visited_commits:
-                    new_commits.add(cid)
-            contributor_rows = await conn.fetch(
-                """
-                SELECT DISTINCT cc.commitment_id FROM commitment_contributors cc
-                JOIN commitments c ON c.id = cc.commitment_id
-                WHERE cc.actor_id = ANY($1::uuid[])
-                  AND c.tenant_id = $2
-                """,
-                actor_list,
-                tenant_id,
-            )
-            for r in contributor_rows:
-                cid = r["commitment_id"]
-                if cid not in visited_commits:
-                    new_commits.add(cid)
-
-        # Update visited sets.
-        visited_commits.update(new_commits)
-        visited_goals.update(new_goals)
-        visited_decisions.update(new_decisions)
-        visited_customers.update(new_customers)
-        # Actors are seed-only (we don't discover new actors from the
-        # walk; that would be a distinct semantic).
-        frontier_commits = new_commits
-        frontier_goals = new_goals
-        frontier_decisions = new_decisions
-        frontier_customers = new_customers
-        frontier_actors = set()  # never expand beyond hop 0 for actors
-
-        notes["hops_executed"] = hop + 1
-
-        # Early exit if frontier is empty.
-        if not (
-            frontier_commits
-            or frontier_goals
-            or frontier_decisions
-            or frontier_customers
-        ):
-            break
-    _append_timing(
-        notes,
-        "graph_walk",
-        stage_started,
-        commitments=len(visited_commits),
-        goals=len(visited_goals),
-        decisions=len(visited_decisions),
-        customers=len(visited_customers),
-        actors=len(visited_actors),
-        hops=notes["hops_executed"],
-    )
-
-    # Fetch full rows for the touched entities (tenant-filtered).
-    stage_started = time.perf_counter()
-    goals_out: list[GoalRow] = []
-    if visited_goals:
-        grs = await conn.fetch(
-            "SELECT * FROM goals WHERE id = ANY($1::uuid[]) AND tenant_id = $2",
-            list(visited_goals),
-            tenant_id,
-        )
-        goals_out = _hydrate_many(grs, _hydrate_goal, notes, "goals")
-
-    commitments_out: list[CommitmentRow] = []
-    if visited_commits:
-        crs = await conn.fetch(
-            "SELECT * FROM commitments WHERE id = ANY($1::uuid[]) AND tenant_id = $2",
-            list(visited_commits),
-            tenant_id,
-        )
-        commitments_out = _hydrate_many(crs, _hydrate_commitment, notes, "commitments")
-
-    decisions_out: list[DecisionRow] = []
-    if visited_decisions:
-        drs = await conn.fetch(
-            "SELECT * FROM decisions WHERE id = ANY($1::uuid[]) AND tenant_id = $2",
-            list(visited_decisions),
-            tenant_id,
-        )
-        decisions_out = _hydrate_many(drs, _hydrate_decision, notes, "decisions")
-
-    resources_out: list[ResourceRow] = []
-    touched_resource_ids = visited_customers | visited_resources
-    if touched_resource_ids:
-        rrs = await conn.fetch(
-            "SELECT * FROM resources WHERE id = ANY($1::uuid[]) AND tenant_id = $2",
-            list(touched_resource_ids),
-            tenant_id,
-        )
-        resources_out = _hydrate_many(rrs, _hydrate_resource, notes, "resources")
-    _append_timing(
-        notes,
-        "act_row_fetch",
-        stage_started,
-        goals=len(goals_out),
-        commitments=len(commitments_out),
-        decisions=len(decisions_out),
-        resources=len(resources_out),
-    )
-
-    # Scoped Model search — union of (scope_entities @> any touched
-    # entity) and (scope_actors && visited actors).
-    stage_started = time.perf_counter()
+    visited_commits: set[UUID],
+    visited_goals: set[UUID],
+    visited_decisions: set[UUID],
+    visited_customers: set[UUID],
+    visited_resources: set[UUID],
+    direct_seed_entity_pairs: set[tuple[str, UUID]],
+) -> tuple[list[dict[str, Any]], int, int]:
     scope_entity_filters: list[dict[str, Any]] = []
     for cid in visited_commits:
         scope_entity_filters.append({"type": "commitment", "id": str(cid)})
@@ -1137,24 +714,960 @@ async def pathway_a_structural(
         for row in rows:
             cid = row["customer_resource_id"]
             scope_entity_filters.append({"type": "customer", "id": str(cid)})
-            scope_entity_filters.append(
-                {"type": "customer_resource", "id": str(cid)}
-            )
+            scope_entity_filters.append({"type": "customer_resource", "id": str(cid)})
             scope_entity_filters.append({"type": "resource", "id": str(cid)})
 
-    if scope_entity_filters:
-        deduped_scope_filters: list[dict[str, Any]] = []
-        seen_scope_filters: set[str] = set()
-        for entry in scope_entity_filters:
-            key = _jsonb(entry)
-            if key in seen_scope_filters:
-                continue
-            seen_scope_filters.add(key)
-            deduped_scope_filters.append(entry)
-        scope_entity_filters = deduped_scope_filters
+    scope_entity_filters = _dedupe_scope_entity_filters(scope_entity_filters)
     filters_before_cap = len(scope_entity_filters)
-    scope_entity_filters, filters_dropped_by_cap = _cap_scope_entity_filters(
+    capped, filters_dropped_by_cap = _cap_scope_entity_filters(
         scope_entity_filters,
+        direct_seed_entity_pairs=direct_seed_entity_pairs,
+    )
+    return capped, filters_before_cap, filters_dropped_by_cap
+
+
+def _record_value(row: asyncpg.Record, key: str, default: Any = None) -> Any:
+    try:
+        return row[key]
+    except (KeyError, TypeError):
+        return default
+
+
+def _rank_sidecar_records(
+    rows: Sequence[asyncpg.Record],
+    *,
+    limit: int,
+) -> list[asyncpg.Record]:
+    ranked = sorted(
+        rows,
+        key=lambda row: (
+            int(_record_value(row, "_seed_priority", 1) or 1),
+            int(_record_value(row, "_local_rank", 0) or 0),
+            int(_record_value(row, "_seed_order", 0) or 0),
+            -float(_record_value(row, "activation", 0.0) or 0.0),
+            str(_record_value(row, "id", "") or ""),
+        ),
+    )
+    return ranked[: max(1, int(limit))]
+
+
+async def _fetch_pathway_a_entity_sidecar_rows(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    entity_types: Sequence[str],
+    entity_ids: Sequence[UUID],
+    entity_orders: Sequence[int],
+    entity_priorities: Sequence[int],
+    per_seed_limit: int,
+    global_limit: int,
+) -> list[asyncpg.Record]:
+    if not entity_ids:
+        return []
+    rows: list[asyncpg.Record] = []
+    per_seed_cap = max(1, int(per_seed_limit))
+    for entity_type, entity_id, seed_order, seed_priority in zip(
+        entity_types,
+        entity_ids,
+        entity_orders,
+        entity_priorities,
+        strict=False,
+    ):
+        model_id_rows = await conn.fetch(
+            """
+            SELECT model_id
+            FROM model_scope_entities
+            WHERE tenant_id = $1
+              AND entity_type = $2
+              AND entity_id = $3
+            """,
+            tenant_id,
+            str(entity_type),
+            entity_id,
+        )
+        model_ids = [row["model_id"] for row in model_id_rows]
+        if not model_ids:
+            continue
+        seed_rows = await conn.fetch(
+            f"""
+            SELECT $2::int AS _seed_priority,
+                   $3::int AS _seed_order,
+                   0::int AS _local_rank,
+                   {_MODEL_SELECT_SQL}
+            FROM models
+            WHERE tenant_id = $1
+              AND status = 'active'
+              AND id = ANY($4::uuid[])
+            ORDER BY activation DESC, created_at DESC
+            LIMIT $5
+            """,
+            tenant_id,
+            int(seed_priority),
+            int(seed_order),
+            model_ids,
+            per_seed_cap,
+        )
+        rows.extend(seed_rows)
+    return _rank_sidecar_records(rows, limit=global_limit)
+
+
+async def _fetch_pathway_a_actor_sidecar_rows(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    actor_ids: Sequence[UUID],
+    actor_orders: Sequence[int],
+    per_seed_limit: int,
+    global_limit: int,
+) -> list[asyncpg.Record]:
+    if not actor_ids:
+        return []
+    rows: list[asyncpg.Record] = []
+    per_seed_cap = max(1, int(per_seed_limit))
+    for actor_id, seed_order in zip(actor_ids, actor_orders, strict=False):
+        model_id_rows = await conn.fetch(
+            """
+            SELECT model_id
+            FROM model_scope_actors
+            WHERE tenant_id = $1
+              AND actor_id = $2
+            """,
+            tenant_id,
+            actor_id,
+        )
+        model_ids = [row["model_id"] for row in model_id_rows]
+        if not model_ids:
+            continue
+        seed_rows = await conn.fetch(
+            f"""
+            SELECT $2::int AS _seed_order,
+                   0::int AS _local_rank,
+                   {_MODEL_SELECT_SQL}
+            FROM models
+            WHERE tenant_id = $1
+              AND status = 'active'
+              AND id = ANY($3::uuid[])
+            ORDER BY activation DESC, created_at DESC
+            LIMIT $4
+            """,
+            tenant_id,
+            int(seed_order),
+            model_ids,
+            per_seed_cap,
+        )
+        rows.extend(seed_rows)
+    ranked = sorted(
+        rows,
+        key=lambda row: (
+            int(_record_value(row, "_local_rank", 0) or 0),
+            int(_record_value(row, "_seed_order", 0) or 0),
+            -float(_record_value(row, "activation", 0.0) or 0.0),
+            str(_record_value(row, "id", "") or ""),
+        ),
+    )
+    return ranked[: max(1, int(global_limit))]
+
+
+async def _fetch_pathway_a_entity_sidecar_rows_fanout(
+    read_pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    entity_types: Sequence[str],
+    entity_ids: Sequence[UUID],
+    entity_orders: Sequence[int],
+    entity_priorities: Sequence[int],
+    per_seed_limit: int,
+    global_limit: int,
+    chunk_size: int,
+) -> list[asyncpg.Record]:
+    type_chunks = _chunked(entity_types, chunk_size)
+    id_chunks = _chunked(entity_ids, chunk_size)
+    order_chunks = _chunked(entity_orders, chunk_size)
+    priority_chunks = _chunked(entity_priorities, chunk_size)
+
+    async def fetch_chunk(
+        types: list[str],
+        ids: list[UUID],
+        orders: list[int],
+        priorities: list[int],
+    ) -> list[asyncpg.Record]:
+        async with read_pool.acquire() as fanout_conn:
+            return await _fetch_pathway_a_entity_sidecar_rows(
+                fanout_conn,
+                tenant_id=tenant_id,
+                entity_types=types,
+                entity_ids=ids,
+                entity_orders=orders,
+                entity_priorities=priorities,
+                per_seed_limit=per_seed_limit,
+                global_limit=min(global_limit, per_seed_limit * max(1, len(ids))),
+            )
+
+    chunks = await asyncio.gather(
+        *[
+            fetch_chunk(types, ids, orders, priorities)
+            for types, ids, orders, priorities in zip(
+                type_chunks,
+                id_chunks,
+                order_chunks,
+                priority_chunks,
+            )
+        ]
+    )
+    return _rank_sidecar_records(
+        [row for chunk in chunks for row in chunk],
+        limit=global_limit,
+    )
+
+
+async def _fetch_pathway_a_actor_sidecar_rows_fanout(
+    read_pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    actor_ids: Sequence[UUID],
+    actor_orders: Sequence[int],
+    per_seed_limit: int,
+    global_limit: int,
+    chunk_size: int,
+) -> list[asyncpg.Record]:
+    id_chunks = _chunked(actor_ids, chunk_size)
+    order_chunks = _chunked(actor_orders, chunk_size)
+
+    async def fetch_chunk(
+        ids: list[UUID],
+        orders: list[int],
+    ) -> list[asyncpg.Record]:
+        async with read_pool.acquire() as fanout_conn:
+            return await _fetch_pathway_a_actor_sidecar_rows(
+                fanout_conn,
+                tenant_id=tenant_id,
+                actor_ids=ids,
+                actor_orders=orders,
+                per_seed_limit=per_seed_limit,
+                global_limit=min(global_limit, per_seed_limit * max(1, len(ids))),
+            )
+
+    chunks = await asyncio.gather(
+        *[fetch_chunk(ids, orders) for ids, orders in zip(id_chunks, order_chunks)]
+    )
+    return _rank_sidecar_records(
+        [row for chunk in chunks for row in chunk],
+        limit=global_limit,
+    )
+
+
+async def _append_pathway_a_jsonb_fallback_models(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    scope_entity_filters: list[dict[str, Any]],
+    visited_actors: set[UUID],
+    entity_sidecar_rows: list[asyncpg.Record],
+    actor_sidecar_rows: list[asyncpg.Record],
+    seen_ids: set[UUID],
+    notes: dict[str, Any],
+    models_out: list[ModelRow],
+) -> None:
+    # Compatibility fallback. The normalized sidecars are the scalable
+    # lookup path; the JSONB predicates remain useful for older rows or
+    # test fixtures that have not been sidecarized.
+    params: list[Any] = [tenant_id]
+    clauses: list[str] = []
+    if visited_actors and not actor_sidecar_rows:
+        params.append(list(visited_actors))
+        clauses.append(f"scope_actors && ${len(params)}::uuid[]")
+    if scope_entity_filters and not entity_sidecar_rows:
+        for f in scope_entity_filters:
+            params.append(_jsonb([f]))
+            clauses.append(f"scope_entities @> ${len(params)}::jsonb")
+    if not clauses:
+        notes["scope_jsonb_fallback_used"] = False
+        notes["scope_jsonb_rows"] = 0
+        _append_timing(
+            notes,
+            "jsonb_fallback_query",
+            time.perf_counter(),
+            skipped=True,
+            clauses=0,
+        )
+        return
+
+    where = " OR ".join(clauses)
+    stage_started = time.perf_counter()
+    rows = await conn.fetch(
+        f"""
+        SELECT {_MODEL_SELECT_SQL} FROM models
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND ({where})
+        ORDER BY activation DESC, created_at DESC
+        LIMIT {_STRUCTURAL_MAX_MODELS}
+        """,
+        *params,
+    )
+    _append_timing(
+        notes,
+        "jsonb_fallback_query",
+        stage_started,
+        rows=len(rows),
+        clauses=len(clauses),
+    )
+    stage_started = time.perf_counter()
+    for r in rows:
+        if r["id"] in seen_ids:
+            continue
+        seen_ids.add(r["id"])
+        try:
+            model = _hydrate_model(r)
+            if not _model_temporally_valid(model):
+                notes.setdefault("expired_scope_temporal_skipped", {}).setdefault(
+                    "models", 0
+                )
+                notes["expired_scope_temporal_skipped"]["models"] += 1
+                continue
+            models_out.append(model)
+        except Exception:
+            notes.setdefault("hydration_skipped", {}).setdefault("models", 0)
+            notes["hydration_skipped"]["models"] += 1
+            notes["hydration_skipped"]["models"] += 1
+    notes["scope_jsonb_fallback_used"] = True
+    notes["scope_jsonb_rows"] = len(rows)
+    _append_timing(
+        notes,
+        "jsonb_fallback_hydrate",
+        stage_started,
+        rows=len(rows),
+        models=len(models_out),
+    )
+
+
+async def _fetch_pathway_a_scoped_models(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    scope_entity_filters: list[dict[str, Any]],
+    visited_actors: set[UUID],
+    direct_seed_entity_pairs: set[tuple[str, UUID]],
+    notes: dict[str, Any],
+    read_pool: asyncpg.Pool | None,
+    read_fanout_enabled: bool,
+    read_fanout_min_seeds: int,
+    read_fanout_chunk_size: int,
+) -> list[ModelRow]:
+    models_out: list[ModelRow] = []
+    if not scope_entity_filters and not visited_actors:
+        return models_out
+
+    sidecar_entity_types: list[str] = []
+    sidecar_entity_ids: list[UUID] = []
+    sidecar_entity_orders: list[int] = []
+    sidecar_entity_priorities: list[int] = []
+    for f in scope_entity_filters:
+        try:
+            entity_type = str(f["type"])
+            entity_id = UUID(str(f["id"]))
+            sidecar_entity_types.append(entity_type)
+            sidecar_entity_ids.append(entity_id)
+            sidecar_entity_orders.append(len(sidecar_entity_orders))
+            sidecar_entity_priorities.append(
+                0 if (entity_type, entity_id) in direct_seed_entity_pairs else 1
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    seen_ids: set[UUID] = set()
+    entity_sidecar_rows: list[asyncpg.Record] = []
+    actor_sidecar_rows: list[asyncpg.Record] = []
+    stage_started = time.perf_counter()
+    if sidecar_entity_ids:
+        if (
+            read_pool is not None
+            and read_fanout_enabled
+            and len(sidecar_entity_ids) >= int(read_fanout_min_seeds)
+        ):
+            entity_sidecar_rows = await _fetch_pathway_a_entity_sidecar_rows_fanout(
+                read_pool,
+                tenant_id=tenant_id,
+                entity_types=sidecar_entity_types,
+                entity_ids=sidecar_entity_ids,
+                entity_orders=sidecar_entity_orders,
+                entity_priorities=sidecar_entity_priorities,
+                per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ENTITY,
+                global_limit=_STRUCTURAL_MAX_MODELS,
+                chunk_size=read_fanout_chunk_size,
+            )
+        else:
+            entity_sidecar_rows = await _fetch_pathway_a_entity_sidecar_rows(
+                conn,
+                tenant_id=tenant_id,
+                entity_types=sidecar_entity_types,
+                entity_ids=sidecar_entity_ids,
+                entity_orders=sidecar_entity_orders,
+                entity_priorities=sidecar_entity_priorities,
+                per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ENTITY,
+                global_limit=_STRUCTURAL_MAX_MODELS,
+            )
+        entity_sidecar_rows = _rank_sidecar_records(
+            entity_sidecar_rows,
+            limit=_STRUCTURAL_MAX_MODELS,
+        )
+    _append_timing(
+        notes,
+        "sidecar_entity_lookup",
+        stage_started,
+        filters=len(sidecar_entity_ids),
+        direct_seed_filters=sum(
+            1 for priority in sidecar_entity_priorities if priority == 0
+        ),
+        per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ENTITY,
+        fanout_used=(
+            read_pool is not None
+            and read_fanout_enabled
+            and len(sidecar_entity_ids) >= int(read_fanout_min_seeds)
+        ),
+        fanout_chunk_size=read_fanout_chunk_size,
+        rows=len(entity_sidecar_rows),
+    )
+    stage_started = time.perf_counter()
+    if visited_actors:
+        actor_ids = list(visited_actors)
+        actor_orders = list(range(len(actor_ids)))
+        if (
+            read_pool is not None
+            and read_fanout_enabled
+            and len(actor_ids) >= int(read_fanout_min_seeds)
+        ):
+            actor_sidecar_rows = await _fetch_pathway_a_actor_sidecar_rows_fanout(
+                read_pool,
+                tenant_id=tenant_id,
+                actor_ids=actor_ids,
+                actor_orders=actor_orders,
+                per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ACTOR,
+                global_limit=_STRUCTURAL_MAX_MODELS,
+                chunk_size=read_fanout_chunk_size,
+            )
+        else:
+            actor_sidecar_rows = await _fetch_pathway_a_actor_sidecar_rows(
+                conn,
+                tenant_id=tenant_id,
+                actor_ids=actor_ids,
+                actor_orders=actor_orders,
+                per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ACTOR,
+                global_limit=_STRUCTURAL_MAX_MODELS,
+            )
+        actor_sidecar_rows = _rank_sidecar_records(
+            actor_sidecar_rows,
+            limit=_STRUCTURAL_MAX_MODELS,
+        )
+    _append_timing(
+        notes,
+        "sidecar_actor_lookup",
+        stage_started,
+        actors=len(visited_actors),
+        per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ACTOR,
+        fanout_used=(
+            read_pool is not None
+            and read_fanout_enabled
+            and len(visited_actors) >= int(read_fanout_min_seeds)
+        ),
+        fanout_chunk_size=read_fanout_chunk_size,
+        rows=len(actor_sidecar_rows),
+    )
+
+    sidecar_rows = _rank_sidecar_records(
+        list(entity_sidecar_rows) + list(actor_sidecar_rows),
+        limit=_STRUCTURAL_MAX_MODELS,
+    )
+    stage_started = time.perf_counter()
+    for r in sidecar_rows:
+        if r["id"] in seen_ids:
+            continue
+        seen_ids.add(r["id"])
+        try:
+            model = _hydrate_model(r)
+            if not _model_temporally_valid(model):
+                notes.setdefault("expired_scope_temporal_skipped", {}).setdefault(
+                    "models", 0
+                )
+                notes["expired_scope_temporal_skipped"]["models"] += 1
+                continue
+            models_out.append(model)
+        except Exception:
+            notes.setdefault("hydration_skipped", {}).setdefault("models", 0)
+            notes["hydration_skipped"]["models"] += 1
+    _append_timing(
+        notes,
+        "sidecar_hydrate",
+        stage_started,
+        rows=len(sidecar_rows),
+        models=len(models_out),
+    )
+
+    notes["scope_sidecar_entity_rows"] = len(entity_sidecar_rows)
+    notes["scope_sidecar_actor_rows"] = len(actor_sidecar_rows)
+    notes["scope_sidecar_rows"] = len(sidecar_rows)
+    notes["scope_sidecar_strategy"] = "bounded_per_scope_seed"
+    notes["scope_sidecar_per_entity_limit"] = _STRUCTURAL_MODELS_PER_SCOPE_ENTITY
+    notes["scope_sidecar_per_actor_limit"] = _STRUCTURAL_MODELS_PER_SCOPE_ACTOR
+
+    await _append_pathway_a_jsonb_fallback_models(
+        conn,
+        tenant_id=tenant_id,
+        scope_entity_filters=scope_entity_filters,
+        visited_actors=visited_actors,
+        entity_sidecar_rows=entity_sidecar_rows,
+        actor_sidecar_rows=actor_sidecar_rows,
+        seen_ids=seen_ids,
+        notes=notes,
+        models_out=models_out,
+    )
+    return models_out
+
+
+async def _expand_pathway_a_commit_frontier(
+    conn: asyncpg.Connection,
+    *,
+    frontier_commits: set[UUID],
+    visited_commits: set[UUID],
+    visited_goals: set[UUID],
+    visited_decisions: set[UUID],
+    visited_customers: set[UUID],
+    expansion: _PathwayAHopExpansion,
+) -> None:
+    if not frontier_commits:
+        return
+    commit_list = list(frontier_commits)
+    goal_rows = await conn.fetch(
+        """
+        SELECT DISTINCT goal_id FROM contributes_to
+        WHERE commitment_id = ANY($1::uuid[])
+        """,
+        commit_list,
+    )
+    for row in goal_rows:
+        goal_id = row["goal_id"]
+        if goal_id not in visited_goals:
+            expansion.goals.add(goal_id)
+
+    dep_rows = await conn.fetch(
+        """
+        SELECT dependency_commitment_id AS d, dependent_commitment_id AS t
+        FROM depends_on
+        WHERE dependent_commitment_id = ANY($1::uuid[])
+           OR dependency_commitment_id = ANY($1::uuid[])
+        """,
+        commit_list,
+    )
+    for row in dep_rows:
+        for commitment_id in (row["d"], row["t"]):
+            if commitment_id is not None and commitment_id not in visited_commits:
+                expansion.commits.add(commitment_id)
+
+    decision_rows = await conn.fetch(
+        """
+        SELECT DISTINCT decision_id FROM constrained_by
+        WHERE commitment_id = ANY($1::uuid[])
+        """,
+        commit_list,
+    )
+    for row in decision_rows:
+        decision_id = row["decision_id"]
+        if decision_id not in visited_decisions:
+            expansion.decisions.add(decision_id)
+
+    customer_rows = await conn.fetch(
+        """
+        SELECT DISTINCT customer_resource_id FROM customer_commitments
+        WHERE commitment_id = ANY($1::uuid[])
+        """,
+        commit_list,
+    )
+    for row in customer_rows:
+        customer_id = row["customer_resource_id"]
+        if customer_id not in visited_customers:
+            expansion.customers.add(customer_id)
+
+
+async def _expand_pathway_a_goal_frontier(
+    conn: asyncpg.Connection,
+    *,
+    frontier_goals: set[UUID],
+    visited_commits: set[UUID],
+    visited_goals: set[UUID],
+    expansion: _PathwayAHopExpansion,
+) -> None:
+    if not frontier_goals:
+        return
+    goal_list = list(frontier_goals)
+    parent_rows = await conn.fetch(
+        """
+        SELECT DISTINCT parent_goal_id FROM goals
+        WHERE id = ANY($1::uuid[]) AND parent_goal_id IS NOT NULL
+        """,
+        goal_list,
+    )
+    for row in parent_rows:
+        parent_id = row["parent_goal_id"]
+        if parent_id is not None and parent_id not in visited_goals:
+            expansion.goals.add(parent_id)
+    child_rows = await conn.fetch(
+        """
+        SELECT DISTINCT id FROM goals
+        WHERE parent_goal_id = ANY($1::uuid[])
+        """,
+        goal_list,
+    )
+    for row in child_rows:
+        child_id = row["id"]
+        if child_id not in visited_goals:
+            expansion.goals.add(child_id)
+    commit_from_goals = await conn.fetch(
+        """
+        SELECT DISTINCT commitment_id FROM contributes_to
+        WHERE goal_id = ANY($1::uuid[])
+        """,
+        goal_list,
+    )
+    for row in commit_from_goals:
+        commitment_id = row["commitment_id"]
+        if commitment_id not in visited_commits:
+            expansion.commits.add(commitment_id)
+
+
+async def _expand_pathway_a_decision_frontier(
+    conn: asyncpg.Connection,
+    *,
+    frontier_decisions: set[UUID],
+    visited_commits: set[UUID],
+    expansion: _PathwayAHopExpansion,
+) -> None:
+    if not frontier_decisions:
+        return
+    decision_list = list(frontier_decisions)
+    commit_from_decisions = await conn.fetch(
+        """
+        SELECT DISTINCT commitment_id FROM constrained_by
+        WHERE decision_id = ANY($1::uuid[])
+        """,
+        decision_list,
+    )
+    for row in commit_from_decisions:
+        commitment_id = row["commitment_id"]
+        if commitment_id not in visited_commits:
+            expansion.commits.add(commitment_id)
+
+
+async def _expand_pathway_a_customer_frontier(
+    conn: asyncpg.Connection,
+    *,
+    frontier_customers: set[UUID],
+    visited_commits: set[UUID],
+    expansion: _PathwayAHopExpansion,
+) -> None:
+    if not frontier_customers:
+        return
+    customer_list = list(frontier_customers)
+    customer_commits = await conn.fetch(
+        """
+        SELECT DISTINCT commitment_id FROM customer_commitments
+        WHERE customer_resource_id = ANY($1::uuid[])
+        """,
+        customer_list,
+    )
+    for row in customer_commits:
+        commitment_id = row["commitment_id"]
+        if commitment_id not in visited_commits:
+            expansion.commits.add(commitment_id)
+
+
+async def _expand_pathway_a_actor_frontier(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    frontier_actors: set[UUID],
+    visited_commits: set[UUID],
+    expansion: _PathwayAHopExpansion,
+) -> None:
+    if not frontier_actors:
+        return
+    actor_list = list(frontier_actors)
+    owner_rows = await conn.fetch(
+        """
+        SELECT id FROM commitments
+        WHERE owner_id = ANY($1::uuid[])
+          AND tenant_id = $2
+        """,
+        actor_list,
+        tenant_id,
+    )
+    for row in owner_rows:
+        commitment_id = row["id"]
+        if commitment_id not in visited_commits:
+            expansion.commits.add(commitment_id)
+    contributor_rows = await conn.fetch(
+        """
+        SELECT DISTINCT cc.commitment_id FROM commitment_contributors cc
+        JOIN commitments c ON c.id = cc.commitment_id
+        WHERE cc.actor_id = ANY($1::uuid[])
+          AND c.tenant_id = $2
+        """,
+        actor_list,
+        tenant_id,
+    )
+    for row in contributor_rows:
+        commitment_id = row["commitment_id"]
+        if commitment_id not in visited_commits:
+            expansion.commits.add(commitment_id)
+
+
+async def _walk_pathway_a_graph(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    seeds: dict[str, set[UUID]],
+    max_hops: int,
+    notes: dict[str, Any],
+) -> _PathwayAWalkResult:
+    visited_commits: set[UUID] = set(seeds["commitment"])
+    visited_goals: set[UUID] = set(seeds["goal"])
+    visited_decisions: set[UUID] = set(seeds["decision"])
+    visited_actors: set[UUID] = set(seeds["actor"])
+    visited_customers: set[UUID] = set(seeds["customer_resource"])
+    visited_resources: set[UUID] = set(seeds["resource"])
+
+    frontier_commits: set[UUID] = set(seeds["commitment"])
+    frontier_goals: set[UUID] = set(seeds["goal"])
+    frontier_decisions: set[UUID] = set(seeds["decision"])
+    frontier_customers: set[UUID] = set(seeds["customer_resource"])
+    frontier_actors: set[UUID] = set(seeds["actor"])
+
+    stage_started = time.perf_counter()
+    for hop in range(max_hops):
+        expansion = _PathwayAHopExpansion()
+        await _expand_pathway_a_commit_frontier(
+            conn,
+            frontier_commits=frontier_commits,
+            visited_commits=visited_commits,
+            visited_goals=visited_goals,
+            visited_decisions=visited_decisions,
+            visited_customers=visited_customers,
+            expansion=expansion,
+        )
+        await _expand_pathway_a_goal_frontier(
+            conn,
+            frontier_goals=frontier_goals,
+            visited_commits=visited_commits,
+            visited_goals=visited_goals,
+            expansion=expansion,
+        )
+        await _expand_pathway_a_decision_frontier(
+            conn,
+            frontier_decisions=frontier_decisions,
+            visited_commits=visited_commits,
+            expansion=expansion,
+        )
+        await _expand_pathway_a_customer_frontier(
+            conn,
+            frontier_customers=frontier_customers,
+            visited_commits=visited_commits,
+            expansion=expansion,
+        )
+        await _expand_pathway_a_actor_frontier(
+            conn,
+            tenant_id=tenant_id,
+            frontier_actors=frontier_actors,
+            visited_commits=visited_commits,
+            expansion=expansion,
+        )
+
+        visited_commits.update(expansion.commits)
+        visited_goals.update(expansion.goals)
+        visited_decisions.update(expansion.decisions)
+        visited_customers.update(expansion.customers)
+        frontier_commits = expansion.commits
+        frontier_goals = expansion.goals
+        frontier_decisions = expansion.decisions
+        frontier_customers = expansion.customers
+        frontier_actors = set()
+        notes["hops_executed"] = hop + 1
+
+        if not (
+            frontier_commits
+            or frontier_goals
+            or frontier_decisions
+            or frontier_customers
+        ):
+            break
+
+    _append_timing(
+        notes,
+        "graph_walk",
+        stage_started,
+        commitments=len(visited_commits),
+        goals=len(visited_goals),
+        decisions=len(visited_decisions),
+        customers=len(visited_customers),
+        actors=len(visited_actors),
+        hops=notes["hops_executed"],
+    )
+    return _PathwayAWalkResult(
+        visited_commits=visited_commits,
+        visited_goals=visited_goals,
+        visited_decisions=visited_decisions,
+        visited_actors=visited_actors,
+        visited_customers=visited_customers,
+        visited_resources=visited_resources,
+        hops_executed=int(notes["hops_executed"]),
+    )
+
+
+async def _fetch_pathway_a_entity_rows(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    walk: _PathwayAWalkResult,
+    notes: dict[str, Any],
+) -> _PathwayAEntityRows:
+    stage_started = time.perf_counter()
+    goals_out: list[GoalRow] = []
+    if walk.visited_goals:
+        goal_rows = await conn.fetch(
+            "SELECT * FROM goals WHERE id = ANY($1::uuid[]) AND tenant_id = $2",
+            list(walk.visited_goals),
+            tenant_id,
+        )
+        goals_out = _hydrate_many(goal_rows, _hydrate_goal, notes, "goals")
+
+    commitments_out: list[CommitmentRow] = []
+    if walk.visited_commits:
+        commitment_rows = await conn.fetch(
+            "SELECT * FROM commitments WHERE id = ANY($1::uuid[]) AND tenant_id = $2",
+            list(walk.visited_commits),
+            tenant_id,
+        )
+        commitments_out = _hydrate_many(
+            commitment_rows, _hydrate_commitment, notes, "commitments"
+        )
+
+    decisions_out: list[DecisionRow] = []
+    if walk.visited_decisions:
+        decision_rows = await conn.fetch(
+            "SELECT * FROM decisions WHERE id = ANY($1::uuid[]) AND tenant_id = $2",
+            list(walk.visited_decisions),
+            tenant_id,
+        )
+        decisions_out = _hydrate_many(
+            decision_rows, _hydrate_decision, notes, "decisions"
+        )
+
+    resources_out: list[ResourceRow] = []
+    touched_resource_ids = walk.visited_customers | walk.visited_resources
+    if touched_resource_ids:
+        resource_rows = await conn.fetch(
+            "SELECT * FROM resources WHERE id = ANY($1::uuid[]) AND tenant_id = $2",
+            list(touched_resource_ids),
+            tenant_id,
+        )
+        resources_out = _hydrate_many(
+            resource_rows, _hydrate_resource, notes, "resources"
+        )
+    _append_timing(
+        notes,
+        "act_row_fetch",
+        stage_started,
+        goals=len(goals_out),
+        commitments=len(commitments_out),
+        decisions=len(decisions_out),
+        resources=len(resources_out),
+    )
+    return _PathwayAEntityRows(
+        goals=goals_out,
+        commitments=commitments_out,
+        decisions=decisions_out,
+        resources=resources_out,
+    )
+
+
+async def pathway_a_structural(
+    seed_entity_ids: Sequence[dict[str, Any]],
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    max_hops: int = _DEFAULT_STRUCTURAL_MAX_HOPS,
+    read_pool: asyncpg.Pool | None = None,
+    read_fanout_enabled: bool = False,
+    read_fanout_min_seeds: int = 16,
+    read_fanout_chunk_size: int = 8,
+) -> PathwayResult:
+    """
+    Walk the Acts graph (contributes_to / depends_on / constrained_by /
+    commitment_contributors / customer_commitments) up to `max_hops`
+    from each seed. Collect the touched entity set. Then fetch Models
+    scoped to any of those entities.
+
+    Seed shape: `[{'type': 'commitment', 'id': UUID}, ...]`. Types are
+    one of {commitment, goal, decision, actor, customer_resource,
+    resource}. Unknown types are skipped with a note.
+
+    Returns:
+      - `models`: Models whose `scope_entities` overlaps the touched
+        entity set, or whose `scope_actors` overlaps any actor seed.
+      - `acts`: dict of {goals, commitments, decisions} — every entity
+        encountered during the walk, for assembler use.
+      - `resources`: Customer and Capacity resources touched on the way.
+      - `notes`: hops_executed, seeds_by_type, entities_touched counts.
+    """
+    notes: dict[str, Any] = {
+        "seeds_by_type": {},
+        "hops_executed": 0,
+        "entities_touched": {},
+        "seeds_accepted": 0,
+        "timings": [],
+    }
+    if not seed_entity_ids:
+        return PathwayResult(
+            source_pathway="A", notes={**notes, "reason": "empty_seed"}
+        )
+    if max_hops < 0:
+        raise ValidationError("max_hops must be >= 0", max_hops=max_hops)
+
+    parsed_seeds = _parse_pathway_a_seeds(seed_entity_ids, notes)
+    seeds = parsed_seeds.seeds
+    if parsed_seeds.accepted_count == 0:
+        return PathwayResult(
+            source_pathway="A", notes={**notes, "reason": "no_valid_seed"}
+        )
+    direct_seed_entity_pairs = parsed_seeds.direct_seed_entity_pairs
+
+    walk = await _walk_pathway_a_graph(
+        conn,
+        tenant_id=tenant_id,
+        seeds=seeds,
+        max_hops=max_hops,
+        notes=notes,
+    )
+    entity_rows = await _fetch_pathway_a_entity_rows(
+        conn,
+        tenant_id=tenant_id,
+        walk=walk,
+        notes=notes,
+    )
+
+    # Scoped Model search — union of (scope_entities @> any touched
+    # entity) and (scope_actors && visited actors).
+    stage_started = time.perf_counter()
+    (
+        scope_entity_filters,
+        filters_before_cap,
+        filters_dropped_by_cap,
+    ) = await _build_pathway_a_scope_entity_filters(
+        conn,
+        tenant_id=tenant_id,
+        visited_commits=walk.visited_commits,
+        visited_goals=walk.visited_goals,
+        visited_decisions=walk.visited_decisions,
+        visited_customers=walk.visited_customers,
+        visited_resources=walk.visited_resources,
         direct_seed_entity_pairs=direct_seed_entity_pairs,
     )
     _append_timing(
@@ -1165,239 +1678,29 @@ async def pathway_a_structural(
         filters_before_cap=filters_before_cap,
         filter_cap=_STRUCTURAL_MAX_SCOPE_ENTITY_FILTERS,
         filters_dropped_by_cap=filters_dropped_by_cap,
-        actors=len(visited_actors),
+        actors=len(walk.visited_actors),
     )
 
-    models_out: list[ModelRow] = []
-    if scope_entity_filters or visited_actors:
-        sidecar_entity_types: list[str] = []
-        sidecar_entity_ids: list[UUID] = []
-        sidecar_entity_orders: list[int] = []
-        sidecar_entity_priorities: list[int] = []
-        for f in scope_entity_filters:
-            try:
-                entity_type = str(f["type"])
-                entity_id = UUID(str(f["id"]))
-                sidecar_entity_types.append(entity_type)
-                sidecar_entity_ids.append(entity_id)
-                sidecar_entity_orders.append(len(sidecar_entity_orders))
-                sidecar_entity_priorities.append(
-                    0
-                    if (entity_type, entity_id) in direct_seed_entity_pairs
-                    else 1
-                )
-            except (KeyError, TypeError, ValueError):
-                continue
-
-        seen_ids: set[UUID] = set()
-        entity_sidecar_rows: list[asyncpg.Record] = []
-        actor_sidecar_rows: list[asyncpg.Record] = []
-        stage_started = time.perf_counter()
-        if sidecar_entity_ids:
-            if (
-                read_pool is not None
-                and read_fanout_enabled
-                and len(sidecar_entity_ids) >= int(read_fanout_min_seeds)
-            ):
-                entity_sidecar_rows = await _fetch_pathway_a_entity_sidecar_rows_fanout(
-                    read_pool,
-                    tenant_id=tenant_id,
-                    entity_types=sidecar_entity_types,
-                    entity_ids=sidecar_entity_ids,
-                    entity_orders=sidecar_entity_orders,
-                    entity_priorities=sidecar_entity_priorities,
-                    per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ENTITY,
-                    global_limit=_STRUCTURAL_MAX_MODELS,
-                    chunk_size=read_fanout_chunk_size,
-                )
-            else:
-                entity_sidecar_rows = await _fetch_pathway_a_entity_sidecar_rows(
-                    conn,
-                    tenant_id=tenant_id,
-                    entity_types=sidecar_entity_types,
-                    entity_ids=sidecar_entity_ids,
-                    entity_orders=sidecar_entity_orders,
-                    entity_priorities=sidecar_entity_priorities,
-                    per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ENTITY,
-                    global_limit=_STRUCTURAL_MAX_MODELS,
-                )
-            entity_sidecar_rows = _rank_sidecar_records(
-                entity_sidecar_rows,
-                limit=_STRUCTURAL_MAX_MODELS,
-            )
-        _append_timing(
-            notes,
-            "sidecar_entity_lookup",
-            stage_started,
-            filters=len(sidecar_entity_ids),
-            direct_seed_filters=sum(
-                1 for priority in sidecar_entity_priorities if priority == 0
-            ),
-            per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ENTITY,
-            fanout_used=(
-                read_pool is not None
-                and read_fanout_enabled
-                and len(sidecar_entity_ids) >= int(read_fanout_min_seeds)
-            ),
-            fanout_chunk_size=read_fanout_chunk_size,
-            rows=len(entity_sidecar_rows),
-        )
-        stage_started = time.perf_counter()
-        if visited_actors:
-            actor_ids = list(visited_actors)
-            actor_orders = list(range(len(actor_ids)))
-            if (
-                read_pool is not None
-                and read_fanout_enabled
-                and len(actor_ids) >= int(read_fanout_min_seeds)
-            ):
-                actor_sidecar_rows = await _fetch_pathway_a_actor_sidecar_rows_fanout(
-                    read_pool,
-                    tenant_id=tenant_id,
-                    actor_ids=actor_ids,
-                    actor_orders=actor_orders,
-                    per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ACTOR,
-                    global_limit=_STRUCTURAL_MAX_MODELS,
-                    chunk_size=read_fanout_chunk_size,
-                )
-            else:
-                actor_sidecar_rows = await _fetch_pathway_a_actor_sidecar_rows(
-                    conn,
-                    tenant_id=tenant_id,
-                    actor_ids=actor_ids,
-                    actor_orders=actor_orders,
-                    per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ACTOR,
-                    global_limit=_STRUCTURAL_MAX_MODELS,
-                )
-            actor_sidecar_rows = _rank_sidecar_records(
-                actor_sidecar_rows,
-                limit=_STRUCTURAL_MAX_MODELS,
-            )
-        _append_timing(
-            notes,
-            "sidecar_actor_lookup",
-            stage_started,
-            actors=len(visited_actors),
-            per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ACTOR,
-            fanout_used=(
-                read_pool is not None
-                and read_fanout_enabled
-                and len(visited_actors) >= int(read_fanout_min_seeds)
-            ),
-            fanout_chunk_size=read_fanout_chunk_size,
-            rows=len(actor_sidecar_rows),
-        )
-
-        sidecar_rows = _rank_sidecar_records(
-            list(entity_sidecar_rows) + list(actor_sidecar_rows),
-            limit=_STRUCTURAL_MAX_MODELS,
-        )
-        stage_started = time.perf_counter()
-        for r in sidecar_rows:
-            if r["id"] in seen_ids:
-                continue
-            seen_ids.add(r["id"])
-            try:
-                model = _hydrate_model(r)
-                if not _model_temporally_valid(model):
-                    notes.setdefault("expired_scope_temporal_skipped", {}).setdefault("models", 0)
-                    notes["expired_scope_temporal_skipped"]["models"] += 1
-                    continue
-                models_out.append(model)
-            except Exception:
-                notes.setdefault("hydration_skipped", {}).setdefault("models", 0)
-                notes["hydration_skipped"]["models"] += 1
-        _append_timing(
-            notes,
-            "sidecar_hydrate",
-            stage_started,
-            rows=len(sidecar_rows),
-            models=len(models_out),
-        )
-
-        notes["scope_sidecar_entity_rows"] = len(entity_sidecar_rows)
-        notes["scope_sidecar_actor_rows"] = len(actor_sidecar_rows)
-        notes["scope_sidecar_rows"] = len(sidecar_rows)
-        notes["scope_sidecar_strategy"] = "bounded_per_scope_seed"
-        notes["scope_sidecar_per_entity_limit"] = _STRUCTURAL_MODELS_PER_SCOPE_ENTITY
-        notes["scope_sidecar_per_actor_limit"] = _STRUCTURAL_MODELS_PER_SCOPE_ACTOR
-
-        # Compatibility fallback. The normalized sidecars are the scalable
-        # lookup path; the JSONB predicates remain useful for older rows or
-        # test fixtures that have not been sidecarized.
-        params: list[Any] = [tenant_id]
-        clauses: list[str] = []
-        if visited_actors and not actor_sidecar_rows:
-            params.append(list(visited_actors))
-            clauses.append(f"scope_actors && ${len(params)}::uuid[]")
-        if scope_entity_filters and not entity_sidecar_rows:
-            for f in scope_entity_filters:
-                params.append(_jsonb([f]))
-                clauses.append(f"scope_entities @> ${len(params)}::jsonb")
-        if clauses:
-            where = " OR ".join(clauses)
-            stage_started = time.perf_counter()
-            rows = await conn.fetch(
-                f"""
-                SELECT {_MODEL_SELECT_SQL} FROM models
-                WHERE tenant_id = $1
-                  AND status = 'active'
-                  AND ({where})
-                ORDER BY activation DESC, created_at DESC
-                LIMIT {_STRUCTURAL_MAX_MODELS}
-                """,
-                *params,
-            )
-            _append_timing(
-                notes,
-                "jsonb_fallback_query",
-                stage_started,
-                rows=len(rows),
-                clauses=len(clauses),
-            )
-            stage_started = time.perf_counter()
-            for r in rows:
-                if r["id"] in seen_ids:
-                    continue
-                seen_ids.add(r["id"])
-                try:
-                    model = _hydrate_model(r)
-                    if not _model_temporally_valid(model):
-                        notes.setdefault("expired_scope_temporal_skipped", {}).setdefault("models", 0)
-                        notes["expired_scope_temporal_skipped"]["models"] += 1
-                        continue
-                    models_out.append(model)
-                except Exception:
-                    notes.setdefault("hydration_skipped", {}).setdefault("models", 0)
-                    notes["hydration_skipped"]["models"] += 1
-                    notes["hydration_skipped"]["models"] += 1
-            notes["scope_jsonb_fallback_used"] = True
-            notes["scope_jsonb_rows"] = len(rows)
-            _append_timing(
-                notes,
-                "jsonb_fallback_hydrate",
-                stage_started,
-                rows=len(rows),
-                models=len(models_out),
-            )
-        else:
-            notes["scope_jsonb_fallback_used"] = False
-            notes["scope_jsonb_rows"] = 0
-            _append_timing(
-                notes,
-                "jsonb_fallback_query",
-                time.perf_counter(),
-                skipped=True,
-                clauses=0,
-            )
+    models_out = await _fetch_pathway_a_scoped_models(
+        conn,
+        tenant_id=tenant_id,
+        scope_entity_filters=scope_entity_filters,
+        visited_actors=walk.visited_actors,
+        direct_seed_entity_pairs=direct_seed_entity_pairs,
+        notes=notes,
+        read_pool=read_pool,
+        read_fanout_enabled=read_fanout_enabled,
+        read_fanout_min_seeds=read_fanout_min_seeds,
+        read_fanout_chunk_size=read_fanout_chunk_size,
+    )
 
     notes["entities_touched"] = {
-        "commitments": len(visited_commits),
-        "goals": len(visited_goals),
-        "decisions": len(visited_decisions),
-        "actors": len(visited_actors),
-        "customers": len(visited_customers),
-        "resources": len(visited_resources),
+        "commitments": len(walk.visited_commits),
+        "goals": len(walk.visited_goals),
+        "decisions": len(walk.visited_decisions),
+        "actors": len(walk.visited_actors),
+        "customers": len(walk.visited_customers),
+        "resources": len(walk.visited_resources),
     }
     notes["model_scope_filters"] = len(scope_entity_filters)
     notes["models_returned"] = len(models_out)
@@ -1406,11 +1709,11 @@ async def pathway_a_structural(
         models=models_out,
         observations=[],
         acts={
-            "goals": goals_out,
-            "commitments": commitments_out,
-            "decisions": decisions_out,
+            "goals": entity_rows.goals,
+            "commitments": entity_rows.commitments,
+            "decisions": entity_rows.decisions,
         },
-        resources=resources_out,
+        resources=entity_rows.resources,
         source_pathway="A",
         notes=notes,
     )
@@ -1440,6 +1743,306 @@ def _conn_has_vector_codec(conn: asyncpg.Connection) -> bool:
 # =====================================================================
 # Pathway B — Semantic similarity (embedding cosine over active Models)
 # =====================================================================
+
+
+@dataclass
+class _PathwayBScope:
+    sql: str
+    params: list[Any]
+    applied: bool
+
+
+def _pathway_b_notes(seed_natural_text: str, k: int) -> dict[str, Any]:
+    return {
+        "seed_chars": len(seed_natural_text or ""),
+        "k_requested": k,
+        "vector_source": None,
+        "scope_filter": None,
+    }
+
+
+async def _pathway_b_resolve_vector(
+    seed_natural_text: str,
+    *,
+    embedder: OllamaClient | None,
+    precomputed_vector: Sequence[float] | None,
+    notes: dict[str, Any],
+) -> list[float]:
+    if precomputed_vector is not None:
+        notes["vector_source"] = "precomputed"
+        return [float(x) for x in precomputed_vector]
+    if embedder is None:
+        raise RetrievalPathwayError(
+            "pathway B requires either a precomputed_vector or an "
+            "embedder; neither was supplied",
+            seed_chars=len(seed_natural_text),
+        )
+    try:
+        vec = await embedder.embed(seed_natural_text)
+        notes["vector_source"] = "ollama"
+        return vec
+    except OllamaError as e:
+        raise RetrievalPathwayError(
+            f"ollama embedding failed: {e}",
+            cause=str(e),
+        ) from e
+
+
+def _pathway_b_validate_vector(vec: Sequence[float]) -> None:
+    if len(vec) != EMBEDDING_DIM:
+        raise ValidationError(
+            f"pathway B vec dim {len(vec)} != {EMBEDDING_DIM}",
+            got=len(vec),
+            expected=EMBEDDING_DIM,
+        )
+
+
+async def _pathway_b_apply_hnsw_ef_search(
+    conn: asyncpg.Connection,
+    *,
+    hnsw_ef_search: int | None,
+    notes: dict[str, Any],
+) -> None:
+    if hnsw_ef_search is None or hnsw_ef_search <= 0:
+        return
+    try:
+        async with conn.transaction():
+            await conn.execute(f"SET LOCAL hnsw.ef_search = {int(hnsw_ef_search)}")
+        notes["hnsw_ef_search"] = int(hnsw_ef_search)
+    except asyncpg.PostgresError:
+        # Not fatal — just means we're not in a tx or pgvector
+        # version doesn't honor the GUC. The savepoint keeps the
+        # caller's transaction usable. Fall back to default.
+        notes["hnsw_ef_search"] = None
+
+
+async def _pathway_b_vector_param(
+    conn: asyncpg.Connection,
+    vec: Sequence[float],
+) -> Any:
+    # Ensure the pgvector codec is registered on THIS connection, then bind a
+    # numpy array — the same pattern ModelsRepo.search_by_embedding uses.
+    #
+    # The previous `if _conn_has_vector_codec(conn): ndarray else: '[…]' string`
+    # branch was unsafe: `_conn_has_vector_codec` keys on a process-wide id-set
+    # (`PGVECTOR_REGISTERED_POOL_IDS`) that goes stale across the
+    # PoolConnectionProxy/inner-Connection id boundary and for pools created
+    # without the codec init. When it reported False while the codec was actually
+    # live on the connection, binding the stringified `'[…]'::vector` literal
+    # crashed asyncpg with "could not convert string to float" — which aborted
+    # the retrieval and therefore every model write that depends on it (0 models
+    # produced). Ensuring the codec + always binding an array removes the
+    # state/bind mismatch entirely.
+    from services.domain.models.repo import _ensure_vector_codec
+    import numpy as _np
+
+    await _ensure_vector_codec(conn)
+    return _np.asarray([float(x) for x in vec], dtype="float32")
+
+
+def _pathway_b_actor_scope(event_actors: Sequence[UUID] | None) -> list[UUID]:
+    actors: list[UUID] = []
+    for actor in event_actors or []:
+        if actor is None:
+            continue
+        try:
+            actors.append(UUID(str(actor)))
+        except (ValueError, TypeError):
+            continue
+    return actors
+
+
+def _pathway_b_entity_scope(
+    event_entities: Sequence[dict[str, Any]] | None,
+) -> list[dict[str, str]]:
+    entities: list[dict[str, str]] = []
+    for entity in event_entities or []:
+        if not isinstance(entity, dict):
+            continue
+        etype = entity.get("type")
+        eid = entity.get("id")
+        if etype is None or eid is None:
+            continue
+        entities.append({"type": str(etype), "id": str(eid)})
+    return entities
+
+
+def _pathway_b_scope(
+    *,
+    tenant_id: UUID,
+    vec_param: Any,
+    k: int,
+    event_actors: Sequence[UUID] | None,
+    event_entities: Sequence[dict[str, Any]] | None,
+    notes: dict[str, Any],
+) -> _PathwayBScope:
+    actor_list = _pathway_b_actor_scope(event_actors)
+    entity_list = _pathway_b_entity_scope(event_entities)
+    scope_clauses: list[str] = []
+    scope_params: list[Any] = [tenant_id, vec_param, k]
+    if actor_list:
+        scope_params.append(actor_list)
+        scope_clauses.append(f"scope_actors && ${len(scope_params)}::uuid[]")
+    for ent in entity_list:
+        scope_params.append(_jsonb([ent]))
+        scope_clauses.append(f"scope_entities @> ${len(scope_params)}::jsonb")
+    notes["scope_filter"] = {
+        "event_actors_count": len(actor_list),
+        "event_entities_count": len(entity_list),
+        "applied": bool(scope_clauses),
+    }
+    scope_sql = ""
+    if scope_clauses:
+        scope_sql = "  AND (" + " OR ".join(scope_clauses) + ")\n"
+    return _PathwayBScope(
+        sql=scope_sql,
+        params=scope_params,
+        applied=bool(scope_clauses),
+    )
+
+
+async def _pathway_b_fetch_ann(
+    conn: asyncpg.Connection,
+    *,
+    scope: _PathwayBScope,
+    notes: dict[str, Any],
+) -> list[asyncpg.Record]:
+    ann_started = time.perf_counter()
+    rows = await conn.fetch(
+        f"""
+        SELECT {_MODEL_SELECT_SQL}
+        FROM models
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND embedding IS NOT NULL
+        {scope.sql}ORDER BY embedding <=> $2::vector
+        LIMIT $3
+        """,
+        *scope.params,
+    )
+    ann_elapsed = time.perf_counter() - ann_started
+    _PGVECTOR_DURATION.observe(ann_elapsed, query="ann")
+    _PGVECTOR_QUERIES.inc(query="ann")
+    notes["ann_query_ms"] = int(ann_elapsed * 1000)
+    return list(rows)
+
+
+def _pathway_b_rank_exact(
+    models: list[ModelRow],
+    *,
+    vec: Sequence[float],
+    k: int,
+) -> list[ModelRow]:
+    models.sort(
+        key=lambda m: (
+            _cosine_distance(vec, m.embedding),
+            -m.activation,
+            str(m.id),
+        )
+    )
+    return models[:k]
+
+
+async def _pathway_b_fetch_scope_exact_fallback(
+    conn: asyncpg.Connection,
+    *,
+    vec: Sequence[float],
+    scope: _PathwayBScope,
+    k: int,
+    ann_rows: Sequence[asyncpg.Record],
+    notes: dict[str, Any],
+) -> list[ModelRow]:
+    exact_started = time.perf_counter()
+    exact_rows = await conn.fetch(
+        f"""
+        WITH _params AS (
+          SELECT $2::vector AS _query_vector, $3::int AS _k
+        )
+        SELECT {_MODEL_SELECT_SQL}
+        FROM models, _params
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND embedding IS NOT NULL
+        {scope.sql}LIMIT LEAST(GREATEST($3::int * 20, 200), 2000)
+        """,
+        *scope.params,
+    )
+    _PGVECTOR_DURATION.observe(
+        time.perf_counter() - exact_started, query="exact_fallback"
+    )
+    _PGVECTOR_QUERIES.inc(query="exact_fallback")
+    exact_models = _hydrate_many(exact_rows, _hydrate_model, notes, "scope_exact_models")
+    models = _pathway_b_rank_exact(exact_models, vec=vec, k=k)
+    notes["scope_exact_fallback"] = {
+        "hnsw_rows": len(ann_rows),
+        "candidate_rows": len(exact_models),
+        "returned": len(models),
+    }
+    return models
+
+
+async def _pathway_b_fetch_exact_fallback(
+    conn: asyncpg.Connection,
+    *,
+    vec: Sequence[float],
+    scope: _PathwayBScope,
+    k: int,
+    ann_rows: Sequence[asyncpg.Record],
+    notes: dict[str, Any],
+) -> list[ModelRow]:
+    exact_rows = await conn.fetch(
+        f"""
+        WITH _params AS (
+          SELECT $2::vector AS _query_vector, $3::int AS _k
+        )
+        SELECT {_MODEL_SELECT_SQL}
+        FROM models, _params
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND embedding IS NOT NULL
+        LIMIT LEAST(GREATEST($3::int * 20, 200), 5000)
+        """,
+        *scope.params,
+    )
+    exact_models = _hydrate_many(exact_rows, _hydrate_model, notes, "exact_models")
+    models = _pathway_b_rank_exact(exact_models, vec=vec, k=k)
+    notes["exact_fallback"] = {
+        "hnsw_rows": len(ann_rows),
+        "candidate_rows": len(exact_models),
+        "returned": len(models),
+    }
+    return models
+
+
+async def _pathway_b_maybe_exact_fallback(
+    conn: asyncpg.Connection,
+    *,
+    vec: Sequence[float],
+    scope: _PathwayBScope,
+    k: int,
+    ann_rows: Sequence[asyncpg.Record],
+    models: list[ModelRow],
+    notes: dict[str, Any],
+) -> list[ModelRow]:
+    if scope.applied and len(models) < min(k, 10):
+        return await _pathway_b_fetch_scope_exact_fallback(
+            conn,
+            vec=vec,
+            scope=scope,
+            k=k,
+            ann_rows=ann_rows,
+            notes=notes,
+        )
+    if not scope.applied and len(models) < k:
+        return await _pathway_b_fetch_exact_fallback(
+            conn,
+            vec=vec,
+            scope=scope,
+            k=k,
+            ann_rows=ann_rows,
+            notes=notes,
+        )
+    return models
 
 
 async def pathway_b_semantic(
@@ -1479,213 +2082,47 @@ async def pathway_b_semantic(
     """
     if k <= 0:
         raise ValidationError("k must be positive", k=k)
-    notes: dict[str, Any] = {
-        "seed_chars": len(seed_natural_text or ""),
-        "k_requested": k,
-        "vector_source": None,
-        "scope_filter": None,
-    }
+    notes = _pathway_b_notes(seed_natural_text, k)
     if not seed_natural_text and precomputed_vector is None:
         return PathwayResult(
             source_pathway="B",
             notes={**notes, "reason": "empty_seed"},
         )
 
-    # Resolve the query vector.
-    vec: list[float]
-    if precomputed_vector is not None:
-        vec = [float(x) for x in precomputed_vector]
-        notes["vector_source"] = "precomputed"
-    else:
-        if embedder is None:
-            raise RetrievalPathwayError(
-                "pathway B requires either a precomputed_vector or an "
-                "embedder; neither was supplied",
-                seed_chars=len(seed_natural_text),
-            )
-        try:
-            vec = await embedder.embed(seed_natural_text)
-            notes["vector_source"] = "ollama"
-        except OllamaError as e:
-            raise RetrievalPathwayError(
-                f"ollama embedding failed: {e}",
-                cause=str(e),
-            ) from e
-    if len(vec) != EMBEDDING_DIM:
-        raise ValidationError(
-            f"pathway B vec dim {len(vec)} != {EMBEDDING_DIM}",
-            got=len(vec),
-            expected=EMBEDDING_DIM,
-        )
-
-    # Optional HNSW ef_search bump (RA-5, RETRIEVAL-DESIGN-AUDIT §3
-    # arg 4). Applied per transaction — the SET LOCAL lands only
-    # inside the caller's tx.
-    if hnsw_ef_search is not None and hnsw_ef_search > 0:
-        try:
-            async with conn.transaction():
-                await conn.execute(
-                    f"SET LOCAL hnsw.ef_search = {int(hnsw_ef_search)}"
-                )
-            notes["hnsw_ef_search"] = int(hnsw_ef_search)
-        except asyncpg.PostgresError:
-            # Not fatal — just means we're not in a tx or pgvector
-            # version doesn't honor the GUC. The savepoint keeps the
-            # caller's transaction usable. Fall back to default.
-            notes["hnsw_ef_search"] = None
-
-    # RA-1 scope filter: restrict to Models whose scope overlaps the
-    # event when either event_actors or event_entities is supplied.
-    # Semantics: OR between the two dimensions. A Model matches if
-    #   (scope_actors && event_actors) OR (scope_entities && event_entities).
-    # Ensure the pgvector codec is registered on THIS connection, then bind a
-    # numpy array — the same pattern ModelsRepo.search_by_embedding uses.
-    #
-    # The previous `if _conn_has_vector_codec(conn): ndarray else: '[…]' string`
-    # branch was unsafe: `_conn_has_vector_codec` keys on a process-wide id-set
-    # (`PGVECTOR_REGISTERED_POOL_IDS`) that goes stale across the
-    # PoolConnectionProxy/inner-Connection id boundary and for pools created
-    # without the codec init. When it reported False while the codec was actually
-    # live on the connection, binding the stringified `'[…]'::vector` literal
-    # crashed asyncpg with "could not convert string to float" — which aborted
-    # the retrieval and therefore every model write that depends on it (0 models
-    # produced). Ensuring the codec + always binding an array removes the
-    # state/bind mismatch entirely.
-    from services.domain.models.repo import _ensure_vector_codec
-    import numpy as _np
-    await _ensure_vector_codec(conn)
-    vec_param: Any = _np.asarray([float(x) for x in vec], dtype="float32")
-    scope_clauses: list[str] = []
-    scope_params: list[Any] = [tenant_id, vec_param, k]
-    actor_list: list[UUID] = []
-    entity_list: list[dict[str, Any]] = []
-    if event_actors:
-        for a in event_actors:
-            if a is None:
-                continue
-            try:
-                actor_list.append(UUID(str(a)))
-            except (ValueError, TypeError):
-                continue
-    if event_entities:
-        for e in event_entities:
-            if not isinstance(e, dict):
-                continue
-            etype = e.get("type")
-            eid = e.get("id")
-            if etype is None or eid is None:
-                continue
-            entity_list.append({"type": str(etype), "id": str(eid)})
-    if actor_list:
-        scope_params.append(actor_list)
-        scope_clauses.append(f"scope_actors && ${len(scope_params)}::uuid[]")
-    if entity_list:
-        for ent in entity_list:
-            scope_params.append(_jsonb([ent]))
-            scope_clauses.append(
-                f"scope_entities @> ${len(scope_params)}::jsonb"
-            )
-    notes["scope_filter"] = {
-        "event_actors_count": len(actor_list),
-        "event_entities_count": len(entity_list),
-        "applied": bool(scope_clauses),
-    }
-
-    scope_sql = ""
-    if scope_clauses:
-        scope_sql = "  AND (" + " OR ".join(scope_clauses) + ")\n"
-
-    ann_started = time.perf_counter()
-    rows = await conn.fetch(
-        f"""
-        SELECT {_MODEL_SELECT_SQL}
-        FROM models
-        WHERE tenant_id = $1
-          AND status = 'active'
-          AND embedding IS NOT NULL
-        {scope_sql}ORDER BY embedding <=> $2::vector
-        LIMIT $3
-        """,
-        *scope_params,
+    vec = await _pathway_b_resolve_vector(
+        seed_natural_text,
+        embedder=embedder,
+        precomputed_vector=precomputed_vector,
+        notes=notes,
     )
-    ann_elapsed = time.perf_counter() - ann_started
-    _PGVECTOR_DURATION.observe(ann_elapsed, query="ann")
-    _PGVECTOR_QUERIES.inc(query="ann")
-    notes["ann_query_ms"] = int(ann_elapsed * 1000)
+    _pathway_b_validate_vector(vec)
+    await _pathway_b_apply_hnsw_ef_search(
+        conn,
+        hnsw_ef_search=hnsw_ef_search,
+        notes=notes,
+    )
+    scope = _pathway_b_scope(
+        tenant_id=tenant_id,
+        vec_param=await _pathway_b_vector_param(conn, vec),
+        k=k,
+        event_actors=event_actors,
+        event_entities=event_entities,
+        notes=notes,
+    )
+    rows = await _pathway_b_fetch_ann(conn, scope=scope, notes=notes)
     models = _hydrate_many(rows, _hydrate_model, notes, "models")
 
-    # HNSW is approximate and Postgres applies the JSONB/actor scope
-    # predicate around the vector order. For highly selective event
-    # scopes, the indexed plan can occasionally return too few rows
-    # even when scoped candidates exist. Exact-rank the scoped candidate
-    # pool in Python as a production precision fallback.
-    if scope_clauses and len(models) < min(k, 10):
-        exact_started = time.perf_counter()
-        exact_rows = await conn.fetch(
-            f"""
-            WITH _params AS (
-              SELECT $2::vector AS _query_vector, $3::int AS _k
-            )
-            SELECT {_MODEL_SELECT_SQL}
-            FROM models, _params
-            WHERE tenant_id = $1
-              AND status = 'active'
-              AND embedding IS NOT NULL
-            {scope_sql}LIMIT LEAST(GREATEST($3::int * 20, 200), 2000)
-            """,
-            *scope_params,
-        )
-        _PGVECTOR_DURATION.observe(
-            time.perf_counter() - exact_started, query="exact_fallback"
-        )
-        _PGVECTOR_QUERIES.inc(query="exact_fallback")
-        exact_models = _hydrate_many(
-            exact_rows, _hydrate_model, notes, "scope_exact_models"
-        )
-        exact_models.sort(
-            key=lambda m: (
-                _cosine_distance(vec, m.embedding),
-                -m.activation,
-                str(m.id),
-            )
-        )
-        models = exact_models[:k]
-        notes["scope_exact_fallback"] = {
-            "hnsw_rows": len(rows),
-            "candidate_rows": len(exact_models),
-            "returned": len(models),
-        }
-    elif not scope_clauses and len(models) < k:
-        exact_rows = await conn.fetch(
-            f"""
-            WITH _params AS (
-              SELECT $2::vector AS _query_vector, $3::int AS _k
-            )
-            SELECT {_MODEL_SELECT_SQL}
-            FROM models, _params
-            WHERE tenant_id = $1
-              AND status = 'active'
-              AND embedding IS NOT NULL
-            LIMIT LEAST(GREATEST($3::int * 20, 200), 5000)
-            """,
-            *scope_params,
-        )
-        exact_models = _hydrate_many(
-            exact_rows, _hydrate_model, notes, "exact_models"
-        )
-        exact_models.sort(
-            key=lambda m: (
-                _cosine_distance(vec, m.embedding),
-                -m.activation,
-                str(m.id),
-            )
-        )
-        models = exact_models[:k]
-        notes["exact_fallback"] = {
-            "hnsw_rows": len(rows),
-            "candidate_rows": len(exact_models),
-            "returned": len(models),
-        }
+    # HNSW is approximate and Postgres applies scope predicates around vector
+    # order. Exact-rank a bounded candidate pool when ANN returns too few rows.
+    models = await _pathway_b_maybe_exact_fallback(
+        conn,
+        vec=vec,
+        scope=scope,
+        k=k,
+        ann_rows=rows,
+        models=models,
+        notes=notes,
+    )
     notes["models_returned"] = len(models)
 
     return PathwayResult(
@@ -1731,7 +2168,9 @@ async def pathway_c_temporal(
     for callers that opted out.
     """
     if window.total_seconds() <= 0:
-        raise ValidationError("window must be > 0", window_seconds=window.total_seconds())
+        raise ValidationError(
+            "window must be > 0", window_seconds=window.total_seconds()
+        )
 
     start = seed_occurred_at - window
     end = seed_occurred_at + window
@@ -1757,8 +2196,10 @@ async def pathway_c_temporal(
         entity_list.append({"type": str(etype), "id": str(eid)})
 
     # Observations query — tenant + time-range; optional actor/entity filter.
-    obs_sql = f"SELECT {_OBS_SELECT_SQL} FROM observations " \
-              "WHERE tenant_id = $1 AND occurred_at >= $2 AND occurred_at <= $3"
+    obs_sql = (
+        f"SELECT {_OBS_SELECT_SQL} FROM observations "
+        "WHERE tenant_id = $1 AND occurred_at >= $2 AND occurred_at <= $3"
+    )
     obs_params: list[Any] = [tenant_id, start, end]
     obs_scope_clauses: list[str] = []
     if scope_actors:
@@ -1775,18 +2216,14 @@ async def pathway_c_temporal(
                     f"entities_mentioned @> ${len(obs_params)}::jsonb"
                 )
             mention_sql = " OR ".join(mention_clauses)
-            obs_scope_clauses.append(
-                f"actor_id = ANY($4::uuid[]) OR ({mention_sql})"
-            )
+            obs_scope_clauses.append(f"actor_id = ANY($4::uuid[]) OR ({mention_sql})")
         else:
             obs_scope_clauses.append("actor_id = ANY($4::uuid[])")
     if entity_list:
         mention_clauses = []
         for ent in entity_list:
             obs_params.append(_jsonb([ent]))
-            mention_clauses.append(
-                f"entities_mentioned @> ${len(obs_params)}::jsonb"
-            )
+            mention_clauses.append(f"entities_mentioned @> ${len(obs_params)}::jsonb")
         obs_scope_clauses.append("(" + " OR ".join(mention_clauses) + ")")
     if obs_scope_clauses:
         obs_sql += " AND (" + " OR ".join(obs_scope_clauses) + ")"
@@ -1797,10 +2234,12 @@ async def pathway_c_temporal(
     # Models in the window (active). Overlap is COALESCE(last_retrieved_at,
     # created_at) — if a Model has been reconsolidated inside the window
     # it is also relevant, otherwise fall back to birth time.
-    model_sql = f"SELECT {_MODEL_SELECT_SQL} FROM models " \
-                "WHERE tenant_id = $1 AND status = 'active' " \
-                "  AND COALESCE(last_retrieved_at, created_at) >= $2 " \
-                "  AND COALESCE(last_retrieved_at, created_at) <= $3"
+    model_sql = (
+        f"SELECT {_MODEL_SELECT_SQL} FROM models "
+        "WHERE tenant_id = $1 AND status = 'active' "
+        "  AND COALESCE(last_retrieved_at, created_at) >= $2 "
+        "  AND COALESCE(last_retrieved_at, created_at) <= $3"
+    )
     model_params: list[Any] = [tenant_id, start, end]
     model_scope_clauses: list[str] = []
     if scope_actors:
@@ -1811,9 +2250,8 @@ async def pathway_c_temporal(
         model_scope_clauses.append(f"scope_entities @> ${len(model_params)}::jsonb")
     if model_scope_clauses:
         model_sql += " AND (" + " OR ".join(model_scope_clauses) + ")"
-    model_sql += (
-        " ORDER BY COALESCE(last_retrieved_at, created_at) DESC LIMIT "
-        + str(max(1, int(max_models)))
+    model_sql += " ORDER BY COALESCE(last_retrieved_at, created_at) DESC LIMIT " + str(
+        max(1, int(max_models))
     )
     model_rows = await conn.fetch(model_sql, *model_params)
     models = _hydrate_many(model_rows, _hydrate_model, notes, "models")
@@ -1954,6 +2392,379 @@ async def pathway_d_pattern(
 # =====================================================================
 
 
+@dataclass
+class _PathwayGScopedSeeds:
+    entity_types: list[str]
+    entity_ids: list[UUID]
+
+
+@dataclass
+class _PathwayGWalk:
+    visited: set[UUID]
+    rank_by_model: dict[UUID, tuple[int, int, str]]
+    edge_rows_seen: int = 0
+    composition_rows_seen: int = 0
+
+
+def _pathway_g_notes(
+    *,
+    seed_model_ids: Sequence[UUID] | None,
+    seed_entity_ids: Sequence[dict[str, Any]] | None,
+    scope_actors: Sequence[UUID] | None,
+    edge_kinds: Sequence[str],
+    max_hops: int,
+    limit: int,
+) -> dict[str, Any]:
+    return {
+        "seed_model_ids": len(seed_model_ids or []),
+        "seed_entity_ids": len(seed_entity_ids or []),
+        "scope_actors": len(scope_actors or []),
+        "edge_kinds": list(edge_kinds),
+        "max_hops": max_hops,
+        "limit": limit,
+    }
+
+
+def _pathway_g_scoped_seeds(
+    seed_entity_ids: Sequence[dict[str, Any]] | None,
+) -> _PathwayGScopedSeeds:
+    entity_types: list[str] = []
+    entity_ids: list[UUID] = []
+    for raw in seed_entity_ids or []:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            entity_type = _canonical_seed_type(raw["type"]) or str(raw["type"])
+            entity_types.append(entity_type)
+            entity_ids.append(UUID(str(raw["id"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return _PathwayGScopedSeeds(entity_types=entity_types, entity_ids=entity_ids)
+
+
+async def _pathway_g_active_seed_candidates(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_ids: Sequence[UUID],
+    limit: int,
+) -> list[asyncpg.Record]:
+    if not model_ids:
+        return []
+    return list(
+        await conn.fetch(
+            """
+            SELECT id, activation, created_at
+            FROM models
+            WHERE tenant_id = $1
+              AND status = 'active'
+              AND id = ANY($2::uuid[])
+            ORDER BY activation DESC, created_at DESC
+            LIMIT $3
+            """,
+            tenant_id,
+            list(model_ids),
+            limit,
+        )
+    )
+
+
+async def _pathway_g_entity_seed_candidates(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    scoped_seeds: _PathwayGScopedSeeds,
+    seed_model_limit: int,
+) -> list[asyncpg.Record]:
+    candidates: list[asyncpg.Record] = []
+    for entity_type, entity_id in zip(
+        scoped_seeds.entity_types,
+        scoped_seeds.entity_ids,
+        strict=False,
+    ):
+        rows = await conn.fetch(
+            """
+            SELECT model_id
+            FROM model_scope_entities
+            WHERE tenant_id = $1
+              AND entity_type = $2
+              AND entity_id = $3
+            """,
+            tenant_id,
+            entity_type,
+            entity_id,
+        )
+        candidates.extend(
+            await _pathway_g_active_seed_candidates(
+                conn,
+                tenant_id=tenant_id,
+                model_ids=[row["model_id"] for row in rows],
+                limit=seed_model_limit,
+            )
+        )
+    return candidates
+
+
+async def _pathway_g_actor_seed_candidates(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    scope_actors: Sequence[UUID] | None,
+    seed_model_limit: int,
+) -> list[asyncpg.Record]:
+    candidates: list[asyncpg.Record] = []
+    for actor_id in scope_actors or []:
+        rows = await conn.fetch(
+            """
+            SELECT model_id
+            FROM model_scope_actors
+            WHERE tenant_id = $1
+              AND actor_id = $2
+            """,
+            tenant_id,
+            actor_id,
+        )
+        candidates.extend(
+            await _pathway_g_active_seed_candidates(
+                conn,
+                tenant_id=tenant_id,
+                model_ids=[row["model_id"] for row in rows],
+                limit=seed_model_limit,
+            )
+        )
+    return candidates
+
+
+def _pathway_g_rank_scoped_seed_ids(
+    candidates: list[asyncpg.Record],
+    *,
+    limit: int,
+) -> list[UUID]:
+    candidates.sort(
+        key=lambda row: (
+            -float(row["activation"] or 0.0),
+            -float(row["created_at"].timestamp() if row["created_at"] else 0.0),
+            str(row["id"]),
+        )
+    )
+    ranked: list[UUID] = []
+    seen: set[UUID] = set()
+    for row in candidates:
+        model_id = row["id"]
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        ranked.append(model_id)
+        if len(ranked) >= limit:
+            break
+    return ranked
+
+
+async def _pathway_g_scoped_seed_ids(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    scoped_seeds: _PathwayGScopedSeeds,
+    scope_actors: Sequence[UUID] | None,
+    limit: int,
+) -> list[UUID]:
+    if not scoped_seeds.entity_ids and not scope_actors:
+        return []
+    seed_model_limit = min(limit, 50)
+    candidates = await _pathway_g_entity_seed_candidates(
+        conn,
+        tenant_id=tenant_id,
+        scoped_seeds=scoped_seeds,
+        seed_model_limit=seed_model_limit,
+    )
+    candidates.extend(
+        await _pathway_g_actor_seed_candidates(
+            conn,
+            tenant_id=tenant_id,
+            scope_actors=scope_actors,
+            seed_model_limit=seed_model_limit,
+        )
+    )
+    return _pathway_g_rank_scoped_seed_ids(candidates, limit=seed_model_limit)
+
+
+async def _pathway_g_composition_candidates(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    frontier: set[UUID],
+    limit: int,
+) -> tuple[list[tuple[UUID, int, str]], int]:
+    rows = await conn.fetch(
+        """
+        SELECT composite_model_id, member_model_id, confidence, source
+        FROM model_composition_members
+        WHERE tenant_id = $1
+          AND (
+            composite_model_id = ANY($2::uuid[])
+            OR member_model_id = ANY($2::uuid[])
+          )
+        ORDER BY confidence DESC, created_at DESC
+        LIMIT $3
+        """,
+        tenant_id,
+        list(frontier),
+        limit * 4,
+    )
+    candidates: list[tuple[UUID, int, str]] = []
+    for pos, row in enumerate(rows):
+        composite = row["composite_model_id"]
+        member = row["member_model_id"]
+        if composite in frontier:
+            candidates.append((member, pos, "composition_member"))
+        if member in frontier:
+            candidates.append((composite, pos, "composition_parent"))
+    return candidates, len(rows)
+
+
+async def _pathway_g_edge_candidates(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    edge_kinds: Sequence[str],
+    frontier: set[UUID],
+    limit: int,
+    position_offset: int,
+) -> list[tuple[UUID, int, str]]:
+    rows = await conn.fetch(
+        """
+        SELECT source_model_id, target_model_id, edge_kind, confidence,
+               weight, review_status
+        FROM model_edges
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND review_status IN ('accepted', 'candidate', 'needs_review', 'disputed')
+          AND (expires_at IS NULL OR expires_at > now())
+          AND edge_kind = ANY($2::text[])
+          AND (source_model_id = ANY($3::uuid[])
+            OR target_model_id = ANY($3::uuid[]))
+        ORDER BY
+          CASE edge_kind
+            WHEN 'contradicts' THEN 0
+            WHEN 'weakens' THEN 1
+            WHEN 'blocks' THEN 2
+            WHEN 'early_warning_for' THEN 3
+            WHEN 'same_issue_as' THEN 4
+            ELSE 10
+          END,
+          confidence DESC,
+          created_at DESC
+        LIMIT $4
+        """,
+        tenant_id,
+        list(edge_kinds),
+        list(frontier),
+        limit * 4,
+    )
+    candidates: list[tuple[UUID, int, str]] = []
+    for pos, row in enumerate(rows, start=position_offset):
+        source = row["source_model_id"]
+        target = row["target_model_id"]
+        other = target if source in frontier else source
+        candidates.append((other, pos, row["edge_kind"]))
+    return candidates
+
+
+def _pathway_g_next_frontier(
+    *,
+    candidates: list[tuple[UUID, int, str]],
+    visited: set[UUID],
+    rank_by_model: dict[UUID, tuple[int, int, str]],
+    hop: int,
+    limit: int,
+) -> set[UUID]:
+    next_frontier: set[UUID] = set()
+    for other, pos, relation_kind in candidates:
+        if other in visited:
+            continue
+        visited.add(other)
+        next_frontier.add(other)
+        rank_by_model[other] = (hop, pos, relation_kind)
+        if len(visited) >= limit:
+            break
+    return next_frontier
+
+
+async def _pathway_g_walk(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    seeds: set[UUID],
+    edge_kinds: Sequence[str],
+    max_hops: int,
+    limit: int,
+) -> _PathwayGWalk:
+    walk = _PathwayGWalk(
+        visited=set(seeds),
+        rank_by_model={mid: (0, 0, "seed") for mid in seeds},
+    )
+    frontier: set[UUID] = set(seeds)
+    for hop in range(1, max_hops + 1):
+        if not frontier or len(walk.visited) >= limit:
+            break
+        candidates, composition_rows_seen = await _pathway_g_composition_candidates(
+            conn,
+            tenant_id=tenant_id,
+            frontier=frontier,
+            limit=limit,
+        )
+        walk.composition_rows_seen += composition_rows_seen
+        edge_candidates = await _pathway_g_edge_candidates(
+            conn,
+            tenant_id=tenant_id,
+            edge_kinds=edge_kinds,
+            frontier=frontier,
+            limit=limit,
+            position_offset=len(candidates),
+        )
+        walk.edge_rows_seen += len(edge_candidates)
+        candidates.extend(edge_candidates)
+        frontier = _pathway_g_next_frontier(
+            candidates=candidates,
+            visited=walk.visited,
+            rank_by_model=walk.rank_by_model,
+            hop=hop,
+            limit=limit,
+        )
+    return walk
+
+
+async def _pathway_g_hydrate_models(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    walk: _PathwayGWalk,
+    notes: dict[str, Any],
+    limit: int,
+) -> list[ModelRow]:
+    model_rows = await conn.fetch(
+        f"""
+        SELECT {_MODEL_SELECT_SQL}
+        FROM models
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND id = ANY($2::uuid[])
+        """,
+        tenant_id,
+        list(walk.visited),
+    )
+    models = _hydrate_many(model_rows, _hydrate_model, notes, "edge_models")
+    models.sort(
+        key=lambda m: (
+            walk.rank_by_model.get(m.id, (999, 999, ""))[0],
+            walk.rank_by_model.get(m.id, (999, 999, ""))[1],
+            -m.activation,
+            str(m.id),
+        )
+    )
+    return models[:limit]
+
+
 async def pathway_g_model_edges(
     tenant_id: UUID,
     conn: asyncpg.Connection,
@@ -1974,238 +2785,67 @@ async def pathway_g_model_edges(
     too, even though it lives in `model_composition_members` instead of
     `model_edges`.
     """
-    notes: dict[str, Any] = {
-        "seed_model_ids": len(seed_model_ids or []),
-        "seed_entity_ids": len(seed_entity_ids or []),
-        "scope_actors": len(scope_actors or []),
-        "edge_kinds": list(edge_kinds),
-        "max_hops": max_hops,
-        "limit": limit,
-    }
+    notes = _pathway_g_notes(
+        seed_model_ids=seed_model_ids,
+        seed_entity_ids=seed_entity_ids,
+        scope_actors=scope_actors,
+        edge_kinds=edge_kinds,
+        max_hops=max_hops,
+        limit=limit,
+    )
     if max_hops < 0:
         raise ValidationError("max_hops must be >= 0", max_hops=max_hops)
     if limit <= 0:
-        return PathwayResult(source_pathway="G", notes={**notes, "reason": "non_positive_limit"})
+        return PathwayResult(
+            source_pathway="G", notes={**notes, "reason": "non_positive_limit"}
+        )
 
     seeds: set[UUID] = set(seed_model_ids or [])
-    entity_types: list[str] = []
-    entity_ids: list[UUID] = []
-    for raw in seed_entity_ids or []:
-        if not isinstance(raw, dict):
-            continue
-        try:
-            entity_type = _canonical_seed_type(raw["type"]) or str(raw["type"])
-            entity_types.append(entity_type)
-            entity_ids.append(UUID(str(raw["id"])))
-        except (KeyError, TypeError, ValueError):
-            continue
-
-    if entity_ids or scope_actors:
-        seed_model_limit = min(limit, 50)
-        scoped_seed_candidates: list[asyncpg.Record] = []
-        for entity_type, entity_id in zip(entity_types, entity_ids, strict=False):
-            model_id_rows = await conn.fetch(
-                """
-                SELECT model_id
-                FROM model_scope_entities
-                WHERE tenant_id = $1
-                  AND entity_type = $2
-                  AND entity_id = $3
-                """,
-                tenant_id,
-                entity_type,
-                entity_id,
-            )
-            model_ids = [row["model_id"] for row in model_id_rows]
-            if not model_ids:
-                continue
-            scoped_seed_candidates.extend(
-                await conn.fetch(
-                    """
-                    SELECT id, activation, created_at
-                    FROM models
-                    WHERE tenant_id = $1
-                      AND status = 'active'
-                      AND id = ANY($2::uuid[])
-                    ORDER BY activation DESC, created_at DESC
-                    LIMIT $3
-                    """,
-                    tenant_id,
-                    model_ids,
-                    seed_model_limit,
-                )
-            )
-        for actor_id in scope_actors or []:
-            model_id_rows = await conn.fetch(
-                """
-                SELECT model_id
-                FROM model_scope_actors
-                WHERE tenant_id = $1
-                  AND actor_id = $2
-                """,
-                tenant_id,
-                actor_id,
-            )
-            model_ids = [row["model_id"] for row in model_id_rows]
-            if not model_ids:
-                continue
-            scoped_seed_candidates.extend(
-                await conn.fetch(
-                    """
-                    SELECT id, activation, created_at
-                    FROM models
-                    WHERE tenant_id = $1
-                      AND status = 'active'
-                      AND id = ANY($2::uuid[])
-                    ORDER BY activation DESC, created_at DESC
-                    LIMIT $3
-                    """,
-                    tenant_id,
-                    model_ids,
-                    seed_model_limit,
-                )
-            )
-        scoped_seed_candidates.sort(
-            key=lambda row: (
-                -float(row["activation"] or 0.0),
-                -float(row["created_at"].timestamp() if row["created_at"] else 0.0),
-                str(row["id"]),
-            )
-        )
-        scoped_seed_ids: list[UUID] = []
-        seen_scoped_seeds: set[UUID] = set()
-        for row in scoped_seed_candidates:
-            model_id = row["id"]
-            if model_id in seen_scoped_seeds:
-                continue
-            seen_scoped_seeds.add(model_id)
-            scoped_seed_ids.append(model_id)
-            if len(scoped_seed_ids) >= seed_model_limit:
-                break
+    scoped_seed_ids = await _pathway_g_scoped_seed_ids(
+        conn,
+        tenant_id=tenant_id,
+        scoped_seeds=_pathway_g_scoped_seeds(seed_entity_ids),
+        scope_actors=scope_actors,
+        limit=limit,
+    )
+    if scoped_seed_ids:
         seeds.update(scoped_seed_ids)
         notes["scope_seed_models"] = len(scoped_seed_ids)
 
     if not seeds:
-        return PathwayResult(source_pathway="G", notes={**notes, "reason": "empty_seed"})
-
-    edge_kinds = [str(k) for k in edge_kinds]
-    visited: set[UUID] = set(seeds)
-    frontier: set[UUID] = set(seeds)
-    rank_by_model: dict[UUID, tuple[int, int, str]] = {
-        mid: (0, 0, "seed") for mid in seeds
-    }
-    edge_rows_seen = 0
-    composition_rows_seen = 0
-
-    for hop in range(1, max_hops + 1):
-        if not frontier or len(visited) >= limit:
-            break
-        composition_rows = await conn.fetch(
-            """
-            SELECT composite_model_id, member_model_id, confidence, source
-            FROM model_composition_members
-            WHERE tenant_id = $1
-              AND (
-                composite_model_id = ANY($2::uuid[])
-                OR member_model_id = ANY($2::uuid[])
-              )
-            ORDER BY confidence DESC, created_at DESC
-            LIMIT $3
-            """,
-            tenant_id,
-            list(frontier),
-            limit * 4,
+        return PathwayResult(
+            source_pathway="G", notes={**notes, "reason": "empty_seed"}
         )
-        composition_rows_seen += len(composition_rows)
 
-        next_candidates: list[tuple[UUID, int, str]] = []
-        for pos, row in enumerate(composition_rows):
-            composite = row["composite_model_id"]
-            member = row["member_model_id"]
-            if composite in frontier:
-                next_candidates.append((member, pos, "composition_member"))
-            if member in frontier:
-                next_candidates.append((composite, pos, "composition_parent"))
-
-        rows = await conn.fetch(
-            """
-            SELECT source_model_id, target_model_id, edge_kind, confidence,
-                   weight, review_status
-            FROM model_edges
-            WHERE tenant_id = $1
-              AND status = 'active'
-              AND review_status IN ('accepted', 'candidate', 'needs_review', 'disputed')
-              AND (expires_at IS NULL OR expires_at > now())
-              AND edge_kind = ANY($2::text[])
-              AND (source_model_id = ANY($3::uuid[])
-                OR target_model_id = ANY($3::uuid[]))
-            ORDER BY
-              CASE edge_kind
-                WHEN 'contradicts' THEN 0
-                WHEN 'weakens' THEN 1
-                WHEN 'blocks' THEN 2
-                WHEN 'early_warning_for' THEN 3
-                WHEN 'same_issue_as' THEN 4
-                ELSE 10
-              END,
-              confidence DESC,
-              created_at DESC
-            LIMIT $4
-            """,
-            tenant_id,
-            edge_kinds,
-            list(frontier),
-            limit * 4,
-        )
-        edge_rows_seen += len(rows)
-        edge_pos_offset = len(next_candidates)
-        for pos, row in enumerate(rows, start=edge_pos_offset):
-            source = row["source_model_id"]
-            target = row["target_model_id"]
-            other = target if source in frontier else source
-            next_candidates.append((other, pos, row["edge_kind"]))
-
-        next_frontier: set[UUID] = set()
-        for other, pos, relation_kind in next_candidates:
-            if other in visited:
-                continue
-            visited.add(other)
-            next_frontier.add(other)
-            rank_by_model[other] = (hop, pos, relation_kind)
-            if len(visited) >= limit:
-                break
-        frontier = next_frontier
-
-    if not visited:
-        return PathwayResult(source_pathway="G", notes={**notes, "reason": "no_reachable_models"})
-
-    model_rows = await conn.fetch(
-        f"""
-        SELECT {_MODEL_SELECT_SQL}
-        FROM models
-        WHERE tenant_id = $1
-          AND status = 'active'
-          AND id = ANY($2::uuid[])
-        """,
-        tenant_id,
-        list(visited),
+    walk = await _pathway_g_walk(
+        conn,
+        tenant_id=tenant_id,
+        seeds=seeds,
+        edge_kinds=[str(k) for k in edge_kinds],
+        max_hops=max_hops,
+        limit=limit,
     )
-    models = _hydrate_many(model_rows, _hydrate_model, notes, "edge_models")
-    models.sort(
-        key=lambda m: (
-            rank_by_model.get(m.id, (999, 999, ""))[0],
-            rank_by_model.get(m.id, (999, 999, ""))[1],
-            -m.activation,
-            str(m.id),
+    if not walk.visited:
+        return PathwayResult(
+            source_pathway="G", notes={**notes, "reason": "no_reachable_models"}
         )
+
+    models = await _pathway_g_hydrate_models(
+        conn,
+        tenant_id=tenant_id,
+        walk=walk,
+        notes=notes,
+        limit=limit,
     )
-    notes["edge_rows_seen"] = edge_rows_seen
-    notes["composition_rows_seen"] = composition_rows_seen
+    notes["edge_rows_seen"] = walk.edge_rows_seen
+    notes["composition_rows_seen"] = walk.composition_rows_seen
     notes["models_returned"] = len(models)
-    notes["hops_executed"] = max((rank_by_model.get(m.id, (0, 0, ""))[0] for m in models), default=0)
+    notes["hops_executed"] = max(
+        (walk.rank_by_model.get(m.id, (0, 0, ""))[0] for m in models), default=0
+    )
 
     return PathwayResult(
-        models=models[:limit],
+        models=models,
         observations=[],
         acts={"goals": [], "commitments": [], "decisions": []},
         resources=[],

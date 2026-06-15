@@ -411,6 +411,27 @@ async def test_pathway_g_ignores_expired_edges(
     assert target_id not in ids
 
 
+async def test_pathway_g_discovers_seed_models_from_scope_entity(
+    tx_conn, fresh_db, tenant,
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
+    expected = set(fs.scope_by_commitment[fs.hero_commitment_id])
+
+    result = await pathway_g_model_edges(
+        tenant,
+        tx_conn,
+        seed_entity_ids=[
+            {"type": "commitment", "id": str(fs.hero_commitment_id)}
+        ],
+        max_hops=0,
+        limit=10,
+    )
+
+    ids = {m.id for m in result.models}
+    assert result.notes["scope_seed_models"] >= 1
+    assert ids & expected
+
+
 async def test_pathway_g_traverses_situation_composition_members(
     tx_conn, fresh_db, tenant,
 ):

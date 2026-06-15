@@ -479,26 +479,60 @@ def _compose_text(
 def _extract_sync(text: str, aliases_map: Mapping[str, str]) -> StructuredCues:
     """Run all deterministic passes against an already-composed text blob."""
     if not text or not text.strip():
-        return StructuredCues(
-            explicit_entities=(),
-            aliases=(),
-            actor_mentions=(),
-            team_mentions=(),
-            customer_mentions=(),
-            system_mentions=(),
-            goal_mentions=(),
-            commitment_mentions=(),
-            relationship_clues=(),
-            time_constraints={},
-            status_constraints={},
-            source_constraints={},
-            access_constraints={},
-            expected_synthesis_decision_type=(),
-        )
+        return _empty_cues()
 
     lower = text.casefold()
+    aliases_hit, explicit, seen_explicit = _alias_hits_and_explicit(lower, aliases_map)
+    systems = _system_mentions(lower, explicit, seen_explicit)
+    _append_capitalized_entities(text, aliases_map, explicit, seen_explicit)
+    teams, commitments, goals, customers, actors = _categorize_entities(
+        explicit,
+        systems,
+        lower,
+    )
+    _promote_raw_text_hints(lower, commitments, goals)
 
-    # -------- aliases & explicit entities ----------------------------
+    return StructuredCues(
+        explicit_entities=tuple(_dedup(explicit)),
+        aliases=tuple(_dedup(aliases_hit)),
+        actor_mentions=tuple(_dedup(actors)),
+        team_mentions=tuple(_dedup(teams)),
+        customer_mentions=tuple(_dedup(customers)),
+        system_mentions=tuple(_dedup(systems)),
+        goal_mentions=tuple(_dedup(goals)),
+        commitment_mentions=tuple(_dedup(commitments)),
+        relationship_clues=tuple(_relationship_clues(text)),
+        time_constraints=_time_constraints(text),
+        status_constraints=_status_constraints(text),
+        source_constraints=_source_constraints(lower),
+        access_constraints=_access_constraints(lower),
+        expected_synthesis_decision_type=tuple(_decision_types(text)),
+    )
+
+
+def _empty_cues() -> StructuredCues:
+    return StructuredCues(
+        explicit_entities=(),
+        aliases=(),
+        actor_mentions=(),
+        team_mentions=(),
+        customer_mentions=(),
+        system_mentions=(),
+        goal_mentions=(),
+        commitment_mentions=(),
+        relationship_clues=(),
+        time_constraints={},
+        status_constraints={},
+        source_constraints={},
+        access_constraints={},
+        expected_synthesis_decision_type=(),
+    )
+
+
+def _alias_hits_and_explicit(
+    lower: str,
+    aliases_map: Mapping[str, str],
+) -> tuple[list[str], list[str], set[str]]:
     aliases_hit: list[str] = []
     explicit: list[str] = []
     seen_explicit: set[str] = set()
@@ -511,8 +545,14 @@ def _extract_sync(text: str, aliases_map: Mapping[str, str]) -> StructuredCues:
             if canonical and canonical not in seen_explicit:
                 explicit.append(canonical)
                 seen_explicit.add(canonical)
+    return aliases_hit, explicit, seen_explicit
 
-    # -------- system mentions (alias-map + builtin dictionary) -------
+
+def _system_mentions(
+    lower: str,
+    explicit: list[str],
+    seen_explicit: set[str],
+) -> list[str]:
     systems: list[str] = []
     seen_sys: set[str] = set()
     for sys_name in _BUILTIN_SYSTEMS:
@@ -531,8 +571,15 @@ def _extract_sync(text: str, aliases_map: Mapping[str, str]) -> StructuredCues:
                 if display not in seen_explicit:
                     explicit.append(display)
                     seen_explicit.add(display)
+    return systems
 
-    # -------- capitalized-noun fallback for unknown entities ---------
+
+def _append_capitalized_entities(
+    text: str,
+    aliases_map: Mapping[str, str],
+    explicit: list[str],
+    seen_explicit: set[str],
+) -> None:
     for match in _RE_CAPITALIZED_PHRASE.finditer(text):
         phrase = match.group(1).strip()
         first = phrase.split()[0]
@@ -552,7 +599,12 @@ def _extract_sync(text: str, aliases_map: Mapping[str, str]) -> StructuredCues:
         explicit.append(phrase)
         seen_explicit.add(phrase)
 
-    # -------- categorise mentions into team/customer/actor/goal/commit
+
+def _categorize_entities(
+    explicit: list[str],
+    systems: list[str],
+    lower: str,
+) -> tuple[list[str], list[str], list[str], list[str], list[str]]:
     teams: list[str] = []
     commitments: list[str] = []
     goals: list[str] = []
@@ -598,9 +650,14 @@ def _extract_sync(text: str, aliases_map: Mapping[str, str]) -> StructuredCues:
                 customers.append(ent)
             else:
                 actors.append(ent)
+    return teams, commitments, goals, customers, actors
 
-    # Promote commitment/goal hints from raw text even if no explicit
-    # entity carried the word.
+
+def _promote_raw_text_hints(
+    lower: str,
+    commitments: list[str],
+    goals: list[str],
+) -> None:
     for hint in _COMMITMENT_HINTS:
         if hint in lower and not any(hint in c.casefold() for c in commitments):
             commitments.append(hint)
@@ -608,15 +665,18 @@ def _extract_sync(text: str, aliases_map: Mapping[str, str]) -> StructuredCues:
         if hint in lower and not any(hint in g.casefold() for g in goals):
             goals.append(hint)
 
-    # -------- relationship clues -------------------------------------
+
+def _relationship_clues(text: str) -> list[str]:
     relation_clues: list[str] = []
     seen_clues: set[str] = set()
     for pattern, clue in _RELATION_PATTERNS:
         if pattern.search(text) and clue not in seen_clues:
             relation_clues.append(clue)
             seen_clues.add(clue)
+    return relation_clues
 
-    # -------- time constraints ---------------------------------------
+
+def _time_constraints(text: str) -> dict[str, Any]:
     time_constraints: dict[str, Any] = {}
     m = _RE_LAST_N_DAYS.search(text) or _RE_PAST_N_DAYS.search(text)
     if m:
@@ -649,15 +709,19 @@ def _extract_sync(text: str, aliases_map: Mapping[str, str]) -> StructuredCues:
         except ValueError:
             # Malformed date; leave it out rather than raising.
             pass
+    return time_constraints
 
-    # -------- status constraints -------------------------------------
+
+def _status_constraints(text: str) -> dict[str, Any]:
     status_constraints: dict[str, Any] = {}
     for pattern, key, value in _STATUS_MARKERS:
         if pattern.search(text):
             # First match wins per key.
             status_constraints.setdefault(key, value)
+    return status_constraints
 
-    # -------- source constraints -------------------------------------
+
+def _source_constraints(lower: str) -> dict[str, Any]:
     source_constraints: dict[str, Any] = {}
     sources_hit: list[str] = []
     for src in _BUILTIN_SOURCES:
@@ -665,8 +729,10 @@ def _extract_sync(text: str, aliases_map: Mapping[str, str]) -> StructuredCues:
             sources_hit.append(src)
     if sources_hit:
         source_constraints["channels"] = tuple(sorted(set(sources_hit)))
+    return source_constraints
 
-    # -------- access constraints -------------------------------------
+
+def _access_constraints(lower: str) -> dict[str, Any]:
     access_constraints: dict[str, Any] = {}
     access_hit: list[str] = []
     for marker in _BUILTIN_ACCESS:
@@ -674,31 +740,17 @@ def _extract_sync(text: str, aliases_map: Mapping[str, str]) -> StructuredCues:
             access_hit.append(marker)
     if access_hit:
         access_constraints["sensitivity_markers"] = tuple(sorted(set(access_hit)))
+    return access_constraints
 
-    # -------- expected synthesis decision types ----------------------
+
+def _decision_types(text: str) -> list[str]:
     decisions: list[str] = []
     seen_dec: set[str] = set()
     for pattern, decision in _DECISION_TRIGGERS:
         if pattern.search(text) and decision not in seen_dec:
             decisions.append(decision)
             seen_dec.add(decision)
-
-    return StructuredCues(
-        explicit_entities=tuple(_dedup(explicit)),
-        aliases=tuple(_dedup(aliases_hit)),
-        actor_mentions=tuple(_dedup(actors)),
-        team_mentions=tuple(_dedup(teams)),
-        customer_mentions=tuple(_dedup(customers)),
-        system_mentions=tuple(_dedup(systems)),
-        goal_mentions=tuple(_dedup(goals)),
-        commitment_mentions=tuple(_dedup(commitments)),
-        relationship_clues=tuple(relation_clues),
-        time_constraints=time_constraints,
-        status_constraints=status_constraints,
-        source_constraints=source_constraints,
-        access_constraints=access_constraints,
-        expected_synthesis_decision_type=tuple(decisions),
-    )
+    return decisions
 
 
 # ---------------------------------------------------------------------

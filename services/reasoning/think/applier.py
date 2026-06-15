@@ -18,11 +18,13 @@ and dropped, matching the validator's partial-accept policy. Unexpected
 errors still propagate and roll back the whole transaction —
 applied_triggers row included.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -38,7 +40,10 @@ from services.domain.acts import commitments as commitments_svc
 from services.domain.acts import decisions as decisions_svc
 from services.domain.acts import goals as goals_svc
 from services.domain.models.propositions import ensure_situation_compositional_defaults
-from services.domain.models.propositions import canonicalize_proposition, validate_proposition
+from services.domain.models.propositions import (
+    canonicalize_proposition,
+    validate_proposition,
+)
 from services.domain.models.repo import ModelsRepo
 from services.domain.observations.state_change import emit_state_change
 from services.domain.resources import deployments as deployments_svc
@@ -56,6 +61,11 @@ from .diff_schema import (
     ValidatedDiff,
 )
 from .observability import log_dropped_op
+from .prediction_lifecycle import (
+    materialize_model_prediction,
+    prepare_prediction_entry,
+    sync_model_prediction_resolution,
+)
 from .quality_gate import QualityContext, QualityVerdict, apply_verdict, score_quality
 from .splitter import split_compound_claim_op
 from .synthesis_decision import summarize_synthesis_decisions
@@ -72,6 +82,7 @@ class AlreadyAppliedError(ApplierError):
     should short-circuit (set think_runs.status='skipped_idempotent')
     without running any ops.
     """
+
     default_code = "already_applied"
 
 
@@ -111,49 +122,47 @@ async def check_already_applied(
     return row["outcome"] if row is not None else None
 
 
+async def _record_apply_drop(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    op_type: str,
+    op_kind: str,
+    reason: str,
+    message: str,
+) -> None:
+    try:
+        from services.domain.feedback_stats import record_feedback_stat
+
+        await record_feedback_stat(
+            conn,
+            tenant_id=tenant_id,
+            surface="think_apply",
+            op_type=op_type,
+            op_kind=op_kind,
+            outcome="dropped",
+            reason=reason,
+            payload={"message": message[:500]},
+        )
+    except asyncpg.PostgresError:
+        pass
+
+
 # ---------------------------------------------------------------------
 # Main apply entry point
 # ---------------------------------------------------------------------
 
 
-async def apply_diff(
+async def _prepare_apply_transaction(
     diff: ValidatedDiff,
     conn: asyncpg.Connection,
     trigger_kind: str,
-    trigger_cause_event_id: UUID | None = None,
-    *,
-    models_repo: ModelsRepo | None = None,
-    think_run_id: UUID | None = None,
-    parent_cascade_payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """
-    Apply a ValidatedDiff inside `conn`'s transaction. The caller MUST
-    have opened the transaction (typically via `async with
-    conn.transaction():`).
-
-    Region lock: acquired here, derived from the diff itself. Two diffs
-    that touch the same (tenant, scope) tuple serialize on the same
-    advisory lock. Re-entrant within a transaction, so the reason.py
-    path (which also acquires a broader retrieval-region lock) is
-    unaffected.
-
-    Returns a summary dict used for observability:
-      { "claim_ops": N, "act_ops": N, "resource_ops": N,
-        "applied_model_ids": [...], "state_changes_emitted": N,
-        "diff_hash": "..." }
-
-    Idempotency: inserts into applied_triggers with outcome='pending'
-    FIRST. Raises AlreadyAppliedError if the trigger_id already has a
-    row — the caller handles that path. The INSERT is also guarded
-    against UniqueViolationError so that a race between the pre-check
-    and the insert (only possible when callers somehow bypass the region
-    lock) still surfaces as AlreadyAppliedError, not as a raw asyncpg
-    error.
-    """
+) -> str:
     from .region_locks import (
         acquire_region_lock as _acquire_region_lock,
         touched_entity_ids_from_diff as _touched_from_diff,
     )
+
     # The retrieval/validation region lock keeps the LLM inside its legal
     # evidence boundary, but concurrent diffs can still reconcile or edge-sync
     # into the same `models` rows through production side effects that were not
@@ -166,9 +175,9 @@ async def apply_diff(
         [("tenant_model_write", str(diff.tenant_id))],
     )
 
-    _diff_entities = _touched_from_diff(diff)
-    if _diff_entities:
-        await _acquire_region_lock(conn, diff.tenant_id, _diff_entities)
+    diff_entities = _touched_from_diff(diff)
+    if diff_entities:
+        await _acquire_region_lock(conn, diff.tenant_id, diff_entities)
 
     prior_outcome = await check_already_applied(conn, diff.trigger_ref)
     if prior_outcome is not None:
@@ -197,65 +206,32 @@ async def apply_diff(
             trigger_id=str(diff.trigger_ref),
             prior_outcome="unknown",
         ) from exc
+    return diff_hash
 
-    applied_model_ids: list[UUID] = []
-    state_changes_emitted = 0
-    ops_summary: dict[str, Any] = {
-        "claim_ops": [],
-        "edge_ops": [],
-        "ontology_gap_ops": [],
-        "act_ops": [],
-        "resource_ops": [],
-        "synthesis_decisions": summarize_synthesis_decisions(diff),
-        "diff_hash": diff_hash,
-        "apply_dropped_op_count": 0,
-        "apply_dropped_op_errors": [],
-    }
-    pending_model_ids_by_event_id: dict[UUID, UUID] = {}
 
-    if models_repo is None:
-        models_repo = ModelsRepo(pool=None)  # type: ignore[arg-type]
-
-    # --- 1. claim_ops ---------------------------------------------
-    _belief_updated_model_ids: list[UUID] = []
-    # T2:belief_updated is a deterministic reevaluation path for prediction
-    # Models. Older builds enqueued it for ordinary beliefs/concerns as a
-    # recommendation-card hook, but that path now routes to a no-op and only
-    # spends retrieval/context budget. Keep the queue focused on Models that
-    # actually have prediction-resolution semantics.
-    _T2_REEVALUATION_KINDS = {"prediction"}
-    # T5: reconcile each claim_op.insert before applying. If the
-    # reconciler decides auto_merge, we substitute the replacement
-    # update op for the original insert. human_review and no_match
-    # both proceed with the original (auditing the decision in
-    # `reconciliation_events` is sufficient for those cases).
-    from .reconciler import reconcile_claim_op
-    reconcile_summary: dict[str, int] = {
-        "auto_merge": 0,
-        "human_review": 0,
-        "no_match": 0,
-        "skipped": 0,
-    }
-    quality_summary: dict[str, int] = {
-        "accept": 0,
-        "needs_review": 0,
-        "reject": 0,
-        "downgrade_to_evidence": 0,
-    }
+def _expand_claim_ops_for_splitter(
+    claim_ops: list[ClaimOp],
+    *,
+    trigger_cause_event_id: UUID | None,
+    trigger_evidence_ids: list[UUID],
+) -> tuple[list[tuple[ClaimOp, ClaimOp, int | None]], dict[str, int]]:
     split_summary: dict[str, int] = {
         "compound_inputs": 0,
         "atomic_outputs": 0,
         "synthesized_situations": 0,
     }
-
-    # ---------- Splitter expansion ----------
     # Each compound op becomes a contiguous group of N atomic ops +
     # 1 synthesized situation. We track the group via `gid` so we
     # can patch member_model_ids on the situation after its atomics
     # commit. Non-compound inputs pass through with `gid=None`.
     expanded_ops: list[tuple[ClaimOp, ClaimOp, int | None]] = []
     next_gid = 0
-    for src_op in diff.claim_ops:
+    for src_op in claim_ops:
+        src_op = _with_claim_evidence_defaults(
+            src_op,
+            trigger_cause_event_id=trigger_cause_event_id,
+            trigger_supporting_event_ids=trigger_evidence_ids,
+        )
         if src_op.op != "insert":
             expanded_ops.append((src_op, src_op, None))
             continue
@@ -268,229 +244,37 @@ async def apply_diff(
         split_summary["compound_inputs"] += 1
         split_summary["atomic_outputs"] += max(0, len(splits) - 1)
         split_summary["synthesized_situations"] += 1
-        for s in splits:
-            expanded_ops.append((src_op, s, gid))
+        for split_op in splits:
+            expanded_ops.append((src_op, split_op, gid))
+    return expanded_ops, split_summary
 
-    # Track atomic model IDs per split group for situation member patching.
-    group_member_ids: dict[int, list[UUID]] = {}
 
-    for original_op, expanded_op, gid in expanded_ops:
-        op = expanded_op
-        recon_result = None
-        verdict = None
-
-        # Pending-situation handling: patch member_model_ids using the
-        # atomic IDs from this group before any further processing.
-        is_pending_situation = (
-            op.op == "insert"
-            and isinstance(op.entry, dict)
-            and op.entry.get("member_model_pending") is True
-        )
-        if is_pending_situation:
-            members = group_member_ids.get(gid, []) if gid is not None else []
-            if not members:
-                # All atomic members were dropped (rejected/downgraded).
-                # Skip the situation rather than emit an empty composite.
-                ops_summary["claim_ops"].append({
-                    "op": "skip",
-                    "reason": "situation_skipped_no_atomic_members_after_quality_gate",
-                    "split_group_id": gid,
-                })
-                continue
-            prop = op.entry.get("proposition") or {}
-            deduped_members: list[UUID] = []
-            seen_members: set[UUID] = set()
-            for uid in members:
-                if uid in seen_members:
-                    continue
-                seen_members.add(uid)
-                deduped_members.append(uid)
-            if len(deduped_members) < 2:
-                ops_summary["claim_ops"].append({
-                    "op": "skip",
-                    "reason": "situation_skipped_insufficient_atomic_members_after_quality_gate",
-                    "split_group_id": gid,
-                    "member_count": len(deduped_members),
-                })
-                continue
-            prop["member_model_ids"] = [str(uid) for uid in deduped_members]
-            op.entry["proposition"] = prop
-            # Strip splitter-only audit markers — ModelCreate forbids extras.
-            op.entry.pop("member_model_pending", None)
-            op.entry.pop("split_reasons", None)
-
-        if op.op == "insert":
-            recon_result = await reconcile_claim_op(
-                op, conn,
-                tenant_id=diff.tenant_id,
-                trigger_id=diff.trigger_ref,
-                think_run_id=think_run_id,
-            )
-            reconcile_summary[recon_result.decision] += 1
-            if recon_result.replacement_op is not None:
-                # auto_merge: substitute the confidence-update op and
-                # skip the quality gate (confidence updates against an
-                # existing model do not need re-scoring).
-                op = recon_result.replacement_op
-            else:
-                # Fresh insert path: run the quality gate.
-                verdict = score_quality(
-                    op,
-                    QualityContext(
-                        reconcile_result=recon_result,
-                        trigger_kind=getattr(diff.trigger_ref, "kind", None),
-                        tenant_id=diff.tenant_id,
-                    ),
-                )
-                quality_summary[verdict.decision] = (
-                    quality_summary.get(verdict.decision, 0) + 1
-                )
-                op_after_verdict, side_ops = apply_verdict(op, verdict)
-                if op_after_verdict is None:
-                    if verdict.decision == "downgrade_to_evidence":
-                        result = await _apply_evidence_downgrade(
-                            op,
-                            conn,
-                            tenant_id=diff.tenant_id,
-                            cause_event_id=trigger_cause_event_id,
-                            verdict=verdict,
-                            preferred_model_id=(
-                                recon_result.matched_model_id
-                                if recon_result is not None
-                                else None
-                            ),
-                        )
-                        if gid is not None:
-                            result["summary"]["split_group_id"] = gid
-                        ops_summary["claim_ops"].append(result["summary"])
-                        state_changes_emitted += result.get("state_changes", 0)
-                        continue
-                    # rejected or downgraded — record and skip apply.
-                    ops_summary["claim_ops"].append({
-                        "op": "skip",
-                        "reason": f"quality_gate_{verdict.decision}",
-                        "quality_verdict": {
-                            "decision": verdict.decision,
-                            "atomicity": verdict.atomicity_score,
-                            "durability": verdict.durability_score,
-                            "kind_fit": verdict.kind_fit_score,
-                            "overall": verdict.overall_score,
-                            "rejection_reasons": verdict.rejection_reasons,
-                        },
-                        "split_group_id": gid,
-                    })
-                    continue
-                op = op_after_verdict
-                # side_ops currently empty (evidence path unwired); future
-                # evidence emission would loop them through _apply_claim_op.
-
-        if gid is None and _should_absorb_near_duplicate(op, recon_result, verdict):
-            result = await _apply_near_duplicate_absorption(
-                op,
-                conn,
-                tenant_id=diff.tenant_id,
-                cause_event_id=trigger_cause_event_id,
-                verdict=verdict,
-                recon_result=recon_result,
-            )
-            if gid is not None:
-                result["summary"]["split_group_id"] = gid
-            ops_summary["claim_ops"].append(result["summary"])
-            state_changes_emitted += result.get("state_changes", 0)
-            continue
-
-        if op.op == "insert" and _entry_is_situation(op.entry):
-            result = await _coalesce_same_event_situation_insert(
-                op,
-                conn,
-                tenant_id=diff.tenant_id,
-                cause_event_id=trigger_cause_event_id,
-            )
-            if result is not None:
-                if recon_result is not None and recon_result.decision != "skipped":
-                    result["summary"]["reconcile_decision"] = recon_result.decision
-                if verdict is not None:
-                    result["summary"]["quality_decision"] = verdict.decision
-                    result["summary"]["quality_overall"] = verdict.overall_score
-                if gid is not None:
-                    result["summary"]["split_group_id"] = gid
-                ops_summary["claim_ops"].append(result["summary"])
-                if result.get("model_id") is not None:
-                    applied_model_ids.append(result["model_id"])
-                state_changes_emitted += result.get("state_changes", 0)
-                continue
-
-        # When the reconciler converted an insert into an update, the
-        # audit chain should record the transition as
-        # 'reconciliation_merge' rather than the default 'field_update'
-        # / 'confidence_update'. Thread the override down.
-        is_recon_merge = (
-            recon_result is not None
-            and recon_result.decision == "auto_merge"
-            and recon_result.replacement_op is not None
-        )
-        result = await _apply_claim_op(
-            op, conn, models_repo, diff.tenant_id,
-            cause_event_id=trigger_cause_event_id,
-            audit_cause_override=(
-                "reconciliation_merge" if is_recon_merge else None
-            ),
-        )
-        # Annotate the per-op summary with reconcile + quality context.
-        if recon_result is not None and recon_result.decision != "skipped":
-            result["summary"]["reconcile_decision"] = recon_result.decision
-            if recon_result.matched_model_id is not None:
-                result["summary"]["reconcile_matched_model_id"] = (
-                    str(recon_result.matched_model_id)
-                )
-            if recon_result.cosine_similarity is not None:
-                result["summary"]["reconcile_cosine"] = (
-                    recon_result.cosine_similarity
-                )
-        if verdict is not None:
-            result["summary"]["quality_decision"] = verdict.decision
-            result["summary"]["quality_overall"] = verdict.overall_score
-        if gid is not None:
-            result["summary"]["split_group_id"] = gid
-        ops_summary["claim_ops"].append(result["summary"])
-        if result.get("model_id") is not None:
-            applied_model_ids.append(result["model_id"])
-            # Track this atomic ID for situation member patching.
-            if gid is not None and not is_pending_situation:
-                group_member_ids.setdefault(gid, []).append(result["model_id"])
-            if original_op.op == "insert" and isinstance(original_op.entry, dict):
-                for key in ("born_from_event_id", "model_id", "id"):
-                    placeholder_id = _coerce_uuid(original_op.entry.get(key))
-                    if placeholder_id is not None:
-                        pending_model_ids_by_event_id[placeholder_id] = (
-                            result["model_id"]
-                        )
-            if (
-                op.op == "insert"
-                and result["summary"].get("proposition_kind")
-                in _T2_REEVALUATION_KINDS
-            ):
-                _belief_updated_model_ids.append(result["model_id"])
-        state_changes_emitted += result.get("state_changes", 0)
-    ops_summary["reconcile_summary"] = reconcile_summary
-    ops_summary["quality_summary"] = quality_summary
-    ops_summary["split_summary"] = split_summary
-
-    # --- 2. edge_ops ----------------------------------------------
+async def _apply_edge_ops_for_diff(
+    *,
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    pending_model_ids_by_event_id: dict[UUID, UUID],
+    trigger_cause_event_id: UUID | None,
+    ops_summary: dict[str, Any],
+) -> None:
     for op in diff.edge_ops:
         op = _resolve_pending_edge_model_refs(op, pending_model_ids_by_event_id)
         if op.source_model_id == op.target_model_id:
-            ops_summary["edge_ops"].append({
-                "op": "skip",
-                "edge_kind": op.edge_kind,
-                "source_model_id": str(op.source_model_id),
-                "target_model_id": str(op.target_model_id),
-                "reason": "resolved_to_same_model_after_reconciliation",
-            })
+            ops_summary["edge_ops"].append(
+                {
+                    "op": "skip",
+                    "edge_kind": op.edge_kind,
+                    "source_model_id": str(op.source_model_id),
+                    "target_model_id": str(op.target_model_id),
+                    "reason": "resolved_to_same_model_after_reconciliation",
+                }
+            )
             continue
         try:
             result = await _apply_edge_op(
-                op, conn, diff.tenant_id,
+                op,
+                conn,
+                diff.tenant_id,
                 cause_event_id=trigger_cause_event_id,
             )
         except (EdgeRegistryError, ValidationError) as exc:
@@ -504,33 +288,53 @@ async def apply_diff(
                 failure_reason=reason,
                 original_op=op,
             )
+            await _record_apply_drop(
+                conn,
+                tenant_id=diff.tenant_id,
+                op_type="edge",
+                op_kind=op.op,
+                reason=reason,
+                message=message,
+            )
             ops_summary["apply_dropped_op_count"] += 1
             ops_summary["apply_dropped_op_errors"].append(message)
-            ops_summary["edge_ops"].append({
-                "op": "skip",
-                "edge_kind": op.edge_kind,
-                "source_model_id": str(op.source_model_id),
-                "target_model_id": str(op.target_model_id),
-                "reason": reason,
-                "message": message,
-            })
+            ops_summary["edge_ops"].append(
+                {
+                    "op": "skip",
+                    "edge_kind": op.edge_kind,
+                    "source_model_id": str(op.source_model_id),
+                    "target_model_id": str(op.target_model_id),
+                    "reason": reason,
+                    "message": message,
+                }
+            )
             continue
         ops_summary["edge_ops"].append(result["summary"])
 
-    # --- 3. ontology_gap_ops --------------------------------------
+
+async def _apply_ontology_gap_ops_for_diff(
+    *,
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    pending_model_ids_by_event_id: dict[UUID, UUID],
+    trigger_cause_event_id: UUID | None,
+    ops_summary: dict[str, Any],
+) -> None:
     for op in diff.ontology_gap_ops:
         op = _resolve_pending_ontology_gap_model_refs(
             op,
             pending_model_ids_by_event_id,
         )
         if op.source_model_id == op.target_model_id:
-            ops_summary["ontology_gap_ops"].append({
-                "op": "skip",
-                "proposed_edge_kind": op.proposed_edge_kind,
-                "source_model_id": str(op.source_model_id),
-                "target_model_id": str(op.target_model_id),
-                "reason": "resolved_to_same_model_after_reconciliation",
-            })
+            ops_summary["ontology_gap_ops"].append(
+                {
+                    "op": "skip",
+                    "proposed_edge_kind": op.proposed_edge_kind,
+                    "source_model_id": str(op.source_model_id),
+                    "target_model_id": str(op.target_model_id),
+                    "reason": "resolved_to_same_model_after_reconciliation",
+                }
+            )
             continue
         try:
             result = await _apply_ontology_gap_op(
@@ -550,20 +354,441 @@ async def apply_diff(
                 failure_reason=reason,
                 original_op=op,
             )
+            await _record_apply_drop(
+                conn,
+                tenant_id=diff.tenant_id,
+                op_type="ontology_gap",
+                op_kind=op.op,
+                reason=reason,
+                message=message,
+            )
             ops_summary["apply_dropped_op_count"] += 1
             ops_summary["apply_dropped_op_errors"].append(message)
-            ops_summary["ontology_gap_ops"].append({
-                "op": "skip",
-                "proposed_edge_kind": op.proposed_edge_kind,
-                "source_model_id": str(op.source_model_id),
-                "target_model_id": str(op.target_model_id),
-                "reason": reason,
-                "message": message,
-            })
+            ops_summary["ontology_gap_ops"].append(
+                {
+                    "op": "skip",
+                    "proposed_edge_kind": op.proposed_edge_kind,
+                    "source_model_id": str(op.source_model_id),
+                    "target_model_id": str(op.target_model_id),
+                    "reason": reason,
+                    "message": message,
+                }
+            )
             continue
         ops_summary["ontology_gap_ops"].append(result["summary"])
 
-    # --- 4. act_ops -----------------------------------------------
+
+async def _enqueue_belief_updated_for_applied_models(
+    *,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    model_ids: list[UUID],
+    source_observation_id: UUID | None,
+    parent_payload: dict[str, Any] | None,
+) -> None:
+    if not model_ids:
+        return
+    from services.reasoning.think.cascade import enqueue_t2_belief_updated
+
+    for model_id in model_ids:
+        await enqueue_t2_belief_updated(
+            conn,
+            tenant_id=tenant_id,
+            model_id=model_id,
+            source_observation_id=source_observation_id,
+            parent_payload=parent_payload,
+        )
+
+
+_T2_REEVALUATION_KINDS = {"prediction"}
+
+
+@dataclass
+class _ClaimOpsApplyResult:
+    applied_model_ids: list[UUID]
+    belief_updated_model_ids: list[UUID]
+    pending_model_ids_by_event_id: dict[UUID, UUID]
+    state_changes_emitted: int
+    expanded_claim_op_count: int
+    split_summary: dict[str, int]
+
+
+async def _apply_claim_ops_for_diff(
+    *,
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    models_repo: ModelsRepo,
+    trigger_cause_event_id: UUID | None,
+    trigger_evidence_ids: list[UUID],
+    think_run_id: UUID | None,
+    ops_summary: dict[str, Any],
+) -> _ClaimOpsApplyResult:
+    from .reconciler import reconcile_claim_op
+
+    reconcile_summary: dict[str, int] = {
+        "auto_merge": 0,
+        "human_review": 0,
+        "no_match": 0,
+        "skipped": 0,
+    }
+    quality_summary: dict[str, int] = {
+        "accept": 0,
+        "needs_review": 0,
+        "reject": 0,
+        "downgrade_to_evidence": 0,
+    }
+    expanded_ops, split_summary = _expand_claim_ops_for_splitter(
+        diff.claim_ops,
+        trigger_cause_event_id=trigger_cause_event_id,
+        trigger_evidence_ids=trigger_evidence_ids,
+    )
+    result = _ClaimOpsApplyResult(
+        applied_model_ids=[],
+        belief_updated_model_ids=[],
+        pending_model_ids_by_event_id={},
+        state_changes_emitted=0,
+        expanded_claim_op_count=len(expanded_ops),
+        split_summary=split_summary,
+    )
+    group_member_ids: dict[int, list[UUID]] = {}
+
+    for original_op, expanded_op, gid in expanded_ops:
+        await _apply_one_expanded_claim_op(
+            original_op=original_op,
+            expanded_op=expanded_op,
+            split_group_id=gid,
+            diff=diff,
+            conn=conn,
+            models_repo=models_repo,
+            trigger_cause_event_id=trigger_cause_event_id,
+            trigger_evidence_ids=trigger_evidence_ids,
+            think_run_id=think_run_id,
+            reconcile_claim_op=reconcile_claim_op,
+            reconcile_summary=reconcile_summary,
+            quality_summary=quality_summary,
+            group_member_ids=group_member_ids,
+            ops_summary=ops_summary,
+            result=result,
+        )
+
+    ops_summary["reconcile_summary"] = reconcile_summary
+    ops_summary["quality_summary"] = quality_summary
+    ops_summary["split_summary"] = split_summary
+    return result
+
+
+async def _apply_one_expanded_claim_op(
+    *,
+    original_op: ClaimOp,
+    expanded_op: ClaimOp,
+    split_group_id: int | None,
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    models_repo: ModelsRepo,
+    trigger_cause_event_id: UUID | None,
+    trigger_evidence_ids: list[UUID],
+    think_run_id: UUID | None,
+    reconcile_claim_op: Any,
+    reconcile_summary: dict[str, int],
+    quality_summary: dict[str, int],
+    group_member_ids: dict[int, list[UUID]],
+    ops_summary: dict[str, Any],
+    result: _ClaimOpsApplyResult,
+) -> None:
+    op = expanded_op
+    recon_result = None
+    verdict = None
+    is_pending_situation = _patch_pending_situation_members(
+        op=op,
+        split_group_id=split_group_id,
+        group_member_ids=group_member_ids,
+        ops_summary=ops_summary,
+    )
+    if is_pending_situation is None:
+        return
+
+    if op.op == "insert":
+        recon_result = await reconcile_claim_op(
+            op,
+            conn,
+            tenant_id=diff.tenant_id,
+            trigger_id=diff.trigger_ref,
+            think_run_id=think_run_id,
+        )
+        reconcile_summary[recon_result.decision] += 1
+        if recon_result.replacement_op is not None:
+            op = recon_result.replacement_op
+        else:
+            verdict = score_quality(
+                op,
+                QualityContext(
+                    reconcile_result=recon_result,
+                    trigger_kind=getattr(diff.trigger_ref, "kind", None),
+                    tenant_id=diff.tenant_id,
+                ),
+            )
+            quality_summary[verdict.decision] = (
+                quality_summary.get(verdict.decision, 0) + 1
+            )
+            op_after_verdict, side_ops = apply_verdict(op, verdict)
+            _ = side_ops
+            if op_after_verdict is None:
+                await _record_rejected_or_downgraded_claim_op(
+                    op=op,
+                    conn=conn,
+                    tenant_id=diff.tenant_id,
+                    trigger_cause_event_id=trigger_cause_event_id,
+                    trigger_evidence_ids=trigger_evidence_ids,
+                    verdict=verdict,
+                    recon_result=recon_result,
+                    split_group_id=split_group_id,
+                    ops_summary=ops_summary,
+                    result=result,
+                )
+                return
+            op = op_after_verdict
+
+    if split_group_id is None and _should_absorb_near_duplicate(
+        op, recon_result, verdict
+    ):
+        apply_result = await _apply_near_duplicate_absorption(
+            op,
+            conn,
+            tenant_id=diff.tenant_id,
+            cause_event_id=trigger_cause_event_id,
+            trigger_supporting_event_ids=trigger_evidence_ids,
+            verdict=verdict,
+            recon_result=recon_result,
+        )
+        ops_summary["claim_ops"].append(apply_result["summary"])
+        result.state_changes_emitted += apply_result.get("state_changes", 0)
+        return
+
+    if op.op == "insert" and _entry_is_situation(op.entry):
+        apply_result = await _coalesce_same_event_situation_insert(
+            op,
+            conn,
+            tenant_id=diff.tenant_id,
+            cause_event_id=trigger_cause_event_id,
+            trigger_supporting_event_ids=trigger_evidence_ids,
+        )
+        if apply_result is not None:
+            _annotate_claim_result_summary(
+                apply_result["summary"],
+                recon_result=recon_result,
+                verdict=verdict,
+                split_group_id=split_group_id,
+            )
+            ops_summary["claim_ops"].append(apply_result["summary"])
+            if apply_result.get("model_id") is not None:
+                result.applied_model_ids.append(apply_result["model_id"])
+            result.state_changes_emitted += apply_result.get("state_changes", 0)
+            return
+
+    is_recon_merge = (
+        recon_result is not None
+        and recon_result.decision == "auto_merge"
+        and recon_result.replacement_op is not None
+    )
+    apply_result = await _apply_claim_op(
+        op,
+        conn,
+        models_repo,
+        diff.tenant_id,
+        cause_event_id=trigger_cause_event_id,
+        trigger_supporting_event_ids=trigger_evidence_ids,
+        audit_cause_override=("reconciliation_merge" if is_recon_merge else None),
+    )
+    _annotate_claim_result_summary(
+        apply_result["summary"],
+        recon_result=recon_result,
+        verdict=verdict,
+        split_group_id=split_group_id,
+    )
+    _record_claim_apply_result(
+        apply_result=apply_result,
+        original_op=original_op,
+        applied_op=op,
+        split_group_id=split_group_id,
+        is_pending_situation=is_pending_situation,
+        group_member_ids=group_member_ids,
+        ops_summary=ops_summary,
+        result=result,
+    )
+
+
+def _patch_pending_situation_members(
+    *,
+    op: ClaimOp,
+    split_group_id: int | None,
+    group_member_ids: dict[int, list[UUID]],
+    ops_summary: dict[str, Any],
+) -> bool | None:
+    is_pending_situation = (
+        op.op == "insert"
+        and isinstance(op.entry, dict)
+        and op.entry.get("member_model_pending") is True
+    )
+    if not is_pending_situation:
+        return False
+    members = (
+        group_member_ids.get(split_group_id, [])
+        if split_group_id is not None
+        else []
+    )
+    if not members:
+        ops_summary["claim_ops"].append(
+            {
+                "op": "skip",
+                "reason": "situation_skipped_no_atomic_members_after_quality_gate",
+                "split_group_id": split_group_id,
+            }
+        )
+        return None
+
+    deduped_members = list(dict.fromkeys(members))
+    if len(deduped_members) < 2:
+        ops_summary["claim_ops"].append(
+            {
+                "op": "skip",
+                "reason": "situation_skipped_insufficient_atomic_members_after_quality_gate",
+                "split_group_id": split_group_id,
+                "member_count": len(deduped_members),
+            }
+        )
+        return None
+
+    prop = op.entry.get("proposition") or {}
+    prop["member_model_ids"] = [str(uid) for uid in deduped_members]
+    op.entry["proposition"] = prop
+    op.entry.pop("member_model_pending", None)
+    op.entry.pop("split_reasons", None)
+    return True
+
+
+async def _record_rejected_or_downgraded_claim_op(
+    *,
+    op: ClaimOp,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    trigger_cause_event_id: UUID | None,
+    trigger_evidence_ids: list[UUID],
+    verdict: QualityVerdict,
+    recon_result: Any,
+    split_group_id: int | None,
+    ops_summary: dict[str, Any],
+    result: _ClaimOpsApplyResult,
+) -> None:
+    if verdict.decision == "downgrade_to_evidence":
+        apply_result = await _apply_evidence_downgrade(
+            op,
+            conn,
+            tenant_id=tenant_id,
+            cause_event_id=trigger_cause_event_id,
+            trigger_supporting_event_ids=trigger_evidence_ids,
+            verdict=verdict,
+            preferred_model_id=(
+                recon_result.matched_model_id if recon_result is not None else None
+            ),
+        )
+        if split_group_id is not None:
+            apply_result["summary"]["split_group_id"] = split_group_id
+        ops_summary["claim_ops"].append(apply_result["summary"])
+        result.state_changes_emitted += apply_result.get("state_changes", 0)
+        return
+
+    ops_summary["claim_ops"].append(
+        {
+            "op": "skip",
+            "reason": f"quality_gate_{verdict.decision}",
+            "quality_verdict": _quality_verdict_summary(verdict),
+            "split_group_id": split_group_id,
+        }
+    )
+
+
+def _annotate_claim_result_summary(
+    summary: dict[str, Any],
+    *,
+    recon_result: Any,
+    verdict: QualityVerdict | None,
+    split_group_id: int | None,
+) -> None:
+    if recon_result is not None and recon_result.decision != "skipped":
+        summary["reconcile_decision"] = recon_result.decision
+        if recon_result.matched_model_id is not None:
+            summary["reconcile_matched_model_id"] = str(recon_result.matched_model_id)
+        if recon_result.cosine_similarity is not None:
+            summary["reconcile_cosine"] = recon_result.cosine_similarity
+    if verdict is not None:
+        summary["quality_decision"] = verdict.decision
+        summary["quality_overall"] = verdict.overall_score
+    if split_group_id is not None:
+        summary["split_group_id"] = split_group_id
+
+
+def _record_claim_apply_result(
+    *,
+    apply_result: dict[str, Any],
+    original_op: ClaimOp,
+    applied_op: ClaimOp,
+    split_group_id: int | None,
+    is_pending_situation: bool,
+    group_member_ids: dict[int, list[UUID]],
+    ops_summary: dict[str, Any],
+    result: _ClaimOpsApplyResult,
+) -> None:
+    ops_summary["claim_ops"].append(apply_result["summary"])
+    model_id = apply_result.get("model_id")
+    if model_id is not None:
+        result.applied_model_ids.append(model_id)
+        if split_group_id is not None and not is_pending_situation:
+            group_member_ids.setdefault(split_group_id, []).append(model_id)
+        _record_pending_model_id_mappings(
+            original_op=original_op,
+            applied_op=applied_op,
+            model_id=model_id,
+            pending_model_ids_by_event_id=result.pending_model_ids_by_event_id,
+        )
+        if (
+            applied_op.op == "insert"
+            and apply_result["summary"].get("proposition_kind")
+            in _T2_REEVALUATION_KINDS
+        ):
+            result.belief_updated_model_ids.append(model_id)
+    result.state_changes_emitted += apply_result.get("state_changes", 0)
+
+
+def _record_pending_model_id_mappings(
+    *,
+    original_op: ClaimOp,
+    applied_op: ClaimOp,
+    model_id: UUID,
+    pending_model_ids_by_event_id: dict[UUID, UUID],
+) -> None:
+    if original_op.op != "insert" or not isinstance(original_op.entry, dict):
+        return
+    for entry_for_mapping in (
+        original_op.entry,
+        applied_op.entry if isinstance(applied_op.entry, dict) else None,
+    ):
+        if not isinstance(entry_for_mapping, dict):
+            continue
+        for key in ("born_from_event_id", "model_id", "id"):
+            placeholder_id = _coerce_uuid(entry_for_mapping.get(key))
+            if placeholder_id is not None:
+                pending_model_ids_by_event_id[placeholder_id] = model_id
+
+
+async def _apply_act_ops_for_diff(
+    *,
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    pending_model_ids_by_event_id: dict[UUID, UUID],
+    trigger_cause_event_id: UUID | None,
+    ops_summary: dict[str, Any],
+) -> int:
+    state_changes_emitted = 0
     for op in diff.act_ops:
         if op.confidence_basis in pending_model_ids_by_event_id:
             op = op.model_copy(
@@ -573,9 +798,45 @@ async def apply_diff(
                     ]
                 }
             )
+        if op.confidence_basis is not None and not await _model_id_exists(
+            conn,
+            tenant_id=diff.tenant_id,
+            model_id=op.confidence_basis,
+        ):
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.op,
+                op_type="act",
+                failure_reason="missing_confidence_basis",
+                original_op=op,
+            )
+            await _record_apply_drop(
+                conn,
+                tenant_id=diff.tenant_id,
+                op_type="act",
+                op_kind=op.op,
+                reason="missing_confidence_basis",
+                message=f"act_op {op.op}: confidence_basis model not found",
+            )
+            ops_summary["apply_dropped_op_count"] += 1
+            ops_summary["apply_dropped_op_errors"].append(
+                f"act_op {op.op}: confidence_basis model not found"
+            )
+            ops_summary["act_ops"].append(
+                {
+                    "op": "skip",
+                    "act_op": op.op,
+                    "reason": "missing_confidence_basis",
+                    "confidence_basis": str(op.confidence_basis),
+                }
+            )
+            continue
         try:
             result = await _apply_act_op(
-                op, conn, diff.tenant_id,
+                op,
+                conn,
+                diff.tenant_id,
                 cause_event_id=trigger_cause_event_id,
             )
         except (InvariantViolation, ValidationError) as exc:
@@ -589,23 +850,44 @@ async def apply_diff(
                 failure_reason=reason,
                 original_op=op,
             )
+            await _record_apply_drop(
+                conn,
+                tenant_id=diff.tenant_id,
+                op_type="act",
+                op_kind=op.op,
+                reason=reason,
+                message=message,
+            )
             ops_summary["apply_dropped_op_count"] += 1
             ops_summary["apply_dropped_op_errors"].append(message)
-            ops_summary["act_ops"].append({
-                "op": "skip",
-                "act_op": op.op,
-                "reason": reason,
-                "message": message,
-            })
+            ops_summary["act_ops"].append(
+                {
+                    "op": "skip",
+                    "act_op": op.op,
+                    "reason": reason,
+                    "message": message,
+                }
+            )
             continue
         ops_summary["act_ops"].append(result["summary"])
         state_changes_emitted += result.get("state_changes", 0)
+    return state_changes_emitted
 
-    # --- 5. resource_ops ------------------------------------------
+
+async def _apply_resource_ops_for_diff(
+    *,
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    trigger_cause_event_id: UUID | None,
+    ops_summary: dict[str, Any],
+) -> int:
+    state_changes_emitted = 0
     for op in diff.resource_ops:
         try:
             result = await _apply_resource_op(
-                op, conn, diff.tenant_id,
+                op,
+                conn,
+                diff.tenant_id,
                 cause_event_id=trigger_cause_event_id,
             )
         except ValidationError as exc:
@@ -619,35 +901,152 @@ async def apply_diff(
                 failure_reason=reason,
                 original_op=op,
             )
+            await _record_apply_drop(
+                conn,
+                tenant_id=diff.tenant_id,
+                op_type="resource",
+                op_kind=op.op,
+                reason=reason,
+                message=message,
+            )
             ops_summary["apply_dropped_op_count"] += 1
             ops_summary["apply_dropped_op_errors"].append(message)
-            ops_summary["resource_ops"].append({
-                "op": "skip",
-                "resource_op": op.op,
-                "reason": reason,
-                "message": message,
-            })
+            ops_summary["resource_ops"].append(
+                {
+                    "op": "skip",
+                    "resource_op": op.op,
+                    "reason": reason,
+                    "message": message,
+                }
+            )
             continue
         ops_summary["resource_ops"].append(result["summary"])
         state_changes_emitted += result.get("state_changes", 0)
+    return state_changes_emitted
+
+
+async def apply_diff(
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    trigger_kind: str,
+    trigger_cause_event_id: UUID | None = None,
+    *,
+    models_repo: ModelsRepo | None = None,
+    think_run_id: UUID | None = None,
+    parent_cascade_payload: dict[str, Any] | None = None,
+    trigger_supporting_event_ids: list[UUID] | tuple[UUID, ...] | None = None,
+) -> dict[str, Any]:
+    """
+    Apply a ValidatedDiff inside `conn`'s transaction. The caller MUST
+    have opened the transaction (typically via `async with
+    conn.transaction():`).
+
+    Region lock: acquired here, derived from the diff itself. Two diffs
+    that touch the same (tenant, scope) tuple serialize on the same
+    advisory lock. Re-entrant within a transaction, so the reason.py
+    path (which also acquires a broader retrieval-region lock) is
+    unaffected.
+
+    Returns a summary dict used for observability:
+      { "claim_ops": N, "act_ops": N, "resource_ops": N,
+        "applied_model_ids": [...], "state_changes_emitted": N,
+        "diff_hash": "..." }
+
+    Idempotency: inserts into applied_triggers with outcome='pending'
+    FIRST. Raises AlreadyAppliedError if the trigger_id already has a
+    row — the caller handles that path. The INSERT is also guarded
+    against UniqueViolationError so that a race between the pre-check
+    and the insert (only possible when callers somehow bypass the region
+    lock) still surfaces as AlreadyAppliedError, not as a raw asyncpg
+    error.
+    """
+    diff_hash = await _prepare_apply_transaction(diff, conn, trigger_kind)
+
+    applied_model_ids: list[UUID] = []
+    state_changes_emitted = 0
+    ops_summary: dict[str, Any] = {
+        "claim_ops": [],
+        "edge_ops": [],
+        "ontology_gap_ops": [],
+        "act_ops": [],
+        "resource_ops": [],
+        "synthesis_decisions": summarize_synthesis_decisions(diff),
+        "diff_hash": diff_hash,
+        "apply_dropped_op_count": 0,
+        "apply_dropped_op_errors": [],
+    }
+    pending_model_ids_by_event_id: dict[UUID, UUID] = {}
+    trigger_evidence_ids = _merge_event_ids(
+        trigger_supporting_event_ids or (),
+        (trigger_cause_event_id,) if trigger_cause_event_id is not None else (),
+    )
+
+    if models_repo is None:
+        models_repo = ModelsRepo(pool=None)  # type: ignore[arg-type]
+
+    # --- 1. claim_ops ---------------------------------------------
+    claim_result = await _apply_claim_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        models_repo=models_repo,
+        trigger_cause_event_id=trigger_cause_event_id,
+        trigger_evidence_ids=trigger_evidence_ids,
+        think_run_id=think_run_id,
+        ops_summary=ops_summary,
+    )
+    applied_model_ids = claim_result.applied_model_ids
+    pending_model_ids_by_event_id = claim_result.pending_model_ids_by_event_id
+    state_changes_emitted = claim_result.state_changes_emitted
+
+    # --- 2. edge_ops ----------------------------------------------
+    await _apply_edge_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
+    )
+
+    # --- 3. ontology_gap_ops --------------------------------------
+    await _apply_ontology_gap_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
+    )
+
+    # --- 4. act_ops -----------------------------------------------
+    state_changes_emitted += await _apply_act_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
+    )
+
+    # --- 5. resource_ops ------------------------------------------
+    state_changes_emitted += await _apply_resource_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
+    )
 
     # --- 5. Enqueue T2:belief_updated for each new state/concern model ----
-    if _belief_updated_model_ids:
-        from services.reasoning.think.cascade import enqueue_t2_belief_updated
-        for mid in _belief_updated_model_ids:
-            await enqueue_t2_belief_updated(
-                conn,
-                tenant_id=diff.tenant_id,
-                model_id=mid,
-                source_observation_id=trigger_cause_event_id,
-                parent_payload=parent_cascade_payload,
-            )
+    await _enqueue_belief_updated_for_applied_models(
+        conn=conn,
+        tenant_id=diff.tenant_id,
+        model_ids=claim_result.belief_updated_model_ids,
+        source_observation_id=trigger_cause_event_id,
+        parent_payload=parent_cascade_payload,
+    )
 
     # --- 6. Mark applied_triggers success (still in same tx) ------
     ops_summary["memory_aggregation"] = _summarize_memory_aggregation(
         ops_summary,
         original_claim_op_count=len(diff.claim_ops),
-        expanded_claim_op_count=len(expanded_ops),
+        expanded_claim_op_count=claim_result.expanded_claim_op_count,
     )
 
     await conn.execute(
@@ -711,13 +1110,11 @@ async def _emit_valid_diff_outcome_events(
         return
     ctx_meta = dict(getattr(ctx, "metadata", {}) or {})
     primitives = [
-        str(p) for p in (ctx_meta.get("question_primitives") or [])
-        if p is not None
+        str(p) for p in (ctx_meta.get("question_primitives") or []) if p is not None
     ]
     default_primitive = primitives[0] if primitives else None
     entities = [
-        str(e) for e in (ctx_meta.get("entities") or [])
-        if e is not None and str(e)
+        str(e) for e in (ctx_meta.get("entities") or []) if e is not None and str(e)
     ]
     signal_type = ctx_meta.get("signal_type") or ctx_meta.get("trigger_kind")
 
@@ -759,17 +1156,20 @@ async def _emit_valid_diff_outcome_events(
                     "entities": entities,
                     "question_primitive": default_primitive,
                     "signature": {
-                        k: v for k, v in {
+                        k: v
+                        for k, v in {
                             "signal_type": signal_type,
                             "entities": entities,
                             "question_primitive": default_primitive,
-                        }.items() if v
+                        }.items()
+                        if v
                     },
                 },
                 ctx=ctx,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
             import structlog
+
             structlog.get_logger(__name__).warning(
                 "sage_trace.node_event_failed",
                 model_id=str(mid),
@@ -794,8 +1194,9 @@ async def _emit_valid_diff_outcome_events(
             list(node_ids),
         )
     except Exception as exc:  # noqa: BLE001 — best-effort; tolerate
-                                # missing/renamed table in test DBs
+        # missing/renamed table in test DBs
         import structlog
+
         structlog.get_logger(__name__).warning(
             "sage_trace.path_lookup_failed",
             error=str(exc),
@@ -822,19 +1223,24 @@ async def _emit_valid_diff_outcome_events(
                     "entities": entities,
                     "question_primitive": default_primitive,
                     "signature": {
-                        k: v for k, v in {
+                        k: v
+                        for k, v in {
                             "signal_type": signal_type,
                             "entities": entities,
                             "question_primitive": default_primitive,
-                        }.items() if v
+                        }.items()
+                        if v
                     },
                 },
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
             import structlog
+
             structlog.get_logger(__name__).warning(
                 "sage_trace.path_event_failed",
-                source=src, target=tgt, edge_kind=kind,
+                source=src,
+                target=tgt,
+                edge_kind=kind,
                 error=str(exc),
             )
 
@@ -999,6 +1405,85 @@ _ALLOWED_MODEL_UPDATE_COLUMNS = {
 }
 
 
+@dataclass(slots=True)
+class _ClaimUpdatePreparation:
+    changes: dict[str, Any]
+    changed_fields_for_summary: set[str]
+    situation_merge_payload: dict[str, Any] | None = None
+    resolution_update_dropped: bool = False
+
+
+def _merge_event_ids(*groups: Any) -> list[UUID]:
+    merged: list[UUID] = []
+    seen: set[UUID] = set()
+    for group in groups:
+        if group is None:
+            continue
+        values = group if isinstance(group, (list, tuple, set)) else (group,)
+        for value in values:
+            uid = _coerce_uuid_or_none(value)
+            if uid is None or uid in seen:
+                continue
+            seen.add(uid)
+            merged.append(uid)
+    return merged
+
+
+async def _model_id_exists(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+) -> bool:
+    return bool(
+        await conn.fetchval(
+            """
+            SELECT 1
+            FROM models
+            WHERE tenant_id = $1
+              AND id = $2
+            """,
+            tenant_id,
+            model_id,
+        )
+    )
+
+
+def _with_claim_evidence_defaults(
+    op: ClaimOp,
+    *,
+    trigger_cause_event_id: UUID | None,
+    trigger_supporting_event_ids: list[UUID],
+) -> ClaimOp:
+    if op.op != "insert" or not isinstance(op.entry, dict):
+        return op
+    entry = dict(op.entry)
+    prop = dict(entry.get("proposition") or {})
+    event_ids = _merge_event_ids(
+        entry.get("supporting_event_ids"),
+        prop.get("evidence_event_ids"),
+        entry.get("born_from_event_id"),
+        trigger_cause_event_id,
+        trigger_supporting_event_ids,
+    )
+    if not event_ids:
+        return op
+    entry.setdefault("born_from_event_id", event_ids[0])
+    entry["supporting_event_ids"] = event_ids
+    if prop and (
+        prop.get("claim_role") == "situation"
+        or prop.get("legacy_kind") == "situation"
+        or prop.get("kind") == "situation"
+        or prop.get("claim_role") == "hypothesis"
+    ):
+        prop["evidence_event_ids"] = [
+            str(uid)
+            for uid in _merge_event_ids(prop.get("evidence_event_ids"), event_ids)
+        ]
+        entry["proposition"] = prop
+    return op.model_copy(update={"entry": entry})
+
+
 def _coerce_update_value(column: str, value: Any) -> Any:
     """Coerce an LLM-provided model-update value to the column's type.
 
@@ -1039,24 +1524,41 @@ def _coerce_update_value(column: str, value: Any) -> Any:
             return int(value)
         except (TypeError, ValueError) as exc:
             raise ValidationError(
-                f"apply_claim_op update: {column} must be an integer; "
-                f"got {value!r}"
+                f"apply_claim_op update: {column} must be an integer; " f"got {value!r}"
             ) from exc
     if column == "evidential_weight":
         try:
             return float(value)
         except (TypeError, ValueError) as exc:
             raise ValidationError(
-                f"apply_claim_op update: {column} must be a number; "
-                f"got {value!r}"
+                f"apply_claim_op update: {column} must be a number; " f"got {value!r}"
             ) from exc
     return value
 
 
 _EVIDENCE_TOKEN_STOPWORDS = {
-    "about", "after", "also", "and", "are", "because", "been", "but",
-    "call", "case", "customer", "from", "has", "have", "into", "now",
-    "that", "the", "their", "this", "with", "without",
+    "about",
+    "after",
+    "also",
+    "and",
+    "are",
+    "because",
+    "been",
+    "but",
+    "call",
+    "case",
+    "customer",
+    "from",
+    "has",
+    "have",
+    "into",
+    "now",
+    "that",
+    "the",
+    "their",
+    "this",
+    "with",
+    "without",
 }
 
 
@@ -1066,6 +1568,7 @@ async def _apply_evidence_downgrade(
     *,
     tenant_id: UUID,
     cause_event_id: UUID | None,
+    trigger_supporting_event_ids: list[UUID],
     verdict: QualityVerdict,
     preferred_model_id: UUID | None = None,
 ) -> dict[str, Any]:
@@ -1078,10 +1581,13 @@ async def _apply_evidence_downgrade(
     original Observation as the durable record and avoid creating memory mass.
     """
     entry = dict(op.entry or {})
-    source_event_id = (
-        _coerce_uuid_or_none(entry.get("born_from_event_id"))
-        or cause_event_id
+    source_event_ids = _merge_event_ids(
+        entry.get("supporting_event_ids"),
+        entry.get("born_from_event_id"),
+        cause_event_id,
+        trigger_supporting_event_ids,
     )
+    source_event_id = source_event_ids[0] if source_event_ids else None
     anchor_id = await _select_evidence_anchor_model(
         conn,
         tenant_id=tenant_id,
@@ -1106,6 +1612,7 @@ async def _apply_evidence_downgrade(
         tenant_id=tenant_id,
         model_id=anchor_id,
         source_event_id=source_event_id,
+        supporting_event_ids=source_event_ids,
         entry=entry,
         verdict=verdict,
     )
@@ -1133,11 +1640,13 @@ async def _select_evidence_anchor_model(
             return row["id"]
 
     scope_actors = [
-        uid for raw in (entry.get("scope_actors") or [])
+        uid
+        for raw in (entry.get("scope_actors") or [])
         if (uid := _coerce_uuid_or_none(raw)) is not None
     ]
     scope_entities = [
-        ent for ent in (entry.get("scope_entities") or [])
+        ent
+        for ent in (entry.get("scope_entities") or [])
         if isinstance(ent, dict) and ent.get("id") is not None
     ]
     if not scope_actors and not scope_entities:
@@ -1180,7 +1689,8 @@ async def _select_evidence_anchor_model(
     for row in rows:
         row_prop = _json_obj(row["proposition"])
         row_text = " ".join(
-            part for part in (
+            part
+            for part in (
                 str(row["natural"] or ""),
                 json.dumps(row_prop, sort_keys=True, default=str),
             )
@@ -1220,6 +1730,7 @@ async def _append_observe_reading(
     tenant_id: UUID,
     model_id: UUID,
     source_event_id: UUID | None,
+    supporting_event_ids: list[UUID],
     entry: dict[str, Any],
     verdict: QualityVerdict,
 ) -> dict[str, Any]:
@@ -1252,8 +1763,7 @@ async def _append_observe_reading(
         "at": now.isoformat(),
         "source_event_id": str(source_event_id) if source_event_id else None,
         "confidence": float(
-            entry.get("confidence", entry.get("confidence_at_assertion", 0.5))
-            or 0.5
+            entry.get("confidence", entry.get("confidence_at_assertion", 0.5)) or 0.5
         ),
         "natural": text[:500],
         "quality_decision": verdict.decision,
@@ -1261,12 +1771,14 @@ async def _append_observe_reading(
     existing_readings = _json_list(row["signal_readings"])
     existing_readings.append(reading)
 
-    supporting_event_ids = [
-        uid for raw in (row["supporting_event_ids"] or [])
+    merged_supporting_event_ids = [
+        uid
+        for raw in (row["supporting_event_ids"] or [])
         if (uid := _coerce_uuid_or_none(raw)) is not None
     ]
-    if source_event_id is not None and source_event_id not in supporting_event_ids:
-        supporting_event_ids.append(source_event_id)
+    for event_id in supporting_event_ids:
+        if event_id not in merged_supporting_event_ids:
+            merged_supporting_event_ids.append(event_id)
 
     previous_state = {
         "signal_readings": _audit_jsonable(row["signal_readings"]),
@@ -1285,7 +1797,7 @@ async def _append_observe_reading(
         tenant_id,
         model_id,
         json.dumps(existing_readings, default=str),
-        supporting_event_ids,
+        merged_supporting_event_ids,
         evidential_weight,
     )
 
@@ -1332,7 +1844,7 @@ async def _append_observe_reading(
         cause_type=CAUSE_FIELD_UPDATE,
         new_state={
             "signal_readings": existing_readings,
-            "supporting_event_ids": [str(uid) for uid in supporting_event_ids],
+            "supporting_event_ids": [str(uid) for uid in merged_supporting_event_ids],
             "evidential_weight": evidential_weight,
         },
         previous_state=previous_state,
@@ -1379,7 +1891,8 @@ def _should_absorb_near_duplicate(
         prop,
         natural=str(op.entry.get("natural") or ""),
         scope_entities=[
-            ent for ent in (op.entry.get("scope_entities") or [])
+            ent
+            for ent in (op.entry.get("scope_entities") or [])
             if isinstance(ent, dict)
         ],
     )
@@ -1414,6 +1927,7 @@ async def _apply_near_duplicate_absorption(
     *,
     tenant_id: UUID,
     cause_event_id: UUID | None,
+    trigger_supporting_event_ids: list[UUID],
     verdict: QualityVerdict | None,
     recon_result: Any,
 ) -> dict[str, Any]:
@@ -1429,10 +1943,13 @@ async def _apply_near_duplicate_absorption(
         }
 
     entry = dict(op.entry or {})
-    source_event_id = (
-        _coerce_uuid_or_none(entry.get("born_from_event_id"))
-        or cause_event_id
+    source_event_ids = _merge_event_ids(
+        entry.get("supporting_event_ids"),
+        entry.get("born_from_event_id"),
+        cause_event_id,
+        trigger_supporting_event_ids,
     )
+    source_event_id = source_event_ids[0] if source_event_ids else None
     row = await conn.fetchrow(
         """
         SELECT signal_readings, supporting_event_ids, evidential_weight,
@@ -1462,8 +1979,7 @@ async def _apply_near_duplicate_absorption(
         "at": now.isoformat(),
         "source_event_id": str(source_event_id) if source_event_id else None,
         "confidence": float(
-            entry.get("confidence", entry.get("confidence_at_assertion", 0.5))
-            or 0.5
+            entry.get("confidence", entry.get("confidence_at_assertion", 0.5)) or 0.5
         ),
         "natural": text[:500],
         "reconcile_decision": getattr(recon_result, "decision", None),
@@ -1473,11 +1989,13 @@ async def _apply_near_duplicate_absorption(
     existing_readings = _json_list(row["signal_readings"])
     existing_readings.append(reading)
     supporting_event_ids = [
-        uid for raw in (row["supporting_event_ids"] or [])
+        uid
+        for raw in (row["supporting_event_ids"] or [])
         if (uid := _coerce_uuid_or_none(raw)) is not None
     ]
-    if source_event_id is not None and source_event_id not in supporting_event_ids:
-        supporting_event_ids.append(source_event_id)
+    for event_id in source_event_ids:
+        if event_id not in supporting_event_ids:
+            supporting_event_ids.append(event_id)
     evidential_weight = min(1.0, float(row["evidential_weight"] or 0.5) + 0.03)
     confirmed_count = int(row["confirmed_count"] or 0) + 1
 
@@ -1511,9 +2029,7 @@ async def _apply_near_duplicate_absorption(
         "natural": text[:1000],
         "proposition": _audit_jsonable(entry.get("proposition") or {}),
         "quality_verdict": (
-            _quality_verdict_summary(verdict)
-            if verdict is not None
-            else None
+            _quality_verdict_summary(verdict) if verdict is not None else None
         ),
         "reconcile": {
             "decision": getattr(recon_result, "decision", None),
@@ -1586,9 +2102,7 @@ async def _apply_near_duplicate_absorption(
             "reconcile_matched_model_id": str(model_id),
             "reconcile_cosine": getattr(recon_result, "cosine_similarity", None),
             "quality_decision": verdict.decision if verdict is not None else None,
-            "quality_overall": (
-                verdict.overall_score if verdict is not None else None
-            ),
+            "quality_overall": (verdict.overall_score if verdict is not None else None),
         },
         "model_id": model_id,
         "state_changes": 1,
@@ -1621,9 +2135,17 @@ def _evidence_entry_text(entry: dict[str, Any]) -> str:
     parts = [str(entry.get("natural") or "")]
     if isinstance(prop, dict):
         for key in (
-            "assertion", "summary", "claim", "nature", "event",
-            "assessment", "hypothesis_text", "observed_tendency",
-            "situation", "relationship_summary", "expected",
+            "assertion",
+            "summary",
+            "claim",
+            "nature",
+            "event",
+            "assessment",
+            "hypothesis_text",
+            "observed_tendency",
+            "situation",
+            "relationship_summary",
+            "expected",
         ):
             value = prop.get(key)
             if isinstance(value, str):
@@ -1700,29 +2222,30 @@ def _summarize_memory_aggregation(
     expanded_claim_op_count: int,
 ) -> dict[str, Any]:
     claim_ops = [
-        item for item in ops_summary.get("claim_ops", [])
-        if isinstance(item, dict)
+        item for item in ops_summary.get("claim_ops", []) if isinstance(item, dict)
     ]
     inserts = [item for item in claim_ops if item.get("op") == "insert"]
     updates = [item for item in claim_ops if item.get("op") == "update"]
     archives = [item for item in claim_ops if item.get("op") == "archive"]
     situation_updates = [
-        item for item in updates
-        if item.get("internal_situation_merge") is True
+        item for item in updates if item.get("internal_situation_merge") is True
     ]
     evidence_attachments = [
-        item for item in claim_ops
+        item
+        for item in claim_ops
         if item.get("op") == "downgrade_to_evidence"
         and item.get("decision") == "attached_to_existing_model"
     ]
     near_duplicate_absorptions = [
-        item for item in claim_ops
+        item
+        for item in claim_ops
         if item.get("op") == "absorb_near_duplicate"
         and item.get("decision") == "attached_to_matched_model"
     ]
     skipped = [item for item in claim_ops if item.get("op") == "skip"]
     situations = [
-        item for item in inserts
+        item
+        for item in inserts
         if item.get("claim_role") == "situation"
         or item.get("abstraction_level") == "composite"
     ]
@@ -1742,8 +2265,7 @@ def _summarize_memory_aggregation(
         "situation_model_inserts": len(situations),
         "situation_model_updates": len(situation_updates),
         "situation_member_additions": sum(
-            int(item.get("situation_members_added") or 0)
-            for item in situation_updates
+            int(item.get("situation_members_added") or 0) for item in situation_updates
         ),
         "model_updates": len(updates),
         "model_archives": len(archives),
@@ -1754,12 +2276,8 @@ def _summarize_memory_aggregation(
         "ontology_gap_ops": len(ops_summary.get("ontology_gap_ops") or []),
         "act_ops": len(ops_summary.get("act_ops") or []),
         "resource_ops": len(ops_summary.get("resource_ops") or []),
-        "new_model_pressure": (
-            len(inserts) / expanded if expanded else 0.0
-        ),
-        "absorption_ratio": (
-            non_insert_absorptions / expanded if expanded else 1.0
-        ),
+        "new_model_pressure": (len(inserts) / expanded if expanded else 0.0),
+        "absorption_ratio": (non_insert_absorptions / expanded if expanded else 1.0),
     }
 
 
@@ -1839,7 +2357,8 @@ async def _apply_situation_merge_payload(
     model_id: UUID,
     payload: dict[str, Any],
     cause_event_id: UUID | None,
-    audit_cause_override: str | None,
+    trigger_supporting_event_ids: list[UUID] | None = None,
+    audit_cause_override: str | None = None,
 ) -> dict[str, Any]:
     proposition = payload.get("proposition")
     if not isinstance(proposition, dict):
@@ -1872,7 +2391,8 @@ async def _apply_situation_merge_payload(
         }
 
     candidate_tags = [
-        str(tag) for tag in (payload.get("candidate_domain_tags") or [])
+        str(tag)
+        for tag in (payload.get("candidate_domain_tags") or [])
         if str(tag).strip()
     ]
     domain_tags = _merge_string_sequence(
@@ -1886,11 +2406,13 @@ async def _apply_situation_merge_payload(
         "supporting_event_ids": _audit_jsonable(row["supporting_event_ids"]),
     }
     supporting_event_ids = [
-        uid for raw in (row["supporting_event_ids"] or [])
+        uid
+        for raw in (row["supporting_event_ids"] or [])
         if (uid := _coerce_uuid_or_none(raw)) is not None
     ]
-    if cause_event_id is not None and cause_event_id not in supporting_event_ids:
-        supporting_event_ids.append(cause_event_id)
+    for event_id in _merge_event_ids(cause_event_id, trigger_supporting_event_ids):
+        if event_id not in supporting_event_ids:
+            supporting_event_ids.append(event_id)
     await conn.execute(
         """
         UPDATE models
@@ -1961,7 +2483,8 @@ async def _apply_situation_merge_payload(
     )
 
     added_members = [
-        str(raw) for raw in (payload.get("added_member_model_ids") or [])
+        str(raw)
+        for raw in (payload.get("added_member_model_ids") or [])
         if _coerce_uuid_or_none(raw) is not None
     ]
     return {
@@ -2010,12 +2533,16 @@ async def _coalesce_same_event_situation_insert(
     *,
     tenant_id: UUID,
     cause_event_id: UUID | None,
+    trigger_supporting_event_ids: list[UUID],
 ) -> dict[str, Any] | None:
     entry = dict(op.entry or {})
-    source_event_id = (
-        _coerce_uuid_or_none(entry.get("born_from_event_id"))
-        or cause_event_id
+    source_event_ids = _merge_event_ids(
+        entry.get("supporting_event_ids"),
+        entry.get("born_from_event_id"),
+        cause_event_id,
+        trigger_supporting_event_ids,
     )
+    source_event_id = source_event_ids[0] if source_event_ids else None
     if source_event_id is None:
         return None
     anchor = await _select_same_event_situation_anchor(
@@ -2027,9 +2554,9 @@ async def _coalesce_same_event_situation_insert(
     if anchor is None:
         return None
 
-    from .reconciler import _build_situation_merge_payload
+    from .reconciler_situation_merge import build_situation_merge_payload
 
-    payload = _build_situation_merge_payload(
+    payload = build_situation_merge_payload(
         entry=entry,
         best_row=anchor,
         source_event_id=source_event_id,
@@ -2043,6 +2570,7 @@ async def _coalesce_same_event_situation_insert(
         model_id=anchor["id"],
         payload=payload,
         cause_event_id=source_event_id,
+        trigger_supporting_event_ids=source_event_ids,
         audit_cause_override="reconciliation_merge",
     )
     return {
@@ -2091,8 +2619,7 @@ async def _select_same_event_situation_anchor(
         candidate_prop,
         natural=str(entry.get("natural") or ""),
         scope_entities=[
-            ent for ent in (entry.get("scope_entities") or [])
-            if isinstance(ent, dict)
+            ent for ent in (entry.get("scope_entities") or []) if isinstance(ent, dict)
         ],
     )
     candidate_text = _evidence_entry_text(entry)
@@ -2110,7 +2637,8 @@ async def _select_same_event_situation_anchor(
         if row_grammar.claim_role != "situation":
             continue
         row_text = " ".join(
-            part for part in (
+            part
+            for part in (
                 str(row["natural"] or ""),
                 json.dumps(row_prop, sort_keys=True, default=str),
             )
@@ -2121,10 +2649,7 @@ async def _select_same_event_situation_anchor(
         row_tags.update(str(tag) for tag in (row["domain_tags"] or []))
         if row_tags and candidate_tags and row_tags & candidate_tags:
             score += 0.20
-        if (
-            candidate_pressure
-            and row_prop.get("pressure_type") == candidate_pressure
-        ):
+        if candidate_pressure and row_prop.get("pressure_type") == candidate_pressure:
             score += 0.18
         if _scope_overlaps(
             entry.get("scope_actors") or [],
@@ -2152,11 +2677,13 @@ def _scope_overlaps(
     right_entities: Any,
 ) -> bool:
     left_actor_ids = {
-        uid for raw in (left_actors or [])
+        uid
+        for raw in (left_actors or [])
         if (uid := _coerce_uuid_or_none(raw)) is not None
     }
     right_actor_ids = {
-        uid for raw in (right_actors or [])
+        uid
+        for raw in (right_actors or [])
         if (uid := _coerce_uuid_or_none(raw)) is not None
     }
     if left_actor_ids and right_actor_ids and left_actor_ids & right_actor_ids:
@@ -2172,7 +2699,9 @@ def _scope_overlaps(
         for ent in (right_entities or [])
         if isinstance(ent, dict) and ent.get("id")
     }
-    return bool(left_entity_keys and right_entity_keys and left_entity_keys & right_entity_keys)
+    return bool(
+        left_entity_keys and right_entity_keys and left_entity_keys & right_entity_keys
+    )
 
 
 async def _apply_claim_op(
@@ -2182,283 +2711,563 @@ async def _apply_claim_op(
     tenant_id: UUID,
     *,
     cause_event_id: UUID | None,
+    trigger_supporting_event_ids: list[UUID],
     audit_cause_override: str | None = None,
 ) -> dict[str, Any]:
     if op.op == "insert":
-        entry = dict(op.entry or {})
-        # Ensure required ModelCreate fields.
-        entry.setdefault("tenant_id", tenant_id)
-        # Backfill confidence_at_assertion if missing.
-        entry.setdefault("confidence_at_assertion", entry.get("confidence", 0.5))
-        # Backfill born_from_event_id from the triggering observation if the
-        # LLM didn't echo it (the prompt asks the LLM to populate it, but
-        # DeepSeek/OpenAI providers sometimes drop it). We also strip
-        # LLM-invented fields that aren't part of ModelCreate.
-        if "born_from_event_id" not in entry and cause_event_id is not None:
-            entry["born_from_event_id"] = cause_event_id
-        for stray in ("title", "description", "id", "model_id"):
-            entry.pop(stray, None)
-        ensure_situation_compositional_defaults(entry)
-        # scope_temporal is required; default to an open-ended present window.
-        if "scope_temporal" not in entry:
-            entry["scope_temporal"] = {
-                "valid_from": datetime.now(timezone.utc).isoformat(),
-                "valid_until": None,
-            }
-        # Never insert an active Model with a zero embedding. If the LLM did
-        # not provide one, use a deterministic lexical fallback so semantic
-        # retrieval/reconciliation/topology have a usable anchor until a
-        # production embedding backfill refreshes it.
-        if "embedding" not in entry or is_zero_embedding(entry.get("embedding")):
-            entry["embedding"] = deterministic_text_embedding(
-                str(entry.get("natural") or entry.get("proposition") or "")
-            )
-        proposed = ModelCreate.model_validate(entry)
-        row = await models_repo.insert(
-            proposed,
-            conn=conn,
-            apply_confidence_calibration=False,
-        )
-        return {
-            "summary": {
-                "op": "insert",
-                "model_id": str(row.id),
-                "confidence": row.confidence,
-                "proposition_kind": row.proposition_kind,
-                "claim_role": row.claim_role,
-                "abstraction_level": row.abstraction_level,
-                "domain_tags": list(row.domain_tags or []),
-            },
-            "model_id": row.id,
-            "state_changes": 1,  # insert emits a state_change
-        }
-    if op.op == "update":
-        if op.model_id is None or not op.changes:
-            raise ValidationError("apply_claim_op update: bad op")
-        raw_changes = dict(op.changes)
-        situation_merge_payload = None
-        if audit_cause_override == "reconciliation_merge":
-            maybe_payload = raw_changes.pop("__situation_merge", None)
-            if isinstance(maybe_payload, dict):
-                situation_merge_payload = maybe_payload
-        changes = {
-            k: _coerce_update_value(k, v) for k, v in raw_changes.items()
-            if k in _ALLOWED_MODEL_UPDATE_COLUMNS
-        }
-        resolution_update_dropped = False
-        resolution_keys = {"resolved_at", "resolution_outcome"} & set(changes)
-        if resolution_keys and resolution_keys != {"resolved_at", "resolution_outcome"}:
-            changes.pop("resolved_at", None)
-            changes.pop("resolution_outcome", None)
-            resolution_update_dropped = True
-        if not changes and situation_merge_payload is None:
-            return {
-                "summary": {
-                    "op": "skip",
-                    "reason": (
-                        "inconsistent_resolution_update"
-                        if resolution_update_dropped
-                        else "no_allowed_columns"
-                    ),
-                    "model_id": str(op.model_id),
-                },
-                "model_id": None,
-                "state_changes": 0,
-            }
-        emitted = 0
-        changed_fields_for_summary = set(changes.keys())
-        if "confidence" in changes:
-            # bulk path handles emit_state_change + audit cleanly. Pass
-            # the audit override so a reconciler-substituted update is
-            # recorded as 'reconciliation_merge' rather than the default
-            # 'confidence_update'.
-            await models_repo.bulk_confidence_update(
-                {op.model_id: float(changes["confidence"])},
-                cause_event_id=cause_event_id,
-                audit_cause_override=audit_cause_override,
-                conn=conn,
-            )
-            changes.pop("confidence")
-            emitted = 1
-        # For remaining columns, build an UPDATE + emit a state_change
-        # + emit an audit_events row. We snapshot the touched columns
-        # before and after so the audit chain captures the diff.
-        if changes:
-            from .audit import (
-                CAUSE_FIELD_UPDATE,
-                emit_audit_event,
-            )
-
-            # Snapshot pre-update values for the touched columns. None
-            # of the _ALLOWED_MODEL_UPDATE_COLUMNS are SQL-reserved.
-            cols_csv = ", ".join(changes.keys())
-            pre_snapshot: dict[str, Any] = {}
-            pre_row = await conn.fetchrow(
-                f"SELECT {cols_csv} FROM models WHERE id = $1",
-                op.model_id,
-            )
-            if pre_row is not None:
-                for k in changes.keys():
-                    pre_snapshot[k] = _audit_jsonable(pre_row[k])
-            previous_signal_readings = (
-                pre_row["signal_readings"]
-                if pre_row is not None and "signal_readings" in changes
-                else None
-            )
-
-            set_clauses = []
-            params: list[Any] = []
-            i = 1
-            for k, v in changes.items():
-                # JSONB columns: pass a JSON string with ::jsonb cast.
-                if k in (
-                    "signal_readings",
-                ):
-                    set_clauses.append(f"{k} = ${i}::jsonb")
-                    params.append(json.dumps(v, default=str))
-                elif k in (
-                    "supporting_event_ids",
-                    "supporting_model_ids",
-                    "contributing_models",
-                ):
-                    set_clauses.append(f"{k} = ${i}::uuid[]")
-                    params.append(list(v) if isinstance(v, (list, tuple)) else [v])
-                elif k in ("last_confirmed_at", "resolved_at"):
-                    set_clauses.append(f"{k} = ${i}")
-                    params.append(_coerce_dt(v))
-                else:
-                    set_clauses.append(f"{k} = ${i}")
-                    params.append(v)
-                i += 1
-            params.append(op.model_id)
-            sql = (
-                f"UPDATE models SET {', '.join(set_clauses)} "
-                f"WHERE id = ${i}"
-            )
-            await conn.execute(sql, *params)
-
-            # S1 dual-write: mirror array changes to typed edges via
-            # the chokepoint helper. update_arrays=False because the
-            # UPDATE above already set the array columns; we just
-            # need to converge the typed edges with the new state.
-            # `instance_of` is not exposed as an LLM-controlled column
-            # — pattern back-links go through promote_pattern_candidate
-            # — so we only sync supports / contributes_to_resolution.
-            if (
-                "supporting_model_ids" in changes
-                or "contributing_models" in changes
-            ):
-                from services.domain.models.repo import _set_model_relations
-
-                await _set_model_relations(
-                    conn,
-                    model_id=op.model_id,
-                    tenant_id=tenant_id,
-                    detected_by="llm_explicit",
-                    supports=(
-                        list(changes["supporting_model_ids"])
-                        if "supporting_model_ids" in changes
-                        else None
-                    ),
-                    contributes_to=(
-                        list(changes["contributing_models"])
-                        if "contributing_models" in changes
-                        else None
-                    ),
-                    created_by_event_id=cause_event_id,
-                    update_arrays=False,
-                )
-
-            await emit_state_change(
-                conn,
-                kind="model_updated",
-                entity_id=op.model_id,
-                tenant_id=tenant_id,
-                cause_event_id=cause_event_id,
-                entity_kind="model",
-                metadata={"columns": sorted(list(changes.keys()))},
-            )
-
-            # Audit event: partial snapshots of just the touched fields.
-            new_state = {k: _audit_jsonable(v) for k, v in changes.items()}
-            await emit_audit_event(
-                conn,
-                model_id=op.model_id,
-                tenant_id=tenant_id,
-                cause_type=audit_cause_override or CAUSE_FIELD_UPDATE,
-                new_state=new_state,
-                previous_state=pre_snapshot or None,
-                cause_id=cause_event_id,
-                changed_fields=sorted(list(changes.keys())),
-            )
-            emitted += 1
-            if "signal_readings" in changes:
-                await _append_signal_readings_sidecar_delta(
-                    conn,
-                    tenant_id=tenant_id,
-                    model_id=op.model_id,
-                    previous_readings=previous_signal_readings,
-                    new_readings=changes["signal_readings"],
-                )
-        situation_merge_summary: dict[str, Any] | None = None
-        if situation_merge_payload is not None:
-            merge_result = await _apply_situation_merge_payload(
-                conn,
-                tenant_id=tenant_id,
-                model_id=op.model_id,
-                payload=situation_merge_payload,
-                cause_event_id=cause_event_id,
-                audit_cause_override=audit_cause_override,
-            )
-            emitted += merge_result["state_changes"]
-            situation_merge_summary = merge_result["summary"]
-            changed_fields_for_summary.update(
-                ("proposition", "domain_tags", "model_composition_members")
-            )
-        return {
-            "summary": {
-                "op": "update",
-                "model_id": str(op.model_id),
-                "changed": sorted(changed_fields_for_summary),
-                **({"claim_role": "situation"} if situation_merge_summary else {}),
-                **(
-                    {
-                        "internal_situation_merge": True,
-                        "situation_members_added": situation_merge_summary[
-                            "situation_members_added"
-                        ],
-                    }
-                    if situation_merge_summary
-                    else {}
-                ),
-                **(
-                    {"dropped_inconsistent_resolution_update": True}
-                    if resolution_update_dropped
-                    else {}
-                ),
-            },
-            "model_id": op.model_id,
-            "state_changes": emitted,
-        }
-    if op.op == "archive":
-        if op.model_id is None or not op.reason:
-            raise ValidationError("apply_claim_op archive: bad op")
-        await models_repo.archive(
-            op.model_id,
-            op.reason,  # type: ignore[arg-type]
+        return await _apply_claim_insert(
+            op,
+            conn,
+            models_repo,
+            tenant_id,
             cause_event_id=cause_event_id,
-            conn=conn,
+            trigger_supporting_event_ids=trigger_supporting_event_ids,
         )
-        return {
-            "summary": {
-                "op": "archive",
-                "model_id": str(op.model_id),
-                "reason": op.reason,
-            },
-            "model_id": op.model_id,
-            "state_changes": 1,
-        }
+    if op.op == "update":
+        return await _apply_claim_update(
+            op,
+            conn,
+            models_repo,
+            tenant_id,
+            cause_event_id=cause_event_id,
+            trigger_supporting_event_ids=trigger_supporting_event_ids,
+            audit_cause_override=audit_cause_override,
+        )
+    if op.op == "archive":
+        return await _apply_claim_archive(
+            op,
+            conn,
+            models_repo,
+            cause_event_id=cause_event_id,
+        )
     raise ValidationError(f"unknown claim_op: {op.op!r}")
+
+
+async def _apply_claim_insert(
+    op: ClaimOp,
+    conn: asyncpg.Connection,
+    models_repo: ModelsRepo,
+    tenant_id: UUID,
+    *,
+    cause_event_id: UUID | None,
+    trigger_supporting_event_ids: list[UUID],
+) -> dict[str, Any]:
+    proposed = _prepare_claim_insert_model(
+        op,
+        tenant_id,
+        cause_event_id=cause_event_id,
+        trigger_supporting_event_ids=trigger_supporting_event_ids,
+    )
+    row = await models_repo.insert(
+        proposed,
+        conn=conn,
+        apply_confidence_calibration=False,
+    )
+    prediction_row_id = await materialize_model_prediction(conn, model=row)
+    return {
+        "summary": {
+            "op": "insert",
+            "model_id": str(row.id),
+            "confidence": row.confidence,
+            "proposition_kind": row.proposition_kind,
+            "claim_role": row.claim_role,
+            "abstraction_level": row.abstraction_level,
+            "domain_tags": list(row.domain_tags or []),
+            **(
+                {"model_prediction_id": str(prediction_row_id)}
+                if prediction_row_id is not None
+                else {}
+            ),
+        },
+        "model_id": row.id,
+        "state_changes": 1,
+    }
+
+
+def _prepare_claim_insert_model(
+    op: ClaimOp,
+    tenant_id: UUID,
+    *,
+    cause_event_id: UUID | None,
+    trigger_supporting_event_ids: list[UUID],
+) -> ModelCreate:
+    op = _with_claim_evidence_defaults(
+        op,
+        trigger_cause_event_id=cause_event_id,
+        trigger_supporting_event_ids=trigger_supporting_event_ids,
+    )
+    entry = dict(op.entry or {})
+    entry.setdefault("tenant_id", tenant_id)
+    entry.setdefault("confidence_at_assertion", entry.get("confidence", 0.5))
+    if "born_from_event_id" not in entry and cause_event_id is not None:
+        entry["born_from_event_id"] = cause_event_id
+    for stray in ("title", "description", "id", "model_id"):
+        entry.pop(stray, None)
+    entry = prepare_prediction_entry(entry)
+    ensure_situation_compositional_defaults(entry)
+    if "scope_temporal" not in entry:
+        entry["scope_temporal"] = {
+            "valid_from": datetime.now(timezone.utc).isoformat(),
+            "valid_until": None,
+        }
+    if "embedding" not in entry or is_zero_embedding(entry.get("embedding")):
+        entry["embedding"] = deterministic_text_embedding(
+            str(entry.get("natural") or entry.get("proposition") or "")
+        )
+    return ModelCreate.model_validate(entry)
+
+
+async def _apply_claim_update(
+    op: ClaimOp,
+    conn: asyncpg.Connection,
+    models_repo: ModelsRepo,
+    tenant_id: UUID,
+    *,
+    cause_event_id: UUID | None,
+    trigger_supporting_event_ids: list[UUID],
+    audit_cause_override: str | None,
+) -> dict[str, Any]:
+    if op.model_id is None or not op.changes:
+        raise ValidationError("apply_claim_op update: bad op")
+    prepared = await _prepare_claim_update(
+        op,
+        conn,
+        tenant_id=tenant_id,
+        cause_event_id=cause_event_id,
+        trigger_supporting_event_ids=trigger_supporting_event_ids,
+        audit_cause_override=audit_cause_override,
+    )
+    if not prepared.changes and prepared.situation_merge_payload is None:
+        return _skipped_claim_update_result(op, prepared)
+
+    emitted = await _apply_claim_confidence_update(
+        prepared.changes,
+        op,
+        conn,
+        models_repo,
+        cause_event_id=cause_event_id,
+        audit_cause_override=audit_cause_override,
+    )
+    if prepared.changes:
+        emitted += await _apply_model_column_updates(
+            prepared.changes,
+            conn,
+            tenant_id=tenant_id,
+            model_id=op.model_id,
+            cause_event_id=cause_event_id,
+            audit_cause_override=audit_cause_override,
+            changed_fields_for_summary=prepared.changed_fields_for_summary,
+        )
+    situation_merge_summary = await _apply_claim_situation_merge_update(
+        prepared,
+        conn,
+        tenant_id=tenant_id,
+        model_id=op.model_id,
+        cause_event_id=cause_event_id,
+        trigger_supporting_event_ids=trigger_supporting_event_ids,
+        audit_cause_override=audit_cause_override,
+    )
+    if situation_merge_summary is not None:
+        emitted += int(situation_merge_summary["state_changes"])
+
+    return _claim_update_result(op, prepared, situation_merge_summary, emitted)
+
+
+async def _prepare_claim_update(
+    op: ClaimOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    cause_event_id: UUID | None,
+    trigger_supporting_event_ids: list[UUID],
+    audit_cause_override: str | None,
+) -> _ClaimUpdatePreparation:
+    raw_changes = dict(op.changes or {})
+    situation_merge_payload = None
+    if audit_cause_override == "reconciliation_merge":
+        maybe_payload = raw_changes.pop("__situation_merge", None)
+        if isinstance(maybe_payload, dict):
+            situation_merge_payload = maybe_payload
+    changes = {
+        k: _coerce_update_value(k, v)
+        for k, v in raw_changes.items()
+        if k in _ALLOWED_MODEL_UPDATE_COLUMNS
+    }
+    user_change_keys = set(changes)
+    await _merge_supporting_update_ids(
+        changes,
+        conn,
+        tenant_id=tenant_id,
+        model_id=op.model_id,
+        cause_event_id=cause_event_id,
+        trigger_supporting_event_ids=trigger_supporting_event_ids,
+    )
+    resolution_update_dropped = _drop_inconsistent_resolution_update(
+        changes,
+        user_change_keys,
+    )
+    return _ClaimUpdatePreparation(
+        changes=changes,
+        changed_fields_for_summary=set(changes.keys()),
+        situation_merge_payload=situation_merge_payload,
+        resolution_update_dropped=resolution_update_dropped,
+    )
+
+
+async def _merge_supporting_update_ids(
+    changes: dict[str, Any],
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID | None,
+    cause_event_id: UUID | None,
+    trigger_supporting_event_ids: list[UUID],
+) -> None:
+    if model_id is None:
+        return
+    supporting_update_ids = _merge_event_ids(
+        changes.get("supporting_event_ids"),
+        cause_event_id,
+        trigger_supporting_event_ids,
+    )
+    if not supporting_update_ids:
+        return
+    row = await conn.fetchrow(
+        """
+        SELECT supporting_event_ids
+        FROM models
+        WHERE tenant_id = $1 AND id = $2 AND status = 'active'
+        """,
+        tenant_id,
+        model_id,
+    )
+    existing_supporting_ids = (
+        _merge_event_ids(row["supporting_event_ids"]) if row is not None else []
+    )
+    merged_supporting_ids = _merge_event_ids(
+        existing_supporting_ids,
+        supporting_update_ids,
+    )
+    if merged_supporting_ids != existing_supporting_ids:
+        changes["supporting_event_ids"] = merged_supporting_ids
+    else:
+        changes.pop("supporting_event_ids", None)
+
+
+def _drop_inconsistent_resolution_update(
+    changes: dict[str, Any],
+    user_change_keys: set[str],
+) -> bool:
+    resolution_keys = {"resolved_at", "resolution_outcome"} & set(changes)
+    if not resolution_keys or resolution_keys == {"resolved_at", "resolution_outcome"}:
+        return False
+    changes.pop("resolved_at", None)
+    changes.pop("resolution_outcome", None)
+    if not (user_change_keys - {"resolved_at", "resolution_outcome"}):
+        changes.clear()
+    return True
+
+
+def _skipped_claim_update_result(
+    op: ClaimOp,
+    prepared: _ClaimUpdatePreparation,
+) -> dict[str, Any]:
+    return {
+        "summary": {
+            "op": "skip",
+            "reason": (
+                "inconsistent_resolution_update"
+                if prepared.resolution_update_dropped
+                else "no_allowed_columns"
+            ),
+            "model_id": str(op.model_id),
+        },
+        "model_id": None,
+        "state_changes": 0,
+    }
+
+
+async def _apply_claim_confidence_update(
+    changes: dict[str, Any],
+    op: ClaimOp,
+    conn: asyncpg.Connection,
+    models_repo: ModelsRepo,
+    *,
+    cause_event_id: UUID | None,
+    audit_cause_override: str | None,
+) -> int:
+    if op.model_id is None or "confidence" not in changes:
+        return 0
+    await models_repo.bulk_confidence_update(
+        {op.model_id: float(changes["confidence"])},
+        cause_event_id=cause_event_id,
+        audit_cause_override=audit_cause_override,
+        conn=conn,
+    )
+    changes.pop("confidence")
+    return 1
+
+
+async def _apply_model_column_updates(
+    changes: dict[str, Any],
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+    cause_event_id: UUID | None,
+    audit_cause_override: str | None,
+    changed_fields_for_summary: set[str],
+) -> int:
+    from .audit import (
+        CAUSE_FIELD_UPDATE,
+        emit_audit_event,
+    )
+
+    pre_snapshot, previous_signal_readings = await _snapshot_model_update_columns(
+        conn,
+        model_id=model_id,
+        changes=changes,
+    )
+    await _execute_model_update(conn, model_id=model_id, changes=changes)
+    await _sync_model_update_relations(
+        conn,
+        tenant_id=tenant_id,
+        model_id=model_id,
+        changes=changes,
+        cause_event_id=cause_event_id,
+    )
+    await emit_state_change(
+        conn,
+        kind="model_updated",
+        entity_id=model_id,
+        tenant_id=tenant_id,
+        cause_event_id=cause_event_id,
+        entity_kind="model",
+        metadata={"columns": sorted(list(changes.keys()))},
+    )
+    await emit_audit_event(
+        conn,
+        model_id=model_id,
+        tenant_id=tenant_id,
+        cause_type=audit_cause_override or CAUSE_FIELD_UPDATE,
+        new_state={k: _audit_jsonable(v) for k, v in changes.items()},
+        previous_state=pre_snapshot or None,
+        cause_id=cause_event_id,
+        changed_fields=sorted(list(changes.keys())),
+    )
+    await _apply_model_update_side_effects(
+        conn,
+        tenant_id=tenant_id,
+        model_id=model_id,
+        changes=changes,
+        previous_signal_readings=previous_signal_readings,
+        cause_event_id=cause_event_id,
+        changed_fields_for_summary=changed_fields_for_summary,
+    )
+    return 1
+
+
+async def _snapshot_model_update_columns(
+    conn: asyncpg.Connection,
+    *,
+    model_id: UUID,
+    changes: dict[str, Any],
+) -> tuple[dict[str, Any], Any]:
+    cols_csv = ", ".join(changes.keys())
+    pre_snapshot: dict[str, Any] = {}
+    pre_row = await conn.fetchrow(f"SELECT {cols_csv} FROM models WHERE id = $1", model_id)
+    if pre_row is not None:
+        for key in changes.keys():
+            pre_snapshot[key] = _audit_jsonable(pre_row[key])
+    previous_signal_readings = (
+        pre_row["signal_readings"]
+        if pre_row is not None and "signal_readings" in changes
+        else None
+    )
+    return pre_snapshot, previous_signal_readings
+
+
+async def _execute_model_update(
+    conn: asyncpg.Connection,
+    *,
+    model_id: UUID,
+    changes: dict[str, Any],
+) -> None:
+    set_clauses = []
+    params: list[Any] = []
+    for index, (key, value) in enumerate(changes.items(), start=1):
+        if key in ("signal_readings",):
+            set_clauses.append(f"{key} = ${index}::jsonb")
+            params.append(json.dumps(value, default=str))
+        elif key in (
+            "supporting_event_ids",
+            "supporting_model_ids",
+            "contributing_models",
+        ):
+            set_clauses.append(f"{key} = ${index}::uuid[]")
+            params.append(list(value) if isinstance(value, (list, tuple)) else [value])
+        elif key in ("last_confirmed_at", "resolved_at"):
+            set_clauses.append(f"{key} = ${index}")
+            params.append(_coerce_dt(value))
+        else:
+            set_clauses.append(f"{key} = ${index}")
+            params.append(value)
+    params.append(model_id)
+    sql = (
+        f"UPDATE models SET {', '.join(set_clauses)} "
+        f"WHERE id = ${len(params)}"
+    )
+    await conn.execute(sql, *params)
+
+
+async def _sync_model_update_relations(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+    changes: dict[str, Any],
+    cause_event_id: UUID | None,
+) -> None:
+    if "supporting_model_ids" not in changes and "contributing_models" not in changes:
+        return
+    from services.domain.models.repo import _set_model_relations
+
+    await _set_model_relations(
+        conn,
+        model_id=model_id,
+        tenant_id=tenant_id,
+        detected_by="llm_explicit",
+        supports=(
+            list(changes["supporting_model_ids"])
+            if "supporting_model_ids" in changes
+            else None
+        ),
+        contributes_to=(
+            list(changes["contributing_models"])
+            if "contributing_models" in changes
+            else None
+        ),
+        created_by_event_id=cause_event_id,
+        update_arrays=False,
+    )
+
+
+async def _apply_model_update_side_effects(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+    changes: dict[str, Any],
+    previous_signal_readings: Any,
+    cause_event_id: UUID | None,
+    changed_fields_for_summary: set[str],
+) -> None:
+    if "signal_readings" in changes:
+        await _append_signal_readings_sidecar_delta(
+            conn,
+            tenant_id=tenant_id,
+            model_id=model_id,
+            previous_readings=previous_signal_readings,
+            new_readings=changes["signal_readings"],
+        )
+    if "resolution_outcome" in changes:
+        synced = await sync_model_prediction_resolution(
+            conn,
+            tenant_id=tenant_id,
+            model_id=model_id,
+            resolution_outcome=changes.get("resolution_outcome"),
+            observation_id=cause_event_id,
+        )
+        if synced:
+            changed_fields_for_summary.add("model_predictions")
+
+
+async def _apply_claim_situation_merge_update(
+    prepared: _ClaimUpdatePreparation,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+    cause_event_id: UUID | None,
+    trigger_supporting_event_ids: list[UUID],
+    audit_cause_override: str | None,
+) -> dict[str, Any] | None:
+    if prepared.situation_merge_payload is None:
+        return None
+    merge_result = await _apply_situation_merge_payload(
+        conn,
+        tenant_id=tenant_id,
+        model_id=model_id,
+        payload=prepared.situation_merge_payload,
+        cause_event_id=cause_event_id,
+        trigger_supporting_event_ids=trigger_supporting_event_ids,
+        audit_cause_override=audit_cause_override,
+    )
+    prepared.changed_fields_for_summary.update(
+        ("proposition", "domain_tags", "model_composition_members")
+    )
+    return {
+        "summary": merge_result["summary"],
+        "state_changes": merge_result["state_changes"],
+    }
+
+
+def _claim_update_result(
+    op: ClaimOp,
+    prepared: _ClaimUpdatePreparation,
+    situation_merge_summary: dict[str, Any] | None,
+    emitted: int,
+) -> dict[str, Any]:
+    summary = situation_merge_summary["summary"] if situation_merge_summary else None
+    return {
+        "summary": {
+            "op": "update",
+            "model_id": str(op.model_id),
+            "changed": sorted(prepared.changed_fields_for_summary),
+            **({"claim_role": "situation"} if summary else {}),
+            **(
+                {
+                    "internal_situation_merge": True,
+                    "situation_members_added": summary["situation_members_added"],
+                }
+                if summary
+                else {}
+            ),
+            **(
+                {"dropped_inconsistent_resolution_update": True}
+                if prepared.resolution_update_dropped
+                else {}
+            ),
+        },
+        "model_id": op.model_id,
+        "state_changes": emitted,
+    }
+
+
+async def _apply_claim_archive(
+    op: ClaimOp,
+    conn: asyncpg.Connection,
+    models_repo: ModelsRepo,
+    *,
+    cause_event_id: UUID | None,
+) -> dict[str, Any]:
+    if op.model_id is None or not op.reason:
+        raise ValidationError("apply_claim_op archive: bad op")
+    await models_repo.archive(
+        op.model_id,
+        op.reason,  # type: ignore[arg-type]
+        cause_event_id=cause_event_id,
+        conn=conn,
+    )
+    return {
+        "summary": {
+            "op": "archive",
+            "model_id": str(op.model_id),
+            "reason": op.reason,
+        },
+        "model_id": op.model_id,
+        "state_changes": 1,
+    }
 
 
 async def _apply_edge_op(
@@ -2538,16 +3347,22 @@ async def _apply_ontology_gap_op(
     )
 
     evidence_model_ids = tuple(
-        dict.fromkeys([
-            op.source_model_id,
-            op.target_model_id,
-            *op.evidence_model_ids,
-        ])
+        dict.fromkeys(
+            [
+                op.source_model_id,
+                op.target_model_id,
+                *op.evidence_model_ids,
+            ]
+        )
     )
-    evidence_event_ids = tuple(dict.fromkeys([
-        *(op.evidence_event_ids or []),
-        *([cause_event_id] if cause_event_id is not None else []),
-    ]))
+    evidence_event_ids = tuple(
+        dict.fromkeys(
+            [
+                *(op.evidence_event_ids or []),
+                *([cause_event_id] if cause_event_id is not None else []),
+            ]
+        )
+    )
     candidate = make_edge_type_candidate(
         tenant_id=tenant_id,
         proposed_edge_kind=op.proposed_edge_kind,
@@ -2584,8 +3399,7 @@ async def _apply_ontology_gap_op(
     proposals_upserted = 0
     try:
         proposals = await (
-            RelationshipOntologyProposalsRepo()
-            .aggregate_from_edge_type_candidates(
+            RelationshipOntologyProposalsRepo().aggregate_from_edge_type_candidates(
                 conn,
                 tenant_id=tenant_id,
             )
@@ -2604,9 +3418,7 @@ async def _apply_ontology_gap_op(
     ):
         proposals_upserted = 0
     proposed = row["proposed_proposition"]["proposed_edge_kind"]
-    fallback = row["metadata"].get("ontology_gap", {}).get(
-        "retrieval_fallback_kind"
-    )
+    fallback = row["metadata"].get("ontology_gap", {}).get("retrieval_fallback_kind")
     return {
         "summary": {
             "op": op.op,
@@ -2623,15 +3435,18 @@ async def _apply_ontology_gap_op(
     }
 
 
-async def _apply_act_op(
+def _act_result(summary: dict[str, Any], state_changes: int) -> dict[str, Any]:
+    return {"summary": summary, "state_changes": state_changes}
+
+
+async def _apply_goal_act_op(
     op: ActOp,
+    ent: dict[str, Any],
     conn: asyncpg.Connection,
     tenant_id: UUID,
     *,
     cause_event_id: UUID | None,
-) -> dict[str, Any]:
-    ent = op.entity or {}
-
+) -> dict[str, Any] | None:
     if op.op == "create_goal":
         row = await goals_svc.create(
             title=ent["title"],
@@ -2640,14 +3455,13 @@ async def _apply_act_op(
             altitude=ent.get("altitude", "operational"),
             success_criteria=ent.get("success_criteria"),
             target_date=_coerce_dt(ent.get("target_date")),
-            created_by_event_id=_coerce_uuid(ent.get("created_by_event_id") or cause_event_id),
+            created_by_event_id=_coerce_uuid(
+                ent.get("created_by_event_id") or cause_event_id
+            ),
             tenant_id=tenant_id,
             conn=conn,
         )
-        return {
-            "summary": {"op": "create_goal", "goal_id": str(row.id)},
-            "state_changes": 1,
-        }
+        return _act_result({"op": "create_goal", "goal_id": str(row.id)}, 1)
 
     if op.op == "update_goal":
         # Minimal update path — bumps cached_health or target_date only.
@@ -2684,10 +3498,7 @@ async def _apply_act_op(
                 k: v for k, v in ent.items() if k in ("cached_health", "target_date")
             },
         )
-        return {
-            "summary": {"op": "update_goal", "goal_id": str(gid)},
-            "state_changes": 1,
-        }
+        return _act_result({"op": "update_goal", "goal_id": str(gid)}, 1)
 
     if op.op == "transition_goal":
         gid = _coerce_uuid(ent["id"])
@@ -2697,15 +3508,25 @@ async def _apply_act_op(
             cause_event_id=cause_event_id,
             conn=conn,
         )
-        return {
-            "summary": {
+        return _act_result(
+            {
                 "op": "transition_goal",
                 "goal_id": str(row.id),
                 "new_state": ent["new_state"],
             },
-            "state_changes": 1,
-        }
+            1,
+        )
+    return None
 
+
+async def _apply_commitment_act_op(
+    op: ActOp,
+    ent: dict[str, Any],
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    *,
+    cause_event_id: UUID | None,
+) -> dict[str, Any] | None:
     if op.op == "create_commitment":
         row = await commitments_svc.create(
             title=ent["title"],
@@ -2717,7 +3538,8 @@ async def _apply_act_op(
             priority=int(ent.get("priority", 5)),
             success_criteria=ent.get("success_criteria"),
             contributes_to_goal_ids=[
-                _coerce_uuid(x) if not isinstance(x, (list, tuple))
+                _coerce_uuid(x)
+                if not isinstance(x, (list, tuple))
                 else (_coerce_uuid(x[0]), bool(x[1]))
                 for x in (ent.get("contributes_to_goal_ids") or [])
             ],
@@ -2733,21 +3555,20 @@ async def _apply_act_op(
             ],
             external_counterparty_ref=ent.get("external_counterparty_ref"),
             estimated_capacity=ent.get("estimated_capacity"),
-            created_by_event_id=_coerce_uuid(ent.get("created_by_event_id") or cause_event_id),
+            created_by_event_id=_coerce_uuid(
+                ent.get("created_by_event_id") or cause_event_id
+            ),
             last_confidence_basis=op.confidence_basis,
             tenant_id=tenant_id,
             conn=conn,
         )
-        return {
-            "summary": {"op": "create_commitment", "commitment_id": str(row.id)},
-            "state_changes": 1,
-        }
+        return _act_result(
+            {"op": "create_commitment", "commitment_id": str(row.id)}, 1
+        )
 
     if op.op == "transition_commitment":
         cid = _coerce_uuid(ent["id"])
-        resolved = [
-            _coerce_uuid(x) for x in (ent.get("resolved_by_event_ids") or [])
-        ]
+        resolved = [_coerce_uuid(x) for x in (ent.get("resolved_by_event_ids") or [])]
         row = await commitments_svc.transition(
             cid,
             ent["new_state"],
@@ -2756,15 +3577,25 @@ async def _apply_act_op(
             cause_event_id=cause_event_id or _coerce_uuid(ent.get("cause_event_id")),
             conn=conn,
         )
-        return {
-            "summary": {
+        return _act_result(
+            {
                 "op": "transition_commitment",
                 "commitment_id": str(row.id),
                 "new_state": ent["new_state"],
             },
-            "state_changes": 1,
-        }
+            1,
+        )
+    return None
 
+
+async def _apply_decision_act_op(
+    op: ActOp,
+    ent: dict[str, Any],
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    *,
+    cause_event_id: UUID | None,
+) -> dict[str, Any] | None:
     if op.op == "create_decision":
         # Decisions repo has `create` that matches our kwargs.
         row = await decisions_svc.create(
@@ -2773,14 +3604,13 @@ async def _apply_act_op(
             rationale=ent.get("rationale"),
             scope=ent.get("scope"),
             revisit_triggers=ent.get("revisit_triggers"),
-            created_by_event_id=_coerce_uuid(ent.get("created_by_event_id") or cause_event_id),
+            created_by_event_id=_coerce_uuid(
+                ent.get("created_by_event_id") or cause_event_id
+            ),
             tenant_id=tenant_id,
             conn=conn,
         )
-        return {
-            "summary": {"op": "create_decision", "decision_id": str(row.id)},
-            "state_changes": 1,
-        }
+        return _act_result({"op": "create_decision", "decision_id": str(row.id)}, 1)
 
     if op.op == "transition_decision":
         did = _coerce_uuid(ent["id"])
@@ -2790,63 +3620,95 @@ async def _apply_act_op(
             cause_event_id=cause_event_id,
             conn=conn,
         )
-        return {
-            "summary": {
+        return _act_result(
+            {
                 "op": "transition_decision",
                 "decision_id": str(row.id),
                 "new_state": ent["new_state"],
             },
-            "state_changes": 1,
-        }
+            1,
+        )
+    return None
 
+
+async def _apply_commitment_edge_act_op(
+    op: ActOp,
+    ent: dict[str, Any],
+    conn: asyncpg.Connection,
+) -> dict[str, Any] | None:
     if op.op == "add_edge_contributes_to":
-        row = await commitments_svc.add_edge(
+        await commitments_svc.add_edge(
             "contributes_to",
             commitment_id=_coerce_uuid(ent["commitment_id"]),
             goal_id=_coerce_uuid(ent["goal_id"]),
             is_critical_path=bool(ent.get("is_critical_path", False)),
             conn=conn,
         )
-        return {
-            "summary": {
+        return _act_result(
+            {
                 "op": "add_edge_contributes_to",
                 "commitment_id": str(ent["commitment_id"]),
                 "goal_id": str(ent["goal_id"]),
             },
-            "state_changes": 0,
-        }
+            0,
+        )
 
     if op.op == "add_edge_depends_on":
-        row = await commitments_svc.add_edge(
+        await commitments_svc.add_edge(
             "depends_on",
             dependent_commitment_id=_coerce_uuid(ent["dependent_commitment_id"]),
             dependency_commitment_id=_coerce_uuid(ent["dependency_commitment_id"]),
             conn=conn,
         )
-        return {
-            "summary": {
+        return _act_result(
+            {
                 "op": "add_edge_depends_on",
                 "dependent": str(ent["dependent_commitment_id"]),
                 "dependency": str(ent["dependency_commitment_id"]),
             },
-            "state_changes": 0,
-        }
+            0,
+        )
 
     if op.op == "add_edge_constrained_by":
-        row = await commitments_svc.add_edge(
+        await commitments_svc.add_edge(
             "constrained_by",
             commitment_id=_coerce_uuid(ent["commitment_id"]),
             decision_id=_coerce_uuid(ent["decision_id"]),
             conn=conn,
         )
-        return {
-            "summary": {
+        return _act_result(
+            {
                 "op": "add_edge_constrained_by",
                 "commitment_id": str(ent["commitment_id"]),
                 "decision_id": str(ent["decision_id"]),
             },
-            "state_changes": 0,
-        }
+            0,
+        )
+    return None
+
+
+async def _apply_act_op(
+    op: ActOp,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    *,
+    cause_event_id: UUID | None,
+) -> dict[str, Any]:
+    ent = op.entity or {}
+    result = (
+        await _apply_goal_act_op(
+            op, ent, conn, tenant_id, cause_event_id=cause_event_id
+        )
+        or await _apply_commitment_act_op(
+            op, ent, conn, tenant_id, cause_event_id=cause_event_id
+        )
+        or await _apply_decision_act_op(
+            op, ent, conn, tenant_id, cause_event_id=cause_event_id
+        )
+        or await _apply_commitment_edge_act_op(op, ent, conn)
+    )
+    if result is not None:
+        return result
 
     raise ValidationError(f"unknown act_op: {op.op!r}")
 
@@ -2900,9 +3762,10 @@ async def _apply_resource_op(
     if op.op == "transaction":
         row = await record_transaction(
             op.resource_id,  # type: ignore[arg-type]
-            kind=op.kind,    # type: ignore[arg-type]
+            kind=op.kind,  # type: ignore[arg-type]
             delta=op.delta,  # type: ignore[arg-type]
-            occurred_at=_coerce_dt((op.payload or {}).get("occurred_at")) or datetime.now(timezone.utc),
+            occurred_at=_coerce_dt((op.payload or {}).get("occurred_at"))
+            or datetime.now(timezone.utc),
             source_event_id=_coerce_uuid(
                 (op.payload or {}).get("source_event_id") or cause_event_id
             ),

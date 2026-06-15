@@ -605,7 +605,7 @@ class TopologyOptimizer:
             conn=conn,
         )
 
-        # 5. Canonical topology candidates — NEVER applied here.
+        # 5. Canonical relationship proposals — NEVER applied here.
         merge = tuple(self._propose_merges(
             useful_paths=useful_path_events,
             session_id=inquiry_session_id,

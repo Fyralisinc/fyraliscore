@@ -218,8 +218,8 @@ def test_prompt_contract_surfaces_ids_scope_and_topology_context() -> None:
     assert str(neighborhood_id) in pair.user
     assert "<actors_in_context>" in pair.user
     assert "<topology_context>" in pair.user
-    assert "This is a T6 trigger" in pair.user
-    assert "Do NOT invent member Model ids" in pair.user
+    assert "This is a T6 trigger" in pair.system
+    assert "Do NOT invent member Model ids" in pair.system
 
 
 def test_worker_payload_hydration_preserves_seed_and_topology_fields() -> None:

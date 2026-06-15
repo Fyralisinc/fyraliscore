@@ -16,9 +16,10 @@ import asyncio
 import os
 import random
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
+from pydantic import BaseModel
 
 from lib.llm.provider import (
     LLMError,
@@ -32,6 +33,16 @@ from lib.shared.errors import CompanyOSError
 from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.retrieval.primary import TriggerContext
 
+from .compiled_reasoning import (
+    BatchMemoryDecisionSet,
+    RelationshipCandidateDecisionSet,
+    build_compiled_batch_memory_decision_request,
+    build_compiled_relationship_candidate_request,
+    compiled_batch_memory_decision_enabled,
+    compiled_batch_memory_decision_max_tokens,
+    compiled_relationship_candidate_enabled,
+    compiled_relationship_candidate_max_tokens,
+)
 from .diff_schema import RawDiff, RawDiffClaimsOnly
 from .prompt import build_prompt
 from .reasoning_frame import reasoning_job_from_trigger
@@ -68,6 +79,58 @@ async def llm_reason(
     `max_attempts` total calls. LLMParseError from the provider is
     already retried internally; if it escapes, we bubble as terminal.
     """
+    feedback = _validation_feedback(trigger)
+    if compiled_relationship_candidate_enabled():
+        compiled = build_compiled_relationship_candidate_request(trigger, bundle)
+        if compiled is not None:
+            from .deterministic import _trigger_ref  # type: ignore
+
+            decision_set, elapsed_ms = await _structured_with_reasoning_retries(
+                provider=provider,
+                system=compiled.system,
+                user=_append_validation_feedback(compiled.user, feedback),
+                schema=RelationshipCandidateDecisionSet,
+                temperature=temperature,
+                max_tokens=min(
+                    max_tokens,
+                    compiled_relationship_candidate_max_tokens(),
+                ),
+                max_attempts=max_attempts,
+            )
+            return (
+                compiled.to_raw_diff(
+                    decision_set,
+                    trigger=trigger,
+                    trigger_ref=_trigger_ref(trigger),
+                ),
+                elapsed_ms,
+            )
+    if compiled_batch_memory_decision_enabled():
+        compiled_batch = build_compiled_batch_memory_decision_request(trigger, bundle)
+        if compiled_batch is not None:
+            from .deterministic import _trigger_ref  # type: ignore
+
+            decision_set, elapsed_ms = await _structured_with_reasoning_retries(
+                provider=provider,
+                system=compiled_batch.system,
+                user=_append_validation_feedback(compiled_batch.user, feedback),
+                schema=BatchMemoryDecisionSet,
+                temperature=temperature,
+                max_tokens=min(
+                    max_tokens,
+                    compiled_batch_memory_decision_max_tokens(),
+                ),
+                max_attempts=max_attempts,
+            )
+            return (
+                compiled_batch.to_raw_diff(
+                    decision_set,
+                    trigger=trigger,
+                    trigger_ref=_trigger_ref(trigger),
+                ),
+                elapsed_ms,
+            )
+
     schema = _select_output_schema(trigger, bundle)
     effective_max_tokens = _effective_max_tokens(max_tokens, schema)
     pair = build_prompt(
@@ -87,35 +150,42 @@ async def llm_reason(
     # Cost-plan §2.4: if a prior attempt persisted validator feedback into the
     # trigger payload, append it so this retry avoids the dropped ops. Only
     # present when THINK_VALIDATION_MAX_ATTEMPTS drove the worker to persist it.
-    user_message = pair.user
-    feedback = None
-    if isinstance(trigger.seed_signature, dict):
-        raw_feedback = trigger.seed_signature.get("validation_feedback")
-        if isinstance(raw_feedback, str) and raw_feedback.strip():
-            feedback = raw_feedback.strip()
-    if feedback:
-        user_message = (
-            f"{pair.user}\n\n<prior_validation_feedback>\n"
-            "A previous attempt at this trigger had operations dropped by the "
-            "validator. Correct these and do not re-introduce them:\n"
-            f"{feedback}\n</prior_validation_feedback>"
-        )
+    diff_like, elapsed_ms = await _structured_with_reasoning_retries(
+        provider=provider,
+        system=pair.system,
+        user=_append_validation_feedback(pair.user, feedback),
+        schema=schema,
+        temperature=temperature,
+        max_tokens=effective_max_tokens,
+        max_attempts=max_attempts,
+    )
+    return _coerce_raw_diff(diff_like), elapsed_ms
 
+
+async def _structured_with_reasoning_retries(
+    *,
+    provider: LLMProvider,
+    system: str,
+    user: str,
+    schema: type[BaseModel],
+    temperature: float,
+    max_tokens: int,
+    max_attempts: int,
+) -> tuple[Any, int]:
     last_err: Exception | None = None
     started = time.monotonic()
 
     for attempt in range(max_attempts):
         try:
-            diff_like = await provider.structured(
-                system=pair.system,
-                user=user_message,
+            parsed = await provider.structured(
+                system=system,
+                user=user,
                 schema=schema,
                 temperature=temperature,
-                max_tokens=effective_max_tokens,
+                max_tokens=max_tokens,
             )
-            diff = _coerce_raw_diff(diff_like)
             elapsed_ms = int((time.monotonic() - started) * 1000)
-            return diff, elapsed_ms
+            return parsed, elapsed_ms
         except LLMParseError as e:
             # Terminal — provider already exhausted its own retries.
             raise ReasoningFailure(
@@ -151,6 +221,26 @@ async def llm_reason(
         f"llm_reason exhausted {max_attempts} attempts: {last_err}",
         attempts=max_attempts,
     ) from last_err
+
+
+def _validation_feedback(trigger: TriggerContext) -> str | None:
+    if not isinstance(trigger.seed_signature, dict):
+        return None
+    raw_feedback = trigger.seed_signature.get("validation_feedback")
+    if isinstance(raw_feedback, str) and raw_feedback.strip():
+        return raw_feedback.strip()
+    return None
+
+
+def _append_validation_feedback(user_message: str, feedback: str | None) -> str:
+    if not feedback:
+        return user_message
+    return (
+        f"{user_message}\n\n<prior_validation_feedback>\n"
+        "A previous attempt at this trigger had operations dropped by the "
+        "validator. Correct these and do not re-introduce them:\n"
+        f"{feedback}\n</prior_validation_feedback>"
+    )
 
 
 def _select_output_schema(

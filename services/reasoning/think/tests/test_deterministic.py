@@ -21,6 +21,7 @@ Scenarios (Wave 3-B Outstanding #4):
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -310,6 +311,102 @@ async def test_t2_prediction_triggered_drops_confidence(
     expected_new = max(0.05, prior_conf - 0.7 * prior_conf)
     assert abs(primary.changes["confidence"] - expected_new) < 1e-6
     assert primary.changes["contested_count"] == 1
+
+
+async def test_t2_prediction_deadline_residual_violation_falsifies(
+    fresh_db, tenant, tenant_cleanup,
+):
+    async with fresh_db.acquire() as conn:
+        mid = await _insert_prediction_model(
+            conn,
+            tenant,
+            confidence=0.75,
+            falsifier={"kind": "prediction_deadline"},
+        )
+        prediction_id = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO model_predictions (
+                id, tenant_id, model_id, prediction, expected_observation,
+                check_after, status, confidence
+            ) VALUES ($1, $2, $3, $4, $5::jsonb, now(), 'active', $6)
+            """,
+            prediction_id,
+            tenant,
+            mid,
+            "Deployment reaches done state",
+            json.dumps({
+                "kind": "state_change",
+                "value_constraint": {
+                    "field": "state",
+                    "op": "eq",
+                    "value": "done",
+                },
+            }),
+            0.75,
+        )
+        obs_id = uuid7()
+
+    trigger = TriggerContext(
+        kind="T2",
+        tenant_id=tenant,
+        subkind="prediction_deadline",
+        model_id=mid,
+    )
+    bundle = ContextBundle(observations=[
+        SimpleNamespace(
+            id=obs_id,
+            kind="state_change",
+            content={"state": "blocked"},
+            content_text="Deployment is blocked.",
+            actor_id=None,
+            entities_mentioned=[],
+        )
+    ])
+    async with fresh_db.acquire() as conn:
+        diff = await deterministic_handler(trigger, bundle, conn)
+
+    primary = next(op for op in diff.claim_ops if op.model_id == mid)
+    assert primary.changes["resolution_outcome"] is False
+    assert primary.changes["confidence"] < 0.75
+    assert primary.changes["contested_count"] == 1
+
+
+async def test_t2_prediction_deadline_uses_provisional_without_uuid_match(
+    fresh_db, tenant, tenant_cleanup,
+):
+    async with fresh_db.acquire() as conn:
+        mid = await _insert_prediction_model(
+            conn,
+            tenant,
+            confidence=0.55,
+            falsifier={"kind": "prediction_deadline"},
+        )
+
+    trigger = TriggerContext(
+        kind="T2",
+        tenant_id=tenant,
+        subkind="prediction_deadline",
+        model_id=mid,
+        seed_signature={"provisional_outcome": "confirmed"},
+    )
+    bundle = ContextBundle(observations=[
+        SimpleNamespace(
+            id=uuid7(),
+            kind="state_change",
+            content={"state": "done"},
+            content_text="No prediction id appears here.",
+            actor_id=None,
+            entities_mentioned=[],
+        )
+    ])
+    async with fresh_db.acquire() as conn:
+        diff = await deterministic_handler(trigger, bundle, conn)
+
+    primary = next(op for op in diff.claim_ops if op.model_id == mid)
+    assert primary.changes["resolution_outcome"] is True
+    assert primary.changes["confidence"] > 0.55
+    assert primary.changes["confirmed_count"] == 1
 
 
 async def test_t2_prediction_no_model_returns_empty(

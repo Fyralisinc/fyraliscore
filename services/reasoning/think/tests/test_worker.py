@@ -31,6 +31,7 @@ from lib.shared.ids import uuid7
 from services.reasoning.relationships import (
     JudgmentScores,
     RelationshipCandidatesRepo,
+    make_edge_candidate,
     make_edge_type_candidate,
 )
 from services.reasoning.think.tests.conftest import ScriptedProvider, make_embedding
@@ -548,6 +549,11 @@ async def test_t1_batch_coalesces_ready_rows_and_attaches_members(
     assert payload["batch"] is True
     assert set(payload["batch_member_trigger_ids"]) == {str(trig_a), str(trig_b)}
     assert set(payload["batch_observation_ids"]) == {str(obs_a), str(obs_b)}
+    assert {
+        fragment["observation_id"]
+        for fragment in payload["batch_signal_fragments"]
+    } == {str(obs_a), str(obs_b)}
+    assert all(fragment.get("text") for fragment in payload["batch_signal_fragments"])
     assert "Batch of 2 signals" in payload["seed_natural_text"]
 
     async with fresh_db.acquire() as conn:
@@ -1020,6 +1026,133 @@ async def test_worker_prunes_edge_type_t4_candidate_trigger(
     )
     assert candidate_row is not None
     assert candidate_row["review_status"] == "needs_review"
+
+
+async def test_worker_prunes_low_value_topology_t4_candidate_trigger(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    left = uuid7()
+    right = uuid7()
+    candidate = make_edge_candidate(
+        tenant_id=tenant,
+        source_model_id=left,
+        target_model_id=right,
+        edge_kind="same_issue_as",
+        basis="topology_suggested",
+        explanation="Weak shared-surface topology hint.",
+        scores=JudgmentScores(
+            impact=0.35,
+            actionability=0.25,
+            urgency=0.20,
+            uncertainty=0.45,
+            confidence=0.90,
+        ),
+        source="latent_topology",
+    )
+    async with fresh_db.acquire() as conn:
+        inserted = await RelationshipCandidatesRepo().insert(conn, candidate)
+    trigger_id = await _enqueue_t4_latent_candidate(
+        fresh_db,
+        tenant,
+        candidate_id=inserted["id"],
+        member_model_ids=[left, right],
+    )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="t4-low-value-pruner",
+            tenant_filter=tenant,
+            downstream_batch_window_s=0.0,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    async with fresh_db.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT completed_at, payload
+            FROM think_trigger_queue
+            WHERE id = $1
+            """,
+            trigger_id,
+        )
+
+    assert dispatched == []
+    assert row is not None
+    assert row["completed_at"] is not None
+    payload = row["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    assert payload["auto_completed_reason"] == "low_value_topology_candidate_noop"
+    assert payload["candidate_judgment_leverage"] < 0.70
+
+
+async def test_worker_keeps_high_value_topology_t4_candidate_trigger(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    left = uuid7()
+    right = uuid7()
+    candidate = make_edge_candidate(
+        tenant_id=tenant,
+        source_model_id=left,
+        target_model_id=right,
+        edge_kind="blocks",
+        basis="topology_suggested",
+        explanation="Material blocker topology hint with action surface.",
+        scores=JudgmentScores(
+            impact=0.95,
+            actionability=0.90,
+            urgency=0.85,
+            authority_required=0.80,
+            uncertainty=0.60,
+            novelty=0.75,
+            reversibility=0.70,
+            confidence=0.80,
+        ),
+        source="latent_topology",
+    )
+    async with fresh_db.acquire() as conn:
+        inserted = await RelationshipCandidatesRepo().insert(conn, candidate)
+    trigger_id = await _enqueue_t4_latent_candidate(
+        fresh_db,
+        tenant,
+        candidate_id=inserted["id"],
+        member_model_ids=[left, right],
+    )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="t4-high-value-keeper",
+            tenant_filter=tenant,
+            downstream_batch_window_s=0.0,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    assert len(dispatched) == 1
+    assert dispatched[0]["id"] == trigger_id
 
 
 async def test_worker_aggregates_and_retires_edge_type_t4_examples(

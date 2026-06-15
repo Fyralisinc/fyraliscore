@@ -6,6 +6,7 @@ lock, cascade, anomalies) live in test_end_to_end.py.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 import pytest
@@ -167,6 +168,116 @@ async def test_apply_single_claim_insert(fresh_db, tenant, tenant_cleanup):
         assert outcome == "success"
 
 
+async def test_apply_batch_insert_threads_all_supporting_events(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Batched T1 writes should preserve every triggering observation id."""
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        first = await _insert_observation(
+            conn,
+            tenant,
+            content_text="Northstar before state",
+        )
+        second = await _insert_observation(
+            conn,
+            tenant,
+            content_text="Northstar after state",
+        )
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "proposition": {
+                            "kind": "belief",
+                            "claim_role": "fact",
+                            "abstraction_level": "atomic",
+                            "assertion": "Northstar has a pricing transition.",
+                        },
+                        "natural": "Northstar has a pricing transition.",
+                        "confidence": 0.6,
+                    },
+                ),
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1:event_batch",
+                trigger_cause_event_id=first,
+                trigger_supporting_event_ids=[first, second],
+            )
+        model_id = result["applied_model_ids"][0]
+        row = await conn.fetchrow(
+            """
+            SELECT born_from_event_id, supporting_event_ids
+            FROM models
+            WHERE id = $1
+            """,
+            model_id,
+        )
+
+    assert row["born_from_event_id"] == first
+    assert row["supporting_event_ids"] == [first, second]
+
+
+async def test_apply_batch_update_merges_supporting_events(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Batch evidence should attach to updated Models without replacing history."""
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        first = await _insert_observation(conn, tenant, content_text="initial")
+        second = await _insert_observation(conn, tenant, content_text="follow-up")
+        third = await _insert_observation(conn, tenant, content_text="batch")
+        model_id = await _insert_applier_model(conn, tenant, first, "memory")
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="update",
+                    model_id=model_id,
+                    changes={"confidence": 0.68},
+                ),
+            ],
+        )
+
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1:event_batch",
+                trigger_cause_event_id=second,
+                trigger_supporting_event_ids=[second, third],
+            )
+        row = await conn.fetchrow(
+            """
+            SELECT supporting_event_ids, confidence
+            FROM models
+            WHERE id = $1
+            """,
+            model_id,
+        )
+
+    assert result["claim_ops"][0]["changed"] == [
+        "confidence",
+        "supporting_event_ids",
+    ]
+    assert row["supporting_event_ids"] == [second, third]
+    assert float(row["confidence"]) == 0.68
+
+
 async def test_apply_claim_update_coerces_iso_timestamp_fields(
     fresh_db,
     tenant,
@@ -215,6 +326,232 @@ async def test_apply_claim_update_coerces_iso_timestamp_fields(
     assert row["resolved_at"].isoformat() == resolved_at
     assert row["resolution_outcome"] is True
     assert row["last_confirmed_at"].isoformat() == resolved_at
+
+
+async def test_apply_prediction_insert_materializes_internal_prediction(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Prediction Models should immediately enter the lifecycle ledger."""
+    from services.reasoning.think.tests.conftest import _insert_observation, make_embedding
+
+    evaluate_at = "2026-06-25T10:00:00+00:00"
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(conn, tenant, content_text="forecast")
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="insert", entry={
+                    "tenant_id": str(tenant),
+                    "born_from_event_id": str(oid),
+                    "proposition": {
+                        "kind": "prediction",
+                        "expected": "Atlas renewal probability will recover",
+                        "resolution": {
+                            "kind": "metric_delta",
+                            "check_after": evaluate_at,
+                            "value_constraint": {
+                                "field": "delta",
+                                "op": "gt",
+                                "value": 0,
+                            },
+                        },
+                    },
+                    "natural": "Atlas renewal probability should recover.",
+                    "embedding": make_embedding("Atlas renewal probability should recover."),
+                    "scope_actors": [],
+                    "scope_entities": [{"type": "customer", "id": str(uuid7())}],
+                    "scope_temporal": {
+                        "valid_from": "2026-06-11T00:00:00+00:00",
+                        "valid_until": evaluate_at,
+                    },
+                    "confidence": 0.72,
+                    "confidence_at_assertion": 0.72,
+                    "falsifier": {
+                        "kind": "observation_pattern",
+                        "pattern": "Atlas renewal probability declines",
+                        "within_window": "P14D",
+                    },
+                }),
+            ],
+        )
+
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+            )
+        model_id = result["applied_model_ids"][0]
+        model_row = await conn.fetchrow(
+            "SELECT evaluate_at, resolution_criteria FROM models WHERE id = $1",
+            model_id,
+        )
+        prediction_row = await conn.fetchrow(
+            """
+            SELECT model_id, prediction, expected_observation, check_after,
+                   status, confidence
+            FROM model_predictions
+            WHERE tenant_id = $1 AND model_id = $2
+            """,
+            tenant,
+            model_id,
+        )
+
+    assert result["claim_ops"][0]["model_prediction_id"]
+    resolution_criteria = (
+        json.loads(model_row["resolution_criteria"])
+        if isinstance(model_row["resolution_criteria"], str)
+        else model_row["resolution_criteria"]
+    )
+    expected_observation = (
+        json.loads(prediction_row["expected_observation"])
+        if isinstance(prediction_row["expected_observation"], str)
+        else prediction_row["expected_observation"]
+    )
+    assert model_row["evaluate_at"].isoformat() == evaluate_at
+    assert resolution_criteria["source"] == "think_prediction_lifecycle"
+    assert prediction_row["model_id"] == model_id
+    assert "Atlas renewal probability" in prediction_row["prediction"]
+    assert "recover" in prediction_row["prediction"]
+    assert expected_observation["kind"] in {"metric_delta", "observation_pattern"}
+    assert expected_observation["falsification_rule"]
+    assert prediction_row["check_after"].isoformat() == evaluate_at
+    assert prediction_row["status"] == "active"
+    assert prediction_row["confidence"] == 0.72
+
+
+async def test_apply_prediction_resolution_syncs_internal_prediction_status(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Resolving a prediction Model should close internal expectations too."""
+    from services.reasoning.think.tests.conftest import _insert_observation, make_embedding
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(conn, tenant, content_text="forecast")
+        trigger = uuid7()
+        insert_diff = ValidatedDiff(
+            trigger_ref=trigger,
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="insert", entry={
+                    "tenant_id": str(tenant),
+                    "born_from_event_id": str(oid),
+                    "proposition": {
+                        "kind": "prediction",
+                        "expected": "Cobalt SAML packet will unblock review",
+                        "resolution": "Review is unblocked by the due date.",
+                    },
+                    "natural": "Cobalt SAML packet will unblock review.",
+                    "embedding": make_embedding("Cobalt SAML packet will unblock review."),
+                    "scope_actors": [],
+                    "scope_entities": [],
+                    "scope_temporal": {},
+                    "confidence": 0.7,
+                    "confidence_at_assertion": 0.7,
+                    "falsifier": {
+                        "kind": "observation_pattern",
+                        "pattern": "Review remains blocked",
+                        "within_window": "P7D",
+                    },
+                }),
+            ],
+        )
+        async with conn.transaction():
+            insert_result = await apply_diff(
+                insert_diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+            )
+        model_id = insert_result["applied_model_ids"][0]
+        resolved_at = datetime(2026, 6, 18, 10, 0, tzinfo=timezone.utc)
+        update_diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="update",
+                    model_id=model_id,
+                    changes={
+                        "resolved_at": resolved_at,
+                        "resolution_outcome": False,
+                    },
+                )
+            ],
+        )
+        async with conn.transaction():
+            update_result = await apply_diff(
+                update_diff,
+                conn,
+                trigger_kind="T2",
+                trigger_cause_event_id=oid,
+            )
+        prediction_status = await conn.fetchval(
+            """
+            SELECT status
+            FROM model_predictions
+            WHERE tenant_id = $1 AND model_id = $2
+            """,
+            tenant,
+            model_id,
+        )
+
+    assert "model_predictions" in update_result["claim_ops"][0]["changed"]
+    assert prediction_status == "falsified"
+
+
+async def test_apply_drops_act_op_with_unresolved_confidence_basis(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """A bad act confidence basis should not abort the whole apply tx."""
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(conn, tenant, content_text="basis missing")
+        missing_basis = uuid7()
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            act_ops=[
+                ActOp(
+                    op="create_commitment",
+                    confidence_basis=missing_basis,
+                    entity={
+                        "title": "Should be skipped before domain insert",
+                        "initial_state": "proposed",
+                        "priority": 3,
+                        "created_by_event_id": str(oid),
+                        "contributes_to_goal_ids": [],
+                        "estimated_capacity": {"maintenance": True},
+                    },
+                )
+            ],
+        )
+
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+            )
+        commitment_count = await conn.fetchval(
+            "SELECT count(*) FROM commitments WHERE tenant_id = $1",
+            tenant,
+        )
+
+    assert result["act_ops"][0]["op"] == "skip"
+    assert result["act_ops"][0]["reason"] == "missing_confidence_basis"
+    assert result["apply_dropped_op_count"] == 1
+    assert commitment_count == 0
 
 
 async def test_apply_claim_update_drops_unpaired_resolution_timestamp(

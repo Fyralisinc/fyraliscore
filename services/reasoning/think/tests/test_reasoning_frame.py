@@ -159,11 +159,14 @@ def test_build_prompt_renders_relationship_candidate_section() -> None:
         },
     )
 
-    user = build_prompt(trigger, ContextBundle()).user
+    prompt = build_prompt(trigger, ContextBundle())
+    user = prompt.user
 
     assert "<relationship_candidate>" in user
     assert "edge_kind: blocks" in user
     assert "latent_relationship_field" in user
+    assert "pre-truth" in prompt.system
+    assert "not a mandate to promote" in prompt.system
 
 
 def test_build_prompt_renders_batched_relationship_candidates() -> None:

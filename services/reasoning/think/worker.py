@@ -48,6 +48,7 @@ from lib.observability.health import (
 )
 from lib.observability.metrics import render_default
 from lib.shared.ids import uuid7
+from services.domain.triggers import enqueue_trigger
 
 from services.reasoning.retrieval.primary import TriggerContext
 
@@ -316,6 +317,10 @@ class WorkerConfig:
     t2_batch_max_size: int = 8
     t4_batch_max_size: int = 4
     prune_low_value_downstream_triggers: bool = True
+    t4_topology_min_judgment_leverage: float = 0.70
+    t4_topology_min_impact: float = 0.50
+    t4_topology_min_actionability: float = 0.40
+    t4_topology_min_confidence: float = 0.50
     worker_id: str = "worker"
     tenant_filter: UUID | None = None
 
@@ -373,6 +378,18 @@ class WorkerConfig:
                 ).strip().lower()
                 not in {"0", "false", "no", "off"}
             ),
+            t4_topology_min_judgment_leverage=float(os.environ.get(
+                "THINK_T4_TOPOLOGY_MIN_JUDGMENT_LEVERAGE", 0.70
+            )),
+            t4_topology_min_impact=float(os.environ.get(
+                "THINK_T4_TOPOLOGY_MIN_IMPACT", 0.50
+            )),
+            t4_topology_min_actionability=float(os.environ.get(
+                "THINK_T4_TOPOLOGY_MIN_ACTIONABILITY", 0.40
+            )),
+            t4_topology_min_confidence=float(os.environ.get(
+                "THINK_T4_TOPOLOGY_MIN_CONFIDENCE", 0.50
+            )),
             worker_id=os.environ.get("THINK_WORKER_ID", f"worker-{os.getpid()}"),
         )
 
@@ -552,17 +569,13 @@ class ThinkWorker:
                         ),
                         "cause_kind": r["cause_kind"],
                     }
-                    await conn.execute(
-                        """
-                        INSERT INTO think_trigger_queue
-                          (id, tenant_id, trigger_kind, trigger_subkind,
-                           model_id, payload)
-                        VALUES ($1, $2, 'T4', 'model_reeval', $3, $4::jsonb)
-                        """,
-                        uuid7(),
-                        r["tenant_id"],
-                        r["model_id"],
-                        json.dumps(payload),
+                    await enqueue_trigger(
+                        conn,
+                        tenant_id=r["tenant_id"],
+                        trigger_kind="T4",
+                        trigger_subkind="model_reeval",
+                        model_id=r["model_id"],
+                        payload=payload,
                     )
 
     # -----------------------------------------------------------------
@@ -752,6 +765,7 @@ class ThinkWorker:
         )
 
         await self._aggregate_edge_type_candidates_for_pruning(conn)
+        await self._prune_low_value_t4_topology_candidate_rows(conn)
 
         await conn.execute(
             f"""
@@ -804,6 +818,72 @@ class ThinkWorker:
               AND c.tenant_id = q.tenant_id
               AND c.id = (q.payload->>'relationship_candidate_id')::uuid
               AND c.candidate_kind = 'edge_type'
+            """,
+            *args,
+        )
+
+    async def _prune_low_value_t4_topology_candidate_rows(
+        self,
+        conn: asyncpg.Connection,
+    ) -> None:
+        tenant_clause = ""
+        args: list[Any] = [
+            self.config.worker_id,
+            float(self.config.t4_topology_min_judgment_leverage),
+            float(self.config.t4_topology_min_impact),
+            float(self.config.t4_topology_min_actionability),
+            float(self.config.t4_topology_min_confidence),
+        ]
+        if self.config.tenant_filter is not None:
+            args.append(self.config.tenant_filter)
+            tenant_clause = f"AND q.tenant_id = ${len(args)}"
+
+        await conn.execute(
+            f"""
+            UPDATE think_trigger_queue q
+            SET completed_at = now(),
+                locked_by = NULL,
+                locked_at = NULL,
+                payload = q.payload || jsonb_build_object(
+                  'auto_completed_reason',
+                  'low_value_topology_candidate_noop',
+                  'auto_completed_by',
+                  $1::text,
+                  'candidate_judgment_leverage',
+                  c.judgment_leverage_score,
+                  'candidate_impact',
+                  c.impact_score,
+                  'candidate_actionability',
+                  c.actionability_score,
+                  'candidate_confidence',
+                  c.confidence_score
+                )
+            FROM relationship_candidates c
+            WHERE q.completed_at IS NULL
+              AND q.batch_parent_id IS NULL
+              AND q.trigger_kind = 'T4'
+              AND q.trigger_subkind = 'latent_relationship_candidate'
+              {tenant_clause}
+              AND q.payload ? 'relationship_candidate_id'
+              AND (q.payload->>'relationship_candidate_id') ~*
+                '^[0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}}$'
+              AND c.tenant_id = q.tenant_id
+              AND c.id = (q.payload->>'relationship_candidate_id')::uuid
+              AND c.candidate_kind IN ('edge', 'situation')
+              AND c.review_status IN ('candidate', 'needs_review')
+              AND (
+                c.source = 'latent_topology'
+                OR c.basis = 'topology_suggested'
+                OR c.metadata ? 'topology'
+                OR c.metadata->'candidate_lifecycle'->>'origin' =
+                  'latent_topology'
+              )
+              AND (
+                c.judgment_leverage_score < $2
+                OR c.impact_score < $3
+                OR c.actionability_score < $4
+                OR c.confidence_score < $5
+              )
             """,
             *args,
         )
@@ -1141,21 +1221,15 @@ class ThinkWorker:
             observation_ids=observation_ids,
         )
         primary_observation_id = observation_ids[0] if observation_ids else None
-        await conn.execute(
-            """
-            INSERT INTO think_trigger_queue (
-              id, tenant_id, trigger_kind, trigger_subkind,
-              observation_id, model_id, payload, scheduled_for, locked_by, locked_at
-            ) VALUES (
-              $1, $2, 'T1', 'event_batch',
-              $3, NULL, $4::jsonb, now(), $5, now()
-            )
-            """,
-            batch_id,
-            tenant_id,
-            primary_observation_id,
-            json.dumps(payload, default=str),
-            self.config.worker_id,
+        await enqueue_trigger(
+            conn,
+            tenant_id=tenant_id,
+            trigger_kind="T1",
+            trigger_subkind="event_batch",
+            observation_id=primary_observation_id,
+            payload=payload,
+            locked_by=self.config.worker_id,
+            trigger_id=batch_id,
         )
         await conn.execute(
             """
@@ -1206,6 +1280,7 @@ class ThinkWorker:
         channels: set[str] = set()
         trust_tiers: set[str] = set()
         kinds: set[str] = set()
+        signal_fragments: list[dict[str, str]] = []
         for row in rows:
             occurred_at = row["occurred_at"]
             if earliest is None or occurred_at < earliest:
@@ -1238,7 +1313,15 @@ class ThinkWorker:
                     seed_entities.append({"type": str(etype), "id": str(eid)})
             text = (row["content_text"] or "").strip()
             if text:
-                compact = " ".join(text.split())
+                compact_full = " ".join(text.split())
+                signal_fragments.append({
+                    "observation_id": str(row["id"]),
+                    "occurred_at": occurred_at.isoformat(),
+                    "source_channel": str(row["source_channel"]),
+                    "kind": str(row["kind"]),
+                    "text": compact_full[:900],
+                })
+                compact = compact_full
                 if len(compact) > 280:
                     compact = compact[:277].rstrip() + "..."
                 signal_lines.append(f"- {row['id']}: {compact}")
@@ -1254,6 +1337,7 @@ class ThinkWorker:
             "batch_member_trigger_ids": [str(m["id"]) for m in members],
             "batch_observation_ids": [str(oid) for oid in observation_ids],
             "observation_ids": [str(oid) for oid in observation_ids],
+            "batch_signal_fragments": signal_fragments,
             "member_trigger_ids": [str(m["id"]) for m in members],
             "source_channel": "batch",
             "kind": "signal_batch",
@@ -1295,24 +1379,16 @@ class ThinkWorker:
             (m["observation_id"] for m in members if m["observation_id"]),
             None,
         )
-        await conn.execute(
-            """
-            INSERT INTO think_trigger_queue (
-              id, tenant_id, trigger_kind, trigger_subkind,
-              observation_id, model_id, payload, scheduled_for, locked_by, locked_at
-            ) VALUES (
-              $1, $2, $3, $4,
-              $5, $6, $7::jsonb, now(), $8, now()
-            )
-            """,
-            batch_id,
-            tenant_id,
-            trigger_kind,
-            trigger_subkind,
-            primary_observation_id,
-            primary_model_id,
-            json.dumps(payload, default=str),
-            self.config.worker_id,
+        await enqueue_trigger(
+            conn,
+            tenant_id=tenant_id,
+            trigger_kind=trigger_kind,
+            trigger_subkind=trigger_subkind,
+            observation_id=primary_observation_id,
+            model_id=primary_model_id,
+            payload=payload,
+            locked_by=self.config.worker_id,
+            trigger_id=batch_id,
         )
         await conn.execute(
             """

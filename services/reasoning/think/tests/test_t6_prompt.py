@@ -3,7 +3,7 @@
 Verifies:
   - <topology_context> section is rendered when bundle.topology_context
     is set, with neighborhood + recent_phase_events lines.
-  - T6-specific operating instructions are appended.
+  - T6-specific operating instructions are emitted in the stable system prompt.
   - is_authoritative(T6) returns False (so T6 routes to LLM).
 """
 from __future__ import annotations
@@ -44,13 +44,12 @@ def test_t6_instructions_appended():
         neighborhood_id=uuid4(),
     )
     pair = build_prompt(trigger, _empty_bundle())
-    user = pair.user
-    assert "T6 trigger" in user
-    assert "legacy accepted-memory graph phase event" in user
-    assert "<topology_context>" in user
+    assert "T6 trigger" in pair.system
+    assert "legacy accepted-memory graph phase event" in pair.system
+    assert "<topology_context>" in pair.user
     # The instructions reference recommendation surfacing for emergence
     # / merge / high-magnitude split.
-    assert "recommendation" in user
+    assert "recommendation" in pair.system
 
 
 def test_topology_context_section_rendered_with_neighborhoods():

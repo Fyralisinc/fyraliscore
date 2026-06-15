@@ -229,6 +229,12 @@ async def tenant_cleanup(fresh_db: asyncpg.Pool, tenant: uuid.UUID):
             "DELETE FROM model_reeval_queue WHERE tenant_id = $1", tenant,
         )
         await conn.execute(
+            "DELETE FROM think_obligations WHERE tenant_id = $1", tenant,
+        )
+        await conn.execute(
+            "DELETE FROM think_feedback_stats WHERE tenant_id = $1", tenant,
+        )
+        await conn.execute(
             "DELETE FROM think_trigger_queue WHERE tenant_id = $1", tenant,
         )
         await conn.execute(

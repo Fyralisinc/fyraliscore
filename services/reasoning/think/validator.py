@@ -109,6 +109,8 @@ def _outcome_event_for_drop_reason(reason: str) -> str:
 
 async def _emit_validation_drop_event(
     *,
+    conn: asyncpg.Connection | None = None,
+    tenant_id: UUID | None = None,
     op_type: str,
     op_kind: str,
     reason: str,
@@ -120,6 +122,23 @@ async def _emit_validation_drop_event(
     services.reasoning.sage (matches the local-import pattern used elsewhere for
     optional surfaces).
     """
+    if conn is not None and tenant_id is not None:
+        try:
+            from services.domain.feedback_stats import record_feedback_stat
+
+            await record_feedback_stat(
+                conn,
+                tenant_id=tenant_id,
+                surface="think_validation",
+                op_type=op_type,
+                op_kind=op_kind,
+                outcome="dropped",
+                reason=reason,
+                payload={"error_message": error_message[:500]},
+            )
+        except asyncpg.PostgresError:
+            pass
+
     try:
         from services.reasoning.sage.inquiry_traces.emitter import emit_event
     except Exception:  # noqa: BLE001
@@ -439,7 +458,8 @@ def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
             # scope_entities so the region covers the subject set.
             for e in op.entry.get("scope_entities", []) or []:
                 if isinstance(e, dict):
-                    et = e.get("type"); eid = e.get("id")
+                    et = e.get("type")
+                    eid = e.get("id")
                     if et and eid:
                         out.append((str(et), str(eid)))
         elif op.model_id is not None:
@@ -483,18 +503,24 @@ def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
         elif op.op == "add_edge_contributes_to":
             cid = ent.get("commitment_id")
             gid = ent.get("goal_id")
-            if cid: out.append(("commitment", str(cid)))
-            if gid: out.append(("goal", str(gid)))
+            if cid:
+                out.append(("commitment", str(cid)))
+            if gid:
+                out.append(("goal", str(gid)))
         elif op.op == "add_edge_depends_on":
             t = ent.get("dependent_commitment_id")
             d = ent.get("dependency_commitment_id")
-            if t: out.append(("commitment", str(t)))
-            if d: out.append(("commitment", str(d)))
+            if t:
+                out.append(("commitment", str(t)))
+            if d:
+                out.append(("commitment", str(d)))
         elif op.op == "add_edge_constrained_by":
             cid = ent.get("commitment_id")
             did = ent.get("decision_id")
-            if cid: out.append(("commitment", str(cid)))
-            if did: out.append(("decision", str(did)))
+            if cid:
+                out.append(("commitment", str(cid)))
+            if did:
+                out.append(("decision", str(did)))
     for op in diff.resource_ops:
         if op.resource_id is not None:
             out.append(("resource", str(op.resource_id)))
@@ -607,36 +633,138 @@ async def validate(
     about region can pass None).
     """
     errors: list[str] = []
-    total_ops = (
-        len(diff.claim_ops)
+    claim_ops = [*diff.claim_ops, *diff.new_predictions]
+    total_ops = _count_submitted_ops(diff, claim_ops)
+    _enforce_region_containment(
+        diff,
+        claim_ops=claim_ops,
+        allowed_region=allowed_region,
+        strict_region=strict_region,
+    )
+
+    validated_claim_ops = await _validate_claim_ops(
+        diff, claim_ops, retrieval_result, conn, errors
+    )
+    pending_claim_basis_confidence = _pending_claim_basis_confidence(
+        validated_claim_ops
+    )
+    validated_edge_ops, neutralized_edge_count = await _validate_edge_ops(
+        diff,
+        conn,
+        errors,
+        pending_claim_basis_confidence=pending_claim_basis_confidence,
+    )
+    validated_ontology_gap_ops = await _validate_ontology_gap_ops(
+        diff,
+        conn,
+        errors,
+        pending_claim_basis_confidence=pending_claim_basis_confidence,
+    )
+    validated_act_ops, neutralized_act_count = await _validate_act_ops(
+        diff,
+        retrieval_result,
+        conn,
+        errors,
+        pending_claim_basis_confidence=pending_claim_basis_confidence,
+    )
+    validated_resource_ops = await _validate_resource_ops(diff, conn, errors)
+
+    _raise_if_every_op_failed(
+        total_ops=total_ops,
+        errors=errors,
+        neutralized_op_count=neutralized_edge_count + neutralized_act_count,
+        validated_groups=(
+            validated_claim_ops,
+            validated_edge_ops,
+            validated_ontology_gap_ops,
+            validated_act_ops,
+            validated_resource_ops,
+        ),
+    )
+
+    return ValidatedDiff(
+        trigger_ref=diff.trigger_ref,
+        tenant_id=diff.tenant_id,
+        claim_ops=validated_claim_ops,
+        edge_ops=validated_edge_ops,
+        ontology_gap_ops=validated_ontology_gap_ops,
+        act_ops=validated_act_ops,
+        resource_ops=validated_resource_ops,
+        new_predictions=[],
+        reasoning_trace=diff.reasoning_trace,
+        dropped_op_count=len(errors),
+        dropped_op_errors=errors[:25],
+    )
+
+
+def _count_submitted_ops(diff: RawDiff, claim_ops: list[ClaimOp]) -> int:
+    return (
+        len(claim_ops)
         + len(diff.edge_ops)
         + len(diff.ontology_gap_ops)
         + len(diff.act_ops)
         + len(diff.resource_ops)
     )
 
-    # --- Out-of-region check (before any other work) ---------------
-    if allowed_region is not None and strict_region:
-        allowed = set(allowed_region)
-        touched = _iter_entity_ids_touched(diff)
-        missing = [t for t in touched if t not in allowed]
-        if missing:
-            raise OutOfRegionError(
-                "diff touches entities outside the pre-declared region",
-                missing=missing[:10],
-                touched=len(touched),
-                allowed_size=len(allowed),
-            )
 
-    validated_claim_ops: list[ClaimOp] = []
-    validated_edge_ops: list[EdgeOp] = []
-    validated_ontology_gap_ops: list[OntologyGapOp] = []
-    validated_act_ops: list[ActOp] = []
-    validated_resource_ops: list[ResourceOp] = []
-    neutralized_op_count = 0
+def _enforce_region_containment(
+    diff: RawDiff,
+    *,
+    claim_ops: list[ClaimOp],
+    allowed_region: list[tuple[str, str]] | None,
+    strict_region: bool,
+) -> None:
+    if allowed_region is None or not strict_region:
+        return
+    allowed = set(allowed_region)
+    touched = _iter_entity_ids_touched(diff.model_copy(update={"claim_ops": claim_ops}))
+    missing = [t for t in touched if t not in allowed]
+    if missing:
+        raise OutOfRegionError(
+            "diff touches entities outside the pre-declared region",
+            missing=missing[:10],
+            touched=len(touched),
+            allowed_size=len(allowed),
+        )
 
-    # --- claim_ops -------------------------------------------------
-    for op in diff.claim_ops:
+
+async def _record_validation_drop(
+    diff: RawDiff,
+    conn: asyncpg.Connection,
+    *,
+    op_type: str,
+    op_kind: str,
+    reason: str,
+    error_message: str,
+    original_op: Any,
+) -> None:
+    log_dropped_op(
+        trigger_id=diff.trigger_ref,
+        tenant_id=diff.tenant_id,
+        op_kind=op_kind,
+        op_type=op_type,
+        failure_reason=reason,
+        original_op=original_op,
+    )
+    await _emit_validation_drop_event(
+        conn=conn,
+        tenant_id=diff.tenant_id,
+        op_type=op_type,
+        op_kind=op_kind,
+        reason=reason,
+        error_message=error_message,
+    )
+
+
+async def _validate_claim_ops(
+    diff: RawDiff,
+    claim_ops: list[ClaimOp],
+    retrieval_result: Any,
+    conn: asyncpg.Connection,
+    errors: list[str],
+) -> list[ClaimOp]:
+    validated: list[ClaimOp] = []
+    for op in claim_ops:
         try:
             v_op = await _validate_claim_op(
                 op, retrieval_result, conn, tenant_id=diff.tenant_id
@@ -645,52 +773,44 @@ async def validate(
             reason = _classify_claim_drop_reason(e)
             err_msg = e.message if hasattr(e, "message") else str(e)
             errors.append(f"claim_op {op.op}: {err_msg}")
-            # OP-4: structured dropped-op log + metrics counter.
-            log_dropped_op(
-                trigger_id=diff.trigger_ref,
-                tenant_id=diff.tenant_id,
-                op_kind=op.op,
-                op_type="claim",
-                failure_reason=reason,
-                original_op=op,
-            )
-            # Phase 1: outcome event for the self-evolution loop.
-            await _emit_validation_drop_event(
+            await _record_validation_drop(
+                diff,
+                conn,
                 op_type="claim",
                 op_kind=op.op,
                 reason=reason,
                 error_message=err_msg,
+                original_op=op,
             )
             continue
-        # For update/archive, the target Model must exist. Retrieval
-        # context may not include it (the LLM may update a Model it
-        # saw in retrieval, or we may relax for archived). We check
-        # DB presence when strict.
-        if v_op.op in ("update", "archive") and v_op.model_id is not None:
-            exists = await conn.fetchval(
-                "SELECT 1 FROM models WHERE id = $1", v_op.model_id
+        if await _claim_target_missing(v_op, conn):
+            err_msg = f"model {v_op.model_id} not found"
+            errors.append(f"claim_op {v_op.op}: {err_msg}")
+            await _record_validation_drop(
+                diff,
+                conn,
+                op_type="claim",
+                op_kind=v_op.op,
+                reason="missing_model_reference",
+                error_message=err_msg,
+                original_op=op,
             )
-            if not exists:
-                err_msg = f"model {v_op.model_id} not found"
-                errors.append(f"claim_op {v_op.op}: {err_msg}")
-                log_dropped_op(
-                    trigger_id=diff.trigger_ref,
-                    tenant_id=diff.tenant_id,
-                    op_kind=v_op.op,
-                    op_type="claim",
-                    failure_reason="missing_model_reference",
-                    original_op=op,
-                )
-                await _emit_validation_drop_event(
-                    op_type="claim",
-                    op_kind=v_op.op,
-                    reason="missing_model_reference",
-                    error_message=err_msg,
-                )
-                continue
-        validated_claim_ops.append(v_op)
+            continue
+        validated.append(v_op)
+    return validated
 
-    pending_claim_basis_confidence: dict[UUID, float] = {}
+
+async def _claim_target_missing(op: ClaimOp, conn: asyncpg.Connection) -> bool:
+    if op.op not in ("update", "archive") or op.model_id is None:
+        return False
+    exists = await conn.fetchval("SELECT 1 FROM models WHERE id = $1", op.model_id)
+    return not bool(exists)
+
+
+def _pending_claim_basis_confidence(
+    validated_claim_ops: list[ClaimOp],
+) -> dict[UUID, float]:
+    pending: dict[UUID, float] = {}
     for op in validated_claim_ops:
         if op.op != "insert" or not isinstance(op.entry, dict):
             continue
@@ -698,9 +818,19 @@ async def validate(
         for key in ("born_from_event_id", "model_id", "id"):
             placeholder_id = _coerce_uuid(op.entry.get(key))
             if placeholder_id is not None:
-                pending_claim_basis_confidence[placeholder_id] = confidence
+                pending[placeholder_id] = confidence
+    return pending
 
-    # --- edge_ops --------------------------------------------------
+
+async def _validate_edge_ops(
+    diff: RawDiff,
+    conn: asyncpg.Connection,
+    errors: list[str],
+    *,
+    pending_claim_basis_confidence: dict[UUID, float],
+) -> tuple[list[EdgeOp], int]:
+    validated: list[EdgeOp] = []
+    neutralized_count = 0
     for op in diff.edge_ops:
         try:
             v_op = await _validate_edge_op(
@@ -708,33 +838,37 @@ async def validate(
                 conn,
                 tenant_id=diff.tenant_id,
                 pending_model_event_ids=set(pending_claim_basis_confidence),
-                pending_edge_ops=validated_edge_ops,
+                pending_edge_ops=validated,
             )
         except (ValidationError, EdgeRegistryError) as e:
             reason = _classify_edge_drop_reason(e)
             msg = getattr(e, "message", None) or str(e)
             errors.append(f"edge_op {op.op}: {msg}")
-            log_dropped_op(
-                trigger_id=diff.trigger_ref,
-                tenant_id=diff.tenant_id,
-                op_kind=op.op,
-                op_type="edge",
-                failure_reason=reason,
-                original_op=op,
-            )
-            await _emit_validation_drop_event(
+            await _record_validation_drop(
+                diff,
+                conn,
                 op_type="edge",
                 op_kind=op.op,
                 reason=reason,
                 error_message=msg,
+                original_op=op,
             )
             continue
         if v_op is None:
-            neutralized_op_count += 1
+            neutralized_count += 1
             continue
-        validated_edge_ops.append(v_op)
+        validated.append(v_op)
+    return validated, neutralized_count
 
-    # --- ontology_gap_ops -----------------------------------------
+
+async def _validate_ontology_gap_ops(
+    diff: RawDiff,
+    conn: asyncpg.Connection,
+    errors: list[str],
+    *,
+    pending_claim_basis_confidence: dict[UUID, float],
+) -> list[OntologyGapOp]:
+    validated: list[OntologyGapOp] = []
     for op in diff.ontology_gap_ops:
         try:
             v_op = await _validate_ontology_gap_op(
@@ -747,24 +881,30 @@ async def validate(
             reason = _classify_ontology_gap_drop_reason(e)
             msg = getattr(e, "message", None) or str(e)
             errors.append(f"ontology_gap_op {op.op}: {msg}")
-            log_dropped_op(
-                trigger_id=diff.trigger_ref,
-                tenant_id=diff.tenant_id,
-                op_kind=op.op,
-                op_type="ontology_gap",
-                failure_reason=reason,
-                original_op=op,
-            )
-            await _emit_validation_drop_event(
+            await _record_validation_drop(
+                diff,
+                conn,
                 op_type="ontology_gap",
                 op_kind=op.op,
                 reason=reason,
                 error_message=msg,
+                original_op=op,
             )
             continue
-        validated_ontology_gap_ops.append(v_op)
+        validated.append(v_op)
+    return validated
 
-    # --- act_ops ---------------------------------------------------
+
+async def _validate_act_ops(
+    diff: RawDiff,
+    retrieval_result: Any,
+    conn: asyncpg.Connection,
+    errors: list[str],
+    *,
+    pending_claim_basis_confidence: dict[UUID, float],
+) -> tuple[list[ActOp], int]:
+    validated: list[ActOp] = []
+    neutralized_count = 0
     for op in diff.act_ops:
         try:
             v_op = await _validate_act_op(
@@ -773,69 +913,67 @@ async def validate(
                 conn,
                 pending_claim_basis_confidence=pending_claim_basis_confidence,
             )
-        except (
-            ValidationError, InvariantViolation, TrustTierError,
-        ) as e:
+        except (ValidationError, InvariantViolation, TrustTierError) as e:
             reason = _classify_act_drop_reason(e)
             msg = getattr(e, "message", None) or str(e)
             errors.append(f"act_op {op.op}: {msg}")
-            log_dropped_op(
-                trigger_id=diff.trigger_ref,
-                tenant_id=diff.tenant_id,
-                op_kind=op.op,
-                op_type="act",
-                failure_reason=reason,
-                original_op=op,
-            )
-            await _emit_validation_drop_event(
+            await _record_validation_drop(
+                diff,
+                conn,
                 op_type="act",
                 op_kind=op.op,
                 reason=reason,
                 error_message=msg,
+                original_op=op,
             )
             continue
         if v_op is None:
-            neutralized_op_count += 1
+            neutralized_count += 1
             continue
-        validated_act_ops.append(v_op)
+        validated.append(v_op)
+    return validated, neutralized_count
 
-    # --- resource_ops ----------------------------------------------
+
+async def _validate_resource_ops(
+    diff: RawDiff,
+    conn: asyncpg.Connection,
+    errors: list[str],
+) -> list[ResourceOp]:
+    validated: list[ResourceOp] = []
     for op in diff.resource_ops:
         try:
             v_op = _validate_resource_op_shape(op)
         except ValidationError as e:
             reason = _classify_resource_drop_reason(e)
             errors.append(f"resource_op {op.op}: {e.message}")
-            log_dropped_op(
-                trigger_id=diff.trigger_ref,
-                tenant_id=diff.tenant_id,
-                op_kind=op.op,
-                op_type="resource",
-                failure_reason=reason,
-                original_op=op,
-            )
-            await _emit_validation_drop_event(
+            await _record_validation_drop(
+                diff,
+                conn,
                 op_type="resource",
                 op_kind=op.op,
                 reason=reason,
                 error_message=e.message,
+                original_op=op,
             )
             continue
-        validated_resource_ops.append(v_op)
+        validated.append(v_op)
+    return validated
 
-    # --- Partial-accept gate --------------------------------------
-    # Policy: keep good ops, drop bad ones. Record dropped-op counts
-    # and error messages on the ValidatedDiff for observability. Only
-    # raise ValidationFailure when the LLM submitted ops (total_ops>0)
-    # and EVERY one of them was bad — in that case there's nothing to
-    # apply and silently returning empty would mask an upstream bug.
-    any_survived = bool(
-        validated_claim_ops
-        or validated_edge_ops
-        or validated_ontology_gap_ops
-        or validated_act_ops
-        or validated_resource_ops
-    )
+
+def _raise_if_every_op_failed(
+    *,
+    total_ops: int,
+    errors: list[str],
+    neutralized_op_count: int,
+    validated_groups: tuple[
+        list[ClaimOp],
+        list[EdgeOp],
+        list[OntologyGapOp],
+        list[ActOp],
+        list[ResourceOp],
+    ],
+) -> None:
+    any_survived = any(validated_groups)
     if total_ops > 0 and not any_survived and neutralized_op_count == 0:
         raise ValidationFailure(
             f"validation rejected {len(errors)}/{total_ops} ops "
@@ -843,20 +981,6 @@ async def validate(
             errors=errors[:25],
             total=total_ops,
         )
-
-    return ValidatedDiff(
-        trigger_ref=diff.trigger_ref,
-        tenant_id=diff.tenant_id,
-        claim_ops=validated_claim_ops,
-        edge_ops=validated_edge_ops,
-        ontology_gap_ops=validated_ontology_gap_ops,
-        act_ops=validated_act_ops,
-        resource_ops=validated_resource_ops,
-        new_predictions=[op for op in diff.new_predictions if op.op == "insert"],
-        reasoning_trace=diff.reasoning_trace,
-        dropped_op_count=len(errors),
-        dropped_op_errors=errors[:25],
-    )
 
 
 # ---------------------------------------------------------------------
@@ -1177,12 +1301,23 @@ async def _validate_edge_op(
         resolve_edge_kind_spec,
         validate_weight_for_spec,
     )
+    from services.reasoning.think.edge_semantics import (
+        canonicalize_edge_semantics,
+        normalize_edge_review_status,
+    )
 
     if op.source_model_id == op.target_model_id:
         raise ValidationError(
             "edge_op self-edge not allowed",
             model_id=str(op.source_model_id),
         )
+    op = await canonicalize_edge_semantics(
+        op,
+        conn,
+        tenant_id=tenant_id,
+        pending_model_event_ids=pending_model_event_ids,
+    )
+    op = normalize_edge_review_status(op)
     spec = await resolve_edge_kind_spec(
         conn,
         tenant_id=tenant_id,

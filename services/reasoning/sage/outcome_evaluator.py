@@ -54,6 +54,7 @@ Design notes
 * The optional `conn=` on `evaluate()` lets callers participate in an
   outer transaction; if `None`, we acquire from the pool.
 """
+
 from __future__ import annotations
 
 import json
@@ -65,6 +66,8 @@ import asyncpg
 import structlog
 
 from lib.shared.errors import CompanyOSError
+from services.reasoning.sage.outcome_evidence import emit_evidence_outcome_events
+from services.reasoning.sage.outcome_reward import build_reward_features
 from services.reasoning.sage.inquiry_traces.repo import OutcomeEventsRepo
 
 
@@ -117,6 +120,43 @@ class InquiryOutcomeSummary:
     quality_signal: OutcomeQualitySignal
 
 
+@dataclass(frozen=True, slots=True)
+class _ValidDiffOutcome:
+    events_emitted: int
+    used_node_ids: list[UUID]
+    diff_model_ids: list[UUID]
+
+
+@dataclass(frozen=True, slots=True)
+class _LowValueReaderOutcome:
+    events_emitted: int
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidationFailureOutcome:
+    events_emitted: int
+    missing_anchors: list[dict[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class _EvaluationContext:
+    session: asyncpg.Record
+    packet: dict[str, Any]
+    signature_context: dict[str, Any]
+    packet_strings: set[str]
+    packet_tokens: float
+    evidence_items: list[asyncpg.Record]
+    omitted_rows: list[asyncpg.Record]
+    think_run_id: UUID | None
+    think_run: asyncpg.Record | None
+    ops_applied: dict[str, Any]
+    context_use: dict[str, Any]
+    selected_context_used: bool
+    run_status: str
+    run_error: str
+    existing_keys: set[tuple[str, str]]
+
+
 # ---------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------
@@ -146,13 +186,15 @@ _BAD_REFERENCE_TOKENS = (
 
 LOW_VALUE_READER_DECISION_LIMIT = 12
 
-_CONTEXT_USED_GRADES = frozenset({
-    "graph_context_used",
-    "model_context_used",
-    "observation_context_used",
-    "justified_noop_context_used",
-    "selected_context_accounted",
-})
+_CONTEXT_USED_GRADES = frozenset(
+    {
+        "graph_context_used",
+        "model_context_used",
+        "observation_context_used",
+        "justified_noop_context_used",
+        "selected_context_accounted",
+    }
+)
 
 
 def _coerce_obj(value: Any) -> dict[str, Any]:
@@ -260,11 +302,13 @@ def _signature_context_from_packet(
                 primitives.append(p)
     primitive = primitives[0] if primitives else None
     signature = {
-        k: v for k, v in {
+        k: v
+        for k, v in {
             "signal_type": signal_type,
             "entities": entities[:12],
             "question_primitive": primitive,
-        }.items() if v
+        }.items()
+        if v
     }
     return {
         "signal_type": signal_type,
@@ -304,20 +348,26 @@ def _signature_from_reader_attribution(
     signal_type = str(
         attribution["signal_type"] or fallback.get("signal_type") or ""
     ).strip()
-    primitive = str(
-        attribution["question_primitive"]
-        or fallback.get("question_primitive")
-        or ""
-    ).strip().upper()
+    primitive = (
+        str(
+            attribution["question_primitive"]
+            or fallback.get("question_primitive")
+            or ""
+        )
+        .strip()
+        .upper()
+    )
     entities = _entity_texts(attribution["entities"])
     if not entities:
         entities = _entity_texts(fallback.get("entities"))
     return {
-        k: v for k, v in {
+        k: v
+        for k, v in {
             "signal_type": signal_type or None,
             "entities": entities[:12],
             "question_primitive": primitive or None,
-        }.items() if v
+        }.items()
+        if v
     }
 
 
@@ -363,6 +413,13 @@ def _collect_model_ids_from_ops(ops_applied: dict[str, Any]) -> list[UUID]:
     return out
 
 
+def _ops_applied_has_state_mutation(ops_applied: dict[str, Any]) -> bool:
+    for key in ("claim_ops", "edge_ops", "act_ops", "resource_ops", "new_predictions"):
+        if _coerce_list(ops_applied.get(key)):
+            return True
+    return False
+
+
 async def _existing_model_ids_in_order(
     conn: asyncpg.Connection,
     *,
@@ -383,19 +440,6 @@ async def _existing_model_ids_in_order(
     )
     existing = {row["id"] for row in rows}
     return [model_id for model_id in model_ids if model_id in existing]
-
-
-def _collect_act_op_counts(ops_applied: dict[str, Any]) -> tuple[int, int]:
-    """Return (applied_act_ops_count, total_act_ops_proposed).
-
-    v1 has no separate "proposed" telemetry surface; we conservatively
-    treat dropped_op_count as the proposal overhead and applied as
-    total minus dropped. Spec §17.1 expects the ratio as a proxy.
-    """
-    applied = len(_coerce_list(ops_applied.get("act_ops")))
-    dropped = int(ops_applied.get("dropped_op_count") or 0)
-    proposed = applied + dropped
-    return applied, proposed
 
 
 # ---------------------------------------------------------------------
@@ -422,7 +466,8 @@ class OutcomeEvaluator:
         self._pool = pool
         self.tenant_id = tenant_id
         self._events_repo = outcome_events_repo or OutcomeEventsRepo(
-            pool, tenant_id=tenant_id,
+            pool,
+            tenant_id=tenant_id,
         )
 
     # -----------------------------------------------------------------
@@ -453,273 +498,65 @@ class OutcomeEvaluator:
         inquiry_session_id: UUID,
         conn: asyncpg.Connection,
     ) -> InquiryOutcomeSummary:
-        session = await self._load_session(conn, inquiry_session_id)
-        if session is None:
-            raise OutcomeEvaluatorError(
-                f"inquiry_session {inquiry_session_id} not found for tenant",
-            )
-
-        packet = _coerce_obj(session["context_packet"])
-        signature_context = _signature_context_from_packet(packet, session)
-        packet_strings = set(_walk_strings(packet))
-        packet_tokens_raw = (
-            _coerce_obj(packet.get("budget")).get("estimated_tokens_used")
-            or packet.get("estimated_tokens")
-            or 0
+        context = await self._load_evaluation_context(
+            conn,
+            inquiry_session_id,
         )
-        try:
-            packet_tokens = float(packet_tokens_raw)
-        except (TypeError, ValueError):
-            packet_tokens = 0.0
+        session = context.session
+        packet = context.packet
+        signature_context = context.signature_context
+        evidence_items = context.evidence_items
+        omitted_rows = context.omitted_rows
+        think_run_id = context.think_run_id
+        think_run = context.think_run
+        ops_applied = context.ops_applied
+        context_use = context.context_use
+        selected_context_used = context.selected_context_used
+        run_status = context.run_status
+        run_error = context.run_error
+        existing_keys = context.existing_keys
 
-        evidence_items = await self._load_evidence_items(conn, inquiry_session_id)
-        omitted_rows = await self._load_omitted_evidence(conn, inquiry_session_id)
-
-        think_run_id = _try_uuid(session.get("think_run_id"))
-        think_run = (
-            await self._load_think_run(conn, think_run_id)
-            if think_run_id is not None
-            else None
+        evidence_stats = await emit_evidence_outcome_events(
+            events_repo=self._events_repo,
+            conn=conn,
+            inquiry_session_id=inquiry_session_id,
+            evidence_items=evidence_items,
+            omitted_rows=omitted_rows,
+            packet_strings=context.packet_strings,
+            existing_keys=existing_keys,
         )
-        ops_applied = _coerce_obj(think_run["ops_applied"]) if think_run else {}
-        context_use = _coerce_obj(ops_applied.get("context_use"))
-        selected_context_used = _selected_context_was_used(context_use)
-        run_status = (think_run or {}).get("status") or ""
-        run_error = ((think_run or {}).get("error") or "").lower()
 
-        # Existing events for idempotency (cheap one-shot scan).
-        existing_events = await self._load_existing_events(
-            conn, inquiry_session_id,
-        )
-        existing_keys = _build_existing_keys(existing_events)
-
-        events_emitted = 0
-        used_evidence_ids: list[UUID] = []
-        omitted_evidence_ids: list[UUID] = []
+        events_emitted = evidence_stats.events_emitted
+        used_evidence_ids = evidence_stats.used_evidence_ids
+        omitted_evidence_ids = evidence_stats.omitted_evidence_ids
+        counterevidence_retrieved = evidence_stats.counterevidence_retrieved
+        counterevidence_in_packet = evidence_stats.counterevidence_in_packet
+        duplicate_evidence = evidence_stats.duplicate_evidence
         used_node_ids: list[UUID] = []
         noisy_paths: list[dict[str, Any]] = []
         missing_anchors: list[dict[str, Any]] = []
-        counterevidence_retrieved = 0
-        counterevidence_in_packet = 0
-        duplicate_evidence = 0
-        retrieved_source_refs: dict[str, int] = {}
-
-        # ------------------------------------------------------------------
-        # retrieved_evidence_used_in_packet / retrieved_evidence_omitted
-        # ------------------------------------------------------------------
-        for item in evidence_items:
-            source_ref = str(item["source_ref"])
-            retrieved_source_refs[source_ref] = (
-                retrieved_source_refs.get(source_ref, 0) + 1
-            )
-            contradicts = _coerce_list(item.get("contradicts_hypotheses"))
-            weakens = _coerce_list(item.get("weakens_hypotheses"))
-            is_counterevidence = bool(contradicts) or bool(weakens)
-            if is_counterevidence:
-                counterevidence_retrieved += 1
-            evidence_uuid = item["id"]
-            in_packet = self._evidence_in_packet(
-                source_ref=source_ref,
-                source_ref_id=item.get("source_ref_id"),
-                packet_strings=packet_strings,
-            )
-            if in_packet:
-                used_evidence_ids.append(evidence_uuid)
-                if is_counterevidence:
-                    counterevidence_in_packet += 1
-                key = ("retrieved_evidence_used_in_packet", str(evidence_uuid))
-                if key not in existing_keys:
-                    await self._events_repo.append(
-                        inquiry_session_id,
-                        "retrieved_evidence_used_in_packet",
-                        {
-                            "evidence_id": str(evidence_uuid),
-                            "source_type": item["source_type"],
-                            "source_ref": source_ref,
-                        },
-                        conn=conn,
-                    )
-                    existing_keys.add(key)
-                    events_emitted += 1
-            else:
-                omitted_evidence_ids.append(evidence_uuid)
-                key = ("retrieved_evidence_omitted", str(evidence_uuid))
-                if key not in existing_keys:
-                    await self._events_repo.append(
-                        inquiry_session_id,
-                        "retrieved_evidence_omitted",
-                        {
-                            "evidence_id": str(evidence_uuid),
-                            "source_type": item["source_type"],
-                            "source_ref": source_ref,
-                            "omission_source": "evidence_items_diff",
-                        },
-                        conn=conn,
-                    )
-                    existing_keys.add(key)
-                    events_emitted += 1
-
-        # Cross-check with omitted_evidence rows (additional omissions
-        # the retrieval pathway already labelled). We dedupe by source_ref
-        # so we don't double-emit for items also in inquiry_evidence_items.
-        seen_omitted_refs = {str(item["source_ref"]) for item in evidence_items}
-        for orow in omitted_rows:
-            source_ref = str(orow["source_ref"])
-            if source_ref in seen_omitted_refs:
-                continue
-            seen_omitted_refs.add(source_ref)
-            key = ("retrieved_evidence_omitted", f"omitted_row:{orow['id']}")
-            if key not in existing_keys:
-                await self._events_repo.append(
-                    inquiry_session_id,
-                    "retrieved_evidence_omitted",
-                    {
-                        "omitted_evidence_id": str(orow["id"]),
-                        "source_type": orow["source_type"],
-                        "source_ref": source_ref,
-                        "omission_reason": orow["omission_reason"],
-                        "omission_source": "omitted_evidence_table",
-                    },
-                    conn=conn,
-                )
-                existing_keys.add(key)
-                events_emitted += 1
 
         # TODO(Phase 14+): omitted_evidence_later_requested requires a
         # cross-session signal (the omitted source_ref re-surfacing in a
         # future plan). Out of scope for v1.
 
-        for ref, count in retrieved_source_refs.items():
-            if count > 1:
-                duplicate_evidence += count - 1
-
         # ------------------------------------------------------------------
         # node_used_in_valid_diff / path_used_in_valid_diff
         # ------------------------------------------------------------------
         diff_is_valid = run_status == "success"
-        diff_model_ids: list[UUID] = []
-        if think_run is not None and diff_is_valid:
-            diff_model_ids = await _existing_model_ids_in_order(
-                conn,
-                tenant_id=self.tenant_id,
-                model_ids=_collect_model_ids_from_ops(ops_applied),
-            )
-            attribution_rows = await self._load_reader_decision_attributions(
-                conn, inquiry_session_id, diff_model_ids,
-            )
-            attributions_by_model: dict[UUID, list[asyncpg.Record]] = {}
-            for row in attribution_rows:
-                attributions_by_model.setdefault(row["model_id"], []).append(row)
-            for mid in diff_model_ids:
-                used_node_ids.append(mid)
-                key = ("node_used_in_valid_diff", str(mid))
-                if key not in existing_keys:
-                    await self._events_repo.append(
-                        inquiry_session_id,
-                        "node_used_in_valid_diff",
-                            {
-                                "model_id": str(mid),
-                                "think_run_id": str(think_run["id"]),
-                                **signature_context,
-                            },
-                            conn=conn,
-                        )
-                    existing_keys.add(key)
-                    events_emitted += 1
-                for attribution in attributions_by_model.get(mid, []):
-                    attr_id = attribution["id"]
-                    credit_score = _reader_decision_credit_score(attribution)
-                    attribution_signature = _signature_from_reader_attribution(
-                        attribution,
-                        signature_context,
-                    )
-                    decision_key = (
-                        "reader_decision_used_in_valid_diff",
-                        str(attr_id),
-                    )
-                    if decision_key not in existing_keys:
-                        payload = {
-                            **signature_context,
-                            "signature": attribution_signature,
-                            "attribution_id": str(attr_id),
-                            "model_id": str(mid),
-                            "think_run_id": str(think_run["id"]),
-                            "question_id": attribution["question_id"],
-                            "question_primitive": attribution_signature.get(
-                                "question_primitive"
-                            ) or attribution["question_primitive"],
-                            "signal_type": attribution_signature.get("signal_type")
-                            or attribution["signal_type"],
-                            "entities": attribution_signature.get("entities")
-                            or _coerce_list(attribution["entities"]),
-                            "selected": bool(attribution["selected"]),
-                            "selection_rank": attribution["selection_rank"],
-                            "activation_score": float(
-                                attribution["activation_score"] or 0.0
-                            ),
-                            "activation_reasons": _coerce_list(
-                                attribution["activation_reasons"]
-                            ),
-                            "source_breakdown": _coerce_obj(
-                                attribution["source_breakdown"]
-                            ),
-                            "retrieval_actions": _coerce_list(
-                                attribution["retrieval_actions"]
-                            ),
-                            "projected_evidence_refs": _coerce_list(
-                                attribution["projected_evidence_refs"]
-                            ),
-                            "evidence_in_packet_count": int(
-                                attribution["evidence_in_packet_count"] or 0
-                            ),
-                            "expected_value": float(
-                                attribution["expected_value"] or 0.0
-                            ),
-                            "expected_cost": float(
-                                attribution["expected_cost"] or 0.0
-                            ),
-                            "credit_score": credit_score,
-                        }
-                        await self._events_repo.append(
-                            inquiry_session_id,
-                            "reader_decision_used_in_valid_diff",
-                            payload,
-                            conn=conn,
-                        )
-                        await self._credit_reader_decision_attribution(
-                            conn,
-                            attribution_id=attr_id,
-                            credit_score=credit_score,
-                        )
-                        existing_keys.add(decision_key)
-                        events_emitted += 1
-
-            if len(diff_model_ids) >= 2:
-                edges = await self._load_edges_between(conn, diff_model_ids)
-                for edge in edges:
-                    sig = {
-                        "source_model_id": str(edge["source_model_id"]),
-                        "target_model_id": str(edge["target_model_id"]),
-                        "edge_kind": edge["edge_kind"],
-                    }
-                    key = (
-                        "path_used_in_valid_diff",
-                        f"{sig['source_model_id']}|{sig['target_model_id']}|"
-                        f"{sig['edge_kind']}",
-                    )
-                    if key not in existing_keys:
-                        await self._events_repo.append(
-                            inquiry_session_id,
-                            "path_used_in_valid_diff",
-                            {
-                                **sig,
-                                "think_run_id": str(think_run["id"]),
-                                **signature_context,
-                            },
-                            conn=conn,
-                        )
-                        existing_keys.add(key)
-                        events_emitted += 1
+        valid_diff_outcome = await self._emit_valid_diff_outcome_events(
+            conn=conn,
+            inquiry_session_id=inquiry_session_id,
+            think_run=think_run,
+            ops_applied=ops_applied,
+            signature_context=signature_context,
+            existing_keys=existing_keys,
+            diff_is_valid=diff_is_valid,
+            selected_context_used=selected_context_used,
+        )
+        events_emitted += valid_diff_outcome.events_emitted
+        used_node_ids = valid_diff_outcome.used_node_ids
+        diff_model_ids = valid_diff_outcome.diff_model_ids
 
         # A successful no-op is valuable only when Think can show that
         # selected context was actually used. If the reader selected and
@@ -734,119 +571,41 @@ class OutcomeEvaluator:
             and len(evidence_items) >= 3
             and not selected_context_used
         )
-        if low_value_selected_reader:
-            attribution_rows = await self._load_reader_decision_attributions(
-                conn,
-                inquiry_session_id,
-                None,
-                selected_only=True,
-            )
-            for attribution in attribution_rows[:LOW_VALUE_READER_DECISION_LIMIT]:
-                attr_id = attribution["id"]
-                decision_key = ("reader_decision_low_value", str(attr_id))
-                if decision_key in existing_keys:
-                    continue
-                attribution_signature = _signature_from_reader_attribution(
-                    attribution,
-                    signature_context,
-                )
-                payload = {
-                    **signature_context,
-                    "signature": attribution_signature,
-                    "attribution_id": str(attr_id),
-                    "model_id": str(attribution["model_id"]),
-                    "think_run_id": str(think_run["id"]),
-                    "question_id": attribution["question_id"],
-                    "question_primitive": attribution_signature.get(
-                        "question_primitive"
-                    ) or attribution["question_primitive"],
-                    "signal_type": attribution_signature.get("signal_type")
-                    or attribution["signal_type"],
-                    "entities": attribution_signature.get("entities")
-                    or _coerce_list(attribution["entities"]),
-                    "selected": bool(attribution["selected"]),
-                    "selection_rank": attribution["selection_rank"],
-                    "activation_score": float(
-                        attribution["activation_score"] or 0.0
-                    ),
-                    "activation_reasons": _coerce_list(
-                        attribution["activation_reasons"]
-                    ),
-                    "source_breakdown": _coerce_obj(
-                        attribution["source_breakdown"]
-                    ),
-                    "retrieval_actions": _coerce_list(
-                        attribution["retrieval_actions"]
-                    ),
-                    "projected_evidence_refs": _coerce_list(
-                        attribution["projected_evidence_refs"]
-                    ),
-                    "evidence_in_packet_count": int(
-                        attribution["evidence_in_packet_count"] or 0
-                    ),
-                    "reason": "selected_reader_context_unused_by_valid_noop",
-                    "retrieved_evidence_count": len(evidence_items),
-                    "used_evidence_count": len(used_evidence_ids),
-                    "context_use_grade": context_use.get("context_use_grade"),
-                }
-                await self._events_repo.append(
-                    inquiry_session_id,
-                    "reader_decision_low_value",
-                    payload,
-                    conn=conn,
-                )
-                existing_keys.add(decision_key)
-                events_emitted += 1
+        low_value_outcome = await self._emit_low_value_reader_events(
+            conn=conn,
+            inquiry_session_id=inquiry_session_id,
+            think_run=think_run,
+            signature_context=signature_context,
+            existing_keys=existing_keys,
+            should_emit=low_value_selected_reader,
+            retrieved_evidence_count=len(evidence_items),
+            used_evidence_count=len(used_evidence_ids),
+            context_use_grade=context_use.get("context_use_grade"),
+        )
+        events_emitted += low_value_outcome.events_emitted
 
         # ------------------------------------------------------------------
         # validation_failed_due_to_missing_evidence
         # validation_failed_due_to_bad_reference
         # ------------------------------------------------------------------
         validation_failure = think_run is not None and run_status in (
-            "failed", "partial",
+            "failed",
+            "partial",
         )
         # think_runs in this repo never sets status='partial' (only
         # running/success/failed/skipped_idempotent), but we honour
         # 'partial' so a future migration that extends the enum doesn't
         # require evaluator code changes.
-        if validation_failure and run_error:
-            if any(tok in run_error for tok in _MISSING_EVIDENCE_TOKENS):
-                anchor = {
-                    "think_run_id": str(think_run["id"]),
-                    "error_excerpt": run_error[:240],
-                }
-                missing_anchors.append(anchor)
-                key = (
-                    "validation_failed_due_to_missing_evidence",
-                    str(think_run["id"]),
-                )
-                if key not in existing_keys:
-                    await self._events_repo.append(
-                        inquiry_session_id,
-                        "validation_failed_due_to_missing_evidence",
-                        anchor,
-                        conn=conn,
-                    )
-                    existing_keys.add(key)
-                    events_emitted += 1
-            if any(tok in run_error for tok in _BAD_REFERENCE_TOKENS):
-                payload = {
-                    "think_run_id": str(think_run["id"]),
-                    "error_excerpt": run_error[:240],
-                }
-                key = (
-                    "validation_failed_due_to_bad_reference",
-                    str(think_run["id"]),
-                )
-                if key not in existing_keys:
-                    await self._events_repo.append(
-                        inquiry_session_id,
-                        "validation_failed_due_to_bad_reference",
-                        payload,
-                        conn=conn,
-                    )
-                    existing_keys.add(key)
-                    events_emitted += 1
+        validation_outcome = await self._emit_validation_failure_events(
+            conn=conn,
+            inquiry_session_id=inquiry_session_id,
+            think_run=think_run,
+            run_error=run_error,
+            existing_keys=existing_keys,
+            validation_failure=validation_failure,
+        )
+        events_emitted += validation_outcome.events_emitted
+        missing_anchors.extend(validation_outcome.missing_anchors)
 
         # TODO(Phase 14+): user_accepted_node / user_contested_node /
         # model_later_confirmed / model_later_falsified /
@@ -857,67 +616,21 @@ class OutcomeEvaluator:
         # ------------------------------------------------------------------
         # Reward features (doc §17.1)
         # ------------------------------------------------------------------
-        retrieved_count = len(evidence_items)
-        used_count = len(used_evidence_ids)
-        packet_node_count = self._count_packet_nodes(packet)
-        applied_acts, proposed_acts = _collect_act_op_counts(ops_applied)
-        added_nodes = sum(
-            1
-            for op in _coerce_list(ops_applied.get("claim_ops"))
-            if isinstance(op, dict) and op.get("op") == "insert"
+        reward_outcome = build_reward_features(
+            packet=packet,
+            ops_applied=ops_applied,
+            evidence_items=evidence_items,
+            omitted_rows=omitted_rows,
+            used_evidence_ids=used_evidence_ids,
+            used_node_ids=used_node_ids,
+            run_status=run_status,
+            counterevidence_retrieved=counterevidence_retrieved,
+            counterevidence_in_packet=counterevidence_in_packet,
+            duplicate_evidence=duplicate_evidence,
+            packet_tokens=context.packet_tokens,
         )
-        merged_nodes = sum(
-            1
-            for op in _coerce_list(ops_applied.get("claim_ops"))
-            if isinstance(op, dict)
-            and op.get("op") == "archive"
-            and (op.get("reason") or "").startswith("superseded")
-        )
-        used_path_count = len(used_node_ids)
-        noisy_path_count = sum(
-            1
-            for orow in omitted_rows
-            if orow.get("omission_reason") in ("generic_hub", "redundant")
-        )
-        if noisy_path_count:
-            noisy_paths.append(
-                {"count": noisy_path_count, "from": "omitted_evidence"},
-            )
-
-        if run_status == "success":
-            diff_deducibility = 1.0
-        elif run_status == "partial":
-            diff_deducibility = 0.5
-        else:
-            diff_deducibility = 0.0
-
-        reward_features: dict[str, float] = {
-            "evidence_coverage": _clamp(
-                used_count / max(retrieved_count, 1), 0.0, 1.0,
-            ),
-            "diff_deducibility": diff_deducibility,
-            "compression_gain": _clamp(
-                used_count / max(packet_node_count, 1), 0.0, 2.0,
-            ),
-            "prediction_falsification_value": 0.0,  # TODO Phase 14+
-            "action_value": _clamp(
-                applied_acts / max(proposed_acts, 1), 0.0, 1.0,
-            ),
-            "counterevidence_preservation": _clamp(
-                counterevidence_in_packet / max(counterevidence_retrieved, 1),
-                0.0,
-                1.0,
-            ),
-            "graph_bloat": float(added_nodes - merged_nodes),
-            "redundancy": _clamp(
-                duplicate_evidence / max(retrieved_count, 1), 0.0, 1.0,
-            ),
-            "noise_introduced": _clamp(
-                noisy_path_count / max(used_path_count, 1), 0.0, 2.0,
-            ),
-            "token_cost": _clamp(packet_tokens / 30000.0, 0.0, 2.0),
-            "permission_risk": 0.0,  # TODO Phase 14+
-        }
+        reward_features = reward_outcome.reward_features
+        noisy_paths = reward_outcome.noisy_paths
 
         quality_signal = _build_quality_signal(
             session_stop_status=str(session.get("stop_status") or ""),
@@ -925,18 +638,18 @@ class OutcomeEvaluator:
             run_status=run_status,
             run_error=run_error,
             reward_features=reward_features,
-            retrieved_count=retrieved_count,
-            used_count=used_count,
+            retrieved_count=reward_outcome.retrieved_count,
+            used_count=reward_outcome.used_count,
             omitted_count=len(omitted_evidence_ids),
-            packet_node_count=packet_node_count,
+            packet_node_count=reward_outcome.packet_node_count,
             counterevidence_retrieved=counterevidence_retrieved,
             counterevidence_in_packet=counterevidence_in_packet,
             duplicate_evidence=duplicate_evidence,
-            noisy_path_count=noisy_path_count,
-            used_path_count=used_path_count,
+            noisy_path_count=reward_outcome.noisy_path_count,
+            used_path_count=reward_outcome.used_path_count,
             selected_context_used=selected_context_used,
-            applied_acts=applied_acts,
-            proposed_acts=proposed_acts,
+            applied_acts=reward_outcome.applied_acts,
+            proposed_acts=reward_outcome.proposed_acts,
         )
         quality_key = ("outcome_quality_assessed", "quality")
         if quality_key not in existing_keys:
@@ -952,7 +665,8 @@ class OutcomeEvaluator:
         # Final per-type aggregation (post-emit) so callers don't need to
         # re-query. Cheap because we already have the existing_events.
         events_by_type = await self._events_repo.aggregate_by_type(
-            inquiry_session_id, conn=conn,
+            inquiry_session_id,
+            conn=conn,
         )
 
         _log.debug(
@@ -975,12 +689,426 @@ class OutcomeEvaluator:
             quality_signal=quality_signal,
         )
 
+    async def _load_evaluation_context(
+        self,
+        conn: asyncpg.Connection,
+        inquiry_session_id: UUID,
+    ) -> _EvaluationContext:
+        session = await self._load_session(conn, inquiry_session_id)
+        if session is None:
+            raise OutcomeEvaluatorError(
+                f"inquiry_session {inquiry_session_id} not found for tenant",
+            )
+
+        packet = _coerce_obj(session["context_packet"])
+        packet_tokens_raw = (
+            _coerce_obj(packet.get("budget")).get("estimated_tokens_used")
+            or packet.get("estimated_tokens")
+            or 0
+        )
+        try:
+            packet_tokens = float(packet_tokens_raw)
+        except (TypeError, ValueError):
+            packet_tokens = 0.0
+
+        evidence_items = await self._load_evidence_items(conn, inquiry_session_id)
+        omitted_rows = await self._load_omitted_evidence(conn, inquiry_session_id)
+        think_run_id = _try_uuid(session.get("think_run_id"))
+        think_run = (
+            await self._load_think_run(conn, think_run_id)
+            if think_run_id is not None
+            else None
+        )
+        ops_applied = _coerce_obj(think_run["ops_applied"]) if think_run else {}
+        context_use = _coerce_obj(ops_applied.get("context_use"))
+        existing_events = await self._load_existing_events(conn, inquiry_session_id)
+        return _EvaluationContext(
+            session=session,
+            packet=packet,
+            signature_context=_signature_context_from_packet(packet, session),
+            packet_strings=set(_walk_strings(packet)),
+            packet_tokens=packet_tokens,
+            evidence_items=evidence_items,
+            omitted_rows=omitted_rows,
+            think_run_id=think_run_id,
+            think_run=think_run,
+            ops_applied=ops_applied,
+            context_use=context_use,
+            selected_context_used=_selected_context_was_used(context_use),
+            run_status=(think_run or {}).get("status") or "",
+            run_error=((think_run or {}).get("error") or "").lower(),
+            existing_keys=_build_existing_keys(existing_events),
+        )
+
+    async def _emit_valid_diff_outcome_events(
+        self,
+        *,
+        conn: asyncpg.Connection,
+        inquiry_session_id: UUID,
+        think_run: asyncpg.Record | None,
+        ops_applied: dict[str, Any],
+        signature_context: dict[str, Any],
+        existing_keys: set[tuple[str, str]],
+        diff_is_valid: bool,
+        selected_context_used: bool,
+    ) -> _ValidDiffOutcome:
+        if think_run is None or not diff_is_valid:
+            return _ValidDiffOutcome(
+                events_emitted=0,
+                used_node_ids=[],
+                diff_model_ids=[],
+            )
+
+        events_emitted = 0
+        reader_events_emitted = 0
+        used_node_ids: list[UUID] = []
+        diff_model_ids = await _existing_model_ids_in_order(
+            conn,
+            tenant_id=self.tenant_id,
+            model_ids=_collect_model_ids_from_ops(ops_applied),
+        )
+        attribution_rows = await self._load_reader_decision_attributions(
+            conn,
+            inquiry_session_id,
+            diff_model_ids,
+        )
+        attributions_by_model: dict[UUID, list[asyncpg.Record]] = {}
+        for row in attribution_rows:
+            attributions_by_model.setdefault(row["model_id"], []).append(row)
+
+        for mid in diff_model_ids:
+            used_node_ids.append(mid)
+            key = ("node_used_in_valid_diff", str(mid))
+            if key not in existing_keys:
+                await self._events_repo.append(
+                    inquiry_session_id,
+                    "node_used_in_valid_diff",
+                    {
+                        "model_id": str(mid),
+                        "think_run_id": str(think_run["id"]),
+                        **signature_context,
+                    },
+                    conn=conn,
+                )
+                existing_keys.add(key)
+                events_emitted += 1
+            for attribution in attributions_by_model.get(mid, []):
+                if await self._emit_reader_decision_used_event(
+                    conn=conn,
+                    inquiry_session_id=inquiry_session_id,
+                    think_run=think_run,
+                    model_id=mid,
+                    attribution=attribution,
+                    signature_context=signature_context,
+                    existing_keys=existing_keys,
+                ):
+                    events_emitted += 1
+                    reader_events_emitted += 1
+
+        if len(diff_model_ids) >= 2:
+            events_emitted += await self._emit_valid_diff_path_events(
+                conn=conn,
+                inquiry_session_id=inquiry_session_id,
+                think_run=think_run,
+                diff_model_ids=diff_model_ids,
+                signature_context=signature_context,
+                existing_keys=existing_keys,
+            )
+
+        if (
+            selected_context_used
+            and reader_events_emitted == 0
+            and _ops_applied_has_state_mutation(ops_applied)
+        ):
+            events_emitted += await self._emit_selected_reader_context_credit_events(
+                conn=conn,
+                inquiry_session_id=inquiry_session_id,
+                think_run=think_run,
+                signature_context=signature_context,
+                existing_keys=existing_keys,
+            )
+
+        return _ValidDiffOutcome(
+            events_emitted=events_emitted,
+            used_node_ids=used_node_ids,
+            diff_model_ids=diff_model_ids,
+        )
+
+    async def _emit_reader_decision_used_event(
+        self,
+        *,
+        conn: asyncpg.Connection,
+        inquiry_session_id: UUID,
+        think_run: asyncpg.Record,
+        model_id: UUID,
+        attribution: asyncpg.Record,
+        signature_context: dict[str, Any],
+        existing_keys: set[tuple[str, str]],
+        credit_reason: str = "diff_model_reference",
+    ) -> bool:
+        attr_id = attribution["id"]
+        decision_key = ("reader_decision_used_in_valid_diff", str(attr_id))
+        if decision_key in existing_keys:
+            return False
+
+        credit_score = _reader_decision_credit_score(attribution)
+        attribution_signature = _signature_from_reader_attribution(
+            attribution,
+            signature_context,
+        )
+        payload = {
+            **signature_context,
+            "signature": attribution_signature,
+            "attribution_id": str(attr_id),
+            "model_id": str(model_id),
+            "think_run_id": str(think_run["id"]),
+            "question_id": attribution["question_id"],
+            "question_primitive": attribution_signature.get("question_primitive")
+            or attribution["question_primitive"],
+            "signal_type": attribution_signature.get("signal_type")
+            or attribution["signal_type"],
+            "entities": attribution_signature.get("entities")
+            or _coerce_list(attribution["entities"]),
+            "selected": bool(attribution["selected"]),
+            "selection_rank": attribution["selection_rank"],
+            "activation_score": float(attribution["activation_score"] or 0.0),
+            "activation_reasons": _coerce_list(attribution["activation_reasons"]),
+            "source_breakdown": _coerce_obj(attribution["source_breakdown"]),
+            "retrieval_actions": _coerce_list(attribution["retrieval_actions"]),
+            "projected_evidence_refs": _coerce_list(
+                attribution["projected_evidence_refs"]
+            ),
+            "evidence_in_packet_count": int(
+                attribution["evidence_in_packet_count"] or 0
+            ),
+            "expected_value": float(attribution["expected_value"] or 0.0),
+            "expected_cost": float(attribution["expected_cost"] or 0.0),
+            "credit_score": credit_score,
+            "credit_reason": credit_reason,
+        }
+        await self._events_repo.append(
+            inquiry_session_id,
+            "reader_decision_used_in_valid_diff",
+            payload,
+            conn=conn,
+        )
+        await self._credit_reader_decision_attribution(
+            conn,
+            attribution_id=attr_id,
+            credit_score=credit_score,
+        )
+        existing_keys.add(decision_key)
+        return True
+
+    async def _emit_selected_reader_context_credit_events(
+        self,
+        *,
+        conn: asyncpg.Connection,
+        inquiry_session_id: UUID,
+        think_run: asyncpg.Record,
+        signature_context: dict[str, Any],
+        existing_keys: set[tuple[str, str]],
+    ) -> int:
+        attribution_rows = await self._load_reader_decision_attributions(
+            conn,
+            inquiry_session_id,
+            None,
+            selected_only=True,
+        )
+        events_emitted = 0
+        for attribution in attribution_rows[:LOW_VALUE_READER_DECISION_LIMIT]:
+            if await self._emit_reader_decision_used_event(
+                conn=conn,
+                inquiry_session_id=inquiry_session_id,
+                think_run=think_run,
+                model_id=attribution["model_id"],
+                attribution=attribution,
+                signature_context=signature_context,
+                existing_keys=existing_keys,
+                credit_reason="selected_context_used_by_valid_mutation",
+            ):
+                events_emitted += 1
+        return events_emitted
+
+    async def _emit_valid_diff_path_events(
+        self,
+        *,
+        conn: asyncpg.Connection,
+        inquiry_session_id: UUID,
+        think_run: asyncpg.Record,
+        diff_model_ids: list[UUID],
+        signature_context: dict[str, Any],
+        existing_keys: set[tuple[str, str]],
+    ) -> int:
+        events_emitted = 0
+        edges = await self._load_edges_between(conn, diff_model_ids)
+        for edge in edges:
+            sig = {
+                "source_model_id": str(edge["source_model_id"]),
+                "target_model_id": str(edge["target_model_id"]),
+                "edge_kind": edge["edge_kind"],
+            }
+            key = (
+                "path_used_in_valid_diff",
+                f"{sig['source_model_id']}|{sig['target_model_id']}|"
+                f"{sig['edge_kind']}",
+            )
+            if key in existing_keys:
+                continue
+            await self._events_repo.append(
+                inquiry_session_id,
+                "path_used_in_valid_diff",
+                {
+                    **sig,
+                    "think_run_id": str(think_run["id"]),
+                    **signature_context,
+                },
+                conn=conn,
+            )
+            existing_keys.add(key)
+            events_emitted += 1
+        return events_emitted
+
+    async def _emit_low_value_reader_events(
+        self,
+        *,
+        conn: asyncpg.Connection,
+        inquiry_session_id: UUID,
+        think_run: asyncpg.Record | None,
+        signature_context: dict[str, Any],
+        existing_keys: set[tuple[str, str]],
+        should_emit: bool,
+        retrieved_evidence_count: int,
+        used_evidence_count: int,
+        context_use_grade: Any,
+    ) -> _LowValueReaderOutcome:
+        if think_run is None or not should_emit:
+            return _LowValueReaderOutcome(events_emitted=0)
+
+        events_emitted = 0
+        attribution_rows = await self._load_reader_decision_attributions(
+            conn,
+            inquiry_session_id,
+            None,
+            selected_only=True,
+        )
+        for attribution in attribution_rows[:LOW_VALUE_READER_DECISION_LIMIT]:
+            attr_id = attribution["id"]
+            decision_key = ("reader_decision_low_value", str(attr_id))
+            if decision_key in existing_keys:
+                continue
+            attribution_signature = _signature_from_reader_attribution(
+                attribution,
+                signature_context,
+            )
+            payload = {
+                **signature_context,
+                "signature": attribution_signature,
+                "attribution_id": str(attr_id),
+                "model_id": str(attribution["model_id"]),
+                "think_run_id": str(think_run["id"]),
+                "question_id": attribution["question_id"],
+                "question_primitive": attribution_signature.get("question_primitive")
+                or attribution["question_primitive"],
+                "signal_type": attribution_signature.get("signal_type")
+                or attribution["signal_type"],
+                "entities": attribution_signature.get("entities")
+                or _coerce_list(attribution["entities"]),
+                "selected": bool(attribution["selected"]),
+                "selection_rank": attribution["selection_rank"],
+                "activation_score": float(attribution["activation_score"] or 0.0),
+                "activation_reasons": _coerce_list(attribution["activation_reasons"]),
+                "source_breakdown": _coerce_obj(attribution["source_breakdown"]),
+                "retrieval_actions": _coerce_list(attribution["retrieval_actions"]),
+                "projected_evidence_refs": _coerce_list(
+                    attribution["projected_evidence_refs"]
+                ),
+                "evidence_in_packet_count": int(
+                    attribution["evidence_in_packet_count"] or 0
+                ),
+                "reason": "selected_reader_context_unused_by_valid_noop",
+                "retrieved_evidence_count": retrieved_evidence_count,
+                "used_evidence_count": used_evidence_count,
+                "context_use_grade": context_use_grade,
+            }
+            await self._events_repo.append(
+                inquiry_session_id,
+                "reader_decision_low_value",
+                payload,
+                conn=conn,
+            )
+            existing_keys.add(decision_key)
+            events_emitted += 1
+        return _LowValueReaderOutcome(events_emitted=events_emitted)
+
+    async def _emit_validation_failure_events(
+        self,
+        *,
+        conn: asyncpg.Connection,
+        inquiry_session_id: UUID,
+        think_run: asyncpg.Record | None,
+        run_error: str,
+        existing_keys: set[tuple[str, str]],
+        validation_failure: bool,
+    ) -> _ValidationFailureOutcome:
+        if think_run is None or not validation_failure or not run_error:
+            return _ValidationFailureOutcome(
+                events_emitted=0,
+                missing_anchors=[],
+            )
+
+        events_emitted = 0
+        missing_anchors: list[dict[str, Any]] = []
+        if any(tok in run_error for tok in _MISSING_EVIDENCE_TOKENS):
+            anchor = {
+                "think_run_id": str(think_run["id"]),
+                "error_excerpt": run_error[:240],
+            }
+            missing_anchors.append(anchor)
+            key = (
+                "validation_failed_due_to_missing_evidence",
+                str(think_run["id"]),
+            )
+            if key not in existing_keys:
+                await self._events_repo.append(
+                    inquiry_session_id,
+                    "validation_failed_due_to_missing_evidence",
+                    anchor,
+                    conn=conn,
+                )
+                existing_keys.add(key)
+                events_emitted += 1
+        if any(tok in run_error for tok in _BAD_REFERENCE_TOKENS):
+            payload = {
+                "think_run_id": str(think_run["id"]),
+                "error_excerpt": run_error[:240],
+            }
+            key = (
+                "validation_failed_due_to_bad_reference",
+                str(think_run["id"]),
+            )
+            if key not in existing_keys:
+                await self._events_repo.append(
+                    inquiry_session_id,
+                    "validation_failed_due_to_bad_reference",
+                    payload,
+                    conn=conn,
+                )
+                existing_keys.add(key)
+                events_emitted += 1
+        return _ValidationFailureOutcome(
+            events_emitted=events_emitted,
+            missing_anchors=missing_anchors,
+        )
+
     # -----------------------------------------------------------------
     # SQL loaders (read-only)
     # -----------------------------------------------------------------
 
     async def _load_session(
-        self, conn: asyncpg.Connection, session_id: UUID,
+        self,
+        conn: asyncpg.Connection,
+        session_id: UUID,
     ) -> asyncpg.Record | None:
         return await conn.fetchrow(
             """
@@ -994,7 +1122,9 @@ class OutcomeEvaluator:
         )
 
     async def _load_evidence_items(
-        self, conn: asyncpg.Connection, session_id: UUID,
+        self,
+        conn: asyncpg.Connection,
+        session_id: UUID,
     ) -> list[asyncpg.Record]:
         return await conn.fetch(
             """
@@ -1034,8 +1164,9 @@ class OutcomeEvaluator:
             filters.append(f"model_id = ANY(${len(params)}::uuid[])")
         if selected_only:
             filters.append("selected = TRUE")
-        return list(await conn.fetch(
-            f"""
+        return list(
+            await conn.fetch(
+                f"""
             SELECT id, tenant_id, inquiry_session_id,
                    question_id, question_primitive, question,
                    question_score, expected_value, expected_cost,
@@ -1047,8 +1178,9 @@ class OutcomeEvaluator:
             WHERE {' AND '.join(filters)}
             ORDER BY selected DESC, activation_score DESC, created_at ASC
             """,
-            *params,
-        ))
+                *params,
+            )
+        )
 
     async def _credit_reader_decision_attribution(
         self,
@@ -1073,7 +1205,9 @@ class OutcomeEvaluator:
         )
 
     async def _load_omitted_evidence(
-        self, conn: asyncpg.Connection, session_id: UUID,
+        self,
+        conn: asyncpg.Connection,
+        session_id: UUID,
     ) -> list[asyncpg.Record]:
         return await conn.fetch(
             """
@@ -1088,7 +1222,9 @@ class OutcomeEvaluator:
         )
 
     async def _load_think_run(
-        self, conn: asyncpg.Connection, run_id: UUID,
+        self,
+        conn: asyncpg.Connection,
+        run_id: UUID,
     ) -> asyncpg.Record | None:
         return await conn.fetchrow(
             """
@@ -1102,7 +1238,9 @@ class OutcomeEvaluator:
         )
 
     async def _load_edges_between(
-        self, conn: asyncpg.Connection, model_ids: list[UUID],
+        self,
+        conn: asyncpg.Connection,
+        model_ids: list[UUID],
     ) -> list[asyncpg.Record]:
         if len(model_ids) < 2:
             return []
@@ -1120,7 +1258,9 @@ class OutcomeEvaluator:
         )
 
     async def _load_existing_events(
-        self, conn: asyncpg.Connection, session_id: UUID,
+        self,
+        conn: asyncpg.Connection,
+        session_id: UUID,
     ) -> list[asyncpg.Record]:
         return await conn.fetch(
             """
@@ -1131,41 +1271,6 @@ class OutcomeEvaluator:
             self.tenant_id,
             session_id,
         )
-
-    # -----------------------------------------------------------------
-    # Helpers (instance — packet shape is up to us to interpret)
-    # -----------------------------------------------------------------
-
-    def _evidence_in_packet(
-        self,
-        *,
-        source_ref: str,
-        source_ref_id: Any,
-        packet_strings: set[str],
-    ) -> bool:
-        if source_ref and source_ref in packet_strings:
-            return True
-        if source_ref_id is not None:
-            sref = str(source_ref_id)
-            if sref in packet_strings:
-                return True
-        return False
-
-    def _count_packet_nodes(self, packet: dict[str, Any]) -> int:
-        """Estimate how many distinct Models/nodes the packet references.
-
-        v1 heuristic: count UUID-shaped strings inside the packet body
-        and treat that as the upper bound on referenced nodes. This is a
-        proxy because the packet may inline more than just Models — the
-        reward signal cares about relative compression, not absolute
-        count, so noise washes out across many sessions.
-        """
-        n = 0
-        for s in _walk_strings(packet):
-            if _try_uuid(s) is not None:
-                n += 1
-        return n
-
 
 # ---------------------------------------------------------------------
 # Module helpers (free functions)
@@ -1311,9 +1416,7 @@ def _build_quality_signal(
         1.0,
     )
     packet_value_density = 1.0 - low_value_leak
-    reference_integrity = (
-        0.0 if _has_token(run_error, _BAD_REFERENCE_TOKENS) else 1.0
-    )
+    reference_integrity = 0.0 if _has_token(run_error, _BAD_REFERENCE_TOKENS) else 1.0
     answerability = _answerability_score(session_stop_status)
 
     axes = {

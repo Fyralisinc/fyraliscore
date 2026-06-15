@@ -4,8 +4,10 @@ Spec §7 "Prompt construction for LLM reasoning".
 
 Structure:
   system:  "You are the reasoning component..." + falsifier rules +
-           diff schema + operating discipline.
-  user:    <triggering_event>
+           diff schema + operating discipline +
+           <operating_instructions>.
+  user:    Reasoning profile for this call
+           <triggering_event>
            <retrieved_context>
              <observations>
              <models>
@@ -14,7 +16,6 @@ Structure:
              <actor_context>
              <customer_context>
            </retrieved_context>
-           <operating_instructions>
 
 Token-budget heuristic: we truncate section bodies at a conservative
 character budget per section. The ContextBundle already caps
@@ -54,7 +55,15 @@ def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
 _OBS_CHAR_BUDGET = _env_int("THINK_OBS_CHAR_BUDGET", 4000)
 _MODELS_CHAR_BUDGET = _env_int("THINK_MODELS_CHAR_BUDGET", 4000)
 _MODELS_INQUIRY_CHAR_BUDGET = _env_int("THINK_MODELS_INQUIRY_CHAR_BUDGET", 2400)
+_MODELS_COMPILED_DECISION_CHAR_BUDGET = _env_int(
+    "THINK_MODELS_COMPILED_DECISION_CHAR_BUDGET",
+    1600,
+)
 _ACTS_CHAR_BUDGET = _env_int("THINK_ACTS_CHAR_BUDGET", 12000)
+_ACTS_COMPILED_DECISION_CHAR_BUDGET = _env_int(
+    "THINK_ACTS_COMPILED_DECISION_CHAR_BUDGET",
+    3000,
+)
 _RESOURCES_CHAR_BUDGET = _env_int("THINK_RESOURCES_CHAR_BUDGET", 1000)
 # Previously-unbudgeted sections (cost-plan §1.3 tail protection). The
 # relationship-candidates cap layers a char budget on top of the existing
@@ -63,7 +72,10 @@ _CANDIDATES_CHAR_BUDGET = _env_int("THINK_CANDIDATES_CHAR_BUDGET", 12000)
 _PER_ITEM_CHAR_LIMIT = 1500
 _MODEL_DETAIL_CHAR_LIMIT = 700
 _MODEL_MANIFEST_CHAR_LIMIT = 220
+_MODEL_COMPILED_DETAIL_CHAR_LIMIT = 420
+_MODEL_COMPILED_MANIFEST_CHAR_LIMIT = 150
 _MODEL_DETAIL_ROW_LIMIT = 8
+_MODEL_COMPILED_DETAIL_ROW_LIMIT = 5
 _RETRIEVAL_GUIDANCE_ID_LIMIT = 12
 
 
@@ -89,6 +101,24 @@ Core discipline:
   edge_ops when several selected Model relationships changed. Empty diffs are
   valid when memory already captures the event and no state/action/relationship
   should change.
+- For T1 event batches, read the whole batch as evidence but do not emit an op
+  per signal. Preserve background/duplicate/noisy signals in reasoning_trace;
+  only promote the batch-level claims, situations, edges, predictions, or acts
+  whose absence would make the durable world model materially less useful.
+- If <inquiry_context_packet> includes memory_decision_candidates, treat them
+  as the primary advisory decision surface, not as writes. For each material
+  candidate, accept it through the right op, update/merge/reject it, or no-op it
+  in reasoning_trace. Add a missing op only when the packet missed a durable
+  memory change.
+- If <inquiry_context_packet> says mode=compiled_memory_decision_boundary, do
+  not reconstruct the hidden planner path. The packet has already compressed the
+  batch; adjudicate the listed candidates, use the minimal cited evidence/model
+  context, and emit only the durable diff that remains.
+- For topology / relationship-candidate T4 calls, the candidate is pre-truth
+  evidence, not a mandate to promote. Prefer an empty diff with exact UUIDs in
+  reasoning_trace unless the candidate adds decision-relevant structure: a
+  sharp grounded edge, a composite situation with marginal insight beyond its
+  members, or a targeted update/archive to existing memory.
 - Never silently ignore selected context. If any selected Model or Observation
   changes the diff, cite its full UUID in the relevant op. If selected context
   is irrelevant, reasoning_trace must cite at least one selected full UUID and
@@ -390,6 +420,14 @@ Core discipline:
   or non-empty diff, reasoning_trace must cite at least one selected full UUID
   and say why it did not warrant a claim, edge, action, or resource change.
 - Never abbreviate UUIDs in reasoning_trace.
+- For T1 event batches, read all batch observations as evidence but do not emit
+  one claim per signal. Promote only durable batch-level facts, concerns,
+  predictions, situations, or recommendations; cite background, duplicate, or
+  noisy signals in reasoning_trace when they do not warrant a claim.
+- If <inquiry_context_packet> includes memory_decision_candidates, use claim or
+  no-op candidates as the primary advisory decision surface. Do not emit edge,
+  act, resource, or prediction ops from this compact schema; mention omitted
+  non-claim candidates in reasoning_trace when relevant.
 
 Return exactly this JSON shape:
 {
@@ -498,19 +536,6 @@ class PromptPair:
     user: str
 
 
-def _cache_optimized_layout_enabled() -> bool:
-    """Cost-plan §1.1 flag `THINK_PROMPT_LAYOUT`. Default `standard` (off).
-
-    When `cache_optimized`, the static system base + per-trigger-kind operating
-    instructions form a stable `system` prefix (so the Codex/OpenAI prompt cache
-    can hit), and the dynamic per-trigger reasoning profile moves to the top of
-    the user message. Content is token-identical to `standard`; only position
-    changes."""
-    return os.environ.get("THINK_PROMPT_LAYOUT", "standard").strip().lower() in {
-        "cache_optimized", "cache-optimized", "cached", "1", "on", "true",
-    }
-
-
 def _strict_lean_prompt_enabled() -> bool:
     """Cost-plan §1.2 flag `THINK_STRICT_LEAN_PROMPT`. Default off. Only takes
     effect when the provider also *enforces* the output schema (DeepSeek strict
@@ -521,11 +546,64 @@ def _strict_lean_prompt_enabled() -> bool:
     }
 
 
+def _compiled_memory_decision_prompt_enabled() -> bool:
+    raw = os.environ.get("THINK_COMPILED_MEMORY_DECISION_PROMPT")
+    if raw is None or raw.strip() == "":
+        return False
+    return raw.strip().lower() in {"1", "on", "true", "yes"}
+
+
+def _compiled_memory_decision_mode(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+) -> bool:
+    if not _compiled_memory_decision_prompt_enabled():
+        return False
+    if not trigger.is_batch:
+        return False
+    packet = _inquiry_context_packet(bundle)
+    if packet is None:
+        return False
+    candidates = packet.get("memory_decision_candidates")
+    return any(isinstance(candidate, dict) for candidate in (candidates or []))
+
+
+def _packet_evidence_policy(packet: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(packet, dict):
+        return {}
+    budget = packet.get("budget")
+    if not isinstance(budget, dict):
+        return {}
+    policy = budget.get("evidence_policy")
+    return policy if isinstance(policy, dict) else {}
+
+
+def _packet_suppresses_t1_raw_observations(
+    packet: dict[str, Any] | None,
+) -> bool:
+    if not isinstance(packet, dict):
+        return False
+    policy = _packet_evidence_policy(packet)
+    if policy.get("mode") != "models_only":
+        return False
+    if policy.get("fallback_reason") == "no_model_evidence":
+        return False
+    source_metadata = packet.get("source_metadata")
+    if not isinstance(source_metadata, dict):
+        return False
+    return source_metadata.get("trigger_kind") == "T1"
+
+
+def _suppress_raw_trigger_text(trigger: TriggerContext, bundle: ContextBundle) -> bool:
+    if not trigger.is_batch:
+        return False
+    return _packet_suppresses_t1_raw_observations(_inquiry_context_packet(bundle))
+
+
 # Cost-plan §1.2: the ONLY prose safely droppable when the strict tool schema
 # is server-enforced is the top-level JSON-shape skeleton (the schema's
 # `required` + field set enforce exactly this). Every *semantic* rule stays —
-# the edge_kind vocabulary (the strict schema validates edge_kind as a regex,
-# not the 16-kind enum), falsifier kinds, payload examples, scoping/confidence
+# edge-kind vocabulary, falsifier kinds, payload examples, scoping/confidence
 # discipline — because the schema validates shape, not meaning.
 _DIFF_SHAPE_SKELETON = """Diff schema (you produce EXACTLY this JSON shape):
 {
@@ -542,8 +620,9 @@ _DIFF_SHAPE_SKELETON = """Diff schema (you produce EXACTLY this JSON shape):
 
 _DIFF_SHAPE_POINTER = (
     "Diff schema: the strict tool schema enforces the exact top-level shape "
-    "(trigger_ref, tenant_id, claim_ops, edge_ops, ontology_gap_ops, act_ops, "
-    "resource_ops, new_predictions, reasoning_trace)."
+    "(trigger_ref, tenant_id, claim_ops, edge_ops, ontology_gap_ops, resource_ops, "
+    "new_predictions, reasoning_trace). Act ops are available in the full RawDiff "
+    "schema but omitted from this strict tool surface."
 )
 
 
@@ -554,21 +633,6 @@ def _lean_strict_base(base: str) -> str:
     if _DIFF_SHAPE_SKELETON in base:
         return base.replace(_DIFF_SHAPE_SKELETON, _DIFF_SHAPE_POINTER)
     return base
-
-
-def _profiled_system_prompt(
-    trigger: TriggerContext,
-    bundle: ContextBundle,
-    *,
-    claims_only: bool,
-) -> str:
-    base = _CLAIMS_ONLY_SYSTEM_PROMPT if claims_only else _SYSTEM_PROMPT
-    profile = _build_reasoning_profile(
-        trigger,
-        bundle,
-        claims_only=claims_only,
-    )
-    return f"{profile}\n\n{base}"
 
 
 def _trigger_metadata(trigger: TriggerContext) -> dict[str, str]:
@@ -805,13 +869,23 @@ def build_prompt(
     triggering signal (for T1). For T2/T3/T4 the caller can pass a
     summary string.
     """
+    compiled_decision_mode = _compiled_memory_decision_mode(trigger, bundle)
+    suppress_raw_trigger_text = _suppress_raw_trigger_text(trigger, bundle)
     triggering = _build_triggering_section(
         trigger,
         triggering_content=triggering_content,
         reason=reason_for_trigger,
+        compiled_decision_mode=compiled_decision_mode,
+        suppress_raw_trigger_text=suppress_raw_trigger_text,
     )
     frame = reasoning_frame.to_prompt_section() if reasoning_frame else None
-    context = _build_context_section(trigger, bundle, triggering_actor_summary)
+    context = _build_context_section(
+        trigger,
+        bundle,
+        triggering_actor_summary,
+        compiled_decision_mode=compiled_decision_mode,
+        suppress_raw_observations=suppress_raw_trigger_text,
+    )
     instructions = _build_instructions(trigger)
     base = _CLAIMS_ONLY_SYSTEM_PROMPT if claims_only else _SYSTEM_PROMPT
     # Cost-plan §1.2: lean only when the caller says the provider enforces the
@@ -820,23 +894,15 @@ def build_prompt(
         base = _lean_strict_base(base)
     profile = _build_reasoning_profile(trigger, bundle, claims_only=claims_only)
 
-    if _cache_optimized_layout_enabled():
-        # Cost-plan §1.1: stable system prefix = static base + per-trigger-kind
-        # operating instructions (one cache bucket per kind×schema-variant); the
-        # dynamic profile leads the user message. Same tokens, cacheable prefix.
-        system_prompt = f"{base}\n\n{instructions}"
-        parts = [profile, triggering]
-        if frame:
-            parts.append(frame)
-        parts.append(context)
-        user_msg = "\n\n".join(parts)
-    else:
-        parts = [triggering]
-        if frame:
-            parts.append(frame)
-        parts.extend([context, instructions])
-        user_msg = "\n\n".join(parts)
-        system_prompt = f"{profile}\n\n{base}"
+    # Stable system prefix: static base + per-trigger-kind operating
+    # instructions. Dynamic call-specific profile/context live in the user
+    # message so provider prefix caches can reuse the system bucket.
+    system_prompt = f"{base}\n\n{instructions}"
+    parts = [profile, triggering]
+    if frame:
+        parts.append(frame)
+    parts.append(context)
+    user_msg = "\n\n".join(parts)
     return PromptPair(system=system_prompt, user=user_msg)
 
 
@@ -851,8 +917,13 @@ def _build_triggering_section(
     *,
     triggering_content: str | None,
     reason: str | None,
+    compiled_decision_mode: bool = False,
+    suppress_raw_trigger_text: bool = False,
 ) -> str:
     lines = ["<triggering_event>"]
+    signature = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
     lines.append(f"  kind: {trigger.kind}")
     if trigger.subkind:
         lines.append(f"  subkind: {trigger.subkind}")
@@ -871,16 +942,38 @@ def _build_triggering_section(
         lines.append(f"  model_id: {trigger.model_id}")
     if trigger.seed_occurred_at:
         lines.append(f"  occurred_at: {trigger.seed_occurred_at.isoformat()}")
-    if triggering_content:
+    if triggering_content and suppress_raw_trigger_text:
+        lines.append(
+            "  content: [raw batch text suppressed by model-only Think evidence policy]"
+        )
+    elif triggering_content and compiled_decision_mode:
+        lines.append(
+            "  content: [batch text compiled into "
+            "<inquiry_context_packet>.signal_summary and candidates]"
+        )
+        lines.append(
+            f"  content_digest: {_trunc(triggering_content, 500)}"
+        )
+    elif triggering_content:
         lines.append(f"  content: {_trunc(triggering_content, _PER_ITEM_CHAR_LIMIT)}")
-    if trigger.seed_natural_text:
+    if trigger.seed_natural_text and suppress_raw_trigger_text:
+        observation_count = len(signature.get("batch_observation_ids") or [])
+        lines.append(
+            "  seed_natural_text: "
+            "[raw batch text suppressed by model-only Think evidence policy]"
+        )
+        if observation_count:
+            lines.append(f"  batch_observation_count: {observation_count}")
+    elif trigger.seed_natural_text and compiled_decision_mode:
+        lines.append(
+            f"  seed_natural_text_digest: "
+            f"{_trunc(trigger.seed_natural_text, 500)}"
+        )
+    elif trigger.seed_natural_text:
         lines.append(
             f"  seed_natural_text: "
             f"{_trunc(trigger.seed_natural_text, _PER_ITEM_CHAR_LIMIT)}"
         )
-    signature = (
-        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
-    )
     candidates = signature.get("relationship_candidates")
     if isinstance(candidates, list):
         # Cost-plan §1.3: cap by count (8) AND by char budget; the tail folds
@@ -964,6 +1057,9 @@ def _build_context_section(
     trigger: TriggerContext,
     bundle: ContextBundle,
     actor_summary: str | None,
+    *,
+    compiled_decision_mode: bool = False,
+    suppress_raw_observations: bool = False,
 ) -> str:
     lines = ["<retrieved_context>"]
 
@@ -979,36 +1075,45 @@ def _build_context_section(
         bundle,
         selected_model_ids=selected_model_ids,
         graph_model_ids=graph_model_ids,
+        compiled_decision_mode=compiled_decision_mode,
     )
     if retrieval_guidance:
         lines.extend(retrieval_guidance)
 
-    inquiry_packet = _build_inquiry_context_packet_section(bundle)
+    inquiry_packet = _build_inquiry_context_packet_section(
+        bundle,
+        compiled_decision_mode=compiled_decision_mode,
+    )
     if inquiry_packet:
         lines.extend(inquiry_packet)
 
     # Observations
-    obs_parts = ["  <observations>"]
-    used = 0
-    for o in bundle.observations:
-        actor_repr = str(o.actor_id) if o.actor_id is not None else "external"
-        if o.actor_id is not None:
-            actor_mentions[str(o.actor_id)] = (
-                actor_mentions.get(str(o.actor_id), 0) + 1
+    if compiled_decision_mode:
+        lines.extend(_build_compiled_observation_manifest(bundle, actor_mentions))
+    elif suppress_raw_observations:
+        lines.extend(_build_redacted_observation_manifest(bundle))
+    else:
+        obs_parts = ["  <observations>"]
+        used = 0
+        for o in bundle.observations:
+            actor_repr = str(o.actor_id) if o.actor_id is not None else "external"
+            if o.actor_id is not None:
+                actor_mentions[str(o.actor_id)] = (
+                    actor_mentions.get(str(o.actor_id), 0) + 1
+                )
+            piece = (
+                f"    - id={o.id} trust={o.trust_tier} channel={o.source_channel} "
+                f"actor_id={actor_repr} "
+                f"at={o.occurred_at.isoformat()}: "
+                f"{_trunc(o.content_text, _PER_ITEM_CHAR_LIMIT)}"
             )
-        piece = (
-            f"    - id={o.id} trust={o.trust_tier} channel={o.source_channel} "
-            f"actor_id={actor_repr} "
-            f"at={o.occurred_at.isoformat()}: "
-            f"{_trunc(o.content_text, _PER_ITEM_CHAR_LIMIT)}"
-        )
-        if used + len(piece) > _OBS_CHAR_BUDGET:
-            obs_parts.append("    - [truncated — more observations omitted]")
-            break
-        obs_parts.append(piece)
-        used += len(piece)
-    obs_parts.append("  </observations>")
-    lines.extend(obs_parts)
+            if used + len(piece) > _OBS_CHAR_BUDGET:
+                obs_parts.append("    - [truncated — more observations omitted]")
+                break
+            obs_parts.append(piece)
+            used += len(piece)
+        obs_parts.append("  </observations>")
+        lines.extend(obs_parts)
 
     lines.extend(
         _build_models_section(
@@ -1017,18 +1122,24 @@ def _build_context_section(
             selected_model_ids=selected_model_ids,
             graph_model_ids=graph_model_ids,
             actor_mentions=actor_mentions,
+            compiled_decision_mode=compiled_decision_mode,
         )
     )
 
     # Acts (goals/commitments/decisions)
     act_parts = ["  <acts>"]
     used = 0
+    acts_budget = (
+        _ACTS_COMPILED_DECISION_CHAR_BUDGET
+        if compiled_decision_mode
+        else _ACTS_CHAR_BUDGET
+    )
     for g in bundle.acts_summary.get("goals", []):
         piece = (
             f"    - goal id={g.id} state={g.state} altitude={g.altitude} "
             f"health={g.cached_health} title={_trunc(g.title, 200)}"
         )
-        if used + len(piece) > _ACTS_CHAR_BUDGET:
+        if used + len(piece) > acts_budget:
             break
         act_parts.append(piece); used += len(piece)
     for c in bundle.acts_summary.get("commitments", []):
@@ -1041,7 +1152,7 @@ def _build_context_section(
             f"owner={c.owner_id} due={c.due_date} "
             f"title={_trunc(c.title, 200)}"
         )
-        if used + len(piece) > _ACTS_CHAR_BUDGET:
+        if used + len(piece) > acts_budget:
             break
         act_parts.append(piece); used += len(piece)
     for d in bundle.acts_summary.get("decisions", []):
@@ -1049,7 +1160,7 @@ def _build_context_section(
             f"    - decision id={d.id} state={d.state} "
             f"title={_trunc(d.title, 200)}"
         )
-        if used + len(piece) > _ACTS_CHAR_BUDGET:
+        if used + len(piece) > acts_budget:
             break
         act_parts.append(piece); used += len(piece)
     act_parts.append("  </acts>")
@@ -1160,6 +1271,64 @@ def _build_context_section(
     return "\n".join(lines)
 
 
+def _build_compiled_observation_manifest(
+    bundle: ContextBundle,
+    actor_mentions: dict[str, int],
+) -> list[str]:
+    packet = _inquiry_context_packet(bundle) or {}
+    candidates = _decision_candidates_from_packet(packet)
+    source_ids = _candidate_source_observation_ids(candidates)
+    lines = ["  <observations>"]
+    lines.append(
+        "    compiled_mode: full retrieved observation bodies omitted; use "
+        "<inquiry_context_packet>.signal_summary, candidate_evidence, and "
+        "source_observation_ids for batch evidence."
+    )
+    if source_ids:
+        lines.append(
+            "    candidate_source_observation_ids: "
+            + _trunc(json.dumps(sorted(source_ids), default=str), 900)
+        )
+
+    shown = 0
+    for observation in bundle.observations:
+        actor_id = getattr(observation, "actor_id", None)
+        if actor_id is not None:
+            actor_mentions[str(actor_id)] = actor_mentions.get(str(actor_id), 0) + 1
+        observation_id = str(getattr(observation, "id", ""))
+        if observation_id not in source_ids or shown >= 8:
+            continue
+        lines.append(
+            "    - id="
+            + observation_id
+            + f" trust={getattr(observation, 'trust_tier', None)}"
+            + f" channel={getattr(observation, 'source_channel', None)}"
+            + f" actor_id={actor_id if actor_id is not None else 'external'}"
+            + f" at={getattr(observation, 'occurred_at', '')}"
+        )
+        shown += 1
+    if bundle.observations and shown == 0:
+        lines.append(
+            f"    retrieved_observation_count: {len(bundle.observations)} "
+            "(bodies omitted by compiled decision prompt)"
+        )
+    lines.append("  </observations>")
+    return lines
+
+
+def _build_redacted_observation_manifest(bundle: ContextBundle) -> list[str]:
+    lines = ["  <observations>"]
+    lines.append(
+        "    redaction_policy: raw observation bodies omitted by model-only "
+        "Think evidence policy; use Models, trigger observation IDs, and Model "
+        "provenance for evidence_event_ids."
+    )
+    if bundle.observations:
+        lines.append(f"    retrieved_observation_count: {len(bundle.observations)}")
+    lines.append("  </observations>")
+    return lines
+
+
 def _build_models_section(
     trigger: TriggerContext,
     bundle: ContextBundle,
@@ -1167,6 +1336,7 @@ def _build_models_section(
     selected_model_ids: set[str],
     graph_model_ids: set[str],
     actor_mentions: dict[str, int],
+    compiled_decision_mode: bool = False,
 ) -> list[str]:
     inquiry_packet = _inquiry_context_packet(bundle)
     inquiry_mode = inquiry_packet is not None
@@ -1175,9 +1345,24 @@ def _build_models_section(
         bundle,
         graph_model_ids=graph_model_ids,
     )
-    budget = _MODELS_INQUIRY_CHAR_BUDGET if inquiry_mode else _MODELS_CHAR_BUDGET
+    if compiled_decision_mode:
+        budget = _MODELS_COMPILED_DECISION_CHAR_BUDGET
+        detail_row_limit = _MODEL_COMPILED_DETAIL_ROW_LIMIT
+        detail_char_limit = _MODEL_COMPILED_DETAIL_CHAR_LIMIT
+        manifest_char_limit = _MODEL_COMPILED_MANIFEST_CHAR_LIMIT
+    else:
+        budget = _MODELS_INQUIRY_CHAR_BUDGET if inquiry_mode else _MODELS_CHAR_BUDGET
+        detail_row_limit = _MODEL_DETAIL_ROW_LIMIT
+        detail_char_limit = _MODEL_DETAIL_CHAR_LIMIT
+        manifest_char_limit = _MODEL_MANIFEST_CHAR_LIMIT
     lines = ["  <models>"]
-    if inquiry_mode:
+    if compiled_decision_mode:
+        lines.append(
+            "    manifest_mode: compiled_memory_decision; only candidate "
+            "target/evidence/graph Models receive detail. Use candidate ids "
+            "and exact Model ids from this section."
+        )
+    elif inquiry_mode:
         lines.append(
             "    manifest_mode: compact; use <inquiry_context_packet> as the "
             "primary evidence summary. Full rows are limited to actionable "
@@ -1186,22 +1371,38 @@ def _build_models_section(
 
     used = 0
     detailed_rows = 0
-    for idx, model in enumerate(bundle.models):
+    models = list(bundle.models)
+    if compiled_decision_mode:
+        models.sort(
+            key=lambda model: (
+                0 if _model_id(model) in actionable_ids else 1,
+                0 if _model_id(model) in graph_model_ids else 1,
+                _model_id(model),
+            )
+        )
+    for idx, model in enumerate(models):
         for actor_id in _model_scope_actors(model):
             actor_mentions[str(actor_id)] = actor_mentions.get(str(actor_id), 0) + 1
 
         model_id = _model_id(model)
-        wants_detail = (
-            not inquiry_mode
-            or model_id in actionable_ids
-            or (not actionable_ids and idx < 2)
-        )
-        include_detail = wants_detail and detailed_rows < _MODEL_DETAIL_ROW_LIMIT
+        if compiled_decision_mode:
+            wants_detail = model_id in actionable_ids or (
+                not actionable_ids and idx < 1
+            )
+        else:
+            wants_detail = (
+                not inquiry_mode
+                or model_id in actionable_ids
+                or (not actionable_ids and idx < 2)
+            )
+        include_detail = wants_detail and detailed_rows < detail_row_limit
         piece = _format_model_row(
             model,
             selected_model_ids=selected_model_ids,
             graph_model_ids=graph_model_ids,
             detail=include_detail,
+            detail_char_limit=detail_char_limit,
+            manifest_char_limit=manifest_char_limit,
         )
         if used + len(piece) > budget:
             remaining = max(0, len(bundle.models) - idx)
@@ -1224,6 +1425,8 @@ def _format_model_row(
     selected_model_ids: set[str],
     graph_model_ids: set[str],
     detail: bool,
+    detail_char_limit: int = _MODEL_DETAIL_CHAR_LIMIT,
+    manifest_char_limit: int = _MODEL_MANIFEST_CHAR_LIMIT,
 ) -> str:
     model_id = _model_id(model)
     natural = _model_natural(model)
@@ -1240,7 +1443,7 @@ def _format_model_row(
     falsifier_kind = falsifier.get("kind") if isinstance(falsifier, dict) else None
     detail_label = "full" if detail else "manifest"
     text_label = "natural" if detail else "summary"
-    text_limit = _MODEL_DETAIL_CHAR_LIMIT if detail else _MODEL_MANIFEST_CHAR_LIMIT
+    text_limit = detail_char_limit if detail else manifest_char_limit
     return (
         f"    - id={model_id} detail={detail_label} "
         f"kind={getattr(model, 'proposition_kind', 'unknown')} "
@@ -1297,6 +1500,70 @@ def _inquiry_context_packet(bundle: ContextBundle) -> dict[str, Any] | None:
     return packet if isinstance(packet, dict) else None
 
 
+def _decision_candidates_from_packet(packet: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(packet, dict):
+        return []
+    candidates = packet.get("memory_decision_candidates") or []
+    return [candidate for candidate in candidates if isinstance(candidate, dict)]
+
+
+def _candidate_values(
+    candidates: list[dict[str, Any]],
+    *keys: str,
+    limit: int | None = None,
+) -> set[str]:
+    values: set[str] = set()
+    for candidate in candidates:
+        for key in keys:
+            raw = candidate.get(key) or []
+            if isinstance(raw, str):
+                raw_values = [raw]
+            elif isinstance(raw, list | tuple | set):
+                raw_values = list(raw)
+            else:
+                continue
+            for value in raw_values:
+                if value:
+                    values.add(str(value))
+                    if limit is not None and len(values) >= limit:
+                        return values
+    return values
+
+
+def _candidate_source_observation_ids(
+    candidates: list[dict[str, Any]],
+    *,
+    limit: int | None = 20,
+) -> set[str]:
+    return _candidate_values(candidates, "source_observation_ids", limit=limit)
+
+
+def _candidate_model_ids(
+    candidates: list[dict[str, Any]],
+    *,
+    limit: int | None = 20,
+) -> set[str]:
+    return _candidate_values(
+        candidates,
+        "target_model_ids",
+        "evidence_model_ids",
+        limit=limit,
+    )
+
+
+def _candidate_evidence_ids(
+    candidates: list[dict[str, Any]],
+    *,
+    limit: int | None = 24,
+) -> set[str]:
+    return _candidate_values(
+        candidates,
+        "supporting_evidence_ids",
+        "counterevidence_ids",
+        limit=limit,
+    )
+
+
 def _actionable_model_ids(
     trigger: TriggerContext,
     bundle: ContextBundle,
@@ -1315,9 +1582,9 @@ def _model_ids_from_inquiry_packet(bundle: ContextBundle) -> set[str]:
     packet = _inquiry_context_packet(bundle)
     if packet is None:
         return set()
+    ids = set(_candidate_model_ids(_decision_candidates_from_packet(packet)))
     tiers = packet.get("tiers") if isinstance(packet.get("tiers"), dict) else {}
     evidence = tiers.get("decisive_evidence") or []
-    ids: set[str] = set()
     for item in evidence:
         if not isinstance(item, dict):
             continue
@@ -1402,6 +1669,7 @@ def _build_retrieval_guidance_section(
     *,
     selected_model_ids: set[str],
     graph_model_ids: set[str],
+    compiled_decision_mode: bool = False,
 ) -> list[str]:
     if not selected_model_ids and not graph_model_ids:
         return []
@@ -1422,6 +1690,28 @@ def _build_retrieval_guidance_section(
             else ""
         )
         return ", ".join(shown) + suffix
+
+    if compiled_decision_mode:
+        lines = ["  <retrieval_priority>"]
+        lines.append(
+            "    compiled_mode: retrieval was already compressed into "
+            "memory_decision_candidates; use this as accountability metadata, "
+            "not as an invitation to re-plan retrieval."
+        )
+        if selected_model_ids:
+            lines.append(
+                f"    selected_model_ids ({selected_count}): {_ids(selected_model_ids)}"
+            )
+        if graph_model_ids:
+            lines.append(
+                f"    graph_anchor_model_ids ({graph_count}): {_ids(graph_model_ids)}"
+            )
+            lines.append(
+                "    For candidate target/evidence Models, emit the sharpest "
+                "needed edge/update or write no-op rationale by candidate id."
+            )
+        lines.append("  </retrieval_priority>")
+        return lines
 
     lines = ["  <retrieval_priority>"]
     lines.append(
@@ -1515,13 +1805,18 @@ def _build_retrieval_guidance_section(
     return lines
 
 
-def _build_inquiry_context_packet_section(bundle: ContextBundle) -> list[str]:
+def _build_inquiry_context_packet_section(
+    bundle: ContextBundle,
+    *,
+    compiled_decision_mode: bool = False,
+) -> list[str]:
     notes = bundle.notes if isinstance(bundle.notes, dict) else {}
     packet = notes.get("inquiry_context_packet")
     if not isinstance(packet, dict):
         return []
     verdict = packet.get("sufficiency_verdict")
     hypotheses = packet.get("hypotheses") or []
+    decision_candidates = _decision_candidates_from_packet(packet)
     questions = packet.get("question_path") or []
     tiers = packet.get("tiers") or {}
     decisive = tiers.get("decisive_evidence") or []
@@ -1533,23 +1828,91 @@ def _build_inquiry_context_packet_section(bundle: ContextBundle) -> list[str]:
         "    This packet is the adaptive inquiry summary. Treat it as "
         "retrieval guidance and provenance, not as permission to invent ids."
     )
-    lines.append(
-        "    signal_summary: "
-        + _trunc(str(packet.get("signal_summary") or ""), 700)
-    )
+    if decision_candidates:
+        lines.append(
+            "    memory_decision_candidates are advisory: accept, update, "
+            "reject, merge, or no-op them; only add missing ops for material "
+            "durable changes the packet missed."
+        )
+    if compiled_decision_mode:
+        lines.append("    mode: compiled_memory_decision_boundary")
+        lines.append(
+            "    planner_artifacts: omitted from prompt; candidates and "
+            "candidate_evidence replace hypotheses/question_path/full tiers."
+        )
+    if _packet_suppresses_t1_raw_observations(packet):
+        lines.append(
+            "    signal_summary: "
+            "[raw T1 signal summary suppressed by model-only Think evidence policy]"
+        )
+    else:
+        lines.append(
+            "    signal_summary: "
+            + _trunc(str(packet.get("signal_summary") or ""), 700)
+        )
     if isinstance(verdict, dict):
+        verdict_limit = 420 if compiled_decision_mode else 900
         lines.append(
             "    sufficiency: "
-            + _trunc(json.dumps(verdict, sort_keys=True, default=str), 900)
+            + _trunc(
+                json.dumps(verdict, sort_keys=True, default=str),
+                verdict_limit,
+            )
         )
-    if hypotheses:
+    if compiled_decision_mode:
+        unknowns = packet.get("important_unknowns") or []
+        if unknowns:
+            lines.append(
+                "    unresolved_slots: "
+                + _trunc(json.dumps(unknowns[:8], default=str), 420)
+            )
+        obligations = packet.get("answer_obligations")
+        if isinstance(obligations, dict):
+            missing = obligations.get("missing_slots") or []
+            premise = obligations.get("premise_status")
+            if missing or premise:
+                lines.append(
+                    "    answer_obligations: "
+                    + _trunc(
+                        json.dumps(
+                            {
+                                "missing_slots": missing[:8],
+                                "premise_status": premise,
+                            },
+                            sort_keys=True,
+                            default=str,
+                        ),
+                        420,
+                    )
+                )
+    elif hypotheses:
         lines.append("    hypotheses:")
         for h in hypotheses[:5]:
             lines.append(
                 "      - "
                 + _trunc(json.dumps(h, sort_keys=True, default=str), 500)
             )
-    if questions:
+    if decision_candidates:
+        lines.append("    memory_decision_candidates:")
+        for candidate in decision_candidates[:5]:
+            lines.extend(_format_memory_decision_candidate(candidate))
+    if compiled_decision_mode:
+        evidence_lines = _format_candidate_evidence(packet, decision_candidates)
+        if evidence_lines:
+            lines.append("    candidate_evidence:")
+            lines.extend(evidence_lines)
+        budget = packet.get("budget")
+        if isinstance(budget, dict):
+            summary = {
+                "reservoir_evidence_count": budget.get("reservoir_evidence_count"),
+                "packet_evidence_count": budget.get("packet_evidence_count"),
+                "evidence_policy": budget.get("evidence_policy"),
+            }
+            lines.append(
+                "    hidden_packet_budget: "
+                + _trunc(json.dumps(summary, sort_keys=True, default=str), 520)
+            )
+    elif questions:
         lines.append("    question_path:")
         for q in questions[:8]:
             qid = q.get("question_id") if isinstance(q, dict) else None
@@ -1559,21 +1922,21 @@ def _build_inquiry_context_packet_section(bundle: ContextBundle) -> list[str]:
                 f"      - {qid or 'Q'} [{primitive or 'question'}]: "
                 + _trunc(str(question), 260)
             )
-    if decisive:
+    if not compiled_decision_mode and decisive:
         lines.append("    decisive_evidence:")
         for e in decisive[:12]:
             lines.append(
                 "      - "
                 + _trunc(json.dumps(e, sort_keys=True, default=str), 700)
             )
-    if supporting:
+    if not compiled_decision_mode and supporting:
         lines.append("    supporting_evidence_groups:")
         for group in supporting[:6]:
             lines.append(
                 "      - "
                 + _trunc(json.dumps(group, sort_keys=True, default=str), 500)
             )
-    if omissions:
+    if not compiled_decision_mode and omissions:
         lines.append("    omission_ledger:")
         for item in omissions[:6]:
             lines.append(
@@ -1581,6 +1944,144 @@ def _build_inquiry_context_packet_section(bundle: ContextBundle) -> list[str]:
                 + _trunc(json.dumps(item, sort_keys=True, default=str), 400)
             )
     lines.append("  </inquiry_context_packet>")
+    return lines
+
+
+def _format_memory_decision_candidate(candidate: dict[str, Any]) -> list[str]:
+    cid = candidate.get("candidate_id") or "candidate"
+    op_family = candidate.get("op_family") or "unknown"
+    confidence = candidate.get("confidence")
+    proposed = _trunc(str(candidate.get("proposed_text") or ""), 300)
+    lines = [
+        f"      - id={cid} op={op_family} confidence={confidence}: {proposed}"
+    ]
+    targets = {
+        "target_model_ids": candidate.get("target_model_ids") or [],
+        "target_act_ids": candidate.get("target_act_ids") or [],
+        "evidence_model_ids": candidate.get("evidence_model_ids") or [],
+        "source_observation_ids": candidate.get("source_observation_ids") or [],
+    }
+    non_empty_targets = {
+        key: value[:6] if isinstance(value, list) else value
+        for key, value in targets.items()
+        if value
+    }
+    if non_empty_targets:
+        lines.append(
+            "        targets: "
+            + _trunc(json.dumps(non_empty_targets, sort_keys=True, default=str), 450)
+        )
+    uncertainty = candidate.get("uncertainty_slots") or []
+    if uncertainty:
+        lines.append(
+            "        uncertainty: "
+            + _trunc(json.dumps(uncertainty[:6], default=str), 320)
+        )
+    evidence = {
+        "supporting_evidence_ids": candidate.get("supporting_evidence_ids") or [],
+        "counterevidence_ids": candidate.get("counterevidence_ids") or [],
+    }
+    evidence = {
+        key: value[:6] if isinstance(value, list) else value
+        for key, value in evidence.items()
+        if value
+    }
+    if evidence:
+        lines.append(
+            "        evidence: "
+            + _trunc(json.dumps(evidence, sort_keys=True, default=str), 420)
+        )
+    edge_hints = candidate.get("suggested_edge_kinds") or []
+    if edge_hints:
+        lines.append(
+            "        suggested_edge_kinds: "
+            + _trunc(json.dumps(edge_hints[:6], default=str), 220)
+        )
+    preconditions = candidate.get("write_preconditions") or []
+    if preconditions:
+        lines.append(
+            "        write_preconditions: "
+            + _trunc(json.dumps(preconditions[:4], default=str), 520)
+        )
+    answer_summary = candidate.get("answer_summary")
+    if answer_summary:
+        lines.append("        answer_summary: " + _trunc(str(answer_summary), 520))
+    reason = candidate.get("reason")
+    if reason:
+        lines.append("        reason: " + _trunc(str(reason), 220))
+    return lines
+
+
+def _format_candidate_evidence(
+    packet: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> list[str]:
+    wanted_ids = _candidate_evidence_ids(candidates)
+    tiers = packet.get("tiers") if isinstance(packet.get("tiers"), dict) else {}
+    decisive = tiers.get("decisive_evidence") or []
+    supporting = tiers.get("supporting_evidence_groups") or []
+    lines: list[str] = []
+    seen: set[str] = set()
+
+    def add_decisive(item: dict[str, Any]) -> None:
+        evidence_id = str(item.get("evidence_id") or "")
+        if evidence_id and evidence_id in seen:
+            return
+        if evidence_id:
+            seen.add(evidence_id)
+        compact_item = {
+            "evidence_id": evidence_id or None,
+            "source_type": item.get("source_type"),
+            "source_ref": item.get("source_ref"),
+            "summary": item.get("summary"),
+            "supports": item.get("supports_hypotheses"),
+            "weakens": item.get("weakens_hypotheses"),
+            "contradicts": item.get("contradicts_hypotheses"),
+        }
+        lines.append(
+            "      - "
+            + _trunc(json.dumps(compact_item, sort_keys=True, default=str), 520)
+        )
+
+    for item in decisive:
+        if not isinstance(item, dict):
+            continue
+        evidence_id = str(item.get("evidence_id") or "")
+        if wanted_ids and evidence_id not in wanted_ids:
+            continue
+        add_decisive(item)
+        if len(lines) >= 8:
+            return lines
+
+    for group in supporting:
+        if not isinstance(group, dict):
+            continue
+        evidence_ids = {str(eid) for eid in (group.get("evidence_ids") or [])}
+        if wanted_ids and not (evidence_ids & wanted_ids):
+            continue
+        group_key = "group:" + ",".join(sorted(evidence_ids))
+        if group_key in seen:
+            continue
+        seen.add(group_key)
+        compact_group = {
+            "claim_supported": group.get("claim_supported"),
+            "evidence_count": group.get("evidence_count"),
+            "sources": group.get("sources"),
+            "evidence_ids": sorted(evidence_ids)[:8],
+            "source_refs": (group.get("source_refs") or [])[:6],
+            "summary": group.get("summary"),
+        }
+        lines.append(
+            "      - "
+            + _trunc(json.dumps(compact_group, sort_keys=True, default=str), 520)
+        )
+        if len(lines) >= 8:
+            return lines
+
+    if not lines and not wanted_ids:
+        for item in decisive[:3]:
+            if isinstance(item, dict):
+                add_decisive(item)
     return lines
 
 
@@ -1745,7 +2246,7 @@ def _build_instructions(trigger: TriggerContext) -> str:
         body.append(_internal_reflection_instructions(trigger))
     elif trigger.kind == "T6":
         # T6 is retained for legacy accepted-memory graph phase events.
-        # New topology candidates arrive as T4 latent_relationship_candidate.
+        # New topology-discovered proposals arrive as T4 latent_relationship_candidate.
         #   - Optionally NAME the neighborhood (overwrite the heuristic).
         #   - Decide whether the structural shift warrants a CEO-facing
         #     `recommendation` claim_op.

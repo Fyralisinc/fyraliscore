@@ -28,6 +28,7 @@ Deviation (a) [documented in BUILD-LOG]: the merge/de-dup/score
 function lives here as a private helper, not on PathwayResult, because
 scoring is trigger-dependent. PathwayResult itself is trigger-agnostic.
 """
+
 from __future__ import annotations
 
 import math
@@ -154,9 +155,8 @@ def _append_pathway_timing(
     # Prometheus twin of the debug-notes timing. `stage` is a bounded
     # literal set (derive_scope, pathway_A..G, merge/rank stages).
     _STAGE_DURATION.observe(elapsed_ms / 1000.0, stage=stage)
-    _STAGE_TOTAL.inc(
-        stage=stage, status="skipped" if extra.get("skipped") else "ok"
-    )
+    _STAGE_TOTAL.inc(stage=stage, status="skipped" if extra.get("skipped") else "ok")
+
 
 # Per-spec-§8 weighting mix. Live topology now writes relationship/
 # situation candidates, and those candidates reach Think through T4
@@ -173,7 +173,9 @@ _TRIGGER_WEIGHTS: dict[TriggerKind, dict[str, float]] = {
 _DEFAULT_TOP_N = 80
 
 
-def _trigger_weights(kind: TriggerKind, cfg: RetrievalConfig) -> dict[str, float] | None:
+def _trigger_weights(
+    kind: TriggerKind, cfg: RetrievalConfig
+) -> dict[str, float] | None:
     weights = _TRIGGER_WEIGHTS.get(kind)
     if weights is None:
         return None
@@ -472,7 +474,9 @@ def _score_with_recency_decay(
         created_at = created_at.replace(tzinfo=timezone.utc)
     age_days = max(
         0.0,
-        (datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)).total_seconds()
+        (
+            datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)
+        ).total_seconds()
         / 86400.0,
     )
     multiplier = math.exp(-math.log(2.0) * age_days / max(half_life_days, 0.001))
@@ -711,16 +715,20 @@ async def _derive_trigger_scope(
         for mid in trigger.member_model_ids:
             if mid not in t2_model_ids:
                 t2_model_ids.append(mid)
-        rows = await conn.fetch(
-            """
+        rows = (
+            await conn.fetch(
+                """
             SELECT scope_entities, scope_actors, "natural", embedding
             FROM models
             WHERE id = ANY($1::uuid[]) AND tenant_id = $2
             ORDER BY array_position($1::uuid[], id)
             """,
-            t2_model_ids,
-            trigger.tenant_id,
-        ) if t2_model_ids else []
+                t2_model_ids,
+                trigger.tenant_id,
+            )
+            if t2_model_ids
+            else []
+        )
         for row in rows:
             raw_se = row["scope_entities"]
             if isinstance(raw_se, (bytes, bytearray)):
@@ -745,6 +753,426 @@ async def _derive_trigger_scope(
                 model_embedding = _coerce_vector(row["embedding"])
 
     return seeds, actors, model_natural, model_embedding
+
+
+def _primary_notes(
+    trigger: TriggerContext,
+    cfg: RetrievalConfig,
+    weights: dict[str, float],
+    pathway_timings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "kind": trigger.kind,
+        "weights": dict(weights),
+        "pathways_run": [],
+        "pathways_skipped": [],
+        "pathway_timings": pathway_timings,
+        "config_summary": {
+            "semantic_k": cfg.semantic_k,
+            "semantic_hnsw_ef_search": cfg.semantic_hnsw_ef_search,
+            "temporal_max_observations": cfg.temporal_max_observations,
+            "temporal_max_models": cfg.temporal_max_models,
+            "temporal_include_entity_mentions": cfg.temporal_include_entity_mentions,
+            "scoring_mode": cfg.scoring_mode,
+            "rrf_k": cfg.rrf_k,
+            "trigger_weights_overridden": bool(cfg.trigger_weights_json),
+            "recency_decay_half_life_days": cfg.recency_decay_half_life_days,
+            "assembler_use_mmr": cfg.assembler_use_mmr,
+            "assembler_budget_models": cfg.assembler_budget_models,
+            "assembler_budget_observations": cfg.assembler_budget_observations,
+        },
+    }
+
+
+async def _prepare_effective_trigger_scope(
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    notes: dict[str, Any],
+    pathway_timings: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[UUID], str | None, list[float] | None]:
+    stage_started = time.perf_counter()
+    (
+        effective_seed_entities,
+        effective_scope_actors,
+        t2_model_natural,
+        t2_model_embedding,
+    ) = await _derive_trigger_scope(trigger, conn)
+    _append_pathway_timing(
+        pathway_timings,
+        "derive_scope",
+        stage_started,
+        seed_entities=len(effective_seed_entities),
+        scope_actors=len(effective_scope_actors),
+        row_text_fallback=bool(t2_model_natural),
+        row_embedding_fallback=bool(t2_model_embedding),
+    )
+    trigger.seed_entity_ids = list(effective_seed_entities)
+    trigger.scope_actors = list(effective_scope_actors)
+    if not trigger.seed_natural_text and t2_model_natural:
+        trigger.seed_natural_text = t2_model_natural
+    if trigger.precomputed_seed_vector is None and t2_model_embedding is not None:
+        trigger.precomputed_seed_vector = t2_model_embedding
+    notes["effective_scope"] = {
+        "seed_entities": len(effective_seed_entities),
+        "scope_actors": len(effective_scope_actors),
+        "row_text_fallback": bool(t2_model_natural),
+        "row_embedding_fallback": bool(t2_model_embedding),
+        "t2_model_text_fallback": (trigger.kind == "T2" and bool(t2_model_natural)),
+        "t2_model_embedding_fallback": (
+            trigger.kind == "T2" and bool(t2_model_embedding)
+        ),
+    }
+    return (
+        effective_seed_entities,
+        effective_scope_actors,
+        t2_model_natural,
+        t2_model_embedding,
+    )
+
+
+async def _run_pathway_a(
+    *,
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    read_pool: asyncpg.Pool | None,
+    read_fanout_enabled: bool,
+    read_fanout_min_seeds: int,
+    read_fanout_chunk_size: int,
+    effective_seed_entities: list[dict[str, Any]],
+    effective_scope_actors: list[UUID],
+    notes: dict[str, Any],
+    pathway_timings: list[dict[str, Any]],
+) -> PathwayResult | None:
+    seeds = list(effective_seed_entities)
+    if trigger.kind == "T1" and effective_scope_actors and not seeds:
+        for actor_id in effective_scope_actors:
+            seeds.append({"type": "actor", "id": str(actor_id)})
+
+    stage_started = time.perf_counter()
+    try:
+        result = await pathway_a_structural(
+            seeds,
+            trigger.tenant_id,
+            conn,
+            max_hops=trigger.max_hops,
+            read_pool=read_pool,
+            read_fanout_enabled=read_fanout_enabled,
+            read_fanout_min_seeds=read_fanout_min_seeds,
+            read_fanout_chunk_size=read_fanout_chunk_size,
+        )
+        notes["pathways_run"].append("A")
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_A",
+            stage_started,
+            **_pathway_counts(result),
+        )
+        return result
+    except Exception as exc:
+        _raise_if_postgres_error(exc)
+        notes["pathways_skipped"].append({"pathway": "A", "reason": str(exc)})
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_A",
+            stage_started,
+            skipped=True,
+            reason=str(exc),
+        )
+        return None
+
+
+async def _run_pathway_b(
+    *,
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    cfg: RetrievalConfig,
+    embedder: OllamaClient | None,
+    effective_seed_entities: list[dict[str, Any]],
+    effective_scope_actors: list[UUID],
+    t2_model_natural: str | None,
+    t2_model_embedding: list[float] | None,
+    notes: dict[str, Any],
+    pathway_timings: list[dict[str, Any]],
+) -> PathwayResult | None:
+    text = trigger.seed_natural_text or t2_model_natural or ""
+    vector = trigger.precomputed_seed_vector or t2_model_embedding
+    b_k = trigger.semantic_k if trigger.semantic_k != 40 else cfg.semantic_k
+    stage_started = time.perf_counter()
+    try:
+        result = await pathway_b_semantic(
+            text,
+            trigger.tenant_id,
+            conn,
+            k=b_k,
+            embedder=embedder,
+            precomputed_vector=vector,
+            event_actors=effective_scope_actors,
+            event_entities=effective_seed_entities,
+            hnsw_ef_search=cfg.semantic_hnsw_ef_search,
+        )
+        notes["pathways_run"].append("B")
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_B",
+            stage_started,
+            **_pathway_counts(result),
+        )
+        return result
+    except (RetrievalPathwayError, ValidationError) as exc:
+        notes["pathways_skipped"].append({"pathway": "B", "reason": str(exc)})
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_B",
+            stage_started,
+            skipped=True,
+            reason=str(exc),
+        )
+        return None
+
+
+async def _run_pathway_c(
+    *,
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    cfg: RetrievalConfig,
+    effective_seed_entities: list[dict[str, Any]],
+    effective_scope_actors: list[UUID],
+    notes: dict[str, Any],
+    pathway_timings: list[dict[str, Any]],
+) -> PathwayResult | None:
+    if trigger.seed_occurred_at is None:
+        notes["pathways_skipped"].append(
+            {"pathway": "C", "reason": "no_seed_occurred_at"}
+        )
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_C",
+            time.perf_counter(),
+            skipped=True,
+            reason="no_seed_occurred_at",
+        )
+        return None
+
+    stage_started = time.perf_counter()
+    temporal_max_observations = int(cfg.temporal_max_observations)
+    if cfg.model_first_context_enabled:
+        temporal_max_observations = min(
+            temporal_max_observations,
+            max(0, int(cfg.historical_observation_cap)),
+        )
+    try:
+        result = await pathway_c_temporal(
+            trigger.seed_occurred_at,
+            trigger.temporal_window,
+            trigger.tenant_id,
+            conn,
+            scope_actors=effective_scope_actors,
+            scope_entities=effective_seed_entities,
+            max_observations=temporal_max_observations,
+            max_models=cfg.temporal_max_models,
+            include_entity_mentions=cfg.temporal_include_entity_mentions,
+        )
+        notes["pathways_run"].append("C")
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_C",
+            stage_started,
+            **_pathway_counts(result),
+        )
+        return result
+    except Exception as exc:
+        _raise_if_postgres_error(exc)
+        notes["pathways_skipped"].append({"pathway": "C", "reason": str(exc)})
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_C",
+            stage_started,
+            skipped=True,
+            reason=str(exc),
+        )
+        return None
+
+
+async def _run_pathway_d(
+    *,
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    notes: dict[str, Any],
+    pathway_timings: list[dict[str, Any]],
+) -> PathwayResult | None:
+    stage_started = time.perf_counter()
+    try:
+        result = await pathway_d_pattern(
+            trigger.seed_signature,
+            trigger.tenant_id,
+            conn,
+        )
+        notes["pathways_run"].append("D")
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_D",
+            stage_started,
+            **_pathway_counts(result),
+        )
+        return result
+    except Exception as exc:
+        _raise_if_postgres_error(exc)
+        notes["pathways_skipped"].append({"pathway": "D", "reason": str(exc)})
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_D",
+            stage_started,
+            skipped=True,
+            reason=str(exc),
+        )
+        return None
+
+
+async def _run_pathway_g(
+    *,
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    effective_seed_entities: list[dict[str, Any]],
+    effective_scope_actors: list[UUID],
+    notes: dict[str, Any],
+    pathway_timings: list[dict[str, Any]],
+) -> PathwayResult | None:
+    seed_model_ids: list[UUID] = []
+    if trigger.model_id is not None:
+        seed_model_ids.append(trigger.model_id)
+    for model_id in trigger.member_model_ids:
+        if model_id not in seed_model_ids:
+            seed_model_ids.append(model_id)
+    g_seed_entities = [] if seed_model_ids else effective_seed_entities
+    g_scope_actors = [] if seed_model_ids else effective_scope_actors
+    stage_started = time.perf_counter()
+    try:
+        result = await pathway_g_model_edges(
+            trigger.tenant_id,
+            conn,
+            seed_model_ids=seed_model_ids,
+            seed_entity_ids=g_seed_entities,
+            scope_actors=g_scope_actors,
+            max_hops=min(max(trigger.max_hops, 0), 3),
+        )
+        notes["pathways_run"].append("G")
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_G",
+            stage_started,
+            **_pathway_counts(result),
+        )
+        return result
+    except Exception as exc:
+        _raise_if_postgres_error(exc)
+        notes["pathways_skipped"].append({"pathway": "G", "reason": str(exc)})
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_G",
+            stage_started,
+            skipped=True,
+            reason=str(exc),
+        )
+        return None
+
+
+async def _merge_primary_results(
+    *,
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    cfg: RetrievalConfig,
+    weights: dict[str, float],
+    top_n: int,
+    pathway_results: list[PathwayResult],
+    notes: dict[str, Any],
+    pathway_timings: list[dict[str, Any]],
+) -> tuple[
+    list[ModelRow],
+    list[ObservationRow],
+    dict[str, list],
+    list[ResourceRow],
+    dict[UUID, float],
+]:
+    stage_started = time.perf_counter()
+    models, scores = _merge_and_rank_models(
+        pathway_results,
+        weights,
+        top_n=top_n,
+        scoring_mode=cfg.scoring_mode,
+        rrf_k=cfg.rrf_k,
+        recency_decay_half_life_days=cfg.recency_decay_half_life_days,
+    )
+    observations = _merge_observations(pathway_results)
+    trigger_observations = await _fetch_trigger_observations(trigger, conn)
+    if trigger_observations:
+        seen_observation_ids = {o.id for o in trigger_observations}
+        observations = [
+            *trigger_observations,
+            *[o for o in observations if o.id not in seen_observation_ids],
+        ]
+    acts = _merge_acts(pathway_results)
+    resources = _merge_resources(pathway_results)
+    _append_pathway_timing(
+        pathway_timings,
+        "merge_rank",
+        stage_started,
+        models=len(models),
+        observations=len(observations),
+        acts={k: len(v) for k, v in acts.items()},
+        resources=len(resources),
+        pathway_results=len(pathway_results),
+    )
+
+    notes["models_merged"] = len(models)
+    notes["observations_merged"] = len(observations)
+    notes["observation_policy"] = {
+        "model_first_context_enabled": bool(cfg.model_first_context_enabled),
+        "trigger_observations": len(trigger_observations),
+        "historical_observations": max(
+            0, len(observations) - len(trigger_observations)
+        ),
+        "historical_observation_cap": (
+            int(cfg.historical_observation_cap)
+            if cfg.model_first_context_enabled
+            else int(cfg.temporal_max_observations)
+        ),
+    }
+    notes["acts_merged"] = {k: len(v) for k, v in acts.items()}
+    notes["resources_merged"] = len(resources)
+    return models, observations, acts, resources, scores
+
+
+async def _reconsolidate_primary_models(
+    *,
+    models: list[ModelRow],
+    conn: asyncpg.Connection,
+    models_repo: ModelsRepo | None,
+    pathway_timings: list[dict[str, Any]],
+    notes: dict[str, Any],
+) -> list[ModelRow]:
+    stage_started = time.perf_counter()
+    if not models:
+        _append_pathway_timing(
+            pathway_timings,
+            "reconsolidation",
+            stage_started,
+            skipped=True,
+            models=0,
+        )
+        return models
+
+    if models_repo is None:
+        models_repo = ModelsRepo(pool=None)  # type: ignore[arg-type]
+    reconsolidated = await models_repo.retrieve([m.id for m in models], conn=conn)
+    by_id = {m.id: m for m in reconsolidated}
+    notes["reconsolidated_count"] = len(reconsolidated)
+    _append_pathway_timing(
+        pathway_timings,
+        "reconsolidation",
+        stage_started,
+        models=len(reconsolidated),
+    )
+    return [by_id.get(m.id, m) for m in models]
 
 
 # ---------------------------------------------------------------------
@@ -796,350 +1224,103 @@ async def primary_retrieve(
 
     pathway_results: list[PathwayResult] = []
     pathway_timings: list[dict[str, Any]] = []
-    notes: dict[str, Any] = {
-        "kind": trigger.kind,
-        "weights": dict(weights),
-        "pathways_run": [],
-        "pathways_skipped": [],
-        "pathway_timings": pathway_timings,
-        "config_summary": {
-            "semantic_k": cfg.semantic_k,
-            "semantic_hnsw_ef_search": cfg.semantic_hnsw_ef_search,
-            "temporal_max_observations": cfg.temporal_max_observations,
-            "temporal_max_models": cfg.temporal_max_models,
-            "temporal_include_entity_mentions": cfg.temporal_include_entity_mentions,
-            "scoring_mode": cfg.scoring_mode,
-            "rrf_k": cfg.rrf_k,
-            "trigger_weights_overridden": bool(cfg.trigger_weights_json),
-            "recency_decay_half_life_days": cfg.recency_decay_half_life_days,
-            "assembler_use_mmr": cfg.assembler_use_mmr,
-            "assembler_budget_models": cfg.assembler_budget_models,
-            "assembler_budget_observations": cfg.assembler_budget_observations,
-        },
-    }
-
-    stage_started = time.perf_counter()
+    notes = _primary_notes(trigger, cfg, weights, pathway_timings)
     (
         effective_seed_entities,
         effective_scope_actors,
         t2_model_natural,
         t2_model_embedding,
-    ) = await _derive_trigger_scope(trigger, conn)
-    _append_pathway_timing(
+    ) = await _prepare_effective_trigger_scope(
+        trigger,
+        conn,
+        notes,
         pathway_timings,
-        "derive_scope",
-        stage_started,
-        seed_entities=len(effective_seed_entities),
-        scope_actors=len(effective_scope_actors),
-        row_text_fallback=bool(t2_model_natural),
-        row_embedding_fallback=bool(t2_model_embedding),
     )
-    # Keep the TriggerContext in sync with the effective scope derived from
-    # the Observation/Model row. Region locks and later deterministic safety
-    # nets read from trigger.seed_entity_ids/scope_actors, not from this
-    # function's local variables.
-    trigger.seed_entity_ids = list(effective_seed_entities)
-    trigger.scope_actors = list(effective_scope_actors)
-    if not trigger.seed_natural_text and t2_model_natural:
-        trigger.seed_natural_text = t2_model_natural
-    if trigger.precomputed_seed_vector is None and t2_model_embedding is not None:
-        trigger.precomputed_seed_vector = t2_model_embedding
-    notes["effective_scope"] = {
-        "seed_entities": len(effective_seed_entities),
-        "scope_actors": len(effective_scope_actors),
-        "row_text_fallback": bool(t2_model_natural),
-        "row_embedding_fallback": bool(t2_model_embedding),
-        "t2_model_text_fallback": (
-            trigger.kind == "T2" and bool(t2_model_natural)
-        ),
-        "t2_model_embedding_fallback": (
-            trigger.kind == "T2" and bool(t2_model_embedding)
-        ),
-    }
 
-    # ------ Pathway A (all triggers) ------
     if "A" in weights:
-        seeds = list(effective_seed_entities)
-        # For T1 event_arrival the ingestion enqueuer puts the author
-        # actor UUID(s) in trigger.scope_actors but does not synthesise
-        # seed_entity_ids. Without entity seeds pathway A bails early
-        # ("empty_seed"), which silently strips the Acts graph walk for
-        # every user-authored signal. Synthesise actor seeds so short
-        # messages ("actually i only need 1 day of work") still retrieve
-        # the author's scoped models / commitments.
-        if trigger.kind == "T1" and effective_scope_actors and not seeds:
-            for a in effective_scope_actors:
-                seeds.append({"type": "actor", "id": str(a)})
+        result = await _run_pathway_a(
+            trigger=trigger,
+            conn=conn,
+            read_pool=read_pool,
+            read_fanout_enabled=structural_read_fanout_enabled,
+            read_fanout_min_seeds=structural_read_fanout_min_seeds,
+            read_fanout_chunk_size=structural_read_fanout_chunk_size,
+            effective_seed_entities=effective_seed_entities,
+            effective_scope_actors=effective_scope_actors,
+            notes=notes,
+            pathway_timings=pathway_timings,
+        )
+        if result is not None:
+            pathway_results.append(result)
 
-        stage_started = time.perf_counter()
-        try:
-            pr_a = await pathway_a_structural(
-                seeds,
-                trigger.tenant_id,
-                conn,
-                max_hops=trigger.max_hops,
-                read_pool=read_pool,
-                read_fanout_enabled=structural_read_fanout_enabled,
-                read_fanout_min_seeds=structural_read_fanout_min_seeds,
-                read_fanout_chunk_size=structural_read_fanout_chunk_size,
-            )
-            pathway_results.append(pr_a)
-            notes["pathways_run"].append("A")
-            _append_pathway_timing(
-                pathway_timings,
-                "pathway_A",
-                stage_started,
-                **_pathway_counts(pr_a),
-            )
-        except Exception as e:
-            _raise_if_postgres_error(e)
-            notes["pathways_skipped"].append({"pathway": "A", "reason": str(e)})
-            _append_pathway_timing(
-                pathway_timings,
-                "pathway_A",
-                stage_started,
-                skipped=True,
-                reason=str(e),
-            )
-
-    # ------ Pathway B ------
     if "B" in weights:
-        text = trigger.seed_natural_text or t2_model_natural or ""
-        vector = trigger.precomputed_seed_vector or t2_model_embedding
-        # Resolve k: trigger field wins if it differs from the legacy
-        # default; otherwise fall back to the config-supplied k.
-        b_k = trigger.semantic_k if trigger.semantic_k != 40 else cfg.semantic_k
-        stage_started = time.perf_counter()
-        try:
-            pr_b = await pathway_b_semantic(
-                text,
-                trigger.tenant_id,
-                conn,
-                k=b_k,
-                embedder=embedder,
-                precomputed_vector=vector,
-                event_actors=effective_scope_actors,
-                event_entities=effective_seed_entities,
-                hnsw_ef_search=cfg.semantic_hnsw_ef_search,
-            )
-            pathway_results.append(pr_b)
-            notes["pathways_run"].append("B")
-            _append_pathway_timing(
-                pathway_timings,
-                "pathway_B",
-                stage_started,
-                **_pathway_counts(pr_b),
-            )
-        except (RetrievalPathwayError, ValidationError) as e:
-            notes["pathways_skipped"].append({"pathway": "B", "reason": str(e)})
-            _append_pathway_timing(
-                pathway_timings,
-                "pathway_B",
-                stage_started,
-                skipped=True,
-                reason=str(e),
-            )
+        result = await _run_pathway_b(
+            trigger=trigger,
+            conn=conn,
+            cfg=cfg,
+            embedder=embedder,
+            effective_seed_entities=effective_seed_entities,
+            effective_scope_actors=effective_scope_actors,
+            t2_model_natural=t2_model_natural,
+            t2_model_embedding=t2_model_embedding,
+            notes=notes,
+            pathway_timings=pathway_timings,
+        )
+        if result is not None:
+            pathway_results.append(result)
 
-    # ------ Pathway C ------
     if "C" in weights:
-        if trigger.seed_occurred_at is not None:
-            stage_started = time.perf_counter()
-            temporal_max_observations = int(cfg.temporal_max_observations)
-            if cfg.model_first_context_enabled:
-                temporal_max_observations = min(
-                    temporal_max_observations,
-                    max(0, int(cfg.historical_observation_cap)),
-                )
-            try:
-                pr_c = await pathway_c_temporal(
-                    trigger.seed_occurred_at,
-                    trigger.temporal_window,
-                    trigger.tenant_id,
-                    conn,
-                    scope_actors=effective_scope_actors,
-                    scope_entities=effective_seed_entities,
-                    max_observations=temporal_max_observations,
-                    max_models=cfg.temporal_max_models,
-                    include_entity_mentions=cfg.temporal_include_entity_mentions,
-                )
-                pathway_results.append(pr_c)
-                notes["pathways_run"].append("C")
-                _append_pathway_timing(
-                    pathway_timings,
-                    "pathway_C",
-                    stage_started,
-                    **_pathway_counts(pr_c),
-                )
-            except Exception as e:
-                _raise_if_postgres_error(e)
-                notes["pathways_skipped"].append({"pathway": "C", "reason": str(e)})
-                _append_pathway_timing(
-                    pathway_timings,
-                    "pathway_C",
-                    stage_started,
-                    skipped=True,
-                    reason=str(e),
-                )
-        else:
-            notes["pathways_skipped"].append(
-                {"pathway": "C", "reason": "no_seed_occurred_at"}
-            )
-            _append_pathway_timing(
-                pathway_timings,
-                "pathway_C",
-                time.perf_counter(),
-                skipped=True,
-                reason="no_seed_occurred_at",
-            )
+        result = await _run_pathway_c(
+            trigger=trigger,
+            conn=conn,
+            cfg=cfg,
+            effective_seed_entities=effective_seed_entities,
+            effective_scope_actors=effective_scope_actors,
+            notes=notes,
+            pathway_timings=pathway_timings,
+        )
+        if result is not None:
+            pathway_results.append(result)
 
-    # ------ Pathway D ------
     if "D" in weights:
-        stage_started = time.perf_counter()
-        try:
-            pr_d = await pathway_d_pattern(
-                trigger.seed_signature,
-                trigger.tenant_id,
-                conn,
-            )
-            pathway_results.append(pr_d)
-            notes["pathways_run"].append("D")
-            _append_pathway_timing(
-                pathway_timings,
-                "pathway_D",
-                stage_started,
-                **_pathway_counts(pr_d),
-            )
-        except Exception as e:
-            _raise_if_postgres_error(e)
-            notes["pathways_skipped"].append({"pathway": "D", "reason": str(e)})
-            _append_pathway_timing(
-                pathway_timings,
-                "pathway_D",
-                stage_started,
-                skipped=True,
-                reason=str(e),
-            )
+        result = await _run_pathway_d(
+            trigger=trigger,
+            conn=conn,
+            notes=notes,
+            pathway_timings=pathway_timings,
+        )
+        if result is not None:
+            pathway_results.append(result)
 
-    # ------ Pathway G (typed Model-edge traversal) ------
     if "G" in weights:
-        seed_model_ids: list[UUID] = []
-        if trigger.model_id is not None:
-            seed_model_ids.append(trigger.model_id)
-        for mid in trigger.member_model_ids:
-            if mid not in seed_model_ids:
-                seed_model_ids.append(mid)
-        # When an explicit Model/neighborhood member seed exists, keep
-        # Pathway G sharp: it should traverse the typed graph around
-        # that Model. Entity/actor scope is still used when no model
-        # seed exists, which is the right behavior for T1/T3 signals.
-        g_seed_entities = [] if seed_model_ids else effective_seed_entities
-        g_scope_actors = [] if seed_model_ids else effective_scope_actors
-        stage_started = time.perf_counter()
-        try:
-            pr_g = await pathway_g_model_edges(
-                trigger.tenant_id,
-                conn,
-                seed_model_ids=seed_model_ids,
-                seed_entity_ids=g_seed_entities,
-                scope_actors=g_scope_actors,
-                max_hops=min(max(trigger.max_hops, 0), 3),
-            )
-            pathway_results.append(pr_g)
-            notes["pathways_run"].append("G")
-            _append_pathway_timing(
-                pathway_timings,
-                "pathway_G",
-                stage_started,
-                **_pathway_counts(pr_g),
-            )
-        except Exception as e:
-            _raise_if_postgres_error(e)
-            notes["pathways_skipped"].append({"pathway": "G", "reason": str(e)})
-            _append_pathway_timing(
-                pathway_timings,
-                "pathway_G",
-                stage_started,
-                skipped=True,
-                reason=str(e),
-            )
+        result = await _run_pathway_g(
+            trigger=trigger,
+            conn=conn,
+            effective_seed_entities=effective_seed_entities,
+            effective_scope_actors=effective_scope_actors,
+            notes=notes,
+            pathway_timings=pathway_timings,
+        )
+        if result is not None:
+            pathway_results.append(result)
 
-    # ------ Merge + rank ------
-    stage_started = time.perf_counter()
-    models, scores = _merge_and_rank_models(
-        pathway_results, weights, top_n=top_n,
-        scoring_mode=cfg.scoring_mode,
-        rrf_k=cfg.rrf_k,
-        recency_decay_half_life_days=cfg.recency_decay_half_life_days,
+    models, observations, acts, resources, scores = await _merge_primary_results(
+        trigger=trigger,
+        conn=conn,
+        cfg=cfg,
+        weights=weights,
+        top_n=top_n,
+        pathway_results=pathway_results,
+        notes=notes,
+        pathway_timings=pathway_timings,
     )
-    observations = _merge_observations(pathway_results)
-    trigger_observations = await _fetch_trigger_observations(trigger, conn)
-    if trigger_observations:
-        seen_observation_ids = {o.id for o in trigger_observations}
-        observations = [
-            *trigger_observations,
-            *[o for o in observations if o.id not in seen_observation_ids],
-        ]
-    acts = _merge_acts(pathway_results)
-    resources = _merge_resources(pathway_results)
-    _append_pathway_timing(
-        pathway_timings,
-        "merge_rank",
-        stage_started,
-        models=len(models),
-        observations=len(observations),
-        acts={k: len(v) for k, v in acts.items()},
-        resources=len(resources),
-        pathway_results=len(pathway_results),
+    models = await _reconsolidate_primary_models(
+        models=models,
+        conn=conn,
+        models_repo=models_repo,
+        pathway_timings=pathway_timings,
+        notes=notes,
     )
-
-    notes["models_merged"] = len(models)
-    notes["observations_merged"] = len(observations)
-    notes["observation_policy"] = {
-        "model_first_context_enabled": bool(cfg.model_first_context_enabled),
-        "trigger_observations": len(trigger_observations),
-        "historical_observations": max(0, len(observations) - len(trigger_observations)),
-        "historical_observation_cap": (
-            int(cfg.historical_observation_cap)
-            if cfg.model_first_context_enabled
-            else int(cfg.temporal_max_observations)
-        ),
-    }
-    notes["acts_merged"] = {k: len(v) for k, v in acts.items()}
-    notes["resources_merged"] = len(resources)
-
-    # ------ Reconsolidation ------
-    stage_started = time.perf_counter()
-    if models:
-        if models_repo is None:
-            # We don't need the embedder for retrieve().
-            models_repo = ModelsRepo(pool=None)  # type: ignore[arg-type]
-        # ModelsRepo.retrieve signs: retrieve(ids, *, conn=None).
-        # We always pass the caller's conn so the UPDATE lands in the
-        # caller's transaction.
-        reconsolidated = await models_repo.retrieve(
-            [m.id for m in models], conn=conn
-        )
-        # Post-reconsolidation ModelRow reflects the bumped activation +
-        # retrieval_count + last_retrieved_at. We prefer these fresh
-        # rows so the caller sees the latest values (they will have
-        # been updated within this same tx).
-        by_id = {m.id: m for m in reconsolidated}
-        models = [by_id.get(m.id, m) for m in models]
-        notes["reconsolidated_count"] = len(reconsolidated)
-        _append_pathway_timing(
-            pathway_timings,
-            "reconsolidation",
-            stage_started,
-            models=len(reconsolidated),
-        )
-    else:
-        _append_pathway_timing(
-            pathway_timings,
-            "reconsolidation",
-            stage_started,
-            skipped=True,
-            models=0,
-        )
 
     return RetrievalResult(
         trigger=trigger,

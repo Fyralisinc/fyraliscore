@@ -369,12 +369,16 @@ async def test_quality_harness_can_run_multiple_cases_as_a_suite(
         assert all(r.tenant_id == tenant for r in result.resources), case.name
 
 
-async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
-    tx_conn,
-    fresh_db,
-    tenant,
-    other_tenant,
-):
+@dataclass(frozen=True, slots=True)
+class _MixedEntrypointGraphIds:
+    seed_id: UUID
+    bridge_id: UUID
+    target_id: UUID
+    rejected_neighbor_id: UUID
+    archived_neighbor_id: UUID
+
+
+async def _build_mixed_entrypoint_fixture(tx_conn, fresh_db, tenant, other_tenant):
     fs = await build_fixture(
         tx_conn,
         tenant,
@@ -401,17 +405,22 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
         n_customers=4,
         n_decisions=4,
     )
+    return fs
 
+
+async def _add_mixed_entrypoint_graph(tx_conn, tenant, fs) -> _MixedEntrypointGraphIds:
     edge_repo = EdgesRepo()
-    graph_seed_id = fs.hero_model_id
-    graph_bridge_id = fs.model_ids[84]
-    graph_target_id = fs.model_ids[96]
-    rejected_neighbor_id = fs.model_ids[97]
-    archived_neighbor_id = fs.model_ids[98]
+    graph_ids = _MixedEntrypointGraphIds(
+        seed_id=fs.hero_model_id,
+        bridge_id=fs.model_ids[84],
+        target_id=fs.model_ids[96],
+        rejected_neighbor_id=fs.model_ids[97],
+        archived_neighbor_id=fs.model_ids[98],
+    )
     await edge_repo.link(
         tx_conn,
-        source=graph_seed_id,
-        target=graph_bridge_id,
+        source=graph_ids.seed_id,
+        target=graph_ids.bridge_id,
         kind="same_issue_as",
         tenant_id=tenant,
         detected_by="manual",
@@ -420,8 +429,8 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
     )
     await edge_repo.link(
         tx_conn,
-        source=graph_bridge_id,
-        target=graph_target_id,
+        source=graph_ids.bridge_id,
+        target=graph_ids.target_id,
         kind="early_warning_for",
         tenant_id=tenant,
         detected_by="manual",
@@ -430,8 +439,8 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
     )
     await edge_repo.link(
         tx_conn,
-        source=graph_seed_id,
-        target=rejected_neighbor_id,
+        source=graph_ids.seed_id,
+        target=graph_ids.rejected_neighbor_id,
         kind="early_warning_for",
         tenant_id=tenant,
         detected_by="manual",
@@ -441,8 +450,8 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
     )
     await edge_repo.link(
         tx_conn,
-        source=graph_seed_id,
-        target=archived_neighbor_id,
+        source=graph_ids.seed_id,
+        target=graph_ids.archived_neighbor_id,
         kind="blocks",
         tenant_id=tenant,
         detected_by="manual",
@@ -457,9 +466,12 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
             archive_reason = 'quality_eval_negative'
         WHERE id = $1
         """,
-        archived_neighbor_id,
+        graph_ids.archived_neighbor_id,
     )
+    return graph_ids
 
+
+async def _actor_model_ids(tx_conn, tenant, actor_id: UUID) -> set[UUID]:
     actor_rows = await tx_conn.fetch(
         """
         SELECT model_id
@@ -469,9 +481,12 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
         ORDER BY model_id
         """,
         tenant,
-        fs.hero_actor_id,
+        actor_id,
     )
-    actor_model_ids = {r["model_id"] for r in actor_rows}
+    return {r["model_id"] for r in actor_rows}
+
+
+async def _decision_model_ids(tx_conn, fs) -> set[UUID]:
     decision_commit_rows = await tx_conn.fetch(
         """
         SELECT commitment_id
@@ -480,22 +495,31 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
         """,
         fs.decision_ids[0],
     )
-    decision_model_ids: set[UUID] = set()
+    model_ids: set[UUID] = set()
     for row in decision_commit_rows:
-        decision_model_ids.update(fs.scope_by_commitment.get(row["commitment_id"], []))
+        model_ids.update(fs.scope_by_commitment.get(row["commitment_id"], []))
+    return model_ids
 
+
+def _mixed_entrypoint_cases(
+    fs,
+    *,
+    actor_model_ids: set[UUID],
+    decision_model_ids: set[UUID],
+    graph_ids: _MixedEntrypointGraphIds,
+) -> list[RetrievalQualityCase]:
     compact_commitment_expected = set(
         fs.scope_by_commitment[fs.hero_commitment_id][:2]
     )
     second_customer_commitment_id = fs.commitment_ids[5]
     seed_time = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
 
-    cases = [
+    return [
         RetrievalQualityCase(
             name="large_customer_to_commitment_scope",
             trigger=TriggerContext(
                 kind="T1",
-                tenant_id=tenant,
+                tenant_id=fs.tenant_id,
                 seed_entity_ids=[
                     {"type": "customer", "id": str(fs.hero_customer_id)}
                 ],
@@ -516,7 +540,7 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
             name="large_commitment_to_customer_bridge",
             trigger=TriggerContext(
                 kind="T1",
-                tenant_id=tenant,
+                tenant_id=fs.tenant_id,
                 seed_entity_ids=[
                     {"type": "commitment", "id": str(fs.hero_commitment_id)}
                 ],
@@ -536,7 +560,7 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
             name="actor_only_signal_uses_structural_scope",
             trigger=TriggerContext(
                 kind="T1",
-                tenant_id=tenant,
+                tenant_id=fs.tenant_id,
                 scope_actors=[fs.hero_actor_id],
                 seed_natural_text="actor reliability and ownership context",
                 seed_occurred_at=seed_time,
@@ -554,7 +578,7 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
             name="decision_constraint_finds_operating_models",
             trigger=TriggerContext(
                 kind="T1",
-                tenant_id=tenant,
+                tenant_id=fs.tenant_id,
                 seed_entity_ids=[
                     {"type": "decision", "id": str(fs.decision_ids[0])}
                 ],
@@ -572,7 +596,7 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
             name="pattern_background_retrieves_patterns_and_instances",
             trigger=TriggerContext(
                 kind="T4",
-                tenant_id=tenant,
+                tenant_id=fs.tenant_id,
                 seed_signature={"regex": "^hotfix"},
             ),
             expected_model_ids=set(
@@ -586,16 +610,23 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
             name="two_hop_model_edge_hidden_warning",
             trigger=TriggerContext(
                 kind="T2",
-                tenant_id=tenant,
-                model_id=graph_seed_id,
+                tenant_id=fs.tenant_id,
+                model_id=graph_ids.seed_id,
                 seed_natural_text="two hop warning through model graph",
                 precomputed_seed_vector=make_embedding(
                     "two hop warning through model graph"
                 ),
             ),
-            expected_model_ids={graph_seed_id, graph_bridge_id, graph_target_id},
-            expected_top_model_ids={graph_target_id},
-            excluded_model_ids={rejected_neighbor_id, archived_neighbor_id},
+            expected_model_ids={
+                graph_ids.seed_id,
+                graph_ids.bridge_id,
+                graph_ids.target_id,
+            },
+            expected_top_model_ids={graph_ids.target_id},
+            excluded_model_ids={
+                graph_ids.rejected_neighbor_id,
+                graph_ids.archived_neighbor_id,
+            },
             required_pathways={"A", "B", "D", "G"},
             top_n=80,
             max_expected_rank=25,
@@ -605,7 +636,7 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
             name="tight_top_n_still_returns_some_relevant_memory",
             trigger=TriggerContext(
                 kind="T1",
-                tenant_id=tenant,
+                tenant_id=fs.tenant_id,
                 seed_entity_ids=[
                     {"type": "commitment", "id": str(fs.hero_commitment_id)}
                 ],
@@ -625,7 +656,7 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
             name="second_customer_does_not_collapse_to_hero_customer",
             trigger=TriggerContext(
                 kind="T1",
-                tenant_id=tenant,
+                tenant_id=fs.tenant_id,
                 seed_entity_ids=[
                     {
                         "type": "customer_resource",
@@ -645,13 +676,21 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
         ),
     ]
 
+
+async def _run_quality_case_suite(cases, tx_conn, tenant) -> list[dict]:
     reports = []
     for case in cases:
         result = await _assert_quality_case(case, tx_conn)
         reports.append(result.notes["quality_report"])
         assert all(m.tenant_id == tenant for m in result.models), case.name
         assert all(r.tenant_id == tenant for r in result.resources), case.name
+    return reports
 
+
+def _assert_quality_suite_summary(
+    cases: list[RetrievalQualityCase],
+    reports: list[dict],
+) -> None:
     expected_total = sum(r["expected_total"] for r in reports)
     expected_hits = sum(r["expected_hits"] for r in reports)
     negative_hits = sum(r["known_negative_hits"] for r in reports)
@@ -661,6 +700,27 @@ async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
     assert expected_hits / expected_total >= 0.85
     assert negative_hits == 0
     assert max(r["latency_ms"] for r in reports) <= 5000
+
+
+async def test_quality_eval_corpus_mixed_entrypoints_regression_gate(
+    tx_conn,
+    fresh_db,
+    tenant,
+    other_tenant,
+):
+    fs = await _build_mixed_entrypoint_fixture(
+        tx_conn, fresh_db, tenant, other_tenant
+    )
+    graph_ids = await _add_mixed_entrypoint_graph(tx_conn, tenant, fs)
+    cases = _mixed_entrypoint_cases(
+        fs,
+        actor_model_ids=await _actor_model_ids(tx_conn, tenant, fs.hero_actor_id),
+        decision_model_ids=await _decision_model_ids(tx_conn, fs),
+        graph_ids=graph_ids,
+    )
+
+    reports = await _run_quality_case_suite(cases, tx_conn, tenant)
+    _assert_quality_suite_summary(cases, reports)
 
 
 async def test_quality_high_value_graph_memory_survives_context_assembly(

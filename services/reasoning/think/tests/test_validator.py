@@ -1122,6 +1122,75 @@ async def test_validate_accepts_evidence_backed_edge_op(fresh_db, tenant):
         assert validated.edge_ops[0].evidence_event_ids == [obs_id]
 
 
+async def test_validate_promotes_precise_evidence_backed_candidate_edge(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    a, obs_id = await _make_model(fresh_db, tenant, confidence=0.6)
+    b, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            edge_ops=[
+                EdgeOp(
+                    op="add",
+                    source_model_id=a,
+                    target_model_id=b,
+                    edge_kind="weakens",
+                    weight=0.45,
+                    confidence=0.76,
+                    evidence_event_ids=[obs_id],
+                    explanation=(
+                        "The fresh telemetry is counter-evidence and weakens "
+                        "confidence in the original launch-readiness model."
+                    ),
+                    review_status="candidate",
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.edge_ops) == 1
+    edge = validated.edge_ops[0]
+    assert edge.edge_kind == "weakens"
+    assert edge.review_status == "accepted"
+    assert edge.metadata["review_status_promoted_by"] == "edge_semantic_refiner"
+
+
+async def test_validate_refines_generic_supports_edge_to_blocks(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    source_id, _ = await _make_model(fresh_db, tenant, confidence=0.7)
+    target_id, _ = await _make_model(fresh_db, tenant, confidence=0.7)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            edge_ops=[
+                EdgeOp(
+                    op="add",
+                    source_model_id=source_id,
+                    target_model_id=target_id,
+                    edge_kind="supports",
+                    explanation=(
+                        "The source blocks the target until approval is recorded."
+                    ),
+                ),
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.edge_ops) == 1
+    edge = validated.edge_ops[0]
+    assert edge.edge_kind == "blocks"
+    assert edge.weight == 0.75
+    assert edge.metadata["canonicalized_from_edge_kind"] == "supports"
+
+
 async def test_validate_accepts_accepted_dynamic_edge_kind(fresh_db, tenant):
     rr = _retrieval_result(tenant)
     a, obs_id = await _make_model(fresh_db, tenant, confidence=0.6)

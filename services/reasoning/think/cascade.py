@@ -40,6 +40,7 @@ from services.domain.acts import commitments as commitments_svc
 from services.domain.acts import goals as goals_svc
 from services.domain.acts.invariants import is_unsatisfied_dependency
 from services.domain.observations.state_change import emit_state_change
+from services.domain.triggers import enqueue_trigger
 
 
 _log = structlog.get_logger(__name__)
@@ -123,20 +124,13 @@ async def enqueue_cascade_t1(
             max_cascade_depth=MAX_CASCADE_DEPTH,
         )
         return None
-    import json as _json
-    new_id = uuid7()
-    await conn.execute(
-        """
-        INSERT INTO think_trigger_queue (
-            id, tenant_id, trigger_kind, trigger_subkind,
-            observation_id, payload
-        ) VALUES ($1, $2, 'T1', $3, $4, $5::jsonb)
-        """,
-        new_id,
-        tenant_id,
-        subkind,
-        observation_id,
-        _json.dumps(payload),
+    new_id = await enqueue_trigger(
+        conn,
+        tenant_id=tenant_id,
+        trigger_kind="T1",
+        trigger_subkind=subkind,
+        observation_id=observation_id,
+        payload=payload,
     )
     return new_id
 
@@ -615,7 +609,6 @@ async def enqueue_t2_belief_updated(
     and pathway A (structural) have seeds to work with even when scope_entities
     is empty.
     """
-    import json as _json
     # Fetch natural text + scope actors from the model so retrieval has seeds.
     row = await conn.fetchrow(
         'SELECT "natural", scope_actors FROM models WHERE id = $1 AND tenant_id = $2',
@@ -629,7 +622,6 @@ async def enqueue_t2_belief_updated(
         raw_actors = row["scope_actors"] or []
         scope_actors = [str(a) for a in raw_actors]
 
-    new_id = uuid7()
     payload_dict: dict[str, Any] = {
         "source_model_id": str(model_id),
         "source_observation_id": str(source_observation_id) if source_observation_id else None,
@@ -639,19 +631,14 @@ async def enqueue_t2_belief_updated(
     # Cost-plan §3.2: carry cross-trigger lineage depth (parent + 1) so the
     # worker's cascade-bound check sees the real depth on this T2, not 0.
     payload_dict.update(propagate_cascade_depth(parent_payload))
-    payload = _json.dumps(payload_dict)
-    await conn.execute(
-        """
-        INSERT INTO think_trigger_queue (
-            id, tenant_id, trigger_kind, trigger_subkind,
-            model_id, observation_id, payload
-        ) VALUES ($1, $2, 'T2', 'belief_updated', $3, $4, $5::jsonb)
-        """,
-        new_id,
-        tenant_id,
-        model_id,
-        source_observation_id,
-        payload,
+    new_id = await enqueue_trigger(
+        conn,
+        tenant_id=tenant_id,
+        trigger_kind="T2",
+        trigger_subkind="belief_updated",
+        model_id=model_id,
+        observation_id=source_observation_id,
+        payload=payload_dict,
     )
     return new_id
 

@@ -37,11 +37,12 @@ import asyncpg
 from lib.shared.errors import CompanyOSError, ValidationError
 from lib.shared.ids import uuid7
 
+from services.domain.models.status_notes import add_note
+from services.domain.triggers import enqueue_trigger
 from services.reasoning.contestability.standing import (
     StandingBasis,
     actor_has_standing_on_model,
 )
-from services.domain.models.status_notes import add_note
 
 
 ContestationKind = Literal["belief", "reading"]
@@ -85,6 +86,20 @@ class ContestationResult:
     override_applied: bool
 
 
+@dataclass(frozen=True)
+class _ModelSnapshot:
+    tenant_id: UUID
+    previous_confidence: float
+    scope_actors: list[UUID]
+    signal_readings: Any
+
+
+@dataclass(frozen=True)
+class _OverrideResult:
+    new_confidence: float
+    applied: bool
+
+
 # ---------------------------------------------------------------------
 # Weights — spec §11 "First-person override rule" verbatim.
 # ---------------------------------------------------------------------
@@ -99,14 +114,7 @@ OVERRIDE_FLOOR = 0.15
 # ---------------------------------------------------------------------
 
 
-async def contest_model(
-    conn: asyncpg.Connection,
-    inp: ContestationInput,
-) -> ContestationResult:
-    """
-    Execute the contestation flow against `conn` (callers wrap in
-    a transaction).
-    """
+def _validate_contestation_input(inp: ContestationInput) -> None:
     if inp.contestation_kind not in ("belief", "reading"):
         raise ValidationError(
             f"contestation_kind must be 'belief' or 'reading'; "
@@ -120,7 +128,11 @@ async def contest_model(
             field="rationale",
         )
 
-    # -- 1. Standing check ------------------------------------------
+
+async def _require_standing(
+    conn: asyncpg.Connection,
+    inp: ContestationInput,
+) -> Any:
     standing = await actor_has_standing_on_model(
         conn,
         actor_id=inp.contestor_actor_id,
@@ -132,8 +144,13 @@ async def contest_model(
             actor_id=str(inp.contestor_actor_id),
             model_id=str(inp.model_id),
         )
+    return standing
 
-    # -- Pull Model snapshot (we need scope_actors[] for override logic) --
+
+async def _load_model_snapshot(
+    conn: asyncpg.Connection,
+    inp: ContestationInput,
+) -> _ModelSnapshot:
     model = await conn.fetchrow(
         """
         SELECT id, tenant_id, scope_actors, confidence, signal_readings,
@@ -154,11 +171,18 @@ async def contest_model(
             model_tenant_id=str(model["tenant_id"]),
             request_tenant_id=str(inp.tenant_id),
         )
+    return _ModelSnapshot(
+        tenant_id=model["tenant_id"],
+        previous_confidence=float(model["confidence"]),
+        scope_actors=list(model["scope_actors"] or []),
+        signal_readings=model["signal_readings"],
+    )
 
-    previous_confidence = float(model["confidence"])
-    scope_actors: list[UUID] = list(model["scope_actors"] or [])
 
-    # -- 2. Insert contestation Observation -------------------------
+async def _insert_contestation_observation(
+    conn: asyncpg.Connection,
+    inp: ContestationInput,
+) -> tuple[UUID, datetime]:
     obs_id = uuid7()
     now = datetime.now(timezone.utc)
     content: dict[str, Any] = {
@@ -168,13 +192,6 @@ async def contest_model(
     }
     if inp.proposed_alternative is not None:
         content["proposed_alternative"] = inp.proposed_alternative
-
-    content_text = (
-        f"contestation ({inp.contestation_kind}) of model "
-        f"{inp.model_id} by actor {inp.contestor_actor_id}: "
-        f"{inp.rationale[:200]}"
-    )
-    entities_mentioned = [{"type": "model", "id": str(inp.model_id)}]
 
     await conn.execute(
         """
@@ -197,9 +214,146 @@ async def contest_model(
         now,
         inp.contestor_actor_id,
         json.dumps(content, sort_keys=True),
-        content_text,
-        json.dumps(entities_mentioned),
+        (
+            f"contestation ({inp.contestation_kind}) of model "
+            f"{inp.model_id} by actor {inp.contestor_actor_id}: "
+            f"{inp.rationale[:200]}"
+        ),
+        json.dumps([{"type": "model", "id": str(inp.model_id)}]),
     )
+    return obs_id, now
+
+
+async def _apply_first_person_override(
+    conn: asyncpg.Connection,
+    inp: ContestationInput,
+    snapshot: _ModelSnapshot,
+) -> _OverrideResult:
+    if inp.contestation_kind != "belief" or inp.contestor_actor_id not in snapshot.scope_actors:
+        return _OverrideResult(
+            new_confidence=snapshot.previous_confidence,
+            applied=False,
+        )
+
+    if snapshot.scope_actors and inp.contestor_actor_id == snapshot.scope_actors[0]:
+        multiplier = PRIMARY_SUBJECT_MULTIPLIER
+        role = "primary"
+    else:
+        multiplier = SECONDARY_SUBJECT_MULTIPLIER
+        role = "secondary"
+
+    new_confidence = max(OVERRIDE_FLOOR, snapshot.previous_confidence * multiplier)
+    new_confidence = min(new_confidence, 0.95)
+    await conn.execute(
+        "UPDATE models SET confidence = $1 WHERE id = $2",
+        new_confidence,
+        inp.model_id,
+    )
+    await add_note(
+        model_id=inp.model_id,
+        note=(
+            f"first-person override ({role}) by actor "
+            f"{inp.contestor_actor_id}: {inp.rationale[:200]}"
+        ),
+        kind="first_person_override",
+        authored_by=inp.contestor_actor_id,
+        conn=conn,
+    )
+    return _OverrideResult(new_confidence=new_confidence, applied=True)
+
+
+def _coerce_signal_readings(existing: Any) -> list[Any]:
+    if isinstance(existing, (bytes, bytearray)):
+        existing = json.loads(existing.decode())
+    elif isinstance(existing, str):
+        existing = json.loads(existing)
+    if isinstance(existing, list):
+        return existing
+    return []
+
+
+async def _mark_reading_contested(
+    conn: asyncpg.Connection,
+    inp: ContestationInput,
+    *,
+    signal_readings: Any,
+    now: datetime,
+) -> None:
+    existing = _coerce_signal_readings(signal_readings)
+    contested_at = now.isoformat()
+    for entry in existing:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("actor_id") != str(inp.contestor_actor_id):
+            continue
+        entry["contested"] = True
+        entry["contested_at"] = contested_at
+        entry["rationale"] = inp.rationale
+        break
+    else:
+        existing.append(
+            {
+                "actor_id": str(inp.contestor_actor_id),
+                "contested": True,
+                "contested_at": contested_at,
+                "rationale": inp.rationale,
+            }
+        )
+
+    await conn.execute(
+        "UPDATE models SET signal_readings = $1::jsonb WHERE id = $2",
+        json.dumps(existing),
+        inp.model_id,
+    )
+    await add_note(
+        model_id=inp.model_id,
+        note=(
+            f"reading contestation by actor {inp.contestor_actor_id}: "
+            f"{inp.rationale[:200]}"
+        ),
+        kind="first_person_override",
+        authored_by=inp.contestor_actor_id,
+        conn=conn,
+    )
+
+
+async def _enqueue_contestation_trigger(
+    conn: asyncpg.Connection,
+    inp: ContestationInput,
+    *,
+    observation_id: UUID,
+) -> UUID | None:
+    trig_subkind = (
+        "belief_contestation"
+        if inp.contestation_kind == "belief"
+        else "reading_contestation"
+    )
+    return await enqueue_trigger(
+        conn,
+        tenant_id=inp.tenant_id,
+        trigger_kind="T3",
+        trigger_subkind=trig_subkind,
+        observation_id=observation_id,
+        model_id=inp.model_id,
+        payload={
+            "contestor_actor_id": str(inp.contestor_actor_id),
+            "contestation_kind": inp.contestation_kind,
+        },
+    )
+
+
+async def contest_model(
+    conn: asyncpg.Connection,
+    inp: ContestationInput,
+) -> ContestationResult:
+    """
+    Execute the contestation flow against `conn` (callers wrap in
+    a transaction).
+    """
+    _validate_contestation_input(inp)
+    standing = await _require_standing(conn, inp)
+    snapshot = await _load_model_snapshot(conn, inp)
+    obs_id, now = await _insert_contestation_observation(conn, inp)
 
     # -- 3. Increment contested_count -------------------------------
     await conn.execute(
@@ -207,113 +361,30 @@ async def contest_model(
         inp.model_id,
     )
 
-    # -- 4. First-person override (belief kind only) ----------------
-    new_confidence = previous_confidence
-    override_applied = False
-    if inp.contestation_kind == "belief" and inp.contestor_actor_id in scope_actors:
-        if scope_actors and inp.contestor_actor_id == scope_actors[0]:
-            multiplier = PRIMARY_SUBJECT_MULTIPLIER
-            role = "primary"
-        else:
-            multiplier = SECONDARY_SUBJECT_MULTIPLIER
-            role = "secondary"
-        new_confidence = max(OVERRIDE_FLOOR, previous_confidence * multiplier)
-        # Apply the confidence change. Clip to [0.05, 0.95] to satisfy
-        # the CHECK constraint (max() already gives us >= floor >=
-        # 0.05; clip against the upper bound explicitly).
-        new_confidence = min(new_confidence, 0.95)
-        await conn.execute(
-            "UPDATE models SET confidence = $1 WHERE id = $2",
-            new_confidence, inp.model_id,
-        )
-        await add_note(
-            model_id=inp.model_id,
-            note=(
-                f"first-person override ({role}) by actor "
-                f"{inp.contestor_actor_id}: {inp.rationale[:200]}"
-            ),
-            kind="first_person_override",
-            authored_by=inp.contestor_actor_id,
-            conn=conn,
-        )
-        override_applied = True
+    override = await _apply_first_person_override(conn, inp, snapshot)
 
     # -- Reading contestation: mark signal_readings entry -----------
     if inp.contestation_kind == "reading":
-        existing = model["signal_readings"]
-        if isinstance(existing, (bytes, bytearray)):
-            existing = json.loads(existing.decode())
-        elif isinstance(existing, str):
-            existing = json.loads(existing)
-        if not isinstance(existing, list):
-            existing = []
-        # Find the entry whose actor_id matches the contestor; insert
-        # one if absent.
-        updated = False
-        for entry in existing:
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("actor_id") == str(inp.contestor_actor_id):
-                entry["contested"] = True
-                entry["contested_at"] = now.isoformat()
-                entry["rationale"] = inp.rationale
-                updated = True
-                break
-        if not updated:
-            existing.append({
-                "actor_id": str(inp.contestor_actor_id),
-                "contested": True,
-                "contested_at": now.isoformat(),
-                "rationale": inp.rationale,
-            })
-        await conn.execute(
-            "UPDATE models SET signal_readings = $1::jsonb WHERE id = $2",
-            json.dumps(existing),
-            inp.model_id,
-        )
-        await add_note(
-            model_id=inp.model_id,
-            note=(
-                f"reading contestation by actor {inp.contestor_actor_id}: "
-                f"{inp.rationale[:200]}"
-            ),
-            kind="first_person_override",
-            authored_by=inp.contestor_actor_id,
-            conn=conn,
+        await _mark_reading_contested(
+            conn,
+            inp,
+            signal_readings=snapshot.signal_readings,
+            now=now,
         )
 
-    # -- 5. Enqueue T3 trigger --------------------------------------
-    trig_subkind = (
-        "belief_contestation"
-        if inp.contestation_kind == "belief"
-        else "reading_contestation"
-    )
-    trig_id = uuid7()
-    await conn.execute(
-        """
-        INSERT INTO think_trigger_queue (
-            id, tenant_id, trigger_kind, trigger_subkind,
-            observation_id, model_id, payload
-        ) VALUES ($1, $2, 'T3', $3, $4, $5, $6::jsonb)
-        """,
-        trig_id,
-        inp.tenant_id,
-        trig_subkind,
-        obs_id,
-        inp.model_id,
-        json.dumps({
-            "contestor_actor_id": str(inp.contestor_actor_id),
-            "contestation_kind": inp.contestation_kind,
-        }),
+    trig_id = await _enqueue_contestation_trigger(
+        conn,
+        inp,
+        observation_id=obs_id,
     )
 
     return ContestationResult(
         observation_id=obs_id,
         trigger_id=trig_id,
-        new_confidence=new_confidence,
-        previous_confidence=previous_confidence,
+        new_confidence=override.new_confidence,
+        previous_confidence=snapshot.previous_confidence,
         standing_basis=standing.basis,
-        override_applied=override_applied,
+        override_applied=override.applied,
     )
 
 

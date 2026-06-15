@@ -20,6 +20,10 @@ import asyncpg
 
 from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.sage.model_predictions.repo import ModelPredictionsRepo
+from services.reasoning.sage.model_predictions.residual import (
+    detect_prediction_error,
+)
 
 from .diff_schema import ClaimOp, RawDiff
 
@@ -104,6 +108,41 @@ async def deterministic_handler(
     )
 
 
+def _graph_model_ids_from_bundle(bundle: ContextBundle) -> list[UUID]:
+    notes = bundle.notes.get("model_selection") if bundle.notes else None
+    if not isinstance(notes, dict):
+        return []
+    pathway_survival = notes.get("pathway_survival")
+    if not isinstance(pathway_survival, dict):
+        return []
+    graph = pathway_survival.get("G")
+    if not isinstance(graph, dict):
+        return []
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in graph.get("selected_model_ids") or []:
+        parsed = _safe_uuid(value)
+        if parsed is None or parsed in seen:
+            continue
+        seen.add(parsed)
+        out.append(parsed)
+    return out
+
+
+def _with_graph_no_edge_trace(bundle: ContextBundle, trace: str) -> str:
+    graph_ids = _graph_model_ids_from_bundle(bundle)
+    if not graph_ids:
+        return trace
+    shown = ", ".join(str(mid) for mid in graph_ids[:8])
+    if len(graph_ids) > 8:
+        shown += f", ... +{len(graph_ids) - 8} more"
+    return (
+        f"{trace}; no edge emitted because this deterministic maintenance "
+        f"handler only applies its trigger-specific model transition. "
+        f"Reviewed graph anchors: {shown}"
+    )
+
+
 # -----------------------------------------------------------------
 # T2 — prediction resolution
 # -----------------------------------------------------------------
@@ -133,7 +172,12 @@ async def _handle_t2_prediction(
     model_id = trigger.model_id
     if model_id is None:
         return RawDiff(
-            trigger_ref=_trigger_ref(trigger), tenant_id=trigger.tenant_id
+            trigger_ref=_trigger_ref(trigger),
+            tenant_id=trigger.tenant_id,
+            reasoning_trace=_with_graph_no_edge_trace(
+                bundle,
+                "T2 deterministic prediction resolution: trigger missing model_id; no-op",
+            ),
         )
 
     row = await conn.fetchrow(
@@ -148,7 +192,12 @@ async def _handle_t2_prediction(
     )
     if row is None:
         return RawDiff(
-            trigger_ref=_trigger_ref(trigger), tenant_id=trigger.tenant_id
+            trigger_ref=_trigger_ref(trigger),
+            tenant_id=trigger.tenant_id,
+            reasoning_trace=_with_graph_no_edge_trace(
+                bundle,
+                f"T2 deterministic prediction resolution: model {model_id} not found; no-op",
+            ),
         )
 
     falsifier = row["falsifier"] or {}
@@ -181,14 +230,12 @@ async def _handle_t2_prediction(
                     else:
                         outcome = state != contradicting
         elif fkind == "prediction_deadline":
-            # Simplistic: look for a supporting observation mentioning
-            # the prediction's id in subsequent Obs content. This is
-            # Wave-3-B; full parse-expression is Wave-5-B.
-            ids_mentioned = [
-                str(o.id) for o in bundle.observations
-                if str(model_id) in (o.content_text or "")
-            ]
-            outcome = bool(ids_mentioned)
+            outcome = await _prediction_deadline_outcome(
+                conn,
+                trigger=trigger,
+                bundle=bundle,
+                model_id=model_id,
+            )
 
     new_confidence = float(row["confidence"])
     if outcome is True:
@@ -240,10 +287,80 @@ async def _handle_t2_prediction(
         claim_ops=claim_ops,
         act_ops=[],
         resource_ops=[],
-        reasoning_trace=(
-            f"T2 deterministic prediction resolution; outcome={outcome}"
+        reasoning_trace=_with_graph_no_edge_trace(
+            bundle,
+            f"T2 deterministic prediction resolution; outcome={outcome}",
         ),
     )
+
+
+async def _prediction_deadline_outcome(
+    conn: asyncpg.Connection,
+    *,
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    model_id: UUID,
+) -> bool | None:
+    """Resolve a prediction deadline using internal residual evidence.
+
+    A residual violation means the prediction failed. If no residual can decide,
+    use the deadline resolver's provisional outcome when the queue payload
+    supplied one. Unknown/inconclusive remains ``None`` so the caller leaves the
+    Model untouched.
+    """
+
+    repo = ModelPredictionsRepo(tenant_id=trigger.tenant_id)
+    predictions = await repo.list_active_for_model(model_id, conn=conn)
+    observations = [_observation_mapping(o) for o in bundle.observations]
+    for prediction in predictions:
+        for observation in observations:
+            if detect_prediction_error(prediction, observation) is not None:
+                return False
+    provisional = _provisional_outcome(trigger.seed_signature)
+    if provisional is not None:
+        return provisional
+    return None
+
+
+def _provisional_outcome(payload: dict[str, Any] | None) -> bool | None:
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("provisional_outcome")
+    if raw in {"confirmed", "satisfied", True}:
+        return True
+    if raw in {"violated", "falsified", False}:
+        return False
+    return None
+
+
+def _observation_mapping(observation: Any) -> dict[str, Any]:
+    if isinstance(observation, dict):
+        data = dict(observation)
+    elif hasattr(observation, "model_dump"):
+        data = observation.model_dump(mode="python")
+    else:
+        keys = (
+            "id",
+            "kind",
+            "content",
+            "content_text",
+            "actor_id",
+            "entities_mentioned",
+            "occurred_at",
+        )
+        data = {key: getattr(observation, key) for key in keys if hasattr(observation, key)}
+
+    content = data.get("content")
+    if isinstance(content, dict):
+        for key in ("value", "delta", "state", "outcome", "payload"):
+            if key not in data and key in content:
+                data[key] = content[key]
+    if "scope_entities" not in data:
+        data["scope_entities"] = data.get("entities_mentioned") or []
+    if "scope_actors" not in data:
+        actor_id = data.get("actor_id")
+        data["scope_actors"] = [actor_id] if actor_id else []
+    return data
 
 
 # -----------------------------------------------------------------
@@ -821,8 +938,9 @@ async def _handle_t3_missing_transition(
         return RawDiff(
             trigger_ref=_trigger_ref(trigger),
             tenant_id=trigger.tenant_id,
-            reasoning_trace=(
-                "T3 missing_transition: trigger missing model_id; no-op"
+            reasoning_trace=_with_graph_no_edge_trace(
+                bundle,
+                "T3 missing_transition: trigger missing model_id; no-op",
             ),
         )
 
@@ -841,8 +959,9 @@ async def _handle_t3_missing_transition(
         return RawDiff(
             trigger_ref=_trigger_ref(trigger),
             tenant_id=trigger.tenant_id,
-            reasoning_trace=(
-                f"T3 missing_transition: source model {model_id} not found"
+            reasoning_trace=_with_graph_no_edge_trace(
+                bundle,
+                f"T3 missing_transition: source model {model_id} not found",
             ),
         )
     if src_row["status"] != "active":
@@ -851,9 +970,10 @@ async def _handle_t3_missing_transition(
         return RawDiff(
             trigger_ref=_trigger_ref(trigger),
             tenant_id=trigger.tenant_id,
-            reasoning_trace=(
+            reasoning_trace=_with_graph_no_edge_trace(
+                bundle,
                 f"T3 missing_transition: source model {model_id} is "
-                f"{src_row['status']}; no-op"
+                f"{src_row['status']}; no-op",
             ),
         )
 
@@ -884,9 +1004,10 @@ async def _handle_t3_missing_transition(
         return RawDiff(
             trigger_ref=_trigger_ref(trigger),
             tenant_id=trigger.tenant_id,
-            reasoning_trace=(
+            reasoning_trace=_with_graph_no_edge_trace(
+                bundle,
                 f"T3 missing_transition: discontinuity for model {model_id} "
-                "resolved before processing; no-op"
+                "resolved before processing; no-op",
             ),
         )
 
@@ -922,13 +1043,14 @@ async def _handle_t3_missing_transition(
         trigger_ref=_trigger_ref(trigger),
         tenant_id=trigger.tenant_id,
         claim_ops=[claim_op],
-        reasoning_trace=(
+        reasoning_trace=_with_graph_no_edge_trace(
+            bundle,
             f"T3 missing_transition: hypothesized intermediate state for "
             f"model {model_id} across "
             f"{discontinuity.prev_event_occurred_at.isoformat()}..."
             f"{discontinuity.next_event_occurred_at.isoformat()} "
             f"(fields={list(discontinuity.differing_fields)}); "
-            f"confidence={imputed.confidence:.3f}"
+            f"confidence={imputed.confidence:.3f}",
         ),
     )
 

@@ -19,8 +19,8 @@ from uuid import UUID
 
 import asyncpg
 
-from lib.shared.ids import uuid7
 from lib.shared.types import ModelRow
+from services.domain.triggers import enqueue_trigger
 from services.reasoning.judgment.scoring import JudgmentScores, clamp_score
 from services.reasoning.relationships.candidates import (
     TOPOLOGY_EMITTABLE_EDGE_KINDS,
@@ -28,6 +28,7 @@ from services.reasoning.relationships.candidates import (
     make_edge_candidate,
     make_edge_type_candidate,
     make_situation_candidate,
+    make_topology_candidate_metadata,
     rank_candidates,
 )
 from services.reasoning.relationships.repo import RelationshipCandidatesRepo
@@ -247,13 +248,13 @@ class TopologySweepReport:
 
 
 class LatentTopologyService:
-    """Generate topology candidates from one newly changed Model.
+    """Generate topology-discovered relationship proposals for one Model.
 
     This is intentionally sparse. It never materializes all pairwise
     scores. One changed Model searches bounded semantic/scope pools,
-    scores consequence interactions, persists only top candidates, and
-    optionally enqueues a small T4 Think pass for the highest-leverage
-    candidate.
+    scores consequence interactions, persists only top proposals into the
+    relationship-candidate lifecycle, and optionally enqueues a small T4
+    Think pass for the highest-leverage candidate.
     """
 
     def __init__(
@@ -619,18 +620,16 @@ class LatentTopologyService:
                 score=score,
             )
             if ontology_gap is not None:
-                metadata = {
-                    "topology": {
-                        "kind": "latent_relationship_field",
-                        "object_type": "edge_type_candidate",
-                        "selection_sources": list(neighbor.sources),
-                        "score_components": score.as_dict(),
-                        "impact_signatures": [
-                            seed_sig.as_dict(),
-                            other_sig.as_dict(),
-                        ],
-                    }
-                }
+                metadata = make_topology_candidate_metadata(
+                    proposal_kind="edge_type",
+                    pattern_kind="edge_type",
+                    selection_sources=neighbor.sources,
+                    score_components=score.as_dict(),
+                    impact_signatures=[
+                        seed_sig.as_dict(),
+                        other_sig.as_dict(),
+                    ],
+                )
                 candidate = make_edge_type_candidate(
                     tenant_id=model.tenant_id,
                     proposed_edge_kind=ontology_gap.proposed_edge_kind,
@@ -660,18 +659,16 @@ class LatentTopologyService:
                 other_sig,
             )
             explanation = _pair_explanation(model, neighbor.row, score, edge_kind)
-            metadata: dict[str, Any] = {
-                "topology": {
-                    "kind": "latent_relationship_field",
-                    "object_type": "pair_candidate",
-                    "selection_sources": list(neighbor.sources),
-                    "score_components": score.as_dict(),
-                    "impact_signatures": [
-                        seed_sig.as_dict(),
-                        other_sig.as_dict(),
-                    ],
-                }
-            }
+            metadata: dict[str, Any] = make_topology_candidate_metadata(
+                proposal_kind="edge",
+                pattern_kind="pair",
+                selection_sources=neighbor.sources,
+                score_components=score.as_dict(),
+                impact_signatures=[
+                    seed_sig.as_dict(),
+                    other_sig.as_dict(),
+                ],
+            )
             kwargs: dict[str, Any] = {}
             justification = _edge_kind_justification(
                 edge_kind, seed_sig, other_sig
@@ -750,17 +747,15 @@ class LatentTopologyService:
                     basis="topology_suggested",
                     scores=_judgment_from_topology(score),
                     source="latent_topology",
-                    metadata={
-                        "topology": {
-                            "kind": "latent_relationship_field",
-                            "object_type": "situation_candidate",
-                            "score_components": score.as_dict(),
-                            "impact_signatures": [
-                                seed_sig.as_dict(),
-                                *[n.signature.as_dict() for n in group],
-                            ],
-                        }
-                    },
+                    metadata=make_topology_candidate_metadata(
+                        proposal_kind="situation",
+                        pattern_kind="situation",
+                        score_components=score.as_dict(),
+                        impact_signatures=[
+                            seed_sig.as_dict(),
+                            *[n.signature.as_dict() for n in group],
+                        ],
+                    ),
                 )
             )
         return rank_candidates(out, limit=3)
@@ -870,17 +865,12 @@ class LatentTopologyService:
         # cascade-bound check applies to insert-time T4 candidates too.
         from services.reasoning.think.cascade import propagate_cascade_depth
         payload.update(propagate_cascade_depth(parent_payload))
-        await conn.execute(
-            """
-            INSERT INTO think_trigger_queue (
-              id, tenant_id, trigger_kind, trigger_subkind, payload
-            )
-            VALUES ($1, $2, 'T4',
-                    'latent_relationship_candidate', $3::jsonb)
-            """,
-            uuid7(),
-            record["tenant_id"],
-            json.dumps(payload, sort_keys=True, default=str),
+        await enqueue_trigger(
+            conn,
+            tenant_id=record["tenant_id"],
+            trigger_kind="T4",
+            trigger_subkind="latent_relationship_candidate",
+            payload=payload,
         )
         return True
 

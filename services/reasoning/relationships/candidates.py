@@ -16,7 +16,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Literal, Optional, Sequence
 from uuid import UUID
 
 from lib.shared.ids import uuid7
@@ -25,6 +25,9 @@ from services.reasoning.judgment.scoring import JudgmentScores, clamp_score
 
 
 CandidateKind = Literal["edge", "situation", "edge_type"]
+CandidateLifecycleStage = Literal["memory_proposal"]
+CandidateOriginStage = Literal["pattern_discovery", "direct_proposal"]
+TopologyPatternKind = Literal["pair", "situation", "edge_type"]
 CandidateBasis = Literal[
     "observed",
     "inferred",
@@ -68,9 +71,76 @@ TOPOLOGY_EMITTABLE_EDGE_KINDS: frozenset[str] = frozenset(
         "blocks",
         "early_warning_for",
         "contradicts",
+        "weakens",
+        "explains",
+        "predicts",
+        "contributes_to_resolution",
+        "causes",
         "enables",
     }
 )
+
+
+def candidate_lifecycle_metadata(
+    metadata: dict[str, Any] | None,
+    *,
+    candidate_kind: CandidateKind,
+    source: str,
+) -> dict[str, Any]:
+    """Annotate candidates with one lifecycle vocabulary.
+
+    `relationship_candidates` is the one persisted pre-truth candidate
+    lifecycle. Topology is an upstream discovery origin for some of those
+    proposals, not a second candidate system.
+    """
+
+    out = dict(metadata or {})
+    raw_lifecycle = out.get("candidate_lifecycle")
+    lifecycle = dict(raw_lifecycle) if isinstance(raw_lifecycle, dict) else {}
+    lifecycle.setdefault("stage", "memory_proposal")
+    lifecycle.setdefault("proposal_kind", candidate_kind)
+    lifecycle.setdefault("origin", source)
+    lifecycle.setdefault(
+        "origin_stage",
+        "pattern_discovery" if source == "latent_topology" else "direct_proposal",
+    )
+    out["candidate_lifecycle"] = lifecycle
+    return out
+
+
+def make_topology_candidate_metadata(
+    *,
+    proposal_kind: CandidateKind,
+    pattern_kind: TopologyPatternKind,
+    score_components: dict[str, Any],
+    impact_signatures: Sequence[dict[str, Any]],
+    selection_sources: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Build metadata for topology-discovered relationship proposals."""
+
+    legacy_object_type = f"{pattern_kind}_candidate"
+    return candidate_lifecycle_metadata(
+        {
+            "candidate_lifecycle": {
+                "stage": "memory_proposal",
+                "origin": "latent_topology",
+                "origin_stage": "pattern_discovery",
+                "proposal_kind": proposal_kind,
+                "discovery_pattern_kind": pattern_kind,
+            },
+            # Kept for compatibility with older reports/tests. New code should
+            # prefer `candidate_lifecycle`.
+            "topology": {
+                "kind": "latent_relationship_field",
+                "object_type": legacy_object_type,
+                "selection_sources": list(selection_sources),
+                "score_components": score_components,
+                "impact_signatures": list(impact_signatures),
+            },
+        },
+        candidate_kind=proposal_kind,
+        source="latent_topology",
+    )
 
 
 @dataclass(frozen=True)
@@ -126,6 +196,11 @@ class RelationshipCandidate:
 
     def to_record(self) -> dict[str, Any]:
         scores = self.scores.as_dict()
+        metadata = candidate_lifecycle_metadata(
+            self.metadata,
+            candidate_kind=self.candidate_kind,
+            source=self.source,
+        )
         return {
             "id": self.id,
             "tenant_id": self.tenant_id,
@@ -151,7 +226,7 @@ class RelationshipCandidate:
             "judgment_leverage_score": scores["judgment_leverage"],
             "source": self.source,
             "review_status": self.review_status,
-            "metadata": self.metadata,
+            "metadata": metadata,
         }
 
 
@@ -440,6 +515,15 @@ def _same_workstream(left: ModelSignal, right: ModelSignal) -> bool:
     if not left.workstream or not right.workstream:
         return False
     return left.workstream == right.workstream
+
+
+def _same_scope(left: ModelSignal, right: ModelSignal) -> bool:
+    return bool(_shared_entities(left, right)) or _same_workstream(left, right)
+
+
+def _contains_any(text: str, phrases: Sequence[str]) -> bool:
+    normalized = _normalize_text(text)
+    return any(phrase in normalized for phrase in phrases)
 
 
 def _orient_by_activation(left: ModelSignal, right: ModelSignal) -> tuple[ModelSignal, ModelSignal]:
@@ -788,6 +872,277 @@ def _rule_contradicts(
     )
 
 
+_WEAKENING_PHRASES = (
+    "weakens",
+    "undermines",
+    "casts doubt",
+    "less likely",
+    "no longer supports",
+    "evidence against",
+    "conflicts with",
+    "stale",
+)
+
+
+def _rule_weakens(
+    tenant_id: UUID,
+    scope_meta: dict[str, Any],
+    left: ModelSignal,
+    right: ModelSignal,
+) -> RelationshipCandidate | None:
+    if not _same_scope(left, right):
+        return None
+    source: ModelSignal | None = None
+    target: ModelSignal | None = None
+    for cand_source, cand_target in ((left, right), (right, left)):
+        phrase_hit = _contains_any(cand_source.natural, _WEAKENING_PHRASES)
+        polarity_hit = (
+            cand_source.polarity == "negative"
+            and cand_target.polarity == "positive"
+            and cand_source.confidence >= cand_target.confidence + 0.10
+        )
+        if phrase_hit or polarity_hit:
+            source, target = cand_source, cand_target
+            break
+    if source is None or target is None:
+        return None
+    metadata = {
+        **scope_meta,
+        "rule": {
+            "edge_kind": "weakens",
+            "source_polarity": source.polarity,
+            "target_polarity": target.polarity,
+            "source_confidence": source.confidence,
+            "target_confidence": target.confidence,
+        },
+    }
+    return make_edge_candidate(
+        tenant_id=tenant_id,
+        source_model_id=source.id,
+        target_model_id=target.id,
+        edge_kind="weakens",
+        basis="inferred",
+        explanation=_explanation(
+            "weakens",
+            "source supplies partial counterevidence over shared scope",
+            scope_meta,
+        ),
+        scores=_avg_scores(left, right, uncertainty=0.50, actionability=0.45),
+        metadata=metadata,
+    )
+
+
+_EXPLANATION_PHRASES = (
+    "because",
+    "due to",
+    "root cause",
+    "explains",
+    "driven by",
+    "caused by",
+)
+
+
+def _rule_explains(
+    tenant_id: UUID,
+    scope_meta: dict[str, Any],
+    left: ModelSignal,
+    right: ModelSignal,
+) -> RelationshipCandidate | None:
+    if not _same_scope(left, right):
+        return None
+    source: ModelSignal | None = None
+    target: ModelSignal | None = None
+    for cand_source, cand_target in ((left, right), (right, left)):
+        if _contains_any(cand_source.natural, _EXPLANATION_PHRASES):
+            source, target = cand_source, cand_target
+            break
+    if source is None or target is None:
+        return None
+    mechanism = (
+        "Source Model states a reason, driver, or root cause for the target context."
+    )
+    metadata = {
+        **scope_meta,
+        "rule": {"edge_kind": "explains"},
+        "mechanism": mechanism,
+    }
+    return make_edge_candidate(
+        tenant_id=tenant_id,
+        source_model_id=source.id,
+        target_model_id=target.id,
+        edge_kind="explains",
+        basis="causal_hypothesis",
+        explanation=_explanation(
+            "explains",
+            "explicit explanatory phrasing",
+            scope_meta,
+        ),
+        scores=_avg_scores(left, right, actionability=0.50, uncertainty=0.55),
+        metadata=metadata,
+        mechanism_summary=mechanism,
+        intervention_surface="verify the stated mechanism or remove the driver",
+        expected_delay="unknown",
+    )
+
+
+_CAUSE_PHRASES = (
+    "causes",
+    "caused",
+    "leads to",
+    "resulting in",
+    "results in",
+    "drives",
+    "triggered",
+)
+
+
+def _rule_causes(
+    tenant_id: UUID,
+    scope_meta: dict[str, Any],
+    left: ModelSignal,
+    right: ModelSignal,
+) -> RelationshipCandidate | None:
+    if not _same_scope(left, right):
+        return None
+    source: ModelSignal | None = None
+    target: ModelSignal | None = None
+    for cand_source, cand_target in ((left, right), (right, left)):
+        if _contains_any(cand_source.natural, _CAUSE_PHRASES):
+            source, target = cand_source, cand_target
+            break
+    if source is None or target is None:
+        return None
+    mechanism = "Source Model names a causal driver that can produce the target state."
+    metadata = {
+        **scope_meta,
+        "rule": {"edge_kind": "causes"},
+        "mechanism": mechanism,
+    }
+    return make_edge_candidate(
+        tenant_id=tenant_id,
+        source_model_id=source.id,
+        target_model_id=target.id,
+        edge_kind="causes",
+        basis="causal_hypothesis",
+        explanation=_explanation("causes", "explicit causal phrasing", scope_meta),
+        scores=_avg_scores(left, right, actionability=0.55, uncertainty=0.55),
+        metadata=metadata,
+        mechanism_summary=mechanism,
+        intervention_surface="change or remove the causal driver",
+        expected_delay="unknown",
+    )
+
+
+_RESOLUTION_PHRASES = (
+    "resolved",
+    "unblocked",
+    "mitigated",
+    "remediated",
+    "fixed",
+    "closed",
+    "cleared",
+    "now available",
+    "approved",
+)
+_PRESSURE_PHRASES = (
+    "blocked",
+    "risk",
+    "concern",
+    "waiting on",
+    "missing",
+    "gap",
+    "issue",
+    "exception",
+)
+
+
+def _rule_contributes_to_resolution(
+    tenant_id: UUID,
+    scope_meta: dict[str, Any],
+    left: ModelSignal,
+    right: ModelSignal,
+) -> RelationshipCandidate | None:
+    if not _same_scope(left, right):
+        return None
+    source: ModelSignal | None = None
+    target: ModelSignal | None = None
+    for cand_source, cand_target in ((left, right), (right, left)):
+        if _contains_any(cand_source.natural, _RESOLUTION_PHRASES) and _contains_any(
+            cand_target.natural,
+            _PRESSURE_PHRASES,
+        ):
+            source, target = cand_source, cand_target
+            break
+    if source is None or target is None:
+        return None
+    metadata = {
+        **scope_meta,
+        "rule": {"edge_kind": "contributes_to_resolution"},
+    }
+    return make_edge_candidate(
+        tenant_id=tenant_id,
+        source_model_id=source.id,
+        target_model_id=target.id,
+        edge_kind="contributes_to_resolution",
+        basis="inferred",
+        explanation=_explanation(
+            "contributes_to_resolution",
+            "resolution evidence addresses an active pressure model",
+            scope_meta,
+        ),
+        scores=_avg_scores(left, right, actionability=0.70, uncertainty=0.40),
+        metadata=metadata,
+    )
+
+
+def _is_prediction_signal(signal: ModelSignal) -> bool:
+    proposition = signal.proposition or {}
+    return (
+        signal.proposition_kind == "prediction"
+        or proposition.get("kind") == "prediction"
+        or proposition.get("claim_role") == "prediction"
+    )
+
+
+def _rule_predicts(
+    tenant_id: UUID,
+    scope_meta: dict[str, Any],
+    left: ModelSignal,
+    right: ModelSignal,
+) -> RelationshipCandidate | None:
+    if not _same_scope(left, right):
+        return None
+    source: ModelSignal | None = None
+    target: ModelSignal | None = None
+    for cand_source, cand_target in ((left, right), (right, left)):
+        if _is_prediction_signal(cand_source) and not _is_prediction_signal(cand_target):
+            source, target = cand_source, cand_target
+            break
+    if source is None or target is None:
+        return None
+    metadata = {
+        **scope_meta,
+        "rule": {
+            "edge_kind": "predicts",
+            "source_time_shape": source.time_shape,
+        },
+    }
+    return make_edge_candidate(
+        tenant_id=tenant_id,
+        source_model_id=source.id,
+        target_model_id=target.id,
+        edge_kind="predicts",
+        basis="inferred",
+        explanation=_explanation(
+            "predicts",
+            "prediction claim points to a future/observable target state",
+            scope_meta,
+        ),
+        scores=_avg_scores(left, right, actionability=0.55, uncertainty=0.65),
+        metadata=metadata,
+    )
+
+
 def _rule_enables(
     tenant_id: UUID,
     scope_meta: dict[str, Any],
@@ -846,6 +1201,11 @@ _CANDIDATE_RULES: dict[str, CandidateRule] = {
     "blocks": _rule_blocks,
     "early_warning_for": _rule_early_warning_for,
     "contradicts": _rule_contradicts,
+    "weakens": _rule_weakens,
+    "explains": _rule_explains,
+    "causes": _rule_causes,
+    "contributes_to_resolution": _rule_contributes_to_resolution,
+    "predicts": _rule_predicts,
     "enables": _rule_enables,
 }
 
