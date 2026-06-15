@@ -32,6 +32,13 @@ def test_env_unknown_raises():
             _resolve_backend(None)
 
 
+def test_production_requires_explicit_backend():
+    env = {"FYRALIS_ENV": "prod", "OPENAI_API_KEY": "sk-x"}
+    with patch.dict(os.environ, env, clear=True):
+        with pytest.raises(EmbedderError, match="EMBEDDER_BACKEND must be set"):
+            _resolve_backend(None)
+
+
 def test_fallback_prefers_openai_when_only_key_set():
     env = {"OPENAI_API_KEY": "sk-x"}
     with patch.dict(os.environ, env, clear=True):

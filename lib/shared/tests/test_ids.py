@@ -122,11 +122,24 @@ def test_current_tenant_no_fallback_raises(monkeypatch):
 
 def test_current_tenant_honors_env_fallback(monkeypatch):
     fallback = "00000000-0000-0000-0000-000000000001"
+    monkeypatch.delenv("FYRALIS_ENV", raising=False)
+    monkeypatch.delenv("COMPANY_OS_ENV", raising=False)
     monkeypatch.setenv("DEFAULT_TENANT_ID", fallback)
     # Need a fresh context where no explicit tenant is bound.
     import contextvars
     ctx = contextvars.copy_context()
     assert ctx.run(current_tenant) == uuid.UUID(fallback)
+
+
+def test_current_tenant_rejects_env_fallback_in_prod(monkeypatch):
+    fallback = "00000000-0000-0000-0000-000000000001"
+    monkeypatch.setenv("FYRALIS_ENV", "prod")
+    monkeypatch.setenv("DEFAULT_TENANT_ID", fallback)
+
+    import contextvars
+    ctx = contextvars.copy_context()
+    with pytest.raises(RuntimeError, match="DEFAULT_TENANT_ID is not allowed"):
+        ctx.run(current_tenant)
 
 
 def test_set_tenant_and_reset(monkeypatch):

@@ -8,10 +8,9 @@ mapping below; call sites stay untouched.
 Selection rules (in priority order):
   1. Explicit `backend=` kwarg ('ollama' | 'openai').
   2. EMBEDDER_BACKEND env var ('ollama' | 'openai').
-  3. Implicit fallback: if OPENAI_API_KEY is set and OLLAMA_URL is not,
-     prefer OpenAI; otherwise default to Ollama. This keeps local
-     development on Ollama without manual config while letting cloud
-     deployments switch by setting OPENAI_API_KEY.
+  3. In production, missing EMBEDDER_BACKEND raises. Dev/test keep the
+     historical implicit fallback: if OPENAI_API_KEY is set and OLLAMA_URL is
+     not, prefer OpenAI; otherwise default to Ollama.
 
 The returned object satisfies the `Embedder` Protocol from
 lib.embeddings.base — callers should type their parameters as
@@ -23,6 +22,7 @@ import os
 from typing import Literal
 
 from lib.embeddings.base import Embedder, EmbedderError
+from lib.shared.env import is_prod
 
 
 BackendName = Literal["ollama", "openai"]
@@ -44,6 +44,10 @@ def _resolve_backend(explicit: BackendName | None) -> BackendName:
                 f"EMBEDDER_BACKEND={env!r}; expected 'ollama' or 'openai'",
             )
         return env  # type: ignore[return-value]
+    if is_prod():
+        raise EmbedderError(
+            "EMBEDDER_BACKEND must be set to 'ollama' or 'openai' in production",
+        )
     # Implicit fallback.
     has_openai_key = bool(os.environ.get("OPENAI_API_KEY"))
     has_ollama_url = bool(os.environ.get("OLLAMA_URL"))

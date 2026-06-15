@@ -19,6 +19,8 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from lib.shared.env import is_prod
+
 
 # ---------------------------------------------------------------------
 # UUID v7 generation
@@ -126,6 +128,11 @@ def current_tenant() -> uuid.UUID:
         return value
     fallback = os.environ.get("DEFAULT_TENANT_ID")
     if fallback:
+        if is_prod():
+            raise RuntimeError(
+                "DEFAULT_TENANT_ID is not allowed in production; bind the "
+                "tenant explicitly",
+            )
         return uuid.UUID(fallback)
     raise LookupError(
         "No tenant bound in current context. Call set_tenant(...) "

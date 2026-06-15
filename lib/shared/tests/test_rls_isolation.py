@@ -74,6 +74,26 @@ async def test_no_tenant_set_sees_all_rows(db_pool: asyncpg.Pool):
             assert tenants == {tenant_a, tenant_b}
 
 
+async def test_empty_current_tenant_setting_uses_permissive_default(
+    db_pool: asyncpg.Pool,
+):
+    tenant_a = uuid7()
+    tenant_b = uuid7()
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await _seed_actor(conn, tenant_a, "rls-empty-a")
+            await _seed_actor(conn, tenant_b, "rls-empty-b")
+            await conn.execute(
+                "SELECT set_config('app.current_tenant', '', true)",
+            )
+            seen = await conn.fetch(
+                "SELECT tenant_id FROM actors WHERE tenant_id = ANY($1::uuid[])",
+                [tenant_a, tenant_b],
+            )
+            tenants = {r["tenant_id"] for r in seen}
+            assert tenants == {tenant_a, tenant_b}
+
+
 # ---------------------------------------------------------------------
 # With tenant set → only that tenant's rows are visible
 # ---------------------------------------------------------------------
