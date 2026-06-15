@@ -1,0 +1,22 @@
+{
+  "abstention_accuracy": null,
+  "accuracy": null,
+  "evidence_precision_at_10": 1.0,
+  "evidence_recall_at_10": 1.0,
+  "exact_match": null,
+  "f1": null,
+  "latency_ms": 1.0,
+  "longmemeval_v2_accuracy": null,
+  "longmemeval_v2_packet_answer_support": null,
+  "memtrack_answer_case_support_score": null,
+  "memtrack_answer_observable": null,
+  "memtrack_answer_single_observation_observable": null,
+  "memtrack_answer_support_at_10": null,
+  "memtrack_answer_support_score_at_10": null,
+  "memtrack_external_tool_surface_missing": null,
+  "memtrack_external_tool_surface_required": null,
+  "passed_exact": 0,
+  "queries": 10,
+  "retrieval_calls": 1.0,
+  "token_cost": 63.6
+}

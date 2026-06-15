@@ -1,0 +1,31 @@
+{
+  "answerer_name": "extractive",
+  "benchmark": "longmemeval_v2",
+  "embedding_model_version": "none",
+  "evidence_k": 10,
+  "git_commit": "ad5330b7384cc03fdd67771502d3a655be1ba7d9",
+  "hardware_profile": "local",
+  "judge_name": null,
+  "metadata": {
+    "apply_migrations": false,
+    "bm25_seed_candidates": null,
+    "data_path": "/Users/rachinkalakheti/fyraliscore/benchmarks/datasets/raw/longmemeval-v2",
+    "db_namespace": null,
+    "embedding_concurrency": null,
+    "embedding_max_chars": null,
+    "embedding_mode": null,
+    "graph_enrichment": false,
+    "haystack_tier": "small",
+    "include_abstention": false,
+    "max_cases": 5
+  },
+  "model_version": "fixed_extract_answerer_v1",
+  "observations_ingested": 6616,
+  "packet_budget": null,
+  "progress": false,
+  "random_seed": 0,
+  "score_answers": false,
+  "system_name": "bm25_session",
+  "timestamp": "2026-06-11T07:19:56.742119+00:00",
+  "top_k": 5
+}

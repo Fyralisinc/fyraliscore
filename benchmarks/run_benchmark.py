@@ -19,7 +19,7 @@ from benchmarks.fyralis_eval.reporting import write_run_artifacts
 from benchmarks.runners.core import BenchmarkRunConfig, run_benchmark
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Fyralis benchmark harness targets.")
     parser.add_argument(
         "--benchmark",
@@ -133,8 +133,13 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("benchmarks/truss_signal_derivable_facts.json"),
         help="Frozen signal-derivable fact checklist for the Truss adapter.",
     )
-    args = parser.parse_args(argv)
+    return parser
 
+
+def _resolve_benchmark_target(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+):
     if args.benchmark in {"toy", "toy_memory"}:
         adapter = ToyMemoryAdapter()
         system_name = args.system or "lexical_fixed_answerer"
@@ -211,7 +216,56 @@ def main(argv: list[str] | None = None) -> int:
 
     if system_name.casefold() == "fyralis_ask_current" and args.answerer is None:
         answerer_name = "passthrough"
+    return adapter, system_name, score_answers, answerer_name
 
+
+def _benchmark_metadata(
+    args: argparse.Namespace,
+    *,
+    adapter,
+    system_name: str,
+    embedding_mode: str | None,
+    graph_enrichment: bool,
+) -> dict[str, object]:
+    return {
+        "data_path": str(args.data) if args.data else None,
+        "max_cases": args.max_cases,
+        "include_abstention": args.include_abstention,
+        "haystack_tier": (
+            args.haystack_tier
+            if adapter.benchmark_name == "longmemeval_v2"
+            else None
+        ),
+        "apply_migrations": args.apply_migrations,
+        "embedding_mode": embedding_mode,
+        "graph_enrichment": graph_enrichment,
+        "bm25_seed_candidates": args.bm25_seed_candidates,
+        "db_namespace": (
+            f"{adapter.benchmark_name}:{system_name}:{args.out.name}"
+            if system_name.casefold().startswith("fyralis")
+            else None
+        ),
+        "embedding_max_chars": (
+            os.environ.get("BENCHMARK_EMBED_MAX_CHARS")
+            if embedding_mode is not None
+            else None
+        ),
+        "embedding_concurrency": (
+            os.environ.get("BENCHMARK_EMBED_CONCURRENCY")
+            if embedding_mode is not None
+            else None
+        ),
+    }
+
+
+def _build_run_config(
+    args: argparse.Namespace,
+    *,
+    adapter,
+    system_name: str,
+    score_answers: bool,
+    answerer_name: str,
+) -> BenchmarkRunConfig:
     embedding_mode = _resolve_embedding_mode(system_name, args.embedding_mode)
     graph_enrichment = bool(args.graph_enrichment) or (
         system_name.casefold() == "fyralis_sage_full_potential"
@@ -227,42 +281,30 @@ def main(argv: list[str] | None = None) -> int:
         model_version=_answerer_model_version(answerer_name),
         judge_name=(args.judge if args.judge_answers else None),
         progress=args.progress,
-        metadata={
-            "data_path": str(args.data) if args.data else None,
-            "max_cases": args.max_cases,
-            "include_abstention": args.include_abstention,
-            "haystack_tier": args.haystack_tier if adapter.benchmark_name == "longmemeval_v2" else None,
-            "apply_migrations": args.apply_migrations,
-            "embedding_mode": embedding_mode,
-            "graph_enrichment": graph_enrichment,
-            "bm25_seed_candidates": args.bm25_seed_candidates,
-            "db_namespace": (
-                f"{adapter.benchmark_name}:{system_name}:{args.out.name}"
-                if system_name.casefold().startswith("fyralis")
-                else None
-            ),
-            "embedding_max_chars": (
-                os.environ.get("BENCHMARK_EMBED_MAX_CHARS")
-                if embedding_mode is not None
-                else None
-            ),
-            "embedding_concurrency": (
-                os.environ.get("BENCHMARK_EMBED_CONCURRENCY")
-                if embedding_mode is not None
-                else None
-            ),
-        },
+        metadata=_benchmark_metadata(
+            args,
+            adapter=adapter,
+            system_name=system_name,
+            embedding_mode=embedding_mode,
+            graph_enrichment=graph_enrichment,
+        ),
     )
-    run = run_benchmark(adapter, config=config)
+    return config
+
+
+def _write_benchmark_run_artifacts(args: argparse.Namespace, run):
     run_config = run.config.to_json()
     run_config["observations_ingested"] = run.observations_ingested
-    artifacts = write_run_artifacts(
+    return write_run_artifacts(
         output_dir=args.out,
         run_config=run_config,
         results=run.results,
         retrieval_traces=run.retrieval_traces,
         metrics_summary=run.metrics_summary,
     )
+
+
+def _print_benchmark_summary(*, adapter, config: BenchmarkRunConfig, run, artifacts) -> None:
     print(f"Benchmark: {adapter.benchmark_name}")
     print(f"System: {config.system_name}")
     print(f"Queries: {run.metrics_summary['queries']}")
@@ -286,6 +328,30 @@ def main(argv: list[str] | None = None) -> int:
             f"{run.metrics_summary[support_key]:.4f}"
         )
     print(f"Report: {artifacts.benchmark_report_md}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    adapter, system_name, score_answers, answerer_name = _resolve_benchmark_target(
+        args,
+        parser,
+    )
+    config = _build_run_config(
+        args,
+        adapter=adapter,
+        system_name=system_name,
+        score_answers=score_answers,
+        answerer_name=answerer_name,
+    )
+    run = run_benchmark(adapter, config=config)
+    artifacts = _write_benchmark_run_artifacts(args, run)
+    _print_benchmark_summary(
+        adapter=adapter,
+        config=config,
+        run=run,
+        artifacts=artifacts,
+    )
     return 0
 
 

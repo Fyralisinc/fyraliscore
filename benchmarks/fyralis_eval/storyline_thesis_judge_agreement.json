@@ -1,0 +1,142 @@
+[
+  {
+    "case_id": "atlas_correct_security_usage_procurement",
+    "storyline_id": "atlas_renewal_risk",
+    "expected_answer": "Atlas looks like a support escalation, but the real pattern is security evidence missing while usage drops and procurement waits.",
+    "predicted_answer": "Atlas renewal risk is being driven by missing SOC2/audit evidence, falling admin usage, and procurement waiting on the security packet rather than by ordinary support noise.",
+    "expected_correct": true
+  },
+  {
+    "case_id": "atlas_incorrect_support_only",
+    "storyline_id": "atlas_renewal_risk",
+    "expected_answer": "Atlas looks like a support escalation, but the real pattern is security evidence missing while usage drops and procurement waits.",
+    "predicted_answer": "Atlas is at risk because support tickets are taking too long to close; the main action is to add more support coverage.",
+    "expected_correct": false
+  },
+  {
+    "case_id": "borealis_correct_incident_opacity",
+    "storyline_id": "borealis_confidence_contradiction",
+    "expected_answer": "Borealis sales confidence is high, but incident opacity and stale dashboard state are undermining the executive sponsor.",
+    "predicted_answer": "Borealis has a contradiction: the forecast still sounds confident, while stale dashboards and an opaque incident timeline are eroding sponsor trust.",
+    "expected_correct": true
+  },
+  {
+    "case_id": "borealis_incorrect_pipeline_only",
+    "storyline_id": "borealis_confidence_contradiction",
+    "expected_answer": "Borealis sales confidence is high, but incident opacity and stale dashboard state are undermining the executive sponsor.",
+    "predicted_answer": "Borealis expansion confidence is strong because the sales pipeline is moving forward and the sponsor has not objected.",
+    "expected_correct": false
+  },
+  {
+    "case_id": "cobalt_correct_gating_packet",
+    "storyline_id": "cobalt_security_packet",
+    "expected_answer": "Cobalt's legal and security asks are not isolated paperwork; they gate procurement approval and should be tied to audit/SOC2 work.",
+    "predicted_answer": "Cobalt procurement is blocked by the security packet; legal, SOC2 evidence, SAML, and audit work should be treated as one gating dependency.",
+    "expected_correct": true
+  },
+  {
+    "case_id": "cobalt_incorrect_billing_exception",
+    "storyline_id": "cobalt_security_packet",
+    "expected_answer": "Cobalt's legal and security asks are not isolated paperwork; they gate procurement approval and should be tied to audit/SOC2 work.",
+    "predicted_answer": "Cobalt mostly needs a billing exception and finance approval; the security review is routine paperwork.",
+    "expected_correct": false
+  },
+  {
+    "case_id": "deltafleet_correct_capacity_handoff",
+    "storyline_id": "deltafleet_capacity_slip",
+    "expected_answer": "DeltaFleet implementation risk is caused by capacity and handoff slippage, not by lack of customer interest.",
+    "predicted_answer": "DeltaFleet remains engaged, but onboarding is slipping because implementation capacity and owner handoff are weak.",
+    "expected_correct": true
+  },
+  {
+    "case_id": "deltafleet_incorrect_customer_apathy",
+    "storyline_id": "deltafleet_capacity_slip",
+    "expected_answer": "DeltaFleet implementation risk is caused by capacity and handoff slippage, not by lack of customer interest.",
+    "predicted_answer": "DeltaFleet is delaying implementation because the customer is not interested and has stopped engaging.",
+    "expected_correct": false
+  },
+  {
+    "case_id": "foundryworks_correct_repeat_reliability",
+    "storyline_id": "foundryworks_connector_reliability",
+    "expected_answer": "FoundryWorks is not a one-off outage; repeated connector reliability issues create churn risk and should affect incident policy.",
+    "predicted_answer": "FoundryWorks churn risk comes from repeat connector freshness incidents, so the issue should change reliability and incident policy rather than be treated as a one-off.",
+    "expected_correct": true
+  },
+  {
+    "case_id": "foundryworks_incorrect_single_outage",
+    "storyline_id": "foundryworks_connector_reliability",
+    "expected_answer": "FoundryWorks is not a one-off outage; repeated connector reliability issues create churn risk and should affect incident policy.",
+    "predicted_answer": "FoundryWorks had a single isolated outage that was resolved, with no broader renewal or churn implication.",
+    "expected_correct": false
+  },
+  {
+    "case_id": "keystone_correct_bespoke_tradeoff",
+    "storyline_id": "keystone_bespoke_drag",
+    "expected_answer": "Keystone's custom workflow request looks like renewal pressure, but it conflicts with the decision to avoid unpriced bespoke work.",
+    "predicted_answer": "Keystone renewal pressure is pushing a custom workflow, but the durable issue is that unpriced bespoke work would weaken roadmap leverage.",
+    "expected_correct": true
+  },
+  {
+    "case_id": "keystone_incorrect_accept_custom",
+    "storyline_id": "keystone_bespoke_drag",
+    "expected_answer": "Keystone's custom workflow request looks like renewal pressure, but it conflicts with the decision to avoid unpriced bespoke work.",
+    "predicted_answer": "Keystone should be handled by accepting the custom workflow immediately because all bespoke work improves renewal odds.",
+    "expected_correct": false
+  },
+  {
+    "case_id": "runway_correct_operating_tradeoff",
+    "storyline_id": "runway_enterprise_controls_tradeoff",
+    "expected_answer": "Cash runway, hiring capacity, and enterprise controls are one operating tradeoff, not separate finance/product updates.",
+    "predicted_answer": "Runway, hiring allocation, and enterprise controls are linked: the board needs one resource tradeoff view for compliance and renewal protection.",
+    "expected_correct": true
+  },
+  {
+    "case_id": "runway_incorrect_separate_updates",
+    "storyline_id": "runway_enterprise_controls_tradeoff",
+    "expected_answer": "Cash runway, hiring capacity, and enterprise controls are one operating tradeoff, not separate finance/product updates.",
+    "predicted_answer": "Runway, hiring, and enterprise controls are unrelated updates that should stay in separate workstreams.",
+    "expected_correct": false
+  },
+  {
+    "case_id": "alias_correct_review_before_edges",
+    "storyline_id": "alias_ambiguity_pollution",
+    "expected_answer": "Ambiguous aliases across Atlas, Granite, and Northstar should be resolved before strong customer graph edges are written.",
+    "predicted_answer": "Atlas, Granite, and Northstar aliases are colliding, so the system should route them for review before durable customer edges are created.",
+    "expected_correct": true
+  },
+  {
+    "case_id": "alias_incorrect_create_edges",
+    "storyline_id": "alias_ambiguity_pollution",
+    "expected_answer": "Ambiguous aliases across Atlas, Granite, and Northstar should be resolved before strong customer graph edges are written.",
+    "predicted_answer": "The ambiguous aliases prove Atlas, Granite, and Northstar are the same account, so the system should immediately merge all customer memory.",
+    "expected_correct": false
+  },
+  {
+    "case_id": "northstar_correct_bounded_bridge",
+    "storyline_id": "northstar_unobserved_discount_bridge",
+    "expected_answer": "Northstar moves from blocked pricing to approved exception without a captured decision, so the system should infer a bounded off-sensor decision bridge without inventing specific unsupported details.",
+    "predicted_answer": "Northstar changed from blocked discount approval to exception pricing without a recorded decision, so the system should keep a bounded inferred bridge and ask for confirmation.",
+    "expected_correct": true
+  },
+  {
+    "case_id": "northstar_incorrect_invented_detail",
+    "storyline_id": "northstar_unobserved_discount_bridge",
+    "expected_answer": "Northstar moves from blocked pricing to approved exception without a captured decision, so the system should infer a bounded off-sensor decision bridge without inventing specific unsupported details.",
+    "predicted_answer": "Northstar was approved because Pat verbally authorized the exact discount in a hallway meeting; the system can treat that as confirmed.",
+    "expected_correct": false
+  },
+  {
+    "case_id": "cross_story_correct_resource_customer_mix",
+    "storyline_id": "runway_enterprise_controls_tradeoff",
+    "expected_answer": "Cash runway, hiring capacity, and enterprise controls are one operating tradeoff, not separate finance/product updates.",
+    "predicted_answer": "The board update, hiring capacity, and regulated enterprise controls form a single operating tradeoff that affects renewal protection.",
+    "expected_correct": true
+  },
+  {
+    "case_id": "cross_story_incorrect_keyword_mimicry",
+    "storyline_id": "atlas_renewal_risk",
+    "expected_answer": "Atlas looks like a support escalation, but the real pattern is security evidence missing while usage drops and procurement waits.",
+    "predicted_answer": "Atlas renewal security usage procurement audit risk appears in the record, so the answer is atlas renewal security usage procurement audit risk.",
+    "expected_correct": false
+  }
+]

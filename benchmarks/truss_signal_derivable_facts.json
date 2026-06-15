@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0",
+  "description": "Frozen signal-derivable Truss facts for the first measured replay runs. These labels are benchmark truth, not authored Think quality.",
+  "facts": [
+    {
+      "id": "truss_fact_api_v1_ga_locked",
+      "question": "What date was locked for Truss API v1 GA after the feature-complete update?",
+      "answer": "July 1",
+      "evidence_ids": ["day040_sarah_001"],
+      "requires_run1_memory": false
+    },
+    {
+      "id": "truss_fact_q3_expansion_opportunity",
+      "question": "How much new ARR was framed as the Q3 expansion opportunity after the offsite?",
+      "answer": "$550K",
+      "evidence_ids": ["day040_monica_001"],
+      "requires_run1_memory": false
+    },
+    {
+      "id": "truss_fact_scale_expansion_signed",
+      "question": "What annual value did Scale AI sign for the expansion agreement?",
+      "answer": "$590,000 per year",
+      "evidence_ids": ["day056_scale_sign"],
+      "requires_run1_memory": false
+    },
+    {
+      "id": "truss_fact_linear_replit_arr",
+      "question": "What ARR did Ravi report after Linear and Replit were in the books, before Vercel signed?",
+      "answer": "$5.13M",
+      "evidence_ids": ["day037_ravi_001"],
+      "requires_run1_memory": false
+    },
+    {
+      "id": "truss_fact_enterprise_checklist",
+      "question": "Which two enterprise checklist features did Ben say could close three contracts at once?",
+      "answer": "Audit logs and SCIM",
+      "evidence_ids": ["day010_ben_001"],
+      "requires_run1_memory": true
+    },
+    {
+      "id": "truss_fact_scim_scope_target",
+      "question": "What target date did Marcus give for the SCIM scope posted to TRUSS-441?",
+      "answer": "around August 9",
+      "evidence_ids": ["slack_s64_d036"],
+      "requires_run1_memory": false
+    },
+    {
+      "id": "truss_fact_series_b_dataroom",
+      "question": "Who did Maya ask to own the Series B dataroom setup?",
+      "answer": "Ravi and Simone",
+      "evidence_ids": ["email_s80_004"],
+      "requires_run1_memory": false
+    },
+    {
+      "id": "truss_fact_posthog_annual",
+      "question": "What annual contract value did PostHog convert to?",
+      "answer": "$155K",
+      "evidence_ids": ["slack_s87_d009"],
+      "requires_run1_memory": false
+    },
+    {
+      "id": "truss_fact_feature_flywheel",
+      "question": "According to Jules, which feature triggered Anthropic and Scale expansion?",
+      "answer": "SCIM",
+      "evidence_ids": ["slack_s92_d010"],
+      "requires_run1_memory": true
+    },
+    {
+      "id": "truss_fact_ten_m_arr_date",
+      "question": "On what date did Maya tell the board Truss achieved $10M ARR?",
+      "answer": "September 12, 2026",
+      "evidence_ids": ["email_s120_d001"],
+      "requires_run1_memory": false
+    },
+    {
+      "id": "truss_fact_final_nrr_margin",
+      "question": "What NRR and gross margin did Maya cite after hitting $10M ARR?",
+      "answer": "162% NRR and 77% gross margin",
+      "evidence_ids": ["slack_s120_d033"],
+      "requires_run1_memory": false
+    },
+    {
+      "id": "truss_fact_investor_intros",
+      "question": "Which two venture firms did Edie say she would introduce Truss to?",
+      "answer": "Sequoia and Accel",
+      "evidence_ids": ["slack_s107_004"],
+      "requires_run1_memory": false
+    }
+  ]
+}
