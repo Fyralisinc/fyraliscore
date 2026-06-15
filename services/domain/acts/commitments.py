@@ -13,6 +13,7 @@ are enforced at transition time. C7 is enforced by DB NOT NULL.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
@@ -43,6 +44,28 @@ from services.domain.acts.state_machines import (
 
 
 EdgeKind = Literal["contributes_to", "depends_on", "constrained_by"]
+
+
+@dataclass(frozen=True)
+class _CommitmentCreateInput:
+    title: str
+    description: str | None
+    initial_state: CommitmentState
+    owner_id: UUID | None
+    due_date: datetime | None
+    ambition_level: AmbitionLevel
+    priority: int
+    success_criteria: dict[str, Any] | None
+    contributes_to_goal_ids: list[UUID | tuple[UUID, bool]]
+    depends_on_commitment_ids: list[UUID]
+    constrained_by_decision_ids: list[UUID]
+    contributors: list[tuple[UUID, str | None]]
+    external_counterparty_ref: dict[str, Any] | None
+    estimated_capacity: dict[str, Any] | None
+    is_maintenance: bool
+    created_by_event_id: UUID
+    last_confidence_basis: UUID | None
+    tenant_id: UUID
 
 
 # =====================================================================
@@ -86,6 +109,50 @@ async def create(
     not doneverified, the commitment lands in state 'blocked' with
     the auto-transition recorded via state_change emission.
     """
+    create_input = _prepare_commitment_create_input(
+        title=title,
+        description=description,
+        initial_state=initial_state,
+        owner_id=owner_id,
+        due_date=due_date,
+        ambition_level=ambition_level,
+        priority=priority,
+        success_criteria=success_criteria,
+        contributes_to_goal_ids=contributes_to_goal_ids,
+        depends_on_commitment_ids=depends_on_commitment_ids,
+        constrained_by_decision_ids=constrained_by_decision_ids,
+        contributors=contributors,
+        external_counterparty_ref=external_counterparty_ref,
+        estimated_capacity=estimated_capacity,
+        is_maintenance=is_maintenance,
+        created_by_event_id=created_by_event_id,
+        last_confidence_basis=last_confidence_basis,
+        tenant_id=tenant_id,
+    )
+    return await _run_commitment_create(create_input, conn)
+
+
+def _prepare_commitment_create_input(
+    *,
+    title: str,
+    description: str | None,
+    initial_state: CommitmentState,
+    owner_id: UUID | None,
+    due_date: datetime | None,
+    ambition_level: AmbitionLevel,
+    priority: int,
+    success_criteria: dict[str, Any] | None,
+    contributes_to_goal_ids: list[UUID | tuple[UUID, bool]] | None,
+    depends_on_commitment_ids: list[UUID] | None,
+    constrained_by_decision_ids: list[UUID] | None,
+    contributors: list[tuple[UUID, str | None]] | None,
+    external_counterparty_ref: dict[str, Any] | None,
+    estimated_capacity: dict[str, Any] | None,
+    is_maintenance: bool | None,
+    created_by_event_id: UUID,
+    last_confidence_basis: UUID | None,
+    tenant_id: UUID,
+) -> _CommitmentCreateInput:
     if not title or not title.strip():
         raise ValidationError(
             "commitment title is required", field="title"
@@ -156,182 +223,240 @@ async def create(
             initial_state=initial_state,
         )
 
-    async def _do(tx: asyncpg.Connection) -> CommitmentRow:
-        # C5 pre-check: owner and contributors are active actors.
-        if owner_id is not None:
-            await _require_active_actor(tx, owner_id, role="owner")
-        for actor_id, _role in contributors:
-            await _require_active_actor(
-                tx, actor_id, role="contributor"
-            )
+    return _CommitmentCreateInput(
+        title=title,
+        description=description,
+        initial_state=initial_state,
+        owner_id=owner_id,
+        due_date=due_date,
+        ambition_level=ambition_level,
+        priority=priority,
+        success_criteria=success_criteria,
+        contributes_to_goal_ids=contributes_to_goal_ids,
+        depends_on_commitment_ids=depends_on_commitment_ids,
+        constrained_by_decision_ids=constrained_by_decision_ids,
+        contributors=contributors,
+        external_counterparty_ref=external_counterparty_ref,
+        estimated_capacity=estimated_capacity,
+        is_maintenance=maintenance,
+        created_by_event_id=created_by_event_id,
+        last_confidence_basis=last_confidence_basis,
+        tenant_id=tenant_id,
+    )
 
-        # Validate that referenced goals / dependencies / decisions exist
-        # and share the tenant — FKs would catch the first but tenant
-        # isolation is our responsibility.
-        for item in contributes_to_goal_ids:
-            goal_id = item if isinstance(item, UUID) else item[0]
-            await _require_tenant_goal(tx, goal_id, tenant_id)
-        for dep_id in depends_on_commitment_ids:
-            await _require_tenant_commitment(tx, dep_id, tenant_id)
-        for dec_id in constrained_by_decision_ids:
-            await _require_tenant_decision(tx, dec_id, tenant_id)
 
-        commitment_id = uuid7()
-        # Possibly auto-block: if initial_state is 'active' and any
-        # depends_on is not doneverified, start in 'blocked'.
-        effective_initial = initial_state
-        if initial_state == "active" and depends_on_commitment_ids:
-            unsatisfied = 0
-            for dep_id in depends_on_commitment_ids:
-                if await inv.is_unsatisfied_dependency(tx, dep_id):
-                    unsatisfied += 1
-            if unsatisfied > 0:
-                effective_initial = "blocked"
-
-        sc_json = (
-            json.dumps(success_criteria) if success_criteria is not None else None
-        )
-        ec_json = (
-            json.dumps(estimated_capacity) if estimated_capacity is not None else None
-        )
-        ec_json = (
-            json.dumps(estimated_capacity) if estimated_capacity is not None else None
-        )
-        ex_json = (
-            json.dumps(external_counterparty_ref)
-            if external_counterparty_ref is not None
-            else None
-        )
-
-        await tx.execute(
-            """
-            INSERT INTO commitments (
-              id, tenant_id, title, description, state, owner_id,
-              due_date, ambition_level, priority, success_criteria,
-              external_counterparty_ref, estimated_capacity,
-              is_maintenance,
-              created_by_event_id, last_confidence_basis
-            ) VALUES (
-              $1, $2, $3, $4, $5, $6, $7, $8, $9,
-              $10::jsonb, $11::jsonb, $12::jsonb,
-              $13,
-              $14, $15
-            )
-            """,
-            commitment_id,
-            tenant_id,
-            title,
-            description,
-            effective_initial,
-            owner_id,
-            due_date,
-            ambition_level,
-            priority,
-            sc_json,
-            ex_json,
-            ec_json,
-            maintenance,
-            created_by_event_id,
-            last_confidence_basis,
-        )
-
-        # Contributors.
-        for actor_id, role in contributors:
-            await tx.execute(
-                """
-                INSERT INTO commitment_contributors (
-                  commitment_id, actor_id, role
-                ) VALUES ($1, $2, $3)
-                ON CONFLICT (commitment_id, actor_id) DO NOTHING
-                """,
-                commitment_id,
-                actor_id,
-                role,
-            )
-
-        # contributes_to edges.
-        for item in contributes_to_goal_ids:
-            if isinstance(item, UUID):
-                goal_id, is_cp = item, False
-            else:
-                goal_id, is_cp = item[0], bool(item[1])
-            await _require_goal_can_accept_critical_path(
-                tx,
-                goal_id=goal_id,
-                commitment_state=effective_initial,
-                is_critical_path=is_cp,
-            )
-            await tx.execute(
-                """
-                INSERT INTO contributes_to (
-                  commitment_id, goal_id, is_critical_path
-                ) VALUES ($1, $2, $3)
-                ON CONFLICT (commitment_id, goal_id) DO NOTHING
-                """,
-                commitment_id,
-                goal_id,
-                is_cp,
-            )
-
-        # depends_on edges — acyclicity check per edge.
-        for dep_id in depends_on_commitment_ids:
-            viol = await inv.check_c6_depends_on_acyclic(
-                tx, commitment_id, dep_id
-            )
-            if viol:
-                raise viol[0]
-            await tx.execute(
-                """
-                INSERT INTO depends_on (
-                  dependent_commitment_id, dependency_commitment_id
-                ) VALUES ($1, $2)
-                ON CONFLICT DO NOTHING
-                """,
-                commitment_id,
-                dep_id,
-            )
-
-        # constrained_by edges.
-        for dec_id in constrained_by_decision_ids:
-            await tx.execute(
-                """
-                INSERT INTO constrained_by (
-                  commitment_id, decision_id
-                ) VALUES ($1, $2)
-                ON CONFLICT DO NOTHING
-                """,
-                commitment_id,
-                dec_id,
-            )
-
-        # Birth state_change.
-        await _emit_state_change(
-            tx,
-            tenant_id=tenant_id,
-            entity_kind="commitment",
-            entity_id=commitment_id,
-            from_state=None,
-            to_state=effective_initial,
-            cause_event_id=created_by_event_id,
-        )
-        # If auto-blocked, emit the additional active→blocked transition.
-        if effective_initial != initial_state:
-            # Note: we don't pre-insert active then transition; we only
-            # ever store 'blocked'. The birth record above reflects the
-            # final state so downstream consumers see a single event.
-            pass
-
-        row = await tx.fetchrow(
-            "SELECT * FROM commitments WHERE id = $1", commitment_id
-        )
-        return CommitmentRow.model_validate(dict(row))
-
+async def _run_commitment_create(
+    create_input: _CommitmentCreateInput,
+    conn: asyncpg.Connection | None,
+) -> CommitmentRow:
     if conn is None:
         async def _run() -> CommitmentRow:
             async with transaction() as tx:
-                return await _do(tx)
+                return await _create_inner(tx, create_input)
         return await with_deadlock_retry(_run)
-    return await _do(conn)
+    return await _create_inner(conn, create_input)
+
+
+async def _create_inner(
+    tx: asyncpg.Connection,
+    create_input: _CommitmentCreateInput,
+) -> CommitmentRow:
+    await _validate_commitment_create_references(tx, create_input)
+    commitment_id = uuid7()
+    effective_initial = await _resolve_effective_initial_state(tx, create_input)
+
+    await _insert_commitment(tx, create_input, commitment_id, effective_initial)
+    await _insert_commitment_contributors(tx, commitment_id, create_input)
+    await _insert_contributes_to_edges(tx, commitment_id, effective_initial, create_input)
+    await _insert_depends_on_edges(tx, commitment_id, create_input)
+    await _insert_constrained_by_edges(tx, commitment_id, create_input)
+    await _emit_state_change(
+        tx,
+        tenant_id=create_input.tenant_id,
+        entity_kind="commitment",
+        entity_id=commitment_id,
+        from_state=None,
+        to_state=effective_initial,
+        cause_event_id=create_input.created_by_event_id,
+    )
+    row = await tx.fetchrow(
+        "SELECT * FROM commitments WHERE id = $1", commitment_id
+    )
+    return CommitmentRow.model_validate(dict(row))
+
+
+async def _validate_commitment_create_references(
+    tx: asyncpg.Connection,
+    create_input: _CommitmentCreateInput,
+) -> None:
+    if create_input.owner_id is not None:
+        await _require_active_actor(tx, create_input.owner_id, role="owner")
+    for actor_id, _role in create_input.contributors:
+        await _require_active_actor(tx, actor_id, role="contributor")
+    for item in create_input.contributes_to_goal_ids:
+        goal_id = item if isinstance(item, UUID) else item[0]
+        await _require_tenant_goal(tx, goal_id, create_input.tenant_id)
+    for dep_id in create_input.depends_on_commitment_ids:
+        await _require_tenant_commitment(tx, dep_id, create_input.tenant_id)
+    for dec_id in create_input.constrained_by_decision_ids:
+        await _require_tenant_decision(tx, dec_id, create_input.tenant_id)
+
+
+async def _resolve_effective_initial_state(
+    tx: asyncpg.Connection,
+    create_input: _CommitmentCreateInput,
+) -> CommitmentState:
+    if (
+        create_input.initial_state != "active"
+        or not create_input.depends_on_commitment_ids
+    ):
+        return create_input.initial_state
+
+    for dep_id in create_input.depends_on_commitment_ids:
+        if await inv.is_unsatisfied_dependency(tx, dep_id):
+            return "blocked"
+    return create_input.initial_state
+
+
+async def _insert_commitment(
+    tx: asyncpg.Connection,
+    create_input: _CommitmentCreateInput,
+    commitment_id: UUID,
+    effective_initial: CommitmentState,
+) -> None:
+    sc_json = _json_or_none(create_input.success_criteria)
+    ex_json = _json_or_none(create_input.external_counterparty_ref)
+    ec_json = _json_or_none(create_input.estimated_capacity)
+    await tx.execute(
+        """
+        INSERT INTO commitments (
+          id, tenant_id, title, description, state, owner_id,
+          due_date, ambition_level, priority, success_criteria,
+          external_counterparty_ref, estimated_capacity,
+          is_maintenance,
+          created_by_event_id, last_confidence_basis
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9,
+          $10::jsonb, $11::jsonb, $12::jsonb,
+          $13,
+          $14, $15
+        )
+        """,
+        commitment_id,
+        create_input.tenant_id,
+        create_input.title,
+        create_input.description,
+        effective_initial,
+        create_input.owner_id,
+        create_input.due_date,
+        create_input.ambition_level,
+        create_input.priority,
+        sc_json,
+        ex_json,
+        ec_json,
+        create_input.is_maintenance,
+        create_input.created_by_event_id,
+        create_input.last_confidence_basis,
+    )
+
+
+async def _insert_commitment_contributors(
+    tx: asyncpg.Connection,
+    commitment_id: UUID,
+    create_input: _CommitmentCreateInput,
+) -> None:
+    for actor_id, role in create_input.contributors:
+        await tx.execute(
+            """
+            INSERT INTO commitment_contributors (
+              commitment_id, actor_id, role
+            ) VALUES ($1, $2, $3)
+            ON CONFLICT (commitment_id, actor_id) DO NOTHING
+            """,
+            commitment_id,
+            actor_id,
+            role,
+        )
+
+
+async def _insert_contributes_to_edges(
+    tx: asyncpg.Connection,
+    commitment_id: UUID,
+    effective_initial: CommitmentState,
+    create_input: _CommitmentCreateInput,
+) -> None:
+    for item in create_input.contributes_to_goal_ids:
+        goal_id, is_critical_path = _contributes_to_edge_parts(item)
+        await _require_goal_can_accept_critical_path(
+            tx,
+            goal_id=goal_id,
+            commitment_state=effective_initial,
+            is_critical_path=is_critical_path,
+        )
+        await tx.execute(
+            """
+            INSERT INTO contributes_to (
+              commitment_id, goal_id, is_critical_path
+            ) VALUES ($1, $2, $3)
+            ON CONFLICT (commitment_id, goal_id) DO NOTHING
+            """,
+            commitment_id,
+            goal_id,
+            is_critical_path,
+        )
+
+
+def _contributes_to_edge_parts(
+    item: UUID | tuple[UUID, bool],
+) -> tuple[UUID, bool]:
+    if isinstance(item, UUID):
+        return item, False
+    return item[0], bool(item[1])
+
+
+async def _insert_depends_on_edges(
+    tx: asyncpg.Connection,
+    commitment_id: UUID,
+    create_input: _CommitmentCreateInput,
+) -> None:
+    for dep_id in create_input.depends_on_commitment_ids:
+        violations = await inv.check_c6_depends_on_acyclic(
+            tx, commitment_id, dep_id
+        )
+        if violations:
+            raise violations[0]
+        await tx.execute(
+            """
+            INSERT INTO depends_on (
+              dependent_commitment_id, dependency_commitment_id
+            ) VALUES ($1, $2)
+            ON CONFLICT DO NOTHING
+            """,
+            commitment_id,
+            dep_id,
+        )
+
+
+async def _insert_constrained_by_edges(
+    tx: asyncpg.Connection,
+    commitment_id: UUID,
+    create_input: _CommitmentCreateInput,
+) -> None:
+    for dec_id in create_input.constrained_by_decision_ids:
+        await tx.execute(
+            """
+            INSERT INTO constrained_by (
+              commitment_id, decision_id
+            ) VALUES ($1, $2)
+            ON CONFLICT DO NOTHING
+            """,
+            commitment_id,
+            dec_id,
+        )
+
+
+def _json_or_none(value: dict[str, Any] | None) -> str | None:
+    return json.dumps(value) if value is not None else None
 
 
 async def _require_active_actor(

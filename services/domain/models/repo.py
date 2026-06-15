@@ -2122,21 +2122,46 @@ class ModelsRepo:
         apply_confidence_calibration: bool,
     ) -> ModelRow:
         await _ensure_vector_codec(conn)
+        prepared = await self._prepare_insert_payload(
+            conn,
+            proposed,
+            prop_kind,
+            apply_confidence_calibration=apply_confidence_calibration,
+        )
+        hydrated = await self._insert_model_row(
+            conn,
+            proposed=proposed,
+            model_id=prepared["model_id"],
+            final_conf=prepared["final_conf"],
+            conf_at_assertion=conf_at_assertion,
+            embedding=prepared["embedding"],
+            domain_tags=prepared["domain_tags"],
+        )
+        await self._sync_insert_sidecars_and_relations(conn, proposed, hydrated)
+        await _bulk_upsert_default_affordance_profiles(conn, [hydrated])
+        await self._apply_insert_topology_effects(
+            conn,
+            hydrated=hydrated,
+            embedding=prepared["embedding"],
+        )
+        await self._emit_insert_observability(conn, hydrated)
+        await self._publish_recommendation_insert(conn, hydrated)
+        return hydrated
 
-        # -- 3. Invariant M3: supporting_model_ids acyclicity.
-        # Per ARCHITECTURE-REVIEW-1 §C4: reject inserts whose
-        # supporting_model_ids would create a cycle. Cheap recursive CTE
-        # over an index on models.supporting_model_ids (GIN).
-        model_id_preview = proposed.id or uuid7()
+    async def _prepare_insert_payload(
+        self,
+        conn: asyncpg.Connection,
+        proposed: ModelCreate,
+        prop_kind: PropositionKind,
+        *,
+        apply_confidence_calibration: bool,
+    ) -> dict[str, Any]:
+        model_id = proposed.id or uuid7()
         await _check_no_support_cycle(
             conn,
-            new_model_id=model_id_preview,
+            new_model_id=model_id,
             new_supports=list(proposed.supporting_model_ids or []),
         )
-
-        # -- 3b. Recommendation cross-field validation.
-        # Pydantic enforces shape; here we check live DB state:
-        # target entity exists in tenant, transition reachable.
         grammar = derive_memory_grammar(
             proposed.proposition,
             natural=proposed.natural,
@@ -2148,8 +2173,6 @@ class ModelsRepo:
                 tenant_id=proposed.tenant_id,
                 conn=conn,
             )
-
-        # -- 4. Apply calibration (Wave 4-C: real DB lookup) -----------
         if apply_confidence_calibration:
             calibrated_conf = await apply_calibration(
                 proposed.confidence,
@@ -2160,29 +2183,7 @@ class ModelsRepo:
             )
         else:
             calibrated_conf = proposed.confidence
-
-        # -- 4. Clip confidence ----------------------------------------
-        final_conf = _clip_confidence(calibrated_conf)
-
-        # 5. scope_actors existence check.
-        if proposed.scope_actors:
-            existing = await conn.fetch(
-                """
-                SELECT id FROM actors
-                WHERE tenant_id = $1 AND id = ANY($2::uuid[])
-                """,
-                proposed.tenant_id,
-                list(proposed.scope_actors),
-            )
-            existing_ids = {r["id"] for r in existing}
-            missing = [a for a in proposed.scope_actors if a not in existing_ids]
-            if missing:
-                raise ValidationError(
-                    f"scope_actors reference {len(missing)} non-existent actor(s)",
-                    missing=[str(m) for m in missing],
-                )
-
-        # 6. Compute embedding if not supplied.
+        await self._validate_scope_actors(conn, proposed)
         embedding = await self._resolve_embedding(proposed)
         if len(embedding) != EMBEDDING_DIM:
             raise ValidationError(
@@ -2190,13 +2191,47 @@ class ModelsRepo:
                 got=len(embedding),
                 expected=EMBEDDING_DIM,
             )
+        return {
+            "model_id": model_id,
+            "final_conf": _clip_confidence(calibrated_conf),
+            "embedding": embedding,
+            "domain_tags": list(proposed.domain_tags or grammar.domain_tags),
+        }
 
-        model_id = model_id_preview  # pre-assigned in step 3 for cycle check
-        domain_tags = list(proposed.domain_tags or grammar.domain_tags)
+    async def _validate_scope_actors(
+        self,
+        conn: asyncpg.Connection,
+        proposed: ModelCreate,
+    ) -> None:
+        if not proposed.scope_actors:
+            return
+        existing = await conn.fetch(
+            """
+            SELECT id FROM actors
+            WHERE tenant_id = $1 AND id = ANY($2::uuid[])
+            """,
+            proposed.tenant_id,
+            list(proposed.scope_actors),
+        )
+        existing_ids = {r["id"] for r in existing}
+        missing = [a for a in proposed.scope_actors if a not in existing_ids]
+        if missing:
+            raise ValidationError(
+                f"scope_actors reference {len(missing)} non-existent actor(s)",
+                missing=[str(m) for m in missing],
+            )
 
-        # 7. INSERT. "natural" is a reserved keyword in SQL, so it must
-        # be quoted in identifier contexts (Wave 0 migration does the
-        # same — see SCHEMA-QUESTION Q0 / BUILD-LOG entry 0.1).
+    async def _insert_model_row(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        proposed: ModelCreate,
+        model_id: UUID,
+        final_conf: float,
+        conf_at_assertion: float,
+        embedding: list[float],
+        domain_tags: list[str],
+    ) -> ModelRow:
         row = await conn.fetchrow(
             f"""
             INSERT INTO models (
@@ -2234,7 +2269,7 @@ class ModelsRepo:
             _jsonb(proposed.scope_entities),
             _jsonb(proposed.scope_temporal),
             final_conf,
-            1.0,  # activation starts at 1.0 (DB default; set explicit for clarity)
+            1.0,
             _jsonb(proposed.falsifier) if proposed.falsifier is not None else None,
             _jsonb(proposed.signal_readings),
             proposed.reading_contestable,
@@ -2251,9 +2286,14 @@ class ModelsRepo:
             domain_tags,
         )
         assert row is not None
+        return _hydrate_row(row)
 
-        hydrated = _hydrate_row(row)
-
+    async def _sync_insert_sidecars_and_relations(
+        self,
+        conn: asyncpg.Connection,
+        proposed: ModelCreate,
+        hydrated: ModelRow,
+    ) -> None:
         await _sync_model_scope_sidecars(
             conn,
             model_id=hydrated.id,
@@ -2267,11 +2307,6 @@ class ModelsRepo:
             tenant_id=hydrated.tenant_id,
             proposition=hydrated.proposition,
         )
-
-        # 7b. Dual-write typed edges to mirror the array columns just
-        # written. Goes through the chokepoint helper so the drift
-        # detector stays happy. update_arrays=False because the INSERT
-        # above already set the array columns.
         if (
             list(proposed.supporting_model_ids)
             or list(proposed.contributing_models)
@@ -2287,18 +2322,13 @@ class ModelsRepo:
                 update_arrays=False,
             )
 
-        await _bulk_upsert_default_affordance_profiles(conn, [hydrated])
-
-        # 7c-pre. Positional topo_embedding (migration 0032). Project
-        # the 768-d content embedding deterministically into the 128-d
-        # topo space so the UMAP map view + Pathway F can see this
-        # Model the moment it commits. The sweeper may later refine
-        # the position with neighbor information; this initial anchor
-        # is the gravitational baseline.
-        #
-        # Skip on NULL/empty embedding (e.g. embedder unavailable):
-        # leave topo_embedding NULL and let a later backfill catch it
-        # rather than blowing up the insert.
+    async def _apply_insert_topology_effects(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        hydrated: ModelRow,
+        embedding: list[float],
+    ) -> None:
         if embedding:
             try:
                 topo_anchor = content_anchor(embedding)
@@ -2318,10 +2348,6 @@ class ModelsRepo:
                 # sweeper / a backfill will fill it later.
                 pass
 
-        # 7c. Topology layer: generate latent relationship/situation
-        # candidates from this new Model. Topology is pre-truth here:
-        # it surfaces consequence-sensitive hypotheses for Think, not
-        # accepted edges or graph layout.
         if self._run_topology_on_insert:
             try:
                 async with conn.transaction():
@@ -2333,7 +2359,11 @@ class ModelsRepo:
                 # poisoning the surrounding model-insert transaction.
                 pass
 
-        # 8. Emit state_change in the same transaction.
+    async def _emit_insert_observability(
+        self,
+        conn: asyncpg.Connection,
+        hydrated: ModelRow,
+    ) -> None:
         await emit_state_change(
             conn,
             kind="insert_model",
@@ -2349,8 +2379,6 @@ class ModelsRepo:
             },
         )
 
-        # 8b. Emit audit_events row (PR 1, Q5). Full snapshot as
-        # new_state since this is the chain root for this Model.
         from services.reasoning.think.audit import (  # noqa: WPS433 — see module top
             CAUSE_CREATE,
             emit_audit_event,
@@ -2369,9 +2397,11 @@ class ModelsRepo:
             detect_re_assert=False,  # creates have no prior to re-assert
         )
 
-        # Announce that a recommendation landed. Subscribers (e.g. the demo
-        # overlay's SSE fan-out to open action-list streams) pick this up via
-        # the process-local event bus. No-op when nothing is subscribed.
+    async def _publish_recommendation_insert(
+        self,
+        conn: asyncpg.Connection,
+        hydrated: ModelRow,
+    ) -> None:
         if hydrated.claim_role == "recommendation" and hydrated.target_actor_id:
             from lib.shared.events import publish as publish_event
 
@@ -2390,18 +2420,7 @@ class ModelsRepo:
                     ),
                 },
             )
-
-            # Auto-accept low-risk create-commitment recommendations.
-            # Self-reported new work ("I've started the backend rewrite")
-            # produces a recommendation whose payload already names the
-            # owner and the contributing goal — making the human-approval
-            # step ceremonial. Auto-accept here so the new Commitment
-            # appears in the ledger without an explicit click; failures
-            # are swallowed so the recommendation stays in the queue and
-            # the user can act on it manually.
             await _maybe_auto_accept(hydrated, conn)
-
-        return hydrated
 
     async def _resolve_embedding(self, proposed: ModelCreate) -> list[float]:
         if proposed.embedding and len(proposed.embedding) == EMBEDDING_DIM:
@@ -2632,20 +2651,15 @@ class ModelsRepo:
                 model_id,
             )
             dep_ids = [r["id"] for r in deps]
+            from services.domain.triggers import enqueue_model_reeval
+
             for dep_id in dep_ids:
-                await c.execute(
-                    """
-                    INSERT INTO model_reeval_queue
-                      (id, tenant_id, model_id, cause_model_id, cause_kind)
-                    VALUES ($1, $2, $3, $4, $5)
-                    ON CONFLICT ON CONSTRAINT model_reeval_queue_dedup
-                    DO NOTHING
-                    """,
-                    uuid7(),
-                    hydrated.tenant_id,
-                    dep_id,
-                    model_id,
-                    legacy_cause_kind,
+                await enqueue_model_reeval(
+                    c,
+                    tenant_id=hydrated.tenant_id,
+                    model_id=dep_id,
+                    cause_model_id=model_id,
+                    cause_kind=legacy_cause_kind,
                 )
 
             # 3. Mark every edge touching this Model inert (same

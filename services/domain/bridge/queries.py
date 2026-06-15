@@ -130,9 +130,134 @@ OWNER_ACTIVE_STATES: tuple[str, ...] = (
 OWNER_COMMITMENT_WARN_THRESHOLD = 5
 
 
+@dataclass(frozen=True)
+class _RevenueAtRiskCustomers:
+    customers: list[CustomerRevenueRow]
+    fallback_count: int
+
+
 # =====================================================================
 # revenue_at_risk
 # =====================================================================
+
+
+_REVENUE_AT_RISK_SQL = """
+    WITH at_risk_cmt AS (
+      SELECT c.id AS commitment_id, c.state
+      FROM commitments c
+      WHERE c.tenant_id = $1
+        AND c.state = ANY($2::text[])
+        AND (
+          (c.due_date IS NOT NULL AND c.due_date < now() + $3)
+          OR EXISTS (
+            SELECT 1 FROM models m
+            WHERE m.tenant_id = $1
+              AND m.proposition_kind = 'prediction'
+              AND m.status = 'active'
+              AND m.scope_entities @> jsonb_build_array(
+                jsonb_build_object('type', 'commitment', 'id', c.id::text)
+              )
+              AND m.proposition->>'direction' = 'will_slip'
+              AND m.confidence > 0.6
+          )
+        )
+    ),
+    pred_only AS (
+      SELECT c.id AS commitment_id
+      FROM commitments c
+      WHERE c.tenant_id = $1
+        AND c.state = ANY($2::text[])
+        AND (c.due_date IS NULL OR c.due_date >= now() + $3)
+        AND EXISTS (
+          SELECT 1 FROM models m
+          WHERE m.tenant_id = $1
+            AND m.proposition_kind = 'prediction'
+            AND m.status = 'active'
+            AND m.scope_entities @> jsonb_build_array(
+              jsonb_build_object('type', 'commitment', 'id', c.id::text)
+            )
+            AND m.proposition->>'direction' = 'will_slip'
+            AND m.confidence > 0.6
+        )
+    ),
+    linked AS (
+      SELECT
+        cc.customer_resource_id,
+        cc.commitment_id,
+        cc.revenue_at_risk_usd,
+        c.state AS cmt_state,
+        (cc.commitment_id IN (SELECT commitment_id FROM pred_only))
+          AS prediction_driven
+      FROM customer_commitments cc
+      JOIN at_risk_cmt ar ON ar.commitment_id = cc.commitment_id
+      JOIN commitments c ON c.id = cc.commitment_id
+      WHERE cc.tenant_id = $1
+    ),
+    customer_counts AS (
+      SELECT customer_resource_id,
+             COUNT(*) AS at_risk_cnt,
+             COUNT(*) FILTER (WHERE revenue_at_risk_usd IS NULL) AS null_cnt
+      FROM linked
+      GROUP BY customer_resource_id
+    )
+    SELECT
+      l.customer_resource_id,
+      COALESCE(r.identity, '') AS customer_name,
+      r.current_value AS customer_current_value,
+      COALESCE(cc2.at_risk_cnt, 0) AS at_risk_cnt,
+      COALESCE(cc2.null_cnt, 0) AS null_cnt,
+      array_agg(l.commitment_id) AS at_risk_commitment_ids,
+      COALESCE(SUM(
+        CASE WHEN l.cmt_state = 'blocked'
+             THEN l.revenue_at_risk_usd ELSE 0 END
+      ), 0) AS blocked_usd_explicit,
+      COALESCE(SUM(
+        CASE WHEN l.cmt_state = 'paused'
+             THEN l.revenue_at_risk_usd ELSE 0 END
+      ), 0) AS paused_usd_explicit,
+      COALESCE(SUM(
+        CASE WHEN l.cmt_state = 'doneunverified'
+             THEN l.revenue_at_risk_usd ELSE 0 END
+      ), 0) AS doneunverified_usd_explicit,
+      COALESCE(SUM(
+        CASE WHEN l.prediction_driven
+             THEN l.revenue_at_risk_usd ELSE 0 END
+      ), 0) AS prediction_driven_usd_explicit,
+      COUNT(*) FILTER (
+        WHERE l.cmt_state = 'blocked' AND l.revenue_at_risk_usd IS NULL
+      ) AS blocked_null_cnt,
+      COUNT(*) FILTER (
+        WHERE l.cmt_state = 'paused' AND l.revenue_at_risk_usd IS NULL
+      ) AS paused_null_cnt,
+      COUNT(*) FILTER (
+        WHERE l.cmt_state = 'doneunverified' AND l.revenue_at_risk_usd IS NULL
+      ) AS doneunverified_null_cnt,
+      COUNT(*) FILTER (
+        WHERE l.prediction_driven AND l.revenue_at_risk_usd IS NULL
+      ) AS prediction_driven_null_cnt
+    FROM linked l
+    LEFT JOIN resources r
+      ON r.id = l.customer_resource_id AND r.tenant_id = $1
+    LEFT JOIN customer_counts cc2
+      ON cc2.customer_resource_id = l.customer_resource_id
+    GROUP BY l.customer_resource_id, r.identity, r.current_value,
+             cc2.at_risk_cnt, cc2.null_cnt
+"""
+
+
+_ZERO_RISK_CUSTOMERS_SQL = """
+    SELECT DISTINCT r.id AS customer_resource_id,
+                    r.identity AS customer_name
+    FROM resources r
+    WHERE r.tenant_id = $1
+      AND r.kind = 'relational'
+      AND r.archived_at IS NULL
+      AND EXISTS (
+        SELECT 1 FROM customer_commitments cc
+        WHERE cc.customer_resource_id = r.id
+          AND cc.tenant_id = $1
+      )
+"""
 
 
 async def revenue_at_risk(
@@ -156,222 +281,12 @@ async def revenue_at_risk(
     surfaces this in the UI.
     """
     interval = timedelta(days=int(horizon_days))
-    sql = """
-        WITH at_risk_cmt AS (
-          SELECT c.id AS commitment_id, c.state
-          FROM commitments c
-          WHERE c.tenant_id = $1
-            AND c.state = ANY($2::text[])
-            AND (
-              (c.due_date IS NOT NULL AND c.due_date < now() + $3)
-              OR EXISTS (
-                SELECT 1 FROM models m
-                WHERE m.tenant_id = $1
-                  AND m.proposition_kind = 'prediction'
-                  AND m.status = 'active'
-                  AND m.scope_entities @> jsonb_build_array(
-                    jsonb_build_object('type', 'commitment', 'id', c.id::text)
-                  )
-                  AND m.proposition->>'direction' = 'will_slip'
-                  AND m.confidence > 0.6
-              )
-            )
-        ),
-        -- Commitments flagged at-risk ONLY by a prediction (due date
-        -- hasn't hit the horizon yet) — used to surface prediction-
-        -- driven risk in a separate bucket.
-        pred_only AS (
-          SELECT c.id AS commitment_id
-          FROM commitments c
-          WHERE c.tenant_id = $1
-            AND c.state = ANY($2::text[])
-            AND (c.due_date IS NULL OR c.due_date >= now() + $3)
-            AND EXISTS (
-              SELECT 1 FROM models m
-              WHERE m.tenant_id = $1
-                AND m.proposition_kind = 'prediction'
-                AND m.status = 'active'
-                AND m.scope_entities @> jsonb_build_array(
-                  jsonb_build_object('type', 'commitment', 'id', c.id::text)
-                )
-                AND m.proposition->>'direction' = 'will_slip'
-                AND m.confidence > 0.6
-            )
-        ),
-        linked AS (
-          SELECT
-            cc.customer_resource_id,
-            cc.commitment_id,
-            cc.revenue_at_risk_usd,
-            c.state AS cmt_state,
-            (cc.commitment_id IN (SELECT commitment_id FROM pred_only))
-              AS prediction_driven
-          FROM customer_commitments cc
-          JOIN at_risk_cmt ar ON ar.commitment_id = cc.commitment_id
-          JOIN commitments c ON c.id = cc.commitment_id
-          WHERE cc.tenant_id = $1
-        ),
-        -- Per customer, count how many at-risk commitments are linked
-        -- so the ARR fallback can be split evenly across them.
-        customer_counts AS (
-          SELECT customer_resource_id,
-                 COUNT(*) AS at_risk_cnt,
-                 COUNT(*) FILTER (WHERE revenue_at_risk_usd IS NULL)
-                   AS null_cnt
-          FROM linked
-          GROUP BY customer_resource_id
-        )
-        SELECT
-          l.customer_resource_id,
-          COALESCE(r.identity, '') AS customer_name,
-          r.current_value AS customer_current_value,
-          COALESCE(cc2.at_risk_cnt, 0) AS at_risk_cnt,
-          COALESCE(cc2.null_cnt, 0) AS null_cnt,
-          array_agg(l.commitment_id) AS at_risk_commitment_ids,
-          -- Bucket per state, using revenue_at_risk_usd directly; NULLs
-          -- are summed as zero here — the fallback is applied in Python
-          -- so it's easy to report fallback_used.
-          COALESCE(SUM(
-            CASE WHEN l.cmt_state = 'blocked'
-                 THEN l.revenue_at_risk_usd ELSE 0 END
-          ), 0) AS blocked_usd_explicit,
-          COALESCE(SUM(
-            CASE WHEN l.cmt_state = 'paused'
-                 THEN l.revenue_at_risk_usd ELSE 0 END
-          ), 0) AS paused_usd_explicit,
-          COALESCE(SUM(
-            CASE WHEN l.cmt_state = 'doneunverified'
-                 THEN l.revenue_at_risk_usd ELSE 0 END
-          ), 0) AS doneunverified_usd_explicit,
-          COALESCE(SUM(
-            CASE WHEN l.prediction_driven
-                 THEN l.revenue_at_risk_usd ELSE 0 END
-          ), 0) AS prediction_driven_usd_explicit,
-          -- Per-state NULL counts for fallback split.
-          COUNT(*) FILTER (
-            WHERE l.cmt_state = 'blocked' AND l.revenue_at_risk_usd IS NULL
-          ) AS blocked_null_cnt,
-          COUNT(*) FILTER (
-            WHERE l.cmt_state = 'paused' AND l.revenue_at_risk_usd IS NULL
-          ) AS paused_null_cnt,
-          COUNT(*) FILTER (
-            WHERE l.cmt_state = 'doneunverified' AND l.revenue_at_risk_usd IS NULL
-          ) AS doneunverified_null_cnt,
-          COUNT(*) FILTER (
-            WHERE l.prediction_driven AND l.revenue_at_risk_usd IS NULL
-          ) AS prediction_driven_null_cnt
-        FROM linked l
-        LEFT JOIN resources r
-          ON r.id = l.customer_resource_id AND r.tenant_id = $1
-        LEFT JOIN customer_counts cc2
-          ON cc2.customer_resource_id = l.customer_resource_id
-        GROUP BY l.customer_resource_id, r.identity, r.current_value,
-                 cc2.at_risk_cnt, cc2.null_cnt
-    """
-
-    async def _run(c: asyncpg.Connection) -> list[asyncpg.Record]:
-        return await c.fetch(sql, tenant_id, list(AT_RISK_STATES), interval)
-
-    if conn is not None:
-        rows = await _run(conn)
-    else:
-        pool = get_pool()
-        async with pool.acquire() as c2:
-            rows = await _run(c2)
-
-    customers: list[CustomerRevenueRow] = []
-    fallback_count = 0
-    for r in rows:
-        at_risk_cnt = int(r["at_risk_cnt"] or 0)
-        null_cnt = int(r["null_cnt"] or 0)
-        blocked_explicit = Decimal(r["blocked_usd_explicit"] or 0)
-        paused_explicit = Decimal(r["paused_usd_explicit"] or 0)
-        doneu_explicit = Decimal(r["doneunverified_usd_explicit"] or 0)
-        pred_explicit = Decimal(r["prediction_driven_usd_explicit"] or 0)
-        blocked_null = int(r["blocked_null_cnt"] or 0)
-        paused_null = int(r["paused_null_cnt"] or 0)
-        doneu_null = int(r["doneunverified_null_cnt"] or 0)
-        pred_null = int(r["prediction_driven_null_cnt"] or 0)
-
-        # Fallback per null row: ARR / at_risk_cnt (split evenly).
-        fallback_used = null_cnt > 0
-        arr_usd = arr_usd_from_current_value(r["customer_current_value"])
-
-        if at_risk_cnt > 0 and null_cnt > 0 and arr_usd > 0:
-            per_row = (arr_usd / Decimal(at_risk_cnt)).quantize(Decimal("0.01"))
-        else:
-            per_row = Decimal("0")
-
-        blocked_usd = (blocked_explicit + per_row * Decimal(blocked_null)).quantize(Decimal("0.01"))
-        paused_usd = (paused_explicit + per_row * Decimal(paused_null)).quantize(Decimal("0.01"))
-        doneu_usd = (doneu_explicit + per_row * Decimal(doneu_null)).quantize(Decimal("0.01"))
-        pred_usd = (pred_explicit + per_row * Decimal(pred_null)).quantize(Decimal("0.01"))
-        total = (blocked_usd + paused_usd + doneu_usd).quantize(Decimal("0.01"))
-
-        ids_raw = r["at_risk_commitment_ids"] or []
-        ids = [UUID(str(x)) if not isinstance(x, UUID) else x for x in ids_raw]
-
-        customers.append(
-            CustomerRevenueRow(
-                customer_resource_id=r["customer_resource_id"],
-                customer_name=r["customer_name"] or "",
-                total_at_risk_usd=total,
-                blocked_usd=blocked_usd,
-                paused_usd=paused_usd,
-                doneunverified_usd=doneu_usd,
-                prediction_driven_usd=pred_usd,
-                at_risk_commitment_ids=ids,
-                fallback_used=fallback_used,
-            )
-        )
-        if fallback_used:
-            fallback_count += 1
-
-    # Also surface every customer that has linked commitments but zero
-    # at-risk ones, so a dashboard can show them explicitly (Test 14).
-    # Pull them in a second pass.
-    seen_ids = {c.customer_resource_id for c in customers}
-    zero_sql = """
-        SELECT DISTINCT r.id AS customer_resource_id,
-                        r.identity AS customer_name
-        FROM resources r
-        WHERE r.tenant_id = $1
-          AND r.kind = 'relational'
-          AND r.archived_at IS NULL
-          AND EXISTS (
-            SELECT 1 FROM customer_commitments cc
-            WHERE cc.customer_resource_id = r.id
-              AND cc.tenant_id = $1
-          )
-    """
-
-    async def _run_zero(c: asyncpg.Connection) -> list[asyncpg.Record]:
-        return await c.fetch(zero_sql, tenant_id)
-
-    if conn is not None:
-        zero_rows = await _run_zero(conn)
-    else:
-        pool = get_pool()
-        async with pool.acquire() as c2:
-            zero_rows = await _run_zero(c2)
-
-    for r in zero_rows:
-        if r["customer_resource_id"] in seen_ids:
-            continue
-        customers.append(
-            CustomerRevenueRow(
-                customer_resource_id=r["customer_resource_id"],
-                customer_name=r["customer_name"] or "",
-                total_at_risk_usd=Decimal("0"),
-                blocked_usd=Decimal("0"),
-                paused_usd=Decimal("0"),
-                doneunverified_usd=Decimal("0"),
-                prediction_driven_usd=Decimal("0"),
-                at_risk_commitment_ids=[],
-                fallback_used=False,
-            )
-        )
-
+    customer_result = await _load_revenue_at_risk_customers(
+        tenant_id,
+        interval=interval,
+        conn=conn,
+    )
+    customers = customer_result.customers
     customers.sort(key=lambda c: c.total_at_risk_usd, reverse=True)
     grand_total = sum((c.total_at_risk_usd for c in customers), Decimal("0")).quantize(Decimal("0.01"))
 
@@ -381,7 +296,127 @@ async def revenue_at_risk(
         generated_at=datetime.now(timezone.utc),
         customers=customers,
         grand_total_usd=grand_total,
-        fallback_count=fallback_count,
+        fallback_count=customer_result.fallback_count,
+    )
+
+
+async def _load_revenue_at_risk_customers(
+    tenant_id: UUID,
+    *,
+    interval: timedelta,
+    conn: asyncpg.Connection | None,
+) -> _RevenueAtRiskCustomers:
+    rows = await _fetch_revenue_at_risk_rows(tenant_id, interval=interval, conn=conn)
+    customers = [_revenue_customer_from_row(row) for row in rows]
+    zero_rows = await _fetch_zero_risk_customer_rows(tenant_id, conn=conn)
+    _append_zero_risk_customers(customers, zero_rows)
+    return _RevenueAtRiskCustomers(
+        customers=customers,
+        fallback_count=sum(1 for customer in customers if customer.fallback_used),
+    )
+
+
+async def _fetch_revenue_at_risk_rows(
+    tenant_id: UUID,
+    *,
+    interval: timedelta,
+    conn: asyncpg.Connection | None,
+) -> list[asyncpg.Record]:
+    args = (tenant_id, list(AT_RISK_STATES), interval)
+    if conn is not None:
+        return await conn.fetch(_REVENUE_AT_RISK_SQL, *args)
+    pool = get_pool()
+    async with pool.acquire() as c2:
+        return await c2.fetch(_REVENUE_AT_RISK_SQL, *args)
+
+
+async def _fetch_zero_risk_customer_rows(
+    tenant_id: UUID,
+    *,
+    conn: asyncpg.Connection | None,
+) -> list[asyncpg.Record]:
+    if conn is not None:
+        return await conn.fetch(_ZERO_RISK_CUSTOMERS_SQL, tenant_id)
+    pool = get_pool()
+    async with pool.acquire() as c2:
+        return await c2.fetch(_ZERO_RISK_CUSTOMERS_SQL, tenant_id)
+
+
+def _revenue_customer_from_row(r: asyncpg.Record) -> CustomerRevenueRow:
+    at_risk_cnt = int(r["at_risk_cnt"] or 0)
+    null_cnt = int(r["null_cnt"] or 0)
+    per_row = _fallback_revenue_per_row(
+        arr_usd_from_current_value(r["customer_current_value"]),
+        at_risk_cnt=at_risk_cnt,
+        null_cnt=null_cnt,
+    )
+    blocked_usd = _risk_bucket_amount(r, "blocked", per_row)
+    paused_usd = _risk_bucket_amount(r, "paused", per_row)
+    doneu_usd = _risk_bucket_amount(r, "doneunverified", per_row)
+    pred_usd = _risk_bucket_amount(r, "prediction_driven", per_row)
+    total = (blocked_usd + paused_usd + doneu_usd).quantize(Decimal("0.01"))
+
+    ids_raw = r["at_risk_commitment_ids"] or []
+    ids = [UUID(str(x)) if not isinstance(x, UUID) else x for x in ids_raw]
+
+    return CustomerRevenueRow(
+        customer_resource_id=r["customer_resource_id"],
+        customer_name=r["customer_name"] or "",
+        total_at_risk_usd=total,
+        blocked_usd=blocked_usd,
+        paused_usd=paused_usd,
+        doneunverified_usd=doneu_usd,
+        prediction_driven_usd=pred_usd,
+        at_risk_commitment_ids=ids,
+        fallback_used=null_cnt > 0,
+    )
+
+
+def _fallback_revenue_per_row(
+    arr_usd: Decimal,
+    *,
+    at_risk_cnt: int,
+    null_cnt: int,
+) -> Decimal:
+    if at_risk_cnt > 0 and null_cnt > 0 and arr_usd > 0:
+        return (arr_usd / Decimal(at_risk_cnt)).quantize(Decimal("0.01"))
+    return Decimal("0")
+
+
+def _risk_bucket_amount(
+    row: asyncpg.Record,
+    bucket: str,
+    per_fallback_row: Decimal,
+) -> Decimal:
+    explicit = Decimal(row[f"{bucket}_usd_explicit"] or 0)
+    null_count = int(row[f"{bucket}_null_cnt"] or 0)
+    return (explicit + per_fallback_row * Decimal(null_count)).quantize(
+        Decimal("0.01")
+    )
+
+
+def _append_zero_risk_customers(
+    customers: list[CustomerRevenueRow],
+    zero_rows: list[asyncpg.Record],
+) -> None:
+    seen_ids = {c.customer_resource_id for c in customers}
+    for row in zero_rows:
+        if row["customer_resource_id"] in seen_ids:
+            continue
+        customers.append(_zero_risk_customer_from_row(row))
+
+
+def _zero_risk_customer_from_row(row: asyncpg.Record) -> CustomerRevenueRow:
+    return CustomerRevenueRow(
+        customer_resource_id=row["customer_resource_id"],
+        customer_name=row["customer_name"] or "",
+        total_at_risk_usd=Decimal("0"),
+        blocked_usd=Decimal("0"),
+        paused_usd=Decimal("0"),
+        doneunverified_usd=Decimal("0"),
+        prediction_driven_usd=Decimal("0"),
+        at_risk_commitment_ids=[],
+        fallback_used=False,
     )
 
 
