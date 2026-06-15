@@ -79,6 +79,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         "Claim reasoning worker.",
         compose_service="think_worker",
         log_file="think_worker.log",
+        has_healthcheck=True,
     ),
     _proc(
         "post_commit_worker",
@@ -88,6 +89,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         "Post-commit cascade and follow-up worker.",
         compose_service="post_commit_worker",
         log_file="post_commit_worker.log",
+        has_healthcheck=True,
     ),
     _proc(
         "topology_sweeper",
@@ -113,6 +115,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "OAuth install polling workflow.",
         compose_service="oauth_poller",
+        has_healthcheck=True,
     ),
     _proc(
         "tenant_onboarding",
@@ -121,6 +124,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Tenant onboarding workflow.",
         compose_service="tenant_onboarding",
+        has_healthcheck=True,
     ),
     _proc(
         "source_onboarding",
@@ -129,6 +133,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Source onboarding workflow.",
         compose_service="source_onboarding",
+        has_healthcheck=True,
     ),
     _proc(
         "shard_fetch",
@@ -137,6 +142,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Backfill shard fetch workflow.",
         compose_service="shard_fetch",
+        has_healthcheck=True,
     ),
     _proc(
         "reconciler",
@@ -145,6 +151,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Onboarding reconciliation workflow.",
         compose_service="reconciler",
+        has_healthcheck=True,
     ),
     _proc(
         "feels_onboarded_monitor",
@@ -157,6 +164,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Onboarding progress monitor.",
         compose_service="feels_onboarded_monitor",
+        has_healthcheck=True,
         singleton=True,
     ),
     _proc(
@@ -238,6 +246,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Discord gateway session worker.",
         compose_service="discord_gateway_worker",
+        has_healthcheck=True,
         singleton=True,
     ),
     _proc(
@@ -247,6 +256,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Telegram MTProto gateway session worker.",
         compose_service="telegram_gateway_worker",
+        has_healthcheck=True,
         singleton=True,
     ),
     _proc(
@@ -256,6 +266,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Signal linked-device (signal-cli JSON-RPC) gateway session worker.",
         compose_service="signal_gateway_worker",
+        has_healthcheck=True,
         singleton=True,
     ),
     _proc(
@@ -265,6 +276,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Gmail watch renewal scheduler.",
         compose_service="gmail_watch_scheduler",
+        has_healthcheck=True,
     ),
     _proc(
         "gmail_history_poller",
@@ -273,6 +285,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Gmail history poller.",
         compose_service="gmail_history_poller",
+        has_healthcheck=True,
     ),
     _proc(
         "google_calendar_live_poller",
@@ -281,6 +294,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Google Calendar live poller.",
         compose_service="google_calendar_live_poller",
+        has_healthcheck=True,
     ),
     _proc(
         "google_drive_live_poller",
@@ -289,6 +303,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Google Drive live poller.",
         compose_service="google_drive_live_poller",
+        has_healthcheck=True,
     ),
     _proc(
         "google_calendar_watch_scheduler",
@@ -297,6 +312,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Google Calendar watch renewal scheduler.",
         compose_service="google_calendar_watch_scheduler",
+        has_healthcheck=True,
     ),
     _proc(
         "google_drive_watch_scheduler",
@@ -305,6 +321,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Google Drive watch renewal scheduler.",
         compose_service="google_drive_watch_scheduler",
+        has_healthcheck=True,
     ),
     _proc(
         "github_intel_worker",
@@ -313,6 +330,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "GitHub ordered intelligence worker.",
         compose_service="github_intel_worker",
+        has_healthcheck=True,
     ),
     _proc(
         "sage_structural_features_worker",
@@ -321,6 +339,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "SAGE structural feature refresh worker.",
         compose_service="sage_structural_features_worker",
+        has_healthcheck=True,
     ),
     _proc(
         "sage_topology_optimizer_worker",
@@ -329,6 +348,16 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "SAGE topology optimizer worker.",
         compose_service="sage_topology_optimizer_worker",
+        has_healthcheck=True,
+    ),
+    _proc(
+        "housekeeper_worker",
+        "reasoning",
+        ("python", "scripts/run_housekeeper_worker.py"),
+        ("production",),
+        "Scheduled lifecycle and maintenance job worker.",
+        compose_service="housekeeper_worker",
+        has_healthcheck=True,
     ),
     _proc(
         "relationship_ontology_proposals_worker",
@@ -337,6 +366,7 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Relationship ontology proposal worker.",
         compose_service="relationship_ontology_proposals_worker",
+        has_healthcheck=True,
     ),
 )
 

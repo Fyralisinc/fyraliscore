@@ -4,7 +4,11 @@ from pathlib import Path
 
 import yaml
 
-from scripts.render_runtime_process_manifest import render_dogfood_tsv
+from scripts.render_runtime_process_manifest import (
+    render_dogfood_tsv,
+    render_production_json,
+    render_production_markdown,
+)
 from services.platform.runtime.process_manifest import (
     dogfood_processes,
     production_processes,
@@ -46,6 +50,24 @@ def test_dogfood_manifest_renders_startup_rows() -> None:
     assert rows[-1][3] == "exec npm run dev"
 
 
+def test_production_manifest_renders_operator_inventory() -> None:
+    markdown = render_production_markdown()
+    assert "| Process | Family | Compose service | Healthcheck | Singleton | Command |" in markdown
+    assert "| think_worker | reasoning | think_worker | True | False | `python scripts/run_think_worker.py` |" in markdown
+    assert "| housekeeper_worker | reasoning | housekeeper_worker | True | False | `python scripts/run_housekeeper_worker.py` |" in markdown
+
+
+def test_production_manifest_json_contains_compose_metadata() -> None:
+    import json
+
+    rows = json.loads(render_production_json())
+    by_name = {row["name"]: row for row in rows}
+
+    assert by_name["circuit_breaker"]["singleton"] is True
+    assert by_name["circuit_breaker"]["has_healthcheck"] is True
+    assert by_name["circuit_breaker"]["compose_service"] == "circuit_breaker"
+
+
 def test_production_manifest_matches_compose_services() -> None:
     services = _compose_services()
     manifest = {
@@ -54,6 +76,7 @@ def test_production_manifest_matches_compose_services() -> None:
 
     missing = sorted(set(manifest) - set(services))
     assert missing == []
+    assert len(manifest) == len({p.compose_service for p in manifest.values()})
 
     for service_name, process in manifest.items():
         service = services[service_name]
@@ -62,6 +85,11 @@ def test_production_manifest_matches_compose_services() -> None:
             assert service["command"] == expected_command
         if process.has_healthcheck:
             assert "healthcheck" in service
+        elif "healthcheck" in service and expected_command is not None:
+            raise AssertionError(
+                f"{service_name} has a compose healthcheck but the runtime "
+                "manifest does not mark has_healthcheck=True"
+            )
 
 
 def test_compose_python_runtime_services_are_manifested() -> None:
@@ -81,3 +109,28 @@ def test_compose_python_runtime_services_are_manifested() -> None:
     }
 
     assert sorted(python_runtime_services - manifest_services) == []
+
+    missing_healthchecks = sorted(
+        name for name in python_runtime_services if "healthcheck" not in services[name]
+    )
+    assert missing_healthchecks == []
+
+
+def test_manifest_python_commands_have_existing_entrypoints() -> None:
+    missing: list[str] = []
+    for process in production_processes():
+        command = process.command
+        if not command or command[0] != "python":
+            continue
+        if len(command) >= 2 and command[1].endswith(".py"):
+            path = ROOT / command[1]
+            if not path.exists():
+                missing.append(f"{process.name}: {command[1]}")
+        elif len(command) >= 3 and command[1] == "-m":
+            module_path = ROOT.joinpath(*command[2].split("."))
+            if not module_path.with_suffix(".py").exists() and not (
+                module_path / "__main__.py"
+            ).exists():
+                missing.append(f"{process.name}: {command[2]}")
+
+    assert missing == []
