@@ -34,7 +34,7 @@ jobs:
         run: ruff check --select E9,F63,F7,F82,F821,F811,F401 .
 
   architecture:
-    name: Architecture (import-linter)
+    name: Architecture (static contracts)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -56,6 +56,26 @@ jobs:
       # crossed a layer boundary it should not.
       - name: Check layer boundaries
         run: lint-imports
+
+      # Enforces small ratchets that complement import-linter: queue-owner
+      # raw-write bans plus import-linter allowlist growth ceilings.
+      - name: Check architecture ratchets
+        run: python scripts/check_architecture_ratchets.py
+
+      # Keeps `.env.production.example` aligned with fail-closed production
+      # settings so deploy operators see required keys before runtime startup.
+      - name: Check production env contract
+        run: python scripts/check_production_env_contract.py
+
+      # Dashboard only: this is intentionally not a threshold gate yet. It keeps
+      # large-file/function/class and import-linter allowlist drift visible in CI.
+      - name: Report technical debt metrics
+        run: python scripts/report_tech_debt_metrics.py --top 10
+
+      # Ratchet: current debt counts may shrink, but unrelated PRs should not
+      # increase hotspot counts or parse/queue-owner violations.
+      - name: Check technical debt budget
+        run: python scripts/check_tech_debt_budget.py
 
   benchmark-baselines:
     name: Benchmark baselines (offline)

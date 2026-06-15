@@ -92,6 +92,15 @@ tests/retrieval_e2e/_last_run.json
 tests/real_llm/cache/
 tests/real_llm/reports/runs/
 
+# Benchmark and local probe outputs
+benchmarks/.cache/
+benchmarks/datasets/raw/
+benchmarks/datasets/tmp/
+benchmarks/reports/generated/
+truss_run/
+truss_run_*/
+.codex-run-logs/
+
 # ---- Internal dev notes (kept locally, not published) ----
 # NOTE: CLAUDE.md is tracked at the repo root. Historical V1 prompts are tracked
 # under docs/history/; root-local scratch copies remain ignored.

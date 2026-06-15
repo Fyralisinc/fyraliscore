@@ -452,6 +452,15 @@ services:
       SAGE_TOPOLOGY_OPTIMIZER_LOOKBACK_HOURS: "24"
       SAGE_TOPOLOGY_OPTIMIZER_LIMIT: "50"
 
+  housekeeper_worker:
+    <<: *worker
+    container_name: company_os_housekeeper_worker
+    command: python scripts/run_housekeeper_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      HOUSEKEEPER_ENABLE_EXPENSIVE_JOBS: "0"
+
   relationship_ontology_proposals_worker:
     <<: *worker
     container_name: company_os_relationship_ontology_proposals_worker

@@ -65,6 +65,18 @@ _load_env()
 _ensure_test_secrets()
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--run-cutover-dryrun",
+        action="store_true",
+        default=False,
+        help=(
+            "Run the staging-only one-hour webhook cutover dry run. "
+            "Requires CUTOVER_DRYRUN_TARGET_URL and provider secrets."
+        ),
+    )
+
+
 def _database_url() -> str | None:
     return os.environ.get("DATABASE_URL")
 
