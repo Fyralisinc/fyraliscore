@@ -18,6 +18,7 @@ from services.product.greeting.rendering_adapter import (
     MockRenderingAdapter,
     build_rendering_adapter,
 )
+from services.product.greeting.scheduler import GreetingScheduler
 from services.product.greeting.snapshot import (
     AnomalyRef,
     CommitmentRef,
@@ -86,6 +87,17 @@ def test_build_rendering_adapter_uses_http_when_configured(
     monkeypatch.setenv("COMPANY_OS_ENV", "prod")
 
     assert isinstance(build_rendering_adapter(), HttpRenderingAdapter)
+
+
+def test_scheduler_default_renderer_uses_prod_guard(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("GRT_RENDERING_BASE_URL", raising=False)
+    monkeypatch.setenv("FYRALIS_ENV", "prod")
+    monkeypatch.setenv("COMPANY_OS_ENV", "prod")
+
+    with pytest.raises(RuntimeError, match="GRT_RENDERING_BASE_URL is unset"):
+        GreetingScheduler(object())
 
 
 async def test_mock_greeting_quiet():

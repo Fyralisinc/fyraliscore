@@ -33,6 +33,8 @@ from decimal import Decimal
 from typing import Any, Optional, Protocol
 from uuid import UUID
 
+from lib.shared.env import is_prod
+
 log = logging.getLogger(__name__)
 
 
@@ -199,9 +201,16 @@ class HttpRenderingAdapter:
 
 def build_rendering_adapter() -> RenderingAdapter:
     """Factory. Controlled by env `QUERY_RENDERING_BASE_URL`. When
-    unset we return the mock so local dev just works."""
+    unset we return the mock in dev/test and fail closed in production."""
     base = os.environ.get("QUERY_RENDERING_BASE_URL")
     if not base:
+        message = (
+            "QUERY_RENDERING_BASE_URL is unset; query rendering is using "
+            "MockRenderingAdapter"
+        )
+        if is_prod():
+            raise RuntimeError(message)
+        log.warning(message)
         return MockRenderingAdapter()
     return HttpRenderingAdapter(
         base_url=base,
@@ -349,10 +358,28 @@ _DEFAULT_CACHE = InMemoryCacheAdapter()
 
 def build_cache_adapter(pool: Any = None) -> CacheAdapter:
     """Factory. If `QUERY_CACHE_BACKEND=pg` and a pool is supplied, use
-    PostgresCacheAdapter. Otherwise the in-memory stub."""
-    backend = os.environ.get("QUERY_CACHE_BACKEND", "memory")
-    if backend == "pg" and pool is not None:
-        return PostgresCacheAdapter(pool)
+    PostgresCacheAdapter. Dev/test may fall back to the in-memory stub, but
+    production fails closed so Query/Ask cache state is shared across workers.
+    """
+    backend = os.environ.get("QUERY_CACHE_BACKEND", "memory").strip().lower()
+    if backend == "pg":
+        if pool is not None:
+            return PostgresCacheAdapter(pool)
+        message = "QUERY_CACHE_BACKEND=pg requires a database pool"
+        if is_prod():
+            raise RuntimeError(message)
+        log.warning(message)
+        return _DEFAULT_CACHE
+    if is_prod():
+        raise RuntimeError(
+            "QUERY_CACHE_BACKEND must be 'pg' in production; refusing "
+            "process-local InMemoryCacheAdapter"
+        )
+    if backend != "memory":
+        log.warning(
+            "unknown QUERY_CACHE_BACKEND=%r; using InMemoryCacheAdapter",
+            backend,
+        )
     return _DEFAULT_CACHE
 
 

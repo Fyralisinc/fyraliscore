@@ -39,10 +39,17 @@ from services.product.greeting.cache import CACHE_KEYS, ViewCeoCacheRepo
 from services.product.greeting.rendering_adapter import (
     MockRenderingAdapter,
     RenderingAdapter,
+    RenderedCard,
+    RenderedCardReasoning,
+    RenderedCloseLine,
+    RenderedGreeting,
+    RenderedQueryGrid,
+    build_rendering_adapter,
 )
 from services.product.greeting.snapshot import (
     ConversationContext,
     FounderContext,
+    QueryGridSnapshot,
     SnapshotComposer,
     SubstrateSnapshot,
 )
@@ -126,6 +133,42 @@ class SchedulerConfig:
     default_founder: FounderContext | None = None
 
 
+@dataclass(frozen=True)
+class _RefreshSnapshots:
+    now: datetime
+    greeting: SubstrateSnapshot
+    query_grid: QueryGridSnapshot
+    observation_cards: list[SubstrateSnapshot]
+    decision_cards: list[SubstrateSnapshot]
+    question_cards: list[SubstrateSnapshot]
+
+    @property
+    def card_focuses(self) -> list[SubstrateSnapshot]:
+        return (
+            list(self.observation_cards)
+            + list(self.decision_cards)
+            + list(self.question_cards)
+        )
+
+
+@dataclass(frozen=True)
+class _RefreshRenderResults:
+    greeting: RenderedGreeting
+    close_line: RenderedCloseLine
+    query_grid: RenderedQueryGrid
+    cards: list[RenderedCard]
+    card_reasoning: list[RenderedCardReasoning]
+
+
+@dataclass(frozen=True)
+class _RefreshPayloads:
+    greeting: dict[str, Any]
+    query_grid: dict[str, Any]
+    cards: list[dict[str, Any]]
+    status: dict[str, Any]
+    close_line: dict[str, Any]
+
+
 class GreetingScheduler:
     """One scheduler per process. Manages a set of tenant refreshes.
 
@@ -150,7 +193,7 @@ class GreetingScheduler:
         self._pool = pool
         self._cache = cache or ViewCeoCacheRepo(pool)
         self._composer = composer or SnapshotComposer(pool)
-        self._rendering = rendering or MockRenderingAdapter()
+        self._rendering = rendering or build_rendering_adapter()
         self._config = config or SchedulerConfig()
         self._publisher = stream_publisher
 
@@ -286,29 +329,83 @@ class GreetingScheduler:
         reason: str,
         prior: dict[str, Any],
     ) -> None:
-        now = _now_utc()
-        # 1. Compose base snapshot (shared by greeting + close-line).
-        greeting_snap = await self._composer.compose_greeting_snapshot(
-            tenant_id, now=now, conversation_context=ConversationContext()
-        )
-
-        # 2. Render greeting + close-line + query grid concurrently.
-        query_grid_snap = await self._composer.compose_query_grid_snapshot(
-            tenant_id, now=now
-        )
+        snapshots = await self._compose_refresh_snapshots(tenant_id)
         render_sem = asyncio.Semaphore(
             max(1, int(self._config.max_concurrent_renders))
         )
         fallback_rendering = MockRenderingAdapter()
+        rendered = await self._render_refresh_sections(
+            founder=founder,
+            snapshots=snapshots,
+            render_sem=render_sem,
+            fallback_rendering=fallback_rendering,
+        )
+        payloads = self._build_refresh_payloads(snapshots, rendered)
+        self._log_stale_prior(tenant_id, prior)
+        await self._write_refresh_payloads(
+            tenant_id,
+            payloads,
+            reason=reason,
+        )
+        await self._publish_refresh_payloads(tenant_id, payloads)
+
+    async def _compose_refresh_snapshots(
+        self,
+        tenant_id: UUID,
+    ) -> _RefreshSnapshots:
+        now = _now_utc()
+        greeting = await self._composer.compose_greeting_snapshot(
+            tenant_id,
+            now=now,
+            conversation_context=ConversationContext(),
+        )
+        query_grid = await self._composer.compose_query_grid_snapshot(
+            tenant_id,
+            now=now,
+        )
+        observation_cards = await self._composer.compose_card_snapshot(
+            tenant_id,
+            "observation",
+            now=now,
+        )
+        decision_cards = await self._composer.compose_card_snapshot(
+            tenant_id,
+            "decision",
+            now=now,
+        )
+        question_cards = await self._composer.compose_card_snapshot(
+            tenant_id,
+            "question",
+            now=now,
+        )
+        return _RefreshSnapshots(
+            now=now,
+            greeting=greeting,
+            query_grid=query_grid,
+            observation_cards=observation_cards,
+            decision_cards=decision_cards,
+            question_cards=question_cards,
+        )
+
+    async def _render_refresh_sections(
+        self,
+        *,
+        founder: FounderContext,
+        snapshots: _RefreshSnapshots,
+        render_sem: asyncio.Semaphore,
+        fallback_rendering: MockRenderingAdapter,
+    ) -> _RefreshRenderResults:
         greeting_task = asyncio.create_task(
             _bounded_render(
                 render_sem,
                 label="greeting",
                 render=lambda: self._rendering.render_greeting(
-                    greeting_snap, founder
+                    snapshots.greeting,
+                    founder,
                 ),
                 fallback=lambda: fallback_rendering.render_greeting(
-                    greeting_snap, founder
+                    snapshots.greeting,
+                    founder,
                 ),
             )
         )
@@ -317,101 +414,98 @@ class GreetingScheduler:
                 render_sem,
                 label="close_line",
                 render=lambda: self._rendering.render_close_line(
-                    greeting_snap, founder
+                    snapshots.greeting,
+                    founder,
                 ),
                 fallback=lambda: fallback_rendering.render_close_line(
-                    greeting_snap, founder
+                    snapshots.greeting,
+                    founder,
                 ),
             )
         )
-        qg_task = asyncio.create_task(
+        query_grid_task = asyncio.create_task(
             _bounded_render(
                 render_sem,
                 label="query_grid",
                 render=lambda: self._rendering.render_query_grid(
-                    query_grid_snap, founder
+                    snapshots.query_grid,
+                    founder,
                 ),
                 fallback=lambda: fallback_rendering.render_query_grid(
-                    query_grid_snap, founder
+                    snapshots.query_grid,
+                    founder,
                 ),
             )
         )
+        cards = await self._render_cards(
+            founder=founder,
+            snapshots=snapshots,
+            render_sem=render_sem,
+            fallback_rendering=fallback_rendering,
+        )
+        card_reasoning = await self._render_card_reasoning(
+            founder=founder,
+            cards=cards,
+            card_focuses=snapshots.card_focuses,
+            render_sem=render_sem,
+            fallback_rendering=fallback_rendering,
+        )
+        return _RefreshRenderResults(
+            greeting=await greeting_task,
+            close_line=await close_task,
+            query_grid=await query_grid_task,
+            cards=cards,
+            card_reasoning=card_reasoning,
+        )
 
-        # 3. Compose per-kind card snapshots and render each.
-        obs_snaps = await self._composer.compose_card_snapshot(
-            tenant_id, "observation", now=now
-        )
-        dec_snaps = await self._composer.compose_card_snapshot(
-            tenant_id, "decision", now=now
-        )
-        que_snaps = await self._composer.compose_card_snapshot(
-            tenant_id, "question", now=now
-        )
-        card_tasks: list[asyncio.Task] = []
-        for snap in obs_snaps:
-            card_tasks.append(
-                asyncio.create_task(
-                    _bounded_render(
-                        render_sem,
-                        label="card:observation",
-                        render=lambda snap=snap: self._rendering.render_card(
-                            snap, founder, "observation"
-                        ),
-                        fallback=lambda snap=snap: fallback_rendering.render_card(
-                            snap, founder, "observation"
-                        ),
+    async def _render_cards(
+        self,
+        *,
+        founder: FounderContext,
+        snapshots: _RefreshSnapshots,
+        render_sem: asyncio.Semaphore,
+        fallback_rendering: MockRenderingAdapter,
+    ) -> list[RenderedCard]:
+        tasks: list[asyncio.Task] = []
+        for kind, focus_snaps in (
+            ("observation", snapshots.observation_cards),
+            ("decision", snapshots.decision_cards),
+            ("question", snapshots.question_cards),
+        ):
+            for snap in focus_snaps:
+                tasks.append(
+                    asyncio.create_task(
+                        _bounded_render(
+                            render_sem,
+                            label=f"card:{kind}",
+                            render=lambda snap=snap, kind=kind: (
+                                self._rendering.render_card(snap, founder, kind)
+                            ),
+                            fallback=lambda snap=snap, kind=kind: (
+                                fallback_rendering.render_card(
+                                    snap,
+                                    founder,
+                                    kind,
+                                )
+                            ),
+                        )
                     )
                 )
-            )
-        for snap in dec_snaps:
-            card_tasks.append(
-                asyncio.create_task(
-                    _bounded_render(
-                        render_sem,
-                        label="card:decision",
-                        render=lambda snap=snap: self._rendering.render_card(
-                            snap, founder, "decision"
-                        ),
-                        fallback=lambda snap=snap: fallback_rendering.render_card(
-                            snap, founder, "decision"
-                        ),
-                    )
-                )
-            )
-        for snap in que_snaps:
-            card_tasks.append(
-                asyncio.create_task(
-                    _bounded_render(
-                        render_sem,
-                        label="card:question",
-                        render=lambda snap=snap: self._rendering.render_card(
-                            snap, founder, "question"
-                        ),
-                        fallback=lambda snap=snap: fallback_rendering.render_card(
-                            snap, founder, "question"
-                        ),
-                    )
-                )
-            )
+        return await asyncio.gather(*tasks) if tasks else []
 
-        greeting = await greeting_task
-        close_line = await close_task
-        query_grid = await qg_task
-        cards = await asyncio.gather(*card_tasks) if card_tasks else []
-
-        # Gate 4b fix — per-card reasoning + evidence rendering via RND.
-        # For each rendered card, compose structured evidence from the
-        # card-focus snapshot and call `render_card_reasoning` to replace
-        # the adapter placeholder with real LLM prose. Failure of any
-        # single card's reasoning call falls back to the placeholder so
-        # the home payload stays robust.
-        card_focus_snaps = (
-            list(obs_snaps) + list(dec_snaps) + list(que_snaps)
-        )
-        reasoning_tasks: list[asyncio.Task] = []
-        for card, focus_snap in zip(cards, card_focus_snaps):
+    async def _render_card_reasoning(
+        self,
+        *,
+        founder: FounderContext,
+        cards: list[RenderedCard],
+        card_focuses: list[SubstrateSnapshot],
+        render_sem: asyncio.Semaphore,
+        fallback_rendering: MockRenderingAdapter,
+    ) -> list[RenderedCardReasoning]:
+        tasks: list[asyncio.Task] = []
+        for card, focus_snap in zip(cards, card_focuses):
             evidence_refs = _gather_card_evidence(card, focus_snap)
-            reasoning_tasks.append(
+            tasks.append(
                 asyncio.create_task(
                     _bounded_render(
                         render_sem,
@@ -435,34 +529,62 @@ class GreetingScheduler:
                     )
                 )
             )
-        reasoning_results = (
-            await asyncio.gather(*reasoning_tasks) if reasoning_tasks else []
-        )
+        return await asyncio.gather(*tasks) if tasks else []
 
-        # 4. Build cache payloads per CONTRACTS §1.1 shape.
+    def _build_refresh_payloads(
+        self,
+        snapshots: _RefreshSnapshots,
+        rendered: _RefreshRenderResults,
+    ) -> _RefreshPayloads:
+        now = snapshots.now
         greeting_payload = {
             "meta": {
                 "date_iso": now.date().isoformat(),
                 "recomputed_at": now.isoformat(),
-                "signals_watched_count": greeting.signals_watched_count,
+                "signals_watched_count": rendered.greeting.signals_watched_count,
             },
-            "body_html": greeting.body_html,
+            "body_html": rendered.greeting.body_html,
             "cached_at": now.isoformat(),
         }
         query_grid_payload = {
-            "queries": query_grid.queries,
+            "queries": rendered.query_grid.queries,
             "cached_at": now.isoformat(),
         }
-        cards_payload = []
+        return _RefreshPayloads(
+            greeting=greeting_payload,
+            query_grid=query_grid_payload,
+            cards=self._build_cards_payload(rendered.cards, rendered.card_reasoning, now),
+            status={
+                "substrate_alive": True,
+                "calibration_pct": rendered.close_line.calibration_pct,
+                "needs_you_count": _needs_you_count(snapshots.greeting),
+            },
+            close_line={
+                "body": rendered.close_line.body,
+                "metadata": {
+                    "signal_count": rendered.close_line.signal_count,
+                    "external_moves": rendered.close_line.external_moves,
+                    "calibration_pct": rendered.close_line.calibration_pct,
+                },
+            },
+        )
+
+    def _build_cards_payload(
+        self,
+        cards: list[RenderedCard],
+        reasoning_results: list[RenderedCardReasoning],
+        now: datetime,
+    ) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
         for i, card in enumerate(cards):
             if i < len(reasoning_results):
-                r = reasoning_results[i]
-                reasoning_html = r.reasoning_html or card.reasoning_html
-                evidence = r.evidence or card.evidence
+                reasoning = reasoning_results[i]
+                reasoning_html = reasoning.reasoning_html or card.reasoning_html
+                evidence = reasoning.evidence or card.evidence
             else:
                 reasoning_html = card.reasoning_html
                 evidence = card.evidence
-            cards_payload.append(
+            payload.append(
                 {
                     "id": card.id,
                     "kind": card.kind,
@@ -478,22 +600,13 @@ class GreetingScheduler:
                     "cached_at": now.isoformat(),
                 }
             )
-        status_payload = {
-            "substrate_alive": True,
-            "calibration_pct": close_line.calibration_pct,
-            "needs_you_count": _needs_you_count(greeting_snap),
-        }
-        close_line_payload = {
-            "body": close_line.body,
-            "metadata": {
-                "signal_count": close_line.signal_count,
-                "external_moves": close_line.external_moves,
-                "calibration_pct": close_line.calibration_pct,
-            },
-        }
+        return payload
 
-        # Phase 4 staleness WARNing — log when the cache was older than
-        # its threshold at refresh time.
+    def _log_stale_prior(
+        self,
+        tenant_id: UUID,
+        prior: dict[str, Any],
+    ) -> None:
         for key in CACHE_KEYS + ("close_line",):
             if key not in prior:
                 continue
@@ -510,38 +623,53 @@ class GreetingScheduler:
                     },
                 )
 
-        # 5. Write all four cache rows + close_line. `close_line` is
-        # stored as a separate row so the HTTP endpoint can fetch it
-        # independently; the UI contract keeps it embedded in the home
-        # payload.
+    async def _write_refresh_payloads(
+        self,
+        tenant_id: UUID,
+        payloads: _RefreshPayloads,
+        *,
+        reason: str,
+    ) -> None:
         writes: list[tuple[str, dict[str, Any]]] = [
-            ("greeting", greeting_payload),
-            ("query_grid", query_grid_payload),
-            ("cards", {"cards": cards_payload}),
-            ("status", status_payload),
-            ("close_line", close_line_payload),
+            ("greeting", payloads.greeting),
+            ("query_grid", payloads.query_grid),
+            ("cards", {"cards": payloads.cards}),
+            ("status", payloads.status),
+            ("close_line", payloads.close_line),
         ]
         for key, payload in writes:
             await self._cache.set_cached(
-                tenant_id, key, payload, reason=reason
+                tenant_id,
+                key,
+                payload,
+                reason=reason,
             )
 
-        # 6. Publish updates on the WS stream if a publisher is wired.
-        if self._publisher is not None:
-            await self._publish_many(
-                tenant_id,
-                [
-                    {"type": "greeting_updated", "greeting": {
-                        **greeting_payload,
+    async def _publish_refresh_payloads(
+        self,
+        tenant_id: UUID,
+        payloads: _RefreshPayloads,
+    ) -> None:
+        if self._publisher is None:
+            return
+        await self._publish_many(
+            tenant_id,
+            [
+                {
+                    "type": "greeting_updated",
+                    "greeting": {
+                        **payloads.greeting,
                         "staleness_seconds": 0,
-                    }},
-                    {"type": "query_grid_updated", "query_grid": {
-                        **query_grid_payload,
-                    }},
-                    {"type": "cards_updated", "cards": cards_payload},
-                    {"type": "status_updated", "status": status_payload},
-                ],
-            )
+                    },
+                },
+                {
+                    "type": "query_grid_updated",
+                    "query_grid": {**payloads.query_grid},
+                },
+                {"type": "cards_updated", "cards": payloads.cards},
+                {"type": "status_updated", "status": payloads.status},
+            ],
+        )
 
     async def _publish_many(
         self,

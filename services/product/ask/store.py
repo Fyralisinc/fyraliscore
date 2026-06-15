@@ -9,6 +9,7 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
+from services.domain.triggers import enqueue_trigger
 
 from .schemas import (
     AskAnswerPayload,
@@ -469,23 +470,20 @@ class PostgresAskStore:
                 trigger_id: UUID | None = row["linked_trigger_id"]
                 if action in {"accept", "deep_review"} and trigger_id is None:
                     trigger_id = uuid7()
-                    await conn.execute(
-                        """
-                        INSERT INTO think_trigger_queue (
-                          id, tenant_id, trigger_kind, trigger_subkind, payload
-                        )
-                        VALUES ($1, $2, 'T4', 'ask_proposed_state_change', $3::jsonb)
-                        """,
-                        trigger_id,
-                        tenant_id,
-                        _jsonb({
+                    await enqueue_trigger(
+                        conn,
+                        tenant_id=tenant_id,
+                        trigger_kind="T4",
+                        trigger_subkind="ask_proposed_state_change",
+                        payload={
                             "source": "ask_fyralis",
                             "proposed_state_change_id": str(change_id),
                             "action": action,
                             "note": note,
                             "delegate_to": delegate_to,
                             "proposed_op": _coerce_json(row["proposed_op"]),
-                        }),
+                        },
+                        trigger_id=trigger_id,
                     )
                 updated = await conn.fetchrow(
                     """
@@ -854,17 +852,12 @@ async def _enqueue_accepted_answer_writeback(
         capped_confidence = min(float(confidence), 0.72)
     except (TypeError, ValueError):
         capped_confidence = 0.6
-    trigger_id = uuid7()
-    await conn.execute(
-        """
-        INSERT INTO think_trigger_queue (
-          id, tenant_id, trigger_kind, trigger_subkind, payload
-        )
-        VALUES ($1, $2, 'T4', 'ask_answer_accepted', $3::jsonb)
-        """,
-        trigger_id,
-        row["tenant_id"],
-        _jsonb({
+    await enqueue_trigger(
+        conn,
+        tenant_id=row["tenant_id"],
+        trigger_kind="T4",
+        trigger_subkind="ask_answer_accepted",
+        payload={
             "source": "ask_fyralis",
             "feedback_id": str(feedback_id),
             "answer_id": str(answer_id),
@@ -893,5 +886,5 @@ async def _enqueue_accepted_answer_writeback(
                 }
                 for r in evidence_rows
             ],
-        }),
+        },
     )

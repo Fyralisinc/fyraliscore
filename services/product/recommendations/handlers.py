@@ -39,6 +39,7 @@ from services.domain.acts import decisions as decisions_svc
 from services.domain.acts import goals as goals_svc
 from services.domain.observations.state_change import emit_state_change
 from services.domain.resources import repo as resources_repo
+from services.domain.triggers import enqueue_trigger
 from services.product.recommendations.feedback import (
     bump_supporting_model_confirmations,
     record_recommendation_feedback,
@@ -965,16 +966,15 @@ async def _emit_hypothesis_ratification_trigger(
             continue
         payload[k] = v
 
-    await conn.execute(
-        """
-        INSERT INTO think_trigger_queue (
-          id, tenant_id, trigger_kind, trigger_subkind,
-          observation_id, model_id, payload
-        ) VALUES ($1, $2, 'T2', $3, $4, $5, $6::jsonb)
-        """,
-        trig_id, tenant_id, subkind,
-        ratification_obs_id, model_id,
-        json.dumps(payload, default=str),
+    await enqueue_trigger(
+        conn,
+        tenant_id=tenant_id,
+        trigger_kind="T2",
+        trigger_subkind=subkind,
+        observation_id=ratification_obs_id,
+        model_id=model_id,
+        payload=payload,
+        trigger_id=trig_id,
     )
 
     return RatifyResult(
