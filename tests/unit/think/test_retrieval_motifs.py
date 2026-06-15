@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from services.platform.execution import inquiry
+from services.platform.execution import action_execution
 from services.platform.execution.inquiry import (
     EvidenceCard,
     InquiryConfig,
@@ -114,9 +115,7 @@ def test_binding_adds_prior_models_and_scope_entities():
         models=[
             SimpleNamespace(
                 id=model_id,
-                scope_entities=[
-                    {"type": "commitment", "id": str(scoped_entity_id)}
-                ],
+                scope_entities=[{"type": "commitment", "id": str(scoped_entity_id)}],
             )
         ],
         resources=[],
@@ -163,16 +162,14 @@ async def test_staged_motif_execution_binds_second_stage(monkeypatch):
                 models=[
                     SimpleNamespace(
                         id=model_id,
-                        scope_entities=[
-                            {"type": "commitment", "id": str(uuid4())}
-                        ],
+                        scope_entities=[{"type": "commitment", "id": str(uuid4())}],
                     )
                 ],
                 source_pathway="A",
             )
         return PathwayResult(models=[], source_pathway="B")
 
-    monkeypatch.setattr(inquiry, "_execute_action", fake_execute_action)
+    monkeypatch.setattr(action_execution, "_execute_action", fake_execute_action)
     plan = inquiry._QuestionRetrievalPlan(
         question=question,
         actions_to_run=[

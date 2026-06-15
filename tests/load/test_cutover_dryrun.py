@@ -43,6 +43,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _require_explicit_cutover_flag(request: pytest.FixtureRequest) -> None:
+    if not request.config.getoption("--run-cutover-dryrun"):
+        pytest.skip(
+            "Pass --run-cutover-dryrun to run the staging cutover dry run."
+        )
+
+
 @pytest.mark.asyncio
 async def test_cutover_dryrun_one_hour():
     """The headline M-Load test. Default-skipped — run on staging.

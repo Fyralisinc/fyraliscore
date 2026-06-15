@@ -148,18 +148,112 @@ async def materialize(scenario: Scenario, *, pool: asyncpg.Pool) -> None:
     scenario.base_time = base_time
 
     foundation = scenario.foundation
-    actors_def = foundation.get("actors") or []
-    customers_def = foundation.get("customers") or []
-    goals_def = foundation.get("goals") or []
-    commitments_def = foundation.get("commitments") or []
-    decisions_def = foundation.get("decisions") or []
-    customer_commitment_links = foundation.get("customer_commitments") or []
-
+    actors_def, customers_def, goals_def, commitments_def, decisions_def = (
+        _foundation_entity_defs(foundation)
+    )
     actor_repo = ActorRepo(pool)
     alias_repo = EntityAliasRepo(pool)
     pending_aliases: list[tuple[str, dict[str, Any], float]] = []
     linked_customer_commitments: set[tuple[UUID, UUID]] = set()
 
+    await _create_scenario_tenant(pool, scenario=scenario, tenant_id=tenant_id)
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            bootstrap_id = await _insert_bootstrap_observation(
+                conn,
+                scenario=scenario,
+                tenant_id=tenant_id,
+            )
+            scenario.bootstrap_observation_id = bootstrap_id
+            await _materialize_actors(
+                scenario,
+                actors_def=actors_def,
+                actor_repo=actor_repo,
+                tenant_id=tenant_id,
+            )
+            await _materialize_customers(
+                scenario,
+                customers_def=customers_def,
+                pending_aliases=pending_aliases,
+                tenant_id=tenant_id,
+                bootstrap_id=bootstrap_id,
+                base_time=base_time,
+                conn=conn,
+            )
+            await _materialize_goals(
+                scenario,
+                goals_def=goals_def,
+                pending_aliases=pending_aliases,
+                tenant_id=tenant_id,
+                bootstrap_id=bootstrap_id,
+                base_time=base_time,
+                conn=conn,
+            )
+            await _materialize_commitments(
+                scenario,
+                commitments_def=commitments_def,
+                pending_aliases=pending_aliases,
+                tenant_id=tenant_id,
+                bootstrap_id=bootstrap_id,
+                base_time=base_time,
+                conn=conn,
+            )
+            await _materialize_decisions(
+                scenario,
+                decisions_def=decisions_def,
+                pending_aliases=pending_aliases,
+                tenant_id=tenant_id,
+                bootstrap_id=bootstrap_id,
+                conn=conn,
+            )
+            await _materialize_customer_commitment_links(
+                scenario,
+                customer_commitment_links=foundation.get("customer_commitments") or [],
+                linked_customer_commitments=linked_customer_commitments,
+                tenant_id=tenant_id,
+                conn=conn,
+            )
+            await _infer_customer_commitment_links(
+                scenario,
+                commitments_def=commitments_def,
+                linked_customer_commitments=linked_customer_commitments,
+                tenant_id=tenant_id,
+                conn=conn,
+            )
+
+    await _insert_pending_aliases(
+        scenario,
+        alias_repo=alias_repo,
+        pending_aliases=pending_aliases,
+        tenant_id=tenant_id,
+    )
+
+
+def _foundation_entity_defs(
+    foundation: dict[str, Any],
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    return (
+        foundation.get("actors") or [],
+        foundation.get("customers") or [],
+        foundation.get("goals") or [],
+        foundation.get("commitments") or [],
+        foundation.get("decisions") or [],
+    )
+
+
+async def _create_scenario_tenant(
+    pool: asyncpg.Pool,
+    *,
+    scenario: Scenario,
+    tenant_id: UUID,
+) -> None:
     # ActorRepo and a few foundation services write through their own pool
     # connections, so the tenant must be committed before the transaction below.
     await pool.execute(
@@ -172,283 +266,361 @@ async def materialize(scenario: Scenario, *, pool: asyncpg.Pool) -> None:
         f"real-llm:{scenario.scenario_id}",
     )
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # Step 1+2: bootstrap observation. Use direct INSERT so we don't
-            # drag in the full ingestion path (entity resolution, embedding,
-            # T1 enqueue) for a synthetic root event.
-            bootstrap_id = uuid7()
-            now = datetime.now(timezone.utc)
-            bootstrap_content = {
-                "synthetic": True,
-                "scenario_id": scenario.scenario_id,
-                "purpose": "scenario_loader_bootstrap",
-            }
-            await conn.execute(
-                """
-                INSERT INTO observations (
-                  id, tenant_id, occurred_at, ingested_at, kind,
-                  source_channel, content, content_text, trust_tier,
-                  entities_mentioned
-                ) VALUES (
-                  $1, $2, $3, $3, 'signal',
-                  'internal:scenario_loader', $4::jsonb, $5, 'authoritative',
-                  $6::jsonb
-                )
-                """,
-                bootstrap_id,
-                tenant_id,
-                now,
-                json.dumps(bootstrap_content),
-                f"scenario {scenario.scenario_id} bootstrap",
-                json.dumps([]),
+
+async def _insert_bootstrap_observation(
+    conn: asyncpg.Connection,
+    *,
+    scenario: Scenario,
+    tenant_id: UUID,
+) -> UUID:
+    bootstrap_id = uuid7()
+    now = datetime.now(timezone.utc)
+    bootstrap_content = {
+        "synthetic": True,
+        "scenario_id": scenario.scenario_id,
+        "purpose": "scenario_loader_bootstrap",
+    }
+    await conn.execute(
+        """
+        INSERT INTO observations (
+          id, tenant_id, occurred_at, ingested_at, kind,
+          source_channel, content, content_text, trust_tier,
+          entities_mentioned
+        ) VALUES (
+          $1, $2, $3, $3, 'signal',
+          'internal:scenario_loader', $4::jsonb, $5, 'authoritative',
+          $6::jsonb
+        )
+        """,
+        bootstrap_id,
+        tenant_id,
+        now,
+        json.dumps(bootstrap_content),
+        f"scenario {scenario.scenario_id} bootstrap",
+        json.dumps([]),
+    )
+    return bootstrap_id
+
+
+async def _materialize_actors(
+    scenario: Scenario,
+    *,
+    actors_def: list[dict[str, Any]],
+    actor_repo: ActorRepo,
+    tenant_id: UUID,
+) -> None:
+    for actor_def in actors_def:
+        name = actor_def["name"]
+        row = await actor_repo.create_actor(
+            email=actor_def.get("email"),
+            display_name=name,
+            type=actor_def.get("kind", "human_internal"),
+            tenant_id=tenant_id,
+            nexus_attested=bool(actor_def.get("nexus_attested", False)),
+            metadata={
+                "role": actor_def.get("role"),
+                "scenario_actor_name": name,
+            },
+        )
+        scenario.actors[name] = row.id
+        await _add_actor_identity_mappings(actor_repo, actor_def, actor_id=row.id)
+
+
+async def _add_actor_identity_mappings(
+    actor_repo: ActorRepo,
+    actor_def: dict[str, Any],
+    *,
+    actor_id: UUID,
+) -> None:
+    for alias_field in ("slack", "github", "email_alias", "linear"):
+        raw_ref = actor_def.get(alias_field)
+        if not raw_ref or ":" not in raw_ref:
+            continue
+        channel, _, ref = raw_ref.partition(":")
+        await actor_repo.add_identity_mapping(
+            actor_id=actor_id,
+            source_channel=channel,
+            source_actor_ref=ref,
+        )
+
+
+async def _materialize_customers(
+    scenario: Scenario,
+    *,
+    customers_def: list[dict[str, Any]],
+    pending_aliases: list[tuple[str, dict[str, Any], float]],
+    tenant_id: UUID,
+    bootstrap_id: UUID,
+    base_time: datetime,
+    conn: asyncpg.Connection,
+) -> None:
+    for customer_def in customers_def:
+        name = customer_def["name"]
+        contract_start_days_ago = int(customer_def.get("contract_start_days_ago", 0))
+        contract_start = (base_time - timedelta(days=contract_start_days_ago)).isoformat()
+        resource = await resources_repo.create(
+            kind="relational",
+            identity=name,
+            description=customer_def.get("description", f"Customer: {name}"),
+            current_value={
+                "arr_usd": customer_def.get("arr_usd"),
+                "health": customer_def.get("health", "healthy"),
+                "contract_start": contract_start,
+            },
+            metadata={"scenario_customer_name": name},
+            created_by_event_id=bootstrap_id,
+            tenant_id=tenant_id,
+            conn=conn,
+        )
+        scenario.customers[name] = resource.id
+        pending_aliases.extend(
+            _entity_aliases_for_name(
+                name,
+                {"type": "customer", "id": str(resource.id)},
+                confidence=0.98,
             )
-            scenario.bootstrap_observation_id = bootstrap_id
+        )
 
-            # Step 3: actors + identity mappings.
-            for actor_def in actors_def:
-                name = actor_def["name"]
-                kind = actor_def.get("kind", "human_internal")
-                row = await actor_repo.create_actor(
-                    email=actor_def.get("email"),
-                    display_name=name,
-                    type=kind,
-                    tenant_id=tenant_id,
-                    nexus_attested=bool(actor_def.get("nexus_attested", False)),
-                    metadata={
-                        "role": actor_def.get("role"),
-                        "scenario_actor_name": name,
-                    },
-                )
-                scenario.actors[name] = row.id
-                for alias_field in ("slack", "github", "email_alias", "linear"):
-                    raw_ref = actor_def.get(alias_field)
-                    if not raw_ref:
-                        continue
-                    if ":" not in raw_ref:
-                        continue
-                    channel, _, ref = raw_ref.partition(":")
-                    await actor_repo.add_identity_mapping(
-                        actor_id=row.id,
-                        source_channel=channel,
-                        source_actor_ref=ref,
-                    )
 
-            # Step 4: customer resources (kind='relational').
-            for customer_def in customers_def:
-                name = customer_def["name"]
-                contract_start_days_ago = int(
-                    customer_def.get("contract_start_days_ago", 0)
-                )
-                contract_start = (
-                    base_time - timedelta(days=contract_start_days_ago)
-                ).isoformat()
-                current_value = {
-                    "arr_usd": customer_def.get("arr_usd"),
-                    "health": customer_def.get("health", "healthy"),
-                    "contract_start": contract_start,
-                }
-                resource = await resources_repo.create(
-                    kind="relational",
-                    identity=name,
-                    description=customer_def.get(
-                        "description", f"Customer: {name}"
-                    ),
-                    current_value=current_value,
-                    metadata={"scenario_customer_name": name},
-                    created_by_event_id=bootstrap_id,
-                    tenant_id=tenant_id,
-                    conn=conn,
-                )
-                scenario.customers[name] = resource.id
-                pending_aliases.extend(
-                    _entity_aliases_for_name(
-                        name,
-                        {"type": "customer", "id": str(resource.id)},
-                        confidence=0.98,
-                    )
-                )
+async def _materialize_goals(
+    scenario: Scenario,
+    *,
+    goals_def: list[dict[str, Any]],
+    pending_aliases: list[tuple[str, dict[str, Any], float]],
+    tenant_id: UUID,
+    bootstrap_id: UUID,
+    base_time: datetime,
+    conn: asyncpg.Connection,
+) -> None:
+    for goal_def in _order_goals_by_parent(goals_def):
+        title = goal_def["title"]
+        parent_id = _resolve_goal_parent_id(scenario, goal_def)
+        target_date: datetime | None = None
+        if "target_days_from_start" in goal_def:
+            target_date = base_time + timedelta(
+                days=int(goal_def["target_days_from_start"])
+            )
+        row = await goals_svc.create(
+            title=title,
+            description=goal_def.get("description"),
+            parent_goal_id=parent_id,
+            altitude=goal_def.get("altitude", "operational"),
+            success_criteria=goal_def.get("success_criteria"),
+            target_date=target_date,
+            created_by_event_id=bootstrap_id,
+            tenant_id=tenant_id,
+            conn=conn,
+        )
+        scenario.goals[title] = row.id
+        pending_aliases.append((title, {"type": "goal", "id": str(row.id)}, 0.95))
 
-            # Step 5: goals — parents first.
-            ordered_goals = _order_goals_by_parent(goals_def)
-            for goal_def in ordered_goals:
-                title = goal_def["title"]
-                parent_title = goal_def.get("parent")
-                parent_id: UUID | None = None
-                if parent_title:
-                    parent_id = scenario.goals.get(parent_title)
-                    if parent_id is None:
-                        raise ValueError(
-                            f"goal {title!r} references unknown parent "
-                            f"{parent_title!r}"
-                        )
-                target_date: datetime | None = None
-                if "target_days_from_start" in goal_def:
-                    target_date = base_time + timedelta(
-                        days=int(goal_def["target_days_from_start"])
-                    )
-                row = await goals_svc.create(
-                    title=title,
-                    description=goal_def.get("description"),
-                    parent_goal_id=parent_id,
-                    altitude=goal_def.get("altitude", "operational"),
-                    success_criteria=goal_def.get("success_criteria"),
-                    target_date=target_date,
-                    created_by_event_id=bootstrap_id,
-                    tenant_id=tenant_id,
-                    conn=conn,
-                )
-                scenario.goals[title] = row.id
-                pending_aliases.append(
-                    (title, {"type": "goal", "id": str(row.id)}, 0.95)
-                )
 
-            # Step 6: commitments.
-            for commitment_def in commitments_def:
-                title = commitment_def["title"]
-                owner_name = commitment_def.get("owner")
-                owner_id = scenario.actors.get(owner_name) if owner_name else None
-                if owner_name and owner_id is None:
-                    raise ValueError(
-                        f"commitment {title!r} references unknown owner "
-                        f"{owner_name!r}"
-                    )
-                due_date: datetime | None = None
-                if "due_days_from_start" in commitment_def:
-                    due_date = base_time + timedelta(
-                        days=int(commitment_def["due_days_from_start"])
-                    )
+def _resolve_goal_parent_id(
+    scenario: Scenario,
+    goal_def: dict[str, Any],
+) -> UUID | None:
+    parent_title = goal_def.get("parent")
+    if not parent_title:
+        return None
+    parent_id = scenario.goals.get(parent_title)
+    if parent_id is None:
+        raise ValueError(
+            f"goal {goal_def['title']!r} references unknown parent {parent_title!r}"
+        )
+    return parent_id
 
-                contributes: list[UUID | tuple[UUID, bool]] = []
-                contributes_raw = commitment_def.get("contributes_to_goal")
-                contributes_list: list[Any]
-                if contributes_raw is None:
-                    contributes_list = []
-                elif isinstance(contributes_raw, list):
-                    contributes_list = contributes_raw
-                else:
-                    contributes_list = [contributes_raw]
-                for entry in contributes_list:
-                    if isinstance(entry, dict):
-                        goal_title = entry["title"]
-                        is_cp = bool(entry.get("critical_path", False))
-                        contributes.append((scenario.goal_id(goal_title), is_cp))
-                    else:
-                        contributes.append(scenario.goal_id(str(entry)))
 
-                # C10: an active (non-proposed, non-terminal) commitment must
-                # either contribute to a goal or be flagged as maintenance.
-                # Scenario YAMLs frequently omit `contributes_to_goal` for
-                # standalone/maintenance work (e.g. "Design new pricing
-                # page"); mark those as maintenance automatically so authors
-                # don't need to repeat the boilerplate. Explicit
-                # `estimated_capacity` from the YAML wins.
-                estimated_capacity = commitment_def.get("estimated_capacity")
-                state_val = commitment_def.get("state", "proposed")
-                non_terminal_non_proposed = state_val not in (
-                    "proposed",
-                    "doneverified",
-                    "closed",
-                )
-                if (
-                    non_terminal_non_proposed
-                    and not contributes
-                    and estimated_capacity is None
-                ):
-                    estimated_capacity = {"maintenance": True}
+async def _materialize_commitments(
+    scenario: Scenario,
+    *,
+    commitments_def: list[dict[str, Any]],
+    pending_aliases: list[tuple[str, dict[str, Any], float]],
+    tenant_id: UUID,
+    bootstrap_id: UUID,
+    base_time: datetime,
+    conn: asyncpg.Connection,
+) -> None:
+    for commitment_def in commitments_def:
+        title = commitment_def["title"]
+        owner_id = _resolve_commitment_owner_id(scenario, commitment_def)
+        due_date: datetime | None = None
+        if "due_days_from_start" in commitment_def:
+            due_date = base_time + timedelta(
+                days=int(commitment_def["due_days_from_start"])
+            )
+        contributes = _resolve_commitment_goal_refs(scenario, commitment_def)
+        state_val = commitment_def.get("state", "proposed")
+        row = await commitments_svc.create(
+            title=title,
+            description=commitment_def.get("description"),
+            initial_state=state_val,
+            owner_id=owner_id,
+            due_date=due_date,
+            ambition_level=commitment_def.get("ambition_level", "base"),
+            priority=int(commitment_def.get("priority", 5)),
+            success_criteria=commitment_def.get("success_criteria"),
+            contributes_to_goal_ids=contributes,
+            estimated_capacity=_commitment_estimated_capacity(
+                commitment_def,
+                state_val=state_val,
+                contributes=contributes,
+            ),
+            created_by_event_id=bootstrap_id,
+            tenant_id=tenant_id,
+            conn=conn,
+        )
+        scenario.commitments[title] = row.id
+        pending_aliases.append(
+            (title, {"type": "commitment", "id": str(row.id)}, 0.95)
+        )
 
-                row = await commitments_svc.create(
-                    title=title,
-                    description=commitment_def.get("description"),
-                    initial_state=state_val,
-                    owner_id=owner_id,
-                    due_date=due_date,
-                    ambition_level=commitment_def.get("ambition_level", "base"),
-                    priority=int(commitment_def.get("priority", 5)),
-                    success_criteria=commitment_def.get("success_criteria"),
-                    contributes_to_goal_ids=contributes,
-                    estimated_capacity=estimated_capacity,
-                    created_by_event_id=bootstrap_id,
-                    tenant_id=tenant_id,
-                    conn=conn,
-                )
-                scenario.commitments[title] = row.id
-                pending_aliases.append(
-                    (title, {"type": "commitment", "id": str(row.id)}, 0.95)
-                )
 
-            # Step 7: decisions.
-            for decision_def in decisions_def:
-                title = decision_def["title"]
-                row = await decisions_svc.create(
-                    title=title,
-                    decision_text=decision_def.get(
-                        "decision_text", decision_def.get("text", title)
-                    ),
-                    rationale=decision_def.get("rationale"),
-                    state=decision_def.get("state", "drafted"),
-                    scope=decision_def.get("scope"),
-                    revisit_triggers=decision_def.get("revisit_triggers"),
-                    created_by_event_id=bootstrap_id,
-                    tenant_id=tenant_id,
-                    conn=conn,
-                )
-                scenario.decisions[title] = row.id
-                pending_aliases.append(
-                    (title, {"type": "decision", "id": str(row.id)}, 0.95)
-                )
+def _resolve_commitment_owner_id(
+    scenario: Scenario,
+    commitment_def: dict[str, Any],
+) -> UUID | None:
+    owner_name = commitment_def.get("owner")
+    owner_id = scenario.actors.get(owner_name) if owner_name else None
+    if owner_name and owner_id is None:
+        raise ValueError(
+            f"commitment {commitment_def['title']!r} references unknown owner "
+            f"{owner_name!r}"
+        )
+    return owner_id
 
-            # Step 8: customer ↔ commitment links.
-            for link_def in customer_commitment_links:
-                customer_name = link_def["customer"]
-                commitment_title = link_def["commitment"]
-                customer_id = scenario.customer_id(customer_name)
-                commitment_id = scenario.commitment_id(commitment_title)
-                await customer_commitments_svc.link_commitment(
-                    customer_id,
-                    commitment_id,
-                    tenant_id=tenant_id,
-                    relationship_kind=link_def.get(
-                        "relationship_kind", "delivers"
-                    ),
-                    revenue_at_risk_usd=link_def.get("revenue_at_risk_usd"),
-                    criticality=link_def.get("criticality", "medium"),
-                    served_description=link_def.get("served_description"),
-                    conn=conn,
-                )
-                linked_customer_commitments.add((customer_id, commitment_id))
 
-            # Scenario authors often encode customer relevance in the
-            # commitment title ("Renew Globex contract") without a separate
-            # customer_commitments stanza. Infer those obvious links so the
-            # real-LLM harness exercises production customer memory paths.
-            for customer_name, customer_id in scenario.customers.items():
-                aliases = _alias_phrases_for_name(customer_name)
-                for commitment_def in commitments_def:
-                    title = commitment_def["title"]
-                    commitment_id = scenario.commitment_id(title)
-                    if (customer_id, commitment_id) in linked_customer_commitments:
-                        continue
-                    searchable = " ".join(
-                        str(part or "")
-                        for part in (
-                            title,
-                            commitment_def.get("description"),
-                        )
-                    ).casefold()
-                    if not any(alias.casefold() in searchable for alias in aliases):
-                        continue
-                    await customer_commitments_svc.link_commitment(
-                        customer_id,
-                        commitment_id,
-                        tenant_id=tenant_id,
-                        relationship_kind="impacts",
-                        criticality="high",
-                        served_description=f"Inferred from scenario commitment title: {title}",
-                        conn=conn,
-                    )
-                    linked_customer_commitments.add((customer_id, commitment_id))
+def _resolve_commitment_goal_refs(
+    scenario: Scenario,
+    commitment_def: dict[str, Any],
+) -> list[UUID | tuple[UUID, bool]]:
+    contributes_raw = commitment_def.get("contributes_to_goal")
+    if contributes_raw is None:
+        contributes_list: list[Any] = []
+    elif isinstance(contributes_raw, list):
+        contributes_list = contributes_raw
+    else:
+        contributes_list = [contributes_raw]
 
+    contributes: list[UUID | tuple[UUID, bool]] = []
+    for entry in contributes_list:
+        if isinstance(entry, dict):
+            contributes.append(
+                (scenario.goal_id(entry["title"]), bool(entry.get("critical_path", False)))
+            )
+        else:
+            contributes.append(scenario.goal_id(str(entry)))
+    return contributes
+
+
+def _commitment_estimated_capacity(
+    commitment_def: dict[str, Any],
+    *,
+    state_val: str,
+    contributes: list[UUID | tuple[UUID, bool]],
+) -> Any:
+    estimated_capacity = commitment_def.get("estimated_capacity")
+    non_terminal_non_proposed = state_val not in (
+        "proposed",
+        "doneverified",
+        "closed",
+    )
+    if non_terminal_non_proposed and not contributes and estimated_capacity is None:
+        return {"maintenance": True}
+    return estimated_capacity
+
+
+async def _materialize_decisions(
+    scenario: Scenario,
+    *,
+    decisions_def: list[dict[str, Any]],
+    pending_aliases: list[tuple[str, dict[str, Any], float]],
+    tenant_id: UUID,
+    bootstrap_id: UUID,
+    conn: asyncpg.Connection,
+) -> None:
+    for decision_def in decisions_def:
+        title = decision_def["title"]
+        row = await decisions_svc.create(
+            title=title,
+            decision_text=decision_def.get(
+                "decision_text",
+                decision_def.get("text", title),
+            ),
+            rationale=decision_def.get("rationale"),
+            state=decision_def.get("state", "drafted"),
+            scope=decision_def.get("scope"),
+            revisit_triggers=decision_def.get("revisit_triggers"),
+            created_by_event_id=bootstrap_id,
+            tenant_id=tenant_id,
+            conn=conn,
+        )
+        scenario.decisions[title] = row.id
+        pending_aliases.append((title, {"type": "decision", "id": str(row.id)}, 0.95))
+
+
+async def _materialize_customer_commitment_links(
+    scenario: Scenario,
+    *,
+    customer_commitment_links: list[dict[str, Any]],
+    linked_customer_commitments: set[tuple[UUID, UUID]],
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+) -> None:
+    for link_def in customer_commitment_links:
+        customer_id = scenario.customer_id(link_def["customer"])
+        commitment_id = scenario.commitment_id(link_def["commitment"])
+        await customer_commitments_svc.link_commitment(
+            customer_id,
+            commitment_id,
+            tenant_id=tenant_id,
+            relationship_kind=link_def.get("relationship_kind", "delivers"),
+            revenue_at_risk_usd=link_def.get("revenue_at_risk_usd"),
+            criticality=link_def.get("criticality", "medium"),
+            served_description=link_def.get("served_description"),
+            conn=conn,
+        )
+        linked_customer_commitments.add((customer_id, commitment_id))
+
+
+async def _infer_customer_commitment_links(
+    scenario: Scenario,
+    *,
+    commitments_def: list[dict[str, Any]],
+    linked_customer_commitments: set[tuple[UUID, UUID]],
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+) -> None:
+    for customer_name, customer_id in scenario.customers.items():
+        aliases = _alias_phrases_for_name(customer_name)
+        for commitment_def in commitments_def:
+            title = commitment_def["title"]
+            commitment_id = scenario.commitment_id(title)
+            if (customer_id, commitment_id) in linked_customer_commitments:
+                continue
+            searchable = " ".join(
+                str(part or "") for part in (title, commitment_def.get("description"))
+            ).casefold()
+            if not any(alias.casefold() in searchable for alias in aliases):
+                continue
+            await customer_commitments_svc.link_commitment(
+                customer_id,
+                commitment_id,
+                tenant_id=tenant_id,
+                relationship_kind="impacts",
+                criticality="high",
+                served_description=f"Inferred from scenario commitment title: {title}",
+                conn=conn,
+            )
+            linked_customer_commitments.add((customer_id, commitment_id))
+
+
+async def _insert_pending_aliases(
+    scenario: Scenario,
+    *,
+    alias_repo: EntityAliasRepo,
+    pending_aliases: list[tuple[str, dict[str, Any], float]],
+    tenant_id: UUID,
+) -> None:
     for phrase, ref, confidence in _dedupe_aliases(pending_aliases):
         await alias_repo.insert_alias(
             phrase=phrase,

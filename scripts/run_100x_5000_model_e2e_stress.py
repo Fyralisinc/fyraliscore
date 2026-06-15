@@ -628,161 +628,288 @@ def _build_case_models(
     drafts: list[ModelCreate] = []
 
     if not archetype.weak:
-        target_count = 16 if archetype.broad else 7
-        for offset in range(target_count):
-            mid = uuid7()
-            expected_ids.append(mid)
-            member_ids.append(mid)
-            event_id = (
-                scaffold.stale_observation_id
-                if archetype.key == "fresh_vs_stale" and offset == target_count - 1
-                else scaffold.target_observation_id
-            )
-            time_mode = "past" if event_id == scaffold.stale_observation_id else "current"
-            natural = _target_natural(
-                archetype=archetype,
-                scaffold=scaffold,
-                marker=marker,
-                offset=offset,
-            )
-            drafts.append(
-                _make_model(
-                    model_id=mid,
-                    tenant_id=scaffold.tenant_id,
-                    born_from_event_id=event_id,
-                    natural=natural,
-                    embedding_key=target_embedding_key,
-                    proposition=_belief_prop(
-                        about=f"{scaffold.customer_label} {archetype.key}",
-                        nature=natural,
-                        claim_role=(
-                            "pattern"
-                            if archetype.key == "recurring_incident"
-                            else "concern"
-                        ),
-                        domain_tags=archetype.domain_tags,
-                        abstraction_level=(
-                            "pattern"
-                            if archetype.key == "recurring_incident"
-                            else "atomic"
-                        ),
-                        time_mode=time_mode,
-                    ),
-                    scope_actors=actor_scope,
-                    scope_entities=scope if not archetype.broad else [scope[0]],
-                    supporting_event_ids=[event_id],
-                    supporting_model_ids=[expected_ids[0]] if offset > 0 else [],
-                    confidence=0.66,
-                    domain_tags=archetype.domain_tags,
-                )
-            )
+        _append_target_case_models(
+            archetype=archetype,
+            scaffold=scaffold,
+            marker=marker,
+            target_embedding_key=target_embedding_key,
+            scope=scope,
+            actor_scope=actor_scope,
+            expected_ids=expected_ids,
+            member_ids=member_ids,
+            drafts=drafts,
+        )
+        _append_counter_model(
+            archetype=archetype,
+            scaffold=scaffold,
+            marker=marker,
+            target_embedding_key=target_embedding_key,
+            scope=scope,
+            actor_scope=actor_scope,
+            expected_ids=expected_ids,
+            drafts=drafts,
+        )
+        _append_optional_graph_model(
+            archetype=archetype,
+            scaffold=scaffold,
+            marker=marker,
+            expected_ids=expected_ids,
+            drafts=drafts,
+        )
+        _append_optional_situation_model(
+            archetype=archetype,
+            scaffold=scaffold,
+            marker=marker,
+            target_embedding_key=target_embedding_key,
+            scope=scope,
+            actor_scope=actor_scope,
+            expected_ids=expected_ids,
+            member_ids=member_ids,
+            drafts=drafts,
+        )
 
-        counter_id = uuid7()
-        expected_ids.append(counter_id)
-        counter_natural = (
-            f"{marker} counterevidence memory: a mitigation exists, but it "
-            "does not remove the active risk and should not erase the blocker."
+    _append_noise_models(
+        archetype=archetype,
+        scaffold=scaffold,
+        marker=marker,
+        target_embedding_key=target_embedding_key,
+        scope=scope,
+        actor_scope=actor_scope,
+        models_per_case=models_per_case,
+        drafts=drafts,
+    )
+    return drafts, StressCase(
+        index=index,
+        name=f"{index:03d}_{archetype.key}",
+        archetype=archetype,
+        trigger=_build_case_trigger(
+            archetype=archetype,
+            scaffold=scaffold,
+            signal_text=signal_text,
+            target_embedding_key=target_embedding_key,
+            actor_scope=actor_scope,
+        ),
+        expected_model_ids=expected_ids,
+        expected_member_ids=member_ids,
+        marker=marker,
+    )
+
+
+def _append_target_case_models(
+    *,
+    archetype: Archetype,
+    scaffold: Scaffold,
+    marker: str,
+    target_embedding_key: str,
+    scope: list[dict[str, str]],
+    actor_scope: list[UUID],
+    expected_ids: list[UUID],
+    member_ids: list[UUID],
+    drafts: list[ModelCreate],
+) -> None:
+    target_count = 16 if archetype.broad else 7
+    for offset in range(target_count):
+        mid = uuid7()
+        expected_ids.append(mid)
+        member_ids.append(mid)
+        event_id = (
+            scaffold.stale_observation_id
+            if archetype.key == "fresh_vs_stale" and offset == target_count - 1
+            else scaffold.target_observation_id
+        )
+        time_mode = "past" if event_id == scaffold.stale_observation_id else "current"
+        natural = _target_natural(
+            archetype=archetype,
+            scaffold=scaffold,
+            marker=marker,
+            offset=offset,
         )
         drafts.append(
             _make_model(
-                model_id=counter_id,
+                model_id=mid,
                 tenant_id=scaffold.tenant_id,
-                born_from_event_id=scaffold.counter_observation_id,
-                natural=counter_natural,
+                born_from_event_id=event_id,
+                natural=natural,
                 embedding_key=target_embedding_key,
                 proposition=_belief_prop(
-                    about=f"{scaffold.customer_label} counterevidence",
-                    nature="mitigation exists but active risk remains",
-                    claim_role="concern",
+                    about=f"{scaffold.customer_label} {archetype.key}",
+                    nature=natural,
+                    claim_role=(
+                        "pattern"
+                        if archetype.key == "recurring_incident"
+                        else "concern"
+                    ),
                     domain_tags=archetype.domain_tags,
-                    polarity="mixed",
+                    abstraction_level=(
+                        "pattern"
+                        if archetype.key == "recurring_incident"
+                        else "atomic"
+                    ),
+                    time_mode=time_mode,
                 ),
                 scope_actors=actor_scope,
-                scope_entities=scope,
-                supporting_event_ids=[scaffold.counter_observation_id],
-                supporting_model_ids=[expected_ids[0]],
-                confidence=0.58,
+                scope_entities=scope if not archetype.broad else [scope[0]],
+                supporting_event_ids=[event_id],
+                supporting_model_ids=[expected_ids[0]] if offset > 0 else [],
+                confidence=0.66,
                 domain_tags=archetype.domain_tags,
             )
         )
 
-        if archetype.graph:
-            hidden_id = uuid7()
-            expected_ids.append(hidden_id)
-            hidden_natural = (
-                f"{marker} graph-only memory: latent invariant B-17 explains "
-                "the dependency without using customer surface language."
-            )
-            drafts.append(
-                _make_model(
-                    model_id=hidden_id,
-                    tenant_id=scaffold.tenant_id,
-                    born_from_event_id=scaffold.target_observation_id,
-                    natural=hidden_natural,
-                    embedding_key=f"{marker}:hidden-graph",
-                    proposition=_belief_prop(
-                        about="latent invariant B-17",
-                        nature=hidden_natural,
-                        claim_role="relation",
-                        abstraction_level="relationship",
-                        domain_tags=archetype.domain_tags,
-                        extra={
-                            "subject": str(expected_ids[0]),
-                            "relation": "explains",
-                            "object": "latent invariant B-17",
-                        },
-                    ),
-                    scope_actors=[],
-                    scope_entities=[],
-                    supporting_event_ids=[scaffold.target_observation_id],
-                    supporting_model_ids=[expected_ids[0]],
-                    confidence=0.57,
-                    domain_tags=archetype.domain_tags,
-                )
-            )
 
-        if archetype.situation:
-            situation_id = uuid7()
-            expected_ids.append(situation_id)
-            situation_natural = (
-                f"{marker} composite situation: owner gap, security gate, "
-                "renewal exposure, and confidence loss are mutually reinforcing."
-            )
-            drafts.append(
-                _make_model(
-                    model_id=situation_id,
-                    tenant_id=scaffold.tenant_id,
-                    born_from_event_id=scaffold.target_observation_id,
-                    natural=situation_natural,
-                    embedding_key=target_embedding_key,
-                    proposition=_belief_prop(
-                        about=f"{scaffold.customer_label} composite situation",
-                        nature=situation_natural,
-                        claim_role="situation",
-                        abstraction_level="composite",
-                        polarity="mixed",
-                        domain_tags=archetype.domain_tags,
-                        extra={
-                            "situation": situation_natural,
-                            "member_model_ids": [str(mid) for mid in member_ids[:5]],
-                            "relationship_summary": (
-                                "Owner, security, and renewal pressures reinforce "
-                                "the same operational situation."
-                            ),
-                            "pressure_type": "execution",
-                            "shared_mechanism": "customer delivery readiness",
-                            "judgment_change": "treat as one escalated situation",
-                        },
-                    ),
-                    scope_actors=actor_scope,
-                    scope_entities=scope,
-                    supporting_event_ids=[scaffold.target_observation_id],
-                    supporting_model_ids=member_ids[:2],
-                    confidence=0.61,
-                    domain_tags=archetype.domain_tags,
-                )
-            )
+def _append_counter_model(
+    *,
+    archetype: Archetype,
+    scaffold: Scaffold,
+    marker: str,
+    target_embedding_key: str,
+    scope: list[dict[str, str]],
+    actor_scope: list[UUID],
+    expected_ids: list[UUID],
+    drafts: list[ModelCreate],
+) -> None:
+    counter_id = uuid7()
+    expected_ids.append(counter_id)
+    counter_natural = (
+        f"{marker} counterevidence memory: a mitigation exists, but it "
+        "does not remove the active risk and should not erase the blocker."
+    )
+    drafts.append(
+        _make_model(
+            model_id=counter_id,
+            tenant_id=scaffold.tenant_id,
+            born_from_event_id=scaffold.counter_observation_id,
+            natural=counter_natural,
+            embedding_key=target_embedding_key,
+            proposition=_belief_prop(
+                about=f"{scaffold.customer_label} counterevidence",
+                nature="mitigation exists but active risk remains",
+                claim_role="concern",
+                domain_tags=archetype.domain_tags,
+                polarity="mixed",
+            ),
+            scope_actors=actor_scope,
+            scope_entities=scope,
+            supporting_event_ids=[scaffold.counter_observation_id],
+            supporting_model_ids=[expected_ids[0]],
+            confidence=0.58,
+            domain_tags=archetype.domain_tags,
+        )
+    )
 
+
+def _append_optional_graph_model(
+    *,
+    archetype: Archetype,
+    scaffold: Scaffold,
+    marker: str,
+    expected_ids: list[UUID],
+    drafts: list[ModelCreate],
+) -> None:
+    if not archetype.graph:
+        return
+    hidden_id = uuid7()
+    expected_ids.append(hidden_id)
+    hidden_natural = (
+        f"{marker} graph-only memory: latent invariant B-17 explains "
+        "the dependency without using customer surface language."
+    )
+    drafts.append(
+        _make_model(
+            model_id=hidden_id,
+            tenant_id=scaffold.tenant_id,
+            born_from_event_id=scaffold.target_observation_id,
+            natural=hidden_natural,
+            embedding_key=f"{marker}:hidden-graph",
+            proposition=_belief_prop(
+                about="latent invariant B-17",
+                nature=hidden_natural,
+                claim_role="relation",
+                abstraction_level="relationship",
+                domain_tags=archetype.domain_tags,
+                extra={
+                    "subject": str(expected_ids[0]),
+                    "relation": "explains",
+                    "object": "latent invariant B-17",
+                },
+            ),
+            scope_actors=[],
+            scope_entities=[],
+            supporting_event_ids=[scaffold.target_observation_id],
+            supporting_model_ids=[expected_ids[0]],
+            confidence=0.57,
+            domain_tags=archetype.domain_tags,
+        )
+    )
+
+
+def _append_optional_situation_model(
+    *,
+    archetype: Archetype,
+    scaffold: Scaffold,
+    marker: str,
+    target_embedding_key: str,
+    scope: list[dict[str, str]],
+    actor_scope: list[UUID],
+    expected_ids: list[UUID],
+    member_ids: list[UUID],
+    drafts: list[ModelCreate],
+) -> None:
+    if not archetype.situation:
+        return
+    situation_id = uuid7()
+    expected_ids.append(situation_id)
+    situation_natural = (
+        f"{marker} composite situation: owner gap, security gate, "
+        "renewal exposure, and confidence loss are mutually reinforcing."
+    )
+    drafts.append(
+        _make_model(
+            model_id=situation_id,
+            tenant_id=scaffold.tenant_id,
+            born_from_event_id=scaffold.target_observation_id,
+            natural=situation_natural,
+            embedding_key=target_embedding_key,
+            proposition=_belief_prop(
+                about=f"{scaffold.customer_label} composite situation",
+                nature=situation_natural,
+                claim_role="situation",
+                abstraction_level="composite",
+                polarity="mixed",
+                domain_tags=archetype.domain_tags,
+                extra={
+                    "situation": situation_natural,
+                    "member_model_ids": [str(mid) for mid in member_ids[:5]],
+                    "relationship_summary": (
+                        "Owner, security, and renewal pressures reinforce "
+                        "the same operational situation."
+                    ),
+                    "pressure_type": "execution",
+                    "shared_mechanism": "customer delivery readiness",
+                    "judgment_change": "treat as one escalated situation",
+                },
+            ),
+            scope_actors=actor_scope,
+            scope_entities=scope,
+            supporting_event_ids=[scaffold.target_observation_id],
+            supporting_model_ids=member_ids[:2],
+            confidence=0.61,
+            domain_tags=archetype.domain_tags,
+        )
+    )
+
+
+def _append_noise_models(
+    *,
+    archetype: Archetype,
+    scaffold: Scaffold,
+    marker: str,
+    target_embedding_key: str,
+    scope: list[dict[str, str]],
+    actor_scope: list[UUID],
+    models_per_case: int,
+    drafts: list[ModelCreate],
+) -> None:
     noise_customers = [uuid7() for _ in range(160)]
     previous_noise_id: UUID | None = None
     noise_needed = models_per_case - len(drafts)
@@ -790,77 +917,138 @@ def _build_case_models(
         mid = uuid7()
         same_scope = noise_idx % 37 == 0
         semantic_collision = noise_idx % 251 == 0
-        operational_noise = noise_idx % 311 == 0
         relation_noise = noise_idx % 173 == 0
-        if same_scope:
-            noise_scope = scope
-            noise_actors = actor_scope if noise_idx % 2 == 0 else []
-            natural = (
-                f"{marker} same-scope distractor {noise_idx}: "
-                f"{scaffold.customer_label} status note mentions general "
-                "queue hygiene but no decisive blocker."
-            )
-        else:
-            noise_customer = noise_customers[noise_idx % len(noise_customers)]
-            noise_scope = [
-                {"type": "customer_resource", "id": str(noise_customer)},
-                {"type": "commitment", "id": str(uuid7())},
-            ]
-            noise_actors = [scaffold.actor_id] if noise_idx % 19 == 0 else []
-            natural = (
-                f"Unrelated Model {noise_idx} for NoiseCustomer"
-                f"{noise_idx % 160}: billing telemetry, support rotation, "
-                "capacity planning, and normal operational chatter."
-            )
-        if operational_noise:
-            natural += (
-                " field list Admin portal option order: Basic, Premium, "
-                "Enterprise; bottom_option = Enterprise; results count = 12."
-            )
-        if relation_noise:
-            natural += " This relation explains a generic backend queue dependency."
-        embedding_key = target_embedding_key if semantic_collision else f"noise-{noise_idx % 997}"
+        noise_scope, noise_actors, natural = _noise_model_scope_and_text(
+            noise_idx=noise_idx,
+            same_scope=same_scope,
+            relation_noise=relation_noise,
+            scaffold=scaffold,
+            marker=marker,
+            scope=scope,
+            actor_scope=actor_scope,
+            noise_customers=noise_customers,
+        )
+        embedding_key = (
+            target_embedding_key if semantic_collision else f"noise-{noise_idx % 997}"
+        )
         support_ids: list[UUID] = []
         if previous_noise_id is not None and noise_idx % 503 == 0:
             support_ids.append(previous_noise_id)
         previous_noise_id = mid
-        claim_role = "relation" if relation_noise else "fact"
-        abstraction = "relationship" if relation_noise else "atomic"
         drafts.append(
-            _make_model(
+            _make_noise_model(
+                scaffold=scaffold,
                 model_id=mid,
-                tenant_id=scaffold.tenant_id,
-                born_from_event_id=scaffold.noise_observation_id,
+                noise_idx=noise_idx,
                 natural=natural,
                 embedding_key=embedding_key,
-                proposition=_belief_prop(
-                    about=f"noise model {noise_idx}",
-                    nature=natural,
-                    claim_role=claim_role,
-                    abstraction_level=abstraction,
-                    domain_tags=("noise", "operations"),
-                    polarity="neutral",
-                    extra=(
-                        {
-                            "subject": f"NoiseCustomer{noise_idx % 160}",
-                            "relation": "co_occurs_with",
-                            "object": "generic queue",
-                        }
-                        if relation_noise
-                        else None
-                    ),
-                ),
-                scope_actors=noise_actors,
-                scope_entities=noise_scope,
-                supporting_event_ids=[scaffold.noise_observation_id],
-                supporting_model_ids=support_ids,
-                confidence=0.31 + (noise_idx % 31) / 100,
-                domain_tags=("noise", "operations"),
+                noise_scope=noise_scope,
+                noise_actors=noise_actors,
+                support_ids=support_ids,
+                relation_noise=relation_noise,
             )
         )
 
-    seed_entities = _scope_entities(scaffold, archetype) if archetype.use_seed_entities else []
-    trigger = TriggerContext(
+
+def _noise_model_scope_and_text(
+    *,
+    noise_idx: int,
+    same_scope: bool,
+    relation_noise: bool,
+    scaffold: Scaffold,
+    marker: str,
+    scope: list[dict[str, str]],
+    actor_scope: list[UUID],
+    noise_customers: list[UUID],
+) -> tuple[list[dict[str, str]], list[UUID], str]:
+    if same_scope:
+        noise_scope = scope
+        noise_actors = actor_scope if noise_idx % 2 == 0 else []
+        natural = (
+            f"{marker} same-scope distractor {noise_idx}: "
+            f"{scaffold.customer_label} status note mentions general "
+            "queue hygiene but no decisive blocker."
+        )
+    else:
+        noise_customer = noise_customers[noise_idx % len(noise_customers)]
+        noise_scope = [
+            {"type": "customer_resource", "id": str(noise_customer)},
+            {"type": "commitment", "id": str(uuid7())},
+        ]
+        noise_actors = [scaffold.actor_id] if noise_idx % 19 == 0 else []
+        natural = (
+            f"Unrelated Model {noise_idx} for NoiseCustomer"
+            f"{noise_idx % 160}: billing telemetry, support rotation, "
+            "capacity planning, and normal operational chatter."
+        )
+    if noise_idx % 311 == 0:
+        natural += (
+            " field list Admin portal option order: Basic, Premium, "
+            "Enterprise; bottom_option = Enterprise; results count = 12."
+        )
+    if relation_noise:
+        natural += " This relation explains a generic backend queue dependency."
+    return noise_scope, noise_actors, natural
+
+
+def _make_noise_model(
+    *,
+    scaffold: Scaffold,
+    model_id: UUID,
+    noise_idx: int,
+    natural: str,
+    embedding_key: str,
+    noise_scope: list[dict[str, str]],
+    noise_actors: list[UUID],
+    support_ids: list[UUID],
+    relation_noise: bool,
+) -> ModelCreate:
+    claim_role = "relation" if relation_noise else "fact"
+    abstraction = "relationship" if relation_noise else "atomic"
+    return _make_model(
+        model_id=model_id,
+        tenant_id=scaffold.tenant_id,
+        born_from_event_id=scaffold.noise_observation_id,
+        natural=natural,
+        embedding_key=embedding_key,
+        proposition=_belief_prop(
+            about=f"noise model {noise_idx}",
+            nature=natural,
+            claim_role=claim_role,
+            abstraction_level=abstraction,
+            domain_tags=("noise", "operations"),
+            polarity="neutral",
+            extra=(
+                {
+                    "subject": f"NoiseCustomer{noise_idx % 160}",
+                    "relation": "co_occurs_with",
+                    "object": "generic queue",
+                }
+                if relation_noise
+                else None
+            ),
+        ),
+        scope_actors=noise_actors,
+        scope_entities=noise_scope,
+        supporting_event_ids=[scaffold.noise_observation_id],
+        supporting_model_ids=support_ids,
+        confidence=0.31 + (noise_idx % 31) / 100,
+        domain_tags=("noise", "operations"),
+    )
+
+
+def _build_case_trigger(
+    *,
+    archetype: Archetype,
+    scaffold: Scaffold,
+    signal_text: str,
+    target_embedding_key: str,
+    actor_scope: list[UUID],
+) -> TriggerContext:
+    seed_entities = (
+        _scope_entities(scaffold, archetype) if archetype.use_seed_entities else []
+    )
+    return TriggerContext(
         kind="T1",
         tenant_id=scaffold.tenant_id,
         observation_id=scaffold.target_observation_id,
@@ -871,15 +1059,6 @@ def _build_case_models(
         precomputed_seed_vector=_embedding(target_embedding_key),
         semantic_k=48,
         temporal_window=timedelta(days=30),
-    )
-    return drafts, StressCase(
-        index=index,
-        name=f"{index:03d}_{archetype.key}",
-        archetype=archetype,
-        trigger=trigger,
-        expected_model_ids=expected_ids,
-        expected_member_ids=member_ids,
-        marker=marker,
     )
 
 

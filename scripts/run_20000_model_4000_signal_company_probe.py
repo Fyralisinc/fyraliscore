@@ -1463,6 +1463,14 @@ async def _model_layer_health(
                 "SELECT COUNT(*) FROM relationship_candidates WHERE tenant_id = $1",
                 tenant_id,
             ) or 0),
+            "relationship_candidates_from_topology": int(await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM relationship_candidates
+                WHERE tenant_id = $1
+                  AND COALESCE(metadata->'candidate_lifecycle'->>'origin', source) = 'latent_topology'
+                """,
+                tenant_id,
+            ) or 0),
             "latent_topology_candidates": int(await conn.fetchval(
                 """
                 SELECT COUNT(*) FROM relationship_candidates
@@ -1628,7 +1636,7 @@ def _readiness(summary: dict[str, Any]) -> dict[str, Any]:
             "retrieves scoped company memory from heterogeneous workplace signals",
             "uses prior retrieval outcomes to tune affordances and reader policy",
             "keeps source-specific noise visible instead of blending it into one narrative",
-            "surfaces graph/topology candidates for hidden cross-functional links",
+            "surfaces topology-discovered relationship proposals for hidden cross-functional links",
         ],
     }
 
@@ -1959,7 +1967,7 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         "archived_models",
         "model_edges",
         "relationship_candidates",
-        "latent_topology_candidates",
+        "relationship_candidates_from_topology",
         "atomic_model_ratio",
         "unscoped_model_ratio",
         "avg_natural_len",

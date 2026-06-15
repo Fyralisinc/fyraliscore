@@ -120,6 +120,7 @@ EXPECTED_TABLES: dict[str, Table] = {
             _col("cause_id", UUID, True),
             _col("sequence_num", BIGINT, False, default=True),
             _col("entities_mentioned", JSONB, True, default=True),
+            _col("thread_canonical_id", UUID, True),
         ]),
         indexes={
             "observations_pkey",
@@ -178,6 +179,14 @@ EXPECTED_TABLES: dict[str, Table] = {
             # Migration 0032 — S2 topology layer.
             _col("topo_embedding", VECTOR, True),
             _col("topo_updated_at", TS, True),
+            # Migration 0047/0048 — memory grammar + four-stance columns.
+            _col("domain_tags", ARRAY, False, default=True),
+            _col("memory_grammar_version", TEXT, False, default=True),
+            _col("claim_role", TEXT, True),          # generated stored
+            _col("abstraction_level", TEXT, True),   # generated stored
+            _col("time_mode", TEXT, True),           # generated stored
+            _col("modality", TEXT, True),            # generated stored
+            _col("polarity", TEXT, True),            # generated stored
         ]),
         indexes={
             "models_pkey",
@@ -249,6 +258,7 @@ EXPECTED_TABLES: dict[str, Table] = {
             _col("terminal_at", TS, True),
             _col("created_by_event_id", UUID, False),
             _col("last_confidence_basis", UUID, True),
+            _col("is_maintenance", BOOL, False, default=True),
         ]),
         indexes={
             "commitments_pkey",
@@ -436,6 +446,7 @@ EXPECTED_TABLES: dict[str, Table] = {
             _col("locked_by", TEXT, True),
             _col("locked_at", TS, True),
             _col("completed_at", TS, True),
+            _col("batch_parent_id", UUID, True),
         ]),
         indexes={
             "think_trigger_queue_pkey",
@@ -517,6 +528,17 @@ EXPECTED_TABLES: dict[str, Table] = {
             _col("created_by_event_id", UUID, True),
             _col("status_changed_at", TS, True),
             _col("status_reason", TEXT, True),
+            # Migration 0043 — richer relationship edge provenance.
+            _col("confidence", FLOAT, False, default=True),
+            _col("evidence_event_ids", ARRAY, False, default=True),
+            _col("evidence_model_ids", ARRAY, False, default=True),
+            _col("explanation", TEXT, True),
+            _col("review_status", TEXT, False, default=True),
+            _col("last_confirmed_at", TS, True),
+            _col("confirmed_count", INT, False, default=True),
+            _col("contested_count", INT, False, default=True),
+            _col("decay_after", TS, True),
+            _col("expires_at", TS, True),
         ]),
         indexes={
             "model_edges_pkey",
@@ -933,6 +955,61 @@ EXPECTED_TABLES: dict[str, Table] = {
             "render_costs_kind",
         },
     ),
+    "think_obligations": Table(
+        # 0133_learning_loop_obligations_feedback.sql — durable generic
+        # future-work obligations for Think, bridging legacy
+        # model_reeval_queue behavior and newer loop-closing cleanup.
+        columns=dict([
+            _col("id", UUID, False),
+            _col("tenant_id", UUID, False),
+            _col("kind", TEXT, False),
+            _col("object_kind", TEXT, False),
+            _col("object_id", UUID, True),
+            _col("due_at", TS, False, default=True),
+            _col("trigger_kind", TEXT, False, default=True),
+            _col("trigger_subkind", TEXT, True),
+            _col("observation_id", UUID, True),
+            _col("model_id", UUID, True),
+            _col("payload", JSONB, False, default=True),
+            _col("status", TEXT, False, default=True),
+            _col("fires", INT, False, default=True),
+            _col("max_fires", INT, False, default=True),
+            _col("last_trigger_id", UUID, True),
+            _col("last_error", TEXT, True),
+            _col("created_at", TS, False, default=True),
+            _col("updated_at", TS, False, default=True),
+            _col("completed_at", TS, True),
+        ]),
+        indexes={
+            "think_obligations_pkey",
+            "think_obligations_open_object_idx",
+            "think_obligations_due_idx",
+            "think_obligations_model_idx",
+        },
+    ),
+    "think_feedback_stats": Table(
+        # 0133_learning_loop_obligations_feedback.sql — bounded aggregate
+        # feedback for validator, applier, and product recommendation
+        # outcomes.
+        columns=dict([
+            _col("tenant_id", UUID, False),
+            _col("surface", TEXT, False),
+            _col("op_type", TEXT, False),
+            _col("op_kind", TEXT, False),
+            _col("reason", TEXT, False, default=True),
+            _col("attempt_count", BIGINT, False, default=True),
+            _col("success_count", BIGINT, False, default=True),
+            _col("dropped_count", BIGINT, False, default=True),
+            _col("failure_count", BIGINT, False, default=True),
+            _col("last_payload", JSONB, False, default=True),
+            _col("first_seen_at", TS, False, default=True),
+            _col("last_seen_at", TS, False, default=True),
+        ]),
+        indexes={
+            "think_feedback_stats_pkey",
+            "think_feedback_stats_surface_idx",
+        },
+    ),
 }
 
 
@@ -1057,22 +1134,25 @@ def compare(conn) -> list[str]:
                 drifts.append(f"COLUMN unexpected: {table_name}.{c}")
 
             for col in sorted(set(expected_cols) & set(live_cols)):
-                e = expected_cols[col]
-                l = live_cols[col]
-                if e.data_type != l.data_type:
+                expected_col = expected_cols[col]
+                live_col = live_cols[col]
+                if expected_col.data_type != live_col.data_type:
                     drifts.append(
                         f"COLUMN type drift: {table_name}.{col} "
-                        f"(expected {e.data_type}, live {l.data_type})"
+                        f"(expected {expected_col.data_type}, "
+                        f"live {live_col.data_type})"
                     )
-                if e.is_nullable != l.is_nullable:
+                if expected_col.is_nullable != live_col.is_nullable:
                     drifts.append(
                         f"COLUMN nullability drift: {table_name}.{col} "
-                        f"(expected nullable={e.is_nullable}, live nullable={l.is_nullable})"
+                        f"(expected nullable={expected_col.is_nullable}, "
+                        f"live nullable={live_col.is_nullable})"
                     )
-                if e.has_default != l.has_default:
+                if expected_col.has_default != live_col.has_default:
                     drifts.append(
                         f"COLUMN default drift: {table_name}.{col} "
-                        f"(expected has_default={e.has_default}, live has_default={l.has_default})"
+                        f"(expected has_default={expected_col.has_default}, "
+                        f"live has_default={live_col.has_default})"
                     )
 
             # Indexes — every expected index must be present; extras are OK

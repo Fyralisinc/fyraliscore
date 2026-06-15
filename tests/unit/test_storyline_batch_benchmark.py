@@ -29,20 +29,16 @@ def test_storyline_scenario_builds_expected_batch_waves() -> None:
     assert sum(len(v) for v in scenario.signal_sequences.values()) == (
         len(STORYLINES) * 20 + len(STORYLINES) * 3 + 5
     )
-    assert len(scenario.signal_sequences["future_validation"]) == (
-        len(STORYLINES) * 3
-    )
+    assert len(scenario.signal_sequences["future_validation"]) == (len(STORYLINES) * 3)
 
     for story in STORYLINES:
         wave = scenario.signal_sequences[f"{story.id}_wave"]
         assert len(wave) == 20
         assert {
-            _story_id_from_external_id(signal.get("external_id"))
-            for signal in wave
+            _story_id_from_external_id(signal.get("external_id")) for signal in wave
         } == {story.id}
         assert all(
-            "storyline_id" not in (signal.get("content_dict") or {})
-            for signal in wave
+            "storyline_id" not in (signal.get("content_dict") or {}) for signal in wave
         )
         assert all(
             "storyline_title" not in (signal.get("content_dict") or {})
@@ -64,15 +60,32 @@ def test_storyline_scenario_builds_long_horizon_400_t1_batches() -> None:
     assert sum(len(v) for v in scenario.signal_sequences.values()) == 10000
     assert {len(v) for v in scenario.signal_sequences.values()} == {25}
     assert any(
-        name.startswith("future_validation_wave_")
-        for name in scenario.signal_sequences
+        name.startswith("future_validation_wave_") for name in scenario.signal_sequences
     )
     assert any(
-        name.startswith("background_noise_wave_")
-        for name in scenario.signal_sequences
+        name.startswith("background_noise_wave_") for name in scenario.signal_sequences
     )
     assert (scenario.raw or {})["scenario_mode"] == "long_horizon"
     assert (scenario.raw or {})["target_t1_batches"] == 400
+
+
+def test_storyline_scenario_builds_long_horizon_10_t1_batches_with_validation() -> None:
+    scenario, gold = build_storyline_scenario(
+        run_id="unit-storyline-long-horizon-10",
+        signals_per_storyline=5,
+        noise_signals=0,
+        future_validation_signals_per_storyline=3,
+        target_t1_batches=10,
+    )
+
+    assert len(gold) == len(STORYLINES)
+    assert len(scenario.signal_sequences) == 10
+    assert sum(len(v) for v in scenario.signal_sequences.values()) == 50
+    assert any(
+        name.startswith("future_validation_wave_") for name in scenario.signal_sequences
+    )
+    assert (scenario.raw or {})["scenario_mode"] == "long_horizon"
+    assert (scenario.raw or {})["warmup_batches"] < 10
 
 
 def test_storyline_scenario_builds_append_horizon_without_reused_signal_ids() -> None:
@@ -98,9 +111,7 @@ def test_storyline_scenario_builds_append_horizon_without_reused_signal_ids() ->
     assert next(iter(append.signal_sequences)).endswith("_wave_401")
     assert (append.raw or {})["horizon_start_batch"] == 400
     assert (append.raw or {})["horizon_end_batch"] == 600
-    assert (append.raw or {})["foundation_namespace"] == (
-        "unit-storyline-long-horizon"
-    )
+    assert (append.raw or {})["foundation_namespace"] == ("unit-storyline-long-horizon")
 
     base_external_ids = {
         signal["external_id"]
@@ -127,9 +138,7 @@ def test_latent_bridge_storyline_has_sensor_gap_without_initial_hallway_leak() -
         future_validation_signals_per_storyline=3,
     )
 
-    bridge_wave = scenario.signal_sequences[
-        f"{_LATENT_BRIDGE_STORYLINE_ID}_wave"
-    ]
+    bridge_wave = scenario.signal_sequences[f"{_LATENT_BRIDGE_STORYLINE_ID}_wave"]
     bridge_text = "\n".join(signal["content"].lower() for signal in bridge_wave)
     future_bridge_text = "\n".join(
         signal["content"].lower()
@@ -173,10 +182,7 @@ def test_storyline_signal_metadata_does_not_persist_gold_answers() -> None:
 
 def test_story_id_from_external_id_accepts_run_prefixed_ids() -> None:
     assert _story_id_from_external_id("storyline:atlas:001") == "atlas"
-    assert (
-        _story_id_from_external_id("capability-400:storyline:atlas:001")
-        == "atlas"
-    )
+    assert _story_id_from_external_id("capability-400:storyline:atlas:001") == "atlas"
     assert (
         _story_id_from_external_id(
             "capability-400-plus-200:storyline:northstar_gap:future:004"
@@ -241,10 +247,7 @@ def test_company_intelligence_scorecard_reports_dimensions_and_gaps() -> None:
         "robustness",
         "efficiency",
     } == set(scorecard["dimensions"])
-    assert any(
-        "No future validation events" in gap
-        for gap in scorecard["proof_gaps"]
-    )
+    assert any("No future validation events" in gap for gap in scorecard["proof_gaps"])
     assert any(
         "Resource/action-resource operations are untested" in gap
         for gap in scorecard["proof_gaps"]
@@ -269,9 +272,7 @@ def test_company_intelligence_scorecard_flags_topology_missing_model_skips() -> 
     )
 
     assert (
-        scorecard["dimensions"]["robustness"]["metrics"][
-            "topology_missing_model_skips"
-        ]
+        scorecard["dimensions"]["robustness"]["metrics"]["topology_missing_model_skips"]
         == 3.0
     )
     assert any(
@@ -299,19 +300,12 @@ def test_company_intelligence_scorecard_scores_future_validation_evidence() -> N
     assert temporal["metrics"]["future_validation_events"] == 24
     assert temporal["metrics"]["future_validation_success_rate"] == 1.0
     assert (
-        temporal["metrics"][
-            "future_validation_model_or_graph_context_use_score"
-        ]
-        == 1.0
+        temporal["metrics"]["future_validation_model_or_graph_context_use_score"] == 1.0
     )
     assert temporal["score"] > 0.55
-    assert (
-        retrieval["metrics"]["avg_historical_observations_per_t1_batch"]
-        == 3.5
-    )
+    assert retrieval["metrics"]["avg_historical_observations_per_t1_batch"] == 3.5
     assert not any(
-        "No future validation events" in gap
-        for gap in scorecard["proof_gaps"]
+        "No future validation events" in gap for gap in scorecard["proof_gaps"]
     )
 
 
@@ -418,21 +412,11 @@ def test_company_intelligence_scorecard_reports_product_value_evals() -> None:
         ]
         == 0
     )
+    assert any("Negative learning eval" in gap for gap in product_value["proof_gaps"])
+    assert any("Question policy eval" in gap for gap in product_value["proof_gaps"])
+    assert any("Customer value eval" in gap for gap in product_value["proof_gaps"])
     assert any(
-        "Negative learning eval" in gap
-        for gap in product_value["proof_gaps"]
-    )
-    assert any(
-        "Question policy eval" in gap
-        for gap in product_value["proof_gaps"]
-    )
-    assert any(
-        "Customer value eval" in gap
-        for gap in product_value["proof_gaps"]
-    )
-    assert any(
-        "Latent bridge inference eval" in gap
-        for gap in product_value["proof_gaps"]
+        "Latent bridge inference eval" in gap for gap in product_value["proof_gaps"]
     )
 
 
@@ -481,9 +465,11 @@ def test_benchmark_summary_renders_company_intelligence_scorecard() -> None:
 
 
 def test_storyline_calibration_report_bins_future_validation_samples() -> None:
-    report = _storyline_calibration_report([
-        _sample_storyline_score_with_calibration(),
-    ])
+    report = _storyline_calibration_report(
+        [
+            _sample_storyline_score_with_calibration(),
+        ]
+    )
 
     assert report["n"] == 2
     assert report["positive_outcomes"] == 1
@@ -492,7 +478,9 @@ def test_storyline_calibration_report_bins_future_validation_samples() -> None:
     assert any(bucket["n"] for bucket in report["bins"])
 
 
-def test_storyline_calibration_report_is_empty_without_future_validation_samples() -> None:
+def test_storyline_calibration_report_is_empty_without_future_validation_samples() -> (
+    None
+):
     report = _storyline_calibration_report([_sample_storyline_score()])
 
     assert report["n"] == 0
@@ -601,30 +589,34 @@ def _write_run_artifact(
     run_dir = report_root / run_id
     run_dir.mkdir(parents=True)
     (run_dir / "storyline_scores.json").write_text(
-        json.dumps({
-            "run_id": run_id,
-            "signals": 225,
-            "storyline_count": 9,
-            "elapsed_seconds": 12.0,
-            "average_storyline_score": average,
-            "company_intelligence_scorecard": {
-                "overall_score": company,
-                "product_value_evals": {"overall_score": product},
-            },
-            "thesis_recovery_judge": {
-                "enabled": True,
-                "n": thesis_correct + thesis_incorrect,
-                "average_score": thesis_average,
-                "correct_count": thesis_correct,
-                "incorrect_count": thesis_incorrect,
-            },
-        })
+        json.dumps(
+            {
+                "run_id": run_id,
+                "signals": 225,
+                "storyline_count": 9,
+                "elapsed_seconds": 12.0,
+                "average_storyline_score": average,
+                "company_intelligence_scorecard": {
+                    "overall_score": company,
+                    "product_value_evals": {"overall_score": product},
+                },
+                "thesis_recovery_judge": {
+                    "enabled": True,
+                    "n": thesis_correct + thesis_incorrect,
+                    "average_score": thesis_average,
+                    "correct_count": thesis_correct,
+                    "incorrect_count": thesis_incorrect,
+                },
+            }
+        )
     )
     (run_dir / "run_config.json").write_text(
-        json.dumps({
-            "run_id": run_id,
-            "cache_bypass_env": {"LLM_CACHE_BYPASS": "1"},
-        })
+        json.dumps(
+            {
+                "run_id": run_id,
+                "cache_bypass_env": {"LLM_CACHE_BYPASS": "1"},
+            }
+        )
     )
 
 
@@ -747,7 +739,11 @@ def _sample_success_wave() -> dict:
                 "ops_applied": {
                     "claim_ops": [{}, {}, {}],
                     "edge_ops": [
-                        {"op": "add", "edge_kind": "supports", "review_status": "accepted"},
+                        {
+                            "op": "add",
+                            "edge_kind": "supports",
+                            "review_status": "accepted",
+                        },
                         {
                             "op": "add",
                             "edge_kind": "early_warning_for",

@@ -755,6 +755,76 @@ async def test_successful_noop_does_not_punish_justified_context_use(
 
 
 @pytest.mark.asyncio
+async def test_selected_reader_context_gets_credit_for_valid_insert_without_model_reference(
+    gateway_pool: asyncpg.Pool, tenant_id: UUID,
+):
+    model_id = await seed_model(
+        gateway_pool,
+        tenant_id=tenant_id,
+        natural="Selected context used to form a new memory",
+    )
+    packet = {
+        "source_metadata": {"trigger_kind": "T1"},
+        "resolved_entities": [{"id": "Acme"}],
+        "question_path": [{"primitive": "CONSTRAINT"}],
+        "tiers": {"supporting_evidence_groups": [{"source_ref": "obs:kept-1"}]},
+    }
+    run_id = await _seed_think_run(
+        gateway_pool,
+        tenant_id=tenant_id,
+        status="success",
+        ops_applied={
+            "claim_ops": [{"op": "insert"}],
+            "edge_ops": [],
+            "act_ops": [],
+            "resource_ops": [],
+            "context_use": {
+                "selected_context_used": True,
+                "context_use_grade": "selected_context_used_for_insert",
+            },
+        },
+    )
+    session_id = await _seed_session(
+        gateway_pool,
+        tenant_id=tenant_id,
+        context_packet=packet,
+        think_run_id=run_id,
+    )
+    await _seed_evidence(
+        gateway_pool,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        source_ref="obs:kept-1",
+    )
+    await _seed_reader_decision_attribution(
+        gateway_pool,
+        tenant_id=tenant_id,
+        session_id=session_id,
+        model_id=model_id,
+    )
+
+    summary = await OutcomeEvaluator(
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+    ).evaluate(inquiry_session_id=session_id)
+
+    assert summary.events_by_type.get("reader_decision_used_in_valid_diff") == 1
+    async with gateway_pool.acquire() as conn:
+        reason = await conn.fetchval(
+            """
+            SELECT payload->>'credit_reason'
+            FROM inquiry_outcome_events
+            WHERE tenant_id = $1
+              AND inquiry_session_id = $2
+              AND event_type = 'reader_decision_used_in_valid_diff'
+            """,
+            tenant_id,
+            session_id,
+        )
+    assert reason == "selected_context_used_by_valid_mutation"
+
+
+@pytest.mark.asyncio
 async def test_accounted_selected_context_does_not_emit_low_value_feedback(
     gateway_pool: asyncpg.Pool, tenant_id: UUID,
 ):

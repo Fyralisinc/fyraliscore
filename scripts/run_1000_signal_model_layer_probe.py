@@ -1477,134 +1477,302 @@ async def collect_model_layer_report(
 ) -> dict[str, Any]:
     report_dir.mkdir(parents=True, exist_ok=True)
     async with pool.acquire() as conn:
-        summary = {
-            "tenant_id": str(tenant_id),
-            "run_id": run_id,
-            "scenario_id": scenario.scenario_id,
-            "company_profile": scenario.raw.get("company_profile") or {},
-            "run_config": run_config,
-            "seed_status": seed_status or {},
-            "signal_count": len(observation_ids),
-            "think_status": think_status,
-            "processing_waves": processing_waves,
-            "post_commit_status": post_commit_status,
-            "topology_optimizer_status": topology_optimizer_status,
-            "elapsed_seconds": round(elapsed_seconds, 3),
-            "observation_count": await conn.fetchval(
-                """
-                SELECT COUNT(*)::bigint
-                FROM observations
-                WHERE tenant_id = $1
-                  AND content->>'run_id' = $2
-                """,
-                tenant_id,
-                run_id,
-            ),
-            "observations_with_entities": await conn.fetchval(
-                """
-                SELECT COUNT(*)::bigint
-                FROM observations
-                WHERE tenant_id = $1
-                  AND content->>'run_id' = $2
-                  AND jsonb_typeof(entities_mentioned) = 'array'
-                  AND jsonb_array_length(entities_mentioned) > 0
-                """,
-                tenant_id,
-                run_id,
-            ),
-            "active_models": await conn.fetchval(
-                "SELECT COUNT(*)::bigint FROM models WHERE tenant_id = $1 AND status = 'active'",
-                tenant_id,
-            ),
-            "archived_models": await conn.fetchval(
-                "SELECT COUNT(*)::bigint FROM models WHERE tenant_id = $1 AND status = 'archived'",
-                tenant_id,
-            ),
-            "model_edges": await conn.fetchval(
-                "SELECT COUNT(*)::bigint FROM model_edges WHERE tenant_id = $1",
-                tenant_id,
-            ),
-            "active_model_edges": await conn.fetchval(
-                "SELECT COUNT(*)::bigint FROM model_edges WHERE tenant_id = $1 AND status = 'active'",
-                tenant_id,
-            ),
-            "relationship_candidates": await conn.fetchval(
-                "SELECT COUNT(*)::bigint FROM relationship_candidates WHERE tenant_id = $1",
-                tenant_id,
-            ),
-            "latent_topology_candidates": await conn.fetchval(
-                """
-                SELECT COUNT(*)::bigint
-                FROM relationship_candidates
-                WHERE tenant_id = $1
-                  AND source = 'latent_topology'
-                """,
-                tenant_id,
-            ),
-            "relationship_candidate_think_triggers": await conn.fetchval(
-                """
-                SELECT COUNT(*)::bigint
-                FROM think_trigger_queue
-                WHERE tenant_id = $1
-                  AND trigger_kind = 'T4'
-                  AND trigger_subkind = 'latent_relationship_candidate'
-                """,
-                tenant_id,
-            ),
-            "model_scope_entity_sidecars": await conn.fetchval(
-                "SELECT COUNT(*)::bigint FROM model_scope_entities WHERE tenant_id = $1",
-                tenant_id,
-            ),
-            "model_scope_actor_sidecars": await conn.fetchval(
-                "SELECT COUNT(*)::bigint FROM model_scope_actors WHERE tenant_id = $1",
-                tenant_id,
-            ),
-            "state_changes": await conn.fetchval(
-                """
-                SELECT COUNT(*)::bigint
-                FROM observations
-                WHERE tenant_id = $1
-                  AND kind = 'state_change'
-                """,
-                tenant_id,
-            ),
-            "think_runs_success": await conn.fetchval(
-                "SELECT COUNT(*)::bigint FROM think_runs WHERE tenant_id = $1 AND status = 'success'",
-                tenant_id,
-            ),
-            "think_runs_failed": await conn.fetchval(
-                "SELECT COUNT(*)::bigint FROM think_runs WHERE tenant_id = $1 AND status = 'failed'",
-                tenant_id,
-            ),
-            "pending_triggers": await conn.fetchval(
-                """
-                SELECT COUNT(*)::bigint
-                FROM think_trigger_queue
-                WHERE tenant_id = $1
-                  AND completed_at IS NULL
-                """,
-                tenant_id,
-            ),
-            "pending_post_commit_actions": await conn.fetchval(
-                """
-                SELECT COUNT(*)::bigint
-                FROM pending_post_commit_actions
-                WHERE tenant_id = $1
-                  AND processed_at IS NULL
-                """,
-                tenant_id,
-            ),
-            "dead_lettered_post_commit_actions": await conn.fetchval(
-                """
-                SELECT COUNT(*)::bigint
-                FROM pending_post_commit_actions
-                WHERE tenant_id = $1
-                  AND dead_lettered_at IS NOT NULL
-                """,
-                tenant_id,
-            ),
-        }
-        summary["channel_family_distribution"] = await _fetch_distribution(
+        summary = await _build_model_layer_summary(
+            conn,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            scenario=scenario,
+            observation_ids=observation_ids,
+            think_status=think_status,
+            run_config=run_config,
+            seed_status=seed_status,
+            processing_waves=processing_waves,
+            post_commit_status=post_commit_status,
+            topology_optimizer_status=topology_optimizer_status,
+            elapsed_seconds=elapsed_seconds,
+        )
+        model_rows, edge_rows = await _fetch_model_layer_export_rows(
+            conn,
+            tenant_id,
+        )
+    summary["graph_health"] = _compute_graph_health(model_rows, edge_rows)
+    _write_model_layer_report_artifacts(
+        report_dir=report_dir,
+        summary=summary,
+        model_rows=model_rows,
+        edge_rows=edge_rows,
+        scenario=scenario,
+        observation_ids=observation_ids,
+    )
+    return summary
+
+
+async def _build_model_layer_summary(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    run_id: str,
+    scenario: Scenario,
+    observation_ids: list[UUID],
+    think_status: str,
+    run_config: dict[str, Any],
+    seed_status: dict[str, Any] | None,
+    processing_waves: list[dict[str, Any]],
+    post_commit_status: dict[str, Any],
+    topology_optimizer_status: dict[str, Any],
+    elapsed_seconds: float,
+) -> dict[str, Any]:
+    summary = _model_layer_static_summary(
+        tenant_id=tenant_id,
+        run_id=run_id,
+        scenario=scenario,
+        observation_ids=observation_ids,
+        think_status=think_status,
+        run_config=run_config,
+        seed_status=seed_status,
+        processing_waves=processing_waves,
+        post_commit_status=post_commit_status,
+        topology_optimizer_status=topology_optimizer_status,
+        elapsed_seconds=elapsed_seconds,
+    )
+    summary.update(await _fetch_model_layer_count_summary(conn, tenant_id, run_id))
+    summary.update(await _fetch_model_layer_distributions(conn, tenant_id, run_id))
+    summary["relationship_candidate_lifecycle"] = (
+        _relationship_candidate_lifecycle_summary(summary)
+    )
+    summary["context_use_relation_contract"] = (
+        await _fetch_context_use_relation_contract(conn, tenant_id)
+    )
+    summary["discovery_layer_counts"] = await _fetch_discovery_layer_counts(
+        conn,
+        tenant_id,
+    )
+    summary["topology_optimizer_metric_totals"] = (
+        await _fetch_topology_optimizer_metric_totals(conn, tenant_id)
+    )
+    summary["top_customer_model_scopes"] = await _fetch_top_customer_model_scopes(
+        conn,
+        tenant_id,
+    )
+    summary["cost"] = await _fetch_cost(conn, tenant_id)
+    return summary
+
+
+def _relationship_candidate_lifecycle_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    total = int(summary.get("relationship_candidates") or 0)
+    from_topology = int(
+        summary.get("relationship_candidates_from_topology")
+        or summary.get("latent_topology_candidates")
+        or 0
+    )
+    pattern_candidates = int(
+        summary.get("topology_pattern_candidates")
+        or summary.get("latent_topology_candidates")
+        or 0
+    )
+    return {
+        "total_memory_proposals": total,
+        "direct_memory_proposals": max(0, total - from_topology),
+        "topology_discovered_memory_proposals": from_topology,
+        "topology_pattern_candidates": pattern_candidates,
+        "by_proposal_kind": summary.get("relationship_candidate_kind_distribution")
+        or {},
+        "by_review_status": summary.get("relationship_candidate_status_distribution")
+        or {},
+        "by_lifecycle_stage": summary.get(
+            "relationship_candidate_lifecycle_stage_distribution"
+        )
+        or {},
+        "by_origin": summary.get("relationship_candidate_origin_distribution") or {},
+        "by_origin_stage": summary.get(
+            "relationship_candidate_origin_stage_distribution"
+        )
+        or {},
+        "topology_patterns_by_kind": summary.get("topology_pattern_distribution")
+        or {},
+    }
+
+
+def _model_layer_static_summary(
+    *,
+    tenant_id: UUID,
+    run_id: str,
+    scenario: Scenario,
+    observation_ids: list[UUID],
+    think_status: str,
+    run_config: dict[str, Any],
+    seed_status: dict[str, Any] | None,
+    processing_waves: list[dict[str, Any]],
+    post_commit_status: dict[str, Any],
+    topology_optimizer_status: dict[str, Any],
+    elapsed_seconds: float,
+) -> dict[str, Any]:
+    return {
+        "tenant_id": str(tenant_id),
+        "run_id": run_id,
+        "scenario_id": scenario.scenario_id,
+        "company_profile": scenario.raw.get("company_profile") or {},
+        "run_config": run_config,
+        "seed_status": seed_status or {},
+        "signal_count": len(observation_ids),
+        "think_status": think_status,
+        "processing_waves": processing_waves,
+        "post_commit_status": post_commit_status,
+        "topology_optimizer_status": topology_optimizer_status,
+        "elapsed_seconds": round(elapsed_seconds, 3),
+    }
+
+
+async def _fetch_model_layer_count_summary(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    run_id: str,
+) -> dict[str, Any]:
+    return {
+        "observation_count": await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM observations
+            WHERE tenant_id = $1
+              AND content->>'run_id' = $2
+            """,
+            tenant_id,
+            run_id,
+        ),
+        "observations_with_entities": await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM observations
+            WHERE tenant_id = $1
+              AND content->>'run_id' = $2
+              AND jsonb_typeof(entities_mentioned) = 'array'
+              AND jsonb_array_length(entities_mentioned) > 0
+            """,
+            tenant_id,
+            run_id,
+        ),
+        "active_models": await conn.fetchval(
+            "SELECT COUNT(*)::bigint FROM models WHERE tenant_id = $1 AND status = 'active'",
+            tenant_id,
+        ),
+        "archived_models": await conn.fetchval(
+            "SELECT COUNT(*)::bigint FROM models WHERE tenant_id = $1 AND status = 'archived'",
+            tenant_id,
+        ),
+        "model_edges": await conn.fetchval(
+            "SELECT COUNT(*)::bigint FROM model_edges WHERE tenant_id = $1",
+            tenant_id,
+        ),
+        "active_model_edges": await conn.fetchval(
+            "SELECT COUNT(*)::bigint FROM model_edges WHERE tenant_id = $1 AND status = 'active'",
+            tenant_id,
+        ),
+        "relationship_candidates": await conn.fetchval(
+            "SELECT COUNT(*)::bigint FROM relationship_candidates WHERE tenant_id = $1",
+            tenant_id,
+        ),
+        "relationship_candidates_from_topology": await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+              AND COALESCE(metadata->'candidate_lifecycle'->>'origin', source) = 'latent_topology'
+            """,
+            tenant_id,
+        ),
+        "topology_pattern_candidates": await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+              AND COALESCE(
+                    metadata->'candidate_lifecycle'->>'origin_stage',
+                    CASE WHEN source = 'latent_topology' THEN 'pattern_discovery' END
+                  ) = 'pattern_discovery'
+            """,
+            tenant_id,
+        ),
+        "latent_topology_candidates": await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+              AND source = 'latent_topology'
+            """,
+            tenant_id,
+        ),
+        "relationship_candidate_think_triggers": await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM think_trigger_queue
+            WHERE tenant_id = $1
+              AND trigger_kind = 'T4'
+              AND trigger_subkind = 'latent_relationship_candidate'
+            """,
+            tenant_id,
+        ),
+        "model_scope_entity_sidecars": await conn.fetchval(
+            "SELECT COUNT(*)::bigint FROM model_scope_entities WHERE tenant_id = $1",
+            tenant_id,
+        ),
+        "model_scope_actor_sidecars": await conn.fetchval(
+            "SELECT COUNT(*)::bigint FROM model_scope_actors WHERE tenant_id = $1",
+            tenant_id,
+        ),
+        "state_changes": await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM observations
+            WHERE tenant_id = $1
+              AND kind = 'state_change'
+            """,
+            tenant_id,
+        ),
+        "think_runs_success": await conn.fetchval(
+            "SELECT COUNT(*)::bigint FROM think_runs WHERE tenant_id = $1 AND status = 'success'",
+            tenant_id,
+        ),
+        "think_runs_failed": await conn.fetchval(
+            "SELECT COUNT(*)::bigint FROM think_runs WHERE tenant_id = $1 AND status = 'failed'",
+            tenant_id,
+        ),
+        "pending_triggers": await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM think_trigger_queue
+            WHERE tenant_id = $1
+              AND completed_at IS NULL
+            """,
+            tenant_id,
+        ),
+        "pending_post_commit_actions": await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM pending_post_commit_actions
+            WHERE tenant_id = $1
+              AND processed_at IS NULL
+            """,
+            tenant_id,
+        ),
+        "dead_lettered_post_commit_actions": await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM pending_post_commit_actions
+            WHERE tenant_id = $1
+              AND dead_lettered_at IS NOT NULL
+            """,
+            tenant_id,
+        ),
+    }
+
+
+async def _fetch_model_layer_distributions(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    run_id: str,
+) -> dict[str, Any]:
+    return {
+        "channel_family_distribution": await _fetch_distribution(
             conn,
             """
             SELECT split_part(source_channel, ':', 1) AS key, COUNT(*)::bigint AS value
@@ -1616,8 +1784,8 @@ async def collect_model_layer_report(
             """,
             tenant_id,
             run_id,
-        )
-        summary["signal_family_distribution"] = await _fetch_distribution(
+        ),
+        "signal_family_distribution": await _fetch_distribution(
             conn,
             """
             SELECT content->>'family' AS key, COUNT(*)::bigint AS value
@@ -1629,8 +1797,8 @@ async def collect_model_layer_report(
             """,
             tenant_id,
             run_id,
-        )
-        summary["trust_tier_distribution"] = await _fetch_distribution(
+        ),
+        "trust_tier_distribution": await _fetch_distribution(
             conn,
             """
             SELECT trust_tier AS key, COUNT(*)::bigint AS value
@@ -1642,8 +1810,8 @@ async def collect_model_layer_report(
             """,
             tenant_id,
             run_id,
-        )
-        summary["model_kind_distribution"] = await _fetch_distribution(
+        ),
+        "model_kind_distribution": await _fetch_distribution(
             conn,
             """
             SELECT COALESCE(proposition_kind, '<none>') AS key, COUNT(*)::bigint AS value
@@ -1653,8 +1821,8 @@ async def collect_model_layer_report(
             ORDER BY 2 DESC, 1 ASC
             """,
             tenant_id,
-        )
-        summary["model_status_distribution"] = await _fetch_distribution(
+        ),
+        "model_status_distribution": await _fetch_distribution(
             conn,
             """
             SELECT status AS key, COUNT(*)::bigint AS value
@@ -1664,8 +1832,8 @@ async def collect_model_layer_report(
             ORDER BY 2 DESC, 1 ASC
             """,
             tenant_id,
-        )
-        summary["model_scope_entity_distribution"] = await _fetch_distribution(
+        ),
+        "model_scope_entity_distribution": await _fetch_distribution(
             conn,
             """
             SELECT COALESCE(e.value->>'type', '<none>') AS key, COUNT(DISTINCT m.id)::bigint AS value
@@ -1676,8 +1844,8 @@ async def collect_model_layer_report(
             ORDER BY 2 DESC, 1 ASC
             """,
             tenant_id,
-        )
-        summary["edge_kind_distribution"] = await _fetch_distribution(
+        ),
+        "edge_kind_distribution": await _fetch_distribution(
             conn,
             """
             SELECT edge_kind AS key, COUNT(*)::bigint AS value
@@ -1687,8 +1855,8 @@ async def collect_model_layer_report(
             ORDER BY 2 DESC, 1 ASC
             """,
             tenant_id,
-        )
-        summary["edge_review_distribution"] = await _fetch_distribution(
+        ),
+        "edge_review_distribution": await _fetch_distribution(
             conn,
             """
             SELECT review_status AS key, COUNT(*)::bigint AS value
@@ -1698,8 +1866,8 @@ async def collect_model_layer_report(
             ORDER BY 2 DESC, 1 ASC
             """,
             tenant_id,
-        )
-        summary["relationship_candidate_kind_distribution"] = await _fetch_distribution(
+        ),
+        "relationship_candidate_kind_distribution": await _fetch_distribution(
             conn,
             """
             SELECT candidate_kind AS key, COUNT(*)::bigint AS value
@@ -1709,8 +1877,8 @@ async def collect_model_layer_report(
             ORDER BY 2 DESC, 1 ASC
             """,
             tenant_id,
-        )
-        summary["relationship_candidate_status_distribution"] = await _fetch_distribution(
+        ),
+        "relationship_candidate_status_distribution": await _fetch_distribution(
             conn,
             """
             SELECT review_status AS key, COUNT(*)::bigint AS value
@@ -1720,8 +1888,65 @@ async def collect_model_layer_report(
             ORDER BY 2 DESC, 1 ASC
             """,
             tenant_id,
-        )
-        summary["topology_object_distribution"] = await _fetch_distribution(
+        ),
+        "relationship_candidate_lifecycle_stage_distribution": await _fetch_distribution(
+            conn,
+            """
+            SELECT COALESCE(metadata->'candidate_lifecycle'->>'stage', '<none>') AS key,
+                   COUNT(*)::bigint AS value
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        ),
+        "relationship_candidate_origin_distribution": await _fetch_distribution(
+            conn,
+            """
+            SELECT COALESCE(metadata->'candidate_lifecycle'->>'origin', source, '<none>') AS key,
+                   COUNT(*)::bigint AS value
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        ),
+        "relationship_candidate_origin_stage_distribution": await _fetch_distribution(
+            conn,
+            """
+            SELECT COALESCE(
+                     metadata->'candidate_lifecycle'->>'origin_stage',
+                     CASE WHEN source = 'latent_topology' THEN 'pattern_discovery' END,
+                     '<none>'
+                   ) AS key,
+                   COUNT(*)::bigint AS value
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        ),
+        "topology_pattern_distribution": await _fetch_distribution(
+            conn,
+            """
+            SELECT COALESCE(
+                     metadata->'candidate_lifecycle'->>'discovery_pattern_kind',
+                     regexp_replace(metadata->'topology'->>'object_type', '_candidate$', ''),
+                     '<none>'
+                   ) AS key,
+                   COUNT(*)::bigint AS value
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+              AND COALESCE(metadata->'candidate_lifecycle'->>'origin', source) = 'latent_topology'
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        ),
+        "topology_object_distribution": await _fetch_distribution(
             conn,
             """
             SELECT COALESCE(metadata->'topology'->>'object_type', '<none>') AS key,
@@ -1733,8 +1958,8 @@ async def collect_model_layer_report(
             ORDER BY 2 DESC, 1 ASC
             """,
             tenant_id,
-        )
-        summary["topology_optimizer_run_distribution"] = await _fetch_distribution(
+        ),
+        "topology_optimizer_run_distribution": await _fetch_distribution(
             conn,
             """
             SELECT status AS key, COUNT(*)::bigint AS value
@@ -1744,8 +1969,8 @@ async def collect_model_layer_report(
             ORDER BY 2 DESC, 1 ASC
             """,
             tenant_id,
-        )
-        summary["context_use_distribution"] = await _fetch_distribution(
+        ),
+        "context_use_distribution": await _fetch_distribution(
             conn,
             """
             SELECT COALESCE(ops_applied->'context_use'->>'context_use_grade', '<none>') AS key,
@@ -1756,124 +1981,150 @@ async def collect_model_layer_report(
             ORDER BY 2 DESC, 1 ASC
             """,
             tenant_id,
-        )
-        row = await conn.fetchrow(
-            """
-            WITH contexts AS (
-              SELECT ops_applied->'context_use' AS context
-              FROM think_runs
-              WHERE tenant_id = $1
-                AND status = 'success'
-                AND ops_applied ? 'context_use'
-            )
-            SELECT
-              COUNT(*)::bigint AS context_use_runs,
-              COUNT(*) FILTER (
-                WHERE COALESCE(NULLIF(context->>'graph_selected_model_count', '')::int, 0) > 0
-              )::bigint AS graph_selected_runs,
-              COUNT(*) FILTER (
-                WHERE COALESCE(NULLIF(context->>'graph_relation_op_count', '')::int, 0) > 0
-              )::bigint AS graph_relation_op_runs,
-              COUNT(*) FILTER (
-                WHERE COALESCE((context->>'graph_no_edge_rationale_present')::boolean, false)
-              )::bigint AS graph_no_edge_rationale_runs,
-              COUNT(*) FILTER (
-                WHERE COALESCE((context->>'graph_selected_without_relation_ops')::boolean, false)
-              )::bigint AS graph_selected_without_relation_ops_runs,
-              COUNT(*) FILTER (
-                WHERE COALESCE((context->>'graph_relation_contract_satisfied')::boolean, false)
-              )::bigint AS graph_relation_contract_satisfied_runs,
-              COUNT(*) FILTER (
-                WHERE COALESCE(NULLIF(context->>'graph_selected_model_count', '')::int, 0) > 0
-                  AND NOT COALESCE((context->>'graph_relation_contract_satisfied')::boolean, false)
-              )::bigint AS graph_relation_contract_failed_runs
-            FROM contexts
-            """,
-            tenant_id,
-        )
-        summary["context_use_relation_contract"] = (
-            _record_to_dict(row) if row is not None else {}
-        )
-        summary["discovery_layer_counts"] = await _fetch_discovery_layer_counts(
-            conn,
-            tenant_id,
-        )
-        summary["topology_optimizer_metric_totals"] = (
-            await _fetch_topology_optimizer_metric_totals(conn, tenant_id)
-        )
-        summary["top_customer_model_scopes"] = await _fetch_named_counts(
-            conn,
-            """
-            SELECT r.identity AS name, COUNT(DISTINCT m.id)::bigint AS value
-            FROM models m
-            JOIN LATERAL jsonb_array_elements(COALESCE(m.scope_entities, '[]'::jsonb)) e(value) ON true
-            JOIN resources r
-              ON r.tenant_id = m.tenant_id
-             AND r.id::text = e.value->>'id'
-             AND e.value->>'type' = 'customer'
-            WHERE m.tenant_id = $1
-            GROUP BY r.identity
-            ORDER BY 2 DESC, 1 ASC
-            LIMIT 20
-            """,
-            tenant_id,
-        )
-        summary["cost"] = await _fetch_cost(conn, tenant_id)
-        model_rows = await conn.fetch(
-            """
-            SELECT id, proposition_kind, status, confidence, activation,
-                   "natural", scope_entities, scope_actors,
-                   array_length(supporting_event_ids, 1) AS supporting_events,
-                   array_length(supporting_model_ids, 1) AS supporting_models,
-                   created_at
-            FROM models
-            WHERE tenant_id = $1
-            ORDER BY created_at ASC
-            """,
-            tenant_id,
-        )
-        edge_rows = await conn.fetch(
-            """
-            SELECT id, source_model_id, target_model_id, edge_kind, status,
-                   review_status, confidence, explanation, created_at
-            FROM model_edges
-            WHERE tenant_id = $1
-            ORDER BY created_at ASC
-            """,
-            tenant_id,
-        )
+        ),
+    }
 
-    summary["graph_health"] = _compute_graph_health(model_rows, edge_rows)
+
+async def _fetch_context_use_relation_contract(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+) -> dict[str, Any]:
+    row = await conn.fetchrow(
+        """
+        WITH contexts AS (
+          SELECT ops_applied->'context_use' AS context
+          FROM think_runs
+          WHERE tenant_id = $1
+            AND status = 'success'
+            AND ops_applied ? 'context_use'
+        )
+        SELECT
+          COUNT(*)::bigint AS context_use_runs,
+          COUNT(*) FILTER (
+            WHERE COALESCE(NULLIF(context->>'graph_selected_model_count', '')::int, 0) > 0
+          )::bigint AS graph_selected_runs,
+          COUNT(*) FILTER (
+            WHERE COALESCE(NULLIF(context->>'graph_relation_op_count', '')::int, 0) > 0
+          )::bigint AS graph_relation_op_runs,
+          COUNT(*) FILTER (
+            WHERE COALESCE((context->>'graph_no_edge_rationale_present')::boolean, false)
+          )::bigint AS graph_no_edge_rationale_runs,
+          COUNT(*) FILTER (
+            WHERE COALESCE((context->>'graph_selected_without_relation_ops')::boolean, false)
+          )::bigint AS graph_selected_without_relation_ops_runs,
+          COUNT(*) FILTER (
+            WHERE COALESCE((context->>'graph_relation_contract_satisfied')::boolean, false)
+          )::bigint AS graph_relation_contract_satisfied_runs,
+          COUNT(*) FILTER (
+            WHERE COALESCE(NULLIF(context->>'graph_selected_model_count', '')::int, 0) > 0
+              AND NOT COALESCE((context->>'graph_relation_contract_satisfied')::boolean, false)
+          )::bigint AS graph_relation_contract_failed_runs
+        FROM contexts
+        """,
+        tenant_id,
+    )
+    return _record_to_dict(row) if row is not None else {}
+
+
+async def _fetch_top_customer_model_scopes(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+) -> list[dict[str, Any]]:
+    return await _fetch_named_counts(
+        conn,
+        """
+        SELECT r.identity AS name, COUNT(DISTINCT m.id)::bigint AS value
+        FROM models m
+        JOIN LATERAL jsonb_array_elements(COALESCE(m.scope_entities, '[]'::jsonb)) e(value) ON true
+        JOIN resources r
+          ON r.tenant_id = m.tenant_id
+         AND r.id::text = e.value->>'id'
+         AND e.value->>'type' = 'customer'
+        WHERE m.tenant_id = $1
+        GROUP BY r.identity
+        ORDER BY 2 DESC, 1 ASC
+        LIMIT 20
+        """,
+        tenant_id,
+    )
+
+
+async def _fetch_model_layer_export_rows(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+) -> tuple[list[asyncpg.Record], list[asyncpg.Record]]:
+    model_rows = await conn.fetch(
+        """
+        SELECT id, proposition_kind, status, confidence, activation,
+               "natural", scope_entities, scope_actors,
+               array_length(supporting_event_ids, 1) AS supporting_events,
+               array_length(supporting_model_ids, 1) AS supporting_models,
+               created_at
+        FROM models
+        WHERE tenant_id = $1
+        ORDER BY created_at ASC
+        """,
+        tenant_id,
+    )
+    edge_rows = await conn.fetch(
+        """
+        SELECT id, source_model_id, target_model_id, edge_kind, status,
+               review_status, confidence, explanation, created_at
+        FROM model_edges
+        WHERE tenant_id = $1
+        ORDER BY created_at ASC
+        """,
+        tenant_id,
+    )
+    return list(model_rows), list(edge_rows)
+
+
+def _write_model_layer_report_artifacts(
+    *,
+    report_dir: Path,
+    summary: dict[str, Any],
+    model_rows: list[asyncpg.Record],
+    edge_rows: list[asyncpg.Record],
+    scenario: Scenario,
+    observation_ids: list[UUID],
+) -> None:
     _write_json(report_dir / "run_summary.json", summary)
     _write_jsonl(report_dir / "models.jsonl", [_record_to_dict(row) for row in model_rows])
     _write_jsonl(report_dir / "model_edges.jsonl", [_record_to_dict(row) for row in edge_rows])
     _write_jsonl(
         report_dir / "signal_manifest.jsonl",
-        [
-            {
-                "index": index,
-                "observation_id": str(observation_id),
-                "family": (signal.get("content_dict") or {}).get("family"),
-                "customer": (signal.get("content_dict") or {}).get("customer_name"),
-                "channel": signal["channel"],
-                "trust_tier": signal.get("trust_tier"),
-                "content": signal["content"],
-            }
-            for index, (observation_id, signal) in enumerate(
-                zip(
-                    observation_ids,
-                    [
-                        s
-                        for sequence in scenario.signal_sequences.values()
-                        for s in sequence
-                    ],
-                    strict=False,
-                )
-            )
-        ],
+        _model_layer_signal_manifest_rows(
+            scenario=scenario,
+            observation_ids=observation_ids,
+        ),
     )
     (report_dir / "model_layer_summary.md").write_text(_render_markdown(summary))
-    return summary
+
+
+def _model_layer_signal_manifest_rows(
+    *,
+    scenario: Scenario,
+    observation_ids: list[UUID],
+) -> list[dict[str, Any]]:
+    signals = [
+        signal
+        for sequence in scenario.signal_sequences.values()
+        for signal in sequence
+    ]
+    return [
+        {
+            "index": index,
+            "observation_id": str(observation_id),
+            "family": (signal.get("content_dict") or {}).get("family"),
+            "customer": (signal.get("content_dict") or {}).get("customer_name"),
+            "channel": signal["channel"],
+            "trust_tier": signal.get("trust_tier"),
+            "content": signal["content"],
+        }
+        for index, (observation_id, signal) in enumerate(
+            zip(observation_ids, signals, strict=False)
+        )
+    ]
 
 
 async def _fetch_distribution(
@@ -2165,7 +2416,8 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         f"- Archived models: {summary['archived_models']}",
         f"- Model edges: {summary['model_edges']}",
         f"- Relationship candidates: {summary.get('relationship_candidates', 0)}",
-        f"- Latent topology candidates: {summary.get('latent_topology_candidates', 0)}",
+        f"- Relationship candidates from topology discovery: "
+        f"{summary.get('relationship_candidates_from_topology', summary.get('latent_topology_candidates', 0))}",
         f"- Topology optimizer runs: {summary.get('topology_optimizer_run_distribution', {})}",
         f"- Scope entity sidecars: {summary.get('model_scope_entity_sidecars', 0)}",
         f"- State changes: {summary['state_changes']}",
@@ -2206,11 +2458,24 @@ def _render_markdown(summary: dict[str, Any]) -> str:
         "## Edge Kinds",
         _table(summary.get("edge_kind_distribution") or {}),
         "",
-        "## Relationship Candidates",
+        "## Relationship Candidate Lifecycle",
+        "```json",
+        json.dumps(
+            summary.get("relationship_candidate_lifecycle") or {},
+            indent=2,
+            sort_keys=True,
+        ),
+        "```",
+        "",
+        "## Relationship Proposal Kinds",
         _table(summary.get("relationship_candidate_kind_distribution") or {}),
         "",
-        "## Topology Objects",
-        _table(summary.get("topology_object_distribution") or {}),
+        "## Topology Discovery Patterns",
+        _table(
+            summary.get("topology_pattern_distribution")
+            or summary.get("topology_object_distribution")
+            or {}
+        ),
         "",
         "## Graph Health",
         "```json",
@@ -2297,8 +2562,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def main() -> int:
-    args = parse_args()
+def _validate_probe_args(args: argparse.Namespace) -> None:
     if args.signals <= 0:
         raise SystemExit("--signals must be positive")
     if args.think_limit < 0:
@@ -2314,11 +2578,43 @@ async def main() -> int:
     if args.topology_optimizer_batch_size <= 0:
         raise SystemExit("--topology-optimizer-batch-size must be positive")
 
-    run_id = args.run_id or f"company-e2e-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-    report_dir = args.report_root / f"model-layer-{run_id}"
-    print(f"building {args.signals}-signal scenario for {COMPANY_NAME}", flush=True)
-    scenario = build_scenario(args.signals, namespace=run_id)
 
+def _probe_run_id(args: argparse.Namespace) -> str:
+    return (
+        args.run_id
+        or f"company-e2e-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    )
+
+
+def _initial_seed_status(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "requested_models": args.seed_models,
+        "families": args.seed_families,
+        "models": 0,
+    }
+
+
+def _initial_post_commit_status() -> dict[str, Any]:
+    return {
+        "processed": 0,
+        "failed": 0,
+        "dead_lettered": 0,
+        "iterations": 0,
+    }
+
+
+def _initial_topology_optimizer_status(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "status": "skipped" if args.skip_topology_optimizer else "not_run",
+        "processed": 0,
+        "completed": 0,
+        "failed": 0,
+        "iterations": 0,
+        "metrics": {},
+    }
+
+
+async def _open_probe_runtime(args: argparse.Namespace) -> tuple[asyncpg.Pool, OllamaClient]:
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
         raise SystemExit("DATABASE_URL is not set")
@@ -2328,240 +2624,409 @@ async def main() -> int:
         max_size=args.pool_max_size,
         init=_register_codecs,
     )
-    embedder = OllamaClient(OllamaConfig.from_env())
-    started = time.monotonic()
-    think_status = "not_run"
-    seed_status: dict[str, Any] = {
+    return pool, OllamaClient(OllamaConfig.from_env())
+
+
+async def _prepare_probe_scenario(
+    args: argparse.Namespace,
+    *,
+    pool: asyncpg.Pool,
+    scenario: Scenario,
+    run_id: str,
+) -> dict[str, Any]:
+    if args.skip_migrations:
+        print("skipping migrations because --skip-migrations was set", flush=True)
+    else:
+        async with pool.acquire() as conn:
+            await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+
+    await materialize(scenario, pool=pool)
+    assert scenario.tenant_id is not None
+    print(f"tenant={scenario.tenant_id} run_id={run_id}", flush=True)
+    await _insert_extra_aliases(scenario, EntityAliasRepo(pool))
+    return await _seed_probe_models(args, pool=pool, tenant_id=scenario.tenant_id)
+
+
+async def _seed_probe_models(
+    args: argparse.Namespace,
+    *,
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+) -> dict[str, Any]:
+    seed_status = _initial_seed_status(args)
+    if not args.seed_models:
+        return seed_status
+
+    from scripts.run_incremental_feedback_loop_stress import _seed_company
+
+    print(
+        f"seeding {args.seed_models} starting models "
+        f"across {args.seed_families} families",
+        flush=True,
+    )
+    seeded = await _seed_company(
+        pool,
+        tenant_id=tenant_id,
+        families=args.seed_families,
+        total_models=args.seed_models,
+    )
+    seed_status = {
         "requested_models": args.seed_models,
         "families": args.seed_families,
-        "models": 0,
+        "models": seeded.total_models,
+        "insert_ms": round(seeded.insert_ms, 3),
+        "sidecars": seeded.sidecars,
     }
+    print(f"seed_status={json.dumps(seed_status, sort_keys=True)}", flush=True)
+    return seed_status
+
+
+async def _process_probe_signal_waves(
+    args: argparse.Namespace,
+    *,
+    pool: asyncpg.Pool,
+    scenario: Scenario,
+    embedder: OllamaClient,
+    run_id: str,
+) -> tuple[list[UUID], list[dict[str, Any]], dict[str, Any], dict[str, Any], str]:
+    assert scenario.tenant_id is not None
+    actor_repo = ActorRepo(pool)
+    alias_repo = EntityAliasRepo(pool)
+    observation_ids: list[UUID] = []
     processing_waves: list[dict[str, Any]] = []
-    post_commit_status: dict[str, Any] = {
-        "processed": 0,
-        "failed": 0,
-        "dead_lettered": 0,
-        "iterations": 0,
-    }
-    topology_optimizer_status: dict[str, Any] = {
-        "status": "skipped" if args.skip_topology_optimizer else "not_run",
-        "processed": 0,
-        "completed": 0,
-        "failed": 0,
-        "iterations": 0,
-        "metrics": {},
-    }
-    try:
-        if args.skip_migrations:
-            print("skipping migrations because --skip-migrations was set", flush=True)
-        else:
-            async with pool.acquire() as conn:
-                await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+    post_commit_status = _initial_post_commit_status()
+    topology_optimizer_status = _initial_topology_optimizer_status(args)
+    think_status = "not_run"
+    remaining_think = args.think_limit
+    provider = _build_cached_provider() if args.think_limit else None
+    batch_size = min(args.signal_batch_size, args.signals)
 
-        await materialize(scenario, pool=pool)
-        assert scenario.tenant_id is not None
-        print(f"tenant={scenario.tenant_id} run_id={run_id}", flush=True)
+    for offset in range(0, args.signals, batch_size):
+        wave = _probe_wave_metadata(
+            wave_index=len(processing_waves) + 1,
+            offset=offset,
+            current_batch_size=min(batch_size, args.signals - offset),
+        )
+        print(
+            f"wave={wave['wave']} injecting signals "
+            f"{wave['signal_start']}-{wave['signal_end']}",
+            flush=True,
+        )
+        batch_ids = await inject_generated_signals(
+            scenario,
+            pool=pool,
+            actor_repo=actor_repo,
+            alias_repo=alias_repo,
+            embedder=embedder,
+            run_id=run_id,
+            progress_every=args.progress_every,
+            offset=offset,
+            limit=int(wave["signal_end"]) - offset,
+        )
+        observation_ids.extend(batch_ids)
+        wave["injected"] = len(batch_ids)
+        wave["cumulative_signals"] = len(observation_ids)
 
-        actor_repo = ActorRepo(pool)
-        alias_repo = EntityAliasRepo(pool)
-        await _insert_extra_aliases(scenario, alias_repo)
-
-        if args.seed_models:
-            from scripts.run_incremental_feedback_loop_stress import _seed_company
-
-            print(
-                f"seeding {args.seed_models} starting models "
-                f"across {args.seed_families} families",
-                flush=True,
-            )
-            seeded = await _seed_company(
-                pool,
-                tenant_id=scenario.tenant_id,
-                families=args.seed_families,
-                total_models=args.seed_models,
-            )
-            seed_status = {
-                "requested_models": args.seed_models,
-                "families": args.seed_families,
-                "models": seeded.total_models,
-                "insert_ms": round(seeded.insert_ms, 3),
-                "sidecars": seeded.sidecars,
-            }
-            print(f"seed_status={json.dumps(seed_status, sort_keys=True)}", flush=True)
-
-        observation_ids: list[UUID] = []
-
-        remaining_think = args.think_limit
-        provider = _build_cached_provider() if args.think_limit else None
-        batch_size = min(args.signal_batch_size, args.signals)
-        for offset in range(0, args.signals, batch_size):
-            current_batch_size = min(batch_size, args.signals - offset)
-            wave_index = len(processing_waves) + 1
-            wave: dict[str, Any] = {
-                "wave": wave_index,
-                "signal_offset": offset,
-                "signal_start": offset + 1,
-                "signal_end": offset + current_batch_size,
-            }
-            print(
-                f"wave={wave_index} injecting signals "
-                f"{offset + 1}-{offset + current_batch_size}",
-                flush=True,
-            )
-            batch_ids = await inject_generated_signals(
-                scenario,
+        if provider is not None and remaining_think > 0:
+            think_status, remaining_think = await _process_probe_think_wave(
+                args,
                 pool=pool,
-                actor_repo=actor_repo,
-                alias_repo=alias_repo,
-                embedder=embedder,
+                scenario=scenario,
+                batch_ids=batch_ids,
+                remaining_think=remaining_think,
+                provider=provider,
+                wave=wave,
+                post_commit_status=post_commit_status,
+                topology_optimizer_status=topology_optimizer_status,
                 run_id=run_id,
-                progress_every=args.progress_every,
-                offset=offset,
-                limit=current_batch_size,
             )
-            observation_ids.extend(batch_ids)
-            wave["injected"] = len(batch_ids)
-            wave["cumulative_signals"] = len(observation_ids)
+        else:
+            wave["enqueued_t1"] = 0
+            wave["think_status"] = "not_run"
 
-            if provider is not None and remaining_think > 0:
-                think_count = min(len(batch_ids), remaining_think)
-                enqueued = await enqueue_t1_for_observations(
-                    pool,
-                    tenant_id=scenario.tenant_id,
-                    observation_ids=batch_ids,
-                    limit=think_count,
-                    run_id=run_id,
-                )
-                remaining_think -= enqueued
-                wave["enqueued_t1"] = enqueued
-                print(
-                    f"wave={wave_index} enqueued {enqueued} T1 triggers "
-                    f"(remaining_think={remaining_think})",
-                    flush=True,
-                )
+        processing_waves.append(wave)
+        if str(wave.get("think_status") or "").startswith("timeout:"):
+            break
 
-                try:
-                    await run_think_until_drain(
-                        scenario.tenant_id,
-                        pool=pool,
-                        provider=provider,
-                        timeout_seconds=args.think_timeout,
-                    )
-                    think_status = "drained"
-                    wave["think_status"] = "drained"
-                except TimeoutError as exc:
-                    think_status = f"timeout: {exc}"
-                    wave["think_status"] = think_status
-                    print(think_status, flush=True)
+    print(f"injected_total={len(observation_ids)}", flush=True)
+    return (
+        observation_ids,
+        processing_waves,
+        post_commit_status,
+        topology_optimizer_status,
+        think_status,
+    )
 
-                current_post_commit = await drain_post_commit_actions(
-                    pool,
-                    tenant_id=scenario.tenant_id,
-                    timeout_seconds=args.post_commit_timeout,
-                )
-                wave["post_commit_status"] = current_post_commit
-                _merge_numeric_status(post_commit_status, current_post_commit)
-                print(
-                    "post_commit="
-                    f"{json.dumps(current_post_commit, sort_keys=True)}",
-                    flush=True,
-                )
 
-                if not args.skip_topology_optimizer:
-                    current_topology = await drain_topology_optimizer(
-                        pool,
-                        tenant_id=scenario.tenant_id,
-                        timeout_seconds=args.topology_optimizer_timeout,
-                        batch_size=args.topology_optimizer_batch_size,
-                        lookback_hours=args.topology_optimizer_lookback_hours,
-                    )
-                    wave["topology_optimizer_status"] = current_topology
-                    _merge_numeric_status(
-                        topology_optimizer_status,
-                        current_topology,
-                        metric_key="metrics",
-                    )
-                    if current_topology.get("status") == "timeout":
-                        topology_optimizer_status["status"] = "timeout"
-                    elif topology_optimizer_status.get("status") != "timeout":
-                        topology_optimizer_status["status"] = "drained"
-                    print(
-                        "topology_optimizer="
-                        f"{json.dumps(current_topology, sort_keys=True)}",
-                        flush=True,
-                    )
-            else:
-                wave["enqueued_t1"] = 0
-                wave["think_status"] = "not_run"
+def _probe_wave_metadata(
+    *,
+    wave_index: int,
+    offset: int,
+    current_batch_size: int,
+) -> dict[str, Any]:
+    return {
+        "wave": wave_index,
+        "signal_offset": offset,
+        "signal_start": offset + 1,
+        "signal_end": offset + current_batch_size,
+    }
 
-            processing_waves.append(wave)
-            if str(wave.get("think_status") or "").startswith("timeout:"):
-                break
 
-        print(f"injected_total={len(observation_ids)}", flush=True)
+async def _process_probe_think_wave(
+    args: argparse.Namespace,
+    *,
+    pool: asyncpg.Pool,
+    scenario: Scenario,
+    batch_ids: list[UUID],
+    remaining_think: int,
+    provider: Any,
+    wave: dict[str, Any],
+    post_commit_status: dict[str, Any],
+    topology_optimizer_status: dict[str, Any],
+    run_id: str,
+) -> tuple[str, int]:
+    assert scenario.tenant_id is not None
+    think_count = min(len(batch_ids), remaining_think)
+    enqueued = await enqueue_t1_for_observations(
+        pool,
+        tenant_id=scenario.tenant_id,
+        observation_ids=batch_ids,
+        limit=think_count,
+        run_id=run_id,
+    )
+    remaining_think -= enqueued
+    wave["enqueued_t1"] = enqueued
+    print(
+        f"wave={wave['wave']} enqueued {enqueued} T1 triggers "
+        f"(remaining_think={remaining_think})",
+        flush=True,
+    )
 
-        summary = await collect_model_layer_report(
-            pool,
-            tenant_id=scenario.tenant_id,
+    try:
+        await run_think_until_drain(
+            scenario.tenant_id,
+            pool=pool,
+            provider=provider,
+            timeout_seconds=args.think_timeout,
+        )
+        think_status = "drained"
+        wave["think_status"] = "drained"
+    except TimeoutError as exc:
+        think_status = f"timeout: {exc}"
+        wave["think_status"] = think_status
+        print(think_status, flush=True)
+
+    await _drain_probe_post_commit(args, pool, scenario, wave, post_commit_status)
+    if not args.skip_topology_optimizer:
+        await _drain_probe_topology(args, pool, scenario, wave, topology_optimizer_status)
+    return think_status, remaining_think
+
+
+async def _drain_probe_post_commit(
+    args: argparse.Namespace,
+    pool: asyncpg.Pool,
+    scenario: Scenario,
+    wave: dict[str, Any],
+    post_commit_status: dict[str, Any],
+) -> None:
+    assert scenario.tenant_id is not None
+    current_post_commit = await drain_post_commit_actions(
+        pool,
+        tenant_id=scenario.tenant_id,
+        timeout_seconds=args.post_commit_timeout,
+    )
+    wave["post_commit_status"] = current_post_commit
+    _merge_numeric_status(post_commit_status, current_post_commit)
+    print(
+        "post_commit="
+        f"{json.dumps(current_post_commit, sort_keys=True)}",
+        flush=True,
+    )
+
+
+async def _drain_probe_topology(
+    args: argparse.Namespace,
+    pool: asyncpg.Pool,
+    scenario: Scenario,
+    wave: dict[str, Any],
+    topology_optimizer_status: dict[str, Any],
+) -> None:
+    assert scenario.tenant_id is not None
+    current_topology = await drain_topology_optimizer(
+        pool,
+        tenant_id=scenario.tenant_id,
+        timeout_seconds=args.topology_optimizer_timeout,
+        batch_size=args.topology_optimizer_batch_size,
+        lookback_hours=args.topology_optimizer_lookback_hours,
+    )
+    wave["topology_optimizer_status"] = current_topology
+    _merge_numeric_status(
+        topology_optimizer_status,
+        current_topology,
+        metric_key="metrics",
+    )
+    if current_topology.get("status") == "timeout":
+        topology_optimizer_status["status"] = "timeout"
+    elif topology_optimizer_status.get("status") != "timeout":
+        topology_optimizer_status["status"] = "drained"
+    print(
+        "topology_optimizer="
+        f"{json.dumps(current_topology, sort_keys=True)}",
+        flush=True,
+    )
+
+
+def _probe_run_config(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "signals": args.signals,
+        "think_limit": args.think_limit,
+        "signal_batch_size": args.signal_batch_size,
+        "seed_models": args.seed_models,
+        "seed_families": args.seed_families,
+        "skip_migrations": args.skip_migrations,
+        "skip_topology_optimizer": args.skip_topology_optimizer,
+        "topology_optimizer_batch_size": args.topology_optimizer_batch_size,
+        "topology_optimizer_timeout": args.topology_optimizer_timeout,
+        "topology_optimizer_lookback_hours": args.topology_optimizer_lookback_hours,
+    }
+
+
+async def _collect_probe_report(
+    args: argparse.Namespace,
+    *,
+    pool: asyncpg.Pool,
+    scenario: Scenario,
+    run_id: str,
+    report_dir: Path,
+    observation_ids: list[UUID],
+    think_status: str,
+    seed_status: dict[str, Any],
+    processing_waves: list[dict[str, Any]],
+    post_commit_status: dict[str, Any],
+    topology_optimizer_status: dict[str, Any],
+    started: float,
+) -> dict[str, Any]:
+    assert scenario.tenant_id is not None
+    summary = await collect_model_layer_report(
+        pool,
+        tenant_id=scenario.tenant_id,
+        run_id=run_id,
+        report_dir=report_dir,
+        scenario=scenario,
+        observation_ids=observation_ids,
+        think_status=think_status,
+        run_config=_probe_run_config(args),
+        seed_status=seed_status,
+        processing_waves=processing_waves,
+        post_commit_status=post_commit_status,
+        topology_optimizer_status=topology_optimizer_status,
+        elapsed_seconds=time.monotonic() - started,
+    )
+    _write_json(report_dir / "run_summary.json", summary)
+    (report_dir / "model_layer_summary.md").write_text(_render_markdown(summary))
+    return summary
+
+
+def _print_probe_report_summary(
+    *,
+    report_dir: Path,
+    summary: dict[str, Any],
+    seed_status: dict[str, Any],
+    processing_waves: list[dict[str, Any]],
+    post_commit_status: dict[str, Any],
+    topology_optimizer_status: dict[str, Any],
+) -> None:
+    print(f"report_dir={report_dir}", flush=True)
+    print(
+        json.dumps(
+            {
+                "tenant_id": summary["tenant_id"],
+                "run_id": summary["run_id"],
+                "signals": summary["signal_count"],
+                "active_models": summary["active_models"],
+                "model_edges": summary["model_edges"],
+                "relationship_candidates": summary["relationship_candidates"],
+                "relationship_candidates_from_topology": summary.get(
+                    "relationship_candidates_from_topology",
+                    summary["latent_topology_candidates"],
+                ),
+                "relationship_candidate_lifecycle": summary.get(
+                    "relationship_candidate_lifecycle",
+                ),
+                "seed_status": seed_status,
+                "processing_waves": len(processing_waves),
+                "think_runs_success": summary["think_runs_success"],
+                "think_runs_failed": summary["think_runs_failed"],
+                "pending_triggers": summary["pending_triggers"],
+                "pending_post_commit_actions": summary["pending_post_commit_actions"],
+                "dead_lettered_post_commit_actions": summary[
+                    "dead_lettered_post_commit_actions"
+                ],
+                "post_commit_status": post_commit_status,
+                "topology_optimizer_status": topology_optimizer_status,
+                "discovery_layer_counts": summary.get("discovery_layer_counts"),
+                "topology_optimizer_metric_totals": summary.get(
+                    "topology_optimizer_metric_totals"
+                ),
+                "cost": summary["cost"],
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+
+
+async def main() -> int:
+    args = parse_args()
+    _validate_probe_args(args)
+    run_id = _probe_run_id(args)
+    report_dir = args.report_root / f"model-layer-{run_id}"
+    print(f"building {args.signals}-signal scenario for {COMPANY_NAME}", flush=True)
+    scenario = build_scenario(args.signals, namespace=run_id)
+    pool, embedder = await _open_probe_runtime(args)
+    started = time.monotonic()
+    try:
+        seed_status = await _prepare_probe_scenario(
+            args,
+            pool=pool,
+            scenario=scenario,
+            run_id=run_id,
+        )
+        (
+            observation_ids,
+            processing_waves,
+            post_commit_status,
+            topology_optimizer_status,
+            think_status,
+        ) = await _process_probe_signal_waves(
+            args,
+            pool=pool,
+            scenario=scenario,
+            embedder=embedder,
+            run_id=run_id,
+        )
+        summary = await _collect_probe_report(
+            args,
+            pool=pool,
+            scenario=scenario,
             run_id=run_id,
             report_dir=report_dir,
-            scenario=scenario,
             observation_ids=observation_ids,
             think_status=think_status,
-            run_config={
-                "signals": args.signals,
-                "think_limit": args.think_limit,
-                "signal_batch_size": args.signal_batch_size,
-                "seed_models": args.seed_models,
-                "seed_families": args.seed_families,
-                "skip_migrations": args.skip_migrations,
-                "skip_topology_optimizer": args.skip_topology_optimizer,
-                "topology_optimizer_batch_size": args.topology_optimizer_batch_size,
-                "topology_optimizer_timeout": args.topology_optimizer_timeout,
-                "topology_optimizer_lookback_hours": (
-                    args.topology_optimizer_lookback_hours
-                ),
-            },
             seed_status=seed_status,
             processing_waves=processing_waves,
             post_commit_status=post_commit_status,
             topology_optimizer_status=topology_optimizer_status,
-            elapsed_seconds=time.monotonic() - started,
+            started=started,
         )
-        _write_json(report_dir / "run_summary.json", summary)
-        (report_dir / "model_layer_summary.md").write_text(_render_markdown(summary))
-        print(f"report_dir={report_dir}", flush=True)
-        print(
-            json.dumps(
-                {
-                    "tenant_id": summary["tenant_id"],
-                    "run_id": summary["run_id"],
-                    "signals": summary["signal_count"],
-                    "active_models": summary["active_models"],
-                    "model_edges": summary["model_edges"],
-                    "relationship_candidates": summary["relationship_candidates"],
-                    "latent_topology_candidates": summary["latent_topology_candidates"],
-                    "seed_status": seed_status,
-                    "processing_waves": len(processing_waves),
-                    "think_runs_success": summary["think_runs_success"],
-                    "think_runs_failed": summary["think_runs_failed"],
-                    "pending_triggers": summary["pending_triggers"],
-                    "pending_post_commit_actions": summary["pending_post_commit_actions"],
-                    "dead_lettered_post_commit_actions": summary[
-                        "dead_lettered_post_commit_actions"
-                    ],
-                    "post_commit_status": post_commit_status,
-                    "topology_optimizer_status": topology_optimizer_status,
-                    "discovery_layer_counts": summary.get("discovery_layer_counts"),
-                    "topology_optimizer_metric_totals": summary.get(
-                        "topology_optimizer_metric_totals"
-                    ),
-                    "cost": summary["cost"],
-                },
-                indent=2,
-                sort_keys=True,
-            ),
-            flush=True,
+        _print_probe_report_summary(
+            report_dir=report_dir,
+            summary=summary,
+            seed_status=seed_status,
+            processing_waves=processing_waves,
+            post_commit_status=post_commit_status,
+            topology_optimizer_status=topology_optimizer_status,
         )
     finally:
         await embedder.close()

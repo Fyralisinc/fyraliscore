@@ -80,12 +80,29 @@ def test_retrieval_question_planning_provider_routes_codex_to_spark_low_effort(
 
     assert isinstance(provider, CodexProvider)
     assert provider is not codex
+
     assert provider.config.provider == "codex"
     assert provider.config.model == "gpt-5.3-codex-spark"
     assert provider.config.api_key == "test-codex-key"
     assert provider.config.reasoning_effort == "low"
     assert provider.config.timeout_s == 24.0
     assert provider.config.max_retries == 0
+
+
+def test_think_inquiry_config_defaults_to_models_only(monkeypatch):
+    monkeypatch.delenv("THINK_INQUIRY_CONTEXT_PACKET_EVIDENCE_MODE", raising=False)
+
+    cfg = context_planner._think_inquiry_config()
+
+    assert cfg.context_packet_evidence_mode == "models_only"
+
+
+def test_think_inquiry_config_allows_explicit_rollback(monkeypatch):
+    monkeypatch.setenv("THINK_INQUIRY_CONTEXT_PACKET_EVIDENCE_MODE", "model_first")
+
+    cfg = context_planner._think_inquiry_config()
+
+    assert cfg.context_packet_evidence_mode == "model_first"
 
 
 def test_retrieval_question_planning_provider_respects_codex_model_override(
@@ -159,12 +176,14 @@ async def test_plan_context_builds_frame_and_preserves_retrieval_notes(
         embedder=None,
         llm_provider=None,
         mode=None,
+        config=None,
     ):
         assert actual_trigger is trigger
         assert conn == "conn"
         assert embedder == "embedder"
         assert llm_provider is None
         assert mode == "deep"
+        assert config.context_packet_evidence_mode == "models_only"
         return retrieval_result
 
     def fake_should_run_second_pass(*args, **kwargs):

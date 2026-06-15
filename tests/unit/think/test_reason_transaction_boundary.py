@@ -85,6 +85,7 @@ async def test_inferential_think_enters_run_once_without_wide_transaction(
     async def fake_record_cost(*args, **kwargs):
         return None
 
+    monkeypatch.setenv("THINK_NARROW_INFERENTIAL_TX", "1")
     monkeypatch.setattr(reason_mod, "is_authoritative", lambda _trigger: False)
     monkeypatch.setattr(reason_mod, "_run_once", fake_run_once)
     monkeypatch.setattr(reason_mod, "_record_cost_for_outcome", fake_record_cost)
