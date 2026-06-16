@@ -711,6 +711,97 @@ async def test_writer_full_mode_publishes_embedding_request_on_pending(
     assert payload["source"] == "slack"
 
 
+async def test_writer_large_document_defers_t1_and_publishes_summarization(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Large document observations should not trigger Think on a placeholder.
+
+    The writer inserts one pending-summary observation, leaves embedding
+    pending, skips the embedding publish, and emits a summarization request.
+    The summarizer worker owns the later content_text update + T1 enqueue.
+    """
+    tenant = await _seed_tenant(fresh_db, "tenant-large-doc")
+    long_text = "Quarterly plan: " + ("growth risk owner date metric " * 500)
+    env = NormalizedEnvelope(
+        envelope_version=1,
+        source="google_drive",
+        ingress_kind="backfill",
+        tenant_id=tenant,
+        raw_s3_key=(
+            f"dev/google_drive/{tenant}/2026-05/aa/{'a' * 40}.json.zst"
+        ),
+        content_hash="a" * 40,
+        raw_ingested_at=_NOW,
+        source_channel="google_drive:file",
+        content_text=long_text,
+        content={
+            "object_type": "file",
+            "file_id": "drive-file-1",
+            "name": "Quarterly Plan.pdf",
+            "mime_type": "application/pdf",
+            "is_document": True,
+            "text_dominant": True,
+            "extracted_chars": len(long_text),
+        },
+        occurred_at=_NOW,
+        trust_tier="authoritative",
+        kind="signal",
+        source_actor_ref=None,
+        external_id="gdrive:drive-file-1:1",
+        entities_hint=[],
+        normalized_at=_NOW,
+        ingress_metadata={},
+        idem_hints={},
+    )
+
+    capture = _CaptureProducer()
+    config = await _writer_config_with_db(
+        fresh_db, embedder=_DeterministicEmbedder(),
+    )
+
+    await writer_module._handle_message(
+        _envelope_bytes(env),
+        config=config,
+        dlq_producer=capture,
+        embedding_producer=capture,
+    )
+
+    row = await fresh_db.fetchrow(
+        """SELECT id, content_text, content, embedding, embedding_pending
+             FROM observations WHERE tenant_id = $1""",
+        tenant,
+    )
+    assert row is not None
+    assert "queued for summarization" in row["content_text"]
+    content = row["content"] if isinstance(row["content"], dict) else json.loads(row["content"])
+    assert content["summarization"]["status"] == "pending"
+    assert content["summarization"]["raw_s3_key"] == env.raw_s3_key
+    assert row["embedding"] is None
+    assert row["embedding_pending"] is True
+
+    trigger_count = await fresh_db.fetchval(
+        "SELECT count(*) FROM think_trigger_queue WHERE tenant_id = $1",
+        tenant,
+    )
+    assert trigger_count == 0
+
+    summary_publishes = [
+        (topic, value) for (topic, value, _key) in capture.published
+        if topic.startswith("ingestion.summarization")
+    ]
+    assert len(summary_publishes) == 1
+    assert summary_publishes[0][0] == "ingestion.summarization.google_drive"
+    payload = orjson.loads(summary_publishes[0][1])
+    assert payload["observation_id"] == str(row["id"])
+    assert payload["raw_s3_key"] == env.raw_s3_key
+
+    emb_publishes = [
+        topic for (topic, _value, _key) in capture.published
+        if topic.startswith("ingestion.embedding")
+    ]
+    assert emb_publishes == []
+
+
 # =====================================================================
 # 7. Permanent error → DLQ + offset committed (no transient retry).
 # =====================================================================
@@ -771,6 +862,37 @@ async def test_writer_parse_failure_dlqs_and_commits(
         tenant_cutover,
     )
     assert obs_count == 0
+
+
+async def test_full_mode_permanent_failure_uses_valid_dlq_kind() -> None:
+    """Regression for #46: permanent writer failures must reach the DLQ.
+
+    The old wire kind `writer.full_mode_permanent_failure` was not part of
+    WireFailureKind, so DLQEnvelope validation failed and publish_dlq silently
+    dropped the message. The permanent path now uses writer.invariant_failure.
+    """
+    tenant = uuid4()
+    env = _build_envelope(tenant, external_id="C01:permanent-failure")
+    capture = _CaptureProducer()
+
+    await writer_module._handle_full_mode_permanent_failure(
+        ValueError("bad draft"),
+        env=env,
+        dlq_producer=capture,
+        msg_value=_envelope_bytes(env),
+        msg_topic="ingestion.normalized.slack",
+        msg_partition=0,
+        msg_offset=12,
+        include_env_fields=True,
+    )
+
+    dlq_publishes = [
+        value for (topic, value, _key) in capture.published
+        if topic.startswith("ingestion.dlq")
+    ]
+    assert len(dlq_publishes) == 1
+    dlq = orjson.loads(dlq_publishes[0])
+    assert dlq["failure_kind"] == "writer.invariant_failure"
 
 
 async def _partition_name_for(occurred: dt.datetime) -> str:

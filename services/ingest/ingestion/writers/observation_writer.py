@@ -347,6 +347,7 @@ async def _full_mode_write(
     alias_repo: EntityAliasRepo | None,
     embedder: Any,
     embedding_producer: Any,
+    summarization_producer: Any,
 ) -> IngestResult:
     """Call `ingest_from_draft` per envelope. One transaction per
     envelope per Finding 4. Caller is responsible for catching
@@ -364,6 +365,9 @@ async def _full_mode_write(
         embedder=embedder,
         enqueue_trigger=True,
         embedding_producer=embedding_producer,
+        summarization_producer=summarization_producer,
+        raw_s3_key=env.raw_s3_key,
+        ingress_kind=env.ingress_kind,
     )
     if result.deduped:
         _bump("writer.full_mode_dedup_hits")
@@ -385,6 +389,7 @@ async def _attempt_partition_self_heal(
     *,
     config: WriterConfig,
     embedding_producer: Any,
+    summarization_producer: Any,
 ) -> str:
     """Ticket #44: heal a missing-partition write by creating the
     covering month and retrying the insert once.
@@ -445,6 +450,7 @@ async def _attempt_partition_self_heal(
             alias_repo=config.alias_repo,
             embedder=config.embedder,
             embedding_producer=embedding_producer,
+            summarization_producer=summarization_producer,
         )
     except asyncpg.exceptions.CheckViolationError as exc:
         if exc.constraint_name is not None:
@@ -516,6 +522,7 @@ class WriterConfig:
     # used for DLQ publishes (one IdempotentProducer can publish to
     # multiple topics).
     embedding_producer: Any = None
+    summarization_producer: Any = None
     # Batch-consume normalized messages and process tenant groups
     # concurrently. Defaults preserve the historical serial loop; prod
     # enables this via WRITER_BATCH_SIZE / WRITER_MAX_CONCURRENCY.
@@ -601,9 +608,17 @@ async def _handle_full_mode_permanent_failure(
             "error": str(exc)[:200],
         },
     )
+    # #46: this path historically published the wire kind
+    # "writer.full_mode_permanent_failure", which is NOT a member of
+    # WireFailureKind. DLQEnvelope construction raised a Pydantic
+    # ValidationError that publish_dlq swallowed via on_failure, so
+    # full-mode permanent failures were SILENTLY dropped (never reached
+    # the DLQ). Use the valid "writer.invariant_failure" kind — the same
+    # kind the parse-failure and partition-DLQ paths already use — so the
+    # envelope validates and the failure is durably recorded.
     await _publish_writer_dlq(
         producer=dlq_producer,
-        failure_kind="writer.full_mode_permanent_failure",
+        failure_kind="writer.invariant_failure",
         error_summary=f"{type(exc).__name__}: {str(exc)[:200]}",
         tenant_id=env.tenant_id if include_env_fields else None,
         source=env.source if include_env_fields else None,
@@ -737,6 +752,7 @@ async def _handle_message(
         return
 
     try:
+        summarization_producer = config.summarization_producer or embedding_producer
         await _full_mode_write(
             env,
             pool=config.pool,
@@ -744,6 +760,7 @@ async def _handle_message(
             alias_repo=config.alias_repo,
             embedder=config.embedder,
             embedding_producer=embedding_producer,
+            summarization_producer=summarization_producer,
         )
     except (ValidationError, HandlerNotFound, PayloadTooLarge) as exc:
         # Permanent error — DLQ + commit. Same shape as the
@@ -776,7 +793,10 @@ async def _handle_message(
         )
         try:
             status = await _attempt_partition_self_heal(
-                env, config=config, embedding_producer=embedding_producer,
+                env,
+                config=config,
+                embedding_producer=embedding_producer,
+                summarization_producer=summarization_producer,
             )
         except (ValidationError, HandlerNotFound, PayloadTooLarge) as exc2:
             # A permanent error surfaced only on the retry (not expected,

@@ -22,6 +22,9 @@ def test_topic_for_shape() -> None:
     assert topics.topic_for("raw", "slack") == "ingestion.raw.slack"
     assert topics.topic_for("normalized", "github") == "ingestion.normalized.github"
     assert topics.topic_for("embedding", "gmail") == "ingestion.embedding.gmail"
+    assert topics.topic_for("summarization", "google_drive") == (
+        "ingestion.summarization.google_drive"
+    )
     assert topics.topic_for("dlq", "jira") == "ingestion.dlq.jira"
 
 

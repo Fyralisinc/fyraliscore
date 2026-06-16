@@ -255,6 +255,12 @@ def _build_file_draft(payload: dict[str, Any]) -> ObservationDraft:
         "parents": payload.get("parents"),
         "has_extracted_text": bool(isinstance(extracted, str) and extracted.strip()),
         "extracted_chars": len(extracted) if isinstance(extracted, str) else 0,
+        "is_document": True,
+        "text_dominant": bool(isinstance(extracted, str) and extracted.strip()),
+        "text_yield": payload.get("_fyralis_text_yield") or (
+            "text" if isinstance(extracted, str) and extracted.strip() else "none"
+        ),
+        "needs_multimodal": bool(payload.get("_fyralis_needs_multimodal")),
     }
 
     # occurred_at — when the change happened: modifiedTime, then change time,

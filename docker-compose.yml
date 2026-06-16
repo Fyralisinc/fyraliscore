@@ -13,7 +13,9 @@
 #             google_calendar_watch_scheduler, google_drive_watch_scheduler
 #   backfill: oauth_poller, tenant_onboarding, source_onboarding,
 #             shard_fetch, reconciler, feels_onboarded_monitor
-#   consume : normalizer, observation_writer, dlq_writer, embedding_worker
+#   consume : normalizer, observation_writer, dlq_writer,
+#             summarization_worker, summarization_batch_worker,
+#             embedding_worker
 #   app     : think_worker, post_commit_worker, github_intel_worker
 #   (UI + TLS edge live in the demo overlay repo's docker-compose.demo.yml)
 #
@@ -297,6 +299,18 @@ services:
     <<: *worker
     container_name: company_os_dlq_writer
     command: python -m services.ingest.ingestion.writers.dlq_writer.dlq_writer
+    healthcheck: *consumer-healthcheck
+
+  summarization_worker:
+    <<: *worker
+    container_name: company_os_summarization_worker
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck: *consumer-healthcheck
+
+  summarization_batch_worker:
+    <<: *worker
+    container_name: company_os_summarization_batch_worker
+    command: python -m services.ingest.ingestion.writers.summarization_batch_worker
     healthcheck: *consumer-healthcheck
 
   embedding_worker:

@@ -1,0 +1,16 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Fyralis Local Postgres",
+      "Group": "Fyralis",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "company_os",
+      "Username": "company_os",
+      "Password": "company_os",
+      "SavePassword": true,
+      "SSLMode": "prefer",
+      "Comment": "Local Fyralis database used by the ingestion workers."
+    }
+  }
+}

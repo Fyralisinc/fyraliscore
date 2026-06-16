@@ -208,6 +208,32 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         has_healthcheck=True,
     ),
     _proc(
+        "summarization_worker",
+        "ingest-consumer",
+        (
+            "python",
+            "-m",
+            "services.ingest.ingestion.writers.summarization_worker.summarization_worker",
+        ),
+        ("production",),
+        "Kafka large-document summarization worker.",
+        compose_service="summarization_worker",
+        has_healthcheck=True,
+    ),
+    _proc(
+        "summarization_batch_worker",
+        "ingest-consumer",
+        (
+            "python",
+            "-m",
+            "services.ingest.ingestion.writers.summarization_batch_worker",
+        ),
+        ("production",),
+        "OpenAI Batch API worker for backfill document summarization.",
+        compose_service="summarization_batch_worker",
+        has_healthcheck=True,
+    ),
+    _proc(
         "embedding_worker",
         "ingest-consumer",
         (

@@ -69,6 +69,8 @@ services:
   normalizer: { <<: *sb-envfile }
   observation_writer: { <<: *sb-envfile }
   dlq_writer: { <<: *sb-envfile }
+  summarization_worker: { <<: *sb-envfile }
+  summarization_batch_worker: { <<: *sb-envfile }
   embedding_worker: { <<: *sb-envfile }
   embedding_backlog: { <<: *sb-envfile }
 

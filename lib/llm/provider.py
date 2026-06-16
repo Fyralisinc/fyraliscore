@@ -1514,6 +1514,10 @@ class CodexProvider(LLMProvider):
                     "strict": False,
                 }
             }
+        if self.config.reasoning_effort:
+            call_kwargs["reasoning"] = {
+                "effort": _codex_reasoning_effort(self.config.reasoning_effort)
+            }
 
         async def _do_call() -> Any:
             return await client.responses.create(

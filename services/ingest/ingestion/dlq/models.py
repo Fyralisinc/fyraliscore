@@ -35,14 +35,15 @@ from services.ingest.ingestion.raw_tier.envelope import SourceLiteral
 
 
 # Wire-side failure kinds. M3.1 shipped three; M3.2 adds the fourth
-# (`embedding.ollama_failure`). The DB CHECK enum was already extended
-# in migration 0051 with the corresponding bucket name
-# `embedding_ollama_failure`, so M3.2 needs no DB migration of its own.
+# (`embedding.ollama_failure`). Summarize-on-ingest adds
+# `summarization.llm_failure`, mapped to the same coarse DB bucket as writer
+# insert failures so no ingestion_failures CHECK migration is required.
 WireFailureKind = Literal[
     "normalizer.parse_failure",     # Pydantic / orjson decode failure on RawEnvelope
     "normalizer.invariant_failure", # EnvelopeInvariantError (M2.4)
     "writer.invariant_failure",     # NormalizedEnvelope rejected by writer
     "embedding.ollama_failure",     # OllamaError after client-level retries (M3.2)
+    "summarization.llm_failure",     # LLM summarizer terminal failure
 ]
 
 

@@ -79,25 +79,25 @@ def _backfill_days() -> int:
 def _extract_max_bytes() -> int:
     """Cap on extracted text per file (env-overridable)."""
     try:
-        return int(os.environ.get("GOOGLE_DRIVE_EXTRACT_MAX_BYTES", "65536"))
+        return int(os.environ.get("GOOGLE_DRIVE_EXTRACT_MAX_BYTES", "524288"))
     except ValueError:
-        return 65536
+        return 524288
 
 
 def _pdf_max_pages() -> int:
     try:
-        return int(os.environ.get("GOOGLE_DRIVE_PDF_MAX_PAGES", "50"))
+        return int(os.environ.get("GOOGLE_DRIVE_PDF_MAX_PAGES", "250"))
     except ValueError:
-        return 50
+        return 250
 
 
 def _max_extract_file_bytes() -> int:
     """Skip extraction for files larger than this (avoid downloading huge
-    binaries just to extract text). Env-overridable; default 10 MB."""
+    binaries just to extract text). Env-overridable; default 50 MB."""
     try:
-        return int(os.environ.get("GOOGLE_DRIVE_MAX_EXTRACT_FILE_BYTES", str(10 * 1024 * 1024)))
+        return int(os.environ.get("GOOGLE_DRIVE_MAX_EXTRACT_FILE_BYTES", str(50 * 1024 * 1024)))
     except ValueError:
-        return 10 * 1024 * 1024
+        return 50 * 1024 * 1024
 
 
 def _flag(name: str, default: bool = True) -> bool:
@@ -169,6 +169,8 @@ async def _maybe_extract(
     metadata observation intact."""
     mime = file.get("mimeType")
     if not is_extractable(mime) or file.get("trashed"):
+        file["_fyralis_text_yield"] = "none"
+        file["_fyralis_needs_multimodal"] = bool(mime) and not is_extractable(mime)
         return
     file_id = file.get("id")
     if not isinstance(file_id, str) or not file_id:
@@ -179,6 +181,8 @@ async def _maybe_extract(
     if size_raw is not None:
         try:
             if int(size_raw) > _max_extract_file_bytes():
+                file["_fyralis_text_yield"] = "skipped_size"
+                file["_fyralis_needs_multimodal"] = True
                 return
         except (TypeError, ValueError):
             pass
@@ -199,7 +203,12 @@ async def _maybe_extract(
         return
     if text:
         file["_fyralis_extracted_text"] = text
+        file["_fyralis_text_yield"] = "text"
+        file["_fyralis_needs_multimodal"] = False
         metrics.record_fetch_event("extracted")
+    else:
+        file["_fyralis_text_yield"] = "empty"
+        file["_fyralis_needs_multimodal"] = bool(mime == "application/pdf")
 
 
 async def _collab_records(
