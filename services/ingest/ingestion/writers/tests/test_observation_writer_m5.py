@@ -129,6 +129,7 @@ def _build_envelope(
     external_id: str = "C01:1.0",
     content_text: str = "hello from M5.2 parity test",
     content_hash: str | None = None,
+    ingress_kind: str = "webhook",
 ) -> NormalizedEnvelope:
     """Build a NormalizedEnvelope for `slack:message`. Trust tier and
     handler-shape match what the Slack handler would produce."""
@@ -139,7 +140,7 @@ def _build_envelope(
     return NormalizedEnvelope(
         envelope_version=1,
         source="slack",
-        ingress_kind="webhook",
+        ingress_kind=ingress_kind,
         tenant_id=tenant_id,
         raw_s3_key=(
             f"dev/slack/{tenant_id}/2026-05/"
@@ -430,6 +431,119 @@ async def test_writer_full_mode_skipped_when_flag_disabled(
     )
     assert writer_module.get_metrics()["writer.shadow_write_events"] == 1
     assert writer_module.get_metrics()["writer.full_mode_writes"] == 0
+    # F2 — the drop is also counted on the distinct alert-worthy metric.
+    assert writer_module.get_metrics()["writer.shadow_drop"] == 1
+
+
+# =====================================================================
+# 2b. F1 — backfill is ALWAYS persisted, even with the kill-switch FALSE.
+#     F2 — live drops are loud; backfill in the shadow path is an ERROR.
+# =====================================================================
+
+async def test_writer_persists_backfill_even_when_flag_disabled(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """F1 regression guard. A tenant with `kafka_path_enabled=FALSE` (the
+    circuit-breaker / operator kill-switch) must STILL have backfill
+    observations written — backfill has no inline fallback, so shadow-dropping
+    it is silent, unrecoverable data loss."""
+    tenant = await _seed_tenant(fresh_db, "tenant-backfill-killswitch")
+    await _disable_kafka_path(fresh_db, tenant)
+    env = _build_envelope(
+        tenant, external_id="C09:9.0", ingress_kind="backfill",
+    )
+
+    capture = _CaptureProducer()
+    config = await _writer_config_with_db(fresh_db, embedder=_DeterministicEmbedder())
+
+    await writer_module._handle_message(
+        _envelope_bytes(env),
+        config=config,
+        dlq_producer=capture,
+        embedding_producer=capture,
+    )
+
+    obs_count = await fresh_db.fetchval(
+        "SELECT count(*) FROM observations WHERE tenant_id = $1",
+        tenant,
+    )
+    assert obs_count == 1, (
+        f"Backfill envelope with flag=FALSE produced {obs_count} observations; "
+        f"expected 1 — F1 backfill exemption is broken (silent data loss)."
+    )
+    # NOT shadow-logged, NOT dropped.
+    assert writer_module.get_shadow_log() == []
+    metrics = writer_module.get_metrics()
+    assert metrics["writer.full_mode_writes"] == 1
+    assert metrics["writer.shadow_write_events"] == 0
+    assert metrics["writer.shadow_drop"] == 0
+
+
+async def test_writer_live_still_shadow_dropped_when_flag_disabled(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """F1 must NOT change live behaviour: a webhook (live) envelope with
+    flag=FALSE is still shadow-only (the inline path writes it), so the
+    writer must not double-write."""
+    tenant = await _seed_tenant(fresh_db, "tenant-live-killswitch")
+    await _disable_kafka_path(fresh_db, tenant)
+    env = _build_envelope(tenant, external_id="C10:1.0", ingress_kind="webhook")
+
+    capture = _CaptureProducer()
+    config = await _writer_config_with_db(fresh_db)
+
+    await writer_module._handle_message(
+        _envelope_bytes(env),
+        config=config,
+        dlq_producer=capture,
+        embedding_producer=capture,
+    )
+
+    obs_count = await fresh_db.fetchval(
+        "SELECT count(*) FROM observations WHERE tenant_id = $1",
+        tenant,
+    )
+    assert obs_count == 0
+    assert len(writer_module.get_shadow_log()) == 1
+    assert writer_module.get_metrics()["writer.shadow_drop"] == 1
+
+
+async def test_writer_backfill_shadow_only_when_no_pool() -> None:
+    """With no pool (pure shadow mode, e.g. the M2 soak harness), even a
+    backfill envelope stays shadow-only — F1 only forces a WRITE when the
+    writer actually has a pool to write through."""
+    env = _build_envelope(uuid4(), ingress_kind="backfill")
+    capture = _CaptureProducer()
+    config = writer_module.WriterConfig(pool=None, tenant_flags=None)
+
+    await writer_module._handle_message(
+        _envelope_bytes(env),
+        config=config,
+        dlq_producer=capture,
+        embedding_producer=capture,
+    )
+
+    assert len(writer_module.get_shadow_log()) == 1
+    assert writer_module.get_metrics()["writer.shadow_drop"] == 1
+
+
+async def test_backfill_in_shadow_path_logs_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """F2 defense-in-depth: if a backfill envelope ever reaches the shadow
+    path (which F1 makes impossible in full-mode), it is logged at ERROR with
+    the BUG reason so it is never silent."""
+    import logging
+
+    env = _build_envelope(uuid4(), ingress_kind="backfill")
+    with caplog.at_level(logging.WARNING, logger="services.ingest.ingestion.writers.observation_writer"):
+        await writer_module._record_shadow_event(env)
+
+    assert writer_module.get_metrics()["writer.shadow_drop"] == 1
+    recs = [r for r in caplog.records if r.message == "writer.shadow_drop"]
+    assert recs, "expected a writer.shadow_drop log record"
+    assert recs[-1].levelno == logging.ERROR
+    assert getattr(recs[-1], "reason", None) == "backfill_envelope_in_shadow_path_BUG"
 
 
 # =====================================================================
@@ -465,6 +579,8 @@ async def test_writer_full_mode_writes_when_flag_enabled(
     assert writer_module.get_shadow_log() == []
     assert writer_module.get_metrics()["writer.full_mode_writes"] == 1
     assert writer_module.get_metrics()["writer.shadow_write_events"] == 0
+    # F2 — no drop on the happy path.
+    assert writer_module.get_metrics()["writer.shadow_drop"] == 0
 
 
 # =====================================================================

@@ -53,9 +53,26 @@ ERROR HANDLING
     bump parse_failure, DLQ-publish, COMMIT offset. Same as M2.4.
   - Full-mode permanent error (ValidationError, HandlerNotFound):
     bump full_mode_failure, DLQ-publish, COMMIT offset.
-  - Full-mode transient error (any other Exception): re-raise.
-    The consumer loop exits; the supervisor restarts the writer;
-    Kafka redelivers from the last committed offset.
+  - Full-mode transient error (any other Exception): retry in place,
+    then re-raise so the consumer loop exits, the supervisor restarts
+    the writer, and Kafka redelivers from the last committed offset.
+    F3: a DETERMINISTIC poison message would otherwise redeliver forever
+    (head-of-line-blocking the partition — and any backfill sharing the
+    key). A durable, restart-surviving give-up counter
+    (`writer_poison_attempts`, keyed by topic/partition/offset) routes the
+    message to the DLQ and COMMITs after `_POISON_MAX_DURABLE_ATTEMPTS`
+    cross-restart give-ups, so the partition advances.
+
+KILL-SWITCH / BACKFILL EXEMPTION (F1)
+============================================================
+The `kafka_path_enabled` flag is a LIVE cutover switch. When FALSE, live
+ingress falls back to inline `ingest()` and the writer shadow-logs to avoid
+double-writing. Backfill has NO inline fallback (`shard_fetch` always
+publishes `ingress_kind="backfill"` and advances its cursor on the
+broker-ack), so the writer ALWAYS persists backfill envelopes regardless of
+the flag — otherwise a flag flip mid-backfill would silently drop rows the
+shard cursor has already moved past. Backfill is single-path, so writing it
+unconditionally cannot double-write.
 """
 from __future__ import annotations
 
@@ -114,6 +131,25 @@ _TRANSIENT_BACKOFF_MAX_S = float(
     os.environ.get("WRITER_TRANSIENT_BACKOFF_MAX_SEC", "30")
 )
 
+# F3 — durable, restart-surviving poison cap. The in-process retry above
+# resets to 0 on every process restart, so a DETERMINISTIC poison message (a
+# code bug — TypeError/KeyError/etc. — that fails identically every time) is
+# redelivered forever: retry 5x -> re-raise -> supervisor restarts -> Kafka
+# redelivers the SAME uncommitted offset -> repeat. That head-of-line-blocks
+# the partition indefinitely, stalling every record behind it on the same key
+# — INCLUDING concurrent backfill (live + backfill share the per-tenant key).
+# We persist a give-up counter keyed by (topic, partition, offset) that
+# survives restarts; after this many cross-restart give-ups the message is
+# routed to the DLQ and committed so the partition advances. The cap is set
+# HIGH so a genuine sustained infra outage (DB failover) rides out on the
+# in-process retry + restart loop and recovers BEFORE the cap, whereas a code
+# bug burns through give-ups fast. 0 disables the cap (pure legacy re-raise).
+# NOTE: messages DLQ'd during a long (> cap) outage need replay — that is the
+# companion drainer (F4), tracked separately.
+_POISON_MAX_DURABLE_ATTEMPTS = int(
+    os.environ.get("WRITER_POISON_MAX_DURABLE_ATTEMPTS", "50")
+)
+
 
 # Ticket #44 — partition self-heal guardrail. `observations` is range-
 # partitioned by `occurred_at` and the partition manager is forward-only
@@ -166,6 +202,16 @@ _metrics: dict[str, float] = {
     "writer.dlq_publish.skipped": 0.0,
     "writer.batches_consumed": 0.0,
     "writer.batch_messages_consumed": 0.0,
+    # F2 — an envelope reached the shadow path and was DROPPED (no row, no
+    # DLQ, offset committed). Distinct from the benign `shadow_write_events`
+    # (which counts the legacy M2 soak no-op): a SUSTAINED nonzero here means
+    # ingress is publishing while the writer shadow-logs — silent data loss /
+    # ingress↔writer drift. Alert-worthy.
+    "writer.shadow_drop": 0.0,
+    # F3 — a transient/unknown-error message exceeded the durable poison cap
+    # and was routed to the DLQ so the partition could advance. Any nonzero
+    # value warrants a look (a real poison message, or a > cap outage).
+    "writer.poison_dlq": 0.0,
 }
 
 
@@ -238,14 +284,28 @@ async def _record_shadow_event(env: NormalizedEnvelope) -> None:
     async with _get_lock():
         _shadow_log.append(event)
     _bump("writer.shadow_write_events")
-    log.info(
-        "writer.shadow_write_event",
+    # F2 — make the drop LOUD. Reaching the shadow path means this envelope
+    # was published to Kafka but the writer will NOT persist it (the flag is
+    # FALSE). For LIVE ingress that is by design (the inline path writes it);
+    # for BACKFILL it must be IMPOSSIBLE after F1 (backfill is exempt from the
+    # kill-switch and always persisted), so a backfill envelope here is a BUG,
+    # logged at ERROR as defense-in-depth for F1's invariant.
+    is_backfill = event.ingress_kind == "backfill"
+    _bump("writer.shadow_drop")
+    (log.error if is_backfill else log.warning)(
+        "writer.shadow_drop",
         extra={
             "tenant_id": event.tenant_id,
             "source": event.source,
+            "ingress_kind": event.ingress_kind,
             "source_channel": event.source_channel,
             "external_id": event.external_id,
             "content_hash_prefix": event.content_hash[:16],
+            "reason": (
+                "backfill_envelope_in_shadow_path_BUG"
+                if is_backfill
+                else "live_envelope_dropped_kafka_path_disabled"
+            ),
         },
     )
 
@@ -643,17 +703,34 @@ async def _handle_message(
 
     # ---- Flag-branched write ----
     should_full_mode = False
-    if config.tenant_flags is not None and config.pool is not None:
-        # Inverted default (kafka-first): a tenant with no flag row is
-        # full-mode — the writer persists the observation. Only an explicit
-        # FALSE (operator / circuit-breaker kill-switch) keeps the writer in
-        # shadow-only mode for that tenant. MUST read through
-        # `kafka_path_enabled()` — the same single-source default the ingress
-        # readers use — so the two ends never drift (ingress publishing while
-        # the writer shadow-logs would silently drop observations).
-        should_full_mode = await config.tenant_flags.kafka_path_enabled(
-            env.tenant_id,
-        )
+    if config.pool is not None:
+        if env.ingress_kind == "backfill":
+            # F1 — backfill is ALWAYS persisted, regardless of the kill-switch.
+            # The `kafka_path_enabled` flag is a LIVE cutover switch: when an
+            # operator / the circuit-breaker flips it FALSE, live ingress falls
+            # back to the inline `ingest()` path (so live data is still
+            # written) and the writer shadow-logs to avoid double-writing it.
+            # Backfill has NO inline fallback — `shard_fetch` publishes
+            # `ingress_kind="backfill"` straight to Kafka with no flag check and
+            # advances its shard cursor on the broker-ack. So a FALSE flag would
+            # make the writer shadow-DROP backfill (no row, no DLQ, offset
+            # committed, cursor already past it) — silent, success-shaped,
+            # unrecoverable data loss. Backfill is strictly single-path
+            # (shard_fetch → Kafka → normalizer → writer; the inline
+            # ingest()/ingest_from_draft() paths are live-only), so always
+            # writing it here can never double-write.
+            should_full_mode = True
+        elif config.tenant_flags is not None:
+            # Live ingress. Inverted default (kafka-first): a tenant with no
+            # flag row is full-mode. Only an explicit FALSE (operator /
+            # circuit-breaker kill-switch) keeps the writer in shadow-only mode.
+            # MUST read through `kafka_path_enabled()` — the same single-source
+            # default the ingress readers use — so the two ends never drift
+            # (ingress publishing while the writer shadow-logs would silently
+            # drop observations).
+            should_full_mode = await config.tenant_flags.kafka_path_enabled(
+                env.tenant_id,
+            )
 
     if not should_full_mode:
         await _record_shadow_event(env)
@@ -875,6 +952,87 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
     return {"consumed": consumed}
 
 
+# ---------------------------------------------------------------------
+# F3 — durable poison-attempt counter (survives process restarts).
+# Keyed by Kafka coordinates, NOT tenant — it is infra bookkeeping about a
+# stuck log position, so the table carries no tenant_id / RLS (same pattern
+# as workflow_states/workflow_signals).
+# ---------------------------------------------------------------------
+_POISON_BUMP_SQL = """
+INSERT INTO writer_poison_attempts (topic, partition, "offset", attempts, last_error)
+VALUES ($1, $2, $3, 1, $4)
+ON CONFLICT (topic, partition, "offset") DO UPDATE
+   SET attempts = writer_poison_attempts.attempts + 1,
+       last_seen_at = now(),
+       last_error = EXCLUDED.last_error
+RETURNING attempts
+"""
+
+_POISON_CLEAR_SQL = """
+DELETE FROM writer_poison_attempts
+ WHERE topic = $1 AND partition = $2 AND "offset" = $3
+"""
+
+
+async def _bump_durable_poison_attempts(
+    config: WriterConfig,
+    msg: Any,
+    *,
+    last_error: str,
+) -> int:
+    """Increment and return the restart-surviving give-up count for this
+    message's (topic, partition, offset). Best-effort: a counter-store outage
+    returns 0 so the caller falls through to the legacy re-raise — we NEVER
+    DLQ a message because the bookkeeping itself failed.
+    """
+    if config.pool is None or _POISON_MAX_DURABLE_ATTEMPTS <= 0:
+        return 0
+    try:
+        async with config.pool.acquire() as conn:
+            return int(
+                await conn.fetchval(
+                    _POISON_BUMP_SQL,
+                    msg.topic, int(msg.partition), int(msg.offset), last_error,
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 — bookkeeping must never crash the writer
+        log.warning(
+            "writer.poison_counter_bump_failed",
+            extra={
+                "topic": getattr(msg, "topic", None),
+                "partition": getattr(msg, "partition", None),
+                "offset": getattr(msg, "offset", None),
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:200],
+            },
+        )
+        return 0
+
+
+async def _clear_durable_poison_attempts(config: WriterConfig, msg: Any) -> None:
+    """Drop the poison counter row once a message finally succeeds or is DLQ'd,
+    so a transient blip that later recovers doesn't accrue toward the cap. Best-
+    effort; a stale row is harmless (its offset is committed and never recurs,
+    and the last_seen_at janitor index backs up cleanup).
+    """
+    if config.pool is None or _POISON_MAX_DURABLE_ATTEMPTS <= 0:
+        return
+    try:
+        async with config.pool.acquire() as conn:
+            await conn.execute(
+                _POISON_CLEAR_SQL,
+                msg.topic, int(msg.partition), int(msg.offset),
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "writer.poison_counter_clear_failed",
+            extra={
+                "topic": getattr(msg, "topic", None),
+                "error_type": type(exc).__name__,
+            },
+        )
+
+
 async def _handle_message_with_retry(
     msg: Any,
     *,
@@ -907,12 +1065,59 @@ async def _handle_message_with_retry(
                 msg_partition=msg.partition,
                 msg_offset=msg.offset,
             )
+            if attempt > 0:
+                # Recovered after in-process retries — clear any durable poison
+                # counter so a transient blip doesn't carry toward the cap.
+                await _clear_durable_poison_attempts(config, msg)
             return
         except Exception as exc:  # noqa: BLE001 — transient; bounded retry
             attempt += 1
             _bump("writer.transient_retry")
             if attempt >= _TRANSIENT_MAX_ATTEMPTS or stop_event.is_set():
                 _bump("writer.transient_giveup")
+                # F3 — a shutdown-driven give-up is NOT poison: re-raise so the
+                # loop exits cleanly and the offset replays on restart. Only a
+                # non-shutdown give-up counts toward the durable poison cap.
+                if not stop_event.is_set():
+                    durable = await _bump_durable_poison_attempts(
+                        config, msg,
+                        last_error=f"{type(exc).__name__}: {str(exc)[:200]}",
+                    )
+                    if 0 < _POISON_MAX_DURABLE_ATTEMPTS <= durable:
+                        # Deterministic poison: redelivered past the cap across
+                        # restarts. Park to DLQ and return so the caller commits
+                        # and the partition (incl. any backfill behind it on the
+                        # same key) advances instead of jamming forever.
+                        _bump("writer.poison_dlq")
+                        log.error(
+                            "writer.poison_dlq",
+                            extra={
+                                "topic": msg.topic,
+                                "partition": msg.partition,
+                                "offset": msg.offset,
+                                "durable_attempts": durable,
+                                "error_type": type(exc).__name__,
+                                "error": str(exc)[:200],
+                            },
+                        )
+                        await _publish_writer_dlq(
+                            producer=dlq_producer,
+                            failure_kind="writer.invariant_failure",
+                            error_summary=(
+                                f"transient_poison: {type(exc).__name__}: "
+                                f"{str(exc)[:200]} (durable_attempts={durable})"
+                            ),
+                            msg_bytes=msg.value,
+                            error_context={
+                                "reason": "transient_poison",
+                                "durable_attempts": durable,
+                                "topic": msg.topic,
+                                "partition": msg.partition,
+                                "offset": msg.offset,
+                            },
+                        )
+                        await _clear_durable_poison_attempts(config, msg)
+                        return  # caller commits → partition advances
                 raise
             backoff = min(
                 _TRANSIENT_BACKOFF_MAX_S,
