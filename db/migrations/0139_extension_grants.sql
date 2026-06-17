@@ -1,5 +1,5 @@
 -- =====================================================================
--- 0127_extension_grants.sql — the capability store + the read-only role
+-- 0139_extension_grants.sql — the capability store + the read-only role
 -- =====================================================================
 -- ADR-0004 §A.5 / roadmap E2. Two things:
 --   1. `extension_grants` — per-(tenant, extension) capability grant. The

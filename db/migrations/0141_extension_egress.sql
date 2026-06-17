@@ -1,5 +1,5 @@
 -- =====================================================================
--- 0129_extension_egress.sql — the egress delivery read-model (E3.1)
+-- 0141_extension_egress.sql — the egress delivery read-model (E3.1)
 -- =====================================================================
 -- The Kafka projection (ext.egress.v1) is the transport; this is the host-managed
 -- DELIVERY state that backs the two ways a developer-hosted extension consumes it:

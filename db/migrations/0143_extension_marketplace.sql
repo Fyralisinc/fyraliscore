@@ -1,5 +1,5 @@
 -- =====================================================================
--- 0131_extension_marketplace.sql — the curated extension registry (E4)
+-- 0143_extension_marketplace.sql — the curated extension registry (E4)
 -- =====================================================================
 -- ADR-0004 E4 / roadmap M8. A submitted extension version moves through:
 --   submitted → (automated gate: manifest lint + scope justification + callback

@@ -1,10 +1,10 @@
 -- =====================================================================
--- 0128_extension_oauth_clients.sql — extension identity (OAuth2 clients)
+-- 0140_extension_oauth_clients.sql — extension identity (OAuth2 clients)
 -- =====================================================================
 -- ADR-0004 DP1.4 / roadmap M1. Each extension authenticates to Fyralis as a
 -- registered OAuth2 client (client_credentials grant → short-lived bearer JWT).
 -- This is the IDENTITY of the extension, distinct from the per-(tenant,extension)
--- capability GRANT in `extension_grants` (0127): the token says "who is calling",
+-- capability GRANT in `extension_grants` (0139): the token says "who is calling",
 -- the grant says "what they may do, for which tenant".
 --
 --   * `client_secret_hash` is a PBKDF2-SHA256 verifier ("pbkdf2$iter$salt$hash") —

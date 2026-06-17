@@ -1,12 +1,12 @@
 -- =====================================================================
--- 0130_extension_governance.sql — audit, kill-switch, provenance (E3.3-3.5, E2.8)
+-- 0142_extension_governance.sql — audit, kill-switch, provenance (E3.3-3.5, E2.8)
 -- =====================================================================
 -- The governance trio + provenance foundation for the extension plane:
 --   1. extension_audit_log  — what each extension READ and WROTE, per tenant
 --      (E3.4). Append-only; queried by ops + the tenant admin console.
 --   2. extension_killswitch — global instant disable (E3.5). A row = the
 --      extension is hard-off everywhere: no token issued, no read/write/stream,
---      regardless of grants. Per-tenant disable stays grant-revocation (0127).
+--      regardless of grants. Per-tenant disable stays grant-revocation (0139).
 --   3. model_provenance     — the set of source identities (incl. ext ids) that
 --      materially drove each synthesized Model (E2.8 foundation). Lets a Model
 --      driven by a third-party extension be surfaced as contestable.
