@@ -84,13 +84,11 @@ discord, gmail, notion, google_calendar, google_drive, jira, mercury, quickbooks
 
 ## 🟠 `code_intel`
 
-See [Ingest](../architecture/ingest.md).
-
-| Feature | Expected | Current status | Severity |
-|---------|----------|----------------|:--------:|
-| Code-graph reachability | Blast-radius/code-search return real dependents per GitHub signal | Only the **read** path is live (via `github_intel`); the index/embed/reindex **write** path has no production caller → `code_snapshots` never populated → results effectively `indexed:false` | high |
-| Self-update / reindex loop | Default-branch advances trigger reindex keeping the graph live | Worker writes `code_intel_index_triggers`, but `reindex` runs only when `CODE_INTEL_REINDEX_ROOT` is set — **absent from the worker's compose env** → triggers accumulate unconsumed | high |
-| Code-RAG embedding fill | Pending `code_embeddings` get batch-embedded for `/code-search` | Only caller of `fill_pending_embeddings` is the demo script → embeddings stay pending forever; code-search empty outside demo | medium |
+**Extracted to a separate repo (`Fyralisinc/github-intel`)** as the first step of the
+interface-platform plan; `code_intel` + `github_intel` are no longer part of core. The
+prior readiness gaps (reindex write-path never wired, embedding fill demo-only) travel
+with it and resolve when it returns as the first external interface. See
+[Interfaces & Extensions](../architecture/interfaces.md) and ADR-0004.
 
 ## 🟠 Product surfaces & substrate fidelity
 

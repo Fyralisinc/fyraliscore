@@ -1,7 +1,7 @@
 # Ingest — Signal Intake
 
-> Source: `services/ingest/` (packages `ingestion`, `integrations`, `synthetic`,
-> `code_intel`, `github_intel`). Part of the [architecture overview](index.md).
+> Source: `services/ingest/` (packages `ingestion`, `integrations`, `synthetic`).
+> Part of the [architecture overview](index.md).
 
 **One-line:** normalizes every external company signal into a tenant-scoped
 `ObservationDraft`, persists it as a deduped [observation](../glossary.md), and
@@ -28,8 +28,8 @@ circuit-breaker **kill-switch**) forces it back to inline. Ingress and the write
 read this through one helper (`TenantFlags.kafka_path_enabled()`) so they cannot
 drift. See [ADR-0001](../adr/0001-kafka-first-ingestion-default.md).
 
-**The 7-step ingest** (`core.py`): (1) handler extracts an `ObservationDraft`
-[+ step 1.5 inline GitHub enrichment for `github:webhook`]; (2) pre-assign a
+**The 7-step ingest** (`core.py`): (1) handler extracts an `ObservationDraft`;
+(2) pre-assign a
 `uuid7`; (3) `ActorRepo` resolves the source actor ref (misses →
 `content._unresolved_actor_ref`); (4) `EntityAliasRepo` fast-path entity lookup
 over 1–3-gram phrases (misses → `content._unresolved_phrases` for the
@@ -58,12 +58,19 @@ inline `200`. The request-path flush is bounded by `CUTOVER_FLUSH_TIMEOUT_SEC`
 (default 2.0s) so a slow broker trips the inline fallback fast. Per-source topic
 lanes prevent head-of-line blocking across sources.
 
-**Intelligence enrichment** — `code_intel` maintains a commit-SHA-versioned
-per-repo code graph + code-RAG embeddings ("blast radius"); `github_intel`
-maintains PR/CI/branch/issue FSMs from `github:webhook` observations and writes
-causal context inline into the observation's `content['intelligence']`
-(raw-on-failure) and to `github_signal_enrichment` (an ordered per-repo worker
-drains `github_intel_queue`).
+!!! note "Planned: large payloads bypass the 1 MB inline shape (ADR-0005)"
+    Today every payload must fit the *one event = one small JSON = one
+    `content_text` = one vector* shape (1 MB gateway cap; per-source `content_text`
+    truncation; Drive's 10 MB / 64 KB / 50-page caps). The
+    [Large Object Pipeline](../adr/0005-large-object-pipeline.md) changes that:
+    handlers will emit a typed `LargeContentRef` instead of fetching/extracting big
+    content inline, and an async chain (`ingestion.blob.{source}` →
+    `ingestion.extract` → `ingestion.chunk_embed`) streams full bytes into the
+    `fyralis-blobs` tier, extracts them in full, and writes one row per chunk to a
+    new `observation_chunks` multi-vector table. Class-B oversized structured JSON
+    (Carta/Jira/QuickBooks/HiBob/AWS) fans out into child observations. None of this
+    is built yet — it is a Proposed ADR with a phased plan at
+    `specs/large-object-pipeline/plan.md`.
 
 ## How it's wired
 
@@ -77,7 +84,6 @@ graph TD
     ING["core.ingest()"]
     REG["Handler registry"]
     DRAFT["ObservationDraft"]
-    GHI["github_intel inline enrich"]
     IFD["core.ingest_from_draft()"]
     OREPO["ObservationRepository"]
     OBS[("observations")]
@@ -95,7 +101,6 @@ graph TD
     SYN -->|"direct injection"| ING
     ING --> REG --> DRAFT
     ING --> IFD
-    IFD -->|"if github:webhook"| GHI
     IFD -->|"ActorRepo · EntityAliasRepo · Ollama"| IFD
     IFD --> OREPO --> OBS
     IFD -->|"step 7"| TTQ
@@ -144,7 +149,6 @@ see [ADR-0003](../adr/0003-telegram-mtproto-user-account-ingestion.md) and the
 | Observation writer | `services/ingest/ingestion/writers/observation_writer.py` | Kafka Path A: normalized → `ingest_from_draft` when full-mode. |
 | Cutover circuit breaker | `services/ingest/ingestion/feature_flags/circuit_breaker.py` | Singleton lag guardrail — per-source lag → auto-flips `kafka_path_enabled=FALSE` on sustained breach. `python -m services.ingest.ingestion.feature_flags`. |
 | Re-enable tool | `scripts/reenable_kafka_path.py` | Operator: list tripped tenants + flip one back onto the Kafka path. |
-| GitHub intel | `services/ingest/github_intel/worker.py`, `api.py` | Per-repo FSM + enrichment worker; read-only `/github-intel/*` router. |
 | Integrations OAuth | `services/ingest/integrations/router.py` | `/integrations/{provider}/{install,callback}` (Slack/Discord/GitHub/Notion). |
 | Discord gateway worker (HA) | `scripts/run_discord_gateway_worker.py`, `services/ingest/integrations/discord/gateway/{worker,lifecycle,leader_lock,session_state}.py` | The single live WSS consumer for Discord. A bot token may be connected by exactly **one** gateway session — two replicas double-deliver every frame. The launcher composes `lifecycle.py`: it acquires the `gateway:discord:leader_lock` Redis lease (M4.1, 30s TTL / 10s refresh) **before** connecting and refreshes it alongside the WS loop, standing down (not fighting) when another pod takes over. `REDIS_URL` is **mandatory** — without the lease there is no double-delivery guard, so a missing DSN fails loud (exit 2). For crash-RESUME (M4.2) it loads the persisted `gateway_session_state` on startup (so a restart RESUMEs and Discord replays buffered frames instead of re-IDENTIFYing) and passes an `on_dispatched` save hook that persists the session cursor after every dispatched frame (keyed by `DISCORD_CLIENT_ID`; RESUME degrades off, lease stays, when it's unset). Lease-acquire timeout / mid-run loss exit `3` (transient → orchestrator restarts to stand by). |
 | Telegram gateway worker (HA) | `scripts/run_telegram_gateway_worker.py`, `services/ingest/integrations/telegram/gateway/{worker,dispatch,client,session_state}.py` | The single live MTProto updates connection for Telegram — the Discord-gateway analog. A Telegram authorization may be driven by only one live connection at a time, so the launcher acquires the `gateway:telegram:leader_lock` Redis lease (`REDIS_URL` mandatory) **before** connecting. Holds the persistent updates connection on the **live session**, advances the `pts/qts/seq/date` update-state (`telegram_update_state`) using `updates.getDifference`/`getChannelDifference` as the native reconciler, and shadow-writes each update to `ingestion.raw.telegram` (`ingress_kind=gateway`) for the kafka-first path (inline `core.ingest` fallback). Backfill runs on a **separate** authorization (the backfill session) so the two never share one `auth_key` — see [ADR-0003](../adr/0003-telegram-mtproto-user-account-ingestion.md). |
@@ -225,8 +229,7 @@ gateway dispatch, the synthetic injector, and the Kafka `raw`/`normalized` topic
 
 **Outbound** *(verified)*: `services.domain.observations` (insert + state-change
 NOTIFY + partition self-heal), `services.domain.actors` / `entity_aliases`,
-`lib.embeddings` (Ollama), `think_trigger_queue`, S3 + Kafka, and inline
-`github_intel`/`code_intel` enrichment.
+`lib.embeddings` (Ollama), `think_trigger_queue`, and S3 + Kafka.
 
 ## Design rationale
 

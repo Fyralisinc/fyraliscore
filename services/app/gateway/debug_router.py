@@ -168,6 +168,11 @@ def build_debug_router() -> APIRouter:
         stats,
         methods=["GET"],
     )
+    router.add_api_route(
+        "/interfaces",
+        list_interfaces,
+        methods=["GET"],
+    )
     return router
 
 
@@ -697,6 +702,97 @@ async def stats(req: Request):
             tid,
         )
     return {"stats": _jsonify(row), "tenant_id": str(tid)}
+
+
+async def list_interfaces(req: Request):
+    """Discovered interface manifests + the live attach seams.
+
+    Read-only, no tenant scope: one place to see every installed extension's
+    declared manifest, the draft-enricher channels currently registered, and
+    the gateway extensions discovered. A bad/missing manifest is simply absent
+    (discovery is failure-isolated) — never a 500.
+    """
+    from lib.extensions.manifest import host_api_version
+    from lib.extensions.registry import load_manifests
+    from services.ingest.ingestion import enrichers as _enrichers
+
+    active, rejected = load_manifests()
+    manifests = [
+        {
+            "id": m.id,
+            "version": m.version,
+            "publisher": m.publisher,
+            "trust_tier": m.trust_tier,
+            "engines_fyralis_host_api": m.engines_fyralis_host_api,
+            "contributes": list(m.contributes),
+            "activation_events": list(m.activation_events),
+            "feature_flag": m.feature_flag,
+            "capabilities": m.capabilities,
+        }
+        for m in active
+    ]
+    rejected_manifests = [
+        {"id": r.manifest.id, "version": r.manifest.version, "reason": r.reason}
+        for r in rejected
+    ]
+
+    draft_enrichers = {
+        ch: _enrichers.enricher_names(ch)
+        for ch in _enrichers.registered_channels()
+    }
+
+    gateway_extensions: list[dict[str, Any]] = []
+    try:
+        from services.app.gateway.extensions import discovered_extensions
+
+        for ext in discovered_extensions():
+            gateway_extensions.append(
+                {
+                    "name": ext.name,
+                    "routers": len(ext.routers),
+                    "startup_hooks": len(ext.startup_hooks),
+                    "public_path_prefixes": list(ext.public_path_prefixes),
+                }
+            )
+    except Exception:  # noqa: BLE001 - discovery must never 500 this endpoint
+        pass
+
+    # Per-tenant install state (grant + enablement) when a tenant + pool are
+    # resolvable. Best-effort: never 500 this endpoint (the grants table may
+    # be unmigrated, or no tenant header present).
+    installed: list[dict[str, Any]] | None = None
+    tenant_for_install: str | None = None
+    try:
+        tid = _resolve_tenant(req)
+        pool = await _pool_from_request(req)
+        from services.platform.extensions.lifecycle import list_installed
+
+        rows = await list_installed(pool, tenant_id=tid, manifests=active)
+        installed = [
+            {
+                "extension_id": r.extension_id,
+                "enabled": r.enabled,
+                "granted": r.granted,
+                "feature_flag": r.feature_flag,
+                "trust_ceiling": r.trust_ceiling,
+                "granted_by": r.granted_by,
+                "capabilities": r.capabilities,
+            }
+            for r in rows
+        ]
+        tenant_for_install = str(tid)
+    except Exception:  # noqa: BLE001 - install state is best-effort
+        installed = None
+
+    return {
+        "host_api_version": host_api_version(),
+        "interfaces": manifests,
+        "rejected_interfaces": rejected_manifests,
+        "draft_enrichers": draft_enrichers,
+        "gateway_extensions": gateway_extensions,
+        "tenant": tenant_for_install,
+        "installed": installed,
+    }
 
 
 __all__ = ["build_debug_router"]

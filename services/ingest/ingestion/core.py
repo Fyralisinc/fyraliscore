@@ -360,7 +360,17 @@ async def ingest_from_draft(
             f"channel={channel!r}"
         )
 
-    await _maybe_enrich_github_draft(channel, draft, pool=pool, tenant_id=tenant_id)
+    # ---- step 1.5: draft enrichment (registered enrichers; raw-on-failure) ----
+    # Channel-keyed enrichers may augment draft.content IN PLACE before
+    # persistence, so the same observation row carries the derived signal (e.g.
+    # the github-intel extension's inline causal enrichment). Core discovers
+    # enrichers via the company_os.draft_enrichers entry-point group — it never
+    # imports an extension. No-op when none are registered; any enricher failure
+    # is swallowed inside run_enrichers so the RAW draft still persists.
+    from services.ingest.ingestion.enrichers import run_enrichers
+
+    await run_enrichers(channel, draft, pool=pool, tenant_id=tenant_id)
+
     summary_pending = (
         summarization_producer is not None
         and _prepare_document_summarization(
@@ -369,6 +379,8 @@ async def ingest_from_draft(
             ingress_kind=ingress_kind,
         )
     )
+
+    # ---- step 2: pre-assign UUID v7 ----------------------------------
     obs_id = uuid7()
     actor = await _resolve_actor(draft, actor_repo)
     entities = await _resolve_entities(draft, alias_repo, tenant_id)
@@ -414,23 +426,6 @@ async def ingest_from_draft(
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
-
-
-async def _maybe_enrich_github_draft(
-    channel: str,
-    draft: ObservationDraft,
-    *,
-    pool: asyncpg.Pool,
-    tenant_id: UUID,
-) -> None:
-    if channel != "github:webhook":
-        return
-    try:
-        from services.ingest.github_intel.inline import maybe_enrich_github_draft
-
-        await maybe_enrich_github_draft(draft, pool=pool, tenant_id=tenant_id)
-    except Exception:  # noqa: BLE001 — enrichment must never break ingest
-        pass
 
 
 async def _resolve_actor(

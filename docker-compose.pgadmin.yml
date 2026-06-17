@@ -1,31 +1,34 @@
-# Local pgAdmin overlay.
+# pgAdmin overlay — visually observe the extension working.
 #
-# Start with:
+# Joins the base stack's default network so it reaches the Postgres container as
+# host `postgres:5432`. A pre-registered server (ops/pgadmin/servers.json) points
+# at the `fyralis_ext_demo` database the e2e demo populates (and at `company_os`).
+#
 #   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml \
 #     -f docker-compose.pgadmin.yml up -d pgadmin
+#   open http://localhost:5050  (login admin@fyralis.local / admin)
 #
-# Open http://localhost:5050 and log in with:
-#   admin@example.com / fyralis
-
+# Then run ops/pgadmin/inspect_github_intel.sql against fyralis_ext_demo.
 services:
   pgadmin:
     image: dpage/pgadmin4:latest
     container_name: company_os_pgadmin
     restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    ports:
-      - "5050:80"
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@example.com
-      PGADMIN_DEFAULT_PASSWORD: fyralis
+      # NB: pgAdmin rejects reserved TLDs like .local — use a normal domain.
+      PGADMIN_DEFAULT_EMAIL: admin@fyralis.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      # Single-user desktop mode + no master password → straight to the servers.
       PGADMIN_CONFIG_SERVER_MODE: "False"
       PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
-      PGADMIN_DISABLE_POSTFIX: "True"
+    ports:
+      - "5050:80"
     volumes:
-      - pgadmin-data:/var/lib/pgadmin
-      - ./.pgadmin/servers.json:/pgadmin4/servers.json:ro
+      - ./ops/pgadmin/servers.json:/pgadmin4/servers.json:ro
+      - ./ops/pgadmin/pgpass:/pgpass:ro
+      - company_os_pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
 
 volumes:
-  pgadmin-data:
+  company_os_pgadmin_data:

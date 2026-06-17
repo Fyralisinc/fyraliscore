@@ -43,7 +43,6 @@ flowchart LR
         SF[shard_fetch :9300 — NEW]
         OP[oauth_poller :9300 — NEW]
         LIVE[live source workers :9300 — NEW<br/>discord · telegram · signal · gmail · gcal · gdrive]
-        GHI[github_intel_worker :9300 — NEW]
         SAGE[SAGE/retrieval-memory workers :9300 — NEW]
     end
     subgraph exporters[Exporters]

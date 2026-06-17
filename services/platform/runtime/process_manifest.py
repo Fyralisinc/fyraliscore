@@ -350,15 +350,6 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         has_healthcheck=True,
     ),
     _proc(
-        "github_intel_worker",
-        "live-source",
-        ("python", "scripts/run_github_intel_worker.py"),
-        ("production",),
-        "GitHub ordered intelligence worker.",
-        compose_service="github_intel_worker",
-        has_healthcheck=True,
-    ),
-    _proc(
         "sage_structural_features_worker",
         "reasoning",
         ("python", "scripts/run_sage_structural_features_worker.py"),
