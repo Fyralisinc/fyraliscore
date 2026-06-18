@@ -180,28 +180,31 @@ async def apply_migration(
         raise MigrationError(name, exc) from exc
 
 
-_SCHEMA_MIGRATIONS_SQL = """
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  filename text PRIMARY KEY,
-  applied_at timestamptz NOT NULL DEFAULT now()
-)
-"""
+_LEDGER_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
-async def _ensure_schema_migrations(conn: asyncpg.Connection) -> None:
-    await conn.execute(_SCHEMA_MIGRATIONS_SQL)
+def _ledger_ddl(table: str) -> str:
+    return (
+        f"CREATE TABLE IF NOT EXISTS {table} (\n"
+        "  filename text PRIMARY KEY,\n"
+        "  applied_at timestamptz NOT NULL DEFAULT now()\n"
+        ")"
+    )
+
+
+async def _ensure_schema_migrations(
+    conn: asyncpg.Connection, table: str = "schema_migrations"
+) -> None:
+    await conn.execute(_ledger_ddl(table))
 
 
 async def _record_applied_migration(
     conn: asyncpg.Connection,
     filename: str,
+    table: str = "schema_migrations",
 ) -> None:
     await conn.execute(
-        """
-        INSERT INTO schema_migrations(filename)
-        VALUES ($1)
-        ON CONFLICT (filename) DO NOTHING
-        """,
+        f"INSERT INTO {table}(filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING",
         filename,
     )
 
@@ -211,6 +214,8 @@ async def apply_migrations_dir(
     migrations_dir: pathlib.Path,
     *,
     on_error: str = "stop",
+    ledger_table: str = "schema_migrations",
+    ensure_partitions: bool = True,
 ) -> list[str]:
     """Apply every `*.sql` file in `migrations_dir` in lex order.
 
@@ -226,10 +231,19 @@ async def apply_migrations_dir(
         every failure as fatal would prevent the harness from ever
         running against a populated DB.
 
+    `ledger_table` namespaces the applied-migrations ledger. The default
+    (`schema_migrations`) is the host's global line; an **extension-owned**
+    migration set passes its own ledger (e.g. `schema_migrations_ext_github_intel`)
+    so its filenames can never collide with the host's in the shared `filename`
+    PK — the key requirement for letting an extension own its schema independently
+    of the host's numbering (ADR-0004 extension-owned schema).
+
     Returns the list of filenames that applied successfully.
     """
     if on_error not in ("stop", "warn"):
         raise ValueError(f"on_error must be 'stop' or 'warn'; got {on_error!r}")
+    if not _LEDGER_NAME_RE.match(ledger_table):
+        raise ValueError(f"invalid ledger_table name: {ledger_table!r}")
 
     files = sorted(migrations_dir.glob("*.sql"))
     if not files:
@@ -240,8 +254,8 @@ async def apply_migrations_dir(
         # Create the ledger inside the bootstrap lock so concurrent
         # bootstraps serialize the CREATE TABLE, then read what's already
         # applied so re-runs against a long-lived DB skip recorded files.
-        await _ensure_schema_migrations(conn)
-        rows = await conn.fetch("SELECT filename FROM schema_migrations")
+        await _ensure_schema_migrations(conn, ledger_table)
+        rows = await conn.fetch(f"SELECT filename FROM {ledger_table}")
         already_applied = {row["filename"] for row in rows}
 
         applied: list[str] = []
@@ -250,7 +264,7 @@ async def apply_migrations_dir(
                 continue
             try:
                 await apply_migration(conn, path.read_text(), name=path.name)
-                await _record_applied_migration(conn, path.name)
+                await _record_applied_migration(conn, path.name, ledger_table)
                 already_applied.add(path.name)
                 applied.append(path.name)
             except MigrationError as e:
@@ -270,7 +284,11 @@ async def apply_migrations_dir(
 
         # Fresh test/dev DBs only get current-month + 3 partitions from the
         # foundation migration; widen the window so historical inserts work.
-        await ensure_test_partition_window(conn)
+        # Skipped (ensure_partitions=False) on the production extension-migrate
+        # path, which must NOT create observation/resource partitions as a side
+        # effect of applying an extension's schema.
+        if ensure_partitions:
+            await ensure_test_partition_window(conn)
     return applied
 
 

@@ -64,7 +64,7 @@ markdown_extensions:
 plugins:
   - search
 
-# Build hook: rewrites the legacy ingestion/github-intelligence trees' source-file
+# Build hook: rewrites the legacy ingestion/ tree's source-file
 # links (../../services/*.py, etc.) into GitHub blob URLs at build time so they
 # build under --strict, without modifying the markdown on disk. See docs_hooks.py.
 hooks:
@@ -72,8 +72,8 @@ hooks:
 
 # A few pre-existing docs/ trees are point-in-time artifacts (test reports, a v1
 # prompt log, an HTML mockup, a long backlog). They're kept on disk but excluded
-# from the built site. The ingestion/ and github-intelligence/ deep-dives ARE
-# built (their source links are rewritten by the hook above).
+# from the built site. The ingestion/ deep-dive IS
+# built (its source links are rewritten by the hook above).
 exclude_docs: |
   history/
   testing/
@@ -94,6 +94,8 @@ nav:
       - Workers — Background Jobs: architecture/workers.md
       - Shared Libraries (lib): architecture/lib.md
       - Runtime & Data Plane: architecture/data-plane.md
+      - Interfaces & Extensions: architecture/interfaces.md
+      - Interface platform roadmap: architecture/interface-platform-roadmap.md
       - Observability — Prometheus & Grafana: architecture/observability_architecture.md
       - Observability audit (2026-06-11): architecture/observability_audit.md
   - Services: services.md
@@ -119,6 +121,8 @@ nav:
       - 0001 · Kafka-first ingestion default: adr/0001-kafka-first-ingestion-default.md
       - 0002 · Main is the single integration trunk: adr/0002-main-is-the-single-integration-trunk.md
       - 0003 · Telegram MTProto ingestion: adr/0003-telegram-mtproto-user-account-ingestion.md
+      - 0004 · Interface/extension platform: adr/0004-interface-extension-platform.md
+      - 0005 · Large Object Pipeline: adr/0005-large-object-pipeline.md
   - Subsystem deep-dives:
       - About these docs: deep-dives.md
       - Ingestion:
@@ -139,8 +143,3 @@ nav:
               - Jira: ingestion/sources/jira.md
               - Grafana: ingestion/sources/grafana.md
               - Telegram (MTProto): ingestion/sources/telegram.md
-      - GitHub Intelligence:
-          - Spec & plan: github-intelligence/plan.md
-          - Implementation status: github-intelligence/IMPLEMENTATION.md
-          - Read API: github-intelligence/API.md
-          - Browser UI: github-intelligence/UI.md

@@ -208,6 +208,32 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         has_healthcheck=True,
     ),
     _proc(
+        "summarization_worker",
+        "ingest-consumer",
+        (
+            "python",
+            "-m",
+            "services.ingest.ingestion.writers.summarization_worker.summarization_worker",
+        ),
+        ("production",),
+        "Kafka large-document summarization worker.",
+        compose_service="summarization_worker",
+        has_healthcheck=True,
+    ),
+    _proc(
+        "summarization_batch_worker",
+        "ingest-consumer",
+        (
+            "python",
+            "-m",
+            "services.ingest.ingestion.writers.summarization_batch_worker",
+        ),
+        ("production",),
+        "OpenAI Batch API worker for backfill document summarization.",
+        compose_service="summarization_batch_worker",
+        has_healthcheck=True,
+    ),
+    _proc(
         "embedding_worker",
         "ingest-consumer",
         (
@@ -321,15 +347,6 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         ("production",),
         "Google Drive watch renewal scheduler.",
         compose_service="google_drive_watch_scheduler",
-        has_healthcheck=True,
-    ),
-    _proc(
-        "github_intel_worker",
-        "live-source",
-        ("python", "scripts/run_github_intel_worker.py"),
-        ("production",),
-        "GitHub ordered intelligence worker.",
-        compose_service="github_intel_worker",
         has_healthcheck=True,
     ),
     _proc(

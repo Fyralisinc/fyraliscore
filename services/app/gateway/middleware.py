@@ -55,6 +55,12 @@ _PUBLIC_PATHS = frozenset({
     "/integrations/notion/callback",
     "/integrations/notion/installed",
     "/integrations/notion/install-error",
+    # WhatsApp (Cloud API) webhook ingress. Authentication is Meta's
+    # X-Hub-Signature-256 HMAC (verified inside whatsapp_router), NOT a Bearer
+    # token — same posture as the /webhooks/* prefix. Both the GET subscribe
+    # handshake and the POST event delivery hit this exact path, so the Bearer
+    # middleware MUST skip it or every WhatsApp webhook becomes a 401.
+    "/integrations/whatsapp/webhook",
 })
 
 

@@ -16,6 +16,8 @@ def register_gateway_routes(app: FastAPI) -> None:
     from services.app.gateway.contest_router import build_contest_router
     from services.app.gateway.core_router import build_core_router
     from services.app.gateway.dashboard_router import build_dashboard_router
+    from services.app.gateway.document_ingest_router import build_document_ingest_router
+    from services.app.gateway.extension_router import build_extension_router
     from services.app.gateway.map_routes import register_map_routes
     from services.app.gateway.recommendations_router import (
         build_recommendations_router,
@@ -24,16 +26,20 @@ def register_gateway_routes(app: FastAPI) -> None:
     from services.app.gateway.structure_router import build_structure_router
     from services.app.gateway.substrate_router import build_substrate_router
     from services.app.gateway.today_core_router import build_today_core_router
+    from services.app.gateway.whatsapp_router import build_whatsapp_router
 
     app.include_router(build_core_router())
     app.include_router(build_clarifications_router())
     app.include_router(build_substrate_router())
     app.include_router(build_contest_router())
     app.include_router(build_dashboard_router())
+    app.include_router(build_document_ingest_router())
+    app.include_router(build_whatsapp_router())
     app.include_router(build_sage_internal_router())
     app.include_router(build_recommendations_router())
     app.include_router(build_structure_router())
     app.include_router(build_today_core_router())
+    app.include_router(build_extension_router())
     register_map_routes(app)
 
 
@@ -119,7 +125,3 @@ def mount_gateway_routes(
             app.include_router(build_slack_router())
         except Exception as exc:  # noqa: BLE001 - never block startup
             log.error("slack_router_mount_failed", error=str(exc))
-
-    from services.ingest.github_intel.api import build_github_intel_router
-
-    app.include_router(build_github_intel_router())

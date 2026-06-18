@@ -47,6 +47,12 @@ CONTROL_PLANE_TOPICS = (
 # here automatically. A test asserts this set matches the registry.
 INGESTION_TOPICS = tuple(all_data_plane_topics()) + CONTROL_PLANE_TOPICS
 
+# Platform egress topics (ADR-0004 E3.1) — provisioned alongside ingestion, kept
+# out of INGESTION_TOPICS so the source-registry parity test stays ingestion-scoped.
+from services.platform.extensions.egress.kafka import egress_topics  # noqa: E402
+
+ALL_TOPICS = INGESTION_TOPICS + tuple(egress_topics())
+
 
 async def _provision() -> int:
     bootstrap = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
@@ -62,7 +68,7 @@ async def _provision() -> int:
     await admin.start()
     try:
         existing = set(await admin.list_topics())
-        missing = [t for t in INGESTION_TOPICS if t not in existing]
+        missing = [t for t in ALL_TOPICS if t not in existing]
         if not missing:
             log.info("all %d ingestion topics already present", len(INGESTION_TOPICS))
             return 0
@@ -87,7 +93,7 @@ async def _provision() -> int:
         )
         # Verify.
         existing = set(await admin.list_topics())
-        still_missing = [t for t in INGESTION_TOPICS if t not in existing]
+        still_missing = [t for t in ALL_TOPICS if t not in existing]
         if still_missing:
             log.error("topics still missing after create: %s", still_missing)
             return 1

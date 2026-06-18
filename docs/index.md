@@ -127,7 +127,7 @@ time, so they build cleanly under `--strict` and are part of this site:
   [Comprehensive reference](reference/FYRALIS.md).
 - [Memory & model layer](memory-layer.md) — the models substrate + think pipeline.
 - [Ingestion](ingestion/README.md) — end-to-end ingestion architecture and a page per source.
-- [GitHub Intelligence](github-intelligence/plan.md) — the GitHub intelligence layer (spec, API, UI).
+- GitHub Intelligence — **extracted** to a separate repo (`Fyralisinc/github-intel`); see [Interfaces & Extensions](architecture/interfaces.md) for how it returns as the first external interface.
 
 `docs/testing/` (comprehensive test reports) is kept on disk but excluded from
 the built site; `CONTRIBUTING.md` lives at the repo root.

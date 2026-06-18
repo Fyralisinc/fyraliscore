@@ -85,6 +85,10 @@ _WIRE_TO_DB_FAILURE_KIND: dict[str, str] = {
     # writer invariant failures happen at the observation-insert
     # stage (LLD §5.2 writer pool); the bucket name reflects that.
     "writer.invariant_failure":     "observation_insert_error",
+    # Summarization is a post-observation write surface. Reuse the existing
+    # observation_insert_error DB bucket to avoid a CHECK-migration for this
+    # first phase while preserving the fine-grained wire kind for alerts.
+    "summarization.llm_failure":     "observation_insert_error",
     # M3.2: OllamaError after the OllamaClient's internal retry loop
     # (default 3 attempts with exponential backoff). The bucket
     # `embedding_ollama_failure` was added to the CHECK enum by

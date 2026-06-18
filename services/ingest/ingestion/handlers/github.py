@@ -169,8 +169,8 @@ def _shape_pull_request(payload: dict[str, Any]) -> ObservationDraft:
     merge_commit_sha = pr.get("merge_commit_sha")
     # GitHub PR webhooks don't carry the file list; production resolves it via
     # the Git Data API / clone diff. Tests/synthetic injection may supply it as
-    # pull_request._changed_files so the intelligence layer can compute blast
-    # radius (services/ingest/github_intel).
+    # pull_request._changed_files so the GitHub Intelligence interface (now a
+    # separate repo, Fyralisinc/github-intel) can compute blast radius.
     changed_files = [p for p in (pr.get("_changed_files") or []) if isinstance(p, str)]
 
     if action == "closed" and merged:
@@ -253,7 +253,8 @@ def _shape_push(payload: dict[str, Any]) -> ObservationDraft:
         if isinstance(last, dict):
             occurred_ts = last.get("timestamp")
     # Changed files across the push (added/modified/removed) — drives the
-    # code-intel blast radius in services/ingest/github_intel.
+    # code-intel blast radius in the GitHub Intelligence interface (now a
+    # separate repo, Fyralisinc/github-intel).
     _files: set[str] = set()
     for _c in (commits if isinstance(commits, list) else []):
         if isinstance(_c, dict):

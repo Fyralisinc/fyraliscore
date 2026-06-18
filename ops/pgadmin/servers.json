@@ -1,0 +1,25 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Fyralis — extension demo (fyralis_ext_demo)",
+      "Group": "Fyralis",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "fyralis_ext_demo",
+      "Username": "company_os",
+      "SSLMode": "prefer",
+      "PassFile": "/pgpass",
+      "Comment": "github-intel evidence: extension_grants, observations(content->intelligence), github_signal_enrichment, code_snapshots. Tenant A = aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    },
+    "2": {
+      "Name": "Fyralis — core (company_os)",
+      "Group": "Fyralis",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "company_os",
+      "Username": "company_os",
+      "SSLMode": "prefer",
+      "PassFile": "/pgpass"
+    }
+  }
+}

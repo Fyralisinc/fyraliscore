@@ -11,6 +11,7 @@
 #   ingestion.normalized  — M2: ObservationDraft JSON                     [7 day retention]
 #   ingestion.dlq         — M3.1: DLQ envelope → ingestion_failures       [30 day retention]
 #   ingestion.embedding   — M3.2: embedding-needed signal (per obs)        [7 day retention]
+#   ingestion.summarization — Large-document summary-needed signal         [7 day retention]
 #
 # Why per-topic retention: LLD §1.3 — DLQ retention must outlive ops's
 # typical triage window (incidents are flagged within hours but full
@@ -18,7 +19,9 @@
 # retention that survives a long weekend + a sick operator without
 # the source bytes evaporating.
 #
-# Idempotent via `--if-not-exists`. Safe to run repeatedly.
+# Idempotent via `--if-not-exists` plus a config alter pass. Safe to run
+# repeatedly, and able to repair older local topics whose retention was
+# created before the current spec.
 set -euo pipefail
 
 KAFKA_CONTAINER="${KAFKA_CONTAINER:-fyralis_dev_kafka}"
@@ -41,6 +44,7 @@ declare -a TOPIC_SPECS=(
   "ingestion.normalized|${RETENTION_7D_MS}"
   "ingestion.dlq|${RETENTION_30D_MS}"
   "ingestion.embedding|${RETENTION_7D_MS}"
+  "ingestion.summarization|${RETENTION_7D_MS}"
 )
 
 for spec in "${TOPIC_SPECS[@]}"; do
@@ -55,6 +59,14 @@ for spec in "${TOPIC_SPECS[@]}"; do
     --replication-factor 1 \
     --config "retention.ms=${retention}" \
     --config "compression.type=zstd" \
+    >/dev/null
+
+  docker exec "${KAFKA_CONTAINER}" /opt/kafka/bin/kafka-configs.sh \
+    --bootstrap-server "${BOOTSTRAP}" \
+    --entity-type topics \
+    --entity-name "${topic}" \
+    --alter \
+    --add-config "retention.ms=${retention},compression.type=zstd" \
     >/dev/null
 done
 

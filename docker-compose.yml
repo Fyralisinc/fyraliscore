@@ -13,8 +13,10 @@
 #             google_calendar_watch_scheduler, google_drive_watch_scheduler
 #   backfill: oauth_poller, tenant_onboarding, source_onboarding,
 #             shard_fetch, reconciler, feels_onboarded_monitor
-#   consume : normalizer, observation_writer, dlq_writer, embedding_worker
-#   app     : think_worker, post_commit_worker, github_intel_worker
+#   consume : normalizer, observation_writer, dlq_writer,
+#             summarization_worker, summarization_batch_worker,
+#             embedding_worker
+#   app     : think_worker, post_commit_worker
 #   (UI + TLS edge live in the demo overlay repo's docker-compose.demo.yml)
 #
 # Secrets (per-source creds, MASTER_KEK, OAuth/HMAC keys) live in
@@ -253,6 +255,19 @@ services:
     command: python -m services.ingest.ingestion.workflows.reconciler
     healthcheck: *consumer-healthcheck
 
+  # Generic supervisor for EXTENSION-contributed background workers (ADR-0004).
+  # Discovers every installed extension's `company_os.workers` BackgroundWorker
+  # and runs it under one process — e.g. the github-intel ordered FSM worker +
+  # code reindexer. Adding an extension needs only a reinstall + restart of this
+  # one service (discovery is import-time), never a new bespoke compose stanza.
+  # CODE_INTEL_REINDEX_ROOT (optional) points the github-intel reindex loop at a
+  # local working copy; omit it to keep enrichment/state without the code graph.
+  extension_workers:
+    <<: *worker
+    container_name: company_os_extension_workers
+    command: python -m lib.extensions.run_workers
+    healthcheck: *consumer-healthcheck
+
   # Emits the `onboarding.progress` Kafka events Bridge consumes (LLD §6).
   # The lifecycle producers (started/complete/shard.fetched) live in the
   # backfill services above; this poller owns the two run-level signals:
@@ -297,6 +312,18 @@ services:
     <<: *worker
     container_name: company_os_dlq_writer
     command: python -m services.ingest.ingestion.writers.dlq_writer.dlq_writer
+    healthcheck: *consumer-healthcheck
+
+  summarization_worker:
+    <<: *worker
+    container_name: company_os_summarization_worker
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck: *consumer-healthcheck
+
+  summarization_batch_worker:
+    <<: *worker
+    container_name: company_os_summarization_batch_worker
+    command: python -m services.ingest.ingestion.writers.summarization_batch_worker
     healthcheck: *consumer-healthcheck
 
   embedding_worker:
@@ -405,31 +432,6 @@ services:
     container_name: company_os_post_commit_worker
     command: python scripts/run_post_commit_worker.py
     healthcheck: *consumer-healthcheck
-
-  # GitHub Intelligence Layer — ordered FSM/state + signal-enrichment worker.
-  # Sweeps github:webhook observations, advances the authoritative GitHub-state
-  # FSMs, writes the github_signal_enrichment system-of-record, and emits
-  # code-intel reindex triggers on default-branch advances. The inline
-  # content.intelligence enrichment runs in-process on the ingest path; this
-  # worker owns the ordered, authoritative state writes + the code self-update.
-  github_intel_worker:
-    <<: *worker
-    container_name: company_os_github_intel_worker
-    command: python scripts/run_github_intel_worker.py
-    healthcheck: *consumer-healthcheck
-    # NB: a service-level `environment:` REPLACES the *worker anchor's env (YAML
-    # merge keys don't deep-merge mappings), so the base worker vars are
-    # re-declared here alongside the github-intel additions.
-    environment:
-      <<: *app-env
-      PYTHONUNBUFFERED: "1"
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
-      PYTHONPATH: /app
-      GITHUB_INTEL_POLL_SECONDS: ${GITHUB_INTEL_POLL_SECONDS:-3.0}
-      GITHUB_INTEL_INLINE_TIMEOUT_MS: ${GITHUB_INTEL_INLINE_TIMEOUT_MS:-1500}
-      CODE_INTEL_MAX_BLAST_HOPS: ${CODE_INTEL_MAX_BLAST_HOPS:-3}
-      GITHUB_INTEL_TENANTS: ${GITHUB_INTEL_TENANTS:-${COMPANY_OS_TENANT_ID:-00000000-0000-0000-0000-000000000001}}
 
   # ---- retrieval/memory feature workers (ported from dev) -----------
   sage_structural_features_worker:

@@ -265,7 +265,7 @@ One row per layer; packages and ownership condensed from `docs/architecture/inde
 | Layer | Package(s) | Owns |
 |---|---|---|
 | **App** | `services/app` (`gateway`, `webhooks`, `realtime`) | HTTP/WS ingress, middleware auth, rate limits, webhook ingress (signature verify + tenant resolve), OAuth, realtime dispatch over `WS /stream`. |
-| **Ingest** | `services/ingest` (`ingestion`, `integrations`, `synthetic`, `code_intel`, `github_intel`) | Per-channel handlers, third-party integrations, normalization to observations, the Kafka full-pipeline path, intel enrichment. |
+| **Ingest** | `services/ingest` (`ingestion`, `integrations`, `synthetic`) | Per-channel handlers, third-party integrations, normalization to observations, the Kafka full-pipeline path. (GitHub/code intel enrichment was extracted to `Fyralisinc/github-intel`.) |
 | **Reasoning** | `services/reasoning` (`think`, `retrieval`, `topology`, `judgment`, `relationships`, `dynamics`, `contestability`, `calibration`) | Retrieval, LLM reasoning, diff validation/apply, reconciliation, topology, judgment/scoring. |
 | **Domain** | `services/domain` (`models`, `acts`, `resources`, `observations`, `actors`, `entity_aliases`, `bridge`, `falsifiers`) | The persisted, tenant-scoped substrate; system-of-record repositories (`*/repo.py`). |
 | **Product** | `services/product` (`greeting`, `today`, `query`, `conversations`, `forecasts`, `recommendations`, `decision_deltas`, `history`, `model_trace`, `rendering`) | CEO-facing surfaces composed from substrate + reasoning: greeting/CEO view, today briefing, query/ask, forecasts, recommendations, rendering. (The demo tenancy subsystem moved to the **fyraliscore-demo** overlay; it mounts back via the gateway extension seam.) |
@@ -397,7 +397,7 @@ graph TD
 
 ## Ingest Layer — Signal Intake
 
-The ingest layer turns every external company signal into a tenant-scoped `observations` row and kicks off downstream reasoning by enqueuing a Think trigger. Source code lives under `services/ingest/` (packages `ingestion`, `integrations`, `synthetic`, `code_intel`, `github_intel`).
+The ingest layer turns every external company signal into a tenant-scoped `observations` row and kicks off downstream reasoning by enqueuing a Think trigger. Source code lives under `services/ingest/` (packages `ingestion`, `integrations`, `synthetic`).
 
 ### The uniform ingest path
 
@@ -411,7 +411,6 @@ The **7-step path** (`core.py`):
 | Step | What happens |
 |------|--------------|
 | 1 | `get_handler(channel)` extracts an `ObservationDraft` (content_text, content, source_actor_ref, external_id, occurred_at, entities_hint, trust_tier). |
-| 1.5 | If `channel == "github:webhook"`, `github_intel.inline.maybe_enrich_github_draft` augments `draft.content["intelligence"]` in place (swallowed on error → raw-on-failure). |
 | 2 | Pre-assign `observation_id = uuid7()`. |
 | 3 | `ActorRepo.resolve_by_source_actor_ref`; misses → `content["_unresolved_actor_ref"]`, `actor_id=NULL`. |
 | 4 | `EntityAliasRepo.fast_path_resolve` over 1–3-gram phrases (`candidate_phrases`); misses → `content["_unresolved_phrases"]` for the entity_resolver worker. |
@@ -491,7 +490,7 @@ OAuth install/callback for Slack/Discord/GitHub/Notion mounts via `services/inge
 
 ### Intelligence enrichment & embedding backlog
 
-- **GitHub Intelligence** (`services/ingest/github_intel/`, `services/ingest/code_intel/`) — `code_intel` maintains a commit-SHA-versioned per-repo code graph + code-RAG embeddings ("blast radius"); `github_intel` maintains PR/CI/branch/issue FSMs and writes causal context inline into `content["intelligence"]` (raw-on-failure). An ordered per-repo worker (`github_intel/worker.py`) drains `github_intel_queue` and writes `github_signal_enrichment`; a read-only `/github-intel/*` router exposes it.
+- **GitHub Intelligence** *(extracted)* — `github_intel` + `code_intel` (PR/CI/branch/issue FSMs, inline `content["intelligence"]` enrichment, the `github_intel_queue` worker + `github_signal_enrichment`, the code graph / blast-radius, and the `/github-intel/*` read API) were **extracted to a separate repo (`Fyralisinc/github-intel`)**. The inline hook is removed from core; they return as the first external interface (ADR-0004).
 - **Embedding** — when step 5 leaves `embedding_pending=TRUE` and an `embedding_producer` is wired, `ingest_from_draft` publishes (post-commit, best-effort) to `ingestion.embedding.{source}` for the async embedding worker. A backlog drainer that scans Postgres directly for `embedding_pending=TRUE` is the safety net when Kafka is down, so failed embeddings are never lost.
 
 ---
@@ -836,7 +835,6 @@ None of the `services/workers/*` packages ship a `__main__.py`; the undeployed o
 |---|---|---|
 | Think worker | `scripts/run_think_worker.py` (compose `think_worker`) | Drains `think_trigger_queue`, runs the reasoning cycle. |
 | Post-commit worker | `scripts/run_post_commit_worker.py` (compose `post_commit_worker`) | Drains `pending_post_commit_actions`. |
-| GitHub intel worker | `scripts/run_github_intel_worker.py` (compose `github_intel_worker`) | Enriches GitHub signals. |
 | Topology sweeper | `scripts/run_topology_sweeper.py` (dogfood host process) | Enqueues `model_reeval_queue`. |
 | Ingest consumer chain | `python -m services.ingest…` (compose `normalizer`, `observation_writer`, `embedding_worker`, `embedding_backlog`, `dlq_writer`) | Kafka raw→normalized→observations→embeddings. |
 | OAuth poller / onboarding / backfill | compose `oauth_poller`, `tenant_onboarding`, `source_onboarding`, `shard_fetch` | Token refresh + backfill. |
@@ -900,7 +898,6 @@ graph TD
     subgraph reasoning["Reasoning / maintenance"]
       THINK["think_worker"]
       PCW["post_commit_worker"]
-      GHI["github_intel_worker"]
       SWEEP["topology_sweeper (host only)"]
     end
 
@@ -933,7 +930,6 @@ graph TD
     THINK -->|"think_trigger_queue"| PG
     THINK --> LLM
     PCW -->|"pending_post_commit_actions"| PG
-    GHI --> PG
     SWEEP -->|"model_reeval_queue"| PG
 ```
 
@@ -1132,11 +1128,11 @@ Providers handled by the unified router (the `VERIFIERS` registry in `services/a
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
 | GET | `/debug/signals` (+ `/{observation_id}`) · `/think-runs` (+ `/{run_id}`) · `/think-quality` (+ `/cases`) · `/models` (+ `/{model_id}`) · `/acts` · `/renders` · `/cache` · `/stats` | Read-only introspection of the pipeline (signals, think runs, quality, models, acts, renders, cache, stats). | Public (dev) |
-| GET | `/github-intel/repos` · `/repos/{owner}/{repo}/state` · `/signals` · `/prs` (+ `/{pr_number}`) · `/blast-radius` · `/code-search` · `/signals/{observation_id}/explain` | GitHub-intelligence reads (repo state, PRs, blast radius, code search, signal explain). | Bearer |
+| — | `/github-intel/*` | **Extracted** to `Fyralisinc/github-intel`; the GitHub-intelligence read API is no longer mounted in core. | — |
 
 ### Mounting summary
 
-Most routers are mounted through `services/app/gateway/route_mounts.py` or `services/app/gateway/ceo_view_wiring.py`: always-on (decision-deltas, forecasts, model-trace, history, webhooks, integrations, github-intel, spec, model-page, today, map, realtime, CEO stream); env-gated (finance, slack, debug, gmail/gcal/gdrive OAuth + push). Overlay-contributed routers (demo, simulation) are mounted at runtime through the gateway extension seam (`services/app/gateway/extensions.py`) when the demo overlay is installed. The synthetic spammer (`services/ingest/synthetic/spammer/server.py`) is a *separate* test-only app, not part of the gateway.
+Most routers are mounted through `services/app/gateway/route_mounts.py` or `services/app/gateway/ceo_view_wiring.py`: always-on (decision-deltas, forecasts, model-trace, history, webhooks, integrations, spec, model-page, today, map, realtime, CEO stream); env-gated (finance, slack, debug, gmail/gcal/gdrive OAuth + push). Overlay-contributed routers (demo, simulation) are mounted at runtime through the gateway extension seam (`services/app/gateway/extensions.py`) when the demo overlay is installed. The synthetic spammer (`services/ingest/synthetic/spammer/server.py`) is a *separate* test-only app, not part of the gateway.
 
 ---
 

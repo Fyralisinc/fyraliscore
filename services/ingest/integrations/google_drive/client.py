@@ -107,7 +107,9 @@ def _extract_pdf_text(raw: bytes, *, max_pages: int, max_bytes: int) -> str | No
                 return None
         parts: list[str] = []
         total = 0
-        for page in reader.pages[:max_pages]:
+        for idx, page in enumerate(reader.pages):
+            if idx >= max_pages:
+                break
             text = page.extract_text() or ""
             if not text:
                 continue

@@ -30,6 +30,12 @@ x-sb-envfile: &sb-envfile
   env_file: !override
     - .env
     - .env.sandbox
+  # The base compose file models production. This overlay is explicitly
+  # local/sandbox, so keep the environment name aligned with the tenant
+  # fallbacks that .env supplies.
+  environment:
+    COMPANY_OS_ENV: dev
+    FYRALIS_ENV: dev
   # GitHub App private key (multi-line PEM can't live in env_file) — mount
   # it read-only from the gitignored .secrets/ dir; .env.sandbox points
   # GITHUB_APP_PRIVATE_KEY_PATH here. Harmless on workers that don't read it.
@@ -69,6 +75,8 @@ services:
   normalizer: { <<: *sb-envfile }
   observation_writer: { <<: *sb-envfile }
   dlq_writer: { <<: *sb-envfile }
+  summarization_worker: { <<: *sb-envfile }
+  summarization_batch_worker: { <<: *sb-envfile }
   embedding_worker: { <<: *sb-envfile }
   embedding_backlog: { <<: *sb-envfile }
 

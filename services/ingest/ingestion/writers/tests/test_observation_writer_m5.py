@@ -129,6 +129,7 @@ def _build_envelope(
     external_id: str = "C01:1.0",
     content_text: str = "hello from M5.2 parity test",
     content_hash: str | None = None,
+    ingress_kind: str = "webhook",
 ) -> NormalizedEnvelope:
     """Build a NormalizedEnvelope for `slack:message`. Trust tier and
     handler-shape match what the Slack handler would produce."""
@@ -139,7 +140,7 @@ def _build_envelope(
     return NormalizedEnvelope(
         envelope_version=1,
         source="slack",
-        ingress_kind="webhook",
+        ingress_kind=ingress_kind,
         tenant_id=tenant_id,
         raw_s3_key=(
             f"dev/slack/{tenant_id}/2026-05/"
@@ -430,6 +431,119 @@ async def test_writer_full_mode_skipped_when_flag_disabled(
     )
     assert writer_module.get_metrics()["writer.shadow_write_events"] == 1
     assert writer_module.get_metrics()["writer.full_mode_writes"] == 0
+    # F2 — the drop is also counted on the distinct alert-worthy metric.
+    assert writer_module.get_metrics()["writer.shadow_drop"] == 1
+
+
+# =====================================================================
+# 2b. F1 — backfill is ALWAYS persisted, even with the kill-switch FALSE.
+#     F2 — live drops are loud; backfill in the shadow path is an ERROR.
+# =====================================================================
+
+async def test_writer_persists_backfill_even_when_flag_disabled(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """F1 regression guard. A tenant with `kafka_path_enabled=FALSE` (the
+    circuit-breaker / operator kill-switch) must STILL have backfill
+    observations written — backfill has no inline fallback, so shadow-dropping
+    it is silent, unrecoverable data loss."""
+    tenant = await _seed_tenant(fresh_db, "tenant-backfill-killswitch")
+    await _disable_kafka_path(fresh_db, tenant)
+    env = _build_envelope(
+        tenant, external_id="C09:9.0", ingress_kind="backfill",
+    )
+
+    capture = _CaptureProducer()
+    config = await _writer_config_with_db(fresh_db, embedder=_DeterministicEmbedder())
+
+    await writer_module._handle_message(
+        _envelope_bytes(env),
+        config=config,
+        dlq_producer=capture,
+        embedding_producer=capture,
+    )
+
+    obs_count = await fresh_db.fetchval(
+        "SELECT count(*) FROM observations WHERE tenant_id = $1",
+        tenant,
+    )
+    assert obs_count == 1, (
+        f"Backfill envelope with flag=FALSE produced {obs_count} observations; "
+        f"expected 1 — F1 backfill exemption is broken (silent data loss)."
+    )
+    # NOT shadow-logged, NOT dropped.
+    assert writer_module.get_shadow_log() == []
+    metrics = writer_module.get_metrics()
+    assert metrics["writer.full_mode_writes"] == 1
+    assert metrics["writer.shadow_write_events"] == 0
+    assert metrics["writer.shadow_drop"] == 0
+
+
+async def test_writer_live_still_shadow_dropped_when_flag_disabled(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """F1 must NOT change live behaviour: a webhook (live) envelope with
+    flag=FALSE is still shadow-only (the inline path writes it), so the
+    writer must not double-write."""
+    tenant = await _seed_tenant(fresh_db, "tenant-live-killswitch")
+    await _disable_kafka_path(fresh_db, tenant)
+    env = _build_envelope(tenant, external_id="C10:1.0", ingress_kind="webhook")
+
+    capture = _CaptureProducer()
+    config = await _writer_config_with_db(fresh_db)
+
+    await writer_module._handle_message(
+        _envelope_bytes(env),
+        config=config,
+        dlq_producer=capture,
+        embedding_producer=capture,
+    )
+
+    obs_count = await fresh_db.fetchval(
+        "SELECT count(*) FROM observations WHERE tenant_id = $1",
+        tenant,
+    )
+    assert obs_count == 0
+    assert len(writer_module.get_shadow_log()) == 1
+    assert writer_module.get_metrics()["writer.shadow_drop"] == 1
+
+
+async def test_writer_backfill_shadow_only_when_no_pool() -> None:
+    """With no pool (pure shadow mode, e.g. the M2 soak harness), even a
+    backfill envelope stays shadow-only — F1 only forces a WRITE when the
+    writer actually has a pool to write through."""
+    env = _build_envelope(uuid4(), ingress_kind="backfill")
+    capture = _CaptureProducer()
+    config = writer_module.WriterConfig(pool=None, tenant_flags=None)
+
+    await writer_module._handle_message(
+        _envelope_bytes(env),
+        config=config,
+        dlq_producer=capture,
+        embedding_producer=capture,
+    )
+
+    assert len(writer_module.get_shadow_log()) == 1
+    assert writer_module.get_metrics()["writer.shadow_drop"] == 1
+
+
+async def test_backfill_in_shadow_path_logs_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """F2 defense-in-depth: if a backfill envelope ever reaches the shadow
+    path (which F1 makes impossible in full-mode), it is logged at ERROR with
+    the BUG reason so it is never silent."""
+    import logging
+
+    env = _build_envelope(uuid4(), ingress_kind="backfill")
+    with caplog.at_level(logging.WARNING, logger="services.ingest.ingestion.writers.observation_writer"):
+        await writer_module._record_shadow_event(env)
+
+    assert writer_module.get_metrics()["writer.shadow_drop"] == 1
+    recs = [r for r in caplog.records if r.message == "writer.shadow_drop"]
+    assert recs, "expected a writer.shadow_drop log record"
+    assert recs[-1].levelno == logging.ERROR
+    assert getattr(recs[-1], "reason", None) == "backfill_envelope_in_shadow_path_BUG"
 
 
 # =====================================================================
@@ -465,6 +579,8 @@ async def test_writer_full_mode_writes_when_flag_enabled(
     assert writer_module.get_shadow_log() == []
     assert writer_module.get_metrics()["writer.full_mode_writes"] == 1
     assert writer_module.get_metrics()["writer.shadow_write_events"] == 0
+    # F2 — no drop on the happy path.
+    assert writer_module.get_metrics()["writer.shadow_drop"] == 0
 
 
 # =====================================================================
@@ -595,6 +711,97 @@ async def test_writer_full_mode_publishes_embedding_request_on_pending(
     assert payload["source"] == "slack"
 
 
+async def test_writer_large_document_defers_t1_and_publishes_summarization(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Large document observations should not trigger Think on a placeholder.
+
+    The writer inserts one pending-summary observation, leaves embedding
+    pending, skips the embedding publish, and emits a summarization request.
+    The summarizer worker owns the later content_text update + T1 enqueue.
+    """
+    tenant = await _seed_tenant(fresh_db, "tenant-large-doc")
+    long_text = "Quarterly plan: " + ("growth risk owner date metric " * 500)
+    env = NormalizedEnvelope(
+        envelope_version=1,
+        source="google_drive",
+        ingress_kind="backfill",
+        tenant_id=tenant,
+        raw_s3_key=(
+            f"dev/google_drive/{tenant}/2026-05/aa/{'a' * 40}.json.zst"
+        ),
+        content_hash="a" * 40,
+        raw_ingested_at=_NOW,
+        source_channel="google_drive:file",
+        content_text=long_text,
+        content={
+            "object_type": "file",
+            "file_id": "drive-file-1",
+            "name": "Quarterly Plan.pdf",
+            "mime_type": "application/pdf",
+            "is_document": True,
+            "text_dominant": True,
+            "extracted_chars": len(long_text),
+        },
+        occurred_at=_NOW,
+        trust_tier="authoritative",
+        kind="signal",
+        source_actor_ref=None,
+        external_id="gdrive:drive-file-1:1",
+        entities_hint=[],
+        normalized_at=_NOW,
+        ingress_metadata={},
+        idem_hints={},
+    )
+
+    capture = _CaptureProducer()
+    config = await _writer_config_with_db(
+        fresh_db, embedder=_DeterministicEmbedder(),
+    )
+
+    await writer_module._handle_message(
+        _envelope_bytes(env),
+        config=config,
+        dlq_producer=capture,
+        embedding_producer=capture,
+    )
+
+    row = await fresh_db.fetchrow(
+        """SELECT id, content_text, content, embedding, embedding_pending
+             FROM observations WHERE tenant_id = $1""",
+        tenant,
+    )
+    assert row is not None
+    assert "queued for summarization" in row["content_text"]
+    content = row["content"] if isinstance(row["content"], dict) else json.loads(row["content"])
+    assert content["summarization"]["status"] == "pending"
+    assert content["summarization"]["raw_s3_key"] == env.raw_s3_key
+    assert row["embedding"] is None
+    assert row["embedding_pending"] is True
+
+    trigger_count = await fresh_db.fetchval(
+        "SELECT count(*) FROM think_trigger_queue WHERE tenant_id = $1",
+        tenant,
+    )
+    assert trigger_count == 0
+
+    summary_publishes = [
+        (topic, value) for (topic, value, _key) in capture.published
+        if topic.startswith("ingestion.summarization")
+    ]
+    assert len(summary_publishes) == 1
+    assert summary_publishes[0][0] == "ingestion.summarization.google_drive"
+    payload = orjson.loads(summary_publishes[0][1])
+    assert payload["observation_id"] == str(row["id"])
+    assert payload["raw_s3_key"] == env.raw_s3_key
+
+    emb_publishes = [
+        topic for (topic, _value, _key) in capture.published
+        if topic.startswith("ingestion.embedding")
+    ]
+    assert emb_publishes == []
+
+
 # =====================================================================
 # 7. Permanent error → DLQ + offset committed (no transient retry).
 # =====================================================================
@@ -655,6 +862,37 @@ async def test_writer_parse_failure_dlqs_and_commits(
         tenant_cutover,
     )
     assert obs_count == 0
+
+
+async def test_full_mode_permanent_failure_uses_valid_dlq_kind() -> None:
+    """Regression for #46: permanent writer failures must reach the DLQ.
+
+    The old wire kind `writer.full_mode_permanent_failure` was not part of
+    WireFailureKind, so DLQEnvelope validation failed and publish_dlq silently
+    dropped the message. The permanent path now uses writer.invariant_failure.
+    """
+    tenant = uuid4()
+    env = _build_envelope(tenant, external_id="C01:permanent-failure")
+    capture = _CaptureProducer()
+
+    await writer_module._handle_full_mode_permanent_failure(
+        ValueError("bad draft"),
+        env=env,
+        dlq_producer=capture,
+        msg_value=_envelope_bytes(env),
+        msg_topic="ingestion.normalized.slack",
+        msg_partition=0,
+        msg_offset=12,
+        include_env_fields=True,
+    )
+
+    dlq_publishes = [
+        value for (topic, value, _key) in capture.published
+        if topic.startswith("ingestion.dlq")
+    ]
+    assert len(dlq_publishes) == 1
+    dlq = orjson.loads(dlq_publishes[0])
+    assert dlq["failure_kind"] == "writer.invariant_failure"
 
 
 async def _partition_name_for(occurred: dt.datetime) -> str:

@@ -84,10 +84,9 @@ in *enforcement/observability seams* that were built ahead of being hooked up.
    production unless `QUERY_RENDERING_BASE_URL` and `QUERY_CACHE_BACKEND=pg` are
    wired, while dev/test still use deterministic fallbacks; the CEO Map reads
    compat-only topology tables.
-7. **`code_intel` is read-only in prod.** Blast-radius/code-search read paths are
-   live via `github_intel`, but the index/embed/reindex write path has no production
-   caller (reindex is gated on `CODE_INTEL_REINDEX_ROOT`, absent from the worker's
-   compose env), so the code graph is never populated in a normal deploy.
+7. **`code_intel` / `github_intel` extracted.** The GitHub/code intelligence layer was
+   **extracted to a separate repo (`Fyralisinc/github-intel`)** and is no longer part of
+   core; it returns as the first external interface (see ADR-0004).
 8. **Per-source install gaps.** Mercury/QuickBooks install only via the dev
    `finance_router` panel; **Google Calendar, Google Drive, and Jira have no gateway
    install router at all** (sandbox-script-only). Gmail mounts its Pub/Sub ingress

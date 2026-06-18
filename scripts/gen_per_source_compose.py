@@ -11,8 +11,8 @@ For true source isolation you want one worker PROCESS per (source, stage)
 so lag/failure/backpressure in one source cannot touch another, and each
 source can be scaled independently. docker-compose has no loop construct,
 so we generate the file from the source registry instead of hand-writing
-8 sources x 3 stages = 24 services (and re-generate when a source is
-added). Run:
+every source x every split stage service (and re-generate when a source
+is added). Run:
 
     uv run python scripts/gen_per_source_compose.py > docker-compose.per-source.yml
 
@@ -20,7 +20,7 @@ Use it WITH the base file, having scaled the all-sources singletons to 0:
 
     docker compose -f docker-compose.yml -f docker-compose.per-source.yml \
         up -d --scale normalizer=0 --scale observation_writer=0 \
-        --scale embedding_worker=0
+        --scale summarization_worker=0 --scale embedding_worker=0
 
 The dlq_writer stays all-sources (DLQ is low-volume by design), so it is
 NOT split here.
@@ -41,6 +41,10 @@ _STAGES = (
     ("normalizer", "services.ingest.ingestion.normalizer.worker"),
     ("observation-writer", "services.ingest.ingestion.writers.observation_writer"),
     (
+        "summarization-worker",
+        "services.ingest.ingestion.writers.summarization_worker.summarization_worker",
+    ),
+    (
         "embedding-worker",
         "services.ingest.ingestion.writers.embedding_worker.embedding_worker",
     ),
@@ -55,7 +59,7 @@ _HEADER = """\
 # Use WITH the base file, all-sources singletons scaled to 0:
 #   docker compose -f docker-compose.yml -f docker-compose.per-source.yml \\
 #       up -d --scale normalizer=0 --scale observation_writer=0 \\
-#       --scale embedding_worker=0
+#       --scale summarization_worker=0 --scale embedding_worker=0
 """
 
 # Health port is per-container localhost (not host-published), so every

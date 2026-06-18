@@ -320,6 +320,24 @@ def carta_entity(
     return f"carta:{firm_id}:{entity_kind}:{entity_id}:{version}"
 
 
+# --- WhatsApp (Cloud API webhook — live ingestion) -------------------
+def whatsapp_message(phone_number_id: object, wamid: str) -> str:
+    """`whatsapp:{phone_number_id}:{wamid}` — IMMUTABLE. The WhatsApp message id
+    (`wamid.…`) is globally unique + stable (an inbound message keeps its id),
+    namespaced by `phone_number_id` so the same wamid seen across two installs
+    stays distinct (the global UNIQUE has no tenant_id). A live webhook redelivery
+    of the same message collapses to one observation."""
+    return f"whatsapp:{phone_number_id}:{wamid}"
+
+
+def whatsapp_status(phone_number_id: object, wamid: str, status: str) -> str:
+    """`whatsapp:{phone_number_id}:status:{wamid}:{status}` — VERSIONED by status
+    so the sent→delivered→read→failed progression for one outbound message lands
+    as DISTINCT state_change observations, while a redelivery of the same status
+    dedups."""
+    return f"whatsapp:{phone_number_id}:status:{wamid}:{status}"
+
+
 __all__ = [
     "aws_event",
     "brex_balance",
@@ -354,4 +372,6 @@ __all__ = [
     "signal_message",
     "slack_message",
     "telegram_message",
+    "whatsapp_message",
+    "whatsapp_status",
 ]

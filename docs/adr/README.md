@@ -33,6 +33,15 @@ way it is, not just *what* it is.
 | [0002](0002-main-is-the-single-integration-trunk.md) | Main is the single integration trunk | Accepted | 2026-06-03 |
 | [0003](0003-telegram-mtproto-user-account-ingestion.md) | Telegram ingestion uses the MTProto user-account API, with a two-session backfill+live topology | Proposed | 2026-06-07 |
 | [0004](0004-keep-model-predictions-and-outcome-evaluator.md) | Keep Model Predictions and Outcome Evaluator | Accepted | 2026-06-12 |
+| [0004](0004-interface-extension-platform.md) | Interface/extension platform — developer-hosted third-party extensions on a governed host boundary | Proposed | 2026-06-13 |
+| [0005](0005-large-object-pipeline.md) | Large payloads ingest through a dedicated Large Object Pipeline (blob tier → extract → chunk → multi-vector), no truncation/exclusion | Proposed | 2026-06-14 |
+
+> **TODO(human):** Merging `feat/interface-platform-e0-e2` into main created an
+> **ADR-0004 number collision** — both `0004-keep-model-predictions-and-outcome-evaluator.md`
+> (Accepted) and `0004-interface-extension-platform.md` (Proposed) claim 0004, and
+> `0005-large-object-pipeline.md` then claims 0005. Renumber the incoming records
+> (and their cross-references across the docs) to the next free numbers and update
+> this index.
 
 ## Related: existing decision records
 

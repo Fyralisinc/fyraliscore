@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -144,6 +145,78 @@ class _EmbeddingResult:
     pending: bool
 
 
+def _document_summary_threshold_chars() -> int:
+    try:
+        return int(os.environ.get("INGEST_DOCUMENT_SUMMARY_THRESHOLD_CHARS", "8192"))
+    except ValueError:
+        return 8192
+
+
+def _document_summary_source_channels() -> set[str]:
+    raw = os.environ.get(
+        "INGEST_DOCUMENT_SUMMARY_CHANNELS",
+        "google_drive:file,notion:object,fireflies:transcript",
+    )
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def _summary_metadata(content: dict[str, Any]) -> dict[str, Any]:
+    current = content.get("summarization")
+    return current if isinstance(current, dict) else {}
+
+
+def _draft_has_pending_summary(draft: ObservationDraft) -> bool:
+    return _summary_metadata(draft.content).get("status") == "pending"
+
+
+def _document_title(draft: ObservationDraft) -> str:
+    for key in ("name", "title", "file_name"):
+        value = draft.content.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return draft.external_id or draft.source_channel
+
+
+def _prepare_document_summarization(
+    draft: ObservationDraft,
+    *,
+    raw_s3_key: str | None,
+    ingress_kind: str | None,
+) -> bool:
+    """Mutate a large document draft into a pending-summary observation."""
+    if _draft_has_pending_summary(draft):
+        return True
+    content = draft.content
+    if _summary_metadata(content).get("status") == "complete":
+        return False
+    if draft.source_channel not in _document_summary_source_channels() and not bool(
+        content.get("is_document")
+    ):
+        return False
+    source_text = draft.content_text or ""
+    if len(source_text) < _document_summary_threshold_chars():
+        return False
+
+    summary: dict[str, Any] = {
+        "status": "pending",
+        "reason": "large_document",
+        "original_chars": len(source_text),
+        "raw_s3_key": raw_s3_key,
+        "ingress_kind": ingress_kind,
+        "source_channel": draft.source_channel,
+        "model": None,
+    }
+    if raw_s3_key is None:
+        # Inline fallback: no raw-tier pointer exists, so retain the full text
+        # temporarily in JSONB and remove it once the summary lands.
+        summary["source_text"] = source_text
+    content["summarization"] = summary
+    if raw_s3_key is not None:
+        content["raw_s3_key"] = raw_s3_key
+    draft.content_text = f"Document '{_document_title(draft)}' is queued for summarization."
+    return True
+
+
 async def ingest(
     channel: str,
     raw_payload: dict[str, Any],
@@ -156,6 +229,7 @@ async def ingest(
     request_headers: dict[str, str] | None = None,
     enqueue_trigger: bool = True,
     embedding_producer: Any | None = None,
+    summarization_producer: Any | None = None,
 ) -> IngestResult:
     """Run the UniformIngestPath for `channel` + `raw_payload`.
 
@@ -227,6 +301,7 @@ async def ingest(
                 embedder=embedder,
                 enqueue_trigger=enqueue_trigger,
                 embedding_producer=embedding_producer,
+                summarization_producer=summarization_producer,
             )
         except asyncpg.exceptions.CheckViolationError as exc:
             # Unnamed CheckViolation on the range-partitioned insert == missing
@@ -254,6 +329,9 @@ async def ingest_from_draft(
     embedder: OllamaClient | None = None,
     enqueue_trigger: bool = True,
     embedding_producer: Any | None = None,
+    summarization_producer: Any | None = None,
+    raw_s3_key: str | None = None,
+    ingress_kind: str | None = None,
 ) -> IngestResult:
     """Steps 2-7 of the UniformIngestPath, given an already-built draft.
 
@@ -283,11 +361,35 @@ async def ingest_from_draft(
             f"channel={channel!r}"
         )
 
-    await _maybe_enrich_github_draft(channel, draft, pool=pool, tenant_id=tenant_id)
+    # ---- step 1.5: draft enrichment (registered enrichers; raw-on-failure) ----
+    # Channel-keyed enrichers may augment draft.content IN PLACE before
+    # persistence, so the same observation row carries the derived signal (e.g.
+    # the github-intel extension's inline causal enrichment). Core discovers
+    # enrichers via the company_os.draft_enrichers entry-point group — it never
+    # imports an extension. No-op when none are registered; any enricher failure
+    # is swallowed inside run_enrichers so the RAW draft still persists.
+    from services.ingest.ingestion.enrichers import run_enrichers
+
+    await run_enrichers(channel, draft, pool=pool, tenant_id=tenant_id)
+
+    summary_pending = (
+        summarization_producer is not None
+        and _prepare_document_summarization(
+            draft,
+            raw_s3_key=raw_s3_key,
+            ingress_kind=ingress_kind,
+        )
+    )
+
+    # ---- step 2: pre-assign UUID v7 ----------------------------------
     obs_id = uuid7()
     actor = await _resolve_actor(draft, actor_repo)
     entities = await _resolve_entities(draft, alias_repo, tenant_id)
-    embedding = await _compute_embedding(embedder, draft.content_text)
+    embedding = (
+        _EmbeddingResult(embedding=None, pending=True)
+        if summary_pending
+        else await _compute_embedding(embedder, draft.content_text)
+    )
     obs_create = _build_observation_create(
         obs_id=obs_id,
         tenant_id=tenant_id,
@@ -301,7 +403,7 @@ async def ingest_from_draft(
         draft=draft,
         obs_create=obs_create,
         embedding=embedding,
-        enqueue_trigger=enqueue_trigger,
+        enqueue_trigger=enqueue_trigger and not summary_pending,
         obs_id=obs_id,
         tenant_id=tenant_id,
     )
@@ -310,6 +412,14 @@ async def ingest_from_draft(
         tenant_id=tenant_id,
         draft=draft,
         row=result.observation,
+        skip=summary_pending,
+    )
+    await _publish_summarization_request_if_needed(
+        producer=summarization_producer,
+        tenant_id=tenant_id,
+        draft=draft,
+        row=result.observation,
+        deduped=result.deduped,
     )
     return result
 
@@ -317,23 +427,6 @@ async def ingest_from_draft(
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
-
-
-async def _maybe_enrich_github_draft(
-    channel: str,
-    draft: ObservationDraft,
-    *,
-    pool: asyncpg.Pool,
-    tenant_id: UUID,
-) -> None:
-    if channel != "github:webhook":
-        return
-    try:
-        from services.ingest.github_intel.inline import maybe_enrich_github_draft
-
-        await maybe_enrich_github_draft(draft, pool=pool, tenant_id=tenant_id)
-    except Exception:  # noqa: BLE001 — enrichment must never break ingest
-        pass
 
 
 async def _resolve_actor(
@@ -642,8 +735,9 @@ async def _publish_embedding_request_if_needed(
     tenant_id: UUID,
     draft: ObservationDraft,
     row: ObservationRow,
+    skip: bool = False,
 ) -> None:
-    if producer is None or not row.embedding_pending:
+    if skip or producer is None or not row.embedding_pending:
         return
     family = draft.source_channel.split(":", 1)[0]
     if family not in INGESTION_SOURCES:
@@ -657,6 +751,35 @@ async def _publish_embedding_request_if_needed(
         tenant_id=tenant_id,
         source=family,
         observation_id=row.id,
+    )
+
+
+async def _publish_summarization_request_if_needed(
+    *,
+    producer: Any | None,
+    tenant_id: UUID,
+    draft: ObservationDraft,
+    row: ObservationRow,
+    deduped: bool,
+) -> None:
+    if deduped or producer is None or not _draft_has_pending_summary(draft):
+        return
+    family = draft.source_channel.split(":", 1)[0]
+    if family not in INGESTION_SOURCES:
+        return
+    from services.ingest.ingestion.summarization.publish import (
+        publish_summarization_request,
+    )
+
+    summary = _summary_metadata(draft.content)
+    raw_key = summary.get("raw_s3_key")
+    await publish_summarization_request(
+        producer=producer,
+        tenant_id=tenant_id,
+        source=family,
+        observation_id=row.id,
+        raw_s3_key=raw_key if isinstance(raw_key, str) else None,
+        ingress_kind=summary.get("ingress_kind"),  # type: ignore[arg-type]
     )
 
 

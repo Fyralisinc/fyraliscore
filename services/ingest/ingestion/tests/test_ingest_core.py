@@ -13,6 +13,7 @@ import json
 import os
 import time
 from datetime import timezone
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -192,6 +193,21 @@ def test_channel_trust_map_slack_attested_agent():
 # =========================================================================
 
 
+class _FakeProducer:
+    def __init__(self) -> None:
+        self.published: list[tuple[str, bytes, bytes | None]] = []
+
+    async def produce(
+        self,
+        topic: str,
+        value: bytes,
+        *,
+        key: bytes | None = None,
+        **_kwargs: Any,
+    ) -> None:
+        self.published.append((topic, value, key))
+
+
 async def _ingest_slack(
     pool: asyncpg.Pool,
     tenant_id: UUID,
@@ -225,6 +241,119 @@ async def _ingest_slack(
         alias_repo=alias_repo or EntityAliasRepo(pool),
         embedder=embedder,
     )
+
+
+def _google_drive_file_payload(
+    *,
+    text: str,
+    file_id: str = "summary-file-1",
+    name: str = "Renewal Plan.pdf",
+    mime_type: str = "application/pdf",
+    version: str = "1",
+) -> dict[str, Any]:
+    return {
+        "id": file_id,
+        "name": name,
+        "mimeType": mime_type,
+        "version": version,
+        "trashed": False,
+        "createdTime": "2026-04-01T09:00:00.000Z",
+        "modifiedTime": "2026-04-20T10:00:00.000Z",
+        "webViewLink": f"https://drive.google.com/file/d/{file_id}",
+        "owners": [{"emailAddress": "alice@acme.com", "displayName": "Alice"}],
+        "lastModifyingUser": {"emailAddress": "alice@acme.com"},
+        "_fyralis_drive_id": "my-drive",
+        "_fyralis_drive_kind": "my_drive",
+        "_fyralis_owner_email": "alice@acme.com",
+        "_fyralis_removed": False,
+        "_fyralis_extracted_text": text,
+    }
+
+
+@pytest.mark.asyncio
+async def test_small_google_drive_file_does_not_enqueue_summarization(
+    gateway_pool,
+    tenant_id,
+    _DeterministicEmbedder,
+    monkeypatch,
+):
+    monkeypatch.setenv("INGEST_DOCUMENT_SUMMARY_THRESHOLD_CHARS", "1000")
+    producer = _FakeProducer()
+    text = "Short renewal note. Alice owns the customer FAQ."
+
+    result = await ingest(
+        "google_drive:file",
+        _google_drive_file_payload(text=text, file_id="small-summary-file"),
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+        actor_repo=ActorRepo(gateway_pool),
+        alias_repo=EntityAliasRepo(gateway_pool),
+        embedder=_DeterministicEmbedder(),
+        summarization_producer=producer,
+    )
+
+    obs = result.observation
+    assert obs.content.get("summarization") is None
+    assert "Short renewal note" in obs.content_text
+    assert obs.embedding_pending is False
+    assert producer.published == []
+    assert result.trigger_queue_id is not None
+
+
+@pytest.mark.asyncio
+async def test_large_google_drive_file_becomes_pending_summary_request(
+    gateway_pool,
+    tenant_id,
+    _DeterministicEmbedder,
+    monkeypatch,
+):
+    monkeypatch.setenv("INGEST_DOCUMENT_SUMMARY_THRESHOLD_CHARS", "1000")
+    producer = _FakeProducer()
+    text = (
+        "Enterprise renewal plan. Alice owns escalation governance. "
+        "Priya sends the FAQ. Mateo validates the dashboard. "
+        "Support capacity must remain above 85 percent. "
+    ) * 20
+
+    result = await ingest(
+        "google_drive:file",
+        _google_drive_file_payload(
+            text=text,
+            file_id="large-summary-file",
+            name="Enterprise Renewal Plan.pdf",
+            version="2",
+        ),
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+        actor_repo=ActorRepo(gateway_pool),
+        alias_repo=EntityAliasRepo(gateway_pool),
+        embedder=_DeterministicEmbedder(),
+        summarization_producer=producer,
+    )
+
+    obs = result.observation
+    summary = obs.content.get("summarization")
+    assert isinstance(summary, dict)
+    assert summary["status"] == "pending"
+    assert summary["reason"] == "large_document"
+    assert summary["model"] is None
+    assert summary["original_chars"] == len(summary["source_text"])
+    assert "Enterprise renewal plan" in summary["source_text"]
+    assert obs.content_text == (
+        "Document 'Enterprise Renewal Plan.pdf' is queued for summarization."
+    )
+    assert obs.embedding is None
+    assert obs.embedding_pending is True
+    assert result.trigger_queue_id is None
+
+    assert len(producer.published) == 1
+    topic, value, key = producer.published[0]
+    assert topic == "ingestion.summarization.google_drive"
+    assert key == str(tenant_id).encode("utf-8")
+    envelope = json.loads(value)
+    assert envelope["tenant_id"] == str(tenant_id)
+    assert envelope["observation_id"] == str(obs.id)
+    assert envelope["source"] == "google_drive"
 
 
 @pytest.mark.asyncio

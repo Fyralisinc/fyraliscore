@@ -113,6 +113,7 @@ def _transcript_extras(t: dict[str, Any]) -> dict[str, Any]:
     summary = t.get("summary")
     summary_text = None
     action_items = None
+    native_summary: dict[str, Any] | None = None
     if isinstance(summary, dict):
         summary_text = (
             summary.get("overview")
@@ -120,11 +121,13 @@ def _transcript_extras(t: dict[str, Any]) -> dict[str, Any]:
             or summary.get("gist")
         )
         action_items = summary.get("action_items") or summary.get("actionItems")
+        native_summary = {k: v for k, v in summary.items() if v not in (None, "", [])}
     elif isinstance(summary, str):
         summary_text = summary
 
     raw: dict[str, Any] = {
         "summary": summary_text,
+        "native_summary": native_summary,
         "action_items": action_items if isinstance(action_items, (list, str)) else None,
         "duration_minutes": t.get("duration") or t.get("durationMinutes"),
         "meeting_url": t.get("meetingLink") or t.get("transcript_url") or t.get("audio_url"),
@@ -168,11 +171,22 @@ def _transcript_draft(
         or _utcnow()
     )
     participants = _participants(transcript)
+    extras = _transcript_extras(transcript)
 
     content_text = title
     if participants:
         who = ", ".join(participants[:5])
         content_text = f"{title} · {who}"
+    summary_text = extras.get("summary")
+    if isinstance(summary_text, str) and summary_text.strip():
+        content_text = f"{content_text}\n\nSummary: {summary_text.strip()}"
+    action_items = extras.get("action_items")
+    if isinstance(action_items, list) and action_items:
+        shown = "; ".join(str(item) for item in action_items[:5] if item)
+        if shown:
+            content_text += f"\nActions: {shown}"
+    elif isinstance(action_items, str) and action_items.strip():
+        content_text += f"\nActions: {action_items.strip()}"
 
     entities: list[dict[str, Any]] = [
         {"type": "fireflies_workspace", "id": workspace_id},
@@ -189,10 +203,13 @@ def _transcript_draft(
         "participants": participants,
         "date": transcript.get("dateTime") or transcript.get("date"),
         "version": version,
+        "is_document": True,
+        "text_dominant": False,
+        "summary_provenance": "fireflies_native" if extras.get("summary") else None,
     }
     # Merge the richer fields (summary, action items, duration, links) — additive,
     # only present keys.
-    content.update(_transcript_extras(transcript))
+    content.update(extras)
 
     return ObservationDraft(
         source_channel=_CHANNEL,

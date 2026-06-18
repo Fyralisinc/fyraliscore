@@ -7,6 +7,7 @@ block another. The data-plane stages are split per source:
     ingestion.raw.{source}
     ingestion.normalized.{source}
     ingestion.embedding.{source}
+    ingestion.summarization.{source}
     ingestion.dlq.{source}
 
 Producers, consumers, the provisioner (`scripts/provision_kafka_topics.py`),
@@ -38,6 +39,7 @@ DATA_PLANE_STAGES: tuple[str, ...] = (
     "raw",
     "normalized",
     "embedding",
+    "summarization",
     "dlq",
 )
 

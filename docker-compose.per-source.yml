@@ -6,7 +6,7 @@
 # Use WITH the base file, all-sources singletons scaled to 0:
 #   docker compose -f docker-compose.yml -f docker-compose.per-source.yml \
 #       up -d --scale normalizer=0 --scale observation_writer=0 \
-#       --scale embedding_worker=0
+#       --scale summarization_worker=0 --scale embedding_worker=0
 
 
 services:
@@ -1755,6 +1755,882 @@ services:
       INGESTION_SOURCE: linkedin
     env_file: .env.production
     command: python -m services.ingest.ingestion.writers.observation_writer
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  # ---- summarization-worker (per source) ----
+  summarization_worker_slack:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: slack
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_github:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: github
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_discord:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: discord
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_gmail:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: gmail
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_notion:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: notion
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_google_calendar:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: google_calendar
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_google_drive:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: google_drive
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_jira:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: jira
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_mercury:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: mercury
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_quickbooks:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: quickbooks
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_grafana:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: grafana
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_telegram:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: telegram
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_brex:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: brex
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_ramp:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: ramp
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_gusto:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: gusto
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_deel:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: deel
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_fireflies:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: fireflies
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_signal:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: signal
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_aws:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: aws
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_miro:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: miro
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_figma:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: figma
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_carta:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: carta
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_hibob:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: hibob
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_ashby:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: ashby
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+
+  summarization_worker_linkedin:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      DATABASE_URL: postgresql://company_os:company_os@postgres:5432/company_os
+      OLLAMA_URL: http://ollama:11434
+      COMPANY_OS_ENV: prod
+      FYRALIS_ENV: prod
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_RAW_BUCKET: fyralis-raw
+      S3_REGION_NAME: us-east-1
+      AWS_ACCESS_KEY_ID: fyralis
+      AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
+      REDIS_URL: redis://redis:6379/0
+      INGESTION_HEALTH_PORT: "9300"
+      # Source isolation: pin this worker to one source's lane.
+      INGESTION_SOURCE: linkedin
+    env_file: .env.production
+    command: python -m services.ingest.ingestion.writers.summarization_worker.summarization_worker
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9300/healthz').status==200 else 1)\""]
       interval: 15s

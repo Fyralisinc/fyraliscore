@@ -1,0 +1,27 @@
+# Local Codex-auth overlay for ingestion workers that make LLM calls.
+#
+# Use this together with the sandbox + pgAdmin overlays:
+#   docker compose -f docker-compose.yml -f docker-compose.sandbox.yml \
+#     -f docker-compose.pgadmin.yml -f docker-compose.codex-auth.yml up -d \
+#     pgadmin normalizer observation_writer summarization_worker
+#
+# The worker reads the same local login created by `codex login`.
+
+x-codex-local-auth: &codex-local-auth
+  environment:
+    CODEX_HOME: /root/.codex
+    CODEX_AUTH_FILE: /root/.codex/auth.json
+    CODEX_TRANSPORT: app-server
+    INGEST_SUMMARIZATION_BATCH_BACKFILL: "0"
+  volumes:
+    - ${HOME}/.codex/auth.json:/root/.codex/auth.json:ro
+    - ${HOME}/.codex/config.toml:/root/.codex/config.toml:ro
+
+services:
+  summarization_worker:
+    <<: *codex-local-auth
+
+  # Local Codex OAuth goes through app-server, not OpenAI's Batch API.
+  # Keep the batch worker opt-in unless platform Batch credentials are configured.
+  summarization_batch_worker:
+    profiles: ["openai-batch"]

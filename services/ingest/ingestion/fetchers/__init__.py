@@ -168,6 +168,8 @@ FETCHER_DISPATCH: dict[str, Fetcher] = {
     "hibob":     _not_implemented_fetcher("hibob",     "IN-PEOPLE"),
     "ashby":     _not_implemented_fetcher("ashby",     "IN-PEOPLE"),
     "linkedin":  _not_implemented_fetcher("linkedin",  "IN-PEOPLE"),
+    # WhatsApp is LIVE-only; backfill (Coexistence/BSP) is deferred.
+    "whatsapp":  _not_implemented_fetcher("whatsapp",  "IN-WHATSAPP-BACKFILL"),
 }
 
 
