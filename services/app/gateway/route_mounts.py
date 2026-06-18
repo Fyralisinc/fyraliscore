@@ -25,12 +25,14 @@ def register_gateway_routes(app: FastAPI) -> None:
     from services.app.gateway.structure_router import build_structure_router
     from services.app.gateway.substrate_router import build_substrate_router
     from services.app.gateway.today_core_router import build_today_core_router
+    from services.app.gateway.whatsapp_router import build_whatsapp_router
 
     app.include_router(build_core_router())
     app.include_router(build_substrate_router())
     app.include_router(build_contest_router())
     app.include_router(build_dashboard_router())
     app.include_router(build_document_ingest_router())
+    app.include_router(build_whatsapp_router())
     app.include_router(build_sage_internal_router())
     app.include_router(build_recommendations_router())
     app.include_router(build_structure_router())

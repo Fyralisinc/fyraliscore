@@ -146,6 +146,9 @@ PLANNER_DISPATCH: dict[str, Planner] = {
     "hibob":     _not_implemented_planner("hibob",     "IN-PEOPLE"),
     "ashby":     _not_implemented_planner("ashby",     "IN-PEOPLE"),
     "linkedin":  _not_implemented_planner("linkedin",  "IN-PEOPLE"),
+    # WhatsApp is LIVE-only (Kafka data plane); backfill is a deferred phase,
+    # so the planner stays a stub — no onboarding_trigger is created for it.
+    "whatsapp":  _not_implemented_planner("whatsapp",  "IN-WHATSAPP-BACKFILL"),
 }
 
 

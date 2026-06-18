@@ -66,6 +66,12 @@ CHANNEL_TRUST_MAP: dict[str, str] = {
     "hibob:object": "authoritative",
     "ashby:object": "authoritative",
     "linkedin:object": "authoritative",
+    # WhatsApp (Cloud API webhook — live). ONE channel/many-event-types
+    # (like github:webhook): inbound customer messages are customer-authored
+    # content via a Meta-signed webhook → attested_agent (Slack/email posture),
+    # while outbound delivery-status callbacks are Meta-asserted facts and the
+    # handler OVERRIDES trust to authoritative + kind=state_change for those.
+    "whatsapp:message": "attested_agent",
     # Internal channels used by system-originated observations; these
     # carry the highest trust and never enter through a signature-
     # verified webhook.
@@ -189,6 +195,7 @@ from services.ingest.ingestion.handlers import carta  # noqa: E402,F401
 from services.ingest.ingestion.handlers import hibob  # noqa: E402,F401
 from services.ingest.ingestion.handlers import ashby  # noqa: E402,F401
 from services.ingest.ingestion.handlers import linkedin  # noqa: E402,F401
+from services.ingest.ingestion.handlers import whatsapp  # noqa: E402,F401
 
 
 __all__ = [
