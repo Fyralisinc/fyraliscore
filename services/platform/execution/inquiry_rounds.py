@@ -24,6 +24,17 @@ from .answer_evaluation import (
 from .inquiry_bootstrap import _InquiryBootstrapState
 from .question_planning import candidate_questions_for_round
 from .question_policy import apply_question_policy, select_questions
+from .reconstruction_state import (
+    apply_reconstruction_to_actions,
+    build_reconstruction_state,
+    evidence_state_for_reader,
+    planner_reconstruction_payload,
+    reader_reconstruction_payload,
+    reconstruction_gate_decision,
+    reconstruction_state_for_purpose,
+    reconstruction_state_note,
+    serialized_payload_size,
+)
 from .retrieval_learning import load_retrieval_motifs_for_questions
 from .retrieval_plan import compile_retrieval_plan
 from .result_composition import _add_result_to_reservoir, _merge_results
@@ -35,7 +46,12 @@ from .sage_reader_notes import (
     sage_reader_action_gate,
     sage_reader_total_ms,
 )
-from .types import InquiryQuestion, InquiryStopStatus, RetrievalAction
+from .types import (
+    InquiryQuestion,
+    InquiryStopStatus,
+    ReconstructionState,
+    RetrievalAction,
+)
 
 _BROAD_DISCOVERY_ACTION_PATHS = frozenset({"semantic", "temporal", "pattern"})
 
@@ -70,6 +86,7 @@ async def _select_questions_for_round(
     trigger: TriggerContext,
     llm_provider: LLMProvider | None,
     round_index: int,
+    reconstruction_state: ReconstructionState | None,
 ) -> list[InquiryQuestion]:
     stage_started = time.perf_counter()
     candidate_questions, planning_note = await candidate_questions_for_round(
@@ -82,6 +99,7 @@ async def _select_questions_for_round(
         config=state.cfg,
         round_index=round_index,
         reflective_rules=state.reflective_rules,
+        reconstruction_state=reconstruction_state,
     )
     candidate_questions = apply_question_policy(
         candidate_questions,
@@ -163,6 +181,7 @@ def _build_question_read_plans(
     selected: list[InquiryQuestion],
     sage_results_by_qid: dict[str, RetrievalResult],
     learned_motifs: dict[str, Any],
+    reconstruction_state: ReconstructionState | None,
 ) -> list[_QuestionRetrievalPlan]:
     question_read_plans: list[_QuestionRetrievalPlan] = []
     for question in selected:
@@ -199,6 +218,10 @@ def _build_question_read_plans(
             actions,
             action_gate_scope=action_gate_scope,
             action_gate_reason=action_gate_reason,
+        )
+        actions_to_run = apply_reconstruction_to_actions(
+            actions_to_run,
+            state=reconstruction_state,
         )
         question_read_plans.append(
             _QuestionRetrievalPlan(
@@ -382,11 +405,66 @@ async def _execute_inquiry_round(
     read_pool: asyncpg.Pool | None,
     round_index: int,
 ) -> _InquiryRoundStatus:
+    stage_started = time.perf_counter()
+    reconstruction_state = build_reconstruction_state(
+        trigger=trigger,
+        hypotheses=state.hypotheses,
+        evidence=list(state.evidence_by_key.values()),
+        answers=state.answers,
+        unknowns=state.unknowns,
+        round_index=round_index,
+    )
+    planner_reconstruction_state = reconstruction_state_for_purpose(
+        reconstruction_state,
+        trigger=trigger,
+        purpose="planner",
+    )
+    reader_reconstruction_state = reconstruction_state_for_purpose(
+        reconstruction_state,
+        trigger=trigger,
+        purpose="reader",
+    )
+    action_reconstruction_state = reconstruction_state_for_purpose(
+        reconstruction_state,
+        trigger=trigger,
+        purpose="actions",
+    )
+    gate_decision = reconstruction_gate_decision(reconstruction_state, trigger=trigger)
+    state.reconstruction_notes.append(
+        reconstruction_state_note(reconstruction_state, trigger=trigger)
+    )
+    append_stage_timing(
+        state.stage_timing_notes,
+        "reconstruction_state",
+        stage_started,
+        round_index=round_index,
+        active_cues=len(reconstruction_state.active_cues),
+        active_tags=len(reconstruction_state.active_tags),
+        unresolved_slots=len(reconstruction_state.unresolved_slots),
+        known_models=len(reconstruction_state.known_model_ids),
+        known_observations=len(reconstruction_state.known_observation_ids),
+        planner_enabled=bool(planner_reconstruction_state is not None),
+        reader_enabled=bool(reader_reconstruction_state is not None),
+        actions_enabled=bool(action_reconstruction_state is not None),
+        planner_payload_chars=serialized_payload_size(
+            planner_reconstruction_payload(planner_reconstruction_state)
+        ),
+        reader_payload_chars=serialized_payload_size(
+            reader_reconstruction_payload(reader_reconstruction_state)
+        ),
+        action_cues=int(gate_decision.get("actions", {}).get("cue_count") or 0),
+        gate_reasons={
+            purpose: data.get("reason")
+            for purpose, data in gate_decision.items()
+            if isinstance(data, dict) and "reason" in data
+        },
+    )
     selected = await _select_questions_for_round(
         state,
         trigger=trigger,
         llm_provider=llm_provider,
         round_index=round_index,
+        reconstruction_state=planner_reconstruction_state,
     )
     if not selected:
         return _InquiryRoundStatus(
@@ -403,6 +481,7 @@ async def _execute_inquiry_round(
         substrate=state.sage_reader_substrate,
         hypotheses=state.hypotheses,
         read_pool=read_pool,
+        evidence_state=evidence_state_for_reader(reader_reconstruction_state),
     )
     state.sage_reader_notes.setdefault("batches", []).append(
         {
@@ -422,6 +501,7 @@ async def _execute_inquiry_round(
         selected=selected,
         sage_results_by_qid=sage_results_by_qid,
         learned_motifs=learned_motifs,
+        reconstruction_state=action_reconstruction_state,
     )
     action_records_by_qid = await _execute_question_retrieval_actions(
         question_read_plans,

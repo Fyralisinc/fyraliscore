@@ -21,8 +21,10 @@ Canonical topology ops (merge, split, promote, demote — doc §16.3,
 §1262-1271) are produced as `dict` candidate payloads only; the
 optimizer NEVER writes to `models`, `model_edges`, or `observations`.
 Multi-model candidates are persisted into the existing pre-truth
-`relationship_candidates` review layer so Think/humans can validate
-them before any canonical truth changes.
+`relationship_candidates` review layer. Single-model split/demote
+candidates are persisted into `canonical_operation_candidates`. Both
+surfaces let Think/humans validate the proposal before any canonical
+truth changes.
 
 Trigger taxonomy (`trigger_event`) matches doc §16.1:
 
@@ -1507,6 +1509,32 @@ class TopologyOptimizer:
                 session_id=session_id,
             )
             if candidate is None:
+                try:
+                    if await _insert_canonical_operation_candidate(
+                        conn,
+                        tenant_id=self._tenant_id,
+                        payload=payload,
+                        session_id=session_id,
+                    ):
+                        inserted += 1
+                except asyncpg.UniqueViolationError:
+                    continue
+                except (
+                    asyncpg.UndefinedTableError,
+                    asyncpg.UndefinedColumnError,
+                ) as exc:
+                    _log.debug(
+                        "topology_optimizer.canonical_op_queue_unavailable",
+                        error=str(exc),
+                    )
+                    return inserted
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "topology_optimizer.canonical_op_enqueue_failed",
+                        error=str(exc),
+                        error_type=type(exc).__name__,
+                        op=payload.get("op"),
+                    )
                 continue
             op_key = candidate.metadata.get("canonical_op_key")
             if not isinstance(op_key, str) or not op_key:
@@ -1959,6 +1987,82 @@ def _canonical_op_to_relationship_candidate(
             review_status="needs_review",
         )
     return None
+
+
+async def _insert_canonical_operation_candidate(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    payload: dict,
+    session_id: UUID,
+) -> bool:
+    op = str(payload.get("op") or "")
+    if op not in {"split", "demote"}:
+        return False
+    op_key = _canonical_op_key(payload)
+    existing = await conn.fetchval(
+        """
+        SELECT id
+        FROM canonical_operation_candidates
+        WHERE tenant_id = $1
+          AND source = 'sage_topology_optimizer'
+          AND operation = $2
+          AND op_key = $3
+        LIMIT 1
+        """,
+        tenant_id,
+        op,
+        op_key,
+    )
+    if existing is not None:
+        return False
+
+    model_ids = _candidate_model_ids(payload)
+    payload_with_key = {
+        **payload,
+        "canonical_op_key": op_key,
+        "evidence_session_ids": [
+            str(item)
+            for item in payload.get("evidence_session_ids", [])
+            if item is not None
+        ] or [str(session_id)],
+    }
+    inserted = await conn.fetchval(
+        """
+        INSERT INTO canonical_operation_candidates (
+            id, tenant_id, source, operation, op_key, proposed_kind,
+            source_model_id, source_model_ids, reason, payload,
+            review_status, metadata
+        ) VALUES (
+            $1, $2, 'sage_topology_optimizer', $3, $4, $5,
+            $6, $7::uuid[], $8, $9::jsonb,
+            'needs_review', $10::jsonb
+        )
+        ON CONFLICT (tenant_id, source, operation, op_key) DO NOTHING
+        RETURNING id
+        """,
+        uuid7(),
+        tenant_id,
+        op,
+        op_key,
+        str(payload.get("proposed_kind") or ""),
+        model_ids[0] if model_ids else None,
+        model_ids,
+        str(payload.get("reason") or ""),
+        json.dumps(payload_with_key, sort_keys=True, default=str),
+        json.dumps(
+            {
+                "origin": "sage_topology_optimizer",
+                "canonical_op": op,
+                "canonical_proposed_kind": payload.get("proposed_kind"),
+                "canonical_op_key": op_key,
+                "evidence_session_ids": payload_with_key["evidence_session_ids"],
+            },
+            sort_keys=True,
+            default=str,
+        ),
+    )
+    return inserted is not None
 
 
 def _candidate_model_ids(payload: dict) -> list[UUID]:

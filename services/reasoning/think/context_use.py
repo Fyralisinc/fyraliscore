@@ -86,12 +86,48 @@ def _referenced_model_ids(diff: RawDiff | ValidatedDiff) -> set[UUID]:
         if model_id is not None:
             referenced.add(model_id)
 
+    for op in getattr(diff, "memory_lifecycle_ops", []) or []:
+        for value in (
+            getattr(op, "model_id", None),
+            getattr(op, "superseded_by_model_id", None),
+        ):
+            model_id = _coerce_uuid(value)
+            if model_id is not None:
+                referenced.add(model_id)
+        for value in getattr(op, "evidence_model_ids", None) or []:
+            model_id = _coerce_uuid(value)
+            if model_id is not None:
+                referenced.add(model_id)
+
     for op in diff.edge_ops:
         for value in (
             getattr(op, "source_model_id", None),
             getattr(op, "target_model_id", None),
         ):
             model_id = _coerce_uuid(value)
+            if model_id is not None:
+                referenced.add(model_id)
+        for value in getattr(op, "evidence_model_ids", None) or []:
+            model_id = _coerce_uuid(value)
+            if model_id is not None:
+                referenced.add(model_id)
+
+    for op in getattr(diff, "relation_claim_ops", []) or []:
+        for value in (
+            getattr(op, "source_model_id", None),
+            getattr(op, "target_model_id", None),
+        ):
+            model_id = _coerce_uuid(value)
+            if model_id is not None:
+                referenced.add(model_id)
+        for value in getattr(op, "evidence_model_ids", None) or []:
+            model_id = _coerce_uuid(value)
+            if model_id is not None:
+                referenced.add(model_id)
+
+    for op in getattr(diff, "relation_frame_ops", []) or []:
+        for participant in getattr(op, "participants", None) or []:
+            model_id = _coerce_uuid(getattr(participant, "model_id", None))
             if model_id is not None:
                 referenced.add(model_id)
         for value in getattr(op, "evidence_model_ids", None) or []:
@@ -128,7 +164,22 @@ def _referenced_observation_ids(diff: RawDiff | ValidatedDiff) -> set[UUID]:
             obs_id = _coerce_uuid(entry.get("born_from_event_id"))
             if obs_id is not None:
                 referenced.add(obs_id)
+    for op in getattr(diff, "memory_lifecycle_ops", []) or []:
+        for value in getattr(op, "evidence_event_ids", None) or []:
+            obs_id = _coerce_uuid(value)
+            if obs_id is not None:
+                referenced.add(obs_id)
     for op in diff.edge_ops:
+        for value in getattr(op, "evidence_event_ids", None) or []:
+            obs_id = _coerce_uuid(value)
+            if obs_id is not None:
+                referenced.add(obs_id)
+    for op in getattr(diff, "relation_claim_ops", []) or []:
+        for value in getattr(op, "evidence_event_ids", None) or []:
+            obs_id = _coerce_uuid(value)
+            if obs_id is not None:
+                referenced.add(obs_id)
+    for op in getattr(diff, "relation_frame_ops", []) or []:
         for value in getattr(op, "evidence_event_ids", None) or []:
             obs_id = _coerce_uuid(value)
             if obs_id is not None:
@@ -185,6 +236,29 @@ def _relation_op_counts(
         target = _coerce_uuid(getattr(op, "target_model_id", None))
         endpoints = {x for x in (source, target) if x is not None}
         if len(endpoints) == 2 and endpoints <= selected_model_ids:
+            between_selected += 1
+        if endpoints & graph_model_ids:
+            touching_graph += 1
+    return between_selected, touching_graph
+
+
+def _relation_frame_op_counts(
+    ops: Any,
+    *,
+    selected_model_ids: set[UUID],
+    graph_model_ids: set[UUID],
+) -> tuple[int, int]:
+    between_selected = 0
+    touching_graph = 0
+    for op in ops or []:
+        participants = getattr(op, "participants", None) or []
+        endpoints = {
+            model_id
+            for participant in participants
+            if (model_id := _coerce_uuid(getattr(participant, "model_id", None)))
+            is not None
+        }
+        if len(endpoints) >= 2 and endpoints <= selected_model_ids:
             between_selected += 1
         if endpoints & graph_model_ids:
             touching_graph += 1
@@ -284,6 +358,9 @@ def summarize_context_use(
     )
     total_ops = (
         len(diff.claim_ops)
+        + len(getattr(diff, "memory_lifecycle_ops", []) or [])
+        + len(getattr(diff, "relation_claim_ops", []) or [])
+        + len(getattr(diff, "relation_frame_ops", []) or [])
         + len(diff.edge_ops)
         + len(getattr(diff, "ontology_gap_ops", []) or [])
         + len(diff.act_ops)
@@ -310,6 +387,25 @@ def summarize_context_use(
         selected_model_ids=selected_model_ids,
         graph_model_ids=graph_model_ids,
     )
+    relation_claim_ops = getattr(diff, "relation_claim_ops", []) or []
+    memory_lifecycle_ops = getattr(diff, "memory_lifecycle_ops", []) or []
+    (
+        relation_claim_ops_between_selected,
+        relation_claim_ops_touching_graph,
+    ) = _relation_op_counts(
+        relation_claim_ops,
+        selected_model_ids=selected_model_ids,
+        graph_model_ids=graph_model_ids,
+    )
+    relation_frame_ops = getattr(diff, "relation_frame_ops", []) or []
+    (
+        relation_frame_ops_between_selected,
+        relation_frame_ops_touching_graph,
+    ) = _relation_frame_op_counts(
+        relation_frame_ops,
+        selected_model_ids=selected_model_ids,
+        graph_model_ids=graph_model_ids,
+    )
     ontology_gap_ops = getattr(diff, "ontology_gap_ops", []) or []
     (
         ontology_gap_ops_between_selected,
@@ -331,9 +427,12 @@ def summarize_context_use(
         selected_context_reference_count=selected_context_reference_count,
         reasoning_trace_context_accounted=reasoning_trace_context_accounted,
         trace_referenced_models=trace_referenced_models,
-        trace_referenced_observations=trace_referenced_observations)
+        trace_referenced_observations=trace_referenced_observations,
+    )
     graph_context_used = (
         bool(graph_referenced)
+        or relation_claim_ops_touching_graph > 0
+        or relation_frame_ops_touching_graph > 0
         or edge_ops_touching_graph > 0
         or ontology_gap_ops_touching_graph > 0
     )
@@ -355,18 +454,28 @@ def summarize_context_use(
         for op in diff.claim_ops
         if _coerce_uuid(getattr(op, "model_id", None)) in graph_model_ids
     )
+    graph_memory_lifecycle_op_reference_count = sum(
+        1
+        for op in memory_lifecycle_ops
+        if _coerce_uuid(getattr(op, "model_id", None)) in graph_model_ids
+    )
     graph_act_op_reference_count = sum(
         1
         for op in diff.act_ops
         if _coerce_uuid(getattr(op, "confidence_basis", None)) in graph_model_ids
     )
     graph_non_relation_op_count = (
-        graph_claim_op_reference_count + graph_act_op_reference_count
+        graph_claim_op_reference_count
+        + graph_memory_lifecycle_op_reference_count
+        + graph_act_op_reference_count
     )
     graph_trace_reference_count = len(trace_referenced_models & graph_model_ids)
     graph_trace_accounted = graph_trace_reference_count > 0 and total_ops == 0
     graph_relation_op_count = (
-        edge_ops_touching_graph + ontology_gap_ops_touching_graph
+        relation_claim_ops_touching_graph
+        + relation_frame_ops_touching_graph
+        + edge_ops_touching_graph
+        + ontology_gap_ops_touching_graph
     )
     graph_selected_without_relation_ops = (
         graph_count > 0 and total_ops > 0 and graph_relation_op_count == 0
@@ -376,7 +485,8 @@ def summarize_context_use(
         graph_relation_op_count=graph_relation_op_count,
         graph_no_edge_rationale_present=graph_no_edge_rationale_present,
         graph_non_relation_op_count=graph_non_relation_op_count,
-        graph_trace_accounted=graph_trace_accounted)
+        graph_trace_accounted=graph_trace_accounted,
+    )
     graph_relation_contract_basis = _graph_relation_contract_basis(
         graph_count=graph_count,
         graph_relation_op_count=graph_relation_op_count,
@@ -444,6 +554,20 @@ def summarize_context_use(
         "edge_ops_count": len(diff.edge_ops),
         "edge_ops_between_selected_models": edge_ops_between_selected,
         "edge_ops_touching_graph_models": edge_ops_touching_graph,
+        "relation_claim_ops_count": len(relation_claim_ops),
+        "relation_claim_ops_between_selected_models": (
+            relation_claim_ops_between_selected
+        ),
+        "relation_claim_ops_touching_graph_models": (
+            relation_claim_ops_touching_graph
+        ),
+        "relation_frame_ops_count": len(relation_frame_ops),
+        "relation_frame_ops_between_selected_models": (
+            relation_frame_ops_between_selected
+        ),
+        "relation_frame_ops_touching_graph_models": (
+            relation_frame_ops_touching_graph
+        ),
         "ontology_gap_ops_count": len(ontology_gap_ops),
         "ontology_gap_ops_between_selected_models": (
             ontology_gap_ops_between_selected
@@ -452,6 +576,9 @@ def summarize_context_use(
         "graph_relation_op_count": graph_relation_op_count,
         "graph_non_relation_op_count": graph_non_relation_op_count,
         "graph_claim_op_reference_count": graph_claim_op_reference_count,
+        "graph_memory_lifecycle_op_reference_count": (
+            graph_memory_lifecycle_op_reference_count
+        ),
         "graph_act_op_reference_count": graph_act_op_reference_count,
         "graph_trace_reference_count": graph_trace_reference_count,
         "graph_selected_without_relation_ops": (
@@ -461,6 +588,7 @@ def summarize_context_use(
         "graph_relation_contract_satisfied": graph_relation_contract_satisfied,
         "graph_relation_contract_basis": graph_relation_contract_basis,
         "claim_ops_count": len(diff.claim_ops),
+        "memory_lifecycle_ops_count": len(memory_lifecycle_ops),
         "act_ops_count": len(diff.act_ops),
         "resource_ops_count": len(diff.resource_ops),
     }

@@ -45,6 +45,30 @@ _VALID_CONTROLLABILITY: tuple[str, ...] = get_args(ResourceControllability)
 _VALID_TEMPORAL: tuple[str, ...] = get_args(ResourceTemporalCharacter)
 
 
+def _json_obj(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if value is None:
+        return {}
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode()
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return dict(decoded) if isinstance(decoded, dict) else {}
+    return {}
+
+
+def _resource_row_from_record(row: asyncpg.Record | dict[str, Any]) -> ResourceRow:
+    data = dict(row)
+    data["current_value"] = _json_obj(data.get("current_value"))
+    if data.get("metadata") is not None:
+        data["metadata"] = _json_obj(data.get("metadata"))
+    return ResourceRow.model_validate(data)
+
+
 # =====================================================================
 # Create
 # =====================================================================
@@ -142,7 +166,7 @@ async def create(
                 "utilization_state": utilization_state,
             },
         )
-        return ResourceRow.model_validate(dict(row))
+        return _resource_row_from_record(row)
 
     if conn is None:
         async with transaction() as tx:
@@ -192,10 +216,10 @@ async def update_attributes(
                 "cannot update archived resource",
                 resource_id=str(resource_id),
             )
-        new_cv = dict(row["current_value"] or {})
+        new_cv = _json_obj(row["current_value"])
         if patch:
             new_cv.update(patch)
-        new_meta = dict(row["metadata"] or {}) if row["metadata"] else {}
+        new_meta = _json_obj(row["metadata"]) if row["metadata"] else {}
         if metadata_patch:
             new_meta.update(metadata_patch)
         new_description = description if description is not None else row["description"]
@@ -228,7 +252,7 @@ async def update_attributes(
                 "patch_keys": sorted(list(patch.keys())) if patch else [],
             },
         )
-        return ResourceRow.model_validate(dict(updated))
+        return _resource_row_from_record(updated)
 
     if conn is None:
         async with transaction() as tx:
@@ -258,7 +282,7 @@ async def archive(
             )
         if row["archived_at"] is not None:
             # Idempotent: already archived — return as-is, no new event.
-            return ResourceRow.model_validate(dict(row))
+            return _resource_row_from_record(row)
         updated = await tx.fetchrow(
             """
             UPDATE resources
@@ -277,7 +301,7 @@ async def archive(
             entity_kind="resource",
             metadata={"reason": reason, "resource_kind": row["kind"]},
         )
-        return ResourceRow.model_validate(dict(updated))
+        return _resource_row_from_record(updated)
 
     if conn is None:
         async with transaction() as tx:
@@ -306,7 +330,7 @@ async def get(
         pool = get_pool()
         async with pool.acquire() as c:
             row = await c.fetchrow(q, resource_id)
-    return ResourceRow.model_validate(dict(row)) if row else None
+    return _resource_row_from_record(row) if row else None
 
 
 # =====================================================================
@@ -346,7 +370,7 @@ async def search_by_kind(
         pool = get_pool()
         async with pool.acquire() as c:
             rows = await c.fetch(q, *args)
-    return [ResourceRow.model_validate(dict(r)) for r in rows]
+    return [_resource_row_from_record(r) for r in rows]
 
 
 async def search_by_name_fuzzy(
@@ -395,7 +419,7 @@ async def search_by_name_fuzzy(
     for r in rows:
         d = dict(r)
         d.pop("sim", None)  # not in ResourceRow
-        out.append(ResourceRow.model_validate(d))
+        out.append(_resource_row_from_record(d))
     return out
 
 

@@ -96,7 +96,11 @@ async def resources_db() -> AsyncGenerator[asyncpg.Pool, None]:
             from lib.shared.migrations import apply_migrations_dir
 
             async with schema_bootstrap_lock(conn):
-                await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+                await apply_migrations_dir(
+                    conn,
+                    REPO_ROOT / "db" / "migrations",
+                    on_error="warn",
+                )
                 rows = await conn.fetch(
                     """
                     SELECT c.relname FROM pg_class c

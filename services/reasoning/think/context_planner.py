@@ -51,12 +51,14 @@ from .deterministic import is_authoritative
 from .debug_capture import capture as debug_capture
 from .reasoning_frame import ReasoningFrame
 from .region_locks import touched_entity_ids
+from .substrate_builder import build_substrate_candidates
 
 
 _log = structlog.get_logger(__name__)
 _diag_log = structlog.get_logger("think.diag")
 _BATCH_CONTEXT_MODEL_BUDGET_DEFAULT = 16
 _BATCH_CONTEXT_HISTORICAL_OBSERVATION_CAP_DEFAULT = 2
+_BATCH_CONTEXT_MODEL_BUDGET_FLOOR = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,15 +160,47 @@ def _retrieval_config_for_trigger(trigger: TriggerContext):
     )
     return replace(
         RETRIEVAL_CONFIG,
-        assembler_budget_models=min(
-            RETRIEVAL_CONFIG.assembler_budget_models,
-            model_budget,
+        assembler_budget_models=_adaptive_t1_batch_model_budget(
+            trigger,
+            max_budget=min(RETRIEVAL_CONFIG.assembler_budget_models, model_budget),
         ),
         historical_observation_cap=min(
             RETRIEVAL_CONFIG.historical_observation_cap,
             historical_observation_cap,
         ),
     )
+
+
+def _adaptive_t1_batch_model_budget(
+    trigger: TriggerContext,
+    *,
+    max_budget: int,
+) -> int:
+    """Scale T1 batch context with batch size instead of using one static cap."""
+    cap = max(1, int(max_budget))
+    seed_signature = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
+    signature_count = _coerce_positive_int(
+        seed_signature.get("batch_size")
+        or seed_signature.get("signal_count")
+        or seed_signature.get("observation_count")
+    )
+    batch_size = max(
+        len(trigger.observation_ids),
+        signature_count or 0,
+        1,
+    )
+    adaptive = _BATCH_CONTEXT_MODEL_BUDGET_FLOOR + (batch_size // 2)
+    return min(cap, max(1, adaptive))
+
+
+def _coerce_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _think_inquiry_config() -> InquiryConfig:
@@ -302,6 +336,55 @@ async def assemble_reasoning_context(
                 },
             )
 
+    try:
+        substrate_candidates = await build_substrate_candidates(
+            conn,
+            tenant_id=trigger.tenant_id,
+            observations=bundle.observations,
+            models=bundle.models,
+            run_id=run_id,
+        )
+        bundle.notes["substrate_candidates"] = substrate_candidates
+        candidate_region = _substrate_candidate_region(substrate_candidates)
+        if candidate_region:
+            allowed_region = sorted(set(allowed_region) | set(candidate_region))
+            bundle.notes["substrate_candidate_region_count"] = len(candidate_region)
+    except asyncpg.exceptions.UndefinedTableError as exc:
+        bundle.notes["substrate_candidates"] = []
+        bundle.notes["substrate_candidates_error"] = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+        }
+        _log.warning(
+            "think.substrate_candidates_table_missing",
+            tenant_id=str(trigger.tenant_id),
+            run_id=str(run_id) if run_id is not None else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_if_postgres_error(exc)
+        bundle.notes["substrate_candidates"] = []
+        bundle.notes["substrate_candidates_error"] = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+        }
+        _log.warning(
+            "think.substrate_candidates_failed",
+            tenant_id=str(trigger.tenant_id),
+            run_id=str(run_id) if run_id is not None else None,
+            error=str(exc),
+        )
+        if run_id is not None:
+            await debug_capture(
+                conn,
+                run_id=run_id,
+                tenant_id=trigger.tenant_id,
+                stage="error",
+                payload={
+                    "phase": "substrate_candidates",
+                    "error": repr(exc),
+                },
+            )
+
     if run_id is not None:
         await debug_capture(
             conn,
@@ -316,6 +399,12 @@ async def assemble_reasoning_context(
                 "selected_observation_count": len(bundle.observations),
                 "observation_selection": bundle.notes.get(
                     "observation_selection"
+                ),
+                "substrate_candidate_count": len(
+                    bundle.notes.get("substrate_candidates") or []
+                ),
+                "substrate_candidate_kinds": _substrate_candidate_kind_counts(
+                    bundle.notes.get("substrate_candidates") or []
                 ),
                 "commitment_count": len(
                     bundle.acts_summary.get("commitments", [])
@@ -505,6 +594,34 @@ async def _augment_active_acts(
         bundle=bundle,
         allowed_region=allowed_region,
     )
+
+
+def _substrate_candidate_kind_counts(candidates: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for candidate in candidates:
+        kind = str(candidate.get("kind") or "unknown")
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+def _substrate_candidate_region(
+    candidates: list[dict[str, Any]],
+) -> list[tuple[str, str]]:
+    region: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        scope_ref = candidate.get("scope_ref")
+        if isinstance(scope_ref, dict):
+            ref_type = str(scope_ref.get("type") or "").strip()
+            ref_id = str(scope_ref.get("id") or "").strip()
+        else:
+            kind = str(candidate.get("kind") or "").strip()
+            ref_type = f"candidate_{kind}" if kind else ""
+            ref_id = str(candidate.get("id") or "").strip()
+        if ref_type and ref_id:
+            region.add((ref_type, ref_id))
+    return sorted(region)
 
 
 def _actor_ids_for_operating_context(

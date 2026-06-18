@@ -6,8 +6,9 @@ these JSON-schema features: object, string, number, integer, boolean,
 array, enum, anyOf, const.
 
 This schema is a deliberate SUBSET of `RawDiff`: it constrains
-`claim_ops`, first-class `edge_ops`, ontology gaps, resource operations,
-and first-class prediction inserts. `act_ops` remain omitted from the
+`claim_ops`, first-class `relation_claim_ops`, `relation_frame_ops`,
+`edge_ops`, ontology gaps, resource operations, and first-class prediction
+inserts. `act_ops` remain omitted from the
 strict schema — Pydantic defaults them to an empty list at parse time.
 Acts can be added back when specific shapes need to be enforced.
 """
@@ -382,6 +383,145 @@ _EDGE_KIND_ENUM = [
 ]
 
 
+_RELATION_CLAIM_OP = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "op",
+        "source_model_id",
+        "target_model_id",
+        "predicate",
+        "edge_kind",
+        "weight",
+        "direction",
+        "endpoint_binding_status",
+        "write_policy",
+        "status",
+        "confidence",
+        "binding_confidence",
+        "evidence_event_ids",
+        "evidence_model_ids",
+        "evidence_text",
+        "explanation",
+    ],
+    "properties": {
+        "op": {"type": "string", "enum": ["upsert"]},
+        "source_model_id": {"anyOf": [_UUID_STR, {"type": "null"}]},
+        "target_model_id": {"anyOf": [_UUID_STR, {"type": "null"}]},
+        "predicate": {"type": "string"},
+        "edge_kind": {"type": "string", "enum": _EDGE_KIND_ENUM},
+        "weight": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "direction": {
+            "type": "string",
+            "enum": [
+                "source_to_target",
+                "target_to_source",
+                "symmetric",
+                "unknown",
+            ],
+        },
+        "endpoint_binding_status": {
+            "type": "string",
+            "enum": ["bound", "partially_bound", "unbound", "ambiguous"],
+        },
+        "write_policy": {
+            "type": "string",
+            "enum": ["accepted_edge", "candidate", "needs_review", "no_edge"],
+        },
+        "status": {
+            "type": "string",
+            "enum": [
+                "active",
+                "accepted",
+                "candidate",
+                "needs_review",
+                "rejected",
+                "retired",
+            ],
+        },
+        "confidence": {"type": "number"},
+        "binding_confidence": {"type": "number"},
+        "evidence_event_ids": {"type": "array", "items": _UUID_STR},
+        "evidence_model_ids": {"type": "array", "items": _UUID_STR},
+        "evidence_text": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "explanation": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    },
+}
+
+
+_RELATION_FRAME_PARTICIPANT_OP = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["model_id", "role", "binding_confidence"],
+    "properties": {
+        "model_id": _UUID_STR,
+        "role": {
+            "type": "string",
+            "enum": [
+                "blocker",
+                "blocked_work",
+                "owner",
+                "downstream_risk",
+                "possible_resolution",
+            ],
+        },
+        "binding_confidence": {"type": "number"},
+    },
+}
+
+
+_RELATION_FRAME_OP = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "op",
+        "relation_kind",
+        "participants",
+        "participant_binding_status",
+        "write_policy",
+        "status",
+        "confidence",
+        "evidence_event_ids",
+        "evidence_model_ids",
+        "evidence_text",
+        "explanation",
+    ],
+    "properties": {
+        "op": {"type": "string", "enum": ["upsert"]},
+        "relation_kind": {"type": "string", "enum": ["blocked_workstream"]},
+        "participants": {
+            "type": "array",
+            "items": _RELATION_FRAME_PARTICIPANT_OP,
+        },
+        "participant_binding_status": {
+            "type": "string",
+            "enum": ["bound", "partially_bound", "unbound", "ambiguous"],
+        },
+        "write_policy": {
+            "type": "string",
+            "enum": ["project_edges", "candidate", "needs_review", "no_projection"],
+        },
+        "status": {
+            "type": "string",
+            "enum": [
+                "active",
+                "candidate",
+                "accepted",
+                "needs_review",
+                "disputed",
+                "rejected",
+                "retired",
+            ],
+        },
+        "confidence": {"type": "number"},
+        "evidence_event_ids": {"type": "array", "items": _UUID_STR},
+        "evidence_model_ids": {"type": "array", "items": _UUID_STR},
+        "evidence_text": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "explanation": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    },
+}
+
+
 _EDGE_OP = {
     "type": "object",
     "additionalProperties": False,
@@ -698,6 +838,50 @@ _RESOURCE_OP = {
 }
 
 
+_MEMORY_LIFECYCLE_OP = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "op",
+        "model_id",
+        "action",
+        "evidence_event_ids",
+        "evidence_model_ids",
+        "confidence_delta",
+        "confidence",
+        "resolution_outcome",
+        "rationale",
+        "reason",
+        "superseded_by_model_id",
+        "metadata",
+    ],
+    "properties": {
+        "op": {"type": "string", "enum": ["reconcile"]},
+        "model_id": _UUID_STR,
+        "action": {
+            "type": "string",
+            "enum": [
+                "confirm",
+                "falsify",
+                "revise",
+                "unchanged",
+                "archive",
+                "supersede",
+            ],
+        },
+        "evidence_event_ids": {"type": "array", "items": _UUID_STR},
+        "evidence_model_ids": {"type": "array", "items": _UUID_STR},
+        "confidence_delta": _NULLABLE_NUMBER,
+        "confidence": _NULLABLE_NUMBER,
+        "resolution_outcome": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+        "rationale": {"type": "string"},
+        "reason": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "superseded_by_model_id": {"anyOf": [_UUID_STR, {"type": "null"}]},
+        "metadata": {"type": "object", "additionalProperties": True},
+    },
+}
+
+
 RAW_DIFF_STRICT_SCHEMA: dict = {
     "type": "object",
     "additionalProperties": False,
@@ -705,6 +889,9 @@ RAW_DIFF_STRICT_SCHEMA: dict = {
         "trigger_ref",
         "tenant_id",
         "claim_ops",
+        "memory_lifecycle_ops",
+        "relation_claim_ops",
+        "relation_frame_ops",
         "edge_ops",
         "ontology_gap_ops",
         "resource_ops",
@@ -715,6 +902,12 @@ RAW_DIFF_STRICT_SCHEMA: dict = {
         "trigger_ref": _UUID_STR,
         "tenant_id": _UUID_STR,
         "claim_ops": {"type": "array", "items": _CLAIM_OP_INSERT},
+        "memory_lifecycle_ops": {
+            "type": "array",
+            "items": _MEMORY_LIFECYCLE_OP,
+        },
+        "relation_claim_ops": {"type": "array", "items": _RELATION_CLAIM_OP},
+        "relation_frame_ops": {"type": "array", "items": _RELATION_FRAME_OP},
         "edge_ops": {"type": "array", "items": _EDGE_OP},
         "ontology_gap_ops": {"type": "array", "items": _ONTOLOGY_GAP_OP},
         "resource_ops": {"type": "array", "items": _RESOURCE_OP},

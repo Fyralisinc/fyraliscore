@@ -123,6 +123,79 @@ def test_select_observations_explicit_budget_is_hard_total_cap():
     assert notes["selected_historical_count"] == 0
 
 
+def test_select_observations_event_batch_keeps_diverse_raw_floor_with_models():
+    tenant = uuid.uuid4()
+    rows = []
+    for i in range(18):
+        row = _obs_row(tenant, i)
+        row.source_channel = "slack:message" if i < 9 else "github:webhook"
+        row.source_actor_ref = f"user-{i % 4}"
+        row.content_text = (
+            f"Actor {i % 4} raised PR #{100 + i} for ENG-{i}"
+            if i >= 9
+            else f"Slack thread {i % 5} blocker update for Atlas"
+        )
+        rows.append(row)
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant,
+        observation_id=rows[0].id,
+        observation_ids=[row.id for row in rows],
+    )
+    result = RetrievalResult(trigger=trigger, observations=list(rows))
+
+    selected, notes = _select_observations(
+        result,
+        list(result.observations),
+        cfg=RetrievalConfig(
+            observation_context_mode="model_gap",
+            assembler_budget_observations=8,
+            t1_event_batch_raw_observation_floor=8,
+            t1_event_batch_raw_source_floor=4,
+        ),
+        budget_observations=8,
+        explicit_budget=False,
+        selected_model_count=16,
+    )
+
+    assert len(selected) == 8
+    assert notes["floor_reason"] == "explicit_t1_event_batch_raw_evidence_floor"
+    assert notes["selected_trigger_count"] == 8
+    sources = {row.source_channel for row in selected}
+    assert sources == {"slack:message", "github:webhook"}
+    assert sum(row.source_channel == "slack:message" for row in selected) <= 4
+    assert sum(row.source_channel == "github:webhook" for row in selected) <= 4
+
+
+def test_select_observations_non_event_batch_still_suppresses_with_models():
+    tenant = uuid.uuid4()
+    rows = [_obs_row(tenant, i) for i in range(8)]
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        observation_id=rows[0].id,
+        observation_ids=[row.id for row in rows],
+    )
+    result = RetrievalResult(trigger=trigger, observations=list(rows))
+
+    selected, notes = _select_observations(
+        result,
+        list(result.observations),
+        cfg=RetrievalConfig(
+            observation_context_mode="model_gap",
+            t1_event_batch_raw_observation_floor=8,
+        ),
+        budget_observations=8,
+        explicit_budget=False,
+        selected_model_count=3,
+    )
+
+    assert selected == []
+    assert notes["suppressed_reason"] == "model_context_sufficient"
+    assert "floor_reason" not in notes
+
+
 async def _retrieve(tx_conn, pool, tenant, seed_commit_id=None):
     trigger = TriggerContext(
         kind="T1",

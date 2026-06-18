@@ -75,10 +75,18 @@ from .diff_schema import (
     ActOp,
     ClaimOp,
     EdgeOp,
+    MemoryLifecycleOp,
     OntologyGapOp,
     RawDiff,
+    RelationClaimOp,
+    RelationFrameOp,
     ResourceOp,
     ValidatedDiff,
+)
+from .edge_semantics import (
+    canonicalize_edge_semantics,
+    enforce_edge_specificity,
+    normalize_edge_review_status,
 )
 from .observability import log_dropped_op
 from .thresholds import compute_threshold
@@ -193,6 +201,23 @@ def _classify_claim_drop_reason(exc: Exception) -> str:
     return "unclassified"
 
 
+def _classify_memory_lifecycle_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "not found" in msg or "missing model" in msg:
+        return "missing_model_reference"
+    if "inactive" in msg or "active" in msg:
+        return "inactive_model_reference"
+    if "confidence" in msg:
+        return "invalid_confidence"
+    if "archive reason" in msg or "registered lifecycle reason" in msg:
+        return "invalid_archive_reason"
+    if "evidence" in msg or "observation" in msg:
+        return "missing_evidence"
+    if "requires" in msg or "rationale" in msg:
+        return "invalid_shape"
+    return "unclassified"
+
+
 def _classify_act_drop_reason(exc: Exception) -> str:
     from lib.shared.errors import InvariantViolation, TrustTierError
     if isinstance(exc, TrustTierError):
@@ -236,6 +261,34 @@ def _classify_edge_drop_reason(exc: Exception) -> str:
         return "cycle_prevention"
     if "explanation" in msg:
         return "missing_explanation"
+    return "unclassified"
+
+
+def _classify_relation_claim_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "edge_kind" in msg:
+        return "invalid_edge_kind"
+    if "confidence" in msg:
+        return "invalid_confidence"
+    if "not found" in msg or "missing model" in msg:
+        return "missing_model_reference"
+    if "same source/target" in msg or "self" in msg:
+        return "invalid_shape"
+    if "evidence" in msg:
+        return "missing_evidence"
+    return "unclassified"
+
+
+def _classify_relation_frame_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "not found" in msg or "missing model" in msg:
+        return "missing_model_reference"
+    if "active model" in msg:
+        return "inactive_model_reference"
+    if "confidence" in msg:
+        return "invalid_confidence"
+    if "participant" in msg or "role" in msg or "requires" in msg:
+        return "invalid_shape"
     return "unclassified"
 
 
@@ -464,8 +517,30 @@ def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
                         out.append((str(et), str(eid)))
         elif op.model_id is not None:
             out.append(("model", str(op.model_id)))
+    for op in diff.memory_lifecycle_ops:
+        out.append(("model", str(op.model_id)))
+        for model_id in op.evidence_model_ids:
+            if _coerce_uuid(model_id) in pending_model_event_ids:
+                continue
+            out.append(("model", str(model_id)))
+        if op.superseded_by_model_id is not None:
+            out.append(("model", str(op.superseded_by_model_id)))
     for op in diff.edge_ops:
         for model_id in (op.source_model_id, op.target_model_id):
+            if _coerce_uuid(model_id) in pending_model_event_ids:
+                continue
+            out.append(("model", str(model_id)))
+    for op in diff.relation_claim_ops:
+        for model_id in (op.source_model_id, op.target_model_id):
+            if model_id is None or _coerce_uuid(model_id) in pending_model_event_ids:
+                continue
+            out.append(("model", str(model_id)))
+    for op in diff.relation_frame_ops:
+        for participant in op.participants:
+            if _coerce_uuid(participant.model_id) in pending_model_event_ids:
+                continue
+            out.append(("model", str(participant.model_id)))
+        for model_id in op.evidence_model_ids:
             if _coerce_uuid(model_id) in pending_model_event_ids:
                 continue
             out.append(("model", str(model_id)))
@@ -645,6 +720,9 @@ async def validate(
     validated_claim_ops = await _validate_claim_ops(
         diff, claim_ops, retrieval_result, conn, errors
     )
+    validated_memory_lifecycle_ops = await _validate_memory_lifecycle_ops(
+        diff, conn, errors
+    )
     pending_claim_basis_confidence = _pending_claim_basis_confidence(
         validated_claim_ops
     )
@@ -653,6 +731,18 @@ async def validate(
         conn,
         errors,
         pending_claim_basis_confidence=pending_claim_basis_confidence,
+    )
+    validated_relation_claim_ops = await _validate_relation_claim_ops(
+        diff,
+        conn,
+        errors,
+        pending_model_event_ids=set(pending_claim_basis_confidence),
+    )
+    validated_relation_frame_ops = await _validate_relation_frame_ops(
+        diff,
+        conn,
+        errors,
+        pending_model_event_ids=set(pending_claim_basis_confidence),
     )
     validated_ontology_gap_ops = await _validate_ontology_gap_ops(
         diff,
@@ -675,6 +765,9 @@ async def validate(
         neutralized_op_count=neutralized_edge_count + neutralized_act_count,
         validated_groups=(
             validated_claim_ops,
+            validated_memory_lifecycle_ops,
+            validated_relation_claim_ops,
+            validated_relation_frame_ops,
             validated_edge_ops,
             validated_ontology_gap_ops,
             validated_act_ops,
@@ -686,6 +779,9 @@ async def validate(
         trigger_ref=diff.trigger_ref,
         tenant_id=diff.tenant_id,
         claim_ops=validated_claim_ops,
+        memory_lifecycle_ops=validated_memory_lifecycle_ops,
+        relation_claim_ops=validated_relation_claim_ops,
+        relation_frame_ops=validated_relation_frame_ops,
         edge_ops=validated_edge_ops,
         ontology_gap_ops=validated_ontology_gap_ops,
         act_ops=validated_act_ops,
@@ -700,6 +796,9 @@ async def validate(
 def _count_submitted_ops(diff: RawDiff, claim_ops: list[ClaimOp]) -> int:
     return (
         len(claim_ops)
+        + len(diff.memory_lifecycle_ops)
+        + len(diff.relation_claim_ops)
+        + len(diff.relation_frame_ops)
         + len(diff.edge_ops)
         + len(diff.ontology_gap_ops)
         + len(diff.act_ops)
@@ -861,6 +960,105 @@ async def _validate_edge_ops(
     return validated, neutralized_count
 
 
+async def _validate_memory_lifecycle_ops(
+    diff: RawDiff,
+    conn: asyncpg.Connection,
+    errors: list[str],
+) -> list[MemoryLifecycleOp]:
+    validated: list[MemoryLifecycleOp] = []
+    for op in diff.memory_lifecycle_ops:
+        try:
+            v_op = await _validate_memory_lifecycle_op(
+                op,
+                conn,
+                tenant_id=diff.tenant_id,
+            )
+        except ValidationError as e:
+            reason = _classify_memory_lifecycle_drop_reason(e)
+            msg = getattr(e, "message", None) or str(e)
+            errors.append(f"memory_lifecycle_op {op.action}: {msg}")
+            await _record_validation_drop(
+                diff,
+                conn,
+                op_type="memory_lifecycle",
+                op_kind=op.action,
+                reason=reason,
+                error_message=msg,
+                original_op=op,
+            )
+            continue
+        validated.append(v_op)
+    return validated
+
+
+async def _validate_relation_claim_ops(
+    diff: RawDiff,
+    conn: asyncpg.Connection,
+    errors: list[str],
+    *,
+    pending_model_event_ids: set[UUID],
+) -> list[RelationClaimOp]:
+    validated: list[RelationClaimOp] = []
+    for op in diff.relation_claim_ops:
+        try:
+            v_op = await _validate_relation_claim_op(
+                op,
+                conn,
+                tenant_id=diff.tenant_id,
+                pending_model_event_ids=pending_model_event_ids,
+            )
+        except (ValidationError, EdgeRegistryError) as e:
+            reason = _classify_relation_claim_drop_reason(e)
+            msg = getattr(e, "message", None) or str(e)
+            errors.append(f"relation_claim_op {op.op}: {msg}")
+            await _record_validation_drop(
+                diff,
+                conn,
+                op_type="relation_claim",
+                op_kind=op.op,
+                reason=reason,
+                error_message=msg,
+                original_op=op,
+            )
+            continue
+        validated.append(v_op)
+    return validated
+
+
+async def _validate_relation_frame_ops(
+    diff: RawDiff,
+    conn: asyncpg.Connection,
+    errors: list[str],
+    *,
+    pending_model_event_ids: set[UUID],
+) -> list[RelationFrameOp]:
+    validated: list[RelationFrameOp] = []
+    for op in diff.relation_frame_ops:
+        try:
+            v_op = await _validate_relation_frame_op(
+                op,
+                conn,
+                tenant_id=diff.tenant_id,
+                pending_model_event_ids=pending_model_event_ids,
+            )
+        except ValidationError as e:
+            reason = _classify_relation_frame_drop_reason(e)
+            msg = getattr(e, "message", None) or str(e)
+            errors.append(f"relation_frame_op {op.op}: {msg}")
+            await _record_validation_drop(
+                diff,
+                conn,
+                op_type="relation_frame",
+                op_kind=op.op,
+                reason=reason,
+                error_message=msg,
+                original_op=op,
+            )
+            continue
+        validated.append(v_op)
+    return validated
+
+
 async def _validate_ontology_gap_ops(
     diff: RawDiff,
     conn: asyncpg.Connection,
@@ -965,13 +1163,7 @@ def _raise_if_every_op_failed(
     total_ops: int,
     errors: list[str],
     neutralized_op_count: int,
-    validated_groups: tuple[
-        list[ClaimOp],
-        list[EdgeOp],
-        list[OntologyGapOp],
-        list[ActOp],
-        list[ResourceOp],
-    ],
+    validated_groups: tuple[list[Any], ...],
 ) -> None:
     any_survived = any(validated_groups)
     if total_ops > 0 and not any_survived and neutralized_op_count == 0:
@@ -1106,6 +1298,98 @@ async def _validate_claim_op(
         return op.model_copy(update={"reason": reason})
 
     raise ValidationError(f"unknown claim_op: {op.op!r}")
+
+
+async def _validate_memory_lifecycle_op(
+    op: MemoryLifecycleOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+) -> MemoryLifecycleOp:
+    rationale = (op.rationale or "").strip()
+    if not rationale:
+        raise ValidationError("memory_lifecycle_op requires rationale")
+    if op.confidence is not None and not (0.0 <= float(op.confidence) <= 1.0):
+        raise ValidationError("memory_lifecycle_op confidence must be in [0, 1]")
+    if op.confidence_delta is not None and not (
+        -0.95 <= float(op.confidence_delta) <= 0.95
+    ):
+        raise ValidationError(
+            "memory_lifecycle_op confidence_delta must be in [-0.95, 0.95]"
+        )
+    if op.action in {"archive", "supersede"}:
+        default_reason = "superseded" if op.action == "supersede" else "decay"
+        reason = str(op.reason or default_reason).strip()
+        if reason not in _ALLOWED_MODEL_ARCHIVE_REASONS:
+            raise ValidationError(
+                "memory_lifecycle_op archive reason must be a registered lifecycle reason",
+                reason=op.reason,
+                allowed=sorted(_ALLOWED_MODEL_ARCHIVE_REASONS),
+            )
+        op = op.model_copy(update={"reason": reason, "rationale": rationale})
+    else:
+        op = op.model_copy(update={"rationale": rationale})
+
+    model_ids = [op.model_id, *op.evidence_model_ids]
+    if op.superseded_by_model_id is not None:
+        model_ids.append(op.superseded_by_model_id)
+    rows = await conn.fetch(
+        """
+        SELECT id, status
+        FROM models
+        WHERE tenant_id = $1
+          AND id = ANY($2::uuid[])
+        """,
+        tenant_id,
+        list(dict.fromkeys(model_ids)),
+    )
+    found = {row["id"]: row["status"] for row in rows}
+    missing = [str(model_id) for model_id in model_ids if model_id not in found]
+    if missing:
+        raise ValidationError(
+            f"memory_lifecycle_op references {len(missing)} missing model(s)",
+            missing=missing,
+        )
+    if found.get(op.model_id) != "active":
+        raise ValidationError(
+            "memory_lifecycle_op target model must be active",
+            model_id=str(op.model_id),
+            status=found.get(op.model_id),
+        )
+    if op.action == "supersede" and op.superseded_by_model_id is None:
+        raise ValidationError("memory_lifecycle_op supersede requires superseded_by_model_id")
+
+    if op.evidence_event_ids:
+        rows = await conn.fetch(
+            """
+            SELECT id
+            FROM observations
+            WHERE tenant_id = $1
+              AND id = ANY($2::uuid[])
+            """,
+            tenant_id,
+            list(dict.fromkeys(op.evidence_event_ids)),
+        )
+        found_events = {row["id"] for row in rows}
+        missing_events = [
+            str(event_id)
+            for event_id in op.evidence_event_ids
+            if event_id not in found_events
+        ]
+        if missing_events:
+            raise ValidationError(
+                f"memory_lifecycle_op references {len(missing_events)} missing observation(s)",
+                missing=missing_events,
+            )
+
+    if (
+        op.action in {"confirm", "falsify", "revise", "unchanged"}
+        and not op.evidence_event_ids
+        and not op.evidence_model_ids
+    ):
+        raise ValidationError("memory_lifecycle_op requires evidence")
+
+    return op
 
 
 async def _validate_act_op(
@@ -1303,6 +1587,7 @@ async def _validate_edge_op(
     )
     from services.reasoning.think.edge_semantics import (
         canonicalize_edge_semantics,
+        enforce_edge_specificity,
         normalize_edge_review_status,
     )
 
@@ -1317,7 +1602,6 @@ async def _validate_edge_op(
         tenant_id=tenant_id,
         pending_model_event_ids=pending_model_event_ids,
     )
-    op = normalize_edge_review_status(op)
     spec = await resolve_edge_kind_spec(
         conn,
         tenant_id=tenant_id,
@@ -1360,7 +1644,10 @@ async def _validate_edge_op(
 
     rows = await conn.fetch(
         """
-        SELECT id, status FROM models
+        SELECT
+            id, status, "natural", proposition, scope_entities, scope_actors,
+            domain_tags, claim_role
+        FROM models
         WHERE tenant_id = $1
           AND id = ANY($2::uuid[])
         """,
@@ -1368,6 +1655,7 @@ async def _validate_edge_op(
         [op.source_model_id, op.target_model_id],
     )
     found = {r["id"]: r["status"] for r in rows}
+    rows_by_id = {r["id"]: r for r in rows}
     pending_model_event_ids = pending_model_event_ids or set()
     missing = [
         str(mid)
@@ -1390,6 +1678,17 @@ async def _validate_edge_op(
                 "edge_op add requires active model endpoints",
                 inactive=inactive,
             )
+        op = normalize_edge_review_status(
+            op,
+            endpoint_models_verified=all(
+                mid in found for mid in (op.source_model_id, op.target_model_id)
+            ),
+        )
+        op = enforce_edge_specificity(
+            op,
+            source_model=rows_by_id.get(op.source_model_id),
+            target_model=rows_by_id.get(op.target_model_id),
+        )
         if await _edge_would_create_cycle(
             op,
             conn,
@@ -1401,6 +1700,337 @@ async def _validate_edge_op(
     # Touch spec so linters/tests know this was intentionally looked up.
     _ = spec
     return op
+
+
+async def _validate_relation_claim_op(
+    op: RelationClaimOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    pending_model_event_ids: set[UUID],
+) -> RelationClaimOp:
+    from services.reasoning.relationships.ontology_runtime import (
+        resolve_edge_kind_spec,
+        validate_weight_for_spec,
+    )
+
+    if op.op != "upsert":
+        raise ValidationError(f"unknown relation_claim_op: {op.op!r}")
+    if not op.predicate.strip():
+        raise ValidationError("relation_claim_op requires predicate")
+    if not op.edge_kind.strip():
+        raise ValidationError("relation_claim_op requires edge_kind")
+    if not (0.0 <= float(op.confidence) <= 1.0):
+        raise ValidationError(
+            "relation_claim_op confidence must be in [0, 1]",
+            confidence=op.confidence,
+        )
+    if not (0.0 <= float(op.binding_confidence) <= 1.0):
+        raise ValidationError(
+            "relation_claim_op binding_confidence must be in [0, 1]",
+            binding_confidence=op.binding_confidence,
+        )
+    if (
+        op.source_model_id is not None
+        and op.target_model_id is not None
+        and op.source_model_id == op.target_model_id
+    ):
+        raise ValidationError("relation_claim_op cannot use same source/target model")
+
+    has_bound_endpoints = op.source_model_id is not None and op.target_model_id is not None
+    if op.write_policy == "accepted_edge" and not has_bound_endpoints:
+        raise ValidationError("accepted relation claim requires bound endpoints")
+    if op.endpoint_binding_status == "bound" and not has_bound_endpoints:
+        raise ValidationError("bound relation claim requires source and target models")
+
+    if has_bound_endpoints:
+        rows = await conn.fetch(
+            """
+            SELECT
+                id, status, "natural", proposition, scope_entities, scope_actors,
+                domain_tags, claim_role
+            FROM models
+            WHERE tenant_id = $1
+              AND id = ANY($2::uuid[])
+            """,
+            tenant_id,
+            [op.source_model_id, op.target_model_id],
+        )
+        found = {row["id"]: row["status"] for row in rows}
+        rows_by_id = {row["id"]: row for row in rows}
+        endpoint_models_verified = all(
+            model_id in found for model_id in (op.source_model_id, op.target_model_id)
+        )
+        missing = [
+            str(model_id)
+            for model_id in (op.source_model_id, op.target_model_id)
+            if model_id not in found and model_id not in pending_model_event_ids
+        ]
+        if missing:
+            raise ValidationError(
+                f"relation_claim_op references {len(missing)} missing model(s)",
+                missing=missing,
+            )
+        inactive = [
+            str(model_id)
+            for model_id, status in found.items()
+            if status != "active"
+        ]
+        if inactive:
+            raise ValidationError(
+                "accepted relation claim requires active model endpoints",
+                inactive=inactive,
+            )
+        op = await _canonicalize_relation_claim_semantics(
+            op,
+            conn,
+            tenant_id=tenant_id,
+            pending_model_event_ids=pending_model_event_ids,
+            endpoint_models_verified=endpoint_models_verified,
+            source_model=rows_by_id.get(op.source_model_id),
+            target_model=rows_by_id.get(op.target_model_id),
+        )
+
+    spec = await resolve_edge_kind_spec(conn, tenant_id=tenant_id, kind=op.edge_kind)
+    op = _normalize_relation_claim_weight(op, spec)
+    validate_weight_for_spec(spec, op.weight)
+
+    if op.write_policy != "no_edge" and not _relation_claim_has_evidence(op):
+        raise ValidationError("relation_claim_op requires evidence or explanation")
+
+    update: dict[str, Any] = {}
+    if has_bound_endpoints and op.endpoint_binding_status != "bound":
+        update["endpoint_binding_status"] = "bound"
+        update["binding_confidence"] = max(float(op.binding_confidence), 0.8)
+    specificity_needs_review = (
+        isinstance(op.metadata, dict)
+        and op.metadata.get("review_status_downgraded_by")
+        == "edge_specificity_guard"
+    )
+    if specificity_needs_review and op.write_policy == "accepted_edge":
+        update["write_policy"] = "needs_review"
+        update["status"] = "needs_review"
+    elif (
+        has_bound_endpoints
+        and op.write_policy in {"candidate", "needs_review"}
+        and float(op.confidence) >= 0.68
+        and not specificity_needs_review
+        and _relation_claim_can_auto_accept_as_edge(op)
+        and _relation_claim_has_evidence(op)
+    ):
+        update["write_policy"] = "accepted_edge"
+        update["status"] = "accepted"
+    elif op.write_policy == "accepted_edge":
+        update["status"] = "accepted"
+    elif op.status == "accepted" and op.write_policy != "accepted_edge":
+        update["status"] = "candidate"
+    if update:
+        op = op.model_copy(update=update)
+    return op
+
+
+def _normalize_relation_claim_weight(
+    op: RelationClaimOp,
+    spec: Any,
+) -> RelationClaimOp:
+    weight = op.weight
+    if not spec.weight_allowed:
+        weight = None
+    elif weight is None and spec.weight_required:
+        weight = min(1.0, max(0.05, float(op.confidence)))
+    if weight == op.weight:
+        return op
+    return op.model_copy(update={"weight": weight})
+
+
+async def _canonicalize_relation_claim_semantics(
+    op: RelationClaimOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    pending_model_event_ids: set[UUID],
+    endpoint_models_verified: bool,
+    source_model: Any | None = None,
+    target_model: Any | None = None,
+) -> RelationClaimOp:
+    if op.source_model_id is None or op.target_model_id is None:
+        return op
+    edge_proxy = EdgeOp(
+        op="add",
+        source_model_id=op.source_model_id,
+        target_model_id=op.target_model_id,
+        edge_kind=op.edge_kind,
+        weight=op.weight,
+        confidence=op.confidence,
+        evidence_event_ids=op.evidence_event_ids,
+        evidence_model_ids=op.evidence_model_ids,
+        explanation=_relation_claim_semantic_text(op),
+        metadata=dict(op.metadata or {}),
+        review_status=(
+            "accepted"
+            if op.write_policy == "accepted_edge" or op.status == "accepted"
+            else "candidate"
+        ),
+    )
+    refined = await canonicalize_edge_semantics(
+        edge_proxy,
+        conn,
+        tenant_id=tenant_id,
+        pending_model_event_ids=pending_model_event_ids,
+    )
+    refined = normalize_edge_review_status(
+        refined,
+        endpoint_models_verified=endpoint_models_verified,
+    )
+    refined = enforce_edge_specificity(
+        refined,
+        source_model=source_model,
+        target_model=target_model,
+    )
+    update: dict[str, Any] = {}
+    if refined.edge_kind != op.edge_kind:
+        update["edge_kind"] = refined.edge_kind
+        if op.predicate.strip() == op.edge_kind:
+            update["predicate"] = refined.edge_kind
+    if refined.weight != edge_proxy.weight:
+        update["weight"] = refined.weight
+    if refined.explanation != edge_proxy.explanation and refined.explanation:
+        update["explanation"] = refined.explanation
+    if refined.metadata != edge_proxy.metadata:
+        update["metadata"] = refined.metadata
+    if refined.review_status == "accepted" and op.write_policy != "accepted_edge":
+        update["write_policy"] = "accepted_edge"
+        update["status"] = "accepted"
+    return op.model_copy(update=update) if update else op
+
+
+def _relation_claim_semantic_text(op: RelationClaimOp) -> str:
+    return " ".join(
+        part
+        for part in (
+            op.predicate,
+            op.explanation or "",
+            op.evidence_text or "",
+        )
+        if str(part or "").strip()
+    )
+
+
+def _relation_claim_can_auto_accept_as_edge(op: RelationClaimOp) -> bool:
+    return op.edge_kind not in {
+        "supports",
+        "same_issue_as",
+        "analogous_to",
+        "co_occurs_with",
+        "alternative_to",
+    }
+
+
+def _relation_claim_has_evidence(op: RelationClaimOp) -> bool:
+    return bool(
+        op.evidence_event_ids
+        or op.evidence_model_ids
+        or (op.evidence_text or "").strip()
+        or (op.explanation or "").strip()
+    )
+
+
+async def _validate_relation_frame_op(
+    op: RelationFrameOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    pending_model_event_ids: set[UUID],
+) -> RelationFrameOp:
+    if op.op != "upsert":
+        raise ValidationError(f"unknown relation_frame_op: {op.op!r}")
+    relation_kind = _normalize_relation_role(op.relation_kind)
+    if not relation_kind:
+        raise ValidationError("relation_frame_op requires relation_kind")
+    if len(op.participants) < 2:
+        raise ValidationError("relation_frame_op requires at least two participants")
+    if len(op.participants) > 12:
+        raise ValidationError("relation_frame_op cannot exceed 12 participants")
+    if not (0.0 <= float(op.confidence) <= 1.0):
+        raise ValidationError(
+            "relation_frame_op confidence must be in [0, 1]",
+            confidence=op.confidence,
+        )
+
+    seen: set[tuple[UUID, str]] = set()
+    model_ids: set[UUID] = set()
+    participants = []
+    for participant in op.participants:
+        role = _normalize_relation_role(participant.role)
+        if not role:
+            raise ValidationError("relation_frame_op participant requires role")
+        if not (0.0 <= float(participant.binding_confidence) <= 1.0):
+            raise ValidationError(
+                "relation_frame_op participant binding_confidence must be in [0, 1]",
+                binding_confidence=participant.binding_confidence,
+            )
+        key = (participant.model_id, role)
+        if key in seen:
+            raise ValidationError("duplicate relation_frame_op participant")
+        seen.add(key)
+        model_ids.add(participant.model_id)
+        if role != participant.role:
+            participant = participant.model_copy(update={"role": role})
+        participants.append(participant)
+    if len(model_ids) < 2:
+        raise ValidationError("relation_frame_op requires at least two distinct models")
+
+    rows = await conn.fetch(
+        """
+        SELECT id, status FROM models
+        WHERE tenant_id = $1
+          AND id = ANY($2::uuid[])
+        """,
+        tenant_id,
+        list(model_ids),
+    )
+    found = {row["id"]: row["status"] for row in rows}
+    missing = [
+        str(model_id)
+        for model_id in model_ids
+        if model_id not in found and model_id not in pending_model_event_ids
+    ]
+    if missing:
+        raise ValidationError(
+            f"relation_frame_op references {len(missing)} missing model(s)",
+            missing=missing,
+        )
+    inactive = [
+        str(model_id)
+        for model_id, status in found.items()
+        if status != "active"
+    ]
+    if inactive:
+        raise ValidationError(
+            "relation_frame_op requires active model participants",
+            inactive=inactive,
+        )
+
+    update: dict[str, Any] = {}
+    if relation_kind != op.relation_kind:
+        update["relation_kind"] = relation_kind
+    if participants != op.participants:
+        update["participants"] = participants
+    if op.write_policy == "project_edges":
+        if op.participant_binding_status != "bound":
+            update["participant_binding_status"] = "bound"
+        if op.status != "accepted":
+            update["status"] = "accepted"
+    elif op.status == "accepted":
+        update["status"] = "candidate"
+    return op.model_copy(update=update) if update else op
+
+
+def _normalize_relation_role(value: str | None) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text[:80]
 
 
 _PROPOSED_EDGE_KIND_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")

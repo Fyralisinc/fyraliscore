@@ -32,8 +32,8 @@ The harness therefore separates:
   reasoning value, edge intelligence, temporal improvement, robustness, and
   efficiency
 - relationship accountability: graph-selected context becomes durable edges,
-  ontology-gap proposals, stronger model mutations, or explicit no-edge
-  rationales
+  N-ary relation frames, ontology-gap proposals, stronger model mutations, or
+  explicit no-edge rationales
 - product value: decisions, memory lifecycle, prediction lifecycle,
   counterfactual traps, latent bridge inference, compression loss, negative
   learning, question policy, and customer account health
@@ -70,7 +70,7 @@ The top-level score is a weighted combination:
 | Compression | 0.12 | Meaning is preserved with bounded model growth and useful updates. |
 | Retrieval Usefulness | 0.14 | Later reasoning receives useful compressed context, not mostly raw observations. |
 | Reasoning Value | 0.16 | Think creates useful situations, recommendations, and low review debt. |
-| Edge Intelligence | 0.12 | Registered edge kinds are created, precisely chosen, accepted, and evolved before new ontology is proposed; graph context is not left only in prose. |
+| Edge Intelligence | 0.12 | Registered edge kinds and N-ary relation frames are created, precisely chosen, accepted, projected, and evolved before new ontology is proposed; graph context is not left only in prose. |
 | Temporal Improvement | 0.14 | Prior memory improves later reasoning, especially on future validation waves. |
 | Robustness | 0.09 | Batches complete, queues drain, validation passes, noise is safely ignored. |
 | Efficiency | 0.05 | Low trigger amplification, LLM calls, cost, and latency. |
@@ -117,11 +117,13 @@ The harness currently reports gaps such as:
 
 - T1 batch timeout before a Think run exists
 - no future validation events
-- expected edge kinds not observed as accepted durable edges
+- expected edge kinds not observed as accepted durable edges or projected
+  relation-frame structure
 - precise registered edge kinds are underused
+- N-ary relation frames are not exercised
 - graph-selected context failed the relationship contract
 - graph-selected context never produced durable relationship ops
-- future validation did not evolve or reconfirm durable edges
+- future validation did not evolve or reconfirm durable edges or relation frames
 - latent bridge inference missing, unsupported, overconfident, or fabricating
   off-sensor details
 - ontology-gap ops occurred while registered expected edge kinds were missing
@@ -211,13 +213,16 @@ The strongest evidence that the system is approaching its true potential is not
 - future validation retrieval uses those Models instead of historical raw observations
 - future reasoning changes because the compressed memory exists
 - registered edge kinds like `blocks`, `weakens`, `explains`, and
-  `contributes_to_resolution` are used precisely before proposing new ontology
-- graph-selected context becomes an edge, ontology-gap proposal, stronger model
-  mutation, or auditable `no edge` rationale
+  `contributes_to_resolution` are used precisely, either directly or through
+  projected relation-frame structure, before proposing new ontology
+- multi-party business relations keep their role semantics as relation frames
+  instead of being flattened into vague binary links
+- graph-selected context becomes an edge, relation frame, ontology-gap proposal,
+  stronger model mutation, or auditable `no edge` rationale
 - irregular before/after state transitions become explicitly inferred bridge
   Models with bounded confidence, not invented hallway-level details
-- later phases evolve or reconfirm durable edges instead of leaving one-shot
-  graph guesses
+- later phases evolve or reconfirm durable edges and relation frames instead of
+  leaving one-shot graph guesses
 - the system avoids harmful graph mutations under ambiguity
 - review debt stays bounded
 - useful decisions arrive with low amplification

@@ -24,11 +24,36 @@ pytestmark = pytest.mark.integration
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
+_MIGRATIONS_READY = False
+
+
+async def _schema_looks_ready(conn: asyncpg.Connection) -> bool:
+    rows = await conn.fetch(
+        """
+        SELECT to_regclass(name) IS NOT NULL AS exists
+        FROM unnest($1::text[]) AS name
+        """,
+        [
+            "public.observations",
+            "public.models",
+            "public.model_edges",
+            "public.signal_memory_fabric",
+            "public.relation_claims",
+            "public.relation_evidence",
+            "public.model_pair_evidence",
+        ],
+    )
+    return bool(rows) and all(row["exists"] for row in rows)
 
 
 async def _run_migrations(conn: asyncpg.Connection) -> None:
+    global _MIGRATIONS_READY
+    if _MIGRATIONS_READY or await _schema_looks_ready(conn):
+        _MIGRATIONS_READY = True
+        return
     from lib.shared.migrations import apply_migrations_dir
     await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+    _MIGRATIONS_READY = True
 
 
 async def _truncate_all(conn: asyncpg.Connection) -> None:

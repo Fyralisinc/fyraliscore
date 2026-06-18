@@ -1,4 +1,5 @@
 """Integration tests for the wired SAGE Synthesis Reader."""
+
 from __future__ import annotations
 
 import json
@@ -12,6 +13,7 @@ from services.domain.models.address import build_belief_address
 from services.reasoning.relationships import (
     JudgmentScores,
     RelationshipCandidatesRepo,
+    make_edge_candidate,
     make_edge_type_candidate,
 )
 from services.reasoning.retrieval.primary import TriggerContext
@@ -94,12 +96,14 @@ async def test_synthesis_reader_activates_model_by_belief_address(
         tenant_id=tenant_id,
         content_text="Kestrel operational note: the account needs follow-up.",
     )
-    address = build_belief_address({
-        "kind": "belief",
-        "claim_role": "concern",
-        "subject": "Kestrel invoice handoff",
-        "assertion": "assigned owner is missing",
-    })
+    address = build_belief_address(
+        {
+            "kind": "belief",
+            "claim_role": "concern",
+            "subject": "Kestrel invoice handoff",
+            "assertion": "assigned owner is missing",
+        }
+    )
     model_id = await seed_model(
         gateway_pool,
         tenant_id=tenant_id,
@@ -235,6 +239,84 @@ async def test_synthesis_reader_propagates_from_edge_type_candidate(
 
     assert hidden_decision_id in {m.id for m in result.models}
     trace = next(t for t in result.activations if t.model_id == hidden_decision_id)
+    assert any("propagated:blocks" in r for r in trace.activation_reasons)
+    assert trace.source_breakdown.get("propagation", 0) > 0
+
+
+@pytest.mark.asyncio
+async def test_synthesis_reader_propagates_from_edge_candidate(
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+):
+    obs_id = await seed_observation(
+        gateway_pool,
+        tenant_id=tenant_id,
+        content_text="Cobalt launch is waiting on DPA approval.",
+    )
+    launch_id = await seed_model(
+        gateway_pool,
+        tenant_id=tenant_id,
+        born_from_event_id=obs_id,
+        natural="Cobalt launch is blocked by pending DPA approval",
+        supporting_event_ids=[obs_id],
+    )
+    approval_id = await seed_model(
+        gateway_pool,
+        tenant_id=tenant_id,
+        born_from_event_id=obs_id,
+        natural="DPA approval is waiting on legal review",
+        supporting_event_ids=[obs_id],
+    )
+    candidate = make_edge_candidate(
+        tenant_id=tenant_id,
+        source_model_id=launch_id,
+        target_model_id=approval_id,
+        edge_kind="blocks",
+        basis="causal_hypothesis",
+        explanation="Launch progress depends on DPA approval.",
+        scores=JudgmentScores(
+            impact=0.9,
+            uncertainty=0.4,
+            urgency=0.8,
+            actionability=0.8,
+            authority_required=0.9,
+            novelty=0.8,
+            confidence=0.82,
+        ),
+        mechanism_summary="Launch progress depends on DPA approval.",
+        intervention_surface="complete legal review",
+        expected_delay="unknown",
+        metadata={
+            "dependency_basis": "approval_gate",
+            "ontology_gap": {
+                "proposed_edge_kind": "gated_by_decision",
+                "retrieval_fallback_kind": "blocks",
+                "folded_into_edge_candidate": True,
+            },
+        },
+    )
+
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=obs_id,
+        seed_natural_text="What is blocking Cobalt launch?",
+        precomputed_seed_vector=ZERO_EMBEDDING,
+    )
+    async with gateway_pool.acquire() as conn:
+        await RelationshipCandidatesRepo().insert(conn, candidate)
+        result = await SynthesisReader().read(
+            conn=conn,
+            tenant_id=tenant_id,
+            trigger=trigger,
+            question_id="Q_DEPENDENCY",
+            question="What is blocking Cobalt launch?",
+            question_primitive="DEPENDENCY",
+            hypotheses=(),
+        )
+
+    assert approval_id in {m.id for m in result.models}
+    trace = next(t for t in result.activations if t.model_id == approval_id)
     assert any("propagated:blocks" in r for r in trace.activation_reasons)
     assert trace.source_breakdown.get("propagation", 0) > 0
 

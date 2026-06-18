@@ -61,6 +61,7 @@ from lib.shared.memory_grammar import derive_memory_grammar
 from services.domain.models.propositions import canonicalize_proposition
 
 from .diff_schema import ClaimOp
+from .representation_contract import contextual_frames_compatible
 from .reconciler_situation_merge import build_situation_merge_payload
 from .text_embedding import deterministic_text_embedding, is_zero_embedding
 
@@ -293,6 +294,7 @@ def _confirmation_reading(
     source_event_id: UUID,
     observed_at: datetime,
 ) -> dict[str, Any]:
+    proposition = entry.get("proposition") if isinstance(entry, dict) else {}
     reading: dict[str, Any] = {
         "kind": "confirm",
         "at": observed_at.isoformat(),
@@ -300,6 +302,11 @@ def _confirmation_reading(
         "confidence": float(entry.get("confidence", 0.5)),
         "natural": str(entry.get("natural") or "")[:500],
     }
+    if isinstance(proposition, dict):
+        if isinstance(proposition.get("contextual_frame"), dict):
+            reading["contextual_frame"] = proposition["contextual_frame"]
+        if isinstance(proposition.get("retrieval_tags"), list):
+            reading["retrieval_tags"] = proposition["retrieval_tags"][:24]
     scope_actors = entry.get("scope_actors") or []
     if scope_actors:
         actor_id = _coerce_uuid(scope_actors[0])
@@ -618,7 +625,7 @@ async def _find_candidates(
         SELECT id, embedding, scope_actors, scope_entities,
                confidence, proposition_kind, "natural", created_at,
                supporting_event_ids, signal_readings, confirmed_count,
-               supporting_model_ids, falsifier, proposition
+               supporting_model_ids, falsifier, proposition, domain_tags
         FROM models
         WHERE {' AND '.join(where)}
         ORDER BY embedding <=> $LIMITSEED::vector
@@ -905,9 +912,21 @@ def _score_candidate_row(
         return None
     if not _pattern_instance_matches(row, context):
         return None
+    compatible, compatibility = contextual_frames_compatible(context.entry, row)
+    if not compatible:
+        return None
 
     cosine = _cosine(context.candidate_embedding, existing_embedding)
     adjusted, breakdown = _compute_signal_breakdown(context.entry, row, cosine)
+    if compatibility.get("compared"):
+        breakdown = dict(breakdown)
+        breakdown["contextual_frame_compared"] = 1.0
+        if any(
+            value
+            for key, value in compatibility.items()
+            if key.endswith("_overlap") and value
+        ):
+            breakdown["contextual_frame_overlap"] = 1.0
     adjusted, breakdown, member_overlap = _apply_situation_member_overlap(
         row,
         context,
@@ -1239,6 +1258,12 @@ def _build_auto_merge_replacement(
             *existing_readings,
             _confirmation_reading(entry, source_event_id, now),
         ]
+    merged_domain_tags = _merged_auto_merge_domain_tags(entry, best_row)
+    if merged_domain_tags is not None:
+        changes["domain_tags"] = merged_domain_tags
+    merged_proposition = _merged_auto_merge_proposition(entry, best_row)
+    if merged_proposition is not None:
+        changes["proposition"] = merged_proposition
     situation_merge = build_situation_merge_payload(
         entry=entry,
         best_row=best_row,
@@ -1251,6 +1276,86 @@ def _build_auto_merge_replacement(
         model_id=matched_id,
         changes=changes,
     )
+
+
+def _merged_auto_merge_domain_tags(
+    entry: dict[str, Any],
+    best_row: dict[str, Any],
+) -> list[str] | None:
+    existing = _string_sequence(best_row.get("domain_tags"))
+    merged = _merge_string_sequence(
+        existing,
+        _entry_representation_tags(entry, include_coverage=True),
+    )
+    return merged if merged != existing else None
+
+
+def _merged_auto_merge_proposition(
+    entry: dict[str, Any],
+    best_row: dict[str, Any],
+) -> dict[str, Any] | None:
+    existing = _normalize_jsonish(best_row.get("proposition"))
+    if not isinstance(existing, dict):
+        return None
+    candidate = entry.get("proposition")
+    if not isinstance(candidate, dict):
+        return None
+
+    merged = dict(existing)
+    changed = False
+    for key in ("retrieval_tags", "coverage_roles", "domain_tags"):
+        values = _merge_string_sequence(
+            existing.get(key),
+            candidate.get(key),
+            entry.get("domain_tags") if key == "domain_tags" else None,
+        )
+        if values and values != _string_sequence(existing.get(key)):
+            merged[key] = values
+            changed = True
+    return merged if changed else None
+
+
+def _entry_representation_tags(
+    entry: dict[str, Any],
+    *,
+    include_coverage: bool = False,
+) -> list[str]:
+    prop = entry.get("proposition")
+    tags: list[Any] = [entry.get("domain_tags")]
+    if isinstance(prop, dict):
+        tags.extend([prop.get("domain_tags"), prop.get("retrieval_tags")])
+        if include_coverage:
+            tags.append(prop.get("coverage_roles"))
+    return _merge_string_sequence(*tags)
+
+
+def _string_sequence(value: Any) -> list[str]:
+    if value is None:
+        return []
+    values = value if isinstance(value, (list, tuple, set)) else (value,)
+    out: list[str] = []
+    for raw in values:
+        if raw is None:
+            continue
+        tag = str(raw).strip()
+        if tag:
+            out.append(tag)
+    return out
+
+
+def _merge_string_sequence(*groups: Any, limit: int = 64) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for tag in _string_sequence(group):
+            key = tag.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(tag)
+            if len(merged) >= limit:
+                return merged
+    return merged
 
 
 async def _emit_same_issue_candidate(

@@ -49,6 +49,47 @@ class ClaimOp(BaseModel):
 
 
 # =====================================================================
+# MemoryLifecycleOp — explicit reconciliation of existing memory.
+# =====================================================================
+
+
+MemoryLifecycleAction = Literal[
+    "confirm",
+    "falsify",
+    "revise",
+    "unchanged",
+    "archive",
+    "supersede",
+]
+
+
+class MemoryLifecycleOp(BaseModel):
+    """
+    A typed lifecycle decision over an existing Model.
+
+    This is intentionally narrower than `claim_ops.update`: it says why an
+    existing memory is being touched by new evidence. Apply compiles it into
+    existing model update/archive machinery so lifecycle accountability is
+    first-class without introducing a second model store.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["reconcile"] = "reconcile"
+    model_id: UUID
+    action: MemoryLifecycleAction
+    evidence_event_ids: list[UUID] = Field(default_factory=list)
+    evidence_model_ids: list[UUID] = Field(default_factory=list)
+    confidence_delta: float | None = None
+    confidence: float | None = None
+    resolution_outcome: bool | None = None
+    rationale: str
+    reason: str | None = None
+    superseded_by_model_id: UUID | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# =====================================================================
 # ActOp — Goal / Commitment / Decision create, transition, edge adds.
 # =====================================================================
 
@@ -168,6 +209,130 @@ class EdgeOp(BaseModel):
 
 
 # =====================================================================
+# RelationClaimOp — first-class relation-bearing facts.
+# =====================================================================
+
+
+class RelationClaimOp(BaseModel):
+    """
+    A first-class relation-bearing write plan.
+
+    These ops persist `relation_claims` rows. When endpoints are concrete and
+    policy permits, apply also creates the corresponding `model_edges` row in
+    the same transaction. This keeps relation extraction, endpoint binding,
+    adjudication, and edge creation in one auditable lifecycle.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["upsert"] = "upsert"
+    id: UUID | None = None
+    source_model_id: UUID | None = None
+    target_model_id: UUID | None = None
+    subject_ref: dict[str, Any] = Field(default_factory=dict)
+    object_ref: dict[str, Any] = Field(default_factory=dict)
+    predicate: str
+    edge_kind: str
+    direction: Literal[
+        "source_to_target",
+        "target_to_source",
+        "symmetric",
+        "unknown",
+    ] = "source_to_target"
+    endpoint_binding_status: Literal[
+        "bound",
+        "partially_bound",
+        "unbound",
+        "ambiguous",
+    ] = "unbound"
+    write_policy: Literal[
+        "accepted_edge",
+        "candidate",
+        "needs_review",
+        "no_edge",
+    ] = "candidate"
+    status: Literal[
+        "active",
+        "accepted",
+        "candidate",
+        "needs_review",
+        "rejected",
+        "retired",
+    ] = "active"
+    confidence: float = 0.5
+    weight: float | None = None
+    binding_confidence: float = 0.0
+    evidence_event_ids: list[UUID] = Field(default_factory=list)
+    evidence_model_ids: list[UUID] = Field(default_factory=list)
+    evidence_text: str | None = None
+    explanation: str | None = None
+    temporal_bounds: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# =====================================================================
+# RelationFrameOp — N-ary relation frames with typed participants.
+# =====================================================================
+
+
+class RelationFrameParticipantOp(BaseModel):
+    """One model bound into a typed role inside an N-ary relation frame."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: UUID
+    role: str
+    binding_confidence: float = 0.5
+    cardinality_group: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class RelationFrameOp(BaseModel):
+    """
+    A multi-model semantic relation frame.
+
+    Frames are persisted as relation_instances plus relation_participants.
+    Accepted/projectable frames can deterministically compile into multiple
+    model_edges while preserving the frame as the source of truth.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["upsert"] = "upsert"
+    id: UUID | None = None
+    relation_kind: str
+    participants: list[RelationFrameParticipantOp] = Field(default_factory=list)
+    participant_binding_status: Literal[
+        "bound",
+        "partially_bound",
+        "unbound",
+        "ambiguous",
+    ] = "unbound"
+    write_policy: Literal[
+        "project_edges",
+        "candidate",
+        "needs_review",
+        "no_projection",
+    ] = "candidate"
+    status: Literal[
+        "active",
+        "candidate",
+        "accepted",
+        "needs_review",
+        "disputed",
+        "rejected",
+        "retired",
+    ] = "candidate"
+    confidence: float = 0.5
+    evidence_event_ids: list[UUID] = Field(default_factory=list)
+    evidence_model_ids: list[UUID] = Field(default_factory=list)
+    evidence_text: str | None = None
+    explanation: str | None = None
+    temporal_bounds: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# =====================================================================
 # OntologyGapOp — pre-truth edge-type proposals.
 # =====================================================================
 
@@ -226,6 +391,9 @@ class ValidatedDiff(BaseModel):
     trigger_ref: UUID
     tenant_id: UUID
     claim_ops: list[ClaimOp] = Field(default_factory=list)
+    memory_lifecycle_ops: list[MemoryLifecycleOp] = Field(default_factory=list)
+    relation_claim_ops: list[RelationClaimOp] = Field(default_factory=list)
+    relation_frame_ops: list[RelationFrameOp] = Field(default_factory=list)
     edge_ops: list[EdgeOp] = Field(default_factory=list)
     ontology_gap_ops: list[OntologyGapOp] = Field(default_factory=list)
     act_ops: list[ActOp] = Field(default_factory=list)
@@ -263,6 +431,9 @@ class RawDiff(BaseModel):
     trigger_ref: UUID
     tenant_id: UUID
     claim_ops: list[ClaimOp] = Field(default_factory=list)
+    memory_lifecycle_ops: list[MemoryLifecycleOp] = Field(default_factory=list)
+    relation_claim_ops: list[RelationClaimOp] = Field(default_factory=list)
+    relation_frame_ops: list[RelationFrameOp] = Field(default_factory=list)
     edge_ops: list[EdgeOp] = Field(default_factory=list)
     ontology_gap_ops: list[OntologyGapOp] = Field(default_factory=list)
     act_ops: list[ActOp] = Field(default_factory=list)
@@ -288,9 +459,14 @@ class RawDiffClaimsOnly(BaseModel):
 
 __all__ = [
     "ClaimOp",
+    "MemoryLifecycleAction",
+    "MemoryLifecycleOp",
     "ActOp",
     "ActOpKind",
     "EdgeOp",
+    "RelationClaimOp",
+    "RelationFrameOp",
+    "RelationFrameParticipantOp",
     "OntologyGapOp",
     "ResourceOp",
     "ResourceOpKind",

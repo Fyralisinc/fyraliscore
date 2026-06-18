@@ -54,6 +54,7 @@ from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import ObservationCreate, ObservationRow
 from services.domain.actors.repo import ActorRepo
+from services.domain.clarifications import open_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo, normalize_phrase
 from services.domain.triggers import enqueue_trigger as enqueue_think_trigger
 from services.ingest.ingestion.handlers import (
@@ -514,6 +515,17 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                         deduped=True,
                         trigger_queue_id=None,
                     )
+                await _maybe_open_actor_identity_clarification(
+                    conn,
+                    tenant_id=tenant_id,
+                    draft=draft,
+                    row=row,
+                    unresolved_actor_ref=(
+                        obs_create.content.get("_unresolved_actor_ref")
+                        if isinstance(obs_create.content, dict)
+                        else None
+                    ),
+                )
                 if enqueue_trigger:
                     trigger_queue_id = await _enqueue_event_arrival_trigger(
                         conn,
@@ -529,6 +541,99 @@ async def _insert_observation_and_maybe_enqueue_trigger(
         deduped=False,
         trigger_queue_id=trigger_queue_id,
     )
+
+
+async def _maybe_open_actor_identity_clarification(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    draft: ObservationDraft,
+    row: ObservationRow,
+    unresolved_actor_ref: Any,
+) -> None:
+    if row.actor_id is not None or not unresolved_actor_ref:
+        return
+    ref = str(unresolved_actor_ref).strip()
+    if not ref:
+        return
+    question = (
+        f"Who is '{ref}'? Is this an existing actor alias, a new actor, "
+        "or not a person?"
+    )
+    options = [
+        {
+            "id": "same_as_existing_actor",
+            "label": "Same as existing actor",
+            "value": {
+                "action": "map_to_existing_actor",
+                "source_actor_ref": ref,
+                "actor_id": None,
+            },
+        },
+        {
+            "id": "new_internal_actor",
+            "label": "New internal actor",
+            "value": {
+                "action": "create_internal_actor",
+                "source_actor_ref": ref,
+            },
+        },
+        {
+            "id": "new_external_actor",
+            "label": "New external actor",
+            "value": {
+                "action": "create_external_actor",
+                "source_actor_ref": ref,
+            },
+        },
+        {
+            "id": "not_an_actor",
+            "label": "Not an actor",
+            "value": {
+                "action": "ignore_actor_ref",
+                "source_actor_ref": ref,
+            },
+        },
+    ]
+    try:
+        await open_clarification_request(
+            conn,
+            tenant_id=tenant_id,
+            kind="actor_identity",
+            priority=_actor_ref_priority(ref),
+            question=question,
+            explanation=(
+                "Ingestion saw a source-specific actor reference but could not "
+                "map it to a canonical actor. Leaving it unresolved prevents "
+                "actor-scoped models and cross-source behavior patterns."
+            ),
+            object_kind="source_actor_ref",
+            object_key=ref,
+            source_observation_id=row.id,
+            options=options,
+            payload={
+                "source_actor_ref": ref,
+                "source_channel": draft.source_channel,
+                "content_text": (row.content_text or "")[:500],
+                "source": "ingestion_actor_resolution",
+            },
+        )
+    except Exception:
+        # Clarification capture should not block ingestion. Operators can still
+        # reconstruct unresolved refs from observations.content.
+        return
+
+
+def _actor_ref_priority(ref: str) -> str:
+    lowered = ref.casefold()
+    if "@" in lowered and not any(
+        marker in lowered
+        for marker in ("noreply", "no-reply", "bot@", "dependabot")
+    ):
+        return "high"
+    if lowered.startswith(("slack:", "signal:", "telegram:", "github:")):
+        return "normal"
+    return "low"
 
 
 async def _publish_embedding_request_if_needed(

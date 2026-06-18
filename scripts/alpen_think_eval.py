@@ -35,7 +35,10 @@ from services.app.gateway.db_bootstrap import _register_codecs
 from tests.real_llm.infrastructure.durability_flow import run_think_until_drain
 from scripts.run_1000_signal_model_layer_probe import enqueue_t1_for_observations
 
-TENANT = UUID("90864cdd-731b-44b3-96c5-78f0004af3e2")
+TENANT = UUID(os.environ.get(
+    "ALPEN_TENANT_ID",
+    "90864cdd-731b-44b3-96c5-78f0004af3e2",
+))
 
 
 async def _report(conn, tenant, *, signals, enqueued, elapsed):
@@ -98,7 +101,8 @@ async def _report(conn, tenant, *, signals, enqueued, elapsed):
 
 
 async def main():
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else 200
+    raw_n = sys.argv[1] if len(sys.argv) > 1 else "200"
+    n = None if raw_n.lower() == "all" else int(raw_n)
     timeout = int(os.environ.get("THINK_TIMEOUT_S", "1800"))
     # run_think_until_drain (durability harness) zeroes the T1 batch window by
     # default -> per-signal. Re-enable batching so the worker pulls 20-30
@@ -115,15 +119,23 @@ async def main():
     run_id = "alpen-think-eval"
 
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT id FROM observations WHERE tenant_id=$1 "
-            "ORDER BY occurred_at DESC LIMIT $2",
-            TENANT, n)
+        if n is None:
+            rows = await conn.fetch(
+                "SELECT id FROM observations WHERE tenant_id=$1 "
+                "ORDER BY occurred_at DESC",
+                TENANT,
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT id FROM observations WHERE tenant_id=$1 "
+                "ORDER BY occurred_at DESC LIMIT $2",
+                TENANT, n)
     obs_ids = [r["id"] for r in rows]
     print(f"sample: {len(obs_ids)} most-recent cross-source observations")
 
     enqueued = await enqueue_t1_for_observations(
-        pool, tenant_id=TENANT, observation_ids=obs_ids, limit=n, run_id=run_id)
+        pool, tenant_id=TENANT, observation_ids=obs_ids,
+        limit=len(obs_ids), run_id=run_id)
     print(f"enqueued {enqueued} T1 triggers; draining Think (batched, codex)...")
 
     t0 = time.monotonic()

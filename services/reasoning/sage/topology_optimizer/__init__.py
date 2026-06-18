@@ -14,8 +14,8 @@ Re-exports the rule-based topology update surface (doc §5.6 + §16):
     layer for routes, scheduled jobs, and tests that need one
     default-wired optimization pass.
   * `optimize_topology` — backwards-compatible functional wrapper.
-  * `enqueue_for_validation` — current no-op stub for the canonical-
-    op gate; will be wired to the validation queue in a later phase.
+  * `enqueue_for_validation` — pure compatibility inspector. The product
+    path persists validation candidates from `TopologyOptimizer`.
 
 Module-level tunables (REINFORCE_DELTA, DECAY_FACTOR,
 SHORTCUT_POSITIVE_DELTA, NEGATIVE_MEMORY_TTL) are exported so tests

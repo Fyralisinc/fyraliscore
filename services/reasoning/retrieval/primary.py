@@ -60,6 +60,7 @@ from .pathways import (
     RetrievalPathwayError,
     pathway_a_structural,
     pathway_b_semantic,
+    pathway_b_representation_tags,
     pathway_c_temporal,
     pathway_d_pattern,
     pathway_g_model_edges,
@@ -910,6 +911,24 @@ async def _run_pathway_b(
             event_entities=effective_seed_entities,
             hnsw_ef_search=cfg.semantic_hnsw_ef_search,
         )
+        tag_result = await pathway_b_representation_tags(
+            text,
+            trigger.tenant_id,
+            conn,
+            seed_signature=(
+                trigger.seed_signature
+                if isinstance(trigger.seed_signature, dict)
+                else None
+            ),
+            limit=max(20, min(120, b_k * 2)),
+        )
+        result.notes["representation_tag_rescue"] = tag_result.notes
+        if tag_result.models:
+            seen = {model.id for model in result.models}
+            rescued = [model for model in tag_result.models if model.id not in seen]
+            if rescued:
+                result.models = [*result.models, *rescued]
+                result.notes["models_returned"] = len(result.models)
         notes["pathways_run"].append("B")
         _append_pathway_timing(
             pathway_timings,

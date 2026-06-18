@@ -182,6 +182,30 @@ def test_maybe_inject_future_prediction_splits_explicit_plan():
     assert prediction["scope_temporal"]["valid_until"].startswith("2026-05-19")
 
 
+def test_maybe_inject_future_prediction_ignores_t1_event_batch():
+    tenant_id = uuid7()
+    obs_id = uuid7()
+    content = (
+        "Batch of 30 signals:\n"
+        "- 019ed474-0000-7000-8000-000000000000: Production deploy is scheduled "
+        "for 3pm today."
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_id=obs_id,
+        seed_natural_text=content,
+        seed_occurred_at=datetime(2026, 5, 18, 12, 0, tzinfo=timezone.utc),
+        member_trigger_ids=[uuid7()],
+    )
+    diff = RawDiff(trigger_ref=obs_id, tenant_id=tenant_id)
+
+    out = maybe_inject_future_prediction(diff, trigger, ContextBundle())
+
+    assert out.claim_ops == []
+
+
 def test_maybe_inject_future_prediction_ignores_existing_prediction():
     tenant_id = uuid7()
     obs_id = uuid7()

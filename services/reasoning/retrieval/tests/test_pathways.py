@@ -26,6 +26,7 @@ from services.reasoning.retrieval.pathways import (
     _STRUCTURAL_MAX_SCOPE_ENTITY_FILTERS,
     _cap_scope_entity_filters,
     pathway_a_structural,
+    pathway_b_representation_tags,
     pathway_b_semantic,
     pathway_c_temporal,
     pathway_d_pattern,
@@ -161,6 +162,49 @@ async def test_pathway_a_skips_one_legacy_bad_commitment_without_losing_models(
 # =====================================================================
 # Pathway B — semantic
 # =====================================================================
+
+
+async def test_pathway_b_representation_tags_rescue_deep_tagged_model(
+    tx_conn,
+    fresh_db,
+    tenant,
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db, n_models=8)
+    tagged_model_id = fs.model_ids[0]
+    proposition = {
+        "kind": "belief",
+        "claim_role": "pattern",
+        "coverage_roles": ["source", "discovered_pattern", "state"],
+        "retrieval_tags": [
+            "source_digest",
+            "contextual_recurrence",
+            "delivery_risk",
+            "source_code",
+        ],
+        "observed_tendency": "GitHub PR delays recur around production deploys.",
+    }
+    await tx_conn.execute(
+        """
+        UPDATE models
+        SET proposition = $2::jsonb,
+            domain_tags = $3::text[]
+        WHERE id = $1
+        """,
+        tagged_model_id,
+        json.dumps(proposition),
+        ["delivery_risk", "source_code", "contextual_recurrence"],
+    )
+
+    result = await pathway_b_representation_tags(
+        "github production deploy risk is recurring around PR review",
+        tenant,
+        tx_conn,
+    )
+
+    assert result.source_pathway == "B"
+    assert tagged_model_id in {model.id for model in result.models}
+    assert "delivery_risk" in result.notes["seed_tags"]
+    assert "source_code" in result.notes["seed_tags"]
 
 
 async def test_pathway_b_precomputed_vector_finds_clustered_models(

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -67,6 +68,7 @@ _STRUCTURAL_MODELS_PER_SCOPE_ACTOR = 48
 _STRUCTURAL_MAX_SCOPE_ENTITY_FILTERS = 64
 _TEMPORAL_MAX_OBSERVATIONS = 300
 _PATTERN_MAX_INSTANCES = 200
+_TAG_RESCUE_LIMIT = 80
 _DEFAULT_EDGE_MAX_HOPS = 2
 _EDGE_MAX_MODELS = 120
 _EDGE_TRAVERSAL_KINDS = (
@@ -86,6 +88,24 @@ _EDGE_TRAVERSAL_KINDS = (
     "alternative_to",
     "contributes_to_resolution",
     "superseded_by",
+)
+_TAGIFY_RE = re.compile(r"[^a-z0-9_]+")
+_REPRESENTATION_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("progress_signal", ("started", "picked up", "raised", "opened", "merged", "shipped", "completed", "pr", "pull request")),
+    ("review_loop", ("review", "feedback", "comment", "approval", "approved")),
+    ("delivery_risk", ("risk", "blocked", "blocker", "stalled", "slip", "delay", "missing")),
+    ("coordination_debt", ("handoff", "waiting", "unclear", "owner", "follow up", "follow-up")),
+    ("deployment_activity", ("deploy", "release", "rollback", "staging", "production")),
+    ("finance_flow", ("invoice", "bill", "payment", "vendor", "runway", "budget", "transaction")),
+    ("operational_churn", ("alert", "latency", "error", "aws", "lambda", "incident", "disk", "5xx")),
+    ("decision_pressure", ("decision", "revisited", "approved", "rejected", "exception")),
+    ("contextual_recurrence", ("repeat", "repeated", "recurring", "cadence", "again", "same pattern")),
+    ("source_code", ("github", "gitlab", "jira")),
+    ("source_chat", ("slack", "telegram", "discord", "signal")),
+    ("source_docs", ("notion", "drive", "gmail", "calendar", "fireflies", "miro", "figma")),
+    ("source_finance", ("quickbooks", "ramp", "brex", "mercury", "deel", "carta", "gusto")),
+    ("source_observability", ("aws", "grafana", "cloudwatch")),
+    ("source_people", ("ashby", "hibob", "linkedin")),
 )
 
 
@@ -400,6 +420,71 @@ def _hydrate_decision(record: asyncpg.Record) -> DecisionRow:
 
 def _jsonb(value: Any) -> str:
     return json.dumps(value, sort_keys=True, default=str)
+
+
+def _tagify(value: Any) -> str:
+    text = str(value or "").strip().casefold()
+    return _TAGIFY_RE.sub("_", text).strip("_")
+
+
+def _seed_representation_tags(
+    seed_text: str | None,
+    seed_signature: dict[str, Any] | None = None,
+) -> list[str]:
+    """Derive deep retrieval tags from trigger text/signature.
+
+    These are intentionally not actor names or surface nouns. They are
+    operating-shape hooks that line up with the tags Think now stores on
+    models.
+    """
+    parts = [seed_text or ""]
+    if isinstance(seed_signature, dict):
+        parts.append(json.dumps(seed_signature, sort_keys=True, default=str))
+    text = " ".join(parts).casefold()
+    tags: list[str] = []
+    seen: set[str] = set()
+    for tag, needles in _REPRESENTATION_TAG_RULES:
+        if any(needle in text for needle in needles):
+            normalized = _tagify(tag)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                tags.append(normalized)
+    if "pattern" in text or "recurrence" in text:
+        for tag in ("discovered_pattern", "contextual_recurrence"):
+            if tag not in seen:
+                seen.add(tag)
+                tags.append(tag)
+    return tags
+
+
+def _coverage_roles_from_seed_tags(tags: Sequence[str]) -> list[str]:
+    roles: list[str] = []
+    seen: set[str] = set()
+    role_map = {
+        "progress_signal": "workstream",
+        "review_loop": "workstream",
+        "delivery_risk": "state",
+        "coordination_debt": "relationship",
+        "deployment_activity": "state",
+        "finance_flow": "state",
+        "operational_churn": "state",
+        "decision_pressure": "state",
+        "contextual_recurrence": "discovered_pattern",
+        "source_code": "source",
+        "source_chat": "source",
+        "source_docs": "source",
+        "source_finance": "source",
+        "source_observability": "source",
+        "source_people": "source",
+        "discovered_pattern": "discovered_pattern",
+    }
+    for tag in tags:
+        for role in (role_map.get(tag), tag.removeprefix("coverage_")):
+            if not role or role == tag or role in seen:
+                continue
+            seen.add(role)
+            roles.append(role)
+    return roles
 
 
 def _vector_to_float_list(value: Any) -> list[float] | None:
@@ -2135,6 +2220,64 @@ async def pathway_b_semantic(
     )
 
 
+async def pathway_b_representation_tags(
+    seed_natural_text: str | None,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    seed_signature: dict[str, Any] | None = None,
+    limit: int = _TAG_RESCUE_LIMIT,
+) -> PathwayResult:
+    """Retrieve active models through representation tags and coverage roles."""
+    seed_tags = _seed_representation_tags(seed_natural_text, seed_signature)
+    coverage_roles = _coverage_roles_from_seed_tags(seed_tags)
+    notes: dict[str, Any] = {
+        "seed_tags": seed_tags,
+        "coverage_roles": coverage_roles,
+        "limit": int(limit),
+    }
+    if not seed_tags and not coverage_roles:
+        return PathwayResult(source_pathway="B", notes={**notes, "reason": "no_tags"})
+
+    rows = await conn.fetch(
+        f"""
+        SELECT {_MODEL_SELECT_SQL},
+               (
+                 CASE WHEN domain_tags && $2::text[] THEN 1 ELSE 0 END
+                 + CASE WHEN coalesce(proposition->'retrieval_tags', '[]'::jsonb) ?| $2::text[] THEN 1 ELSE 0 END
+                 + CASE WHEN coalesce(proposition->'coverage_roles', '[]'::jsonb) ?| $3::text[] THEN 1 ELSE 0 END
+               ) AS _tag_match_rank
+        FROM models
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND (
+               domain_tags && $2::text[]
+               OR coalesce(proposition->'retrieval_tags', '[]'::jsonb) ?| $2::text[]
+               OR coalesce(proposition->'coverage_roles', '[]'::jsonb) ?| $3::text[]
+          )
+        ORDER BY _tag_match_rank DESC,
+                 activation DESC,
+                 confirmed_count DESC,
+                 created_at DESC
+        LIMIT $4
+        """,
+        tenant_id,
+        seed_tags,
+        coverage_roles,
+        max(1, int(limit)),
+    )
+    models = _hydrate_many(rows, _hydrate_model, notes, "models")
+    notes["models_returned"] = len(models)
+    return PathwayResult(
+        models=models,
+        observations=[],
+        acts={"goals": [], "commitments": [], "decisions": []},
+        resources=[],
+        source_pathway="B",
+        notes=notes,
+    )
+
+
 # =====================================================================
 # Pathway C — Temporal recency (Observations + Models in a time window)
 # =====================================================================
@@ -2859,6 +3002,7 @@ __all__ = [
     "PathwayName",
     "pathway_a_structural",
     "pathway_b_semantic",
+    "pathway_b_representation_tags",
     "pathway_c_temporal",
     "pathway_d_pattern",
     "pathway_g_model_edges",

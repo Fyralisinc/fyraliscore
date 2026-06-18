@@ -30,6 +30,7 @@ from lib.shared.ids import uuid7
 from services.domain.models.repo import ModelsRepo
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
+_MIGRATIONS_READY = False
 
 
 pytestmark = pytest.mark.integration
@@ -55,9 +56,16 @@ async def db_pool() -> AsyncGenerator[asyncpg.Pool, None]:
         init=_init_connection,
     )
     async with pool.acquire() as conn:
-        from lib.shared.migrations import apply_migrations_dir
+        from lib.shared.migrations import (
+            apply_migrations_dir,
+            schema_bootstrap_lock,
+        )
 
-        await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+        global _MIGRATIONS_READY
+        async with schema_bootstrap_lock(conn):
+            if not _MIGRATIONS_READY and not await _schema_looks_ready(conn):
+                await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+            _MIGRATIONS_READY = True
     try:
         yield pool
     finally:
@@ -75,6 +83,26 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
         await register_vector(conn)
     except Exception:
         pass
+
+
+async def _schema_looks_ready(conn: asyncpg.Connection) -> bool:
+    rows = await conn.fetch(
+        """
+        SELECT to_regclass(name) IS NOT NULL AS exists
+        FROM unnest($1::text[]) AS name
+        """,
+        [
+            "public.observations",
+            "public.models",
+            "public.model_edges",
+            "public.model_search_documents",
+            "public.model_sparse_terms",
+            "public.relation_claims",
+            "public.inquiry_sessions",
+            "public.inquiry_question_runs",
+        ],
+    )
+    return bool(rows) and all(row["exists"] for row in rows)
 
 
 @pytest_asyncio.fixture

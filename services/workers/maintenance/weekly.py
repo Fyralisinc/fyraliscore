@@ -38,6 +38,9 @@ from services.reasoning.retrieval.maintenance import (
     background_relationship_maintenance,
 )
 from services.reasoning.relationships.promoter import promote_high_confidence_edges
+from services.reasoning.edge_intelligence.promoter import (
+    promote_pair_evidence_candidates,
+)
 
 
 log = logging.getLogger(__name__)
@@ -88,6 +91,7 @@ async def relationship_maintenance_per_tenant(
     orphans = outliers = arch = promoted = retired = 0
     for tid in tenant_ids:
         report = await background_relationship_maintenance(tid, conn)
+        await promote_pair_evidence_candidates(conn, tenant_id=tid)
         promotion = await promote_high_confidence_edges(conn, tenant_id=tid)
         processed += 1
         orphans += report.orphans_flagged

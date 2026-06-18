@@ -15,7 +15,15 @@ from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.retrieval.tests._fixtures import build_fixture, make_embedding
 from services.reasoning.think.context_planner import _retrieval_config_for_trigger
 from services.reasoning.think.context_use import summarize_context_use
-from services.reasoning.think.diff_schema import ActOp, ClaimOp, EdgeOp, RawDiff
+from services.reasoning.think.diff_schema import (
+    ActOp,
+    ClaimOp,
+    EdgeOp,
+    MemoryLifecycleOp,
+    RawDiff,
+    RelationFrameOp,
+    RelationFrameParticipantOp,
+)
 from services.reasoning.think.observability import METRICS
 from services.reasoning.think.reason import think
 from services.reasoning.think.tests.conftest import ScriptedProvider, _insert_observation
@@ -110,7 +118,7 @@ def test_t1_event_batch_uses_compact_historical_context_budget(monkeypatch):
 
     assert cfg.assembler_budget_models == min(
         RETRIEVAL_CONFIG.assembler_budget_models,
-        16,
+        9,
     )
     assert cfg.historical_observation_cap == min(
         RETRIEVAL_CONFIG.historical_observation_cap,
@@ -118,6 +126,27 @@ def test_t1_event_batch_uses_compact_historical_context_budget(monkeypatch):
     )
     assert cfg.trigger_observation_cap == RETRIEVAL_CONFIG.trigger_observation_cap
     assert cfg.observation_context_mode == RETRIEVAL_CONFIG.observation_context_mode
+
+
+def test_large_t1_event_batch_uses_configured_context_cap(monkeypatch):
+    monkeypatch.delenv("THINK_BATCH_CONTEXT_MODEL_BUDGET", raising=False)
+    tenant_id = uuid4()
+    observation_ids = [uuid4() for _ in range(20)]
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_id=observation_ids[0],
+        observation_ids=observation_ids,
+        seed_signature={"batch": True},
+    )
+
+    cfg = _retrieval_config_for_trigger(trigger)
+
+    assert cfg.assembler_budget_models == min(
+        RETRIEVAL_CONFIG.assembler_budget_models,
+        16,
+    )
 
 
 def test_single_t1_keeps_default_context_budget(monkeypatch):
@@ -167,6 +196,74 @@ def test_context_use_counts_edge_ops_between_selected_graph_models():
     assert report["edge_ops_touching_graph_models"] == 1
     assert report["context_use_grade"] == "graph_context_used"
     assert report["selected_context_used"] is True
+    assert report["referenced_observation_ids"] == [str(obs_id)]
+
+
+def test_context_use_counts_relation_frames_as_graph_relation_work():
+    tenant_id = uuid4()
+    trigger_id = uuid4()
+    blocker = uuid4()
+    work = uuid4()
+    owner = uuid4()
+    risk = uuid4()
+    resolution = uuid4()
+    obs_id = uuid4()
+    bundle = _bundle_with_selection(
+        selected=[blocker, work, owner, risk, resolution],
+        graph_selected=[blocker, work],
+    )
+    diff = RawDiff(
+        trigger_ref=trigger_id,
+        tenant_id=tenant_id,
+        relation_frame_ops=[
+            RelationFrameOp(
+                relation_kind="blocked_workstream",
+                participants=[
+                    RelationFrameParticipantOp(
+                        model_id=blocker,
+                        role="blocker",
+                        binding_confidence=0.9,
+                    ),
+                    RelationFrameParticipantOp(
+                        model_id=work,
+                        role="blocked_work",
+                        binding_confidence=0.92,
+                    ),
+                    RelationFrameParticipantOp(
+                        model_id=owner,
+                        role="owner",
+                        binding_confidence=0.78,
+                    ),
+                    RelationFrameParticipantOp(
+                        model_id=risk,
+                        role="downstream_risk",
+                        binding_confidence=0.8,
+                    ),
+                    RelationFrameParticipantOp(
+                        model_id=resolution,
+                        role="possible_resolution",
+                        binding_confidence=0.76,
+                    ),
+                ],
+                participant_binding_status="bound",
+                write_policy="project_edges",
+                status="accepted",
+                confidence=0.84,
+                evidence_event_ids=[obs_id],
+                evidence_model_ids=[blocker, work],
+                explanation="A blocker, workstream, owner, risk, and resolution are linked.",
+            )
+        ],
+    )
+
+    report = summarize_context_use(bundle, diff)
+
+    assert report["context_use_grade"] == "graph_context_used"
+    assert report["relation_frame_ops_count"] == 1
+    assert report["relation_frame_ops_between_selected_models"] == 1
+    assert report["relation_frame_ops_touching_graph_models"] == 1
+    assert report["graph_relation_op_count"] == 1
+    assert report["graph_relation_contract_satisfied"] is True
     assert report["referenced_observation_ids"] == [str(obs_id)]
 
 
@@ -267,6 +364,41 @@ def test_context_use_satisfies_graph_contract_for_graph_claim_update():
     assert report["graph_claim_op_reference_count"] == 1
     assert report["graph_relation_contract_satisfied"] is True
     assert report["graph_relation_contract_basis"] == "model_or_act_mutation"
+
+
+def test_context_use_satisfies_graph_contract_for_memory_lifecycle_update():
+    tenant_id = uuid4()
+    trigger_id = uuid4()
+    graph_model = uuid4()
+    other = uuid4()
+    obs_id = uuid4()
+    bundle = _bundle_with_selection(
+        selected=[graph_model, other],
+        graph_selected=[graph_model, other],
+        observations=[_obs(obs_id)],
+    )
+    diff = RawDiff(
+        trigger_ref=trigger_id,
+        tenant_id=tenant_id,
+        memory_lifecycle_ops=[
+            MemoryLifecycleOp(
+                model_id=graph_model,
+                action="confirm",
+                evidence_event_ids=[obs_id],
+                rationale="The signal confirms this selected graph memory.",
+            )
+        ],
+    )
+
+    report = summarize_context_use(bundle, diff)
+
+    assert report["context_use_grade"] == "graph_context_used"
+    assert report["memory_lifecycle_ops_count"] == 1
+    assert report["graph_non_relation_op_count"] == 1
+    assert report["graph_memory_lifecycle_op_reference_count"] == 1
+    assert report["graph_relation_contract_satisfied"] is True
+    assert report["referenced_model_ids"] == [str(graph_model)]
+    assert report["referenced_observation_ids"] == [str(obs_id)]
 
 
 def test_context_use_satisfies_graph_contract_for_graph_act_basis():
@@ -541,7 +673,8 @@ async def test_think_persists_context_use_and_applies_context_edge(
         ops_applied = json.loads(ops_applied)
     context_use = ops_applied["context_use"]
     assert context_use["context_use_grade"] == "graph_context_used"
-    assert context_use["edge_ops_touching_graph_models"] >= 1
+    assert context_use["relation_claim_ops_touching_graph_models"] >= 1
+    assert context_use["graph_relation_op_count"] >= 1
     assert context_use["graph_selected_reference_count"] >= 2
     assert str(bridge_id) in context_use["referenced_model_ids"]
     assert str(target_id) in context_use["referenced_model_ids"]

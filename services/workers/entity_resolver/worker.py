@@ -57,6 +57,7 @@ from lib.llm.provider import (
 )
 from lib.shared.ids import uuid7
 from services.domain.triggers import enqueue_trigger
+from services.domain.clarifications import open_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.workers.entity_resolver.context import (
     ResolverContext,
@@ -460,6 +461,107 @@ class EntityResolverWorker:
             ctx.phrase,
             ctx.observation_id,
             json.dumps(candidates),
+        )
+        await self._open_entity_resolution_clarification(
+            ctx=ctx,
+            resolution=resolution,
+            review_id=row_id,
+            candidates=candidates,
+            conn=conn,
+        )
+
+    async def _open_entity_resolution_clarification(
+        self,
+        *,
+        ctx: ResolverContext,
+        resolution: EntityResolution,
+        review_id: UUID,
+        candidates: list[dict[str, Any]],
+        conn: asyncpg.Connection | None,
+    ) -> None:
+        ref = resolution.canonical_ref or {}
+        label = f"{ref.get('type')}:{ref.get('id')}" if ref else "no candidate"
+        options = [
+            {
+                "id": "accept_candidate",
+                "label": f"Resolve to {label}",
+                "value": {
+                    "action": "accept_candidate",
+                    "canonical_ref": resolution.canonical_ref,
+                },
+            },
+            {
+                "id": "not_same_entity",
+                "label": "Not this entity",
+                "value": {"action": "reject_candidate"},
+            },
+            {
+                "id": "needs_new_entity",
+                "label": "Create a new entity",
+                "value": {"action": "create_new_entity"},
+                "requires": ["entity_type"],
+            },
+        ]
+        try:
+            if conn is not None:
+                await self._write_entity_resolution_clarification(
+                    conn,
+                    ctx=ctx,
+                    ref=ref,
+                    review_id=review_id,
+                    candidates=candidates,
+                    options=options,
+                )
+            else:
+                async with self._pool.acquire() as owned:
+                    await self._write_entity_resolution_clarification(
+                        owned,
+                        ctx=ctx,
+                        ref=ref,
+                        review_id=review_id,
+                        candidates=candidates,
+                        options=options,
+                    )
+        except Exception:
+            self._log.warning(
+                "entity_resolver.clarification_open_failed",
+                phrase=ctx.phrase,
+                observation_id=str(ctx.observation_id),
+            )
+
+    async def _write_entity_resolution_clarification(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        ctx: ResolverContext,
+        ref: dict[str, Any],
+        review_id: UUID,
+        candidates: list[dict[str, Any]],
+        options: list[dict[str, Any]],
+    ) -> None:
+        await open_clarification_request(
+            conn,
+            tenant_id=ctx.tenant_id,
+            kind="entity_resolution",
+            priority=(
+                "high"
+                if ref.get("type") in {"customer", "actor", "person", "organization"}
+                else "normal"
+            ),
+            question=f"What does '{ctx.phrase}' refer to?",
+            explanation=(
+                "The resolver found a plausible match but not enough evidence "
+                "to safely write a canonical alias without user judgment."
+            ),
+            object_kind="entity_review",
+            object_id=review_id,
+            source_observation_id=ctx.observation_id,
+            options=options,
+            payload={
+                "phrase": ctx.phrase,
+                "candidates": candidates,
+                "source": "entity_resolver",
+            },
         )
 
     # -----------------------------------------------------------------

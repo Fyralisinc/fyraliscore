@@ -147,6 +147,23 @@ def test_ephemeral_state_downgrades_to_evidence() -> None:
     assert any("evidence" in r.lower() for r in verdict.rejection_reasons)
 
 
+def test_ephemeral_review_sentiment_downgrades_to_evidence() -> None:
+    op = _insert(
+        kind="state",
+        assertion=(
+            "Yesterday's review felt rough around enterprise-control launch "
+            "security readiness."
+        ),
+        confidence=0.5,
+        falsifier="I changed my mind about how it went.",
+    )
+
+    verdict = score_quality(op, _ctx())
+
+    assert verdict.durability_score < 0.3, verdict
+    assert verdict.decision == "downgrade_to_evidence"
+
+
 def test_recommendation_phrased_as_descriptive_needs_review() -> None:
     # We strip the default proposed_change.operation to force the gate
     # to consider the text shape only.

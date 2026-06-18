@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -21,12 +22,27 @@ from services.reasoning.think.diff_schema import (
     ActOp,
     ClaimOp,
     EdgeOp,
+    MemoryLifecycleOp,
     OntologyGapOp,
+    RawDiff,
+    RelationClaimOp,
+    RelationFrameOp,
+    RelationFrameParticipantOp,
     ValidatedDiff,
 )
-from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.retrieval.assembler import ContextBundle
+from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext
+from services.reasoning.sage.inquiry_traces import (
+    OutcomeEventsRepo,
+    TraceContext,
+    reset_trace_context,
+    set_trace_context,
+)
+from services.reasoning.sage.topology_optimizer.optimizer import TopologyOptimizer
 from services.reasoning.sage.reader import SynthesisReader
+from services.reasoning.think.capability_probes import maybe_inject_capability_probe_ops
 from services.reasoning.think.text_embedding import deterministic_text_embedding
+from services.reasoning.think.validator import validate
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -54,6 +70,24 @@ async def _insert_applier_model(conn, tenant, observation_id, natural: str):
         make_embedding(natural),
     )
     return mid
+
+
+async def _insert_inquiry_session(conn, tenant) -> UUID:
+    session_id = uuid7()
+    await conn.execute(
+        """
+        INSERT INTO inquiry_sessions (
+          id, tenant_id, signal_ref_type, signal_ref_id,
+          route, status, stop_status
+        ) VALUES (
+          $1, $2, 'internal', NULL,
+          'DEEP_INQUIRY_PATH', 'running', 'insufficient_continue'
+        )
+        """,
+        session_id,
+        tenant,
+    )
+    return session_id
 
 
 async def test_apply_diff_acquires_tenant_model_write_lock(
@@ -166,6 +200,221 @@ async def test_apply_single_claim_insert(fresh_db, tenant, tenant_cleanup):
             diff.trigger_ref,
         )
         assert outcome == "success"
+
+
+async def test_source_digest_pattern_insert_stays_single_pattern_model(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Source digest claims are already compressed patterns, not compounds."""
+    from services.reasoning.think.tests.conftest import make_embedding
+
+    async with fresh_db.acquire() as conn:
+        oid = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO observations
+              (id, tenant_id, occurred_at, kind, source_channel,
+               content, content_text, embedding, embedding_pending, trust_tier)
+            VALUES ($1, $2, now(), 'signal', 'aws:event', '{}'::jsonb, $3,
+                    $4, FALSE, 'authoritative')
+            """,
+            oid,
+            tenant,
+            "[aws] lambda:createfunction<num>",
+            make_embedding("[aws] lambda:createfunction<num>"),
+        )
+        natural = (
+            "The aws:event source is showing a source cadence: 10 recent "
+            "observations form a major source window. This should be "
+            "represented as a compact source-pattern baseline, not left as "
+            "independent low-level events."
+        )
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "tenant_id": str(tenant),
+                        "born_from_event_id": str(oid),
+                        "proposition": {
+                            "kind": "belief",
+                            "claim_role": "pattern",
+                            "abstraction_level": "pattern",
+                            "time_mode": "recurring",
+                            "modality": "observed",
+                            "polarity": "neutral",
+                            "signature": "aws:event recurring source pattern",
+                            "observed_tendency": (
+                                "10 recent observations form a major source window."
+                            ),
+                            "domain_tags": [
+                                "source_digest",
+                                "discovered_pattern",
+                                "major_source_window",
+                            ],
+                        },
+                        "natural": natural,
+                        "scope_actors": [],
+                        "scope_entities": [],
+                        "scope_temporal": {},
+                        "confidence": 0.66,
+                        "confidence_at_assertion": 0.66,
+                        "falsifier": {
+                            "kind": "observation_pattern",
+                            "pattern": (
+                                "The aws:event stream no longer contributes a "
+                                "major recurring source window."
+                            ),
+                            "within_window": "P7D",
+                        },
+                    },
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+            )
+        rows = await conn.fetch(
+            """
+            SELECT claim_role, abstraction_level, proposition, domain_tags
+            FROM models
+            WHERE tenant_id = $1
+            ORDER BY created_at
+            """,
+            tenant,
+        )
+
+    assert result["split_summary"]["compound_inputs"] == 0
+    assert len(rows) == 1
+    proposition = rows[0]["proposition"]
+    if isinstance(proposition, str):
+        proposition = json.loads(proposition)
+    assert rows[0]["claim_role"] == "pattern"
+    assert rows[0]["abstraction_level"] == "pattern"
+    assert proposition["claim_role"] == "pattern"
+    assert {"source_digest", "major_source_window"} <= set(rows[0]["domain_tags"])
+
+
+async def test_curiosity_hypothesis_insert_survives_model_apply(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Open-question hypotheses should persist as searchable company memory."""
+    from services.reasoning.think.tests.conftest import make_embedding
+
+    async with fresh_db.acquire() as conn:
+        oid = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO observations
+              (id, tenant_id, occurred_at, kind, source_channel,
+               content, content_text, embedding, embedding_pending, trust_tier)
+            VALUES ($1, $2, now(), 'signal', 'slack:message', '{}'::jsonb, $3,
+                    $4, FALSE, 'authoritative')
+            """,
+            oid,
+            tenant,
+            "Atlas launch blocker discussion",
+            make_embedding("Atlas launch blocker discussion"),
+        )
+        natural = (
+            "Open operating questions remain for Atlas launch: who owns the "
+            "next action and whether the blocker is on the critical path."
+        )
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "tenant_id": str(tenant),
+                        "born_from_event_id": str(oid),
+                        "proposition": {
+                            "kind": "belief",
+                            "claim_role": "hypothesis",
+                            "abstraction_level": "atomic",
+                            "time_mode": "current",
+                            "modality": "inferred",
+                            "polarity": "neutral",
+                            "hypothesis_text": natural,
+                            "test_conditions": (
+                                "Resolve by finding owner and critical path evidence."
+                            ),
+                            "important_unknowns": [
+                                "responsible owner",
+                                "whether the blocker is on the critical path",
+                            ],
+                            "coverage_roles": [
+                                "curiosity",
+                                "epistemic",
+                                "intervention",
+                            ],
+                            "retrieval_tags": [
+                                "open_question",
+                                "unresolved_unknown",
+                                "success_driver",
+                                "coverage_curiosity",
+                                "manager_question",
+                                "operator_question",
+                            ],
+                            "domain_tags": [
+                                "open_question",
+                                "coverage_curiosity",
+                                "manager_question",
+                                "operator_question",
+                            ],
+                        },
+                        "natural": natural,
+                        "scope_actors": [],
+                        "scope_entities": [],
+                        "scope_temporal": {},
+                        "confidence": 0.58,
+                        "confidence_at_assertion": 0.58,
+                        "falsifier": {
+                            "kind": "observation_pattern",
+                            "pattern": "The owner and critical path status are resolved.",
+                            "within_window": "P14D",
+                        },
+                        "domain_tags": ["open_question", "coverage_curiosity"],
+                    },
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+            )
+        row = await conn.fetchrow(
+            """
+            SELECT claim_role, proposition, domain_tags
+            FROM models
+            WHERE tenant_id = $1
+            """,
+            tenant,
+        )
+
+    assert result["memory_aggregation"]["model_inserts"] == 1
+    assert row is not None
+    assert row["claim_role"] == "hypothesis"
+    proposition = row["proposition"]
+    if isinstance(proposition, str):
+        proposition = json.loads(proposition)
+    assert "curiosity" in set(proposition["coverage_roles"])
+    assert "open_question" in set(proposition["retrieval_tags"])
+    assert "coverage_curiosity" in set(row["domain_tags"])
 
 
 async def test_apply_batch_insert_threads_all_supporting_events(
@@ -424,6 +673,99 @@ async def test_apply_prediction_insert_materializes_internal_prediction(
     assert prediction_row["confidence"] == 0.72
 
 
+async def test_apply_prediction_insert_normalizes_text_resolution_criteria(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Live LLM prediction criteria may arrive as text; apply must canonicalize it."""
+    from services.reasoning.think.tests.conftest import _insert_observation, make_embedding
+
+    evaluate_at = "2026-06-25T10:00:00+00:00"
+    text_criteria = "Check launch/decision evidence after the stated Friday deadline."
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(conn, tenant, content_text="forecast")
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="insert", entry={
+                    "tenant_id": str(tenant),
+                    "born_from_event_id": str(oid),
+                    "proposition": {
+                        "kind": "prediction",
+                        "expected": "Enterprise-control launch will move by Friday",
+                        "resolution": (
+                            "Later launch evidence shows the decision advanced, "
+                            "moved to Friday, or was delayed by capacity."
+                        ),
+                    },
+                    "natural": "Enterprise-control launch will move by Friday.",
+                    "embedding": make_embedding(
+                        "Enterprise-control launch will move by Friday."
+                    ),
+                    "scope_actors": [],
+                    "scope_entities": [{"type": "customer", "id": str(uuid7())}],
+                    "scope_temporal": {
+                        "valid_from": "2026-06-11T00:00:00+00:00",
+                        "valid_until": evaluate_at,
+                    },
+                    "evaluate_at": evaluate_at,
+                    "resolution_criteria": text_criteria,
+                    "confidence": 0.68,
+                    "confidence_at_assertion": 0.68,
+                    "falsifier": {
+                        "kind": "observation_pattern",
+                        "pattern": "Launch decision evidence contradicts the forecast.",
+                        "within_window": "P4D",
+                    },
+                }),
+            ],
+        )
+
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+            )
+        model_id = result["applied_model_ids"][0]
+        model_row = await conn.fetchrow(
+            "SELECT resolution_criteria FROM models WHERE id = $1",
+            model_id,
+        )
+        prediction_row = await conn.fetchrow(
+            """
+            SELECT expected_observation
+            FROM model_predictions
+            WHERE tenant_id = $1 AND model_id = $2
+            """,
+            tenant,
+            model_id,
+        )
+
+    resolution_criteria = (
+        json.loads(model_row["resolution_criteria"])
+        if isinstance(model_row["resolution_criteria"], str)
+        else model_row["resolution_criteria"]
+    )
+    expected_observation = (
+        json.loads(prediction_row["expected_observation"])
+        if isinstance(prediction_row["expected_observation"], str)
+        else prediction_row["expected_observation"]
+    )
+    assert result["claim_ops"][0]["model_prediction_id"]
+    assert resolution_criteria["source"] == "think_prediction_lifecycle"
+    assert resolution_criteria["natural_language_criteria"] == text_criteria
+    assert resolution_criteria["falsification_rule"] == (
+        "Launch decision evidence contradicts the forecast."
+    )
+    assert expected_observation["falsification_rule"] == (
+        "Launch decision evidence contradicts the forecast."
+    )
+
+
 async def test_apply_prediction_resolution_syncs_internal_prediction_status(
     fresh_db,
     tenant,
@@ -504,6 +846,107 @@ async def test_apply_prediction_resolution_syncs_internal_prediction_status(
 
     assert "model_predictions" in update_result["claim_ops"][0]["changed"]
     assert prediction_status == "falsified"
+
+
+async def test_apply_memory_lifecycle_confirm_resolves_prediction_model(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Lifecycle reconcile should close prediction Models through the model ledger."""
+    from services.reasoning.think.tests.conftest import _insert_observation, make_embedding
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(conn, tenant, content_text="forecast")
+        insert_diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="insert", entry={
+                    "tenant_id": str(tenant),
+                    "born_from_event_id": str(oid),
+                    "proposition": {
+                        "kind": "prediction",
+                        "expected": "Atlas launch will complete by Friday",
+                        "resolution": "Launch completion is observed by Friday.",
+                    },
+                    "natural": "Atlas launch will complete by Friday.",
+                    "embedding": make_embedding("Atlas launch will complete by Friday."),
+                    "scope_actors": [],
+                    "scope_entities": [],
+                    "scope_temporal": {},
+                    "confidence": 0.66,
+                    "confidence_at_assertion": 0.66,
+                    "falsifier": {
+                        "kind": "observation_pattern",
+                        "pattern": "Atlas launch remains incomplete after Friday",
+                        "within_window": "P7D",
+                    },
+                }),
+            ],
+        )
+        async with conn.transaction():
+            insert_result = await apply_diff(
+                insert_diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+            )
+        model_id = insert_result["applied_model_ids"][0]
+
+        evidence_id = await _insert_observation(
+            conn,
+            tenant,
+            content_text="Atlas launch completed by Friday",
+        )
+        lifecycle_diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            memory_lifecycle_ops=[
+                MemoryLifecycleOp(
+                    model_id=model_id,
+                    action="confirm",
+                    evidence_event_ids=[evidence_id],
+                    rationale="The observed launch completion confirms the forecast.",
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(
+                lifecycle_diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=evidence_id,
+            )
+        model_row = await conn.fetchrow(
+            """
+            SELECT confidence, confirmed_count, last_confirmed_at,
+                   resolved_at, resolution_outcome, supporting_event_ids
+            FROM models
+            WHERE id = $1
+            """,
+            model_id,
+        )
+        prediction_status = await conn.fetchval(
+            """
+            SELECT status
+            FROM model_predictions
+            WHERE tenant_id = $1 AND model_id = $2
+            """,
+            tenant,
+            model_id,
+        )
+
+    assert result["memory_lifecycle_ops"][0]["action"] == "confirm"
+    assert result["memory_lifecycle_ops"][0]["compiled_op"] == "update"
+    assert result["memory_aggregation"]["memory_lifecycle_ops"] == 1
+    assert float(model_row["confidence"]) == pytest.approx(0.71)
+    assert model_row["confirmed_count"] == 1
+    assert model_row["last_confirmed_at"] is not None
+    assert model_row["resolved_at"] is not None
+    assert model_row["resolution_outcome"] is True
+    assert evidence_id in model_row["supporting_event_ids"]
+    assert prediction_status == "confirmed"
 
 
 async def test_apply_drops_act_op_with_unresolved_confidence_basis(
@@ -892,9 +1335,42 @@ async def test_apply_resolves_same_diff_invented_model_id_for_edges(
             """,
             tenant,
         )
+        pair_row = await conn.fetchrow(
+            """
+            SELECT explicit_relation_count, edge_kind_votes, direction_votes
+            FROM model_pair_evidence
+            WHERE tenant_id = $1
+              AND (
+                (model_a_id = $2 AND model_b_id = $3)
+                OR (model_a_id = $3 AND model_b_id = $2)
+              )
+            """,
+            tenant,
+            inserted_model_id,
+            existing,
+        )
+        placeholder_pair_count = await conn.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM model_pair_evidence
+            WHERE tenant_id = $1
+              AND (model_a_id = $2 OR model_b_id = $2)
+            """,
+            tenant,
+            invented,
+        )
         assert row is not None
         assert row["source_model_id"] == inserted_model_id
         assert row["target_model_id"] == existing
+        assert pair_row is not None
+        edge_kind_votes = (
+            json.loads(pair_row["edge_kind_votes"])
+            if isinstance(pair_row["edge_kind_votes"], str)
+            else pair_row["edge_kind_votes"]
+        )
+        assert pair_row["explicit_relation_count"] == 1
+        assert edge_kind_votes["supports"] == 1
+        assert placeholder_pair_count == 0
 
 
 async def test_apply_resolves_same_diff_insert_refs_for_edges_and_acts(
@@ -1100,8 +1576,15 @@ async def test_reconciler_folds_llm_insert_without_embedding_into_existing_model
                             "about": "Atlas renewal",
                             "nature": "audit evidence is late",
                             "raised_by": "customer",
+                            "domain_tags": ["source_digest", "major_source_window"],
+                            "retrieval_tags": [
+                                "source_digest",
+                                "coverage_discovered_pattern",
+                            ],
+                            "coverage_roles": ["source", "discovered_pattern"],
                         },
                         "natural": natural,
+                        "domain_tags": ["source_digest"],
                         "scope_actors": [],
                         "scope_entities": [],
                         "scope_temporal": {},
@@ -1137,7 +1620,7 @@ async def test_reconciler_folds_llm_insert_without_embedding_into_existing_model
         row = await conn.fetchrow(
             """
             SELECT confidence, supporting_event_ids, signal_readings,
-                   confirmed_count, last_confirmed_at
+                   confirmed_count, last_confirmed_at, domain_tags, proposition
             FROM models WHERE id = $1
             """,
             existing_model,
@@ -1148,11 +1631,460 @@ async def test_reconciler_folds_llm_insert_without_embedding_into_existing_model
     assert new_event in row["supporting_event_ids"]
     assert row["confirmed_count"] == 1
     assert row["last_confirmed_at"] is not None
+    assert "source_digest" in set(row["domain_tags"])
+    assert "major_source_window" in set(row["domain_tags"])
+    proposition = row["proposition"]
+    if isinstance(proposition, str):
+        proposition = json.loads(proposition)
+    assert "source_digest" in set(proposition["retrieval_tags"])
+    assert "discovered_pattern" in set(proposition["coverage_roles"])
     readings = row["signal_readings"]
     if isinstance(readings, str):
         readings = json.loads(readings)
     assert readings[-1]["kind"] == "confirm"
     assert readings[-1]["source_event_id"] == str(new_event)
+
+
+async def test_outcome_events_filter_pending_relation_placeholders(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    async with fresh_db.acquire() as conn:
+        old_event = uuid7()
+        new_event = uuid7()
+        trigger_ref = uuid7()
+        session_id = await _insert_inquiry_session(conn, tenant)
+        target_model = await _insert_applier_model(
+            conn,
+            tenant,
+            old_event,
+            "HubSpot import depends on DPA approval.",
+        )
+        diff = ValidatedDiff(
+            trigger_ref=trigger_ref,
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "tenant_id": str(tenant),
+                        "born_from_event_id": str(new_event),
+                        "proposition": {
+                            "kind": "belief",
+                            "claim_role": "concern",
+                            "subject": "DPA approval",
+                            "assertion": "DPA approval is missing.",
+                        },
+                        "natural": "DPA approval is missing.",
+                        "scope_actors": [],
+                        "scope_entities": [],
+                        "scope_temporal": {},
+                        "confidence": 0.78,
+                        "confidence_at_assertion": 0.78,
+                        "falsifier": {
+                            "kind": "observation_pattern",
+                            "pattern": "DPA approval is delivered.",
+                            "within_window": "P14D",
+                        },
+                    },
+                )
+            ],
+            relation_claim_ops=[
+                RelationClaimOp(
+                    source_model_id=new_event,
+                    target_model_id=target_model,
+                    subject_ref={"kind": "pending_model", "born_from_event_id": str(new_event)},
+                    object_ref={"kind": "model", "model_id": str(target_model)},
+                    predicate="blocks",
+                    edge_kind="blocks",
+                    endpoint_binding_status="bound",
+                    write_policy="accepted_edge",
+                    status="accepted",
+                    confidence=0.78,
+                    evidence_event_ids=[new_event],
+                    evidence_model_ids=[new_event, target_model],
+                    explanation="DPA approval blocks the import.",
+                )
+            ],
+        )
+        repo = ModelsRepo(fresh_db, embedder=None)
+        ctx = TraceContext(
+            tenant_id=tenant,
+            inquiry_session_id=session_id,
+            pool=fresh_db,
+            conn=conn,
+            metadata={"question_primitives": ["CONSTRAINT"], "trigger_kind": "T1"},
+        )
+        token = set_trace_context(ctx)
+        try:
+            async with conn.transaction():
+                result = await apply_diff(
+                    diff,
+                    conn,
+                    trigger_kind="T1",
+                    trigger_cause_event_id=new_event,
+                    models_repo=repo,
+                )
+        finally:
+            reset_trace_context(token)
+
+        applied_model_ids = {
+            UUID(str(model_id)) for model_id in result["applied_model_ids"]
+        }
+        assert len(applied_model_ids) == 1
+        created_model = next(iter(applied_model_ids))
+        events = await OutcomeEventsRepo(
+            fresh_db,
+            tenant_id=tenant,
+        ).list_for_session(session_id)
+        emitted_model_ids = {
+            UUID(row.payload["model_id"])
+            for row in events
+            if row.event_type == "node_used_in_valid_diff"
+        }
+
+    assert created_model in emitted_model_ids
+    assert target_model in emitted_model_ids
+    assert new_event not in emitted_model_ids
+
+
+async def test_question_policy_probe_feedback_reaches_policy_stats(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    async with fresh_db.acquire() as conn:
+        event_id = uuid7()
+        session_id = await _insert_inquiry_session(conn, tenant)
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "tenant_id": str(tenant),
+                        "born_from_event_id": str(event_id),
+                        "supporting_event_ids": [str(event_id)],
+                        "proposition": {
+                            "kind": "belief",
+                            "claim_role": "capability",
+                            "abstraction_level": "atomic",
+                            "capability_id": (
+                                "question_policy_missing_context_precision"
+                            ),
+                            "subject": "question policy",
+                            "assessment": (
+                                "Question-policy probe: asking for the missing "
+                                "approval owner before writing a strong launch "
+                                "relation would have improved precision."
+                            ),
+                        },
+                        "natural": (
+                            "Question-policy probe: asking for the missing "
+                            "approval owner before writing a strong launch "
+                            "relation would have improved precision."
+                        ),
+                        "scope_actors": [],
+                        "scope_entities": [
+                            {"type": "customer", "id": str(uuid7())}
+                        ],
+                        "scope_temporal": {},
+                        "confidence": 0.72,
+                        "confidence_at_assertion": 0.72,
+                        "falsifier": {
+                            "kind": "observation_pattern",
+                            "pattern": (
+                                "Future similar probes show the extra question "
+                                "has no precision benefit."
+                            ),
+                            "within_window": "P30D",
+                        },
+                        "domain_tags": [
+                            "question_policy",
+                            "learning",
+                            "capability_probe",
+                        ],
+                    },
+                )
+            ],
+        )
+        repo = ModelsRepo(fresh_db, embedder=None)
+        ctx = TraceContext(
+            tenant_id=tenant,
+            inquiry_session_id=session_id,
+            pool=fresh_db,
+            conn=conn,
+            metadata={
+                "question_primitives": ["DEPENDENCY"],
+                "signal_type": "T1",
+                "trigger_kind": "T1:event_batch",
+                "entities": ["customer:enterprise-control"],
+            },
+        )
+        token = set_trace_context(ctx)
+        try:
+            async with conn.transaction():
+                result = await apply_diff(
+                    diff,
+                    conn,
+                    trigger_kind="T1:event_batch",
+                    trigger_cause_event_id=event_id,
+                    models_repo=repo,
+                )
+        finally:
+            reset_trace_context(token)
+
+        model_ids = [UUID(str(model_id)) for model_id in result["applied_model_ids"]]
+        assert len(model_ids) == 1
+        model_id = model_ids[0]
+        attribution = await conn.fetchrow(
+            """
+            SELECT question_primitive, signal_type, selected, activation_score
+            FROM sage_reader_decision_attributions
+            WHERE tenant_id = $1
+              AND inquiry_session_id = $2
+              AND model_id = $3
+            """,
+            tenant,
+            session_id,
+            model_id,
+        )
+        events = await OutcomeEventsRepo(
+            fresh_db,
+            tenant_id=tenant,
+        ).list_for_session(session_id, conn=conn)
+        credit_events = [
+            event
+            for event in events
+            if event.event_type == "reader_decision_used_in_valid_diff"
+        ]
+
+        report = await TopologyOptimizer(
+            pool=fresh_db,
+            tenant_id=tenant,
+        ).optimize(
+            inquiry_session_id=session_id,
+            trigger_event="validated_synthesis_diff_applied",
+            conn=conn,
+        )
+        stats = await conn.fetchrow(
+            """
+            SELECT attempts, successes, total_credit, utility_score
+            FROM sage_question_policy_stats
+            WHERE tenant_id = $1
+              AND signal_type = 'T1'
+              AND question_primitive = 'DEPENDENCY'
+            """,
+            tenant,
+        )
+
+    assert attribution is not None
+    assert attribution["question_primitive"] == "DEPENDENCY"
+    assert attribution["signal_type"] == "T1"
+    assert attribution["selected"] is True
+    assert attribution["activation_score"] == 1.0
+    assert len(credit_events) == 1
+    assert credit_events[0].payload["model_id"] == str(model_id)
+    assert credit_events[0].payload["question_primitive"] == "DEPENDENCY"
+    assert report.question_policy_updates >= 1
+    assert stats is not None
+    assert stats["attempts"] >= 1
+    assert stats["successes"] >= 1
+    assert stats["total_credit"] > 0
+    assert stats["utility_score"] > 0
+
+
+async def test_capability_probe_wave_survives_validate_apply_and_feedback(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    event_time = datetime(2026, 6, 16, tzinfo=timezone.utc)
+    fragment_text = (
+        "Capability probe. capability_probe=true "
+        "capability_probe_kinds=prediction,resource,ontology_gap,archive,"
+        "evidence_attachment,question_policy. resource_ops ontology_gap_ops "
+        "evidence attachment question_policy evaluate_at archive lifecycle."
+    )
+    async with fresh_db.acquire() as conn:
+        event_id = await _insert_observation(
+            conn,
+            tenant,
+            content_text=fragment_text,
+            occurred_at=event_time,
+            external_id=f"capability-probe-{uuid7()}",
+        )
+        session_id = await _insert_inquiry_session(conn, tenant)
+        scope_entity = {"type": "customer", "id": str(uuid7())}
+        source_model = await _insert_applier_model(
+            conn,
+            tenant,
+            event_id,
+            "Enterprise-control launch needs security review.",
+        )
+        target_model = await _insert_applier_model(
+            conn,
+            tenant,
+            event_id,
+            "Security exception approval is still pending.",
+        )
+        stale_model = await _insert_applier_model(
+            conn,
+            tenant,
+            event_id,
+            "Older launch assumption is stale.",
+        )
+        await conn.execute(
+            "UPDATE models SET scope_entities = $2::jsonb WHERE id = ANY($1::uuid[])",
+            [source_model, target_model],
+            json.dumps([scope_entity]),
+        )
+        trigger = TriggerContext(
+            kind="T1",
+            subkind="event_batch",
+            tenant_id=tenant,
+            observation_id=event_id,
+            observation_ids=[event_id],
+            seed_occurred_at=event_time,
+            seed_signature={
+                "batch_signal_fragments": [
+                    {"observation_id": str(event_id), "text": fragment_text}
+                ]
+            },
+        )
+        bundle = ContextBundle(
+            models=[
+                SimpleNamespace(
+                    id=source_model,
+                    status="active",
+                    confidence=0.9,
+                    natural="Enterprise-control launch needs security review.",
+                    scope_actors=[],
+                    scope_entities=[scope_entity],
+                ),
+                SimpleNamespace(
+                    id=target_model,
+                    status="active",
+                    confidence=0.8,
+                    natural="Security exception approval is still pending.",
+                    scope_actors=[],
+                    scope_entities=[scope_entity],
+                ),
+                SimpleNamespace(
+                    id=stale_model,
+                    status="active",
+                    confidence=0.4,
+                    natural="Older launch assumption is stale.",
+                    scope_actors=[],
+                    scope_entities=[],
+                ),
+            ]
+        )
+        raw = maybe_inject_capability_probe_ops(
+            RawDiff(trigger_ref=uuid7(), tenant_id=tenant),
+            trigger,
+            bundle,
+        )
+        retrieval_result = RetrievalResult(
+            trigger=trigger,
+            models=[],
+            observations=[],
+            acts={"goals": [], "commitments": [], "decisions": []},
+            resources=[],
+            pathway_results=[],
+            notes={},
+            model_scores={},
+        )
+        validated = await validate(
+            raw,
+            retrieval_result,
+            conn,
+            allowed_region=None,
+        )
+        repo = ModelsRepo(fresh_db, embedder=None)
+        ctx = TraceContext(
+            tenant_id=tenant,
+            inquiry_session_id=session_id,
+            pool=fresh_db,
+            conn=conn,
+            metadata={
+                "question_primitives": ["DEPENDENCY"],
+                "signal_type": "T1",
+                "trigger_kind": "T1:event_batch",
+                "entities": ["customer:enterprise-control"],
+            },
+        )
+        token = set_trace_context(ctx)
+        try:
+            async with conn.transaction():
+                result = await apply_diff(
+                    validated,
+                    conn,
+                    trigger_kind="T1:event_batch",
+                    trigger_cause_event_id=event_id,
+                    models_repo=repo,
+                )
+        finally:
+            reset_trace_context(token)
+
+        report = await TopologyOptimizer(
+            pool=fresh_db,
+            tenant_id=tenant,
+        ).optimize(
+            inquiry_session_id=session_id,
+            trigger_event="validated_synthesis_diff_applied",
+            conn=conn,
+        )
+        stats = await conn.fetchrow(
+            """
+            SELECT attempts, successes, total_credit, utility_score
+            FROM sage_question_policy_stats
+            WHERE tenant_id = $1
+              AND signal_type = 'T1'
+              AND question_primitive = 'DEPENDENCY'
+            """,
+            tenant,
+        )
+        stale_status = await conn.fetchval(
+            "SELECT status FROM models WHERE id = $1",
+            stale_model,
+        )
+        prediction_count = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM model_predictions
+            WHERE tenant_id = $1
+            """,
+            tenant,
+        )
+
+    aggregation = result["memory_aggregation"]
+    claim_summaries = result["claim_ops"]
+    assert validated.dropped_op_count == 0
+    assert len(result["resource_ops"]) == 1
+    assert result["resource_ops"][0]["op"] == "create_resource"
+    assert len(result["ontology_gap_ops"]) == 1
+    assert result["ontology_gap_ops"][0]["op"] == "propose_edge_type"
+    assert aggregation["model_archives"] == 1
+    assert aggregation["evidence_attachments"] == 1
+    assert prediction_count == 1
+    assert stale_status == "archived"
+    assert any(summary.get("model_prediction_id") for summary in claim_summaries)
+    assert any(
+        {"question_policy", "capability_probe"}
+        <= {str(tag) for tag in (summary.get("domain_tags") or [])}
+        for summary in claim_summaries
+    )
+    assert report.question_policy_updates >= 1
+    assert stats is not None
+    assert stats["attempts"] >= 1
+    assert stats["successes"] >= 1
+    assert stats["total_credit"] > 0
+    assert stats["utility_score"] > 0
 
 
 async def test_quality_downgrade_attaches_observe_reading_without_new_model(
@@ -2055,6 +2987,853 @@ async def test_apply_edge_ops_add_and_retire(fresh_db, tenant, tenant_cleanup):
         }
 
 
+async def test_apply_edge_op_attaches_trigger_event_as_edge_evidence(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="The DPA approval blocks the HubSpot import",
+            external_id=f"edge-op-cause-evidence-{uuid7()}",
+        )
+        a = await _insert_applier_model(conn, tenant, oid, "DPA approval is pending")
+        b = await _insert_applier_model(conn, tenant, oid, "HubSpot import is blocked")
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            edge_ops=[
+                EdgeOp(
+                    op="add",
+                    source_model_id=a,
+                    target_model_id=b,
+                    edge_kind="blocks",
+                    weight=0.75,
+                    confidence=0.86,
+                    explanation="The DPA approval blocks the HubSpot import.",
+                )
+            ],
+        )
+        async with conn.transaction():
+            await apply_diff(diff, conn, "T1", oid)
+        row = await conn.fetchrow(
+            """
+            SELECT evidence_event_ids, created_by_event_id
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND edge_kind = 'blocks'
+            """,
+            tenant,
+            a,
+            b,
+        )
+
+    assert row is not None
+    assert row["created_by_event_id"] == oid
+    assert row["evidence_event_ids"] == [oid]
+
+
+async def test_apply_relation_claim_op_persists_claim_and_creates_edge(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="The DPA approval blocks the HubSpot import",
+            external_id=f"relation-claim-op-{uuid7()}",
+        )
+        a = await _insert_applier_model(conn, tenant, oid, "DPA approval is pending")
+        b = await _insert_applier_model(conn, tenant, oid, "HubSpot import is blocked")
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[
+                RelationClaimOp(
+                    op="upsert",
+                    source_model_id=a,
+                    target_model_id=b,
+                    subject_ref={"kind": "model", "model_id": str(a)},
+                    object_ref={"kind": "model", "model_id": str(b)},
+                    predicate="blocks",
+                    edge_kind="blocks",
+                    endpoint_binding_status="bound",
+                    write_policy="accepted_edge",
+                    status="accepted",
+                    confidence=0.86,
+                    binding_confidence=0.92,
+                    evidence_event_ids=[oid],
+                    evidence_model_ids=[a, b],
+                    evidence_text="The DPA approval blocks the HubSpot import.",
+                    explanation="The pending DPA approval gates the import.",
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(diff, conn, "T1", oid)
+        claim = await conn.fetchrow(
+            """
+            SELECT id, source_model_id, target_model_id, edge_kind, write_policy,
+                   status, accepted_edge_ids
+            FROM relation_claims
+            WHERE tenant_id = $1
+            """,
+            tenant,
+        )
+        edge = await conn.fetchrow(
+            """
+            SELECT source_model_id, target_model_id, edge_kind, review_status,
+                   evidence_event_ids, metadata
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND edge_kind = 'blocks'
+            """,
+            tenant,
+            a,
+            b,
+        )
+
+    assert len(result["relation_claim_ops"]) == 1
+    assert result["relation_claim_ops"][0]["status"] == "accepted"
+    assert len(result["edge_ops"]) == 1
+    assert result["edge_ops"][0]["source"] == "relation_claim_op"
+    assert claim is not None
+    assert claim["source_model_id"] == a
+    assert claim["target_model_id"] == b
+    assert claim["write_policy"] == "accepted_edge"
+    assert claim["status"] == "accepted"
+    assert claim["accepted_edge_ids"]
+    assert edge is not None
+    assert edge["review_status"] == "accepted"
+    assert edge["evidence_event_ids"] == [oid]
+    edge_metadata = (
+        json.loads(edge["metadata"])
+        if isinstance(edge["metadata"], str)
+        else edge["metadata"]
+    )
+    assert edge_metadata["relation_claim_id"] == str(claim["id"])
+
+
+async def test_apply_retired_relation_claim_retires_projected_edge(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="Future evidence retired the blocker relation",
+            external_id=f"relation-claim-retire-{uuid7()}",
+        )
+        a = await _insert_applier_model(conn, tenant, oid, "DPA approval is pending")
+        b = await _insert_applier_model(conn, tenant, oid, "HubSpot import is blocked")
+        add_diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[
+                RelationClaimOp(
+                    op="upsert",
+                    source_model_id=a,
+                    target_model_id=b,
+                    subject_ref={"kind": "model", "model_id": str(a)},
+                    object_ref={"kind": "model", "model_id": str(b)},
+                    predicate="blocks",
+                    edge_kind="blocks",
+                    endpoint_binding_status="bound",
+                    write_policy="accepted_edge",
+                    status="accepted",
+                    confidence=0.86,
+                    binding_confidence=0.92,
+                    evidence_event_ids=[oid],
+                    evidence_model_ids=[a, b],
+                    evidence_text="The DPA approval blocks the HubSpot import.",
+                    explanation="The pending DPA approval gates the import.",
+                )
+            ],
+        )
+        async with conn.transaction():
+            await apply_diff(add_diff, conn, "T1", oid)
+
+        retire_diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[
+                RelationClaimOp(
+                    op="upsert",
+                    source_model_id=a,
+                    target_model_id=b,
+                    subject_ref={"kind": "model", "model_id": str(a)},
+                    object_ref={"kind": "model", "model_id": str(b)},
+                    predicate="blocks",
+                    edge_kind="blocks",
+                    endpoint_binding_status="bound",
+                    write_policy="no_edge",
+                    status="retired",
+                    confidence=0.74,
+                    binding_confidence=0.92,
+                    evidence_event_ids=[oid],
+                    evidence_model_ids=[a, b],
+                    evidence_text="Future evidence shows the import is no longer blocked.",
+                    explanation="Future validation retired the blocker relation.",
+                )
+            ],
+        )
+        async with conn.transaction():
+            retire_result = await apply_diff(retire_diff, conn, "T1", oid)
+
+        edge = await conn.fetchrow(
+            """
+            SELECT status, review_status, status_reason
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND edge_kind = 'blocks'
+            """,
+            tenant,
+            a,
+            b,
+        )
+        retired_claim = await conn.fetchrow(
+            """
+            SELECT status, write_policy
+            FROM relation_claims
+            WHERE tenant_id = $1 AND status = 'retired'
+            """,
+            tenant,
+        )
+
+    assert retire_result["relation_claim_ops"][0]["status"] == "retired"
+    assert retire_result["edge_ops"][0]["op"] == "retire"
+    assert retire_result["edge_ops"][0]["source"] == "relation_claim_op"
+    assert retire_result["edge_ops"][0]["retired_edges"] == 1
+    assert edge is not None
+    assert edge["status"] == "inert"
+    assert edge["review_status"] == "retired"
+    assert edge["status_reason"] == "Future validation retired the blocker relation."
+    assert retired_claim is not None
+    assert retired_claim["write_policy"] == "no_edge"
+
+
+async def test_apply_weighted_relation_claim_creates_weighted_edge(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="Fresh telemetry weakens the launch readiness claim",
+            external_id=f"relation-claim-weight-{uuid7()}",
+        )
+        a = await _insert_applier_model(conn, tenant, oid, "Fresh telemetry is bad")
+        b = await _insert_applier_model(conn, tenant, oid, "Launch is ready")
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[
+                RelationClaimOp(
+                    op="upsert",
+                    source_model_id=a,
+                    target_model_id=b,
+                    subject_ref={"kind": "model", "model_id": str(a)},
+                    object_ref={"kind": "model", "model_id": str(b)},
+                    predicate="weakens",
+                    edge_kind="weakens",
+                    weight=0.72,
+                    endpoint_binding_status="bound",
+                    write_policy="accepted_edge",
+                    status="accepted",
+                    confidence=0.72,
+                    binding_confidence=0.92,
+                    evidence_event_ids=[oid],
+                    evidence_model_ids=[a, b],
+                    evidence_text="Fresh telemetry weakens launch readiness.",
+                    explanation="The new telemetry is counterevidence.",
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(diff, conn, "T1", oid)
+        edge = await conn.fetchrow(
+            """
+            SELECT edge_kind, weight, review_status
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND edge_kind = 'weakens'
+            """,
+            tenant,
+            a,
+            b,
+        )
+
+    assert len(result["edge_ops"]) == 1
+    assert edge is not None
+    assert edge["review_status"] == "accepted"
+    assert float(edge["weight"]) == 0.72
+
+
+async def test_apply_relation_claim_supersedes_generated_support_edge(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.domain.models.repo import _set_model_relations
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="Fresh telemetry weakens the launch readiness claim",
+            external_id=f"relation-claim-supersede-support-{uuid7()}",
+        )
+        a = await _insert_applier_model(conn, tenant, oid, "Fresh telemetry is bad")
+        b = await _insert_applier_model(conn, tenant, oid, "Launch is ready")
+        async with conn.transaction():
+            await _set_model_relations(
+                conn,
+                model_id=b,
+                tenant_id=tenant,
+                detected_by="think_edge_op",
+                supports=[a],
+                created_by_event_id=oid,
+            )
+
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[
+                RelationClaimOp(
+                    op="upsert",
+                    source_model_id=a,
+                    target_model_id=b,
+                    subject_ref={"kind": "model", "model_id": str(a)},
+                    object_ref={"kind": "model", "model_id": str(b)},
+                    predicate="weakens",
+                    edge_kind="weakens",
+                    weight=0.72,
+                    endpoint_binding_status="bound",
+                    write_policy="accepted_edge",
+                    status="accepted",
+                    confidence=0.72,
+                    binding_confidence=0.92,
+                    evidence_event_ids=[oid],
+                    evidence_model_ids=[a, b],
+                    evidence_text="Fresh telemetry weakens launch readiness.",
+                    explanation="The new telemetry is counterevidence.",
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(diff, conn, "T1", oid)
+
+        support = await conn.fetchrow(
+            """
+            SELECT status, review_status, status_reason
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND edge_kind = 'supports'
+            """,
+            tenant,
+            a,
+            b,
+        )
+        weakens = await conn.fetchrow(
+            """
+            SELECT status, review_status, weight, metadata
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND edge_kind = 'weakens'
+            """,
+            tenant,
+            a,
+            b,
+        )
+        target_arrays = await conn.fetchrow(
+            "SELECT supporting_model_ids FROM models WHERE id = $1",
+            b,
+        )
+
+    assert result["apply_dropped_op_count"] == 0
+    assert [edge["op"] for edge in result["edge_ops"]] == ["retire", "add"]
+    assert result["edge_ops"][0]["edge_kind"] == "supports"
+    assert result["edge_ops"][0]["superseded_by_edge_kind"] == "weakens"
+    assert result["relation_claim_ops"][0]["superseded_edge_count"] == 1
+    assert support is not None
+    assert support["status"] == "inert"
+    assert support["review_status"] == "retired"
+    assert "superseded_by_relation_claim:weakens" in support["status_reason"]
+    assert weakens is not None
+    assert weakens["status"] == "active"
+    assert weakens["review_status"] == "accepted"
+    assert float(weakens["weight"]) == 0.72
+    assert a not in list(target_arrays["supporting_model_ids"] or [])
+
+
+async def test_apply_relation_claim_does_not_supersede_manual_support_edge(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.domain.models.repo import _set_model_relations
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="Fresh telemetry weakens a manually asserted launch claim",
+            external_id=f"relation-claim-manual-support-{uuid7()}",
+        )
+        a = await _insert_applier_model(conn, tenant, oid, "Fresh telemetry is bad")
+        b = await _insert_applier_model(conn, tenant, oid, "Launch is ready")
+        async with conn.transaction():
+            await _set_model_relations(
+                conn,
+                model_id=b,
+                tenant_id=tenant,
+                detected_by="manual",
+                supports=[a],
+                created_by_event_id=oid,
+            )
+
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[
+                RelationClaimOp(
+                    op="upsert",
+                    source_model_id=a,
+                    target_model_id=b,
+                    subject_ref={"kind": "model", "model_id": str(a)},
+                    object_ref={"kind": "model", "model_id": str(b)},
+                    predicate="weakens",
+                    edge_kind="weakens",
+                    weight=0.72,
+                    endpoint_binding_status="bound",
+                    write_policy="accepted_edge",
+                    status="accepted",
+                    confidence=0.72,
+                    binding_confidence=0.92,
+                    evidence_event_ids=[oid],
+                    evidence_model_ids=[a, b],
+                    evidence_text="Fresh telemetry weakens launch readiness.",
+                    explanation="The new telemetry is counterevidence.",
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(diff, conn, "T1", oid)
+
+        support = await conn.fetchrow(
+            """
+            SELECT status, review_status
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND edge_kind = 'supports'
+            """,
+            tenant,
+            a,
+            b,
+        )
+        weakens_count = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND edge_kind = 'weakens'
+            """,
+            tenant,
+            a,
+            b,
+        )
+        target_arrays = await conn.fetchrow(
+            "SELECT supporting_model_ids FROM models WHERE id = $1",
+            b,
+        )
+
+    assert result["apply_dropped_op_count"] == 1
+    assert result["relation_claim_ops"][0]["reason"] == "mutually_exclusive_edge"
+    assert support is not None
+    assert support["status"] == "active"
+    assert support["review_status"] == "accepted"
+    assert weakens_count == 0
+    assert a in list(target_arrays["supporting_model_ids"] or [])
+
+
+async def test_apply_symmetric_relation_claim_supersedes_reverse_support(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.domain.models.repo import _set_model_relations
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="The two launch claims cannot both be true",
+            external_id=f"relation-claim-contradicts-supports-{uuid7()}",
+        )
+        a = await _insert_applier_model(conn, tenant, oid, "Launch is ready")
+        b = await _insert_applier_model(conn, tenant, oid, "Launch cannot proceed")
+        async with conn.transaction():
+            await _set_model_relations(
+                conn,
+                model_id=a,
+                tenant_id=tenant,
+                detected_by="think_edge_op",
+                supports=[b],
+                created_by_event_id=oid,
+            )
+
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[
+                RelationClaimOp(
+                    op="upsert",
+                    source_model_id=a,
+                    target_model_id=b,
+                    subject_ref={"kind": "model", "model_id": str(a)},
+                    object_ref={"kind": "model", "model_id": str(b)},
+                    predicate="contradicts",
+                    edge_kind="contradicts",
+                    weight=0.81,
+                    endpoint_binding_status="bound",
+                    write_policy="accepted_edge",
+                    status="accepted",
+                    confidence=0.81,
+                    binding_confidence=0.93,
+                    evidence_event_ids=[oid],
+                    evidence_model_ids=[a, b],
+                    evidence_text="The two launch claims cannot both be true.",
+                    explanation="The assertions are mutually exclusive.",
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(diff, conn, "T1", oid)
+
+        support_rows = await conn.fetch(
+            """
+            SELECT status, review_status
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND edge_kind = 'supports'
+              AND ((source_model_id = $2 AND target_model_id = $3)
+                OR (source_model_id = $3 AND target_model_id = $2))
+            ORDER BY source_model_id
+            """,
+            tenant,
+            a,
+            b,
+        )
+        contradict_rows = await conn.fetch(
+            """
+            SELECT source_model_id, target_model_id, status, review_status, weight
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND edge_kind = 'contradicts'
+              AND ((source_model_id = $2 AND target_model_id = $3)
+                OR (source_model_id = $3 AND target_model_id = $2))
+            """,
+            tenant,
+            a,
+            b,
+        )
+        arrays = await conn.fetch(
+            """
+            SELECT id, supporting_model_ids
+            FROM models
+            WHERE id = ANY($1::uuid[])
+            """,
+            [a, b],
+        )
+
+    assert result["apply_dropped_op_count"] == 0
+    assert [edge["op"] for edge in result["edge_ops"]] == ["retire", "add"]
+    assert result["relation_claim_ops"][0]["superseded_edge_count"] == 1
+    assert len(support_rows) == 1
+    assert {row["status"] for row in support_rows} == {"inert"}
+    assert {row["review_status"] for row in support_rows} == {"retired"}
+    assert len(contradict_rows) == 2
+    assert {row["status"] for row in contradict_rows} == {"active"}
+    assert {float(row["weight"]) for row in contradict_rows} == {0.81}
+    arrays_by_id = {row["id"]: list(row["supporting_model_ids"] or []) for row in arrays}
+    assert b not in arrays_by_id[a]
+
+
+async def test_apply_relation_claim_keeps_support_when_other_conflict_blocks_retry(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.domain.models.edges_repo import EdgesRepo
+    from services.domain.models.repo import _set_model_relations
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="A blocks B, but an accepted enables edge already exists",
+            external_id=f"relation-claim-enables-conflict-{uuid7()}",
+        )
+        a = await _insert_applier_model(conn, tenant, oid, "Decision is pending")
+        b = await _insert_applier_model(conn, tenant, oid, "Import can proceed")
+        async with conn.transaction():
+            await _set_model_relations(
+                conn,
+                model_id=b,
+                tenant_id=tenant,
+                detected_by="think_edge_op",
+                supports=[a],
+                created_by_event_id=oid,
+            )
+            await EdgesRepo().link(
+                conn,
+                source=a,
+                target=b,
+                kind="enables",
+                tenant_id=tenant,
+                detected_by="think_edge_op",
+                confidence=0.75,
+            )
+
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[
+                RelationClaimOp(
+                    op="upsert",
+                    source_model_id=a,
+                    target_model_id=b,
+                    subject_ref={"kind": "model", "model_id": str(a)},
+                    object_ref={"kind": "model", "model_id": str(b)},
+                    predicate="blocks",
+                    edge_kind="blocks",
+                    endpoint_binding_status="bound",
+                    write_policy="accepted_edge",
+                    status="accepted",
+                    confidence=0.79,
+                    binding_confidence=0.9,
+                    evidence_event_ids=[oid],
+                    evidence_model_ids=[a, b],
+                    evidence_text="The pending decision blocks the import.",
+                    explanation="The blocker conflicts with an existing enablement.",
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(diff, conn, "T1", oid)
+
+        rows = await conn.fetch(
+            """
+            SELECT edge_kind, status, review_status
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+            ORDER BY edge_kind
+            """,
+            tenant,
+            a,
+            b,
+        )
+
+    assert result["apply_dropped_op_count"] == 1
+    assert result["relation_claim_ops"][0]["reason"] == "mutually_exclusive_edge"
+    by_kind = {row["edge_kind"]: row for row in rows}
+    assert set(by_kind) == {"enables", "supports"}
+    assert by_kind["supports"]["status"] == "active"
+    assert by_kind["enables"]["status"] == "active"
+
+
+async def test_apply_relation_frame_op_persists_participants_and_projects_edges(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text=(
+                "DPA approval blocks HubSpot import; Priya owns the blocker; "
+                "Friday launch may slip; security packet can resolve it."
+            ),
+            external_id=f"relation-frame-op-{uuid7()}",
+        )
+        blocker = await _insert_applier_model(conn, tenant, oid, "DPA approval")
+        work = await _insert_applier_model(conn, tenant, oid, "HubSpot import")
+        owner = await _insert_applier_model(conn, tenant, oid, "Priya/legal owner")
+        risk = await _insert_applier_model(conn, tenant, oid, "Friday launch slip")
+        resolution = await _insert_applier_model(
+            conn,
+            tenant,
+            oid,
+            "Security packet approval",
+        )
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_frame_ops=[
+                RelationFrameOp(
+                    relation_kind="blocked_workstream",
+                    status="accepted",
+                    participant_binding_status="bound",
+                    write_policy="project_edges",
+                    confidence=0.86,
+                    participants=[
+                        RelationFrameParticipantOp(
+                            model_id=blocker,
+                            role="blocker",
+                            binding_confidence=0.9,
+                        ),
+                        RelationFrameParticipantOp(
+                            model_id=work,
+                            role="blocked_work",
+                            binding_confidence=0.9,
+                        ),
+                        RelationFrameParticipantOp(
+                            model_id=owner,
+                            role="owner",
+                            binding_confidence=0.8,
+                        ),
+                        RelationFrameParticipantOp(
+                            model_id=risk,
+                            role="downstream_risk",
+                            binding_confidence=0.82,
+                        ),
+                        RelationFrameParticipantOp(
+                            model_id=resolution,
+                            role="possible_resolution",
+                            binding_confidence=0.78,
+                        ),
+                    ],
+                    evidence_event_ids=[oid],
+                    evidence_model_ids=[blocker, work, owner, risk, resolution],
+                    evidence_text="DPA approval blocks HubSpot import.",
+                    explanation="This is one blocked workstream frame.",
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(diff, conn, "T1", oid)
+
+        frame = await conn.fetchrow(
+            """
+            SELECT id, relation_kind, status, write_policy
+            FROM relation_instances
+            WHERE tenant_id = $1
+            """,
+            tenant,
+        )
+        participants = await conn.fetch(
+            """
+            SELECT role, model_id
+            FROM relation_participants
+            WHERE tenant_id = $1
+            ORDER BY role
+            """,
+            tenant,
+        )
+        projections = await conn.fetch(
+            """
+            SELECT projection_rule, edge_kind, source_model_id, target_model_id
+            FROM relation_edge_projections
+            WHERE tenant_id = $1
+            ORDER BY projection_rule
+            """,
+            tenant,
+        )
+        edges = await conn.fetch(
+            """
+            SELECT edge_kind, source_model_id, target_model_id
+            FROM model_edges
+            WHERE tenant_id = $1
+            ORDER BY edge_kind
+            """,
+            tenant,
+        )
+
+    assert result["apply_dropped_op_count"] == 0
+    assert result["relation_frame_ops"][0]["projected_edge_count"] == 3
+    assert len(result["edge_ops"]) == 3
+    assert frame is not None
+    assert frame["relation_kind"] == "blocked_workstream"
+    assert frame["status"] == "accepted"
+    assert frame["write_policy"] == "project_edges"
+    assert {row["role"] for row in participants} == {
+        "blocked_work",
+        "blocker",
+        "downstream_risk",
+        "owner",
+        "possible_resolution",
+    }
+    projection_tuples = {
+        (
+            row["source_model_id"],
+            row["target_model_id"],
+            row["edge_kind"],
+            row["projection_rule"],
+        )
+        for row in projections
+    }
+    assert (
+        blocker,
+        work,
+        "blocks",
+        "blocker_blocks_work",
+    ) in projection_tuples
+    assert (
+        work,
+        risk,
+        "early_warning_for",
+        "blocked_work_warns_downstream_risk",
+    ) in projection_tuples
+    assert (
+        resolution,
+        blocker,
+        "contributes_to_resolution",
+        "resolution_contributes_to_blocker_resolution",
+    ) in projection_tuples
+    assert all(owner not in {row["source_model_id"], row["target_model_id"]} for row in edges)
+
+
 async def test_apply_ontology_gap_op_persists_candidate_and_feeds_sage(
     fresh_db,
     tenant,
@@ -2145,6 +3924,69 @@ async def test_apply_ontology_gap_op_persists_candidate_and_feeds_sage(
             "blocks"
         )
         assert row["source"] == "think_ontology_gap_op"
+
+        evidence_row = await conn.fetchrow(
+            """
+            SELECT predicate, edge_kind_hint, direction, extraction_method,
+                   source_model_id, target_model_id, metadata
+            FROM relation_evidence
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+            """,
+            tenant,
+            blocker,
+            decision,
+        )
+        assert evidence_row is not None
+        assert evidence_row["predicate"] == "gated_by_decision"
+        assert evidence_row["edge_kind_hint"] == "gated_by_decision"
+        assert evidence_row["direction"] == "source_to_target"
+        assert evidence_row["extraction_method"] == "ontology_gap_op"
+        evidence_metadata = (
+            json.loads(evidence_row["metadata"])
+            if isinstance(evidence_row["metadata"], str)
+            else evidence_row["metadata"]
+        )
+        assert evidence_metadata["proposed_edge_kind"] == "gated_by_decision"
+
+        pair_row = await conn.fetchrow(
+            """
+            SELECT explicit_relation_count, edge_kind_votes, direction_votes,
+                   metadata
+            FROM model_pair_evidence
+            WHERE tenant_id = $1
+              AND (
+                (model_a_id = $2 AND model_b_id = $3)
+                OR (model_a_id = $3 AND model_b_id = $2)
+              )
+            """,
+            tenant,
+            blocker,
+            decision,
+        )
+        assert pair_row is not None
+        assert pair_row["explicit_relation_count"] == 1
+        edge_kind_votes = (
+            json.loads(pair_row["edge_kind_votes"])
+            if isinstance(pair_row["edge_kind_votes"], str)
+            else pair_row["edge_kind_votes"]
+        )
+        direction_votes = (
+            json.loads(pair_row["direction_votes"])
+            if isinstance(pair_row["direction_votes"], str)
+            else pair_row["direction_votes"]
+        )
+        pair_metadata = (
+            json.loads(pair_row["metadata"])
+            if isinstance(pair_row["metadata"], str)
+            else pair_row["metadata"]
+        )
+        assert edge_kind_votes["gated_by_decision"] == 1
+        assert sum(direction_votes.values()) == 1
+        assert pair_metadata["ontology_gap"]["proposed_edge_kind"] == (
+            "gated_by_decision"
+        )
 
         result = await SynthesisReader().read(
             conn=conn,

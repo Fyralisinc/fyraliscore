@@ -23,12 +23,17 @@ from uuid import UUID, uuid4
 from lib.integrations import endpoints as _ep
 from lib.shared.db import init_pool, get_pool, close_pool
 from lib.shared.migrations import ensure_test_partition_window
+from services.domain.actors.repo import ActorRepo
+from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.ingest.ingestion.core import ingest_from_draft
 from services.ingest.ingestion.handlers import get_handler
 from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
 
 # The tenant the spammer prepared (./dev.sh status -> fyralis_tenant_id).
-TENANT = UUID("90864cdd-731b-44b3-96c5-78f0004af3e2")
+TENANT = UUID(os.environ.get(
+    "ALPEN_TENANT_ID",
+    "90864cdd-731b-44b3-96c5-78f0004af3e2",
+))
 HOST = os.environ.get("ALPEN_MOCK_HOST", "http://localhost")
 
 # saas-api-mocks per-provider ports (dev.sh cmd_serve).
@@ -65,6 +70,8 @@ async def _write_records(records, source: str, pool) -> int:
     if channel is None:
         raise RuntimeError(f"{source}: no (source,'backfill') channel mapping")
     handler = get_handler(channel)
+    actor_repo = ActorRepo(pool)
+    alias_repo = EntityAliasRepo(pool)
     written = 0
     for record in records:
         body = dict(record)
@@ -77,6 +84,8 @@ async def _write_records(records, source: str, pool) -> int:
             draft=draft,
             pool=pool,
             tenant_id=TENANT,
+            actor_repo=actor_repo,
+            alias_repo=alias_repo,
             enqueue_trigger=False,   # ingestion-only: no Think trigger
             embedder=None,           # no embeddings
         )

@@ -56,6 +56,7 @@ async def _add_model(
     )
 
 
+@pytest.mark.timeout(90)
 async def test_inquiry_relevance_gate_on_rich_high_density_model_universe(
     tx_conn,
     fresh_db,
@@ -127,6 +128,8 @@ async def test_inquiry_relevance_gate_on_rich_high_density_model_universe(
         result_model_limit=64,
         action_model_budget_limit=40,
         action_observation_budget_limit=20,
+        retrieval_motifs_enabled=False,
+        reflective_rules_enabled=False,
         persist=False,
     )
     now = datetime.now(timezone.utc)

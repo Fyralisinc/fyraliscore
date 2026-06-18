@@ -126,9 +126,10 @@ async def test_real_llm_uses_selected_models_to_emit_edge_op(provider):
     )
     report = summarize_context_use(bundle, diff)
 
-    assert report["edge_ops_touching_graph_models"] >= 1
+    assert report["relation_claim_ops_touching_graph_models"] >= 1
+    assert report["graph_relation_op_count"] >= 1
     assert report["graph_selected_reference_count"] >= 2
     assert any(
         op.edge_kind in {"blocks", "early_warning_for", "weakens", "causes"}
-        for op in diff.edge_ops
+        for op in diff.relation_claim_ops
     )

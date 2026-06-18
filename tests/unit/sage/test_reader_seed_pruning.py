@@ -2,11 +2,13 @@ from uuid import uuid4
 
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.sage.reader import (
+    ActivatedNode,
     ReaderBudget,
     _CandidateAccumulator,
     _LearnedReadPlan,
     _edge_seed_limit,
     _explicit_seed_ids,
+    _protected_counterevidence_node_ids,
 )
 
 
@@ -59,3 +61,34 @@ def test_explicit_seed_ids_includes_trigger_and_member_models() -> None:
     )
 
     assert _explicit_seed_ids(trigger) == {model_id, member_id}
+
+
+def test_counterevidence_protection_is_capped_and_score_ordered() -> None:
+    nodes: list[ActivatedNode] = []
+    expected: list = []
+    suppressed = uuid4()
+    for index in range(30):
+        model_id = uuid4()
+        reasons = ("counterevidence:lexical",)
+        if index == 29:
+            model_id = suppressed
+            reasons = ("counterevidence:lexical", "negative_memory:low_value")
+        nodes.append(
+            ActivatedNode(
+                model_id=model_id,
+                activation_score=float(index) / 100.0,
+                activation_reasons=reasons,
+                structural_features=None,
+            )
+        )
+        if index not in {29}:
+            expected.append((model_id, float(index) / 100.0))
+
+    protected = _protected_counterevidence_node_ids(nodes, max_nodes=40)
+    expected_ids = [
+        model_id
+        for model_id, _score in sorted(expected, key=lambda item: -item[1])[:16]
+    ]
+
+    assert list(protected) == expected_ids
+    assert suppressed not in protected

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -38,6 +39,7 @@ from .observability import (
     insert_think_run,
     update_think_run,
 )
+from .representation_contract import enrich_raw_diff_representation
 from .region_locks import (
     RegionLockAcquisition,
     acquire_region_lock,
@@ -112,6 +114,9 @@ def _raw_diff_op_count(diff: Any) -> int:
         len(getattr(diff, name, []) or [])
         for name in (
             "claim_ops",
+            "memory_lifecycle_ops",
+            "relation_claim_ops",
+            "relation_frame_ops",
             "edge_ops",
             "ontology_gap_ops",
             "act_ops",
@@ -119,6 +124,58 @@ def _raw_diff_op_count(diff: Any) -> int:
             "new_predictions",
         )
     )
+
+
+_BATCH_WRAPPER_CLAIM_RE = re.compile(
+    r"^\s*(?:the\s+batch\b|this\s+batch\b|batch\s+of\b|"
+    r"batch[-\s]+level\b|evidence\s+window\b|the\s+window\s+wrapper\b|"
+    r"future\s+plan\s+to\s+verify:\s*batch\b)"
+    r"|[,;:]\s*(?:but\s+|and\s+|while\s+)?(?:the\s+batch|this\s+batch)\b",
+    re.IGNORECASE,
+)
+
+
+def _drop_event_batch_wrapper_claims(raw_diff: Any, trigger: TriggerContext) -> Any:
+    if trigger.kind != "T1":
+        return raw_diff
+    if trigger.subkind != "event_batch" and not trigger.member_trigger_ids:
+        return raw_diff
+
+    kept = []
+    dropped = 0
+    for op in getattr(raw_diff, "claim_ops", []) or []:
+        entry = getattr(op, "entry", None) or {}
+        prop = entry.get("proposition") if isinstance(entry, dict) else {}
+        if not isinstance(prop, dict):
+            prop = {}
+        natural = str(entry.get("natural") or "")
+        candidates = [
+            natural,
+            str(prop.get("summary") or ""),
+            str(prop.get("situation") or ""),
+            str(prop.get("subject") or ""),
+            str((prop.get("belief_address") or {}).get("subject") or "")
+            if isinstance(prop.get("belief_address"), dict)
+            else "",
+        ]
+        if getattr(op, "op", None) == "insert" and any(
+            _BATCH_WRAPPER_CLAIM_RE.search(text) for text in candidates if text
+        ):
+            dropped += 1
+            continue
+        kept.append(op)
+
+    if dropped:
+        raw_diff.claim_ops = kept
+        note = f"dropped {dropped} T1:event_batch wrapper claim(s)"
+        trace = raw_diff.reasoning_trace or ""
+        raw_diff.reasoning_trace = f"{trace}\n{note}".strip() if trace else note
+        emit(
+            "think.event_batch_wrapper_claims_dropped",
+            trigger_ref=str(trigger.observation_id or trigger.model_id or ""),
+            dropped=dropped,
+        )
+    return raw_diff
 
 
 async def assert_tx_usable(conn: asyncpg.Connection, phase: str) -> None:
@@ -311,6 +368,7 @@ async def build_raw_reasoning_output(
         maybe_inject_future_prediction,
     )
     from .bridge_inference import maybe_inject_latent_bridge
+    from .capability_probes import maybe_inject_capability_probe_ops
     from .context_use import summarize_context_use
     from .deterministic import _trigger_ref  # type: ignore
 
@@ -322,6 +380,9 @@ async def build_raw_reasoning_output(
     raw_diff = maybe_inject_future_prediction(raw_diff, trigger, state.bundle)
     raw_diff = maybe_inject_customer_risk(raw_diff, trigger, state.bundle)
     raw_diff = maybe_inject_latent_bridge(raw_diff, trigger)
+    raw_diff = maybe_inject_capability_probe_ops(raw_diff, trigger, state.bundle)
+    raw_diff = _drop_event_batch_wrapper_claims(raw_diff, trigger)
+    raw_diff = enrich_raw_diff_representation(raw_diff, trigger, state.bundle)
     raw_context_use = summarize_context_use(state.bundle, raw_diff)
 
     allowed_region = state.allowed_region
@@ -388,6 +449,9 @@ async def validate_raw_reasoning_output(
         "think.validation_done",
         run_id=str(record.id),
         claim_ops=len(validated.claim_ops),
+        memory_lifecycle_ops=len(validated.memory_lifecycle_ops),
+        relation_claim_ops=len(validated.relation_claim_ops),
+        relation_frame_ops=len(validated.relation_frame_ops),
         edge_ops=len(validated.edge_ops),
         ontology_gap_ops=len(validated.ontology_gap_ops),
         act_ops=len(validated.act_ops),
@@ -417,6 +481,9 @@ async def validate_raw_reasoning_output(
         stage="validation",
         payload={
             "claim_ops": validated.claim_ops,
+            "memory_lifecycle_ops": validated.memory_lifecycle_ops,
+            "relation_claim_ops": validated.relation_claim_ops,
+            "relation_frame_ops": validated.relation_frame_ops,
             "edge_ops": validated.edge_ops,
             "ontology_gap_ops": validated.ontology_gap_ops,
             "act_ops": validated.act_ops,

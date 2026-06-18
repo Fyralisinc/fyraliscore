@@ -9,9 +9,11 @@ THINK-DESIGN-AUDIT §8.1, §10 arg 1. Verifies:
   * mid-dispatch crash (simulated via a handler that raises) leaves the
     row pending for retry — it is NOT marked processed
 """
+
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 from uuid import UUID
@@ -20,6 +22,10 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from services.reasoning.edge_intelligence import (
+    EdgeIntelligenceRepo,
+    PairEvidenceObservation,
+)
 from services.reasoning.think.diff_schema import ClaimOp, ValidatedDiff
 from services.reasoning.think.post_commit import (
     BACKOFF_BASE_SECONDS,
@@ -119,10 +125,10 @@ def _reset_handlers_each_test():
 
 def test_compute_backoff_exponential():
     assert _compute_backoff(0) == 0
-    assert _compute_backoff(1) == BACKOFF_BASE_SECONDS          # 2s
-    assert _compute_backoff(2) == BACKOFF_BASE_SECONDS * 2      # 4s
-    assert _compute_backoff(3) == BACKOFF_BASE_SECONDS * 4      # 8s
-    assert _compute_backoff(5) == BACKOFF_BASE_SECONDS * 16     # 32s
+    assert _compute_backoff(1) == BACKOFF_BASE_SECONDS  # 2s
+    assert _compute_backoff(2) == BACKOFF_BASE_SECONDS * 2  # 4s
+    assert _compute_backoff(3) == BACKOFF_BASE_SECONDS * 4  # 8s
+    assert _compute_backoff(5) == BACKOFF_BASE_SECONDS * 16  # 32s
     # Cap at 300s regardless of exponent blowing up.
     assert _compute_backoff(20) == 300
 
@@ -133,14 +139,18 @@ def test_compute_backoff_exponential():
 
 
 async def test_enqueue_creates_rows_per_action_kind(
-    db_pool: asyncpg.Pool, tenant, clean_queue,
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
 ):
     """Enqueueing a diff with content in every action-kind creates four
     rows: publish_anomalies, schedule_predictions, broadcast_realtime,
     invalidate_metrics."""
     trigger_ref = uuid.uuid4()
     diff = _make_diff(tenant_id=tenant, trigger_ref=trigger_ref)
-    anomalies = [{"kind": "confidence_drop", "region": {"model_id": "abc"}, "significance": 0.6}]
+    anomalies = [
+        {"kind": "confidence_drop", "region": {"model_id": "abc"}, "significance": 0.6}
+    ]
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
@@ -172,7 +182,9 @@ async def test_enqueue_creates_rows_per_action_kind(
 
 
 async def test_enqueue_skips_empty_payloads(
-    db_pool: asyncpg.Pool, tenant, clean_queue,
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
 ):
     """A diff with no anomalies / predictions / entity mutations should
     only enqueue broadcast_realtime (always-on heartbeat)."""
@@ -188,21 +200,162 @@ async def test_enqueue_skips_empty_payloads(
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             inserted = await enqueue_post_commit_actions(
-                trigger=None, validated_diff=diff, conn=conn, anomalies=[],
+                trigger=None,
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[],
             )
 
     # Only broadcast_realtime is unconditional.
     assert len(inserted) == 1
     async with db_pool.acquire() as conn:
-        kinds = [r["action_kind"] for r in await conn.fetch(
-            "SELECT action_kind FROM pending_post_commit_actions "
-            "WHERE trigger_id = $1", trigger_ref,
-        )]
+        kinds = [
+            r["action_kind"]
+            for r in await conn.fetch(
+                "SELECT action_kind FROM pending_post_commit_actions "
+                "WHERE trigger_id = $1",
+                trigger_ref,
+            )
+        ]
     assert kinds == ["broadcast_realtime"]
 
 
+async def test_enqueue_discovers_edges_for_applied_models(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    trigger_ref = uuid.uuid4()
+    model_a = uuid.uuid4()
+    model_b = uuid.uuid4()
+    diff = ValidatedDiff(
+        trigger_ref=trigger_ref,
+        tenant_id=tenant,
+        claim_ops=[],
+        act_ops=[],
+        resource_ops=[],
+        new_predictions=[],
+    )
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            inserted = await enqueue_post_commit_actions(
+                trigger=None,
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[],
+                applied_model_ids=[model_a, model_b, model_a],
+            )
+
+    assert len(inserted) == 2
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT action_kind, action_payload
+            FROM pending_post_commit_actions
+            WHERE trigger_id = $1
+            ORDER BY action_kind
+            """,
+            trigger_ref,
+        )
+
+    assert [r["action_kind"] for r in rows] == [
+        "broadcast_realtime",
+        "discover_model_edges",
+    ]
+    payload_text = await db_pool.fetchval(
+        """
+        SELECT action_payload->>'model_ids'
+        FROM pending_post_commit_actions
+        WHERE trigger_id = $1 AND action_kind = 'discover_model_edges'
+        """,
+        trigger_ref,
+    )
+    assert json.loads(payload_text) == [str(model_a), str(model_b)]
+
+
+async def test_discover_model_edges_promotes_scoped_pair_evidence(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    repo = EdgeIntelligenceRepo()
+    trigger_ref = uuid.uuid4()
+    changed_source_id = uuid.uuid4()
+    changed_target_id = uuid.uuid4()
+    unrelated_source_id = uuid.uuid4()
+    unrelated_target_id = uuid.uuid4()
+
+    async with db_pool.acquire() as conn:
+        for source_model_id, target_model_id in (
+            (changed_source_id, changed_target_id),
+            (unrelated_source_id, unrelated_target_id),
+        ):
+            await repo.record_pair_observation(
+                conn,
+                PairEvidenceObservation(
+                    tenant_id=tenant,
+                    left_model_id=source_model_id,
+                    right_model_id=target_model_id,
+                    primitive="DEPENDENCY",
+                    co_used_valid_diff_delta=1,
+                    explicit_relation_delta=1,
+                    think_edge_op_delta=1,
+                    directed_source_model_id=source_model_id,
+                    directed_target_model_id=target_model_id,
+                    edge_kind_hint="blocks",
+                ),
+            )
+        await conn.execute(
+            """
+            INSERT INTO pending_post_commit_actions (
+              tenant_id, trigger_id, action_kind, action_payload
+            )
+            VALUES ($1, $2, 'discover_model_edges', $3::jsonb)
+            """,
+            tenant,
+            trigger_ref,
+            json.dumps({"model_ids": [str(changed_source_id)]}),
+        )
+
+    stats = await process_batch(db_pool, limit=5, tenant_id=tenant)
+
+    async with db_pool.acquire() as conn:
+        processed = await conn.fetchval(
+            """
+            SELECT processed_at
+            FROM pending_post_commit_actions
+            WHERE tenant_id = $1
+              AND trigger_id = $2
+              AND action_kind = 'discover_model_edges'
+            """,
+            tenant,
+            trigger_ref,
+        )
+        candidates = await conn.fetch(
+            """
+            SELECT source_model_id, target_model_id, edge_kind, source
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+              AND source = 'edge_intelligence_kernel'
+            ORDER BY created_at ASC
+            """,
+            tenant,
+        )
+
+    assert stats.processed == 1
+    assert stats.failed == 0
+    assert processed is not None
+    assert len(candidates) == 1
+    assert candidates[0]["source_model_id"] == changed_source_id
+    assert candidates[0]["target_model_id"] == changed_target_id
+    assert candidates[0]["edge_kind"] == "blocks"
+
+
 async def test_enqueue_dedup_collapses_duplicates(
-    db_pool: asyncpg.Pool, tenant, clean_queue,
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
 ):
     """Calling enqueue_post_commit_actions twice with the same trigger
     produces one set of rows, not two."""
@@ -212,13 +365,21 @@ async def test_enqueue_dedup_collapses_duplicates(
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             first = await enqueue_post_commit_actions(
-                trigger=None, validated_diff=diff, conn=conn,
-                anomalies=[{"kind": "confidence_drop", "region": {}, "significance": 0.5}],
+                trigger=None,
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[
+                    {"kind": "confidence_drop", "region": {}, "significance": 0.5}
+                ],
             )
         async with conn.transaction():
             second = await enqueue_post_commit_actions(
-                trigger=None, validated_diff=diff, conn=conn,
-                anomalies=[{"kind": "confidence_drop", "region": {}, "significance": 0.5}],
+                trigger=None,
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[
+                    {"kind": "confidence_drop", "region": {}, "significance": 0.5}
+                ],
             )
 
     # Second call returns empty (all dedupped by NULLS NOT DISTINCT unique).
@@ -227,14 +388,16 @@ async def test_enqueue_dedup_collapses_duplicates(
 
     async with db_pool.acquire() as conn:
         total = await conn.fetchval(
-            "SELECT count(*) FROM pending_post_commit_actions "
-            "WHERE trigger_id = $1", trigger_ref,
+            "SELECT count(*) FROM pending_post_commit_actions " "WHERE trigger_id = $1",
+            trigger_ref,
         )
     assert total == 4
 
 
 async def test_enqueue_rolls_back_with_outer_tx(
-    db_pool: asyncpg.Pool, tenant, clean_queue,
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
 ):
     """If the outer transaction rolls back, the enqueued rows are rolled
     back with it — this is the entire point of enqueuing inside the
@@ -249,15 +412,17 @@ async def test_enqueue_rolls_back_with_outer_tx(
         async with db_pool.acquire() as conn:
             async with conn.transaction():
                 await enqueue_post_commit_actions(
-                    trigger=None, validated_diff=diff, conn=conn,
+                    trigger=None,
+                    validated_diff=diff,
+                    conn=conn,
                     anomalies=[{"kind": "x", "region": {}, "significance": 0.5}],
                 )
                 raise _IntentionalRollback("simulated apply failure")
 
     async with db_pool.acquire() as conn:
         total = await conn.fetchval(
-            "SELECT count(*) FROM pending_post_commit_actions "
-            "WHERE trigger_id = $1", trigger_ref,
+            "SELECT count(*) FROM pending_post_commit_actions " "WHERE trigger_id = $1",
+            trigger_ref,
         )
     assert total == 0, "enqueued rows should roll back with the outer tx"
 
@@ -268,7 +433,9 @@ async def test_enqueue_rolls_back_with_outer_tx(
 
 
 async def test_worker_processes_pending_rows(
-    db_pool: asyncpg.Pool, tenant, clean_queue,
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
 ):
     """Worker picks up a pending row, dispatches to the registered
     handler, and marks processed_at."""
@@ -288,8 +455,12 @@ async def test_worker_processes_pending_rows(
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await enqueue_post_commit_actions(
-                trigger=None, validated_diff=diff, conn=conn,
-                anomalies=[{"kind": "confidence_drop", "region": {}, "significance": 0.5}],
+                trigger=None,
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[
+                    {"kind": "confidence_drop", "region": {}, "significance": 0.5}
+                ],
             )
 
     stats = await process_batch(db_pool, limit=50, tenant_id=tenant)
@@ -310,14 +481,18 @@ async def test_worker_processes_pending_rows(
 
 
 async def test_worker_retries_on_handler_failure(
-    db_pool: asyncpg.Pool, tenant, clean_queue,
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
 ):
     """A handler that raises causes attempts to increment and the row
     to be rescheduled (scheduled_at > now)."""
     trigger_ref = uuid.uuid4()
     diff = _make_diff(
-        tenant_id=tenant, trigger_ref=trigger_ref,
-        with_predictions=False, with_entities=False,
+        tenant_id=tenant,
+        trigger_ref=trigger_ref,
+        with_predictions=False,
+        with_entities=False,
     )
 
     call_count = {"n": 0}
@@ -331,7 +506,10 @@ async def test_worker_retries_on_handler_failure(
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await enqueue_post_commit_actions(
-                trigger=None, validated_diff=diff, conn=conn, anomalies=[],
+                trigger=None,
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[],
             )
 
     stats = await process_batch(db_pool, limit=10, tenant_id=tenant)
@@ -359,14 +537,18 @@ async def test_worker_retries_on_handler_failure(
 
 
 async def test_worker_dead_letters_after_max_attempts(
-    db_pool: asyncpg.Pool, tenant, clean_queue,
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
 ):
     """5 consecutive failures → row is moved to dead-letter (the partial
     index excludes it from the pending poll)."""
     trigger_ref = uuid.uuid4()
     diff = _make_diff(
-        tenant_id=tenant, trigger_ref=trigger_ref,
-        with_predictions=False, with_entities=False,
+        tenant_id=tenant,
+        trigger_ref=trigger_ref,
+        with_predictions=False,
+        with_entities=False,
     )
 
     async def _always_failing(payload, tid, trid):
@@ -377,7 +559,10 @@ async def test_worker_dead_letters_after_max_attempts(
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await enqueue_post_commit_actions(
-                trigger=None, validated_diff=diff, conn=conn, anomalies=[],
+                trigger=None,
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[],
             )
 
     # Drive N failures. Because scheduled_at is advanced into the future
@@ -413,7 +598,9 @@ async def test_worker_dead_letters_after_max_attempts(
 
 
 async def test_worker_fetch_respects_scheduled_at(
-    db_pool: asyncpg.Pool, tenant, clean_queue,
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
 ):
     """A row scheduled in the future is not returned by fetch_pending."""
     trigger_ref = uuid.uuid4()
@@ -426,7 +613,8 @@ async def test_worker_fetch_respects_scheduled_at(
             VALUES ($1, $2, 'broadcast_realtime', '{}'::jsonb,
                     now() + interval '1 hour')
             """,
-            tenant, trigger_ref,
+            tenant,
+            trigger_ref,
         )
         pending = await fetch_pending_actions(conn, limit=10, tenant_id=tenant)
     assert all(a.trigger_id != trigger_ref for a in pending)
@@ -438,15 +626,21 @@ async def test_worker_fetch_respects_scheduled_at(
 
 
 async def test_worker_loop_processes_and_stops(
-    db_pool: asyncpg.Pool, tenant, clean_queue,
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
 ):
     """Run `post_commit_worker` with a stop_event; enqueue a row;
     verify it gets processed within one poll cycle."""
     from services.reasoning.think.post_commit import post_commit_worker
 
     trigger_ref = uuid.uuid4()
-    diff = _make_diff(tenant_id=tenant, trigger_ref=trigger_ref,
-                      with_predictions=False, with_entities=False)
+    diff = _make_diff(
+        tenant_id=tenant,
+        trigger_ref=trigger_ref,
+        with_predictions=False,
+        with_entities=False,
+    )
 
     seen = asyncio.Event()
 
@@ -458,13 +652,19 @@ async def test_worker_loop_processes_and_stops(
     async with db_pool.acquire() as conn:
         async with conn.transaction():
             await enqueue_post_commit_actions(
-                trigger=None, validated_diff=diff, conn=conn, anomalies=[],
+                trigger=None,
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[],
             )
 
     stop = asyncio.Event()
     task = asyncio.create_task(
         post_commit_worker(
-            db_pool, poll_interval=0.1, stop_event=stop, tenant_id=tenant,
+            db_pool,
+            poll_interval=0.1,
+            stop_event=stop,
+            tenant_id=tenant,
         )
     )
     try:

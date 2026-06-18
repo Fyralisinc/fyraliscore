@@ -68,6 +68,35 @@ def test_action_timing_note_includes_cache_and_motif_details() -> None:
     assert note["bound_scope"] == {"model_count": 1}
 
 
+def test_action_timing_note_includes_reconstruction_details() -> None:
+    action = RetrievalAction(
+        "Q1",
+        "semantic",
+        "owner_evidence",
+        filters={
+            "_reconstruction_stage": 2,
+            "_reconstruction_round": 3,
+            "_reconstruction_active_cues": ["owner", "audit"],
+            "_reconstruction_cue_count": 2,
+            "_bound_scope": {"model_count": 2},
+        },
+    )
+
+    note = action_execution._action_timing_note(
+        action,
+        PathwayResult(source_pathway="B"),
+        elapsed_ms=4,
+        cache_hit=False,
+    )
+
+    assert action_execution._action_stage(action) == 2
+    assert note["reconstruction_stage"] == 2
+    assert note["reconstruction_round"] == 3
+    assert note["reconstruction_cue_count"] == 2
+    assert note["reconstruction_active_cues"] == ["owner", "audit"]
+    assert note["bound_scope"] == {"model_count": 2}
+
+
 def test_question_retrieval_plan_defaults_to_empty_action_lists() -> None:
     plan = action_execution._QuestionRetrievalPlan(question=_question())
 

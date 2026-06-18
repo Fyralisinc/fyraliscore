@@ -1045,9 +1045,9 @@ def test_coverage_compaction_uses_larger_broad_portfolio_budget():
         model_questions={model.id: {"Q_GOAL_IMPACT"} for model, _ in pairs},
     )
 
-    assert 20 <= len(compacted) <= 32
-    assert dropped >= 32
-    assert notes["target_limit"] == 32
+    assert 32 <= len(compacted) <= 48
+    assert dropped >= 16
+    assert notes["target_limit"] == 48
 
 
 def test_broad_compaction_preserves_repeated_trend_breadth():
@@ -1076,11 +1076,11 @@ def test_broad_compaction_preserves_repeated_trend_breadth():
         model_questions={model.id: {"Q_CONSTRAINT"} for model, _ in pairs},
     )
 
-    assert len(compacted) >= 20
-    assert len(compacted) <= 32
-    assert dropped <= 44
-    assert notes["floor"] == 20
-    assert notes["target_limit"] == 32
+    assert len(compacted) >= 32
+    assert len(compacted) <= 48
+    assert dropped <= 32
+    assert notes["floor"] == 32
+    assert notes["target_limit"] == 48
 
 
 def test_structural_closure_keeps_linked_counterevidence_and_relation_only():

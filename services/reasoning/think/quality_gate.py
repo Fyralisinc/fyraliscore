@@ -199,9 +199,9 @@ _EPHEMERAL_TERMS = re.compile(
     r"\b("
     r"yesterday|this\s+morning|this\s+afternoon|this\s+evening|"
     r"earlier\s+today|just\s+now|a\s+moment\s+ago|"
-    r"yesterday'?s\s+(?:call|meeting|sync|standup|email|message)|"
-    r"today'?s\s+(?:call|meeting|sync|standup|email|message)|"
-    r"the\s+last\s+(?:call|meeting|sync|standup|email|message)"
+    r"yesterday'?s\s+(?:call|meeting|sync|standup|email|message|review)|"
+    r"today'?s\s+(?:call|meeting|sync|standup|email|message|review)|"
+    r"the\s+last\s+(?:call|meeting|sync|standup|email|message|review)"
     r")\b",
     re.IGNORECASE,
 )
@@ -211,8 +211,9 @@ _EPHEMERAL_TERMS = re.compile(
 _SENTIMENT_TERMS = re.compile(
     r"\b("
     r"frustrated|annoyed|upset|happy|sad|excited|anxious|worried(?!\s+that\b)|"
-    r"feels?\s+(?:stuck|lost|good|bad|great|terrible|frustrated|fine)|"
-    r"feeling\s+(?:stuck|lost|good|bad|great|terrible|frustrated|fine)|"
+    r"feels?\s+(?:stuck|lost|good|bad|rough|great|terrible|frustrated|fine)|"
+    r"feeling\s+(?:stuck|lost|good|bad|rough|great|terrible|frustrated|fine)|"
+    r"felt\s+(?:stuck|lost|good|bad|rough|great|terrible|frustrated|fine)|"
     r"is\s+frustrated|is\s+annoyed|is\s+upset|is\s+excited"
     r")\b",
     re.IGNORECASE,

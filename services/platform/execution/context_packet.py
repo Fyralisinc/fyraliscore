@@ -22,6 +22,10 @@ from .evidence_utils import (
     trust_score,
 )
 from .question_generation import dedupe_unknowns
+from .reconstruction_state import (
+    build_reconstruction_state,
+    reconstruction_state_payload,
+)
 from .retrieval_learning import is_low_value_model_noise
 from .routing import trigger_text
 from .types import (
@@ -624,6 +628,14 @@ def compile_context_packet(
             ],
         ]
     )
+    reconstruction_state = build_reconstruction_state(
+        trigger=trigger,
+        hypotheses=hypotheses,
+        evidence=packet_evidence,
+        answers=answers,
+        unknowns=set(important_unknowns),
+        round_index=max((question.round_index for question in questions), default=0),
+    )
     return {
         "signal_summary": compact(trigger_text(trigger), 1000),
         "source_metadata": {
@@ -656,6 +668,7 @@ def compile_context_packet(
             sufficiency,
         ),
         "important_unknowns": important_unknowns,
+        "reconstruction_state": reconstruction_state_payload(reconstruction_state),
         "state_contract": state_contract,
         "answer_obligations": {
             "required_slots": state_contract.get("required_slots", []),
@@ -687,7 +700,7 @@ def memory_decision_candidates(
     evidence: list[EvidenceCard],
     sufficiency: SufficiencyVerdict,
     *,
-    max_candidates: int = 5,
+    max_candidates: int = 6,
 ) -> list[MemoryDecisionCandidate]:
     """Compile inquiry output into Think-facing memory decision candidates.
 
@@ -723,8 +736,7 @@ def memory_decision_candidates(
     non_noop = [
         hypothesis
         for hypothesis in hypotheses
-        if hypothesis.id != "H0"
-        and _op_family_for_hypothesis(hypothesis) != "no_op"
+        if hypothesis.id != "H0" and _op_family_for_hypothesis(hypothesis) != "no_op"
     ]
     non_noop.sort(
         key=lambda h: (
@@ -767,6 +779,18 @@ def memory_decision_candidates(
                 add(edge_candidate)
                 break
 
+    for slot_candidate in _relation_slot_candidates(
+        trigger,
+        non_noop,
+        questions_by_hypothesis,
+        answers_by_question,
+        evidence_by_hypothesis,
+        max_slots=2,
+    ):
+        if len(candidates) >= max_candidates - 1:
+            break
+        add(slot_candidate)
+
     for hypothesis in non_noop:
         if len(candidates) >= max_candidates - 1:
             break
@@ -791,6 +815,23 @@ def memory_decision_candidates(
     return candidates[:max_candidates]
 
 
+_RELATION_SLOT_PRIORITY = {
+    "blocks": 0,
+    "weakens": 1,
+    "contributes_to_resolution": 2,
+    "early_warning_for": 3,
+    "explains": 4,
+}
+
+_RELATION_SLOT_EDGE_HINTS = {
+    "blocks": ("blocks", "explains", "supports"),
+    "weakens": ("weakens", "contradicts", "supports"),
+    "contributes_to_resolution": ("contributes_to_resolution", "supports"),
+    "early_warning_for": ("early_warning_for", "explains", "supports"),
+    "explains": ("explains", "supports"),
+}
+
+
 def _memory_decision_candidates_enabled() -> bool:
     raw = os.environ.get("INQUIRY_MEMORY_DECISION_CANDIDATES")
     if raw is None or raw.strip() == "":
@@ -807,6 +848,14 @@ def _candidate_from_hypothesis(
 ) -> MemoryDecisionCandidate:
     family = _op_family_for_hypothesis(hypothesis)
     evidence_model_ids = _evidence_model_ids(evidence, limit=5)
+    relation_hints: tuple[str, ...] = ()
+    relation_preconditions: tuple[str, ...] = ()
+    if _needs_relationship_decision(hypothesis, questions):
+        relation_hints = _suggested_edge_kinds(hypothesis, questions, evidence)
+        relation_preconditions = _relationship_write_preconditions(
+            hypothesis,
+            questions,
+        )
     reason = (
         f"Planner hypothesis {hypothesis.id} with "
         f"{len(_supporting_cards(evidence, hypothesis.id))} supporting and "
@@ -834,6 +883,8 @@ def _candidate_from_hypothesis(
             questions,
         ),
         retrieval_targets=_retrieval_targets(hypothesis, questions),
+        suggested_edge_kinds=relation_hints,
+        write_preconditions=relation_preconditions,
         answer_summary=_answer_summary_for_questions(questions, answers_by_question),
         confidence=round(max(0.0, min(0.99, hypothesis.confidence)), 3),
         reason=reason,
@@ -897,6 +948,325 @@ def _relationship_candidate_from_hypothesis(
     )
 
 
+def _relation_slot_candidates(
+    trigger: TriggerContext,
+    hypotheses: list[Hypothesis],
+    questions_by_hypothesis: dict[str, list[InquiryQuestion]],
+    answers_by_question: dict[str, QuestionAnswer],
+    evidence_by_hypothesis: dict[str, list[EvidenceCard]],
+    *,
+    max_slots: int,
+) -> list[MemoryDecisionCandidate]:
+    """Emit bounded, semantic-role relation candidates.
+
+    This is intentionally sparse: it only uses hypotheses/evidence already in
+    the packet and requires concrete model endpoints before surfacing a slot.
+    """
+
+    scored: list[tuple[float, int, str, MemoryDecisionCandidate]] = []
+    for hypothesis in hypotheses:
+        evidence = evidence_by_hypothesis.get(hypothesis.id, [])
+        if not evidence:
+            continue
+        questions = questions_by_hypothesis.get(hypothesis.id, [])
+        for edge_kind, score in _relation_slot_scores(hypothesis, questions, evidence):
+            slot_evidence = _relation_slot_evidence(edge_kind, evidence)
+            if not slot_evidence:
+                slot_evidence = _rank_cards(evidence)[:3]
+            endpoints = _relation_slot_endpoints(hypothesis, slot_evidence)
+            if endpoints is None:
+                continue
+            source_model_id, target_model_id, endpoint_model_ids = endpoints
+            proposed_text = _relation_slot_proposed_text(
+                edge_kind,
+                hypothesis=hypothesis,
+                evidence=slot_evidence,
+            )
+            candidate = MemoryDecisionCandidate(
+                candidate_id=_candidate_id(
+                    f"MDC_SLOT_{edge_kind.upper()}",
+                    hypothesis.id,
+                ),
+                op_family="edge_insert",
+                proposed_text=proposed_text,
+                target_model_ids=(target_model_id,),
+                source_observation_ids=_observation_ids_for_candidate(
+                    trigger,
+                    slot_evidence,
+                ),
+                evidence_model_ids=endpoint_model_ids,
+                supporting_evidence_ids=_evidence_ids(
+                    _supporting_cards(slot_evidence, hypothesis.id) or slot_evidence,
+                    limit=6,
+                ),
+                counterevidence_ids=_evidence_ids(
+                    _counter_cards(slot_evidence, hypothesis.id),
+                    limit=4,
+                ),
+                uncertainty_slots=_decision_uncertainties(
+                    (
+                        *hypothesis.uncertainty_slots,
+                        f"whether the {edge_kind} relation is explicit enough",
+                    ),
+                    questions,
+                ),
+                retrieval_targets=_retrieval_targets(hypothesis, questions),
+                suggested_edge_kinds=_RELATION_SLOT_EDGE_HINTS[edge_kind],
+                write_preconditions=_relation_slot_write_preconditions(edge_kind),
+                answer_summary=_answer_summary_for_questions(
+                    questions,
+                    answers_by_question,
+                ),
+                confidence=round(max(0.0, min(0.9, hypothesis.confidence * 0.92)), 3),
+                reason=(
+                    f"Relation slot compiler detected {edge_kind} between "
+                    f"{source_model_id} and {target_model_id}"
+                ),
+            )
+            scored.append(
+                (
+                    score,
+                    -_RELATION_SLOT_PRIORITY.get(edge_kind, 99),
+                    candidate.candidate_id,
+                    candidate,
+                )
+            )
+    scored.sort(reverse=True)
+    out: list[MemoryDecisionCandidate] = []
+    seen_kinds: set[str] = set()
+    for _score, _priority, _slot_candidate_id, candidate in scored:
+        edge_kind = candidate.suggested_edge_kinds[0]
+        if edge_kind in seen_kinds:
+            continue
+        seen_kinds.add(edge_kind)
+        out.append(candidate)
+        if len(out) >= max_slots:
+            break
+    return out
+
+
+def _relation_slot_scores(
+    hypothesis: Hypothesis,
+    questions: list[InquiryQuestion],
+    evidence: list[EvidenceCard],
+) -> list[tuple[str, float]]:
+    text = _relation_slot_hint_text(hypothesis, questions, evidence)
+    scores: dict[str, float] = {}
+
+    def bump(edge_kind: str, amount: float) -> None:
+        scores[edge_kind] = scores.get(edge_kind, 0.0) + amount
+
+    for card in evidence:
+        if hypothesis.id in card.weakens_hypotheses:
+            bump("weakens", 1.2)
+        if hypothesis.id in card.contradicts_hypotheses:
+            bump("weakens", 1.4)
+
+    if _contains_any(
+        text,
+        (
+            "blocked by",
+            " blocks ",
+            "blocker",
+            "blocking",
+            "waiting on",
+            "waiting for",
+            "dependency",
+            "depends on",
+            "critical path",
+            "prerequisite",
+            "cannot proceed",
+            "gates ",
+        ),
+    ):
+        bump("blocks", 1.1)
+    if _contains_any(
+        text,
+        (
+            "counterevidence",
+            "counter-evidence",
+            "weakens",
+            "contradict",
+            "undermines",
+            "despite",
+            "not the blocker",
+            "not blocking",
+        ),
+    ):
+        bump("weakens", 1.1)
+    if _contains_any(
+        text,
+        (
+            "contributes to resolution",
+            "helps resolve",
+            "resolution",
+            "resolved",
+            "unblock",
+            "unblocks",
+            "mitigate",
+            "mitigates",
+            "remediate",
+            "closed",
+        ),
+    ):
+        bump("contributes_to_resolution", 1.05)
+    if _contains_any(
+        text,
+        (
+            "early warning",
+            "warning",
+            "risk signal",
+            "churn risk",
+            "renewal risk",
+            "usage is down",
+            "usage decay",
+            "leading indicator",
+        ),
+    ):
+        bump("early_warning_for", 0.95)
+    if _contains_any(
+        text,
+        ("explains", "explain why", "because", "due to", "root cause", "mechanism"),
+    ):
+        bump("explains", 0.9)
+
+    if not scores:
+        return []
+    base = max(0.0, min(0.4, float(hypothesis.confidence) * 0.25))
+    return sorted(
+        ((edge_kind, score + base) for edge_kind, score in scores.items()),
+        key=lambda item: (
+            item[1],
+            -_RELATION_SLOT_PRIORITY.get(item[0], 99),
+            item[0],
+        ),
+        reverse=True,
+    )
+
+
+def _relation_slot_hint_text(
+    hypothesis: Hypothesis,
+    questions: list[InquiryQuestion],
+    evidence: list[EvidenceCard],
+) -> str:
+    parts: list[str] = [
+        hypothesis.claim,
+        *hypothesis.uncertainty_slots,
+        hypothesis.delta_type or "",
+        hypothesis.impact_if_true or "",
+    ]
+    for question in questions[:8]:
+        parts.extend((question.primitive, question.stop_condition))
+    for card in _rank_cards(evidence)[:8]:
+        parts.append(card.summary)
+    return " ".join(part for part in parts if part).casefold()
+
+
+def _relation_slot_endpoints(
+    hypothesis: Hypothesis,
+    evidence: list[EvidenceCard],
+) -> tuple[str, str, tuple[str, ...]] | None:
+    target_model_id = next(
+        (str(model_id) for model_id in hypothesis.target_model_ids if model_id),
+        None,
+    )
+    model_ids = list(_evidence_model_ids(evidence, limit=5))
+    if target_model_id is None and len(model_ids) >= 2:
+        target_model_id = model_ids[1]
+    if target_model_id is None:
+        return None
+    source_model_id = next(
+        (model_id for model_id in model_ids if model_id != target_model_id),
+        None,
+    )
+    if source_model_id is None:
+        return None
+    endpoint_model_ids = tuple(
+        dict.fromkeys([source_model_id, target_model_id, *model_ids])
+    )[:5]
+    return source_model_id, target_model_id, endpoint_model_ids
+
+
+def _relation_slot_evidence(
+    edge_kind: str,
+    evidence: list[EvidenceCard],
+) -> list[EvidenceCard]:
+    ranked = _rank_cards(evidence)
+    if edge_kind == "weakens":
+        selected = [
+            card
+            for card in ranked
+            if card.weakens_hypotheses
+            or card.contradicts_hypotheses
+            or _contains_any(
+                card.summary.casefold(),
+                ("weakens", "contradict", "counterevidence", "undermines"),
+            )
+        ]
+    else:
+        selected = [
+            card
+            for card in ranked
+            if edge_kind
+            in _suggested_edge_kinds(
+                Hypothesis("slot", card.summary, 0.5, "medium"),
+                [],
+                [card],
+            )
+        ]
+    return (selected or ranked)[:3]
+
+
+def _relation_slot_proposed_text(
+    edge_kind: str,
+    *,
+    hypothesis: Hypothesis,
+    evidence: list[EvidenceCard],
+) -> str:
+    evidence_text = compact("; ".join(card.summary for card in evidence), 220)
+    claim = compact(hypothesis.claim, 180)
+    templates = {
+        "blocks": "{evidence} blocks or gates {claim}",
+        "weakens": "{evidence} weakens or is counterevidence against {claim}",
+        "contributes_to_resolution": (
+            "{evidence} contributes to resolution or unblocks {claim}"
+        ),
+        "early_warning_for": "{evidence} is an early warning or risk signal for {claim}",
+        "explains": "{evidence} explains why {claim}",
+    }
+    template = templates.get(edge_kind, "{evidence} relates to {claim}")
+    return compact(template.format(evidence=evidence_text, claim=claim), 360)
+
+
+def _relation_slot_write_preconditions(edge_kind: str) -> tuple[str, ...]:
+    common = (
+        "Write this relation only when both endpoints are concrete Models.",
+        "Do not downgrade a precise operational relation into supports/similarity.",
+    )
+    specific = {
+        "blocks": (
+            "Use blocks only when the source prevents, gates, or is prerequisite for target progress.",
+        ),
+        "weakens": (
+            "Use weakens only when the source reduces confidence in the target, not when it is another parallel risk.",
+        ),
+        "contributes_to_resolution": (
+            "Use contributes_to_resolution only when the source mitigates, resolves, or unblocks the target concern.",
+        ),
+        "early_warning_for": (
+            "Use early_warning_for only when the source is a leading risk signal for the target.",
+        ),
+        "explains": (
+            "Use explains only when the source is a cause, mechanism, or reason for the target.",
+        ),
+    }
+    return tuple([*(specific.get(edge_kind, ())), *common])[:4]
+
+
+def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in text for needle in needles)
+
+
 def _act_candidate_from_hypothesis(
     trigger: TriggerContext,
     hypothesis: Hypothesis,
@@ -910,8 +1280,7 @@ def _act_candidate_from_hypothesis(
         op_family="act_update",
         proposed_text=(
             "Decide whether active goals, commitments, decisions, or resources "
-            "need an update for: "
-            + compact(hypothesis.claim, 220)
+            "need an update for: " + compact(hypothesis.claim, 220)
         ),
         target_act_ids=act_ids,
         source_observation_ids=_observation_ids_for_candidate(trigger, evidence),
@@ -954,7 +1323,9 @@ def _noop_candidate(
     ]
     reason = "Planner retained a no-op/background hypothesis"
     if trigger.is_batch:
-        reason = "Batch may contain duplicate/background signals; preserve as provenance"
+        reason = (
+            "Batch may contain duplicate/background signals; preserve as provenance"
+        )
     return MemoryDecisionCandidate(
         candidate_id=_candidate_id("MDC", hypothesis.id),
         op_family="no_op",
@@ -1018,7 +1389,9 @@ def _hypothesis_decision_score(
 ) -> float:
     support = len(_supporting_cards(evidence, hypothesis.id)) * 0.10
     counter = len(_counter_cards(evidence, hypothesis.id)) * 0.08
-    question_value = sum(max(0.0, q.expected_value - q.expected_cost) for q in questions)
+    question_value = sum(
+        max(0.0, q.expected_value - q.expected_cost) for q in questions
+    )
     impact = {"critical": 0.24, "high": 0.18, "medium": 0.08, "low": 0.0}.get(
         str(hypothesis.impact_if_true or "").lower(),
         0.04,
@@ -1077,10 +1450,7 @@ def _answer_summary_for_questions(
             continue
         support = len(answer.supporting_evidence)
         counter = len(answer.counterevidence)
-        text = (
-            f"{question.question_id}:{question.primitive}="
-            f"{answer.answer_status}"
-        )
+        text = f"{question.question_id}:{question.primitive}=" f"{answer.answer_status}"
         if support or counter:
             text += f" support={support} counter={counter}"
         if answer.new_uncertainties:
@@ -1175,7 +1545,8 @@ def _relationship_write_preconditions(
     text = _relationship_hint_text(hypothesis, questions, [])
     preconditions = [
         "Write an edge only when both endpoints are concrete Models and the relation is decision-relevant.",
-        "Use same_issue_as or analogous_to for cross-account similarity without an operational dependency.",
+        "Do not use same_issue_as or analogous_to when blocks, explains, weakens, early_warning_for, or contributes_to_resolution fits.",
+        "Use same_issue_as or analogous_to only as candidate/review similarity, never as a substitute for an operational relation.",
     ]
     if any(
         token in text
@@ -1330,9 +1701,7 @@ def _retrieval_targets(
     questions: list[InquiryQuestion],
 ) -> tuple[str, ...]:
     values = [
-        question.retrieval_target
-        for question in questions
-        if question.retrieval_target
+        question.retrieval_target for question in questions if question.retrieval_target
     ]
     values.extend(hypothesis.evidence_needed)
     return tuple(dedupe_unknowns(values)[:8])

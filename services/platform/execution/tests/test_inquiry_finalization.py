@@ -60,6 +60,7 @@ def test_finalize_inquiry_run_builds_result_notes_and_packet() -> None:
         action_timing_notes=[],
         stage_timing_notes=stage_timings,
         question_planning_notes=[],
+        reconstruction_notes=[],
         baseline_action_cache_notes={"seeded": False},
         sage_reader_notes={"questions": {}},
         total_started=0.0,

@@ -28,6 +28,7 @@ def test_lexical_helpers_keep_legacy_inquiry_identity() -> None:
     assert inquiry._focused_index_terms is lexical_terms.focused_index_terms
     assert inquiry._focused_material_tokens is lexical_terms.focused_material_tokens
     assert inquiry._hybrid_lexical_terms is lexical_terms.hybrid_lexical_terms
+    assert inquiry._hybrid_lookup_terms is lexical_terms.hybrid_lookup_terms
     assert inquiry._hybrid_sparse_lookup_groups is (
         lexical_terms.hybrid_sparse_lookup_groups
     )
@@ -79,6 +80,22 @@ def test_hybrid_terms_and_sparse_lookup_stay_bounded() -> None:
     assert lexical_terms.hybrid_sparse_strong_single_match_terms(
         ["alpha", "soc2-risk-77", "risk_42"]
     ) == ["soc2-risk-77", "risk_42"]
+
+
+def test_hybrid_lookup_terms_drop_generic_fallback_words() -> None:
+    terms = lexical_terms.hybrid_lookup_terms(
+        [
+            "owner responsible assigned dependency evidence blocker customer launch",
+            "customer-95 Borealis Bank renewal timeline",
+        ]
+    )
+
+    assert "owner" not in terms
+    assert "dependency" not in terms
+    assert "launch" not in terms
+    assert "customer-95" in terms
+    assert "borealis" in terms
+    assert "renewal" in terms
 
 
 def test_sparse_groups_patterns_and_relevance_tokens_are_stable() -> None:

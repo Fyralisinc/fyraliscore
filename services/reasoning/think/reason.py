@@ -54,6 +54,7 @@ from .anomaly_integration import (
 )
 from .applier import AlreadyAppliedError, apply_diff, check_already_applied
 from .debug_capture import capture as debug_capture
+from .debug_capture import capture_with_pool as debug_capture_with_pool
 from .deterministic import is_authoritative
 from .observability import (
     METRICS,
@@ -65,6 +66,10 @@ from .observability import (
     write_region_lock_log,
 )
 from .post_commit import enqueue_post_commit_actions
+from .representation_audit import (
+    build_representation_audit,
+    persist_representation_audit,
+)
 from .region_locks import (
     RegionLockAcquisition,
     acquire_region_lock,
@@ -93,12 +98,6 @@ def _raise_if_postgres_error(exc: Exception) -> None:
         raise exc
 
 
-
-
-
-
-
-
 def _early_idempotency_skip_enabled() -> bool:
     """Cost-plan §2.2: when set, check `applied_triggers` at the top of `think()`
     and skip retrieval + reasoning entirely for an already-applied trigger.
@@ -123,8 +122,6 @@ async def _mutation_transaction(conn: asyncpg.Connection):
     else:
         async with conn.transaction():
             yield
-
-
 
 
 # ---------------------------------------------------------------------
@@ -166,6 +163,7 @@ class ThinkRunOutcome:
     @property
     def skipped_idempotent(self) -> bool:
         return self.status == "skipped_idempotent"
+
 
 # ---------------------------------------------------------------------
 # think() — single-shot entry point
@@ -254,9 +252,7 @@ async def think(
                         usage_agg=usage_agg,
                         llm_provider=llm_provider,
                     )
-                expanded_region = _expand_region_after_out_of_region(
-                    expanded_region, e
-                )
+                expanded_region = _expand_region_after_out_of_region(expanded_region, e)
                 emit(
                     "think.out_of_region",
                     run_id=str(record.id),
@@ -460,9 +456,7 @@ async def _sleep_before_transaction_retry(
     max_attempts: int,
     exc: Exception,
 ) -> None:
-    backoff_s = min(5.0, 0.1 * (2 ** max(0, attempt - 1))) + random.uniform(
-        0.0, 0.25
-    )
+    backoff_s = min(5.0, 0.1 * (2 ** max(0, attempt - 1))) + random.uniform(0.0, 0.25)
     emit(
         "think.transaction_retry",
         run_id=str(run_id),
@@ -588,6 +582,19 @@ async def _record_failed_outcome(
 ) -> ThinkRunOutcome:
     out = _fail_outcome(record.id, trigger_id, trigger_kind_full, exc, started_at)
     _snapshot_usage(out, usage_agg, llm_provider)
+    await debug_capture_with_pool(
+        pool,
+        run_id=record.id,
+        tenant_id=trigger.tenant_id,
+        stage="error",
+        payload={
+            "trigger_id": str(trigger_id),
+            "trigger_kind": trigger_kind_full,
+            "error": out.error,
+            "error_type": type(exc).__name__,
+            "exception_repr": repr(exc),
+        },
+    )
     await _record_failed_run(pool, record, out.error)
     await _record_cost_for_outcome(
         pool,
@@ -628,8 +635,6 @@ def _snapshot_usage(
     outcome.llm_cache_creation_tokens = agg.total_cache_creation_tokens
     if provider is not None:
         outcome.llm_model_name = provider.config.model
-
-
 
 
 async def _record_cost_for_outcome(
@@ -776,18 +781,6 @@ def _fail_outcome(
     )
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 async def _apply_validated_diff(
     *,
     conn: asyncpg.Connection,
@@ -889,6 +882,9 @@ async def _record_apply_observability(
         run_id=str(record.id),
         ops_applied=(
             len(applied["claim_ops"])
+            + len(applied.get("memory_lifecycle_ops", []))
+            + len(applied.get("relation_claim_ops", []))
+            + len(applied.get("relation_frame_ops", []))
             + len(applied["edge_ops"])
             + len(applied.get("ontology_gap_ops", []))
             + len(applied["act_ops"])
@@ -898,6 +894,20 @@ async def _record_apply_observability(
     )
     applied["context_use"] = validated_context_use
     applied["reasoning_frame"] = reasoning_frame.to_dict()
+    try:
+        from services.reasoning.edge_intelligence.context_feedback import (
+            record_context_use_pair_feedback,
+        )
+
+        await record_context_use_pair_feedback(
+            conn,
+            tenant_id=trigger.tenant_id,
+            trigger_ref=record.id,
+            context_use=validated_context_use,
+            primitive=_primitive_from_trigger(trigger),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _raise_if_postgres_error(exc)
     await debug_capture(
         conn,
         run_id=record.id,
@@ -907,8 +917,18 @@ async def _record_apply_observability(
     )
     for summary in applied.get("claim_ops", []):
         METRICS.inc_op(f"claim_{summary.get('op')}")
+    for summary in applied.get("memory_lifecycle_ops", []):
+        METRICS.inc_op(f"memory_lifecycle_{summary.get('action')}")
     for summary in applied.get("edge_ops", []):
         METRICS.inc_op(f"edge_{summary.get('op')}_{summary.get('edge_kind')}")
+    for summary in applied.get("relation_claim_ops", []):
+        METRICS.inc_op(
+            f"relation_claim_{summary.get('op')}_{summary.get('edge_kind')}"
+        )
+    for summary in applied.get("relation_frame_ops", []):
+        METRICS.inc_op(
+            f"relation_frame_{summary.get('op')}_{summary.get('relation_kind')}"
+        )
     for summary in applied.get("ontology_gap_ops", []):
         METRICS.inc_op(
             f"ontology_gap_{summary.get('op')}_{summary.get('proposed_edge_kind')}"
@@ -919,12 +939,30 @@ async def _record_apply_observability(
         METRICS.inc_op(summary.get("op", "resource_unknown"))
 
 
+def _primitive_from_trigger(trigger: TriggerContext) -> str | None:
+    signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    for key in ("question_primitive", "primitive"):
+        value = signature.get(key)
+        if value:
+            return str(value)
+    primitives = signature.get("question_primitives")
+    if isinstance(primitives, list) and primitives:
+        return str(primitives[0])
+    nested = signature.get("seed_signature")
+    if isinstance(nested, dict):
+        value = nested.get("question_primitive") or nested.get("primitive")
+        if value:
+            return str(value)
+    return trigger.subkind or trigger.kind
+
+
 async def _publish_anomalies_and_enqueue_post_commit(
     *,
     conn: asyncpg.Connection,
     trigger: TriggerContext,
     record: ThinkRunRecord,
     validated: Any,
+    applied: dict[str, Any],
 ) -> list[Any]:
     anomalies = await check_anomalies(validated, conn)
     await publish_anomalies(anomalies, record.id, trigger.tenant_id, conn)
@@ -944,9 +982,43 @@ async def _publish_anomalies_and_enqueue_post_commit(
         validated,
         conn,
         anomalies=anomaly_dicts,
+        applied_model_ids=applied.get("applied_model_ids") or [],
     )
     await assert_tx_usable(conn, "post_commit_enqueue")
     return anomalies
+
+
+async def _record_representation_audit(
+    *,
+    conn: asyncpg.Connection,
+    trigger: TriggerContext,
+    record: ThinkRunRecord,
+    trigger_kind_full: str,
+    validated: Any,
+    bundle: Any,
+    applied: dict[str, Any],
+) -> None:
+    audit = build_representation_audit(
+        trigger=trigger,
+        run_id=record.id,
+        trigger_id=record.trigger_id,
+        trigger_kind_full=trigger_kind_full,
+        validated=validated,
+        bundle=bundle,
+        applied=applied,
+    )
+    applied["representation_audit"] = audit.to_dict()
+    await persist_representation_audit(conn, audit)
+    await assert_tx_usable(conn, "representation_audit")
+    emit(
+        "think.representation_audit",
+        run_id=str(record.id),
+        status=audit.budget_status,
+        warnings=len(audit.warnings),
+        model_adaptiveness=audit.model_adaptiveness,
+        edge_adaptiveness=audit.edge_adaptiveness,
+        coverage_roles=audit.coverage_roles,
+    )
 
 
 async def _finalize_successful_run(
@@ -988,6 +1060,9 @@ async def _finalize_successful_run(
         status="success",
         ops_applied_count=(
             len(applied["claim_ops"])
+            + len(applied.get("memory_lifecycle_ops", []))
+            + len(applied.get("relation_claim_ops", []))
+            + len(applied.get("relation_frame_ops", []))
             + len(applied["edge_ops"])
             + len(applied.get("ontology_gap_ops", []))
             + len(applied["act_ops"])
@@ -1123,6 +1198,15 @@ async def _run_once(
         if skipped is not None:
             return skipped
         assert applied is not None
+        await _record_representation_audit(
+            conn=conn,
+            trigger=trigger,
+            record=record,
+            trigger_kind_full=trigger_kind_full,
+            validated=validated,
+            bundle=state.bundle,
+            applied=applied,
+        )
         await _record_apply_observability(
             conn=conn,
             trigger=trigger,
@@ -1136,6 +1220,7 @@ async def _run_once(
             trigger=trigger,
             record=record,
             validated=validated,
+            applied=applied,
         )
         return await _finalize_successful_run(
             conn=conn,
@@ -1150,8 +1235,6 @@ async def _run_once(
             region_entity_hash=eh,
             acquisition=acquisition,
         )
-
-
 
 
 __all__ = [

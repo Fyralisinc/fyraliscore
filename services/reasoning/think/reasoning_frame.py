@@ -31,6 +31,9 @@ class ReasoningJob:
     )
     allowed_ops: tuple[str, ...] = (
         "claim_ops",
+        "memory_lifecycle_ops",
+        "relation_claim_ops",
+        "relation_frame_ops",
         "edge_ops",
         "act_ops",
         "resource_ops",
@@ -43,6 +46,9 @@ class ReasoningJob:
     budget: dict[str, int] = field(
         default_factory=lambda: {
             "claim_ops": 3,
+            "memory_lifecycle_ops": 1,
+            "relation_claim_ops": 4,
+            "relation_frame_ops": 1,
             "edge_ops": 4,
             "act_ops": 1,
             "resource_ops": 1,
@@ -71,6 +77,9 @@ class ReasoningFrame:
     dynamic_signals: tuple[dict[str, Any], ...] = ()
     allowed_ops: tuple[str, ...] = (
         "claim_ops",
+        "memory_lifecycle_ops",
+        "relation_claim_ops",
+        "relation_frame_ops",
         "edge_ops",
         "act_ops",
         "resource_ops",
@@ -83,6 +92,9 @@ class ReasoningFrame:
     budget: dict[str, int] = field(
         default_factory=lambda: {
             "claim_ops": 3,
+            "memory_lifecycle_ops": 1,
+            "relation_claim_ops": 4,
+            "relation_frame_ops": 1,
             "edge_ops": 4,
             "act_ops": 1,
             "resource_ops": 1,
@@ -280,9 +292,19 @@ def reasoning_job_from_trigger(trigger: TriggerContext) -> ReasoningJob:
             source="model_change",
             intent="propagate_consequence",
             priority=("downstream_consequences",),
-            allowed_ops=("claim_ops", "edge_ops", "act_ops"),
+            allowed_ops=(
+                "claim_ops",
+                "memory_lifecycle_ops",
+                "relation_claim_ops",
+                "relation_frame_ops",
+                "edge_ops",
+                "act_ops",
+            ),
             budget={
                 "claim_ops": 2,
+                "memory_lifecycle_ops": 1,
+                "relation_claim_ops": 2,
+                "relation_frame_ops": 1,
                 "edge_ops": 2,
                 "act_ops": 1,
                 "resource_ops": 0,
@@ -301,9 +323,18 @@ def reasoning_job_from_trigger(trigger: TriggerContext) -> ReasoningJob:
             source="anomaly_detector",
             intent="explain_inconsistency",
             priority=("structural_explanation",),
-            allowed_ops=("claim_ops", "edge_ops"),
+            allowed_ops=(
+                "claim_ops",
+                "memory_lifecycle_ops",
+                "relation_claim_ops",
+                "relation_frame_ops",
+                "edge_ops",
+            ),
             budget={
                 "claim_ops": 3,
+                "memory_lifecycle_ops": 2,
+                "relation_claim_ops": 3,
+                "relation_frame_ops": 1,
                 "edge_ops": 3,
                 "act_ops": 0,
                 "resource_ops": 0,
@@ -319,9 +350,18 @@ def reasoning_job_from_trigger(trigger: TriggerContext) -> ReasoningJob:
                     "structural_explanation",
                     "impact_signature_interaction",
                 ),
-                allowed_ops=("claim_ops", "edge_ops"),
+                allowed_ops=(
+                    "claim_ops",
+                    "memory_lifecycle_ops",
+                    "relation_claim_ops",
+                    "relation_frame_ops",
+                    "edge_ops",
+                ),
                 budget={
                     "claim_ops": 2,
+                    "memory_lifecycle_ops": 1,
+                    "relation_claim_ops": 2,
+                    "relation_frame_ops": 1,
                     "edge_ops": 2,
                     "act_ops": 0,
                     "resource_ops": 0,
@@ -332,9 +372,18 @@ def reasoning_job_from_trigger(trigger: TriggerContext) -> ReasoningJob:
             source="maintenance",
             intent="reorganize_memory",
             priority=("memory_quality",),
-            allowed_ops=("claim_ops", "edge_ops"),
+            allowed_ops=(
+                "claim_ops",
+                "memory_lifecycle_ops",
+                "relation_claim_ops",
+                "relation_frame_ops",
+                "edge_ops",
+            ),
             budget={
                 "claim_ops": 3,
+                "memory_lifecycle_ops": 2,
+                "relation_claim_ops": 3,
+                "relation_frame_ops": 1,
                 "edge_ops": 3,
                 "act_ops": 0,
                 "resource_ops": 0,
@@ -351,12 +400,21 @@ def reasoning_job_from_trigger(trigger: TriggerContext) -> ReasoningJob:
                 "What relationship or composite situation changed because "
                 "this topology region shifted?"
             ),
-            allowed_ops=("claim_ops", "edge_ops"),
+            allowed_ops=(
+                "claim_ops",
+                "memory_lifecycle_ops",
+                "relation_claim_ops",
+                "relation_frame_ops",
+                "edge_ops",
+            ),
             priority_dimensions=_priority_dimensions_with(
                 "structural_explanation",
             ),
             budget={
                 "claim_ops": 2,
+                "memory_lifecycle_ops": 1,
+                "relation_claim_ops": 2,
+                "relation_frame_ops": 1,
                 "edge_ops": 2,
                 "act_ops": 0,
                 "resource_ops": 0,
@@ -379,6 +437,9 @@ def _internal_reflection_job(
     priority: tuple[str, ...] = (),
     allowed_ops: tuple[str, ...] = (
         "claim_ops",
+        "memory_lifecycle_ops",
+        "relation_claim_ops",
+        "relation_frame_ops",
         "edge_ops",
         "act_ops",
         "resource_ops",
@@ -402,6 +463,9 @@ def _internal_reflection_job(
         if budget is not None
         else {
             "claim_ops": 3,
+            "memory_lifecycle_ops": 2,
+            "relation_claim_ops": 2,
+            "relation_frame_ops": 1,
             "edge_ops": 2,
             "act_ops": 1,
             "resource_ops": 1,

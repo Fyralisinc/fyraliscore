@@ -291,6 +291,46 @@ async def test_unknown_actor_ref_records_unresolved_marker(
     obs = r.observation
     assert obs.actor_id is None
     assert obs.content.get("_unresolved_actor_ref") == "slack:U99GHOST"
+    rows = await gateway_pool.fetch(
+        """
+        SELECT kind, object_kind, object_key, question, options, payload
+        FROM clarification_requests
+        WHERE tenant_id = $1
+        """,
+        tenant_id,
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["kind"] == "actor_identity"
+    assert row["object_kind"] == "source_actor_ref"
+    assert row["object_key"] == "slack:U99GHOST"
+    assert "slack:U99GHOST" in row["question"]
+    options = row["options"]
+    if isinstance(options, str):
+        options = json.loads(options)
+    assert {option["id"] for option in options} >= {
+        "same_as_existing_actor",
+        "new_internal_actor",
+        "new_external_actor",
+        "not_an_actor",
+    }
+
+    await _ingest_slack(
+        gateway_pool,
+        tenant_id,
+        user="U99GHOST",
+        ts=f"{time.time() + 1:.6f}",
+        embedder=_DeterministicEmbedder(),
+    )
+    count = await gateway_pool.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM clarification_requests
+        WHERE tenant_id = $1 AND kind = 'actor_identity'
+        """,
+        tenant_id,
+    )
+    assert count == 1
 
 
 @pytest.mark.asyncio

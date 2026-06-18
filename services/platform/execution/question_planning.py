@@ -37,6 +37,10 @@ from .reflective_rules import (
     reflective_rules_note,
     reflective_rules_prompt_payload,
 )
+from .reconstruction_state import (
+    planner_reconstruction_payload,
+    reconstruction_state_note,
+)
 from .question_text import (
     clean_question_anchor,
     clean_question_focus_phrase,
@@ -47,7 +51,7 @@ from .question_text import (
     specific_question,
     truncate_text,
 )
-from .types import EvidenceCard, Hypothesis, InquiryQuestion
+from .types import EvidenceCard, Hypothesis, InquiryQuestion, ReconstructionState
 
 ALLOWED_QUESTION_PRIMITIVES = {
     "DEPENDENCY",
@@ -121,6 +125,7 @@ async def candidate_questions_for_round(
     config: InquiryConfig,
     round_index: int,
     reflective_rules: tuple[ReflectiveRetrievalRule, ...] = (),
+    reconstruction_state: ReconstructionState | None = None,
 ) -> tuple[list[InquiryQuestion], dict[str, Any]]:
     deterministic = candidate_questions(trigger, hypotheses, evidence_by_key, unknowns)
     deterministic, deterministic_rule_note = _apply_reflective_question_rules(
@@ -136,6 +141,7 @@ async def candidate_questions_for_round(
             "mode": "deterministic_fallback",
             "reason": "non_t1_trigger_uses_seeded_retrieval",
             "candidate_count": len(deterministic),
+            **_reconstruction_note(reconstruction_state),
             **deterministic_rule_note,
         }
     if not config.llm_question_planning_enabled:
@@ -144,6 +150,7 @@ async def candidate_questions_for_round(
             "mode": "deterministic_fallback",
             "reason": "disabled_by_config",
             "candidate_count": len(deterministic),
+            **_reconstruction_note(reconstruction_state),
             **deterministic_rule_note,
         }
     if llm_provider is None:
@@ -152,6 +159,7 @@ async def candidate_questions_for_round(
             "mode": "deterministic_fallback",
             "reason": "llm_provider_missing",
             "candidate_count": len(deterministic),
+            **_reconstruction_note(reconstruction_state),
             **deterministic_rule_note,
         }
     planning_provider = select_question_planning_provider(llm_provider)
@@ -168,6 +176,7 @@ async def candidate_questions_for_round(
             config=config,
             max_tokens=question_planning_max_tokens(config, planning_provider),
             reflective_rules=reflective_rules,
+            reconstruction_state=reconstruction_state,
         )
         timeout_s = question_planning_timeout_seconds(planning_provider)
         # Cost-plan 0.1: tag planning LLM spend as question_planning.
@@ -201,6 +210,7 @@ async def candidate_questions_for_round(
                 "candidate_count": len(deterministic),
                 "llm_rationale": plan.rationale,
                 "belief_delta_count": len(belief_delta_hypotheses),
+                **_reconstruction_note(reconstruction_state),
                 **deterministic_rule_note,
                 **provider_metadata,
             }
@@ -237,6 +247,7 @@ async def candidate_questions_for_round(
             "llm_primitives": [q.primitive for q in llm_questions],
             "llm_schema": question_planning_schema_name(planning_provider),
             "question_quality": question_quality_summary(question_quality_notes),
+            **_reconstruction_note(reconstruction_state),
             **rule_note,
             **provider_metadata,
         }
@@ -247,9 +258,17 @@ async def candidate_questions_for_round(
             "reason": type(exc).__name__,
             "detail": str(exc)[:240],
             "candidate_count": len(deterministic),
+            **_reconstruction_note(reconstruction_state),
             **deterministic_rule_note,
             **provider_metadata,
         }
+
+
+def _reconstruction_note(
+    reconstruction_state: ReconstructionState | None,
+) -> dict[str, Any]:
+    note = reconstruction_state_note(reconstruction_state)
+    return {"reconstruction_state": note} if note else {}
 
 
 def _apply_reflective_question_rules(
@@ -293,6 +312,7 @@ async def generate_llm_question_plan(
     config: InquiryConfig,
     max_tokens: int | None = None,
     reflective_rules: tuple[ReflectiveRetrievalRule, ...] = (),
+    reconstruction_state: ReconstructionState | None = None,
 ) -> LLMInquiryQuestionPlan:
     active_reflective_rules = (
         reflective_rules
@@ -343,6 +363,11 @@ async def generate_llm_question_plan(
                 "base": compact_baseline_snapshot_for_question_planning(
                     baseline,
                     evidence_by_key,
+                ),
+                **(
+                    {"recon": planner_reconstruction_payload(reconstruction_state)}
+                    if reconstruction_state is not None
+                    else {}
                 ),
                 **(
                     {
@@ -425,6 +450,15 @@ async def generate_llm_question_plan(
             "baseline_snapshot": baseline_snapshot_for_question_planning(
                 baseline,
                 evidence_by_key,
+            ),
+            **(
+                {
+                    "reconstruction_state": planner_reconstruction_payload(
+                        reconstruction_state
+                    )
+                }
+                if reconstruction_state is not None
+                else {}
             ),
             **(
                 {

@@ -69,6 +69,7 @@ class _InquiryBootstrapState:
     retrieval_results: list[RetrievalResult]
     unknowns: set[str]
     question_planning_notes: list[dict[str, Any]]
+    reconstruction_notes: list[dict[str, Any]]
     question_policy: dict[str, QuestionPolicySignal]
     reflective_rules: tuple[ReflectiveRetrievalRule, ...]
     sage_reader_notes: dict[str, Any]
@@ -217,6 +218,7 @@ async def _bootstrap_inquiry_run(
     retrieval_results = [baseline]
     unknowns: set[str] = set(initial_unknowns(trigger, baseline))
     question_planning_notes: list[dict[str, Any]] = []
+    reconstruction_notes: list[dict[str, Any]] = []
     append_stage_timing(
         stage_timing_notes,
         "baseline_reservoir_seed",
@@ -319,6 +321,7 @@ async def _bootstrap_inquiry_run(
         retrieval_results=retrieval_results,
         unknowns=unknowns,
         question_planning_notes=question_planning_notes,
+        reconstruction_notes=reconstruction_notes,
         question_policy=question_policy,
         reflective_rules=reflective_rules,
         sage_reader_notes=sage_reader_notes,

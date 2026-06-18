@@ -26,6 +26,7 @@ Dead-letter policy:
     `model_reeval_dead_letter` AND set original_row.processed_at=now()
     so the dedup collapses if a new identical row enqueues later.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -59,11 +60,31 @@ from .reason import think
 _log = structlog.get_logger(__name__)
 _DEFAULT_T1_BATCH_WINDOW_S = 30.0
 _DEFAULT_DOWNSTREAM_BATCH_WINDOW_S = 60.0
+_ENTITY_BATCH_TYPE_PRIORITY = (
+    "customer",
+    "commitment",
+    "goal",
+    "decision",
+    "resource",
+    "project",
+    "repository",
+    "issue",
+    "ticket",
+    "account",
+    "invoice",
+    "transaction",
+    "employee",
+    "team",
+)
+_DEFAULT_PROVIDER_QUOTA_BACKOFF_S = 3 * 60 * 60
+_DEFAULT_PROVIDER_RATE_LIMIT_BACKOFF_S = 15 * 60
+_DEFAULT_PROVIDER_CIRCUIT_OPEN_BACKOFF_S = 15 * 60
 
 
 # ---------------------------------------------------------------------
 # Payload → TriggerContext rehydration
 # ---------------------------------------------------------------------
+
 
 def _populate_seed_fields(trigger: TriggerContext, payload: dict) -> None:
     """
@@ -84,9 +105,7 @@ def _populate_seed_fields(trigger: TriggerContext, payload: dict) -> None:
 
     entity_ids = payload.get("seed_entity_ids")
     if isinstance(entity_ids, list):
-        trigger.seed_entity_ids = [
-            e for e in entity_ids if isinstance(e, dict)
-        ]
+        trigger.seed_entity_ids = [e for e in entity_ids if isinstance(e, dict)]
 
     observation_ids = payload.get("observation_ids")
     if not isinstance(observation_ids, list):
@@ -223,6 +242,128 @@ def _timestamp(value: datetime) -> float:
     return value.timestamp()
 
 
+def _jsonb_array(raw: Any) -> list[Any]:
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            raw = raw.decode()
+        except Exception:
+            return []
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
+def _entity_refs(raw: Any) -> list[tuple[str, str]]:
+    refs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for entity in _jsonb_array(raw):
+        if not isinstance(entity, dict):
+            continue
+        etype = entity.get("type")
+        eid = entity.get("id")
+        if not etype or eid is None:
+            continue
+        key = (str(etype).strip().lower(), str(eid).strip())
+        if not key[0] or not key[1] or key in seen:
+            continue
+        seen.add(key)
+        refs.append(key)
+    return refs
+
+
+def _entity_lane(raw: Any) -> str | None:
+    refs = _entity_refs(raw)
+    non_actor_refs = [(etype, eid) for etype, eid in refs if etype != "actor"]
+    for wanted_type in _ENTITY_BATCH_TYPE_PRIORITY:
+        for etype, eid in non_actor_refs:
+            if etype == wanted_type:
+                return f"entity:{etype}:{eid}"
+    if non_actor_refs:
+        etype, eid = non_actor_refs[0]
+        return f"entity:{etype}:{eid}"
+    return None
+
+
+def _actor_lane(*values: Any) -> str | None:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            lane = _actor_lane(*value)
+            if lane is not None:
+                return lane
+            continue
+        try:
+            actor_id = value if isinstance(value, UUID) else UUID(str(value))
+        except (TypeError, ValueError):
+            continue
+        return f"actor:{actor_id}"
+    return None
+
+
+def _actor_entity_lane(raw: Any) -> str | None:
+    for etype, eid in _entity_refs(raw):
+        if etype != "actor":
+            continue
+        lane = _actor_lane(eid)
+        if lane is not None:
+            return lane
+    return None
+
+
+def _scope_batch_lane(
+    *,
+    entities: Any = None,
+    actor_id: Any = None,
+    actors: Any = None,
+) -> str | None:
+    return (
+        _entity_lane(entities)
+        or _actor_lane(actor_id)
+        or _actor_lane(actors)
+        or _actor_entity_lane(entities)
+    )
+
+
+def _ready_batch_members(
+    rows: list[asyncpg.Record],
+    *,
+    max_size: int,
+    min_size: int,
+    window_s: float,
+    now: datetime,
+    allow_max_size: bool = True,
+    fallback_by_arrival: bool = False,
+) -> list[asyncpg.Record] | None:
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r["enqueued_at"])
+    oldest = rows[0]["enqueued_at"]
+    if oldest.tzinfo is None:
+        oldest = oldest.replace(tzinfo=timezone.utc)
+    window_elapsed = (now - oldest).total_seconds() >= window_s
+    if fallback_by_arrival:
+        if not window_elapsed:
+            return None
+        members = rows[:max_size]
+    else:
+        cutoff = oldest.timestamp() + window_s
+        in_window = [r for r in rows if _timestamp(r["enqueued_at"]) <= cutoff]
+        max_size_reached = len(in_window) >= max_size
+        if not window_elapsed and not (allow_max_size and max_size_reached):
+            return None
+        members = in_window[:max_size]
+    if len(members) < min_size:
+        return None
+    return members
+
+
 def _validation_max_attempts_env() -> int | None:
     """Cost-plan §2.4 flag `THINK_VALIDATION_MAX_ATTEMPTS`. When set, validation-
     class failures dead-letter after this many attempts instead of the generic
@@ -235,6 +376,55 @@ def _validation_max_attempts_env() -> int | None:
         return max(1, int(raw))
     except ValueError:
         return None
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return default
+
+
+def _provider_failure_backoff_seconds(error: str | None) -> int | None:
+    """Return a long cooldown for provider availability/quota failures.
+
+    Normal reasoning failures can retry with the short exponential schedule.
+    Provider quota, balance, and outage signals should not be hot-looped: they
+    are external-state failures, and retrying every few minutes just creates
+    failure noise while making the provider less likely to recover.
+    """
+    if not isinstance(error, str) or not error.strip():
+        return None
+    text = error.casefold()
+    if any(
+        marker in text
+        for marker in (
+            "usage limit",
+            "insufficient balance",
+            "payment required",
+            "quota",
+            "billing",
+            "credits",
+        )
+    ):
+        return _positive_int_env(
+            "THINK_PROVIDER_QUOTA_BACKOFF_S",
+            _DEFAULT_PROVIDER_QUOTA_BACKOFF_S,
+        )
+    if any(marker in text for marker in ("rate limit", "rate_limit", " 429", "429 ")):
+        return _positive_int_env(
+            "THINK_PROVIDER_RATE_LIMIT_BACKOFF_S",
+            _DEFAULT_PROVIDER_RATE_LIMIT_BACKOFF_S,
+        )
+    if "circuit breaker" in text and "open" in text:
+        return _positive_int_env(
+            "THINK_PROVIDER_CIRCUIT_OPEN_BACKOFF_S",
+            _DEFAULT_PROVIDER_CIRCUIT_OPEN_BACKOFF_S,
+        )
+    return None
 
 
 def _classify_failure(outcome: Any) -> str | None:
@@ -252,9 +442,12 @@ def _classify_failure(outcome: Any) -> str | None:
 
 
 def _daily_budget_enforcement_enabled() -> bool:
-    return os.environ.get(
-        "THINK_DAILY_BUDGET_ENFORCEMENT", "0"
-    ).strip().lower() in {"1", "on", "true", "yes"}
+    return os.environ.get("THINK_DAILY_BUDGET_ENFORCEMENT", "0").strip().lower() in {
+        "1",
+        "on",
+        "true",
+        "yes",
+    }
 
 
 def _escalation_model_env() -> str | None:
@@ -329,67 +522,55 @@ class WorkerConfig:
         return cls(
             poll_interval_s=float(os.environ.get("THINK_POLL_INTERVAL_S", 2.0)),
             poll_batch=int(os.environ.get("THINK_POLL_BATCH", 10)),
-            max_concurrency_per_tenant=int(os.environ.get(
-                "THINK_MAX_CONCURRENCY_PER_TENANT", 1
-            )),
-            backpressure_limit=int(os.environ.get(
-                "THINK_QUEUE_BACKPRESSURE_LIMIT", 500
-            )),
-            trigger_max_attempts=int(os.environ.get(
-                "THINK_TRIGGER_MAX_ATTEMPTS", 5
-            )),
-            reeval_max_attempts=int(os.environ.get(
-                "THINK_REEVAL_MAX_ATTEMPTS", 5
-            )),
-            trigger_lock_timeout_s=float(os.environ.get(
-                "THINK_TRIGGER_LOCK_TIMEOUT_S", 600.0
-            )),
-            trigger_heartbeat_interval_s=float(os.environ.get(
-                "THINK_TRIGGER_HEARTBEAT_INTERVAL_S", 30.0
-            )),
-            run_timeout_s=float(os.environ.get(
-                "THINK_RUN_TIMEOUT_S", 600.0
-            )),
-            t1_batch_window_s=float(os.environ.get(
-                "THINK_T1_BATCH_WINDOW_S", _DEFAULT_T1_BATCH_WINDOW_S
-            )),
-            t1_batch_max_size=int(os.environ.get(
-                "THINK_T1_BATCH_MAX_SIZE", 30
-            )),
-            t1_batch_min_size=int(os.environ.get(
-                "THINK_T1_BATCH_MIN_SIZE", 20
-            )),
-            downstream_batch_window_s=float(os.environ.get(
-                "THINK_DOWNSTREAM_BATCH_WINDOW_S",
-                _DEFAULT_DOWNSTREAM_BATCH_WINDOW_S,
-            )),
-            downstream_batch_min_size=int(os.environ.get(
-                "THINK_DOWNSTREAM_BATCH_MIN_SIZE", 2
-            )),
-            t2_batch_max_size=int(os.environ.get(
-                "THINK_T2_BATCH_MAX_SIZE", 8
-            )),
-            t4_batch_max_size=int(os.environ.get(
-                "THINK_T4_BATCH_MAX_SIZE", 4
-            )),
-            prune_low_value_downstream_triggers=(
+            max_concurrency_per_tenant=int(
+                os.environ.get("THINK_MAX_CONCURRENCY_PER_TENANT", 1)
+            ),
+            backpressure_limit=int(
+                os.environ.get("THINK_QUEUE_BACKPRESSURE_LIMIT", 500)
+            ),
+            trigger_max_attempts=int(os.environ.get("THINK_TRIGGER_MAX_ATTEMPTS", 5)),
+            reeval_max_attempts=int(os.environ.get("THINK_REEVAL_MAX_ATTEMPTS", 5)),
+            trigger_lock_timeout_s=float(
+                os.environ.get("THINK_TRIGGER_LOCK_TIMEOUT_S", 600.0)
+            ),
+            trigger_heartbeat_interval_s=float(
+                os.environ.get("THINK_TRIGGER_HEARTBEAT_INTERVAL_S", 30.0)
+            ),
+            run_timeout_s=float(os.environ.get("THINK_RUN_TIMEOUT_S", 600.0)),
+            t1_batch_window_s=float(
+                os.environ.get("THINK_T1_BATCH_WINDOW_S", _DEFAULT_T1_BATCH_WINDOW_S)
+            ),
+            t1_batch_max_size=int(os.environ.get("THINK_T1_BATCH_MAX_SIZE", 30)),
+            t1_batch_min_size=int(os.environ.get("THINK_T1_BATCH_MIN_SIZE", 20)),
+            downstream_batch_window_s=float(
                 os.environ.get(
-                    "THINK_PRUNE_LOW_VALUE_DOWNSTREAM_TRIGGERS", "1"
-                ).strip().lower()
+                    "THINK_DOWNSTREAM_BATCH_WINDOW_S",
+                    _DEFAULT_DOWNSTREAM_BATCH_WINDOW_S,
+                )
+            ),
+            downstream_batch_min_size=int(
+                os.environ.get("THINK_DOWNSTREAM_BATCH_MIN_SIZE", 2)
+            ),
+            t2_batch_max_size=int(os.environ.get("THINK_T2_BATCH_MAX_SIZE", 8)),
+            t4_batch_max_size=int(os.environ.get("THINK_T4_BATCH_MAX_SIZE", 4)),
+            prune_low_value_downstream_triggers=(
+                os.environ.get("THINK_PRUNE_LOW_VALUE_DOWNSTREAM_TRIGGERS", "1")
+                .strip()
+                .lower()
                 not in {"0", "false", "no", "off"}
             ),
-            t4_topology_min_judgment_leverage=float(os.environ.get(
-                "THINK_T4_TOPOLOGY_MIN_JUDGMENT_LEVERAGE", 0.70
-            )),
-            t4_topology_min_impact=float(os.environ.get(
-                "THINK_T4_TOPOLOGY_MIN_IMPACT", 0.50
-            )),
-            t4_topology_min_actionability=float(os.environ.get(
-                "THINK_T4_TOPOLOGY_MIN_ACTIONABILITY", 0.40
-            )),
-            t4_topology_min_confidence=float(os.environ.get(
-                "THINK_T4_TOPOLOGY_MIN_CONFIDENCE", 0.50
-            )),
+            t4_topology_min_judgment_leverage=float(
+                os.environ.get("THINK_T4_TOPOLOGY_MIN_JUDGMENT_LEVERAGE", 0.70)
+            ),
+            t4_topology_min_impact=float(
+                os.environ.get("THINK_T4_TOPOLOGY_MIN_IMPACT", 0.50)
+            ),
+            t4_topology_min_actionability=float(
+                os.environ.get("THINK_T4_TOPOLOGY_MIN_ACTIONABILITY", 0.40)
+            ),
+            t4_topology_min_confidence=float(
+                os.environ.get("THINK_T4_TOPOLOGY_MIN_CONFIDENCE", 0.50)
+            ),
             worker_id=os.environ.get("THINK_WORKER_ID", f"worker-{os.getpid()}"),
         )
 
@@ -417,6 +598,7 @@ class ThinkWorker:
         if embedder is None:
             try:
                 from lib.embeddings.ollama import OllamaClient
+
                 embedder = OllamaClient()
             except Exception:  # noqa: BLE001
                 embedder = None
@@ -487,8 +669,7 @@ class ThinkWorker:
                     pass
 
             # Shutdown — wait for in-flight runs to finish.
-            emit("think.worker.shutting_down",
-                 in_flight=len(self._in_flight))
+            emit("think.worker.shutting_down", in_flight=len(self._in_flight))
             if self._in_flight:
                 await asyncio.gather(*self._in_flight, return_exceptions=True)
         finally:
@@ -564,8 +745,7 @@ class ThinkWorker:
                     payload = {
                         "reeval_row_id": str(r["id"]),
                         "cause_model_id": (
-                            str(r["cause_model_id"])
-                            if r["cause_model_id"] else None
+                            str(r["cause_model_id"]) if r["cause_model_id"] else None
                         ),
                         "cause_kind": r["cause_kind"],
                     }
@@ -593,7 +773,14 @@ class ThinkWorker:
                     conn,
                     available_slots=available_slots,
                 )
-                remaining_slots = available_slots - len(rows)
+                # Batch-first means a poll cycle that successfully creates
+                # T1 event batches should dispatch those batches before it
+                # leases older singleton T1 rows. Otherwise the per-tenant
+                # semaphore can serialize a useful batch behind raw tail rows.
+                if rows:
+                    remaining_slots = 0
+                else:
+                    remaining_slots = available_slots
                 if remaining_slots > 0:
                     downstream_rows = await self._create_downstream_batch_rows(
                         conn,
@@ -641,7 +828,10 @@ class ThinkWorker:
                             WHEN trigger_kind = 'T2' THEN 1
                             WHEN trigger_kind = 'T4' THEN 2
                             WHEN trigger_kind = 'T3' THEN 3
-                            ELSE 4
+                            WHEN trigger_kind = 'T1'
+                              AND trigger_subkind = 'event_batch'
+                              THEN 4
+                            ELSE 5
                           END,
                           enqueued_at ASC
                         FOR UPDATE SKIP LOCKED
@@ -692,7 +882,10 @@ class ThinkWorker:
                             WHEN trigger_kind = 'T2' THEN 1
                             WHEN trigger_kind = 'T4' THEN 2
                             WHEN trigger_kind = 'T3' THEN 3
-                            ELSE 4
+                            WHEN trigger_kind = 'T1'
+                              AND trigger_subkind = 'event_batch'
+                              THEN 4
+                            ELSE 5
                           END,
                           enqueued_at ASC
                         FOR UPDATE SKIP LOCKED
@@ -718,9 +911,7 @@ class ThinkWorker:
                         leased_ids,
                     )
             for r in rows:
-                task = asyncio.create_task(
-                    self._dispatch_trigger(r)
-                )
+                task = asyncio.create_task(self._dispatch_trigger(r))
                 self._in_flight.add(task)
                 task.add_done_callback(self._in_flight.discard)
 
@@ -961,8 +1152,7 @@ class ThinkWorker:
             self.config.downstream_batch_window_s > 0
             and self.config.downstream_batch_min_size >= 2
             and (
-                self.config.t2_batch_max_size >= 2
-                or self.config.t4_batch_max_size >= 2
+                self.config.t2_batch_max_size >= 2 or self.config.t4_batch_max_size >= 2
             )
         )
 
@@ -1064,36 +1254,94 @@ class ThinkWorker:
             return []
 
         now = datetime.now(timezone.utc)
-        by_group: dict[tuple[UUID, str, str | None], list[asyncpg.Record]] = {}
+        t2_lanes = await self._t2_belief_batch_lanes(conn, candidates)
+        t4_lanes = await self._t4_candidate_batch_lanes(conn, candidates)
+        by_group: dict[
+            tuple[UUID, str, str | None, str | None],
+            list[asyncpg.Record],
+        ] = {}
         for row in candidates:
-            key = (row["tenant_id"], row["trigger_kind"], row["trigger_subkind"])
+            lane = None
+            if row["trigger_kind"] == "T2":
+                lane = t2_lanes.get(row["id"])
+            elif row["trigger_kind"] == "T4":
+                lane = t4_lanes.get(row["id"])
+            key = (
+                row["tenant_id"],
+                row["trigger_kind"],
+                row["trigger_subkind"],
+                lane,
+            )
             by_group.setdefault(key, []).append(row)
 
         batch_rows: list[dict[str, Any]] = []
-        for (tenant_id, kind, subkind), rows in by_group.items():
+        used_ids: set[UUID] = set()
+        lane_groups = sorted(
+            by_group.items(),
+            key=lambda item: min(_timestamp(row["enqueued_at"]) for row in item[1]),
+        )
+        while len(batch_rows) < available_slots:
+            created_lane_batch = False
+            for (tenant_id, kind, subkind, _lane), rows in lane_groups:
+                if len(batch_rows) >= available_slots:
+                    break
+                remaining_rows = [row for row in rows if row["id"] not in used_ids]
+                max_size = self._downstream_batch_max_size(kind, subkind)
+                if max_size < self.config.downstream_batch_min_size:
+                    continue
+                members = _ready_batch_members(
+                    remaining_rows,
+                    max_size=max_size,
+                    min_size=self.config.downstream_batch_min_size,
+                    window_s=self.config.downstream_batch_window_s,
+                    now=now,
+                )
+                if members is None:
+                    continue
+                batch_row = await self._insert_downstream_batch_row(
+                    conn,
+                    tenant_id=tenant_id,
+                    trigger_kind=kind,
+                    trigger_subkind=subkind,
+                    members=members,
+                )
+                batch_rows.append(batch_row)
+                used_ids.update(row["id"] for row in members)
+                created_lane_batch = True
+            if not created_lane_batch:
+                break
+        if len(batch_rows) >= available_slots:
+            return batch_rows
+
+        fallback_groups: dict[
+            tuple[UUID, str, str | None],
+            list[asyncpg.Record],
+        ] = {}
+        for row in candidates:
+            if row["id"] in used_ids:
+                continue
+            key = (row["tenant_id"], row["trigger_kind"], row["trigger_subkind"])
+            fallback_groups.setdefault(key, []).append(row)
+        fallback_items = sorted(
+            fallback_groups.items(),
+            key=lambda item: min(_timestamp(row["enqueued_at"]) for row in item[1]),
+        )
+        for (tenant_id, kind, subkind), rows in fallback_items:
             if len(batch_rows) >= available_slots:
                 break
             max_size = self._downstream_batch_max_size(kind, subkind)
             if max_size < self.config.downstream_batch_min_size:
                 continue
-            rows.sort(key=lambda r: r["enqueued_at"])
-            oldest = rows[0]["enqueued_at"]
-            if oldest.tzinfo is None:
-                oldest = oldest.replace(tzinfo=timezone.utc)
-            cutoff = oldest.timestamp() + self.config.downstream_batch_window_s
-            in_window = [
-                r for r in rows
-                if _timestamp(r["enqueued_at"]) <= cutoff
-            ]
-            window_elapsed = (
-                (now - oldest).total_seconds()
-                >= self.config.downstream_batch_window_s
+            members = _ready_batch_members(
+                rows,
+                max_size=max_size,
+                min_size=self.config.downstream_batch_min_size,
+                window_s=self.config.downstream_batch_window_s,
+                now=now,
+                allow_max_size=False,
+                fallback_by_arrival=True,
             )
-            max_size_reached = len(in_window) >= max_size
-            if not window_elapsed and not max_size_reached:
-                continue
-            members = in_window[:max_size]
-            if len(members) < self.config.downstream_batch_min_size:
+            if members is None:
                 continue
             batch_row = await self._insert_downstream_batch_row(
                 conn,
@@ -1103,7 +1351,169 @@ class ThinkWorker:
                 members=members,
             )
             batch_rows.append(batch_row)
+            used_ids.update(row["id"] for row in members)
         return batch_rows
+
+    async def _t2_belief_batch_lanes(
+        self,
+        conn: asyncpg.Connection,
+        rows: list[asyncpg.Record],
+    ) -> dict[UUID, str | None]:
+        model_ids = list(
+            dict.fromkeys(
+                row["model_id"]
+                for row in rows
+                if row["trigger_kind"] == "T2"
+                and row["trigger_subkind"] == "belief_updated"
+                and row["model_id"] is not None
+            )
+        )
+        if not model_ids:
+            return {}
+        model_rows = await conn.fetch(
+            """
+            SELECT id, scope_actors, scope_entities
+            FROM models
+            WHERE id = ANY($1::uuid[])
+            """,
+            model_ids,
+        )
+        lane_by_model = {
+            row["id"]: _scope_batch_lane(
+                entities=row["scope_entities"],
+                actors=row["scope_actors"],
+            )
+            for row in model_rows
+        }
+        return {
+            row["id"]: lane_by_model.get(row["model_id"])
+            for row in rows
+            if row["trigger_kind"] == "T2"
+            and row["trigger_subkind"] == "belief_updated"
+        }
+
+    async def _t4_candidate_batch_lanes(
+        self,
+        conn: asyncpg.Connection,
+        rows: list[asyncpg.Record],
+    ) -> dict[UUID, str | None]:
+        """Return a batching lane for T4 relationship candidates.
+
+        Edge candidates can use the compact compiled adjudicator, while
+        situation candidates need broader synthesis. Keeping them in separate
+        downstream batches avoids one situation candidate forcing edge
+        candidates onto the broad RawDiff path.
+        """
+        trigger_to_candidates: dict[UUID, list[UUID]] = {}
+        for row in rows:
+            if (
+                row["trigger_kind"] != "T4"
+                or row["trigger_subkind"] != "latent_relationship_candidate"
+            ):
+                continue
+            payload = _payload_dict(row["payload"])
+            candidate_ids = _coerce_uuid_list(
+                payload.get("relationship_candidate_ids")
+                if isinstance(payload.get("relationship_candidate_ids"), list)
+                else [payload.get("relationship_candidate_id")]
+            )
+            if candidate_ids:
+                trigger_to_candidates[row["id"]] = candidate_ids
+        if not trigger_to_candidates:
+            return {}
+        candidate_ids = list(
+            dict.fromkeys(
+                candidate_id
+                for ids in trigger_to_candidates.values()
+                for candidate_id in ids
+            )
+        )
+        candidate_rows = await conn.fetch(
+            """
+            SELECT id, candidate_kind, member_model_ids,
+                   source_model_id, target_model_id
+            FROM relationship_candidates
+            WHERE id = ANY($1::uuid[])
+            """,
+            candidate_ids,
+        )
+        candidate_by_id = {row["id"]: row for row in candidate_rows}
+        kind_by_candidate = {
+            row["id"]: str(row["candidate_kind"] or "unknown")
+            for row in candidate_rows
+        }
+        model_ids: list[UUID] = []
+        seen_models: set[UUID] = set()
+        trigger_to_models: dict[UUID, list[UUID]] = {}
+        for row in rows:
+            if row["id"] not in trigger_to_candidates:
+                continue
+            payload = _payload_dict(row["payload"])
+            row_model_ids = _coerce_uuid_list(payload.get("member_model_ids") or [])
+            for candidate_id in trigger_to_candidates[row["id"]]:
+                candidate = candidate_by_id.get(candidate_id)
+                if candidate is None:
+                    continue
+                row_model_ids.extend(
+                    _coerce_uuid_list(candidate["member_model_ids"] or [])
+                )
+                for key in ("source_model_id", "target_model_id"):
+                    value = candidate[key]
+                    if value is not None:
+                        row_model_ids.append(value)
+            deduped_models: list[UUID] = []
+            for model_id in row_model_ids:
+                if model_id not in deduped_models:
+                    deduped_models.append(model_id)
+                if model_id not in seen_models:
+                    seen_models.add(model_id)
+                    model_ids.append(model_id)
+            trigger_to_models[row["id"]] = deduped_models
+        model_scope_rows = (
+            await conn.fetch(
+                """
+                SELECT id, scope_actors, scope_entities
+                FROM models
+                WHERE id = ANY($1::uuid[])
+                """,
+                model_ids,
+            )
+            if model_ids
+            else []
+        )
+        model_scope_by_id = {row["id"]: row for row in model_scope_rows}
+        lanes: dict[UUID, str | None] = {}
+        for row in rows:
+            row_candidate_ids = trigger_to_candidates.get(row["id"])
+            if not row_candidate_ids:
+                lanes[row["id"]] = None
+                continue
+            kinds = sorted(
+                {
+                    kind_by_candidate.get(candidate_id, "unknown")
+                    for candidate_id in row_candidate_ids
+                }
+            )
+            if len(kinds) == 1:
+                kind_lane = f"candidate_kind:{kinds[0]}"
+            else:
+                kind_lane = "candidate_kind:mixed:" + ",".join(kinds)
+            scope_entities: list[Any] = []
+            scope_actors: list[Any] = []
+            for model_id in trigger_to_models.get(row["id"], []):
+                model_scope = model_scope_by_id.get(model_id)
+                if model_scope is None:
+                    continue
+                scope_entities.extend(_jsonb_array(model_scope["scope_entities"]))
+                scope_actors.extend(model_scope["scope_actors"] or [])
+            scope_lane = _scope_batch_lane(
+                entities=scope_entities,
+                actors=scope_actors,
+            )
+            lanes[row["id"]] = (
+                f"{kind_lane}|{scope_lane}" if scope_lane is not None else kind_lane
+            )
+        return lanes
 
     async def _create_t1_batch_rows(
         self,
@@ -1175,35 +1585,100 @@ class ThinkWorker:
             return []
 
         now = datetime.now(timezone.utc)
-        by_tenant: dict[UUID, list[asyncpg.Record]] = {}
+        lanes = await self._t1_event_batch_lanes(conn, candidates)
+        by_lane: dict[tuple[UUID, str | None], list[asyncpg.Record]] = {}
         for row in candidates:
-            by_tenant.setdefault(row["tenant_id"], []).append(row)
+            by_lane.setdefault((row["tenant_id"], lanes.get(row["id"])), []).append(row)
 
         batch_rows: list[dict[str, Any]] = []
-        for tenant_id, rows in by_tenant.items():
+        used_ids: set[UUID] = set()
+        lane_groups = sorted(
+            by_lane.items(),
+            key=lambda item: min(_timestamp(row["enqueued_at"]) for row in item[1]),
+        )
+        while len(batch_rows) < available_slots:
+            created_lane_batch = False
+            for (tenant_id, lane), rows in lane_groups:
+                if len(batch_rows) >= available_slots:
+                    break
+                if lane is None:
+                    continue
+                remaining_rows = [row for row in rows if row["id"] not in used_ids]
+                members = _ready_batch_members(
+                    remaining_rows,
+                    max_size=self.config.t1_batch_max_size,
+                    min_size=self.config.t1_batch_min_size,
+                    window_s=self.config.t1_batch_window_s,
+                    now=now,
+                )
+                if members is None:
+                    continue
+                batch_row = await self._insert_t1_batch_row(conn, tenant_id, members)
+                batch_rows.append(batch_row)
+                used_ids.update(row["id"] for row in members)
+                created_lane_batch = True
+            if not created_lane_batch:
+                break
+        if len(batch_rows) >= available_slots:
+            return batch_rows
+
+        fallback_by_tenant: dict[UUID, list[asyncpg.Record]] = {}
+        for row in candidates:
+            if row["id"] in used_ids:
+                continue
+            fallback_by_tenant.setdefault(row["tenant_id"], []).append(row)
+        fallback_items = sorted(
+            fallback_by_tenant.items(),
+            key=lambda item: min(_timestamp(row["enqueued_at"]) for row in item[1]),
+        )
+        for tenant_id, rows in fallback_items:
             if len(batch_rows) >= available_slots:
                 break
-            rows.sort(key=lambda r: r["enqueued_at"])
-            oldest = rows[0]["enqueued_at"]
-            if oldest.tzinfo is None:
-                oldest = oldest.replace(tzinfo=timezone.utc)
-            cutoff = oldest.timestamp() + self.config.t1_batch_window_s
-            in_window = [
-                r for r in rows
-                if _timestamp(r["enqueued_at"]) <= cutoff
-            ]
-            window_elapsed = (
-                (now - oldest).total_seconds() >= self.config.t1_batch_window_s
+            members = _ready_batch_members(
+                rows,
+                max_size=self.config.t1_batch_max_size,
+                min_size=self.config.t1_batch_min_size,
+                window_s=self.config.t1_batch_window_s,
+                now=now,
+                allow_max_size=False,
+                fallback_by_arrival=True,
             )
-            max_size_reached = len(in_window) >= self.config.t1_batch_max_size
-            if not window_elapsed and not max_size_reached:
-                continue
-            members = in_window[:self.config.t1_batch_max_size]
-            if len(members) < self.config.t1_batch_min_size:
+            if members is None:
                 continue
             batch_row = await self._insert_t1_batch_row(conn, tenant_id, members)
             batch_rows.append(batch_row)
+            used_ids.update(row["id"] for row in members)
         return batch_rows
+
+    async def _t1_event_batch_lanes(
+        self,
+        conn: asyncpg.Connection,
+        rows: list[asyncpg.Record],
+    ) -> dict[UUID, str | None]:
+        observation_ids = list(
+            dict.fromkeys(row["observation_id"] for row in rows if row["observation_id"])
+        )
+        if not observation_ids:
+            return {}
+        observation_rows = await conn.fetch(
+            """
+            SELECT id, actor_id, entities_mentioned
+            FROM observations
+            WHERE id = ANY($1::uuid[])
+            """,
+            observation_ids,
+        )
+        lane_by_observation = {
+            row["id"]: _scope_batch_lane(
+                entities=row["entities_mentioned"],
+                actor_id=row["actor_id"],
+            )
+            for row in observation_rows
+        }
+        return {
+            row["id"]: lane_by_observation.get(row["observation_id"])
+            for row in rows
+        }
 
     async def _insert_t1_batch_row(
         self,
@@ -1314,18 +1789,24 @@ class ThinkWorker:
             text = (row["content_text"] or "").strip()
             if text:
                 compact_full = " ".join(text.split())
-                signal_fragments.append({
-                    "observation_id": str(row["id"]),
-                    "occurred_at": occurred_at.isoformat(),
-                    "source_channel": str(row["source_channel"]),
-                    "kind": str(row["kind"]),
-                    "text": compact_full[:900],
-                })
+                signal_fragments.append(
+                    {
+                        "observation_id": str(row["id"]),
+                        "occurred_at": occurred_at.isoformat(),
+                        "source_channel": str(row["source_channel"]),
+                        "kind": str(row["kind"]),
+                        "text": compact_full[:900],
+                    }
+                )
                 compact = compact_full
                 if len(compact) > 280:
                     compact = compact[:277].rstrip() + "..."
                 signal_lines.append(f"- {row['id']}: {compact}")
-        summary = f"Batch of {len(observation_ids)} signals"
+        summary = (
+            f"Evidence window containing {len(observation_ids)} source signals. "
+            "The window wrapper is not itself a business fact; derive durable "
+            "claims only from the individual signals below."
+        )
         if signal_lines:
             summary = f"{summary}:\n" + "\n".join(signal_lines)
         if len(summary) > 2000:
@@ -1427,10 +1908,7 @@ class ThinkWorker:
                 batch_id=batch_id,
                 members=members,
             )
-        if (
-            trigger_kind == "T4"
-            and trigger_subkind == "latent_relationship_candidate"
-        ):
+        if trigger_kind == "T4" and trigger_subkind == "latent_relationship_candidate":
             return await self._build_t4_latent_batch_payload(
                 conn,
                 batch_id=batch_id,
@@ -1451,20 +1929,21 @@ class ThinkWorker:
         batch_id: UUID,
         members: list[asyncpg.Record],
     ) -> dict[str, Any]:
-        model_ids = [
-            m["model_id"] for m in members
-            if m["model_id"] is not None
-        ]
+        model_ids = [m["model_id"] for m in members if m["model_id"] is not None]
         model_ids = list(dict.fromkeys(model_ids))
-        rows = await conn.fetch(
-            """
+        rows = (
+            await conn.fetch(
+                """
             SELECT id, "natural", scope_actors, scope_entities
             FROM models
             WHERE id = ANY($1::uuid[])
             ORDER BY array_position($1::uuid[], id)
             """,
-            model_ids,
-        ) if model_ids else []
+                model_ids,
+            )
+            if model_ids
+            else []
+        )
         scope_actors: list[str] = []
         seen_actors: set[str] = set()
         seed_entities: list[dict[str, Any]] = []
@@ -1503,8 +1982,7 @@ class ThinkWorker:
                     seed_entities.append({"type": str(etype), "id": str(eid)})
 
         observation_ids = [
-            m["observation_id"] for m in members
-            if m["observation_id"] is not None
+            m["observation_id"] for m in members if m["observation_id"] is not None
         ]
         summary = f"Batch of {len(model_ids)} updated beliefs"
         if lines:
@@ -1559,17 +2037,26 @@ class ThinkWorker:
                     compact = compact[:217].rstrip() + "..."
                 seed_lines.append(f"- {member['id']}: {compact}")
 
-        rows = await conn.fetch(
-            """
+        rows = (
+            await conn.fetch(
+                """
             SELECT id, member_model_ids, source_model_id, target_model_id,
-                   explanation
+                   candidate_kind, explanation
             FROM relationship_candidates
             WHERE id = ANY($1::uuid[])
             ORDER BY array_position($1::uuid[], id)
             """,
-            candidate_ids,
-        ) if candidate_ids else []
+                candidate_ids,
+            )
+            if candidate_ids
+            else []
+        )
+        candidate_kind_counts: dict[str, int] = {}
         for row in rows:
+            candidate_kind = str(row["candidate_kind"] or "unknown")
+            candidate_kind_counts[candidate_kind] = (
+                candidate_kind_counts.get(candidate_kind, 0) + 1
+            )
             for value in row["member_model_ids"] or []:
                 if value not in seen_members:
                     seen_members.add(value)
@@ -1602,23 +2089,23 @@ class ThinkWorker:
             "batch_member_trigger_ids": [str(m["id"]) for m in members],
             "member_trigger_ids": [str(m["id"]) for m in members],
             "relationship_candidate_id": first_candidate,
-            "relationship_candidate_ids": [
-                str(cid) for cid in candidate_ids
-            ],
-            "batch_relationship_candidate_ids": [
-                str(cid) for cid in candidate_ids
-            ],
+            "relationship_candidate_ids": [str(cid) for cid in candidate_ids],
+            "batch_relationship_candidate_ids": [str(cid) for cid in candidate_ids],
             "member_model_ids": [str(mid) for mid in member_model_ids],
             "seed_natural_text": summary,
             "seed_signature": {
                 "kind": "latent_relationship_candidate_batch",
                 "candidate_count": len(candidate_ids),
+                "candidate_kind": (
+                    next(iter(candidate_kind_counts))
+                    if len(candidate_kind_counts) == 1
+                    else None
+                ),
+                "candidate_kind_counts": candidate_kind_counts,
             },
         }
 
-    def _maybe_escalation_provider(
-        self, payload: dict[str, Any]
-    ) -> LLMProvider | None:
+    def _maybe_escalation_provider(self, payload: dict[str, Any]) -> LLMProvider | None:
         """Cost-plan §2.4: when this dispatch is a validation retry (the payload
         carries `validation_feedback`, persisted by `_mark_trigger_failed`) and
         `THINK_ESCALATION_MODEL` names a different model, return a cached provider
@@ -1633,6 +2120,7 @@ class ThinkWorker:
         if cached is not None and cached.config.model == model:
             return cached
         from dataclasses import replace
+
         self._escalation_provider = build_provider(
             replace(self.llm_provider.config, model=model)
         )
@@ -1696,9 +2184,7 @@ class ThinkWorker:
             tenant_id=str(tenant_id),
         )
 
-    async def _dispatch_trigger(
-        self, row: asyncpg.Record | dict[str, Any]
-    ) -> None:
+    async def _dispatch_trigger(self, row: asyncpg.Record | dict[str, Any]) -> None:
         tenant_id = row["tenant_id"]
         sem = self._semaphores.setdefault(
             tenant_id,
@@ -1717,6 +2203,7 @@ class ThinkWorker:
         # indefinitely (e.g. a cycle where two commitments keep
         # unblocking each other across Think cycles).
         from .cascade import MAX_CASCADE_DEPTH
+
         cascade_depth_raw = payload.get("cascade_depth", 0)
         try:
             cascade_depth = int(cascade_depth_raw)
@@ -1781,7 +2268,8 @@ class ThinkWorker:
                 embedder=self.embedder,
                 trigger_kind_subkind=(
                     f"{row['trigger_kind']}:{row['trigger_subkind']}"
-                    if row["trigger_subkind"] else row["trigger_kind"]
+                    if row["trigger_subkind"]
+                    else row["trigger_kind"]
                 ),
             )
             if self.config.run_timeout_s > 0:
@@ -1792,9 +2280,7 @@ class ThinkWorker:
             else:
                 outcome = await call
         except asyncio.TimeoutError:
-            error = (
-                f"think_run_timeout after {self.config.run_timeout_s:.0f}s"
-            )
+            error = f"think_run_timeout after {self.config.run_timeout_s:.0f}s"
             _log.warning(
                 "think.worker.run_timeout",
                 trigger_id=str(row["id"]),
@@ -1802,6 +2288,7 @@ class ThinkWorker:
             )
             try:
                 from lib.llm.provider import close_codex_app_server_client
+
                 await asyncio.wait_for(
                     close_codex_app_server_client(),
                     timeout=5.0,
@@ -1826,9 +2313,7 @@ class ThinkWorker:
                 pass
 
         if outcome.succeeded or outcome.skipped_idempotent:
-            await self._mark_trigger_complete(
-                row["id"], payload=payload
-            )
+            await self._mark_trigger_complete(row["id"], payload=payload)
             # POST_COMMIT_HOOK (OP-1): integrated. Post-commit actions are
             # now enqueued in `reason.py::_run_once` inside the apply
             # transaction (atomic with apply_diff) via
@@ -1847,11 +2332,10 @@ class ThinkWorker:
             # the blind same-model resample up to trigger_max_attempts.
             failure_class = _classify_failure(outcome)
             await self._mark_trigger_failed(
-                row["id"], outcome.error or "unknown",
+                row["id"],
+                outcome.error or "unknown",
                 failure_class=failure_class,
-                feedback=(
-                    outcome.error if failure_class == "validation" else None
-                ),
+                feedback=(outcome.error if failure_class == "validation" else None),
             )
 
     async def _heartbeat_trigger(self, trigger_id: UUID) -> None:
@@ -1913,7 +2397,8 @@ class ThinkWorker:
                 )
                 member_ids = (
                     _payload_uuid_list(payload, "batch_member_trigger_ids")
-                    if payload else []
+                    if payload
+                    else []
                 )
                 if member_ids:
                     await conn.execute(
@@ -1987,7 +2472,12 @@ class ThinkWorker:
                 if failure_class == "validation" and validation_cap is not None:
                     effective_max = min(effective_max, validation_cap)
                 terminal = force_terminal or attempts >= effective_max
-                backoff_seconds = min(300, 10 * (2 ** min(attempts, 4)))
+                provider_backoff_seconds = _provider_failure_backoff_seconds(error)
+                backoff_seconds = (
+                    provider_backoff_seconds
+                    if provider_backoff_seconds is not None
+                    else min(300, 10 * (2 ** min(attempts, 4)))
+                )
                 if terminal:
                     await conn.execute(
                         """
@@ -1998,11 +2488,10 @@ class ThinkWorker:
                             locked_at = NULL
                         WHERE id = $1
                         """,
-                        trigger_id, attempts,
+                        trigger_id,
+                        attempts,
                     )
-                    member_ids = _payload_uuid_list(
-                        payload, "batch_member_trigger_ids"
-                    )
+                    member_ids = _payload_uuid_list(payload, "batch_member_trigger_ids")
                     if member_ids:
                         # Cost-plan §2.3 C7: stamp `unbatched_from` so released
                         # members are excluded from re-batching. Without this a
@@ -2036,9 +2525,7 @@ class ThinkWorker:
                         except (ValueError, TypeError):
                             rrid = None
                         if rrid is not None:
-                            await self._dead_letter_reeval(
-                                conn, rrid, attempts, error
-                            )
+                            await self._dead_letter_reeval(conn, rrid, attempts, error)
                 elif (
                     feedback
                     and failure_class == "validation"
@@ -2059,7 +2546,9 @@ class ThinkWorker:
                             )
                         WHERE id = $1
                         """,
-                        trigger_id, attempts, str(backoff_seconds),
+                        trigger_id,
+                        attempts,
+                        str(backoff_seconds),
                         feedback[:2000],
                     )
                 else:
@@ -2072,7 +2561,9 @@ class ThinkWorker:
                             scheduled_for = now() + ($3 || ' seconds')::interval
                         WHERE id = $1
                         """,
-                        trigger_id, attempts, str(backoff_seconds),
+                        trigger_id,
+                        attempts,
+                        str(backoff_seconds),
                     )
 
     async def _dead_letter_reeval(
@@ -2119,7 +2610,9 @@ class ThinkWorker:
                 last_error = $3
             WHERE id = $1
             """,
-            reeval_row_id, attempts, last_error,
+            reeval_row_id,
+            attempts,
+            last_error,
         )
 
     # -----------------------------------------------------------------

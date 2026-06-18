@@ -10,6 +10,7 @@ package. They protect the production contract we care about:
 * mixed-quality LLM diffs are partially accepted with observability;
 * duplicate claims are reconciled through the real Think path.
 """
+
 from __future__ import annotations
 
 import json
@@ -162,9 +163,7 @@ def test_prompt_contract_surfaces_ids_scope_and_topology_context() -> None:
                 falsifier={"kind": "observation_pattern"},
                 status="active",
                 scope_actors=[actor_id],
-                scope_entities=[
-                    {"type": "commitment", "id": str(commitment_id)}
-                ],
+                scope_entities=[{"type": "commitment", "id": str(commitment_id)}],
                 natural="Globex renewal risk is rising.",
             )
         ],
@@ -349,7 +348,10 @@ async def test_scripted_think_creates_model_audit_state_change_and_post_commit(
     assert audit_count == 1
     assert state_change_count == 1
     assert validation_errors == 0
-    assert [r["action_kind"] for r in post_commit_kinds] == ["broadcast_realtime"]
+    assert [r["action_kind"] for r in post_commit_kinds] == [
+        "broadcast_realtime",
+        "discover_model_edges",
+    ]
 
 
 async def test_think_partially_accepts_mixed_llm_diff_and_records_drop_count(

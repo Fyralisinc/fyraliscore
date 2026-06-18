@@ -55,11 +55,15 @@ from .diff_schema import (
     ActOp,
     ClaimOp,
     EdgeOp,
+    MemoryLifecycleOp,
     OntologyGapOp,
     RawDiff,
+    RelationClaimOp,
+    RelationFrameOp,
     ResourceOp,
     ValidatedDiff,
 )
+from .evidence_support import compact_supporting_event_ids
 from .observability import log_dropped_op
 from .prediction_lifecycle import (
     materialize_model_prediction,
@@ -70,6 +74,19 @@ from .quality_gate import QualityContext, QualityVerdict, apply_verdict, score_q
 from .splitter import split_compound_claim_op
 from .synthesis_decision import summarize_synthesis_decisions
 from .text_embedding import deterministic_text_embedding, is_zero_embedding
+
+
+def _raise_if_postgres_error(exc: Exception) -> None:
+    if isinstance(exc, asyncpg.PostgresError):
+        raise exc
+
+
+_RELATION_CLAIM_SUPPORT_SUPERSEDERS = frozenset({
+    "blocks",
+    "contradicts",
+    "weakens",
+})
+_NON_OVERRIDABLE_EDGE_PROVENANCE = frozenset({"manual"})
 
 
 class ApplierError(CompanyOSError):
@@ -97,6 +114,15 @@ def hash_diff(diff: ValidatedDiff | RawDiff) -> str:
         "trigger_ref": str(diff.trigger_ref),
         "tenant_id": str(diff.tenant_id),
         "claim_ops": [op.model_dump(mode="json") for op in diff.claim_ops],
+        "memory_lifecycle_ops": [
+            op.model_dump(mode="json") for op in diff.memory_lifecycle_ops
+        ],
+        "relation_claim_ops": [
+            op.model_dump(mode="json") for op in diff.relation_claim_ops
+        ],
+        "relation_frame_ops": [
+            op.model_dump(mode="json") for op in diff.relation_frame_ops
+        ],
         "edge_ops": [op.model_dump(mode="json") for op in diff.edge_ops],
         "ontology_gap_ops": [
             op.model_dump(mode="json") for op in diff.ontology_gap_ops
@@ -145,7 +171,7 @@ async def _record_apply_drop(
             payload={"message": message[:500]},
         )
     except asyncpg.PostgresError:
-        pass
+        raise
 
 
 # ---------------------------------------------------------------------
@@ -256,7 +282,8 @@ async def _apply_edge_ops_for_diff(
     pending_model_ids_by_event_id: dict[UUID, UUID],
     trigger_cause_event_id: UUID | None,
     ops_summary: dict[str, Any],
-) -> None:
+) -> list[EdgeOp]:
+    applied_ops: list[EdgeOp] = []
     for op in diff.edge_ops:
         op = _resolve_pending_edge_model_refs(op, pending_model_ids_by_event_id)
         if op.source_model_id == op.target_model_id:
@@ -310,6 +337,143 @@ async def _apply_edge_ops_for_diff(
             )
             continue
         ops_summary["edge_ops"].append(result["summary"])
+        applied_ops.append(op)
+    return applied_ops
+
+
+async def _apply_relation_claim_ops_for_diff(
+    *,
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    pending_model_ids_by_event_id: dict[UUID, UUID],
+    trigger_cause_event_id: UUID | None,
+    think_run_id: UUID | None,
+    ops_summary: dict[str, Any],
+) -> list[RelationClaimOp]:
+    applied_ops: list[RelationClaimOp] = []
+    for op in diff.relation_claim_ops:
+        op = _resolve_pending_relation_claim_model_refs(
+            op,
+            pending_model_ids_by_event_id,
+        )
+        if (
+            op.source_model_id is not None
+            and op.target_model_id is not None
+            and op.source_model_id == op.target_model_id
+        ):
+            ops_summary["relation_claim_ops"].append(
+                {
+                    "op": "skip",
+                    "edge_kind": op.edge_kind,
+                    "reason": "resolved_to_same_model_after_reconciliation",
+                }
+            )
+            continue
+        try:
+            result = await _apply_relation_claim_op(
+                op,
+                conn,
+                diff.tenant_id,
+                cause_event_id=trigger_cause_event_id,
+                think_run_id=think_run_id,
+            )
+        except (EdgeRegistryError, ValidationError) as exc:
+            reason = _classify_apply_edge_drop_reason(exc)
+            message = getattr(exc, "message", str(exc))
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.op,
+                op_type="relation_claim",
+                failure_reason=reason,
+                original_op=op,
+            )
+            await _record_apply_drop(
+                conn,
+                tenant_id=diff.tenant_id,
+                op_type="relation_claim",
+                op_kind=op.op,
+                reason=reason,
+                message=message,
+            )
+            ops_summary["apply_dropped_op_count"] += 1
+            ops_summary["apply_dropped_op_errors"].append(message)
+            ops_summary["relation_claim_ops"].append(
+                {
+                    "op": "skip",
+                    "edge_kind": op.edge_kind,
+                    "reason": reason,
+                    "message": message,
+                }
+            )
+            continue
+        ops_summary["relation_claim_ops"].append(result["summary"])
+        edge_summaries = result.get("edge_summaries")
+        if isinstance(edge_summaries, list):
+            ops_summary["edge_ops"].extend(edge_summaries)
+        elif result.get("edge_summary") is not None:
+            ops_summary["edge_ops"].append(result["edge_summary"])
+        applied_ops.append(op)
+    return applied_ops
+
+
+async def _apply_relation_frame_ops_for_diff(
+    *,
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    pending_model_ids_by_event_id: dict[UUID, UUID],
+    trigger_cause_event_id: UUID | None,
+    think_run_id: UUID | None,
+    ops_summary: dict[str, Any],
+) -> list[RelationFrameOp]:
+    applied_ops: list[RelationFrameOp] = []
+    for op in diff.relation_frame_ops:
+        op = _resolve_pending_relation_frame_model_refs(
+            op,
+            pending_model_ids_by_event_id,
+        )
+        try:
+            result = await _apply_relation_frame_op(
+                op,
+                conn,
+                diff.tenant_id,
+                cause_event_id=trigger_cause_event_id,
+                think_run_id=think_run_id,
+            )
+        except (EdgeRegistryError, ValidationError) as exc:
+            reason = _classify_apply_edge_drop_reason(exc)
+            message = getattr(exc, "message", str(exc))
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.op,
+                op_type="relation_frame",
+                failure_reason=reason,
+                original_op=op,
+            )
+            await _record_apply_drop(
+                conn,
+                tenant_id=diff.tenant_id,
+                op_type="relation_frame",
+                op_kind=op.op,
+                reason=reason,
+                message=message,
+            )
+            ops_summary["apply_dropped_op_count"] += 1
+            ops_summary["apply_dropped_op_errors"].append(message)
+            ops_summary["relation_frame_ops"].append(
+                {
+                    "op": "skip",
+                    "relation_kind": op.relation_kind,
+                    "reason": reason,
+                    "message": message,
+                }
+            )
+            continue
+        ops_summary["relation_frame_ops"].append(result["summary"])
+        ops_summary["edge_ops"].extend(result.get("edge_summaries") or [])
+        applied_ops.append(op)
+    return applied_ops
 
 
 async def _apply_ontology_gap_ops_for_diff(
@@ -319,7 +483,8 @@ async def _apply_ontology_gap_ops_for_diff(
     pending_model_ids_by_event_id: dict[UUID, UUID],
     trigger_cause_event_id: UUID | None,
     ops_summary: dict[str, Any],
-) -> None:
+) -> list[OntologyGapOp]:
+    applied_ops: list[OntologyGapOp] = []
     for op in diff.ontology_gap_ops:
         op = _resolve_pending_ontology_gap_model_refs(
             op,
@@ -376,6 +541,8 @@ async def _apply_ontology_gap_ops_for_diff(
             )
             continue
         ops_summary["ontology_gap_ops"].append(result["summary"])
+        applied_ops.append(op)
+    return applied_ops
 
 
 async def _enqueue_belief_updated_for_applied_models(
@@ -632,9 +799,7 @@ def _patch_pending_situation_members(
     if not is_pending_situation:
         return False
     members = (
-        group_member_ids.get(split_group_id, [])
-        if split_group_id is not None
-        else []
+        group_member_ids.get(split_group_id, []) if split_group_id is not None else []
     )
     if not members:
         ops_summary["claim_ops"].append(
@@ -925,6 +1090,198 @@ async def _apply_resource_ops_for_diff(
     return state_changes_emitted
 
 
+def _bounded_confidence(value: float) -> float:
+    return min(0.95, max(0.05, float(value)))
+
+
+def _lifecycle_confidence(
+    op: MemoryLifecycleOp,
+    *,
+    current_confidence: float,
+) -> float | None:
+    if op.confidence is not None:
+        return _bounded_confidence(float(op.confidence))
+    if op.confidence_delta is not None:
+        return _bounded_confidence(current_confidence + float(op.confidence_delta))
+    if op.action == "confirm":
+        return _bounded_confidence(current_confidence + 0.05)
+    if op.action == "falsify":
+        return _bounded_confidence(current_confidence - 0.25)
+    return None
+
+
+def _lifecycle_resolution_outcome(op: MemoryLifecycleOp) -> bool | None:
+    if op.action == "confirm":
+        return True if op.resolution_outcome is None else bool(op.resolution_outcome)
+    if op.action == "falsify":
+        return False if op.resolution_outcome is None else bool(op.resolution_outcome)
+    return op.resolution_outcome
+
+
+async def _compile_memory_lifecycle_update(
+    op: MemoryLifecycleOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    now: datetime,
+) -> ClaimOp:
+    row = await conn.fetchrow(
+        """
+        SELECT confidence, confirmed_count, contested_count,
+               supporting_model_ids, proposition_kind, claim_role
+        FROM models
+        WHERE tenant_id = $1
+          AND id = $2
+        """,
+        tenant_id,
+        op.model_id,
+    )
+    if row is None:
+        raise ValidationError("memory_lifecycle_op target model not found")
+
+    current_confidence = float(row["confidence"] or 0.5)
+    confirmed_count = int(row["confirmed_count"] or 0)
+    contested_count = int(row["contested_count"] or 0)
+    supporting_model_ids = _merge_event_ids(
+        row["supporting_model_ids"],
+        op.evidence_model_ids,
+    )
+    changes: dict[str, Any] = {
+        "supporting_event_ids": op.evidence_event_ids,
+        "supporting_model_ids": supporting_model_ids,
+    }
+    confidence = _lifecycle_confidence(op, current_confidence=current_confidence)
+    if confidence is not None:
+        changes["confidence"] = confidence
+
+    if op.action in {"confirm", "unchanged"}:
+        changes["confirmed_count"] = confirmed_count + 1
+        changes["last_confirmed_at"] = now
+    if op.action == "revise":
+        if confidence is not None and confidence < current_confidence:
+            changes["contested_count"] = contested_count + 1
+        elif confidence is not None and confidence > current_confidence:
+            changes["confirmed_count"] = confirmed_count + 1
+            changes["last_confirmed_at"] = now
+    if op.action == "falsify":
+        changes["contested_count"] = contested_count + 1
+        changes["resolved_at"] = now
+
+    outcome = _lifecycle_resolution_outcome(op)
+    is_prediction = (
+        row["proposition_kind"] == "prediction"
+        or row["claim_role"] == "prediction"
+    )
+    if outcome is not None and (is_prediction or op.action == "falsify"):
+        changes["resolution_outcome"] = outcome
+        changes.setdefault("resolved_at", now)
+
+    return ClaimOp(op="update", model_id=op.model_id, changes=changes)
+
+
+async def _apply_memory_lifecycle_ops_for_diff(
+    *,
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    models_repo: ModelsRepo,
+    trigger_cause_event_id: UUID | None,
+    trigger_evidence_ids: list[UUID],
+    ops_summary: dict[str, Any],
+) -> tuple[list[UUID], int]:
+    applied_model_ids: list[UUID] = []
+    state_changes_emitted = 0
+    now = datetime.now(timezone.utc)
+    for op in diff.memory_lifecycle_ops:
+        try:
+            if op.action in {"archive", "supersede"}:
+                claim_op = ClaimOp(
+                    op="archive",
+                    model_id=op.model_id,
+                    reason=op.reason or (
+                        "superseded" if op.action == "supersede" else "decay"
+                    ),
+                )
+                apply_result = await _apply_claim_archive(
+                    claim_op,
+                    conn,
+                    models_repo,
+                    cause_event_id=trigger_cause_event_id,
+                )
+            else:
+                claim_op = await _compile_memory_lifecycle_update(
+                    op,
+                    conn,
+                    tenant_id=diff.tenant_id,
+                    now=now,
+                )
+                apply_result = await _apply_claim_update(
+                    claim_op,
+                    conn,
+                    models_repo,
+                    diff.tenant_id,
+                    cause_event_id=trigger_cause_event_id,
+                    trigger_supporting_event_ids=trigger_evidence_ids,
+                    audit_cause_override=None,
+                )
+        except ValidationError as exc:
+            message = getattr(exc, "message", str(exc))
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.action,
+                op_type="memory_lifecycle",
+                failure_reason="apply_validation_error",
+                original_op=op,
+            )
+            await _record_apply_drop(
+                conn,
+                tenant_id=diff.tenant_id,
+                op_type="memory_lifecycle",
+                op_kind=op.action,
+                reason="apply_validation_error",
+                message=message,
+            )
+            ops_summary["apply_dropped_op_count"] += 1
+            ops_summary["apply_dropped_op_errors"].append(message)
+            ops_summary["memory_lifecycle_ops"].append(
+                {
+                    "op": "skip",
+                    "action": op.action,
+                    "model_id": str(op.model_id),
+                    "reason": "apply_validation_error",
+                    "message": message,
+                }
+            )
+            continue
+
+        summary = {
+            "op": "reconcile",
+            "action": op.action,
+            "model_id": str(op.model_id),
+            "rationale": op.rationale,
+            "evidence_event_ids": [
+                str(event_id) for event_id in _merge_event_ids(op.evidence_event_ids)
+            ],
+            "evidence_model_ids": [
+                str(model_id) for model_id in _merge_event_ids(op.evidence_model_ids)
+            ],
+            "compiled_op": apply_result["summary"].get("op"),
+            "changed": apply_result["summary"].get("changed", []),
+            "archive_reason": apply_result["summary"].get("reason"),
+            "resolution_outcome": _lifecycle_resolution_outcome(op),
+            "superseded_by_model_id": (
+                str(op.superseded_by_model_id)
+                if op.superseded_by_model_id is not None
+                else None
+            ),
+        }
+        ops_summary["memory_lifecycle_ops"].append(summary)
+        if apply_result.get("model_id") is not None:
+            applied_model_ids.append(apply_result["model_id"])
+        state_changes_emitted += int(apply_result.get("state_changes", 0))
+    return applied_model_ids, state_changes_emitted
+
+
 async def apply_diff(
     diff: ValidatedDiff,
     conn: asyncpg.Connection,
@@ -966,6 +1323,9 @@ async def apply_diff(
     state_changes_emitted = 0
     ops_summary: dict[str, Any] = {
         "claim_ops": [],
+        "memory_lifecycle_ops": [],
+        "relation_claim_ops": [],
+        "relation_frame_ops": [],
         "edge_ops": [],
         "ontology_gap_ops": [],
         "act_ops": [],
@@ -982,7 +1342,10 @@ async def apply_diff(
     )
 
     if models_repo is None:
-        models_repo = ModelsRepo(pool=None)  # type: ignore[arg-type]
+        models_repo = ModelsRepo(  # type: ignore[arg-type]
+            pool=None,
+            run_topology_on_insert=False,
+        )
 
     # --- 1. claim_ops ---------------------------------------------
     claim_result = await _apply_claim_ops_for_diff(
@@ -998,8 +1361,40 @@ async def apply_diff(
     pending_model_ids_by_event_id = claim_result.pending_model_ids_by_event_id
     state_changes_emitted = claim_result.state_changes_emitted
 
-    # --- 2. edge_ops ----------------------------------------------
-    await _apply_edge_ops_for_diff(
+    # --- 2. memory_lifecycle_ops ----------------------------------
+    lifecycle_model_ids, lifecycle_state_changes = await _apply_memory_lifecycle_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        models_repo=models_repo,
+        trigger_cause_event_id=trigger_cause_event_id,
+        trigger_evidence_ids=trigger_evidence_ids,
+        ops_summary=ops_summary,
+    )
+    applied_model_ids.extend(lifecycle_model_ids)
+    state_changes_emitted += lifecycle_state_changes
+
+    # --- 3. relation_claim_ops ------------------------------------
+    applied_relation_claim_ops = await _apply_relation_claim_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        think_run_id=think_run_id,
+        ops_summary=ops_summary,
+    )
+
+    # --- 4. relation_frame_ops ------------------------------------
+    applied_relation_frame_ops = await _apply_relation_frame_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        think_run_id=think_run_id,
+        ops_summary=ops_summary,
+    )
+
+    # --- 5. edge_ops ----------------------------------------------
+    applied_edge_ops = await _apply_edge_ops_for_diff(
         diff=diff,
         conn=conn,
         pending_model_ids_by_event_id=pending_model_ids_by_event_id,
@@ -1007,8 +1402,8 @@ async def apply_diff(
         ops_summary=ops_summary,
     )
 
-    # --- 3. ontology_gap_ops --------------------------------------
-    await _apply_ontology_gap_ops_for_diff(
+    # --- 6. ontology_gap_ops --------------------------------------
+    applied_ontology_gap_ops = await _apply_ontology_gap_ops_for_diff(
         diff=diff,
         conn=conn,
         pending_model_ids_by_event_id=pending_model_ids_by_event_id,
@@ -1016,7 +1411,7 @@ async def apply_diff(
         ops_summary=ops_summary,
     )
 
-    # --- 4. act_ops -----------------------------------------------
+    # --- 7. act_ops -----------------------------------------------
     state_changes_emitted += await _apply_act_ops_for_diff(
         diff=diff,
         conn=conn,
@@ -1025,7 +1420,7 @@ async def apply_diff(
         ops_summary=ops_summary,
     )
 
-    # --- 5. resource_ops ------------------------------------------
+    # --- 8. resource_ops ------------------------------------------
     state_changes_emitted += await _apply_resource_ops_for_diff(
         diff=diff,
         conn=conn,
@@ -1033,7 +1428,7 @@ async def apply_diff(
         ops_summary=ops_summary,
     )
 
-    # --- 5. Enqueue T2:belief_updated for each new state/concern model ----
+    # --- 9. Enqueue T2:belief_updated for each new state/concern model ----
     await _enqueue_belief_updated_for_applied_models(
         conn=conn,
         tenant_id=diff.tenant_id,
@@ -1042,7 +1437,7 @@ async def apply_diff(
         parent_payload=parent_cascade_payload,
     )
 
-    # --- 6. Mark applied_triggers success (still in same tx) ------
+    # --- 10. Mark applied_triggers success (still in same tx) ------
     ops_summary["memory_aggregation"] = _summarize_memory_aggregation(
         ops_summary,
         original_claim_op_count=len(diff.claim_ops),
@@ -1054,7 +1449,7 @@ async def apply_diff(
         diff.trigger_ref,
     )
 
-    # --- 7. Phase 1 outcome events --------------------------------
+    # --- 11. Phase 1 outcome events -------------------------------
     # The apply succeeded (we just updated applied_triggers to
     # 'success'), so every model_id referenced by the validated diff
     # got "used in a valid diff" for the topology optimizer's
@@ -1062,10 +1457,21 @@ async def apply_diff(
     # the diff connected via an existing model_edges edge. Both emits
     # are best-effort and require an active TraceContext (installed by
     # the inquiry runtime); when none is set they are no-ops.
+    feedback_diff = diff.model_copy(
+        update={
+            "edge_ops": applied_edge_ops,
+            "memory_lifecycle_ops": diff.memory_lifecycle_ops,
+            "relation_claim_ops": applied_relation_claim_ops,
+            "relation_frame_ops": applied_relation_frame_ops,
+            "ontology_gap_ops": applied_ontology_gap_ops,
+        }
+    )
     await _emit_valid_diff_outcome_events(
-        diff,
+        feedback_diff,
         applied_model_ids=applied_model_ids,
         conn=conn,
+        ops_summary=ops_summary,
+        source_observation_id=trigger_cause_event_id,
     )
 
     return {
@@ -1081,6 +1487,8 @@ async def _emit_valid_diff_outcome_events(
     *,
     applied_model_ids: list[UUID],
     conn: asyncpg.Connection,
+    ops_summary: dict[str, Any] | None = None,
+    source_observation_id: UUID | None = None,
 ) -> None:
     """Emit `node_used_in_valid_diff` + `path_used_in_valid_diff`.
 
@@ -1095,29 +1503,6 @@ async def _emit_valid_diff_outcome_events(
     `model_edges` row. We batch the existence check in a single SQL
     query so a 20-node diff costs ~1 query, not 20*19.
     """
-    try:
-        from services.reasoning.sage.inquiry_traces.emitter import (
-            current_trace_context,
-            emit_event,
-            emission_enabled,
-        )
-    except Exception:  # noqa: BLE001
-        return
-    if not emission_enabled():
-        return
-    ctx = current_trace_context()
-    if ctx is None:
-        return
-    ctx_meta = dict(getattr(ctx, "metadata", {}) or {})
-    primitives = [
-        str(p) for p in (ctx_meta.get("question_primitives") or []) if p is not None
-    ]
-    default_primitive = primitives[0] if primitives else None
-    entities = [
-        str(e) for e in (ctx_meta.get("entities") or []) if e is not None and str(e)
-    ]
-    signal_type = ctx_meta.get("signal_type") or ctx_meta.get("trigger_kind")
-
     # Collect every model_id the diff touched. Include applied (insert
     # results) + update/archive targets + edge endpoints + the
     # confidence_basis on act_ops (a Model that grounded the decision).
@@ -1128,11 +1513,35 @@ async def _emit_valid_diff_outcome_events(
     for op in diff.claim_ops:
         if isinstance(getattr(op, "model_id", None), UUID):
             node_ids.add(op.model_id)
+    for op in diff.memory_lifecycle_ops:
+        if isinstance(getattr(op, "model_id", None), UUID):
+            node_ids.add(op.model_id)
+        if isinstance(getattr(op, "superseded_by_model_id", None), UUID):
+            node_ids.add(op.superseded_by_model_id)
+        for model_id in getattr(op, "evidence_model_ids", None) or []:
+            if isinstance(model_id, UUID):
+                node_ids.add(model_id)
     for op in diff.edge_ops:
         if isinstance(getattr(op, "source_model_id", None), UUID):
             node_ids.add(op.source_model_id)
         if isinstance(getattr(op, "target_model_id", None), UUID):
             node_ids.add(op.target_model_id)
+    for op in diff.relation_claim_ops:
+        if isinstance(getattr(op, "source_model_id", None), UUID):
+            node_ids.add(op.source_model_id)
+        if isinstance(getattr(op, "target_model_id", None), UUID):
+            node_ids.add(op.target_model_id)
+        for model_id in getattr(op, "evidence_model_ids", None) or []:
+            if isinstance(model_id, UUID):
+                node_ids.add(model_id)
+    for op in diff.relation_frame_ops:
+        for participant in getattr(op, "participants", None) or []:
+            model_id = getattr(participant, "model_id", None)
+            if isinstance(model_id, UUID):
+                node_ids.add(model_id)
+        for model_id in getattr(op, "evidence_model_ids", None) or []:
+            if isinstance(model_id, UUID):
+                node_ids.add(model_id)
     for op in diff.ontology_gap_ops:
         if isinstance(getattr(op, "source_model_id", None), UUID):
             node_ids.add(op.source_model_id)
@@ -1145,6 +1554,63 @@ async def _emit_valid_diff_outcome_events(
         basis = getattr(op, "confidence_basis", None)
         if isinstance(basis, UUID):
             node_ids.add(basis)
+
+    node_ids = await _filter_existing_model_ids_for_outcome_events(
+        conn,
+        tenant_id=diff.tenant_id,
+        model_ids=node_ids,
+        applied_model_ids=applied_model_ids,
+    )
+
+    try:
+        from services.reasoning.sage.inquiry_traces.emitter import (
+            current_trace_context,
+            emit_event,
+            emission_enabled,
+        )
+    except Exception:  # noqa: BLE001
+        await _record_edge_intelligence_valid_diff(
+            diff,
+            node_ids=node_ids,
+            conn=conn,
+            primitive=None,
+            source_observation_id=source_observation_id,
+        )
+        return
+
+    ctx = current_trace_context()
+    ctx_meta = dict(getattr(ctx, "metadata", {}) or {}) if ctx is not None else {}
+    primitives = [
+        str(p) for p in (ctx_meta.get("question_primitives") or []) if p is not None
+    ]
+    default_primitive = primitives[0] if primitives else None
+
+    await _record_edge_intelligence_valid_diff(
+        diff,
+        node_ids=node_ids,
+        conn=conn,
+        primitive=default_primitive,
+        source_observation_id=source_observation_id,
+    )
+
+    if not emission_enabled() or ctx is None:
+        return
+
+    entities = [
+        str(e) for e in (ctx_meta.get("entities") or []) if e is not None and str(e)
+    ]
+    signal_type = ctx_meta.get("signal_type") or ctx_meta.get("trigger_kind")
+
+    await _emit_question_policy_valid_diff_feedback(
+        diff,
+        conn=conn,
+        ctx=ctx,
+        ops_summary=ops_summary or {},
+        emit_event=emit_event,
+        signal_type=str(signal_type or "unknown"),
+        question_primitive=default_primitive,
+        entities=entities,
+    )
 
     for mid in sorted(node_ids, key=str):
         try:
@@ -1168,6 +1634,7 @@ async def _emit_valid_diff_outcome_events(
                 ctx=ctx,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
+            _raise_if_postgres_error(exc)
             import structlog
 
             structlog.get_logger(__name__).warning(
@@ -1194,6 +1661,7 @@ async def _emit_valid_diff_outcome_events(
             list(node_ids),
         )
     except Exception as exc:  # noqa: BLE001 — best-effort; tolerate
+        _raise_if_postgres_error(exc)
         # missing/renamed table in test DBs
         import structlog
 
@@ -1234,6 +1702,7 @@ async def _emit_valid_diff_outcome_events(
                 },
             )
         except Exception as exc:  # noqa: BLE001 — best-effort
+            _raise_if_postgres_error(exc)
             import structlog
 
             structlog.get_logger(__name__).warning(
@@ -1243,6 +1712,569 @@ async def _emit_valid_diff_outcome_events(
                 edge_kind=kind,
                 error=str(exc),
             )
+
+
+_QUESTION_POLICY_FEEDBACK_TAGS = frozenset({"question_policy", "capability_probe"})
+
+
+def _accepted_question_policy_probe_model_ids(
+    ops_summary: dict[str, Any],
+) -> list[UUID]:
+    model_ids: list[UUID] = []
+    seen: set[UUID] = set()
+    for item in ops_summary.get("claim_ops", []) or []:
+        if not isinstance(item, dict):
+            continue
+        tags = {str(tag) for tag in (item.get("domain_tags") or [])}
+        if not _QUESTION_POLICY_FEEDBACK_TAGS <= tags:
+            continue
+        model_id = _coerce_uuid_or_none(item.get("model_id"))
+        if model_id is None or model_id in seen:
+            continue
+        seen.add(model_id)
+        model_ids.append(model_id)
+    return model_ids
+
+
+async def _emit_question_policy_valid_diff_feedback(
+    diff: ValidatedDiff,
+    *,
+    conn: asyncpg.Connection,
+    ctx: Any,
+    ops_summary: dict[str, Any],
+    emit_event: Any,
+    signal_type: str,
+    question_primitive: str | None,
+    entities: list[str],
+) -> None:
+    """Bridge accepted question-policy probe writes into SAGE policy credit."""
+    model_ids = _accepted_question_policy_probe_model_ids(ops_summary)
+    if not model_ids:
+        return
+    primitive = str(question_primitive or "DEPENDENCY").upper()
+    question_id = "capability_probe:question_policy"
+    question = (
+        "Would asking for the missing approval owner before writing a strong "
+        "relation improve precision?"
+    )
+    try:
+        async with conn.transaction():
+            table_name = await conn.fetchval(
+                "SELECT to_regclass('public.sage_reader_decision_attributions')"
+            )
+            if table_name is None:
+                return
+            await conn.executemany(
+                """
+                INSERT INTO sage_reader_decision_attributions (
+                  id, tenant_id, inquiry_session_id,
+                  question_id, question_primitive, question,
+                  question_score, expected_value, expected_cost,
+                  signal_type, entities, model_id,
+                  selected, selection_rank, activation_score,
+                  activation_reasons, source_breakdown, retrieval_actions,
+                  projected_evidence_refs, evidence_in_packet_count
+                ) VALUES (
+                  $1, $2, $3,
+                  $4, $5, $6,
+                  $7, $8, $9,
+                  $10, $11::jsonb, $12,
+                  TRUE, 0, 1.0,
+                  $13::jsonb, $14::jsonb, $15::jsonb,
+                  $16::jsonb, 1
+                )
+                ON CONFLICT (inquiry_session_id, question_id, model_id)
+                DO UPDATE SET
+                  question_primitive = EXCLUDED.question_primitive,
+                  question = EXCLUDED.question,
+                  question_score = EXCLUDED.question_score,
+                  expected_value = EXCLUDED.expected_value,
+                  expected_cost = EXCLUDED.expected_cost,
+                  signal_type = EXCLUDED.signal_type,
+                  entities = EXCLUDED.entities,
+                  selected = TRUE,
+                  selection_rank = 0,
+                  activation_score = 1.0,
+                  activation_reasons = EXCLUDED.activation_reasons,
+                  source_breakdown = EXCLUDED.source_breakdown,
+                  retrieval_actions = EXCLUDED.retrieval_actions,
+                  projected_evidence_refs = EXCLUDED.projected_evidence_refs,
+                  evidence_in_packet_count = EXCLUDED.evidence_in_packet_count,
+                  updated_at = now()
+                """,
+                [
+                    (
+                        uuid7(),
+                        diff.tenant_id,
+                        ctx.inquiry_session_id,
+                        question_id,
+                        primitive,
+                        question,
+                        0.82,
+                        0.74,
+                        0.05,
+                        signal_type,
+                        json.dumps(entities, default=str),
+                        model_id,
+                        json.dumps(
+                            [
+                                "accepted_question_policy_capability_probe",
+                                "valid_diff_writer_used_probe_memory",
+                            ],
+                            default=str,
+                        ),
+                        json.dumps(
+                            {
+                                "capability_probe": 1.0,
+                                "writer_valid_diff": 1.0,
+                            },
+                            default=str,
+                        ),
+                        json.dumps(
+                            [
+                                {
+                                    "kind": "capability_probe",
+                                    "question_id": question_id,
+                                    "question_primitive": primitive,
+                                }
+                            ],
+                            default=str,
+                        ),
+                        json.dumps(
+                            [
+                                {
+                                    "source_type": "model",
+                                    "source_ref_id": str(model_id),
+                                    "reason": "question_policy_probe_memory_applied",
+                                }
+                            ],
+                            default=str,
+                        ),
+                    )
+                    for model_id in model_ids
+                ],
+            )
+    except Exception as exc:  # noqa: BLE001 — feedback bridge is best-effort
+        _raise_if_postgres_error(exc)
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "sage_trace.question_policy_feedback_attribution_failed",
+            error=str(exc),
+        )
+        return
+
+    for model_id in model_ids:
+        try:
+            await emit_event(
+                "reader_decision_used_in_valid_diff",
+                {
+                    "question_id": question_id,
+                    "question_primitive": primitive,
+                    "signal_type": signal_type,
+                    "model_id": str(model_id),
+                    "entities": entities,
+                    "credit_score": 0.7,
+                    "source": "accepted_question_policy_capability_probe",
+                    "signature": {
+                        k: v
+                        for k, v in {
+                            "signal_type": signal_type,
+                            "entities": entities,
+                            "question_primitive": primitive,
+                        }.items()
+                        if v
+                    },
+                },
+                ctx=ctx,
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            _raise_if_postgres_error(exc)
+            import structlog
+
+            structlog.get_logger(__name__).warning(
+                "sage_trace.question_policy_feedback_event_failed",
+                model_id=str(model_id),
+                error=str(exc),
+            )
+
+
+async def _filter_existing_model_ids_for_outcome_events(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_ids: set[UUID],
+    applied_model_ids: list[UUID],
+) -> set[UUID]:
+    if not model_ids:
+        return set()
+    try:
+        rows = await conn.fetch(
+            """
+            SELECT id
+            FROM models
+            WHERE tenant_id = $1
+              AND id = ANY($2::uuid[])
+            """,
+            tenant_id,
+            sorted(model_ids, key=str),
+        )
+    except Exception as exc:  # noqa: BLE001 — outcome emission is best-effort
+        _raise_if_postgres_error(exc)
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "sage_trace.model_id_filter_failed",
+            error=str(exc),
+        )
+        return {mid for mid in applied_model_ids if isinstance(mid, UUID)}
+    existing = {row["id"] for row in rows}
+    return {mid for mid in model_ids if mid in existing}
+
+
+async def _record_edge_intelligence_valid_diff(
+    diff: ValidatedDiff,
+    *,
+    node_ids: set[UUID],
+    conn: asyncpg.Connection,
+    primitive: str | None,
+    source_observation_id: UUID | None,
+) -> None:
+    """Record pair-level edge-learning signals after a successful diff."""
+    if (
+        len(node_ids) < 2
+        and not diff.edge_ops
+        and not diff.relation_claim_ops
+        and source_observation_id is None
+    ):
+        return
+    try:
+        from lib.shared.edge_registry import EDGE_REGISTRY
+        from services.reasoning.edge_intelligence import (
+            EdgeIntelligenceRepo,
+            PairEvidenceObservation,
+            RelationEvidence,
+            extract_relation_evidence,
+        )
+    except Exception:  # noqa: BLE001
+        return
+
+    repo = EdgeIntelligenceRepo()
+    pair_primitive = primitive or "UNKNOWN"
+    bounded_nodes = sorted(node_ids, key=str)[:24]
+
+    try:
+        async with conn.transaction():
+            if source_observation_id is not None:
+                content = await conn.fetchval(
+                    """
+                    SELECT content_text
+                    FROM observations
+                    WHERE tenant_id = $1
+                      AND id = $2
+                    """,
+                    diff.tenant_id,
+                    source_observation_id,
+                )
+                for relation in extract_relation_evidence(str(content or "")):
+                    await repo.insert_relation_evidence(
+                        conn,
+                        RelationEvidence(
+                            tenant_id=diff.tenant_id,
+                            source_observation_id=source_observation_id,
+                            subject_ref={"text": relation.subject_text},
+                            object_ref={"text": relation.object_text},
+                            predicate=relation.predicate,
+                            edge_kind_hint=relation.edge_kind_hint,
+                            evidence_text=relation.evidence_text,
+                            confidence=relation.confidence,
+                            extraction_method="deterministic_signal_relation",
+                            metadata={"trigger_ref": str(diff.trigger_ref)},
+                        ),
+                    )
+
+            for op in diff.edge_ops:
+                if op.op != "add":
+                    continue
+                spec = EDGE_REGISTRY.get(op.edge_kind)
+                direction = (
+                    "source_to_target"
+                    if spec is None or spec.is_directed
+                    else "symmetric"
+                )
+                await repo.insert_relation_evidence(
+                    conn,
+                    RelationEvidence(
+                        tenant_id=diff.tenant_id,
+                        source_observation_id=(
+                            op.evidence_event_ids[0]
+                            if op.evidence_event_ids
+                            else None
+                        ),
+                        source_model_id=op.source_model_id,
+                        target_model_id=op.target_model_id,
+                        predicate=op.edge_kind,
+                        edge_kind_hint=op.edge_kind,
+                        direction=direction,
+                        evidence_text=op.explanation,
+                        confidence=op.confidence,
+                        extraction_method="think_edge_op",
+                        metadata={
+                            "trigger_ref": str(diff.trigger_ref),
+                            "review_status": op.review_status,
+                            "detected_by": op.detected_by,
+                        },
+                    ),
+                )
+                await repo.record_pair_observation(
+                    conn,
+                    PairEvidenceObservation(
+                        tenant_id=diff.tenant_id,
+                        left_model_id=op.source_model_id,
+                        right_model_id=op.target_model_id,
+                        primitive=pair_primitive,
+                        explicit_relation_delta=1,
+                        think_edge_op_delta=1,
+                        directed_source_model_id=op.source_model_id,
+                        directed_target_model_id=op.target_model_id,
+                        edge_kind_hint=op.edge_kind,
+                        metadata={"trigger_ref": str(diff.trigger_ref)},
+                    ),
+                )
+
+            for op in diff.relation_claim_ops:
+                if op.source_model_id is None or op.target_model_id is None:
+                    continue
+                direction = (
+                    "source_to_target"
+                    if op.direction == "unknown"
+                    else op.direction
+                )
+                await repo.insert_relation_evidence(
+                    conn,
+                    RelationEvidence(
+                        tenant_id=diff.tenant_id,
+                        source_observation_id=(
+                            op.evidence_event_ids[0]
+                            if op.evidence_event_ids
+                            else source_observation_id
+                        ),
+                        source_model_id=op.source_model_id,
+                        target_model_id=op.target_model_id,
+                        predicate=op.predicate,
+                        edge_kind_hint=op.edge_kind,
+                        direction=direction,
+                        evidence_text=op.explanation or op.evidence_text,
+                        confidence=op.confidence,
+                        extraction_method="relation_claim_op",
+                        metadata={
+                            "trigger_ref": str(diff.trigger_ref),
+                            "write_policy": op.write_policy,
+                            "status": op.status,
+                        },
+                    ),
+                )
+                await repo.record_pair_observation(
+                    conn,
+                    PairEvidenceObservation(
+                        tenant_id=diff.tenant_id,
+                        left_model_id=op.source_model_id,
+                        right_model_id=op.target_model_id,
+                        primitive=pair_primitive,
+                        explicit_relation_delta=1,
+                        think_edge_op_delta=(
+                            1 if op.write_policy == "accepted_edge" else 0
+                        ),
+                        directed_source_model_id=op.source_model_id,
+                        directed_target_model_id=op.target_model_id,
+                        edge_kind_hint=op.edge_kind,
+                        metadata={"trigger_ref": str(diff.trigger_ref)},
+                    ),
+                )
+
+            for op in diff.ontology_gap_ops:
+                if op.source_model_id is None or op.target_model_id is None:
+                    continue
+                direction = (
+                    "symmetric"
+                    if op.directionality == "symmetric"
+                    else "source_to_target"
+                )
+                await repo.insert_relation_evidence(
+                    conn,
+                    RelationEvidence(
+                        tenant_id=diff.tenant_id,
+                        source_observation_id=(
+                            op.evidence_event_ids[0]
+                            if op.evidence_event_ids
+                            else source_observation_id
+                        ),
+                        source_model_id=op.source_model_id,
+                        target_model_id=op.target_model_id,
+                        predicate=op.proposed_edge_kind,
+                        edge_kind_hint=op.proposed_edge_kind,
+                        direction=direction,
+                        evidence_text=op.relationship_summary or op.description,
+                        confidence=op.confidence,
+                        extraction_method="ontology_gap_op",
+                        metadata={
+                            "trigger_ref": str(diff.trigger_ref),
+                            "proposed_edge_kind": op.proposed_edge_kind,
+                            "nearest_existing_kind": op.nearest_existing_kind,
+                            "parent_kind": op.parent_kind,
+                        },
+                    ),
+                )
+                await repo.record_pair_observation(
+                    conn,
+                    PairEvidenceObservation(
+                        tenant_id=diff.tenant_id,
+                        left_model_id=op.source_model_id,
+                        right_model_id=op.target_model_id,
+                        primitive=pair_primitive,
+                        explicit_relation_delta=1,
+                        directed_source_model_id=(
+                            op.source_model_id
+                            if direction == "source_to_target"
+                            else None
+                        ),
+                        directed_target_model_id=(
+                            op.target_model_id
+                            if direction == "source_to_target"
+                            else None
+                        ),
+                        edge_kind_hint=op.proposed_edge_kind,
+                        metadata={
+                            "trigger_ref": str(diff.trigger_ref),
+                            "ontology_gap": {
+                                "proposed_edge_kind": op.proposed_edge_kind,
+                                "nearest_existing_kind": op.nearest_existing_kind,
+                                "parent_kind": op.parent_kind,
+                            },
+                        },
+                    ),
+                )
+
+            for op in diff.relation_frame_ops:
+                participants_by_role: dict[str, list[UUID]] = {}
+                for participant in op.participants:
+                    participants_by_role.setdefault(
+                        participant.role,
+                        [],
+                    ).append(participant.model_id)
+
+                projection_rules = (
+                    (
+                        "blocker",
+                        "blocked_work",
+                        "blocks",
+                    ),
+                    (
+                        "blocked_work",
+                        "downstream_risk",
+                        "early_warning_for",
+                    ),
+                    (
+                        "possible_resolution",
+                        "blocker",
+                        "contributes_to_resolution",
+                    ),
+                )
+                if op.relation_kind == "blocked_workstream":
+                    for source_role, target_role, edge_kind in projection_rules:
+                        for source_model_id in participants_by_role.get(
+                            source_role,
+                            [],
+                        ):
+                            for target_model_id in participants_by_role.get(
+                                target_role,
+                                [],
+                            ):
+                                await repo.insert_relation_evidence(
+                                    conn,
+                                    RelationEvidence(
+                                        tenant_id=diff.tenant_id,
+                                        source_observation_id=(
+                                            op.evidence_event_ids[0]
+                                            if op.evidence_event_ids
+                                            else source_observation_id
+                                        ),
+                                        source_model_id=source_model_id,
+                                        target_model_id=target_model_id,
+                                        predicate=edge_kind,
+                                        edge_kind_hint=edge_kind,
+                                        direction="source_to_target",
+                                        evidence_text=(
+                                            op.explanation or op.evidence_text
+                                        ),
+                                        confidence=op.confidence,
+                                        extraction_method="relation_frame_op",
+                                        metadata={
+                                            "trigger_ref": str(diff.trigger_ref),
+                                            "relation_kind": op.relation_kind,
+                                            "source_role": source_role,
+                                            "target_role": target_role,
+                                            "write_policy": op.write_policy,
+                                            "status": op.status,
+                                        },
+                                    ),
+                                )
+
+                participant_model_ids = sorted(
+                    set(
+                        model_id
+                        for values in participants_by_role.values()
+                        for model_id in values
+                    ),
+                    key=str,
+                )[:24]
+                for idx, left in enumerate(participant_model_ids):
+                    for right in participant_model_ids[idx + 1 :]:
+                        await repo.record_pair_observation(
+                            conn,
+                            PairEvidenceObservation(
+                                tenant_id=diff.tenant_id,
+                                left_model_id=left,
+                                right_model_id=right,
+                                primitive=pair_primitive,
+                                explicit_relation_delta=1,
+                                think_edge_op_delta=(
+                                    1
+                                    if op.write_policy == "project_edges"
+                                    and op.status == "accepted"
+                                    else 0
+                                ),
+                                edge_kind_hint=op.relation_kind,
+                                metadata={
+                                    "trigger_ref": str(diff.trigger_ref),
+                                    "relation_kind": op.relation_kind,
+                                },
+                            ),
+                        )
+
+            for idx, left in enumerate(bounded_nodes):
+                for right in bounded_nodes[idx + 1 :]:
+                    await repo.record_pair_observation(
+                        conn,
+                        PairEvidenceObservation(
+                            tenant_id=diff.tenant_id,
+                            left_model_id=left,
+                            right_model_id=right,
+                            primitive=pair_primitive,
+                            co_used_valid_diff_delta=1,
+                            positive_outcome_delta=1,
+                            metadata={"trigger_ref": str(diff.trigger_ref)},
+                        ),
+                    )
+    except Exception as exc:  # noqa: BLE001
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "edge_intelligence.valid_diff_record_failed",
+            tenant_id=str(diff.tenant_id),
+            trigger_ref=str(diff.trigger_ref),
+            error=str(exc),
+        )
 
 
 # ---------------------------------------------------------------------
@@ -1290,6 +2322,47 @@ def _resolve_pending_edge_model_refs(
     if metadata != (op.metadata or {}):
         updates["metadata"] = metadata
     return op.model_copy(update=updates) if updates else op
+
+
+def _resolve_pending_relation_claim_model_refs(
+    op: RelationClaimOp,
+    pending_model_ids_by_event_id: dict[UUID, UUID],
+) -> RelationClaimOp:
+    updates: dict[str, Any] = {}
+    if op.source_model_id in pending_model_ids_by_event_id:
+        updates["source_model_id"] = pending_model_ids_by_event_id[op.source_model_id]
+    if op.target_model_id in pending_model_ids_by_event_id:
+        updates["target_model_id"] = pending_model_ids_by_event_id[op.target_model_id]
+    if updates and "endpoint_binding_status" not in updates:
+        source = updates.get("source_model_id", op.source_model_id)
+        target = updates.get("target_model_id", op.target_model_id)
+        if source is not None and target is not None:
+            updates["endpoint_binding_status"] = "bound"
+            updates["binding_confidence"] = max(float(op.binding_confidence), 0.8)
+    return op.model_copy(update=updates) if updates else op
+
+
+def _resolve_pending_relation_frame_model_refs(
+    op: RelationFrameOp,
+    pending_model_ids_by_event_id: dict[UUID, UUID],
+) -> RelationFrameOp:
+    participants = []
+    changed = False
+    for participant in op.participants:
+        model_id = pending_model_ids_by_event_id.get(
+            participant.model_id,
+            participant.model_id,
+        )
+        if model_id != participant.model_id:
+            changed = True
+            participant = participant.model_copy(update={"model_id": model_id})
+        participants.append(participant)
+    if not changed:
+        return op
+    update: dict[str, Any] = {"participants": participants}
+    if op.participant_binding_status != "bound":
+        update["participant_binding_status"] = "bound"
+    return op.model_copy(update=update)
 
 
 def _resolve_pending_ontology_gap_model_refs(
@@ -1399,6 +2472,8 @@ _ALLOWED_MODEL_UPDATE_COLUMNS = {
     "contested_count",
     "resolved_at",
     "resolution_outcome",
+    "proposition",
+    "domain_tags",
     "contributing_models",
     "supporting_event_ids",
     "supporting_model_ids",
@@ -1427,6 +2502,10 @@ def _merge_event_ids(*groups: Any) -> list[UUID]:
             seen.add(uid)
             merged.append(uid)
     return merged
+
+
+def _merge_supporting_event_ids(*groups: Any) -> list[UUID]:
+    return compact_supporting_event_ids(*groups).event_ids
 
 
 async def _model_id_exists(
@@ -1459,7 +2538,7 @@ def _with_claim_evidence_defaults(
         return op
     entry = dict(op.entry)
     prop = dict(entry.get("proposition") or {})
-    event_ids = _merge_event_ids(
+    event_ids = _merge_supporting_event_ids(
         entry.get("supporting_event_ids"),
         prop.get("evidence_event_ids"),
         entry.get("born_from_event_id"),
@@ -1478,7 +2557,10 @@ def _with_claim_evidence_defaults(
     ):
         prop["evidence_event_ids"] = [
             str(uid)
-            for uid in _merge_event_ids(prop.get("evidence_event_ids"), event_ids)
+            for uid in _merge_supporting_event_ids(
+                prop.get("evidence_event_ids"),
+                event_ids,
+            )
         ]
         entry["proposition"] = prop
     return op.model_copy(update={"entry": entry})
@@ -1533,6 +2615,25 @@ def _coerce_update_value(column: str, value: Any) -> Any:
             raise ValidationError(
                 f"apply_claim_op update: {column} must be a number; " f"got {value!r}"
             ) from exc
+    if column == "proposition":
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValidationError(
+                    "apply_claim_op update: proposition must be a JSON object"
+                ) from exc
+            if isinstance(decoded, dict):
+                return decoded
+        raise ValidationError(
+            f"apply_claim_op update: proposition must be a dict; got {value!r}"
+        )
+    if column == "domain_tags":
+        values = value if isinstance(value, (list, tuple, set)) else (value,)
+        tags = [str(tag).strip() for tag in values if str(tag).strip()]
+        return tags
     return value
 
 
@@ -1771,14 +2872,10 @@ async def _append_observe_reading(
     existing_readings = _json_list(row["signal_readings"])
     existing_readings.append(reading)
 
-    merged_supporting_event_ids = [
-        uid
-        for raw in (row["supporting_event_ids"] or [])
-        if (uid := _coerce_uuid_or_none(raw)) is not None
-    ]
-    for event_id in supporting_event_ids:
-        if event_id not in merged_supporting_event_ids:
-            merged_supporting_event_ids.append(event_id)
+    merged_supporting_event_ids = _merge_supporting_event_ids(
+        row["supporting_event_ids"],
+        supporting_event_ids,
+    )
 
     previous_state = {
         "signal_readings": _audit_jsonable(row["signal_readings"]),
@@ -1974,6 +3071,7 @@ async def _apply_near_duplicate_absorption(
 
     now = datetime.now(timezone.utc)
     text = _evidence_entry_text(entry)
+    entry_prop = entry.get("proposition") if isinstance(entry, dict) else {}
     reading = {
         "kind": "confirm",
         "at": now.isoformat(),
@@ -1986,16 +3084,17 @@ async def _apply_near_duplicate_absorption(
         "reconcile_cosine": getattr(recon_result, "cosine_similarity", None),
         "quality_decision": verdict.decision if verdict is not None else None,
     }
+    if isinstance(entry_prop, dict):
+        if isinstance(entry_prop.get("contextual_frame"), dict):
+            reading["contextual_frame"] = entry_prop["contextual_frame"]
+        if isinstance(entry_prop.get("retrieval_tags"), list):
+            reading["retrieval_tags"] = entry_prop["retrieval_tags"][:24]
     existing_readings = _json_list(row["signal_readings"])
     existing_readings.append(reading)
-    supporting_event_ids = [
-        uid
-        for raw in (row["supporting_event_ids"] or [])
-        if (uid := _coerce_uuid_or_none(raw)) is not None
-    ]
-    for event_id in source_event_ids:
-        if event_id not in supporting_event_ids:
-            supporting_event_ids.append(event_id)
+    supporting_event_ids = _merge_supporting_event_ids(
+        row["supporting_event_ids"],
+        source_event_ids,
+    )
     evidential_weight = min(1.0, float(row["evidential_weight"] or 0.5) + 0.03)
     confirmed_count = int(row["confirmed_count"] or 0) + 1
 
@@ -2272,6 +3371,10 @@ def _summarize_memory_aggregation(
         "evidence_attachments": len(evidence_attachments),
         "near_duplicate_absorptions": len(near_duplicate_absorptions),
         "skipped_claim_writes": len(skipped),
+        "memory_lifecycle_ops": len(
+            ops_summary.get("memory_lifecycle_ops") or []
+        ),
+        "relation_claim_ops": len(ops_summary.get("relation_claim_ops") or []),
         "edge_ops": len(ops_summary.get("edge_ops") or []),
         "ontology_gap_ops": len(ops_summary.get("ontology_gap_ops") or []),
         "act_ops": len(ops_summary.get("act_ops") or []),
@@ -2405,14 +3508,11 @@ async def _apply_situation_merge_payload(
         "domain_tags": _audit_jsonable(row["domain_tags"]),
         "supporting_event_ids": _audit_jsonable(row["supporting_event_ids"]),
     }
-    supporting_event_ids = [
-        uid
-        for raw in (row["supporting_event_ids"] or [])
-        if (uid := _coerce_uuid_or_none(raw)) is not None
-    ]
-    for event_id in _merge_event_ids(cause_event_id, trigger_supporting_event_ids):
-        if event_id not in supporting_event_ids:
-            supporting_event_ids.append(event_id)
+    supporting_event_ids = _merge_supporting_event_ids(
+        row["supporting_event_ids"],
+        cause_event_id,
+        trigger_supporting_event_ids,
+    )
     await conn.execute(
         """
         UPDATE models
@@ -2944,7 +4044,7 @@ async def _merge_supporting_update_ids(
     existing_supporting_ids = (
         _merge_event_ids(row["supporting_event_ids"]) if row is not None else []
     )
-    merged_supporting_ids = _merge_event_ids(
+    merged_supporting_ids = _merge_supporting_event_ids(
         existing_supporting_ids,
         supporting_update_ids,
     )
@@ -3075,7 +4175,9 @@ async def _snapshot_model_update_columns(
 ) -> tuple[dict[str, Any], Any]:
     cols_csv = ", ".join(changes.keys())
     pre_snapshot: dict[str, Any] = {}
-    pre_row = await conn.fetchrow(f"SELECT {cols_csv} FROM models WHERE id = $1", model_id)
+    pre_row = await conn.fetchrow(
+        f"SELECT {cols_csv} FROM models WHERE id = $1", model_id
+    )
     if pre_row is not None:
         for key in changes.keys():
             pre_snapshot[key] = _audit_jsonable(pre_row[key])
@@ -3096,9 +4198,12 @@ async def _execute_model_update(
     set_clauses = []
     params: list[Any] = []
     for index, (key, value) in enumerate(changes.items(), start=1):
-        if key in ("signal_readings",):
+        if key in ("signal_readings", "proposition"):
             set_clauses.append(f"{key} = ${index}::jsonb")
             params.append(json.dumps(value, default=str))
+        elif key in ("domain_tags",):
+            set_clauses.append(f"{key} = ${index}::text[]")
+            params.append(list(value) if isinstance(value, (list, tuple)) else [value])
         elif key in (
             "supporting_event_ids",
             "supporting_model_ids",
@@ -3113,10 +4218,7 @@ async def _execute_model_update(
             set_clauses.append(f"{key} = ${index}")
             params.append(value)
     params.append(model_id)
-    sql = (
-        f"UPDATE models SET {', '.join(set_clauses)} "
-        f"WHERE id = ${len(params)}"
-    )
+    sql = f"UPDATE models SET {', '.join(set_clauses)} " f"WHERE id = ${len(params)}"
     await conn.execute(sql, *params)
 
 
@@ -3180,6 +4282,483 @@ async def _apply_model_update_side_effects(
         )
         if synced:
             changed_fields_for_summary.add("model_predictions")
+
+
+async def _apply_relation_claim_op(
+    op: RelationClaimOp,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    *,
+    cause_event_id: UUID | None,
+    think_run_id: UUID | None,
+) -> dict[str, Any]:
+    from services.domain.models.edges_repo import EdgesRepo
+    from services.reasoning.edge_intelligence import EdgeIntelligenceRepo, RelationClaim
+
+    edges_repo = EdgesRepo()
+    evidence_event_ids = tuple(
+        _merge_event_ids(
+            op.evidence_event_ids,
+            (cause_event_id,) if cause_event_id is not None else (),
+        )
+    )
+    endpoint_status = op.endpoint_binding_status
+    if op.source_model_id is not None and op.target_model_id is not None:
+        endpoint_status = "bound"
+    repo = EdgeIntelligenceRepo()
+    row = await repo.insert_relation_claim(
+        conn,
+        RelationClaim(
+            id=op.id,
+            tenant_id=tenant_id,
+            source_observation_id=evidence_event_ids[0] if evidence_event_ids else None,
+            think_run_id=think_run_id,
+            source_model_id=op.source_model_id,
+            target_model_id=op.target_model_id,
+            subject_ref=op.subject_ref,
+            object_ref=op.object_ref,
+            predicate=op.predicate,
+            edge_kind=op.edge_kind,
+            direction=op.direction,
+            endpoint_binding_status=endpoint_status,
+            write_policy=op.write_policy,
+            status=op.status,
+            confidence=op.confidence,
+            weight=op.weight,
+            binding_confidence=op.binding_confidence,
+            evidence_event_ids=evidence_event_ids,
+            evidence_model_ids=tuple(_merge_event_ids(op.evidence_model_ids)),
+            evidence_text=op.evidence_text,
+            explanation=op.explanation,
+            temporal_bounds=op.temporal_bounds,
+            metadata={
+                **dict(op.metadata or {}),
+                "relation_claim_op": True,
+                "cause_event_id": str(cause_event_id) if cause_event_id else None,
+            },
+        ),
+    )
+    edge_ids: list[UUID] = []
+    edge_summary: dict[str, Any] | None = None
+    retired_edge_summaries: list[dict[str, Any]] = []
+    if (
+        op.status == "retired"
+        and op.source_model_id is not None
+        and op.target_model_id is not None
+    ):
+        count = await edges_repo.retire(
+            conn,
+            source=op.source_model_id,
+            target=op.target_model_id,
+            kind=op.edge_kind,
+            tenant_id=tenant_id,
+            reason=op.explanation or "relation_claim_retired",
+        )
+        retired_edge_summaries.append(
+            {
+                "op": "retire",
+                "edge_kind": op.edge_kind,
+                "source_model_id": str(op.source_model_id),
+                "target_model_id": str(op.target_model_id),
+                "retired_edges": count,
+                "source": "relation_claim_op",
+            }
+        )
+    if (
+        op.write_policy == "accepted_edge"
+        and op.source_model_id is not None
+        and op.target_model_id is not None
+        and op.status != "retired"
+    ):
+        edge_metadata = {
+            **dict(op.metadata or {}),
+            "relation_claim_id": str(row["id"]),
+            "source": "relation_claim_op",
+        }
+        try:
+            edge_ids = await edges_repo.link(
+                conn,
+                source=op.source_model_id,
+                target=op.target_model_id,
+                kind=op.edge_kind,
+                tenant_id=tenant_id,
+                detected_by="think_edge_op",
+                weight=op.weight,
+                metadata=edge_metadata,
+                created_by_event_id=cause_event_id,
+                confidence=op.confidence,
+                evidence_event_ids=evidence_event_ids,
+                evidence_model_ids=op.evidence_model_ids,
+                explanation=op.explanation or op.evidence_text,
+                review_status="accepted",
+            )
+        except EdgeRegistryError as exc:
+            if _classify_apply_edge_drop_reason(exc) != "mutually_exclusive_edge":
+                raise
+            retired_edge_summaries = (
+                await _retire_superseded_support_edges_for_relation_claim(
+                    op,
+                    conn,
+                    tenant_id,
+                    claim_id=row["id"],
+                    edges_repo=edges_repo,
+                )
+            )
+            if not retired_edge_summaries:
+                raise
+            edge_metadata["superseded_edge_count"] = sum(
+                int(item.get("retired_edges") or 0)
+                for item in retired_edge_summaries
+            )
+            edge_ids = await edges_repo.link(
+                conn,
+                source=op.source_model_id,
+                target=op.target_model_id,
+                kind=op.edge_kind,
+                tenant_id=tenant_id,
+                detected_by="think_edge_op",
+                weight=op.weight,
+                metadata=edge_metadata,
+                created_by_event_id=cause_event_id,
+                confidence=op.confidence,
+                evidence_event_ids=evidence_event_ids,
+                evidence_model_ids=op.evidence_model_ids,
+                explanation=op.explanation or op.evidence_text,
+                review_status="accepted",
+            )
+        row = await repo.mark_relation_claim_decided(
+            conn,
+            claim_id=row["id"],
+            tenant_id=tenant_id,
+            status="accepted",
+            accepted_edge_ids=edge_ids,
+            decision_metadata={
+                "reason": "accepted_relation_claim_created_edge",
+                "accepted_edge_ids": [str(edge_id) for edge_id in edge_ids],
+                "superseded_edges": retired_edge_summaries,
+            },
+        ) or row
+        edge_summary = {
+            "op": "add",
+            "edge_kind": op.edge_kind,
+            "source_model_id": str(op.source_model_id),
+            "target_model_id": str(op.target_model_id),
+            "edge_ids": [str(edge_id) for edge_id in edge_ids],
+            "review_status": "accepted",
+            "source": "relation_claim_op",
+        }
+    edge_summaries = [
+        *retired_edge_summaries,
+        *([edge_summary] if edge_summary is not None else []),
+    ]
+    return {
+        "summary": {
+            "op": op.op,
+            "relation_claim_id": str(row["id"]),
+            "edge_kind": op.edge_kind,
+            "predicate": op.predicate,
+            "source_model_id": (
+                str(op.source_model_id) if op.source_model_id is not None else None
+            ),
+            "target_model_id": (
+                str(op.target_model_id) if op.target_model_id is not None else None
+            ),
+            "endpoint_binding_status": row["endpoint_binding_status"],
+            "write_policy": row["write_policy"],
+            "status": row["status"],
+            "accepted_edge_ids": [str(edge_id) for edge_id in edge_ids],
+            "superseded_edge_count": sum(
+                int(item.get("retired_edges") or 0)
+                for item in retired_edge_summaries
+            ),
+        },
+        "edge_summary": edge_summary,
+        "edge_summaries": edge_summaries,
+    }
+
+
+async def _apply_relation_frame_op(
+    op: RelationFrameOp,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    *,
+    cause_event_id: UUID | None,
+    think_run_id: UUID | None,
+) -> dict[str, Any]:
+    from services.reasoning.edge_intelligence import (
+        EdgeIntelligenceRepo,
+        RelationFrame,
+        RelationParticipant,
+        project_relation_frame,
+    )
+
+    repo = EdgeIntelligenceRepo()
+    evidence_event_ids = tuple(
+        _merge_event_ids(
+            op.evidence_event_ids,
+            (cause_event_id,) if cause_event_id is not None else (),
+        )
+    )
+    evidence_model_ids = tuple(_merge_event_ids(op.evidence_model_ids))
+    participant_models = tuple(
+        participant.model_id for participant in op.participants
+    )
+    frame = await repo.insert_relation_frame(
+        conn,
+        RelationFrame(
+            id=op.id,
+            tenant_id=tenant_id,
+            source_observation_id=evidence_event_ids[0] if evidence_event_ids else None,
+            think_run_id=think_run_id,
+            relation_kind=op.relation_kind,
+            status=op.status,
+            participant_binding_status=op.participant_binding_status,
+            write_policy=op.write_policy,
+            confidence=op.confidence,
+            evidence_event_ids=evidence_event_ids,
+            evidence_model_ids=tuple(_merge_event_ids(evidence_model_ids, participant_models)),
+            evidence_text=op.evidence_text,
+            explanation=op.explanation,
+            temporal_bounds=op.temporal_bounds,
+            metadata={
+                **dict(op.metadata or {}),
+                "relation_frame_op": True,
+                "cause_event_id": str(cause_event_id) if cause_event_id else None,
+            },
+        ),
+        participants=tuple(
+            RelationParticipant(
+                model_id=participant.model_id,
+                role=participant.role,
+                binding_confidence=participant.binding_confidence,
+                cardinality_group=participant.cardinality_group,
+                metadata=participant.metadata,
+            )
+            for participant in op.participants
+        ),
+    )
+
+    projection_report = None
+    edge_summaries: list[dict[str, Any]] = []
+    if op.write_policy == "project_edges" and op.status == "accepted":
+        projection_report = await project_relation_frame(
+            conn,
+            tenant_id=tenant_id,
+            relation_id=frame["id"],
+            created_by_event_id=cause_event_id,
+            repo=repo,
+        )
+        edge_summaries = [
+            {
+                "op": "add",
+                "edge_kind": projection["edge_kind"],
+                "source_model_id": str(projection["source_model_id"]),
+                "target_model_id": str(projection["target_model_id"]),
+                "edge_ids": [str(projection["edge_id"])],
+                "review_status": "accepted",
+                "source": "relation_frame_projection",
+                "relation_instance_id": str(frame["id"]),
+                "projection_rule": projection["projection_rule"],
+            }
+            for projection in projection_report.projections
+        ]
+        await repo.mark_relation_frame_decided(
+            conn,
+            relation_id=frame["id"],
+            tenant_id=tenant_id,
+            status="accepted",
+            decision_metadata={
+                "reason": "accepted_relation_frame_projected_edges",
+                "projected_edge_ids": [
+                    str(edge_id) for edge_id in projection_report.edge_ids
+                ],
+                "skipped": projection_report.skipped,
+            },
+        )
+
+    return {
+        "summary": {
+            "op": op.op,
+            "relation_instance_id": str(frame["id"]),
+            "relation_kind": op.relation_kind,
+            "status": op.status,
+            "write_policy": op.write_policy,
+            "participant_count": len(frame["participants"]),
+            "projected_edge_count": (
+                len(projection_report.edge_ids) if projection_report is not None else 0
+            ),
+            "projection_skipped": (
+                projection_report.skipped if projection_report is not None else []
+            ),
+        },
+        "edge_summaries": edge_summaries,
+    }
+
+
+async def _retire_superseded_support_edges_for_relation_claim(
+    op: RelationClaimOp,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    *,
+    claim_id: UUID,
+    edges_repo: Any,
+) -> list[dict[str, Any]]:
+    from lib.shared.edge_registry import EDGE_REGISTRY
+
+    if (
+        op.edge_kind not in _RELATION_CLAIM_SUPPORT_SUPERSEDERS
+        or op.source_model_id is None
+        or op.target_model_id is None
+    ):
+        return []
+    spec = EDGE_REGISTRY.get(op.edge_kind)
+    if spec is None or "supports" not in spec.mutually_exclusive_with:
+        return []
+
+    pairs = _relation_claim_conflict_pairs(
+        source=op.source_model_id,
+        target=op.target_model_id,
+        symmetric=not spec.is_directed,
+    )
+    conflicts_by_pair: list[tuple[UUID, UUID, list[asyncpg.Record]]] = []
+    for source, target in pairs:
+        rows = await conn.fetch(
+            """
+            SELECT id, source_model_id, target_model_id, edge_kind,
+                   detected_by, review_status, confidence
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND edge_kind = ANY($4::text[])
+              AND status = 'active'
+              AND review_status != 'rejected'
+            ORDER BY created_at ASC, id ASC
+            """,
+            tenant_id,
+            source,
+            target,
+            list(spec.mutually_exclusive_with),
+        )
+        if rows:
+            conflicts_by_pair.append((source, target, rows))
+
+    if not conflicts_by_pair:
+        return []
+
+    for _source, _target, rows in conflicts_by_pair:
+        for row in rows:
+            if row["edge_kind"] != "supports":
+                return []
+            if row["detected_by"] in _NON_OVERRIDABLE_EDGE_PROVENANCE:
+                return []
+
+    summaries: list[dict[str, Any]] = []
+    affected_targets: set[UUID] = set()
+    for source, target, rows in conflicts_by_pair:
+        support_rows = [row for row in rows if row["edge_kind"] == "supports"]
+        if not support_rows:
+            continue
+        count = await edges_repo.retire(
+            conn,
+            source=source,
+            target=target,
+            kind="supports",
+            tenant_id=tenant_id,
+            reason=(
+                "superseded_by_relation_claim:"
+                f"{op.edge_kind}:{claim_id}"
+            ),
+        )
+        if count <= 0:
+            continue
+        affected_targets.add(target)
+        summaries.append({
+            "op": "retire",
+            "edge_kind": "supports",
+            "source_model_id": str(source),
+            "target_model_id": str(target),
+            "retired_edges": int(count),
+            "retired_edge_ids": [str(row["id"]) for row in support_rows],
+            "reason": "superseded_by_precise_relation_claim",
+            "superseded_by_edge_kind": op.edge_kind,
+            "relation_claim_id": str(claim_id),
+            "source": "relation_claim_op",
+        })
+
+    for target in affected_targets:
+        await _refresh_supporting_model_ids_from_active_edges(
+            conn,
+            tenant_id=tenant_id,
+            model_id=target,
+        )
+    return summaries
+
+
+def _relation_claim_conflict_pairs(
+    *,
+    source: UUID,
+    target: UUID,
+    symmetric: bool,
+) -> list[tuple[UUID, UUID]]:
+    pairs = [(source, target)]
+    if symmetric and source != target:
+        pairs.append((target, source))
+    return pairs
+
+
+async def _refresh_supporting_model_ids_from_active_edges(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+) -> None:
+    support_rows = await conn.fetch(
+        """
+        SELECT source_model_id AS model_id
+        FROM model_edges
+        WHERE tenant_id = $1
+          AND target_model_id = $2
+          AND edge_kind = 'supports'
+          AND status = 'active'
+        ORDER BY created_at ASC, id ASC
+        """,
+        tenant_id,
+        model_id,
+    )
+    instance_rows = await conn.fetch(
+        """
+        SELECT target_model_id AS model_id
+        FROM model_edges
+        WHERE tenant_id = $1
+          AND source_model_id = $2
+          AND edge_kind = 'instance_of'
+          AND status = 'active'
+        ORDER BY created_at ASC, id ASC
+        """,
+        tenant_id,
+        model_id,
+    )
+    seen: set[UUID] = set()
+    supporting_model_ids: list[UUID] = []
+    for row in [*support_rows, *instance_rows]:
+        related_model_id = row["model_id"]
+        if related_model_id in seen:
+            continue
+        seen.add(related_model_id)
+        supporting_model_ids.append(related_model_id)
+
+    await conn.execute(
+        """
+        UPDATE models
+        SET supporting_model_ids = $1::uuid[]
+        WHERE tenant_id = $2
+          AND id = $3
+        """,
+        supporting_model_ids,
+        tenant_id,
+        model_id,
+    )
 
 
 async def _apply_claim_situation_merge_update(
@@ -3281,6 +4860,10 @@ async def _apply_edge_op(
 
     repo = EdgesRepo()
     if op.op == "add":
+        evidence_event_ids = _merge_event_ids(
+            op.evidence_event_ids,
+            (cause_event_id,) if cause_event_id is not None else (),
+        )
         ids = await repo.link(
             conn,
             source=op.source_model_id,
@@ -3292,7 +4875,7 @@ async def _apply_edge_op(
             metadata=op.metadata,
             created_by_event_id=cause_event_id,
             confidence=op.confidence,
-            evidence_event_ids=op.evidence_event_ids,
+            evidence_event_ids=evidence_event_ids,
             evidence_model_ids=op.evidence_model_ids,
             explanation=op.explanation,
             review_status=op.review_status,
@@ -3562,9 +5145,7 @@ async def _apply_commitment_act_op(
             tenant_id=tenant_id,
             conn=conn,
         )
-        return _act_result(
-            {"op": "create_commitment", "commitment_id": str(row.id)}, 1
-        )
+        return _act_result({"op": "create_commitment", "commitment_id": str(row.id)}, 1)
 
     if op.op == "transition_commitment":
         cid = _coerce_uuid(ent["id"])
