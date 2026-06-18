@@ -318,6 +318,18 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     # partner-gated in production (no webhook entitlement → poll-only live edge).
     ("linkedin", "backfill"): "linkedin:object",
     ("linkedin", "poll"): "linkedin:object",
+    # WhatsApp — webhook (live) only in Phase 1. Like github:webhook /
+    # notion:object, this is a ONE-channel/many-event-types source: BOTH
+    # inbound customer messages AND outbound delivery-status callbacks route
+    # to the single `whatsapp:message` channel, whose handler branches on the
+    # item (message -> signal/attested_agent; status -> state_change/
+    # authoritative) and sets external_id accordingly. The dedicated
+    # whatsapp_router fans a delivery out into one raw envelope per item
+    # (`{message,...}` or `{status,...}`), so the normalizer runs the unified
+    # handler per item. external_id parity (`whatsapp:{phone_number_id}:{wamid}`)
+    # collapses an inline-fallback message and its Kafka twin to one observation.
+    # Backfill (Coexistence/BSP) is a deferred phase — no backfill ingress here.
+    ("whatsapp", "webhook"): "whatsapp:message",
 }
 
 

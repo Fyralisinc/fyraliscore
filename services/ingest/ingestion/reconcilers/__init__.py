@@ -192,6 +192,8 @@ RECONCILER_DISPATCH: dict[str, Reconciler] = {
     "hibob":     _not_implemented_reconciler("hibob",     "IN-PEOPLE"),
     "ashby":     _not_implemented_reconciler("ashby",     "IN-PEOPLE"),
     "linkedin":  _not_implemented_reconciler("linkedin",  "IN-PEOPLE"),
+    # WhatsApp is LIVE-only; backfill reconciliation is a deferred phase.
+    "whatsapp":  _not_implemented_reconciler("whatsapp",  "IN-WHATSAPP-BACKFILL"),
 }
 
 
