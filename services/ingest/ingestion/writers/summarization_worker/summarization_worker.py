@@ -13,6 +13,7 @@ import asyncpg
 import orjson
 from aiokafka import AIOKafkaConsumer
 
+from lib.embeddings.mode import write_obs_embeddings
 from services.domain.triggers import enqueue_trigger
 from services.ingest.ingestion.dlq.publish import publish_dlq
 from services.ingest.ingestion.embedding.publish import publish_embedding_request
@@ -95,6 +96,20 @@ UPDATE observations
 """
 
 
+# OBS_EMBEDDING_MODE=cutover: embeddings are decommissioned, so leave the row
+# embedding-less and unflagged (the T1 trigger re-embeds the summary on demand).
+_UPDATE_SQL_NO_EMBED = """
+UPDATE observations
+   SET content_text = $1,
+       content = $2::jsonb,
+       embedding = NULL,
+       embedding_pending = FALSE
+ WHERE id = $3
+   AND COALESCE(content->'summarization'->>'status', '') <> 'complete'
+ RETURNING source_channel, content_text, occurred_at, kind, trust_tier, actor_id
+"""
+
+
 _FAIL_UPDATE_SQL = """
 UPDATE observations
    SET content_text = $1,
@@ -154,7 +169,7 @@ async def _write_summary_and_enqueue(
                 str(env.tenant_id),
             )
             updated = await conn.fetchrow(
-                _UPDATE_SQL,
+                _UPDATE_SQL if write_obs_embeddings() else _UPDATE_SQL_NO_EMBED,
                 result.summary_text,
                 json.dumps(content),
                 env.observation_id,
@@ -353,7 +368,11 @@ async def summarize_and_update(
         result=result,
         source_chars=len(source_text),
     )
-    if status == "summarized" and embedding_producer is not None:
+    if (
+        status == "summarized"
+        and embedding_producer is not None
+        and write_obs_embeddings()
+    ):
         await publish_embedding_request(
             producer=embedding_producer,
             tenant_id=env.tenant_id,

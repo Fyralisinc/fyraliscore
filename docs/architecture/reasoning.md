@@ -20,6 +20,13 @@ latent topology field.
 1. Load any pending [relationship candidate](../glossary.md) for the trigger.
 2. **Retrieve** via `platform.execution.inquiry.retrieve_for_execution(mode="deep")`
    (the active "inquiry" engine; the legacy resolver is `retrieval/primary.py`).
+   Pathway B (semantic) seeds its ANN over `models.embedding` from a query
+   vector. For a T1 (signal-triggered) run that vector is, by default, the
+   trigger observation's persisted `observations.embedding`; under
+   `OBS_EMBEDDING_MODE=cutover` it is re-embedded from the observation's full
+   `content_text` on demand and cached on the trigger so inquiry rounds reuse it.
+   A missing/failed embed degrades gracefully (Pathway B skipped, A/C/G still
+   form models). See the [`OBS_EMBEDDING_MODE` callout](ingest.md).
 3. Optional second-pass expansion (`retrieval/second_pass.py`).
 4. Build a `ReasoningFrame` and detect ephemeral `dynamics` signals (a detected
    state-jump enqueues a deferred `T3:missing_transition`).
