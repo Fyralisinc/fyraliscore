@@ -14,7 +14,11 @@ RUN npm install -g @openai/codex@0.134.0
 RUN mkdir -p /root/.codex
 
 COPY pyproject.toml .
-RUN pip install --no-cache-dir .
+# Include the `telegram` extra (Telethon) so the telegram_gateway_worker and the
+# Telegram backfill client can run in-container. Telethon is pure-Python and
+# small; the app still imports it lazily, so non-Telegram deployments are
+# unaffected by its presence.
+RUN pip install --no-cache-dir '.[telegram]'
 
 COPY . .
 
