@@ -93,7 +93,7 @@ no real external API is contacted (mock clients + fixtures + in-process ASGI).
 | Source | Fixture params | Count |
 |---|---|---|
 | slack | `channels=1, messages_per_channel=200` | 1×200 = 200 |
-| github | `repos=1, events_per_repo=100, per_page=100` | 100 issues + 100 PRs = 200 |
+| github | `repos=1, events_per_repo=100, per_page=60` (forces 2 pages/type) | 100 issues + 100 PRs = 200 |
 | discord | `channels=1, messages_per_channel=200` (channels **must** be 1 — see below) | 1×200 = 200 |
 | jira | `projects=1, issues_per_project=200, transitions=0, comments=0` | 1×200 = 200 |
 | notion | `databases=1, pages_per_database=200, loose_pages=0, blocks=0` | 1×200 = 200 |
@@ -112,8 +112,9 @@ moto-S3 + Kafka `ingestion.raw.<src>` → `normalizer` (handler maps raw → dra
   fetcher paginates `conversations_history`; handler emits 1 draft/message.
 - **github** → `source_channel=github:webhook`, `external_id={node_id}:{action}`
   (e.g. `I_kwDO…:opened`, `PR_kwDO…:closed`). Planner emits 5 shards/repo; only
-  `issues` + `pull_requests` are fixtured → 100 + 100. **Backfill fetches one page
-  per shard-fetch call** (cursor model), so `per_page` must cover the page.
+  `issues` + `pull_requests` are fixtured → 100 + 100. Backfill fetches a page per
+  fetcher call; `shard_fetch`'s loop drains pages until `end_of_data` (now derived
+  from GitHub's Link `rel="next"` — see bug #3).
 - **discord** → `source_channel=discord:message`, `external_id=discord:{snowflake}`.
   Gateway-style live (direct dispatch, no HTTP). Backfill planner samples
   `k=max(1,int(channels*0.05))` channels → **channels=1 always samples the one
@@ -170,15 +171,25 @@ Against `fyralis_signal_tests`, `COMPANY_OS_ENV=test`:
    mechanism (service calls `register_pool_provider`; telegram ∈ `RECONCILER_DISPATCH`
    with a `set_pool_provider`).
 
+3. **GitHub multi-page backfill stopped after the first page (silent truncation).**
+   *Not* a missing re-queue — `shard_fetch`'s fetch loop (`while True` →
+   break on `FetchResult.end_of_data`, [workflows/shard_fetch.py](../../services/ingest/ingestion/workflows/shard_fetch.py))
+   already drains every page. The bug was in how the **github fetcher computed
+   `end_of_data`**: `is_end = next_page is None OR len(page_records) < _DEFAULT_PER_PAGE`
+   ([fetchers/github.py](../../services/ingest/ingestion/fetchers/github.py)). GitHub's
+   Link-header `rel="next"` (parsed into `next_page` by the client) is the authoritative
+   end signal — present iff another page exists — but the `len < _DEFAULT_PER_PAGE`
+   belt **overrode** it: any short-but-not-final page (the synthetic mock caps each page
+   at the fixture `per_page`, and **real GitHub can also return short non-final pages**)
+   was misread as the last page, so only the first page landed (60 of 200 github obs).
+   **Fix:** `is_end = next_page is None` — trust the Link header alone (regression test
+   `fetchers/tests/test_github.py::test_short_nonfinal_pages_do_not_end_pagination`
+   drives the drain loop over 3 short pages and asserts all are collected). The run now
+   forces github onto **2 pages/type** (`per_page=60` → 60+40) and lands the full **200**
+   end-to-end. This removed a latent **production data-loss** risk, not just a test artifact.
+
 ## Caveats for the real-credential wiring
 
-- **GitHub multi-page backfill:** the github backfill fetcher drains **one page per
-  shard-fetch call** (cursor re-queue model) and this synthetic harness did **not**
-  re-queue beyond page 1 — with the default `per_page=30` only 30/type (60) landed.
-  We sized `per_page=100` so all 100 issues + 100 PRs fit a single page. With real
-  repos whose event count exceeds one page, confirm the production `shard_fetch`
-  re-queues github shards until the cursor is exhausted (other five sources drain
-  fully in a single fetch).
 - **Embeddings:** run under `OBS_EMBEDDING_MODE=cutover`, so all rows land with
   `embedding = NULL` (decommission path). Observation **landing** is independent of
   embedding mode; flip to `eager` if vectors are wanted for the real run.
