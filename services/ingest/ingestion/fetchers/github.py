@@ -456,10 +456,18 @@ async def fetch_page_github(
             if ts and (last_seen is None or ts > last_seen):
                 last_seen = ts
 
-        is_end = (
-            next_page is None
-            or len(page_records) < _DEFAULT_PER_PAGE
-        )
+        # GitHub's Link-header `rel="next"` (parsed into `next_page` by the
+        # client) is the AUTHORITATIVE end-of-pagination signal — present iff
+        # another page exists. Do NOT also stop on a short page: GitHub may
+        # return fewer than the requested `per_page` on a non-final page (e.g.
+        # server-side filtering, secondary-rate-limit truncation), and the
+        # synthetic mock does so whenever a fixture caps `per_page` below the
+        # request. The old `len(page_records) < _DEFAULT_PER_PAGE` belt
+        # overrode a valid `next_page` and declared end-of-data early, silently
+        # truncating the backfill to its first page. Trust `next_page` alone;
+        # ShardFetch's loop bounds guard against a pathological non-terminating
+        # Link header.
+        is_end = next_page is None
         next_cursor = GithubCursor(
             page=next_page if next_page is not None else cur.page + 1,
             etag=etag,

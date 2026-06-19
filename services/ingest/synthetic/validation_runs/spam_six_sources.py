@@ -55,13 +55,15 @@ def _params(source: str, slug: str) -> dict:
                 "messages_per_channel": PER_SOURCE_BACKFILL, "page_size": 10}
     if source == "github":
         # EVENT_TYPES = (issues, pull_requests) → 2 obs/event; 100 × 2 = 200.
-        # per_page MUST be ≥ events_per_repo (capped at the fetcher's
-        # _DEFAULT_PER_PAGE=100): the github backfill fetcher drains ONE page
-        # per shard-fetch call (cursor re-queue model) and the synthetic harness
-        # does not re-queue beyond page 1, so with the default per_page=30 only
-        # 30/type (60 total) land. A single 100-event page per type → full 200.
+        # per_page=60 forces TWO pages per event-type (60 + 40) so this run
+        # exercises multi-page backfill drain end-to-end. ShardFetch's fetch
+        # loop (shard_fetch.py while-loop) drains every page until the fetcher
+        # reports end_of_data, which github now derives solely from GitHub's
+        # Link `rel="next"` (fetchers/github.py) — the earlier
+        # `len(page) < _DEFAULT_PER_PAGE` heuristic wrongly treated any short
+        # (mock-capped) page as the last and truncated the backfill to 60.
         return {"org_or_user": slug.replace("-", ""), "repos": 1,
-                "events_per_repo": PER_SOURCE_BACKFILL // 2, "per_page": 100}
+                "events_per_repo": PER_SOURCE_BACKFILL // 2, "per_page": 60}
     if source == "discord":
         # channels MUST be 1: planner samples k=max(1,int(channels*0.05)); at
         # channels=1 the single channel is always fully sampled (200→200).
