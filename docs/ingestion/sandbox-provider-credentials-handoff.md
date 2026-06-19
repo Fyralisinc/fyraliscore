@@ -12,17 +12,19 @@ There are three credential types:
 
 ---
 
-## ⚠️ Before you start: the BASE_URL
+## ⚠️ Before you start: the public URL (already running)
 
 Every OAuth **redirect URL** and **webhook URL** you register must point at our
 running gateway's **public HTTPS URL**, and must match **exactly** (scheme, host,
 path — no trailing slash unless shown).
 
-> **BASE_URL = `______________________________`**  ← (filled in by the requester;
-> a stable HTTPS URL, e.g. a reserved ngrok domain `https://fyralis.ngrok.app`)
+> **Base URL = `https://angle-briary-valentina.ngrok-free.dev`**
+> (a reserved ngrok static domain — stable across restarts; the tunnel is already
+> running and forwards to the local gateway on port 8000.)
 
-Wherever you see `BASE_URL` below, substitute that value. If it ever changes, the
-redirect/webhook URLs must be updated in every app.
+The redirect/webhook URLs in this doc are **already filled in** with that base URL —
+copy them as-is into each provider app. If the tunnel domain ever changes, update
+every URL here (and the `*_REDIRECT_URI` lines in `.env.sandbox`).
 
 **Current local status** (so you know what's already done): GitHub, Jira and
 Notion are already configured on the requester's machine — **focus on Slack,
@@ -37,11 +39,11 @@ Discord, and Telegram**, and only re-do the others if asked.
 (Direct link: https://github.com/settings/apps/new)
 
 1. **GitHub App name:** anything unique (e.g. `fyralis-ingest-test`).
-2. **Homepage URL:** `BASE_URL` (any valid URL is fine).
+2. **Homepage URL:** `https://angle-briary-valentina.ngrok-free.dev` (any valid URL is fine).
 3. **Identifying and authorizing users → Callback URL:**
-   `BASE_URL/integrations/github/callback`
+   `https://angle-briary-valentina.ngrok-free.dev/integrations/github/callback`
 4. **Webhook:** tick **Active**.
-   - **Webhook URL:** `BASE_URL/webhooks/github`
+   - **Webhook URL:** `https://angle-briary-valentina.ngrok-free.dev/webhooks/github`
    - **Webhook secret:** generate a random high-entropy string and **save it**.
 5. **Permissions → Repository permissions:**
    - Contents → **Read-only**
@@ -67,14 +69,14 @@ Discord, and Telegram**, and only re-do the others if asked.
 name it, pick the workspace.
 
 1. **OAuth & Permissions** (left sidebar) → **Redirect URLs** → **Add New
-   Redirect URL** → `BASE_URL/integrations/slack/callback` → **Save URLs**.
+   Redirect URL** → `https://angle-briary-valentina.ngrok-free.dev/integrations/slack/callback` → **Save URLs**.
 2. Same page → **Scopes → Bot Token Scopes** → **Add an OAuth Scope**, add all of:
    `channels:read`, `channels:history`, `groups:read`, `groups:history`,
    `users:read`, `team:read`.
 3. *(Optional — only if you want private human↔human DMs)* **User Token Scopes:**
    `im:read`, `im:history`, `mpim:read`, `mpim:history`.
 4. **Event Subscriptions** (left sidebar) → toggle **Enable Events** on →
-   **Request URL:** `BASE_URL/webhooks/slack`.
+   **Request URL:** `https://angle-briary-valentina.ngrok-free.dev/webhooks/slack`.
    - Slack verifies this URL live, so it only succeeds **once our stack + tunnel
      are running**. If it won't verify yet, skip it and come back after we're up.
    - **Subscribe to bot events:** `message.channels` (and `message.groups` for
@@ -99,7 +101,7 @@ name it → **Create**.
    - Scroll to **Privileged Gateway Intents** → enable **MESSAGE CONTENT INTENT**
      → **Save Changes**. *(Without this, message text arrives empty.)*
 2. **OAuth2** (left sidebar):
-   - **Redirects** → **Add Redirect** → `BASE_URL/integrations/discord/callback`
+   - **Redirects** → **Add Redirect** → `https://angle-briary-valentina.ngrok-free.dev/integrations/discord/callback`
      → **Save Changes**.
    - Copy **Client ID**; **Reset Secret** → copy **Client Secret**.
 3. **General Information** (left sidebar): copy **Application ID** and **Public
@@ -135,9 +137,9 @@ Also note:
 2. **Integration type → Public** *(this reveals the OAuth section; an "Internal"
    integration won't give you OAuth client credentials)*.
 3. Fill the required **Company name** and **Website/homepage URL** (can be
-   `BASE_URL` or any real URL).
+   `https://angle-briary-valentina.ngrok-free.dev` or any real URL).
 4. **OAuth Domain & URIs → Redirect URIs** → add
-   `BASE_URL/integrations/notion/callback`.
+   `https://angle-briary-valentina.ngrok-free.dev/integrations/notion/callback`.
 5. **Capabilities** → **Read content**.
 6. **Save**, then copy the **OAuth client ID** and **OAuth client secret** (the
    secret is shown **only once** — save it).
@@ -198,8 +200,9 @@ password manager / secure channel, not plaintext chat):
 | | api_hash | |
 | | Login owner + phone | |
 
-**Reminder:** every redirect/webhook URL above must use the **same `BASE_URL`**
-and match exactly. If `BASE_URL` changes, update it in every app.
+**Reminder:** every redirect/webhook URL above uses the **same base host**
+(`https://angle-briary-valentina.ngrok-free.dev`) and must match exactly. If the
+tunnel domain changes, update it in every app **and** in `.env.sandbox`.
 
 ---
 
