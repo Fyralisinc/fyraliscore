@@ -222,7 +222,16 @@ def register_pool_provider(pool: asyncpg.Pool) -> list[str]:
 
     registered: list[str] = []
     for source in RECONCILER_DISPATCH:
-        module = importlib.import_module(f"{__name__}.{source}")
+        try:
+            module = importlib.import_module(f"{__name__}.{source}")
+        except ModuleNotFoundError:
+            # Sources whose backfill reconciliation is a deferred phase keep a
+            # _not_implemented_reconciler placeholder in RECONCILER_DISPATCH but
+            # ship no per-source module (e.g. whatsapp — live-only; backfill
+            # reconciliation deferred). They have no pool provider to register;
+            # importing the package-qualified name would raise here and crash
+            # the whole reconciler/PeriodicReconciler service at startup. Skip.
+            continue
         setter = getattr(module, "set_pool_provider", None)
         if setter is not None:
             setter(pool)
