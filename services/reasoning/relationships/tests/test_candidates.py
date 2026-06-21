@@ -418,8 +418,8 @@ def test_blocks_fires_on_explicit_blocker_target() -> None:
     result = _rule("blocks")(tenant_id, _scope_meta(), source, target)
     assert result is not None
     assert result.edge_kind == "blocks"
-    assert result.source_model_id == source.id
-    assert result.target_model_id == target.id
+    assert result.source_model_id == target.id
+    assert result.target_model_id == source.id
     assert result.metadata.get("mechanism")
     assert result.metadata.get("dependency_basis")
 
@@ -441,6 +441,110 @@ def test_blocks_rejects_pure_pressure_overlap() -> None:
         activation=0.7,
     )
     result = _rule("blocks")(tenant_id, _scope_meta(), left, right)
+    assert result is None
+
+
+def test_blocks_rejects_shared_goal_cross_customer_dependency() -> None:
+    tenant_id = uuid7()
+    goal = uuid7()
+    atlas = uuid7()
+    cobalt = uuid7()
+    blocker_id = uuid7()
+    blocked = ModelSignal(
+        id=uuid7(),
+        natural="Atlas launch is blocked by security review",
+        proposition_kind="concern",
+        confidence=0.8,
+        activation=0.8,
+        scope_entities=_scope(("customer", atlas), ("goal", goal)),
+        blocker_targets=(blocker_id,),
+    )
+    blocker = ModelSignal(
+        id=blocker_id,
+        natural="Cobalt security review is waiting on procurement approval",
+        proposition_kind="state",
+        confidence=0.7,
+        activation=0.5,
+        scope_entities=_scope(("customer", cobalt), ("goal", goal)),
+    )
+
+    result = _rule("blocks")(tenant_id, _scope_meta(), blocked, blocker)
+
+    assert result is None
+
+
+def test_blocks_rejects_broad_goal_without_concrete_shared_scope() -> None:
+    tenant_id = uuid7()
+    goal = uuid7()
+    blocker_id = uuid7()
+    blocked = ModelSignal(
+        id=uuid7(),
+        natural="Launch is blocked by security review",
+        proposition_kind="concern",
+        confidence=0.8,
+        activation=0.8,
+        scope_entities=_scope(("goal", goal)),
+        blocker_targets=(blocker_id,),
+    )
+    blocker = ModelSignal(
+        id=blocker_id,
+        natural="Security review for the launch",
+        proposition_kind="state",
+        confidence=0.7,
+        activation=0.5,
+        scope_entities=_scope(("goal", goal)),
+    )
+
+    result = _rule("blocks")(tenant_id, _scope_meta(), blocked, blocker)
+
+    assert result is None
+
+
+def test_blocks_rejects_diagnostic_mutation_endpoint() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural="Procurement is waiting on security evidence approval",
+        proposition_kind="concern",
+        scope_entities=_scope(("customer", customer)),
+        blocker_text_refs=("security evidence approval",),
+    )
+    diagnostic = ModelSignal(
+        id=uuid7(),
+        natural=(
+            "Model shows a state discontinuity across consecutive audit events; "
+            "an unrecorded mutation likely occurred for security evidence approval"
+        ),
+        proposition_kind="belief",
+        scope_entities=_scope(("customer", customer)),
+    )
+
+    result = _rule("blocks")(tenant_id, _scope_meta(), source, diagnostic)
+
+    assert result is None
+
+
+def test_blocks_rejects_composite_summary_endpoint() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural="Procurement is waiting on SOC2 evidence",
+        proposition_kind="concern",
+        scope_entities=_scope(("customer", customer)),
+        blocker_text_refs=("SOC2 evidence",),
+    )
+    composite = ModelSignal(
+        id=uuid7(),
+        natural="Atlas renewal situation includes procurement waiting on SOC2 evidence",
+        proposition_kind="belief",
+        proposition={"claim_role": "situation", "abstraction_level": "composite"},
+        scope_entities=_scope(("customer", customer)),
+    )
+
+    result = _rule("blocks")(tenant_id, _scope_meta(), source, composite)
+
     assert result is None
 
 
@@ -559,6 +663,31 @@ def test_weakens_fires_on_partial_counterevidence_same_scope() -> None:
     assert result.target_model_id == target.id
 
 
+def test_weakens_rejects_negative_pressure_without_positive_target() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural="Dashboard freshness is stale and creates renewal risk",
+        proposition_kind="belief",
+        polarity="negative",
+        confidence=0.82,
+        scope_entities=_scope(("customer", customer)),
+    )
+    target = ModelSignal(
+        id=uuid7(),
+        natural="Connector reliability risk is increasing",
+        proposition_kind="belief",
+        polarity="negative",
+        confidence=0.72,
+        scope_entities=_scope(("customer", customer)),
+    )
+
+    result = _rule("weakens")(tenant_id, _scope_meta(), source, target)
+
+    assert result is None
+
+
 def test_explains_fires_on_explanatory_phrasing_same_scope() -> None:
     tenant_id = uuid7()
     customer = uuid7()
@@ -627,12 +756,98 @@ def test_contributes_to_resolution_fires_on_resolution_evidence() -> None:
         scope_entities=_scope(("customer", customer)),
     )
 
-    result = _rule("contributes_to_resolution")(tenant_id, _scope_meta(), source, target)
+    result = _rule("contributes_to_resolution")(
+        tenant_id, _scope_meta(), source, target
+    )
 
     assert result is not None
     assert result.edge_kind == "contributes_to_resolution"
     assert result.source_model_id == source.id
     assert result.target_model_id == target.id
+
+
+def test_contributes_to_resolution_rejects_negative_approval_risk() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural="Pricing approval artifact risk remains open",
+        proposition_kind="concern",
+        polarity="negative",
+        confidence=0.82,
+        scope_entities=_scope(("customer", customer)),
+    )
+    target = ModelSignal(
+        id=uuid7(),
+        natural="Procurement is blocked by missing pricing approval",
+        proposition_kind="concern",
+        polarity="negative",
+        confidence=0.72,
+        scope_entities=_scope(("customer", customer)),
+    )
+
+    result = _rule("contributes_to_resolution")(
+        tenant_id, _scope_meta(), source, target
+    )
+
+    assert result is None
+
+
+def test_contributes_to_resolution_rejects_unresolved_risk_text() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural="Finance is treating the unresolved renewal packet as material risk",
+        proposition_kind="concern",
+        polarity="negative",
+        confidence=0.82,
+        scope_entities=_scope(("customer", customer)),
+    )
+    target = ModelSignal(
+        id=uuid7(),
+        natural="Security approval is blocked on audit evidence readiness",
+        proposition_kind="concern",
+        polarity="negative",
+        confidence=0.72,
+        scope_entities=_scope(("customer", customer)),
+    )
+
+    result = _rule("contributes_to_resolution")(
+        tenant_id, _scope_meta(), source, target
+    )
+
+    assert result is None
+
+
+def test_contributes_to_resolution_rejects_mostly_resolved_stale_signal() -> None:
+    tenant_id = uuid7()
+    customer = uuid7()
+    source = ModelSignal(
+        id=uuid7(),
+        natural=(
+            "Dashboard status is stale again after the streaming lag incident "
+            "was marked mostly resolved"
+        ),
+        proposition_kind="concern",
+        polarity="negative",
+        confidence=0.82,
+        scope_entities=_scope(("customer", customer)),
+    )
+    target = ModelSignal(
+        id=uuid7(),
+        natural="Sponsor trust is at risk because the incident timeline is opaque",
+        proposition_kind="concern",
+        polarity="negative",
+        confidence=0.72,
+        scope_entities=_scope(("customer", customer)),
+    )
+
+    result = _rule("contributes_to_resolution")(
+        tenant_id, _scope_meta(), source, target
+    )
+
+    assert result is None
 
 
 def test_predicts_fires_from_prediction_claim_to_outcome_scope() -> None:
@@ -755,12 +970,42 @@ def test_generate_scope_overlap_runs_blocks_rule_in_pipeline() -> None:
     kinds = {c.edge_kind for c in out}
     assert "blocks" in kinds
     blocks_candidate = next(c for c in out if c.edge_kind == "blocks")
+    assert blocks_candidate.source_model_id == target.id
+    assert blocks_candidate.target_model_id == blocker.id
     assert blocks_candidate.metadata.get("dependency_basis")
     assert blocks_candidate.metadata.get("mechanism")
     assert blocks_candidate.metadata["scope"] == {
         "type": "commitment",
         "id": str(commitment),
     }
+
+
+def test_generate_scope_overlap_does_not_use_shared_goal_as_precise_scope() -> None:
+    tenant_id = uuid7()
+    goal = uuid7()
+    blocked = ModelSignal(
+        id=uuid7(),
+        natural="Atlas launch is blocked by security review",
+        proposition_kind="concern",
+        confidence=0.8,
+        activation=0.9,
+        scope_entities=_scope(("goal", goal)),
+        blocker_text_refs=("security review",),
+    )
+    blocker = ModelSignal(
+        id=uuid7(),
+        natural="Security review for the launch",
+        proposition_kind="state",
+        confidence=0.7,
+        activation=0.5,
+        scope_entities=_scope(("goal", goal)),
+    )
+
+    out = generate_scope_overlap_candidates(
+        tenant_id=tenant_id, models=[blocked, blocker]
+    )
+
+    assert all(c.edge_kind != "blocks" for c in out)
 
 
 def test_generate_scope_overlap_runs_precise_resolution_rule_in_pipeline() -> None:

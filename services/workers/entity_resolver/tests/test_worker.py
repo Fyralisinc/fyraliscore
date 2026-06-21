@@ -141,6 +141,21 @@ async def _count_review_rows(
         ) or 0
 
 
+async def _fetch_clarification_rows(
+    pool: asyncpg.Pool, tenant_id: UUID
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT *
+            FROM clarification_requests
+            WHERE tenant_id = $1
+            ORDER BY created_at
+            """,
+            tenant_id,
+        )
+
+
 async def _count_trigger_rows(
     pool: asyncpg.Pool, tenant_id: UUID
 ) -> int:
@@ -354,6 +369,21 @@ async def test_ambiguous_confidence_goes_to_review_queue(
 
     # No alias written; review row exists.
     assert await _count_review_rows(resolver_db, tenant_id) == 1
+    clarifications = await _fetch_clarification_rows(resolver_db, tenant_id)
+    assert len(clarifications) == 1
+    clarification = clarifications[0]
+    assert clarification["kind"] == "entity_resolution"
+    assert clarification["object_kind"] == "entity_review"
+    assert clarification["source_observation_id"] == obs_id
+    assert "the project" in clarification["question"]
+    options = clarification["options"]
+    if isinstance(options, str):
+        options = json.loads(options)
+    assert {option["id"] for option in options} >= {
+        "accept_candidate",
+        "not_same_entity",
+        "needs_new_entity",
+    }
 
 
 # =====================================================================

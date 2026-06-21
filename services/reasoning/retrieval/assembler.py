@@ -43,6 +43,8 @@ SKIPPED — we never truncate mid-item (audit §7 arg 2).
 from __future__ import annotations
 
 import math
+import re
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Protocol, Sequence
 from uuid import UUID
@@ -84,6 +86,10 @@ _MMR_GRAPH_ANCHOR_COUNT = 3
 # for a context-budget bound. Minimum 1 token so items with no
 # `natural` text never get skipped as "too big".
 _CHARS_PER_TOKEN = 4
+_WS_RE = re.compile(r"\s+")
+_HEX_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.I)
+_NUMBER_RE = re.compile(r"[$]?[0-9][0-9,]*([.][0-9]+)?")
+_URL_RE = re.compile(r"https?://[^\s)]+", re.I)
 
 
 def _estimate_model_tokens(m: ModelRow) -> int:
@@ -161,6 +167,104 @@ def _trigger_observation_ids(retrieval_result: RetrievalResult) -> set[UUID]:
     return ids
 
 
+def _is_explicit_t1_event_batch(retrieval_result: RetrievalResult) -> bool:
+    trigger = retrieval_result.trigger
+    if trigger.kind != "T1":
+        return False
+    signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    return bool(
+        trigger.subkind == "event_batch"
+        or signature.get("signal_type") == "event_batch"
+        or signature.get("batch") is True
+        or isinstance(signature.get("batch_signal_fragments"), list)
+    )
+
+
+def _observation_signature(observation: ObservationRow) -> tuple[str, str, str, str]:
+    source = str(getattr(observation, "source_channel", "") or "unknown")
+    actor = str(getattr(observation, "source_actor_ref", "") or "unknown_actor")
+    content = getattr(observation, "content", None)
+    thread = ""
+    if isinstance(content, dict):
+        for key in (
+            "thread_id",
+            "conversation_id",
+            "channel_id",
+            "issue_id",
+            "pull_request_id",
+            "file_id",
+        ):
+            raw = content.get(key)
+            if raw is not None and str(raw).strip():
+                thread = f"{key}:{str(raw).strip()}"
+                break
+    text = str(getattr(observation, "content_text", "") or "").casefold()
+    text = _URL_RE.sub("<url>", text)
+    text = _HEX_RE.sub("<hex>", text)
+    text = _NUMBER_RE.sub("<num>", text)
+    text = _WS_RE.sub(" ", text).strip()[:96]
+    return source, actor, thread, text
+
+
+def _select_diverse_observation_floor(
+    observations: list[ObservationRow],
+    *,
+    floor: int,
+    source_floor: int,
+    total_cap: int,
+) -> list[ObservationRow]:
+    """Pick a source/actor/text-diverse raw evidence floor for event batches."""
+    limit = min(max(0, int(floor)), max(0, int(total_cap)))
+    if limit <= 0 or not observations:
+        return []
+
+    by_source: dict[str, list[ObservationRow]] = defaultdict(list)
+    for observation in observations:
+        source = str(getattr(observation, "source_channel", "") or "unknown")
+        by_source[source].append(observation)
+
+    selected: list[ObservationRow] = []
+    selected_ids: set[UUID] = set()
+    selected_signatures: set[tuple[str, str, str, str]] = set()
+    source_counts: dict[str, int] = defaultdict(int)
+    sources = sorted(
+        by_source,
+        key=lambda source: (-len(by_source[source]), source),
+    )
+
+    def try_add(observation: ObservationRow, *, enforce_signature: bool) -> bool:
+        if len(selected) >= limit:
+            return False
+        if observation.id in selected_ids:
+            return False
+        source = str(getattr(observation, "source_channel", "") or "unknown")
+        per_source_cap = max(1, int(source_floor)) if len(sources) > 1 else limit
+        if source_counts[source] >= per_source_cap and len(selected) < limit:
+            if any(source_counts[other] < per_source_cap for other in sources):
+                return False
+        signature = _observation_signature(observation)
+        if enforce_signature and signature in selected_signatures:
+            return False
+        selected.append(observation)
+        selected_ids.add(observation.id)
+        selected_signatures.add(signature)
+        source_counts[source] += 1
+        return True
+
+    for enforce_signature in (True, False):
+        made_progress = True
+        while made_progress and len(selected) < limit:
+            made_progress = False
+            for source in sources:
+                for observation in by_source[source]:
+                    if try_add(observation, enforce_signature=enforce_signature):
+                        made_progress = True
+                        break
+                if len(selected) >= limit:
+                    break
+    return selected
+
+
 def _select_observations(
     retrieval_result: RetrievalResult,
     observations: list[ObservationRow],
@@ -210,6 +314,44 @@ def _select_observations(
     elif mode == "model_gap" and model_context_sufficient:
         suppressed_reason = "model_context_sufficient"
     if suppressed_reason is not None:
+        floor_selected: list[ObservationRow] = []
+        if suppressed_reason == "model_context_sufficient" and _is_explicit_t1_event_batch(
+            retrieval_result
+        ):
+            floor_selected = _select_diverse_observation_floor(
+                trigger_observations,
+                floor=int(getattr(cfg, "t1_event_batch_raw_observation_floor", 0)),
+                source_floor=int(getattr(cfg, "t1_event_batch_raw_source_floor", 0)),
+                total_cap=budget_observations,
+            )
+        if floor_selected:
+            return floor_selected, {
+                "model_first_context_enabled": True,
+                "retrieved_count": len(observations),
+                "selected_count": len(floor_selected),
+                "selected_trigger_count": len(floor_selected),
+                "selected_historical_count": 0,
+                "trigger_candidate_count": len(trigger_observations),
+                "historical_candidate_count": len(historical_observations),
+                "trigger_cap": len(floor_selected),
+                "historical_cap": 0,
+                "dropped_trigger_count": max(
+                    0, len(trigger_observations) - len(floor_selected)
+                ),
+                "dropped_historical_count": len(historical_observations),
+                "observation_context_mode": mode,
+                "observation_context_min_models": min_models,
+                "selected_model_count": int(selected_model_count),
+                "model_context_sufficient": bool(model_context_sufficient),
+                "suppressed_reason": None,
+                "floor_reason": "explicit_t1_event_batch_raw_evidence_floor",
+                "floor_requested": int(
+                    getattr(cfg, "t1_event_batch_raw_observation_floor", 0)
+                ),
+                "source_floor": int(
+                    getattr(cfg, "t1_event_batch_raw_source_floor", 0)
+                ),
+            }
         return [], {
             "model_first_context_enabled": True,
             "retrieved_count": len(observations),

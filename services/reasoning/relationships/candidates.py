@@ -11,9 +11,12 @@ rules across pairs; the loop never coerces a pair into a kind that does
 not fit. Heuristic "pick one kind per pair" generators are intentionally
 gone — they produced candidate spam.
 """
+
 from __future__ import annotations
 
 import math
+import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Literal, Optional, Sequence
@@ -403,10 +406,12 @@ def make_edge_type_candidate(
     examples: list[dict[str, str]] = []
     if example_source_model_id is not None and example_target_model_id is not None:
         example_models = (example_source_model_id, example_target_model_id)
-        examples.append({
-            "source_model_id": str(example_source_model_id),
-            "target_model_id": str(example_target_model_id),
-        })
+        examples.append(
+            {
+                "source_model_id": str(example_source_model_id),
+                "target_model_id": str(example_target_model_id),
+            }
+        )
 
     proposal = {
         "kind": "ontology_gap",
@@ -521,16 +526,107 @@ def _same_scope(left: ModelSignal, right: ModelSignal) -> bool:
     return bool(_shared_entities(left, right)) or _same_workstream(left, right)
 
 
+_CONCRETE_EDGE_SCOPE_TYPES = frozenset(
+    {
+        "customer",
+        "customer_resource",
+        "commitment",
+    }
+)
+
+
+def _shared_concrete_entities(
+    left: ModelSignal,
+    right: ModelSignal,
+) -> set[tuple[str, UUID]]:
+    return {
+        scope
+        for scope in _shared_entities(left, right)
+        if scope[0] in _CONCRETE_EDGE_SCOPE_TYPES
+    }
+
+
+def _has_concrete_scope(signal: ModelSignal) -> bool:
+    return any(scope_type in _CONCRETE_EDGE_SCOPE_TYPES for scope_type, _ in signal.scope_entities)
+
+
+def _precise_edge_scope_compatible(left: ModelSignal, right: ModelSignal) -> bool:
+    """Return whether a pair is scoped tightly enough for a direct precise edge.
+
+    Broad objects such as goals/decisions can gather useful retrieval context,
+    but they are too coarse to justify causal/blocking/warning edges across
+    unrelated customers. Allow no-scope/internal pairs for legacy callers, and
+    otherwise require a shared concrete business object.
+    """
+    if _shared_concrete_entities(left, right):
+        return True
+    if not left.scope_entities and not right.scope_entities:
+        return True
+    if _has_concrete_scope(left) or _has_concrete_scope(right):
+        return False
+    return False
+
+
+_DIAGNOSTIC_EDGE_ENDPOINT_TERMS = (
+    "unrecorded mutation",
+    "state discontinuity",
+    "consecutive audit events",
+    "mutation gap",
+    "missing transition",
+)
+
+
+def _signal_text(signal: ModelSignal) -> str:
+    return " ".join(
+        [
+            signal.natural,
+            json.dumps(signal.proposition, sort_keys=True, default=str),
+        ]
+    ).lower()
+
+
+def _is_diagnostic_endpoint(signal: ModelSignal) -> bool:
+    text = _signal_text(signal)
+    return any(term in text for term in _DIAGNOSTIC_EDGE_ENDPOINT_TERMS)
+
+
+def _is_composite_endpoint(signal: ModelSignal) -> bool:
+    if signal.proposition_kind == "situation":
+        return True
+    proposition = signal.proposition or {}
+    if proposition.get("claim_role") == "situation":
+        return True
+    if proposition.get("abstraction_level") == "composite":
+        return True
+    return False
+
+
+def _eligible_precise_edge_endpoints(
+    left: ModelSignal,
+    right: ModelSignal,
+) -> bool:
+    return not (
+        _is_diagnostic_endpoint(left)
+        or _is_diagnostic_endpoint(right)
+        or _is_composite_endpoint(left)
+        or _is_composite_endpoint(right)
+    )
+
+
 def _contains_any(text: str, phrases: Sequence[str]) -> bool:
     normalized = _normalize_text(text)
     return any(phrase in normalized for phrase in phrases)
 
 
-def _orient_by_activation(left: ModelSignal, right: ModelSignal) -> tuple[ModelSignal, ModelSignal]:
+def _orient_by_activation(
+    left: ModelSignal, right: ModelSignal
+) -> tuple[ModelSignal, ModelSignal]:
     return (left, right) if left.activation >= right.activation else (right, left)
 
 
-def _undirected_orient(left: ModelSignal, right: ModelSignal) -> tuple[ModelSignal, ModelSignal]:
+def _undirected_orient(
+    left: ModelSignal, right: ModelSignal
+) -> tuple[ModelSignal, ModelSignal]:
     return (left, right) if str(left.id) < str(right.id) else (right, left)
 
 
@@ -555,9 +651,7 @@ def _avg_scores(
     )
 
 
-def _explanation(
-    edge_kind: str, reason: str, scope_meta: dict[str, Any]
-) -> str:
+def _explanation(edge_kind: str, reason: str, scope_meta: dict[str, Any]) -> str:
     scope_hint = ""
     if "scope_type" in scope_meta and "scope_id" in scope_meta:
         scope_hint = f" (scope {scope_meta['scope_type']}:{scope_meta['scope_id']})"
@@ -572,15 +666,12 @@ def _rule_same_issue_as(
 ) -> RelationshipCandidate | None:
     # Trigger 1: very-high cosine + shared entity + same workstream.
     cos = _cosine(left.embedding, right.embedding)
-    entities_shared = bool(_shared_entities(left, right))
+    entities_shared = bool(_shared_concrete_entities(left, right))
     same_ws = _same_workstream(left, right)
-    cosine_hit = (
-        cos is not None and cos >= 0.85 and entities_shared and same_ws
-    )
+    cosine_hit = cos is not None and cos >= 0.85 and entities_shared and same_ws
     # Trigger 2: identical normalized natural text (independent of scope).
-    text_hit = (
-        _normalize_text(left.natural) == _normalize_text(right.natural)
-        and bool(left.natural.strip())
+    text_hit = _normalize_text(left.natural) == _normalize_text(right.natural) and bool(
+        left.natural.strip()
     )
     if not (cosine_hit or text_hit):
         return None
@@ -596,7 +687,8 @@ def _rule_same_issue_as(
             "edge_kind": "same_issue_as",
             "cosine": cos,
             "shared_entities": [
-                {"type": t, "id": str(eid)} for (t, eid) in _shared_entities(left, right)
+                {"type": t, "id": str(eid)}
+                for (t, eid) in _shared_entities(left, right)
             ],
             "identical_text": text_hit,
         },
@@ -620,6 +712,8 @@ def _rule_supports(
     right: ModelSignal,
 ) -> RelationshipCandidate | None:
     shared_events = set(left.evidence_event_ids) & set(right.evidence_event_ids)
+    if not shared_events and not _precise_edge_scope_compatible(left, right):
+        return None
     # source provides high-confidence evidence; target activation rising.
     source: ModelSignal | None = None
     target: ModelSignal | None = None
@@ -637,7 +731,9 @@ def _rule_supports(
         **scope_meta,
         "rule": {
             "edge_kind": "supports",
-            "shared_evidence_event_ids": [str(e) for e in sorted(shared_events, key=str)],
+            "shared_evidence_event_ids": [
+                str(e) for e in sorted(shared_events, key=str)
+            ],
             "source_confidence": source.confidence,
             "target_activation": target.activation,
         },
@@ -710,6 +806,31 @@ _BLOCKER_PHRASES = (
 )
 
 
+_BLOCKER_REF_STOPWORDS = {
+    "approval",
+    "blocked",
+    "blocking",
+    "cannot",
+    "decision",
+    "dependency",
+    "depends",
+    "evidence",
+    "missing",
+    "prerequisite",
+    "requires",
+    "review",
+    "waiting",
+}
+
+
+def _blocker_ref_tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", text.lower())
+        if token not in _BLOCKER_REF_STOPWORDS
+    }
+
+
 def _detect_dependency_basis(source: ModelSignal, target: ModelSignal) -> str | None:
     if target.id in source.blocker_targets:
         return "explicit_blocker_target_reference"
@@ -721,6 +842,8 @@ def _detect_dependency_basis(source: ModelSignal, target: ModelSignal) -> str | 
         for ref in source.blocker_text_refs:
             if ref.lower() in target_text or target_text[:40] in ref.lower():
                 return "phrase_and_named_resource"
+            if len(_blocker_ref_tokens(ref) & _blocker_ref_tokens(target_text)) >= 1:
+                return "phrase_and_named_resource"
     return None
 
 
@@ -730,6 +853,10 @@ def _rule_blocks(
     left: ModelSignal,
     right: ModelSignal,
 ) -> RelationshipCandidate | None:
+    if not _eligible_precise_edge_endpoints(left, right):
+        return None
+    if not _precise_edge_scope_compatible(left, right):
+        return None
     # REJECT pure pressure overlap. Require a dependency surface: one
     # model concretely names the other as a blocker / prerequisite.
     dep_lr = _detect_dependency_basis(left, right)
@@ -737,9 +864,11 @@ def _rule_blocks(
     if dep_lr is None and dep_rl is None:
         return None
     if dep_lr is not None and dep_rl is None:
-        source, target, basis_reason = left, right, dep_lr
+        # left says it is blocked by / waiting on right; the blocker is the
+        # edge source and the blocked model is the target.
+        source, target, basis_reason = right, left, dep_lr
     elif dep_rl is not None and dep_lr is None:
-        source, target, basis_reason = right, left, dep_rl
+        source, target, basis_reason = left, right, dep_rl
     else:
         # Mutual phrasing: prefer the higher-activation as source.
         source, target = _orient_by_activation(left, right)
@@ -778,6 +907,10 @@ def _rule_early_warning_for(
     left: ModelSignal,
     right: ModelSignal,
 ) -> RelationshipCandidate | None:
+    if not _eligible_precise_edge_endpoints(left, right):
+        return None
+    if not _precise_edge_scope_compatible(left, right):
+        return None
     candidates: list[tuple[ModelSignal, ModelSignal, str]] = []
     for source, target in ((left, right), (right, left)):
         leading = source.time_shape == "leading" or source.is_leading_indicator
@@ -845,7 +978,7 @@ def _rule_contradicts(
     if left.polarity == right.polarity:
         return None
     # Must share scope to be claims over the same subject.
-    if not _shared_entities(left, right) and not _same_workstream(left, right):
+    if not _precise_edge_scope_compatible(left, right):
         return None
     source, target = _undirected_orient(left, right)
     metadata = {
@@ -890,7 +1023,9 @@ def _rule_weakens(
     left: ModelSignal,
     right: ModelSignal,
 ) -> RelationshipCandidate | None:
-    if not _same_scope(left, right):
+    if not _eligible_precise_edge_endpoints(left, right):
+        return None
+    if not _precise_edge_scope_compatible(left, right):
         return None
     source: ModelSignal | None = None
     target: ModelSignal | None = None
@@ -901,7 +1036,7 @@ def _rule_weakens(
             and cand_target.polarity == "positive"
             and cand_source.confidence >= cand_target.confidence + 0.10
         )
-        if phrase_hit or polarity_hit:
+        if (phrase_hit and cand_target.polarity == "positive") or polarity_hit:
             source, target = cand_source, cand_target
             break
     if source is None or target is None:
@@ -948,7 +1083,9 @@ def _rule_explains(
     left: ModelSignal,
     right: ModelSignal,
 ) -> RelationshipCandidate | None:
-    if not _same_scope(left, right):
+    if not _eligible_precise_edge_endpoints(left, right):
+        return None
+    if not _precise_edge_scope_compatible(left, right):
         return None
     source: ModelSignal | None = None
     target: ModelSignal | None = None
@@ -1002,7 +1139,7 @@ def _rule_causes(
     left: ModelSignal,
     right: ModelSignal,
 ) -> RelationshipCandidate | None:
-    if not _same_scope(left, right):
+    if not _precise_edge_scope_compatible(left, right):
         return None
     source: ModelSignal | None = None
     target: ModelSignal | None = None
@@ -1044,6 +1181,21 @@ _RESOLUTION_PHRASES = (
     "now available",
     "approved",
 )
+_STRONG_POSITIVE_RESOLUTION_PHRASES = (
+    "unblocked",
+    "mitigated",
+    "remediated",
+    "fixed",
+    "closed",
+    "cleared",
+    "now available",
+    "approved",
+)
+_RESOLUTION_NEGATION_PHRASES = (
+    "unresolved",
+    "mostly resolved",
+    "treated as mostly resolved",
+)
 _PRESSURE_PHRASES = (
     "blocked",
     "risk",
@@ -1056,20 +1208,47 @@ _PRESSURE_PHRASES = (
 )
 
 
+def _contains_resolution_signal(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if any(phrase in normalized for phrase in _RESOLUTION_NEGATION_PHRASES):
+        return False
+    return any(phrase in normalized for phrase in _RESOLUTION_PHRASES)
+
+
+def _contains_strong_positive_resolution_signal(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if any(phrase in normalized for phrase in _RESOLUTION_NEGATION_PHRASES):
+        return False
+    return any(phrase in normalized for phrase in _STRONG_POSITIVE_RESOLUTION_PHRASES)
+
+
 def _rule_contributes_to_resolution(
     tenant_id: UUID,
     scope_meta: dict[str, Any],
     left: ModelSignal,
     right: ModelSignal,
 ) -> RelationshipCandidate | None:
-    if not _same_scope(left, right):
+    if not _eligible_precise_edge_endpoints(left, right):
+        return None
+    if not _precise_edge_scope_compatible(left, right):
         return None
     source: ModelSignal | None = None
     target: ModelSignal | None = None
     for cand_source, cand_target in ((left, right), (right, left)):
-        if _contains_any(cand_source.natural, _RESOLUTION_PHRASES) and _contains_any(
-            cand_target.natural,
-            _PRESSURE_PHRASES,
+        source_resolves = _contains_resolution_signal(cand_source.natural)
+        target_has_pressure = _contains_any(cand_target.natural, _PRESSURE_PHRASES)
+        source_not_negative = (
+            cand_source.polarity != "negative"
+            or _contains_strong_positive_resolution_signal(cand_source.natural)
+        )
+        target_is_pressure = (
+            cand_target.polarity == "negative" or _claim_role(cand_target) == "concern"
+        )
+        if (
+            source_resolves
+            and target_has_pressure
+            and source_not_negative
+            and target_is_pressure
         ):
             source, target = cand_source, cand_target
             break
@@ -1110,12 +1289,14 @@ def _rule_predicts(
     left: ModelSignal,
     right: ModelSignal,
 ) -> RelationshipCandidate | None:
-    if not _same_scope(left, right):
+    if not _precise_edge_scope_compatible(left, right):
         return None
     source: ModelSignal | None = None
     target: ModelSignal | None = None
     for cand_source, cand_target in ((left, right), (right, left)):
-        if _is_prediction_signal(cand_source) and not _is_prediction_signal(cand_target):
+        if _is_prediction_signal(cand_source) and not _is_prediction_signal(
+            cand_target
+        ):
             source, target = cand_source, cand_target
             break
     if source is None or target is None:
@@ -1149,6 +1330,8 @@ def _rule_enables(
     left: ModelSignal,
     right: ModelSignal,
 ) -> RelationshipCandidate | None:
+    if not _precise_edge_scope_compatible(left, right):
+        return None
     for source, target in ((left, right), (right, left)):
         if not source.capability_surface:
             continue
@@ -1190,6 +1373,8 @@ def _claim_role(model: ModelSignal) -> str:
         return "capability"
     if model.proposition_kind == "situation":
         return "situation"
+    if model.proposition_kind == "concern":
+        return "concern"
     grammar = derive_memory_grammar(model.proposition)
     return grammar.claim_role
 
@@ -1249,7 +1434,7 @@ def generate_scope_overlap_candidates(
             "scope_id": str(scope[1]),
         }
         for i, left in enumerate(group_sorted):
-            for right in group_sorted[i + 1:]:
+            for right in group_sorted[i + 1 :]:
                 for edge_kind, rule in rules.items():
                     candidate = rule(tenant_id, scope_meta, left, right)
                     if candidate is None:

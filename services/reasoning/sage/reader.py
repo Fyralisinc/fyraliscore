@@ -13,6 +13,7 @@ The reader only reads canonical Synthesis tables. Its explainable
 activation trace is returned to the caller for persistence in the
 Discovery Utility Layer after the inquiry session row exists.
 """
+
 from __future__ import annotations
 
 import json
@@ -42,7 +43,10 @@ from services.reasoning.sage.evidence_projection import (
     ProjectionBudget,
     ProjectionResult,
 )
-from services.reasoning.sage.intent_inferer import RetrievalIntent, RetrievalIntentInferer
+from services.reasoning.sage.intent_inferer import (
+    RetrievalIntent,
+    RetrievalIntentInferer,
+)
 from services.reasoning.sage.structural_features.types import (
     EdgeStructuralFeatures,
     ModelStructuralFeatures,
@@ -267,9 +271,7 @@ class SynthesisReader:
 
         started = time.perf_counter()
         substrate.aliases = await self._load_aliases_cached(conn, tenant_id)
-        substrate.timings_ms["aliases_ms"] = int(
-            (time.perf_counter() - started) * 1000
-        )
+        substrate.timings_ms["aliases_ms"] = int((time.perf_counter() - started) * 1000)
 
         model_started = time.perf_counter()
         baseline_ids: list[UUID] = []
@@ -297,7 +299,9 @@ class SynthesisReader:
         )
 
         edge_started = time.perf_counter()
-        edge_seed_ids = baseline_ids[: max(0, int(self._budget.substrate_edge_seed_limit))]
+        edge_seed_ids = baseline_ids[
+            : max(0, int(self._budget.substrate_edge_seed_limit))
+        ]
         if edge_seed_ids:
             await self._load_candidate_edges_for_read(
                 conn,
@@ -362,6 +366,7 @@ class SynthesisReader:
         question_primitive: str,
         hypotheses: tuple[Any, ...] = (),
         substrate: SageReadSubstrate | None = None,
+        evidence_state: dict[str, Any] | None = None,
     ) -> SynthesisReaderResult:
         timings: dict[str, int] = {}
         degraded_sources: list[dict[str, Any]] = []
@@ -379,17 +384,17 @@ class SynthesisReader:
             signal=_signal_payload(trigger),
             question=question,
             hypotheses=[_hypothesis_text(h) for h in hypotheses],
-            evidence_state=None,
+            evidence_state=evidence_state,
         )
-        stage_started = _mark_reader_stage(
-            timings, "cue_extraction_ms", stage_started
+        stage_started = _mark_reader_stage(timings, "cue_extraction_ms", stage_started)
+        intents = tuple(
+            self._intent_inferer.infer(
+                cues=cues,
+                evidence_state=evidence_state,
+                question_id=question_id,
+                question_text=question,
+            )
         )
-        intents = tuple(self._intent_inferer.infer(
-            cues=cues,
-            evidence_state=None,
-            question_id=question_id,
-            question_text=question,
-        ))
         primitive = _coarse_primitive(question_primitive, intents)
         signature = _signature_for(trigger, primitive, cues)
         stage_started = _mark_reader_stage(
@@ -399,27 +404,36 @@ class SynthesisReader:
         candidates = _CandidateAccumulator()
         _add_explicit_trigger_models(candidates, trigger)
         _add_substrate_seed_models(candidates, substrate, self._budget)
-        stage_started = _mark_reader_stage(
-            timings, "explicit_seed_ms", stage_started
-        )
+        stage_started = _mark_reader_stage(timings, "explicit_seed_ms", stage_started)
         shortcut_hits = await self._activate_from_shortcuts(
-            conn, tenant_id, signature, candidates, degraded_sources,
+            conn,
+            tenant_id,
+            signature,
+            candidates,
+            degraded_sources,
         )
         stage_started = _mark_reader_stage(
             timings, "shortcut_activation_ms", stage_started
         )
         contextual_affordance_hits = await self._activate_from_affordances(
-            conn, tenant_id, primitive, signature, candidates, degraded_sources,
+            conn,
+            tenant_id,
+            primitive,
+            signature,
+            candidates,
+            degraded_sources,
         )
         stage_started = _mark_reader_stage(
             timings, "affordance_activation_ms", stage_started
         )
         negative_memory = await self._suppress_from_negative_memory(
-            conn, tenant_id, signature, candidates, degraded_sources,
+            conn,
+            tenant_id,
+            signature,
+            candidates,
+            degraded_sources,
         )
-        stage_started = _mark_reader_stage(
-            timings, "negative_memory_ms", stage_started
-        )
+        stage_started = _mark_reader_stage(timings, "negative_memory_ms", stage_started)
 
         learned_plan = _learned_read_plan(
             budget=self._budget,
@@ -443,6 +457,7 @@ class SynthesisReader:
                 read_started=read_started,
                 learned_plan=learned_plan,
                 degraded_sources=degraded_sources,
+                evidence_state=evidence_state,
             )
 
         lexical_activation_stats = await self._activate_from_lexical_scan(
@@ -463,19 +478,31 @@ class SynthesisReader:
             timings["alternative_activation_ms"] = 0
         else:
             await self._activate_from_belief_addresses(
-                conn, tenant_id, primitive, question, trigger, cues, candidates,
+                conn,
+                tenant_id,
+                primitive,
+                question,
+                trigger,
+                cues,
+                candidates,
             )
             stage_started = _mark_reader_stage(
                 timings, "belief_address_activation_ms", stage_started
             )
             await self._activate_from_operational_facets(
-                conn, tenant_id, question, candidates,
+                conn,
+                tenant_id,
+                question,
+                candidates,
             )
             stage_started = _mark_reader_stage(
                 timings, "operational_facet_activation_ms", stage_started
             )
             await self._activate_from_alternative_scan(
-                conn, tenant_id, question, candidates,
+                conn,
+                tenant_id,
+                question,
+                candidates,
             )
             stage_started = _mark_reader_stage(
                 timings, "alternative_activation_ms", stage_started
@@ -529,6 +556,7 @@ class SynthesisReader:
             timings=timings,
             read_started=read_started,
             learned_plan=learned_plan,
+            evidence_state=evidence_state,
         )
 
     async def _load_reader_graph_rows(
@@ -569,14 +597,14 @@ class SynthesisReader:
             conn, tenant_id, sorted(model_ids, key=str)
         )
         stage_started = _mark_reader_stage(timings, "load_models_ms", stage_started)
-        features = await self._load_model_features_cached(
-            conn, tenant_id, list(models)
-        )
+        features = await self._load_model_features_cached(conn, tenant_id, list(models))
         stage_started = _mark_reader_stage(
             timings, "load_model_features_ms", stage_started
         )
         edge_features = await self._load_edge_features_cached(
-            conn, tenant_id, [r["id"] for r in edges],
+            conn,
+            tenant_id,
+            [r["id"] for r in edges],
         )
         stage_started = _mark_reader_stage(
             timings, "load_edge_features_ms", stage_started
@@ -666,7 +694,10 @@ class SynthesisReader:
             score = candidates.score_for(mid)
             detail = candidates.details[mid]
             lexical_score, lexical_reasons = _lexical_activation(
-                model, question, trigger, cues,
+                model,
+                question,
+                trigger,
+                cues,
             )
             if lexical_score > 0:
                 score += lexical_score
@@ -719,15 +750,15 @@ class SynthesisReader:
                 )
             )
 
+        node_budget = learned_plan.max_nodes or self._budget.max_nodes
         selection = selector.select(
             activated_nodes=scored.activated_nodes,
             candidate_edges=scored.gate_edges,
             question_primitive=primitive,
             required_evidence_roles=_required_roles_for(primitive),
-            known_counterevidence_node_ids=tuple(
-                n.model_id
-                for n in scored.activated_nodes
-                if any("counterevidence" in r for r in n.activation_reasons)
+            known_counterevidence_node_ids=_protected_counterevidence_node_ids(
+                scored.activated_nodes,
+                max_nodes=node_budget,
             ),
         )
         stage_started = _mark_reader_stage(
@@ -882,9 +913,12 @@ class SynthesisReader:
             return 0
         try:
             shortcuts = await DiscoveryShortcutsRepo(
-                self._pool, tenant_id=tenant_id,
+                self._pool,
+                tenant_id=tenant_id,
             ).find_for_signature(
-                signature, limit=self._budget.shortcut_candidates, conn=conn,
+                signature,
+                limit=self._budget.shortcut_candidates,
+                conn=conn,
             )
         except Exception as exc:  # noqa: BLE001
             _record_degraded_source(
@@ -925,7 +959,8 @@ class SynthesisReader:
         entities = _signature_entities(signature)
         try:
             profiles = await AffordanceProfilesRepo(
-                self._pool, tenant_id=tenant_id,
+                self._pool,
+                tenant_id=tenant_id,
             ).search_by_primitive_context(
                 primitive,
                 entities=entities,
@@ -961,7 +996,8 @@ class SynthesisReader:
                 score,
                 (
                     f"affordance:{primitive}:context"
-                    if overlap > 0 else f"affordance:{primitive}"
+                    if overlap > 0
+                    else f"affordance:{primitive}"
                 ),
                 source="affordance",
             )
@@ -1081,7 +1117,8 @@ class SynthesisReader:
         if not plan.roles:
             return
         seed_roles = [
-            role for role in plan.roles
+            role
+            for role in plan.roles
             if role in {"action", "count", "delta", "invariant", "sequence"}
         ]
         if not seed_roles:
@@ -1127,9 +1164,7 @@ class SynthesisReader:
             role_count = int(row["role_match_count"] or 1)
             lexical_count = int(row["lexical_match_count"] or 0)
             matched_roles = [
-                str(role)
-                for role in (row["matched_roles"] or [])
-                if role is not None
+                str(role) for role in (row["matched_roles"] or []) if role is not None
             ]
             score = (
                 0.16
@@ -1265,9 +1300,7 @@ class _CandidateScore:
 
 class _CandidateAccumulator:
     def __init__(self) -> None:
-        self.details: defaultdict[UUID, _CandidateScore] = defaultdict(
-            _CandidateScore
-        )
+        self.details: defaultdict[UUID, _CandidateScore] = defaultdict(_CandidateScore)
         self.suppressed: dict[UUID, str] = {}
 
     @property
@@ -1301,8 +1334,7 @@ class _CandidateAccumulator:
 
     def source_total(self, source: str) -> float:
         return sum(
-            float(detail.sources.get(source, 0.0))
-            for detail in self.details.values()
+            float(detail.sources.get(source, 0.0)) for detail in self.details.values()
         )
 
     def top_source_score(self, sources: tuple[str, ...]) -> float:
@@ -1325,9 +1357,7 @@ class _CandidateAccumulator:
         required_ids: set[UUID] | tuple[UUID, ...] | list[UUID] = (),
     ) -> list[UUID]:
         required = [
-            mid
-            for mid in sorted(set(required_ids), key=str)
-            if mid in self.details
+            mid for mid in sorted(set(required_ids), key=str) if mid in self.details
         ]
         effective_limit = max(len(required), max(0, int(limit)))
         ranked = sorted(
@@ -1381,6 +1411,27 @@ class _CandidateAccumulator:
         )
 
 
+def _protected_counterevidence_node_ids(
+    activated_nodes: list[ActivatedNode],
+    *,
+    max_nodes: int,
+) -> tuple[UUID, ...]:
+    cap = max(4, min(24, int(max(1, max_nodes) * 0.4)))
+    counter_nodes = [
+        node
+        for node in activated_nodes
+        if any("counterevidence" in reason for reason in node.activation_reasons)
+        and not any(
+            reason.startswith("negative_memory:")
+            for reason in node.activation_reasons
+        )
+    ]
+    counter_nodes.sort(
+        key=lambda node: (-float(node.activation_score or 0.0), str(node.model_id))
+    )
+    return tuple(node.model_id for node in counter_nodes[:cap])
+
+
 def _build_reader_result(
     *,
     budget: ReaderBudget,
@@ -1399,10 +1450,9 @@ def _build_reader_result(
     timings: dict[str, int],
     read_started: float,
     learned_plan: _LearnedReadPlan,
+    evidence_state: dict[str, Any] | None,
 ) -> SynthesisReaderResult:
-    selection_rank = {
-        mid: idx for idx, mid in enumerate(projected.selected_model_ids)
-    }
+    selection_rank = {mid: idx for idx, mid in enumerate(projected.selected_model_ids)}
     traces = _build_activation_traces(
         question_id=question_id,
         activated_nodes=scored.activated_nodes,
@@ -1445,6 +1495,7 @@ def _build_reader_result(
         timings=timings,
         read_started=read_started,
         learned_plan=learned_plan,
+        evidence_state=evidence_state,
     )
     return SynthesisReaderResult(
         question_id=question_id,
@@ -1513,10 +1564,12 @@ def _build_reader_debug_payload(
     timings: dict[str, int],
     read_started: float,
     learned_plan: _LearnedReadPlan,
+    evidence_state: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return {
         "cue_extraction": _jsonable(asdict(cues)),
         "intents": [_jsonable(asdict(intent)) for intent in intents],
+        "evidence_state": _jsonable(evidence_state or {}),
         "activation_reasons": {
             str(trace.model_id): list(trace.activation_reasons) for trace in traces
         },
@@ -1598,28 +1651,22 @@ def _learned_read_plan(
     reasons: list[str] = []
 
     negative_ready = (
-        negative_memory_count >= negative_threshold
-        and explicit_model_count == 0
+        negative_memory_count >= negative_threshold and explicit_model_count == 0
     )
     negative_only = (
-        negative_ready
-        and positive_hit_count == 0
-        and top_learned_score < 0.24
+        negative_ready and positive_hit_count == 0 and top_learned_score < 0.24
     )
-    negative_dominant = (
-        negative_ready
-        and (
-            suppressed_count >= max(negative_threshold, positive_hit_count)
-            or (
-                negative_memory_count >= max(8, positive_hit_count * 4)
-                and positive_hit_count <= 1
-                and top_learned_score < 0.50
-            )
-            or (
-                negative_memory_count >= max(16, positive_hit_count * 6)
-                and learned_score < 0.80
-                and top_learned_score < 0.36
-            )
+    negative_dominant = negative_ready and (
+        suppressed_count >= max(negative_threshold, positive_hit_count)
+        or (
+            negative_memory_count >= max(8, positive_hit_count * 4)
+            and positive_hit_count <= 1
+            and top_learned_score < 0.50
+        )
+        or (
+            negative_memory_count >= max(16, positive_hit_count * 6)
+            and learned_score < 0.80
+            and top_learned_score < 0.36
         )
     )
     if negative_only or negative_dominant:
@@ -1647,11 +1694,13 @@ def _learned_read_plan(
         and learned_score >= 0.70
     )
     if focused:
-        reasons.extend([
-            f"positive_hit_count={positive_hit_count}",
-            f"top_learned_score={top_learned_score:.3f}",
-            f"learned_score={learned_score:.3f}",
-        ])
+        reasons.extend(
+            [
+                f"positive_hit_count={positive_hit_count}",
+                f"top_learned_score={top_learned_score:.3f}",
+                f"learned_score={learned_score:.3f}",
+            ]
+        )
         if suppressed_count:
             reasons.append(f"suppressed_by_negative_memory={suppressed_count}")
         return _LearnedReadPlan(
@@ -1672,20 +1721,19 @@ def _learned_read_plan(
             reasons=tuple(reasons),
         )
 
-    rerank_ready = (
-        substrate_model_count >= max(1, int(budget.rerank_min_substrate_models))
-        and (
-            explicit_model_count > 0
-            or positive_hit_count >= 1
-            or top_learned_score >= 0.24
-        )
+    rerank_ready = substrate_model_count >= max(
+        1, int(budget.rerank_min_substrate_models)
+    ) and (
+        explicit_model_count > 0 or positive_hit_count >= 1 or top_learned_score >= 0.24
     )
     if rerank_ready:
-        reasons.extend([
-            f"substrate_model_count={substrate_model_count}",
-            f"positive_hit_count={positive_hit_count}",
-            f"top_learned_score={top_learned_score:.3f}",
-        ])
+        reasons.extend(
+            [
+                f"substrate_model_count={substrate_model_count}",
+                f"positive_hit_count={positive_hit_count}",
+                f"top_learned_score={top_learned_score:.3f}",
+            ]
+        )
         if suppressed_count:
             reasons.append(f"suppressed_by_negative_memory={suppressed_count}")
         return _LearnedReadPlan(
@@ -1707,9 +1755,7 @@ def _learned_read_plan(
         )
 
     guarded_negative_route = (
-        negative_ready
-        and top_learned_score < 0.42
-        and learned_score < 0.90
+        negative_ready and top_learned_score < 0.42 and learned_score < 0.90
     )
     if guarded_negative_route:
         reasons.append(f"negative_memory_count={negative_memory_count}")
@@ -1790,6 +1836,7 @@ def _empty_reader_result(
     read_started: float,
     learned_plan: _LearnedReadPlan,
     degraded_sources: list[dict[str, Any]] | None = None,
+    evidence_state: dict[str, Any] | None = None,
 ) -> SynthesisReaderResult:
     degraded = list(degraded_sources or [])
     selection = SubgraphSelection(
@@ -1822,6 +1869,7 @@ def _empty_reader_result(
     debug = {
         "cue_extraction": _jsonable(asdict(cues)),
         "intents": [_jsonable(asdict(intent)) for intent in intents],
+        "evidence_state": _jsonable(evidence_state or {}),
         "activation_reasons": {},
         "gate_scores": {},
         "selector": {
@@ -1875,7 +1923,8 @@ def _explicit_model_count(trigger: TriggerContext) -> int:
 
 
 async def _load_aliases_with_conn(
-    conn: asyncpg.Connection, tenant_id: UUID,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
 ) -> dict[str, str]:
     table = await conn.fetchval("SELECT to_regclass('public.entity_aliases')")
     if table is None:
@@ -2027,8 +2076,7 @@ async def _load_edge_features(
         edge_ids,
     )
     return {
-        row["edge_id"]: EdgeStructuralFeatures.model_validate(dict(row))
-        for row in rows
+        row["edge_id"]: EdgeStructuralFeatures.model_validate(dict(row)) for row in rows
     }
 
 
@@ -2053,6 +2101,30 @@ async def _load_candidate_edges(
             OR target_model_id = ANY($2::uuid[])
           )
         ORDER BY created_at DESC
+        LIMIT $3
+        """,
+        tenant_id,
+        seed_model_ids,
+        int(limit),
+    )
+    candidate_edge_rows = await conn.fetch(
+        """
+        SELECT id, source_model_id, target_model_id, edge_kind,
+               COALESCE(confidence_score, judgment_leverage_score, 0.55)::float
+                 AS weight,
+               created_at
+        FROM relationship_candidates
+        WHERE tenant_id = $1
+          AND candidate_kind = 'edge'
+          AND review_status IN ('candidate', 'needs_review', 'accepted')
+          AND (expires_at IS NULL OR expires_at > now())
+          AND source_model_id IS NOT NULL
+          AND target_model_id IS NOT NULL
+          AND (
+            source_model_id = ANY($2::uuid[])
+            OR target_model_id = ANY($2::uuid[])
+          )
+        ORDER BY judgment_leverage_score DESC, created_at DESC
         LIMIT $3
         """,
         tenant_id,
@@ -2088,9 +2160,11 @@ async def _load_candidate_edges(
         int(limit),
     )
     rows = [dict(row) for row in model_edge_rows]
+    rows.extend(dict(row) for row in candidate_edge_rows)
     rows.extend(dict(row) for row in edge_type_rows)
     rows = [
-        row for row in rows
+        row
+        for row in rows
         if row.get("source_model_id")
         and row.get("target_model_id")
         and row.get("source_model_id") != row.get("target_model_id")
@@ -2211,16 +2285,20 @@ def _negative_memory_signature_probes(
     probes: list[dict[str, Any]] = [dict(signature)]
     entities = _signature_entities(signature)
     for entity in entities[:8]:
-        probes.append({
-            "signal_type": signal_type,
-            "question_primitive": primitive,
-            "entities": [entity],
-        })
+        probes.append(
+            {
+                "signal_type": signal_type,
+                "question_primitive": primitive,
+                "entities": [entity],
+            }
+        )
     if not entities:
-        probes.append({
-            "signal_type": signal_type,
-            "question_primitive": primitive,
-        })
+        probes.append(
+            {
+                "signal_type": signal_type,
+                "question_primitive": primitive,
+            }
+        )
 
     deduped: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -2249,7 +2327,10 @@ def _add_explicit_trigger_models(
 ) -> None:
     if trigger.model_id is not None:
         candidates.add(
-            trigger.model_id, 0.72, "explicit:trigger_model", source="explicit",
+            trigger.model_id,
+            0.72,
+            "explicit:trigger_model",
+            source="explicit",
         )
     for mid in trigger.member_model_ids or []:
         candidates.add(mid, 0.48, "explicit:member_model", source="explicit")
@@ -2262,7 +2343,9 @@ def _add_substrate_seed_models(
 ) -> None:
     if substrate is None or not substrate.baseline_model_ids:
         return
-    limit = max(0, min(len(substrate.baseline_model_ids), int(budget.substrate_model_limit)))
+    limit = max(
+        0, min(len(substrate.baseline_model_ids), int(budget.substrate_model_limit))
+    )
     if limit <= 0:
         return
     for rank, model_id in enumerate(substrate.baseline_model_ids[:limit]):
@@ -2325,12 +2408,7 @@ def _contains_like_patterns(terms: list[str] | tuple[str, ...]) -> list[str]:
         term = str(raw or "").casefold().strip()
         if len(term) < 3:
             continue
-        escaped = (
-            term
-            .replace("!", "!!")
-            .replace("%", "!%")
-            .replace("_", "!_")
-        )
+        escaped = term.replace("!", "!!").replace("%", "!%").replace("_", "!_")
         pattern = f"%{escaped}%"
         if pattern in seen:
             continue
@@ -2370,6 +2448,34 @@ _BELIEF_ADDRESS_FTS_GENERIC_TERMS = {
     "responsible",
 }
 
+_LEXICAL_DISCOVERY_GENERIC_TERMS = {
+    *_BELIEF_ADDRESS_FTS_GENERIC_TERMS,
+    "accountable",
+    "blocking",
+    "currently",
+    "issue",
+    "launch",
+    "matching",
+    "model",
+    "models",
+    "pattern",
+    "recurring",
+    "related",
+    "repeated",
+    "risk",
+    "same",
+    "showing",
+    "similar",
+    "specific",
+    "stable",
+    "status",
+}
+_SPARSE_LOOKUP_ALLOWED_GENERIC_TERMS = {
+    # Generic alone, valuable in combination. The sparse query still requires
+    # multi-term overlap unless the token is symbol-specific.
+    "evidence",
+}
+
 
 def _belief_address_fts_query_for_terms(terms: list[str] | tuple[str, ...]) -> str:
     clauses: list[str] = []
@@ -2384,9 +2490,7 @@ def _belief_address_fts_query_for_terms(terms: list[str] | tuple[str, ...]) -> s
         if not tokens:
             continue
         specific_tokens = [
-            token
-            for token in tokens
-            if token not in _BELIEF_ADDRESS_FTS_GENERIC_TERMS
+            token for token in tokens if token not in _BELIEF_ADDRESS_FTS_GENERIC_TERMS
         ]
         if not specific_tokens:
             continue
@@ -2395,9 +2499,11 @@ def _belief_address_fts_query_for_terms(terms: list[str] | tuple[str, ...]) -> s
                 continue
             clause = _fts_lexeme(specific_tokens[0])
         else:
-            clause = "(" + " & ".join(
-                _fts_lexeme(token) for token in specific_tokens[:3]
-            ) + ")"
+            clause = (
+                "("
+                + " & ".join(_fts_lexeme(token) for token in specific_tokens[:3])
+                + ")"
+            )
         if clause in seen:
             continue
         seen.add(clause)
@@ -2424,6 +2530,17 @@ def _sparse_lookup_terms(
         for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", str(raw or "").casefold()):
             if token in _STOPWORDS or token.isdigit():
                 continue
+            symbol_specific = (
+                "-" in token or "_" in token or any(ch.isdigit() for ch in token)
+            )
+            if (
+                token in _LEXICAL_DISCOVERY_GENERIC_TERMS
+                and not symbol_specific
+                and token not in _SPARSE_LOOKUP_ALLOWED_GENERIC_TERMS
+            ):
+                continue
+            if len(token) < 4 and not symbol_specific:
+                continue
             if token not in out:
                 out.append(token)
             if len(out) >= max(1, int(max_terms)):
@@ -2435,8 +2552,7 @@ def _sparse_strong_single_match_terms(terms: list[str]) -> list[str]:
     return [
         term
         for term in terms
-        if len(term) >= 4
-        and any(ch.isdigit() or ch in {"-", "_"} for ch in term)
+        if len(term) >= 4 and any(ch.isdigit() or ch in {"-", "_"} for ch in term)
     ]
 
 
@@ -2451,7 +2567,9 @@ def _sparse_lookup_groups(
     for raw in terms:
         tokens = [
             token
-            for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", str(raw or "").casefold())
+            for token in re.findall(
+                r"[a-z0-9][a-z0-9_-]{2,}", str(raw or "").casefold()
+            )
             if token not in _STOPWORDS and not token.isdigit()
         ]
         if exclude_generics:
@@ -2498,7 +2616,8 @@ async def _fetch_search_document_matches(
     if sparse_rows:
         return sparse_rows
 
-    patterns = _contains_like_patterns(terms)
+    lookup_terms = _sparse_lookup_terms(terms, max_terms=microquery_terms)
+    patterns = _contains_like_patterns(lookup_terms)
     if not patterns:
         return []
     if microquery_enabled and len(patterns) > 1:
@@ -2727,9 +2846,7 @@ async def _fetch_bounded_lookup_rows(
     *args: Any,
     label: str = "lookup",
 ) -> list[asyncpg.Record]:
-    in_outer_transaction = bool(
-        getattr(conn, "is_in_transaction", lambda: False)()
-    )
+    in_outer_transaction = bool(getattr(conn, "is_in_transaction", lambda: False)())
     previous_timeout: str | None = None
     if in_outer_transaction:
         previous_timeout = await conn.fetchval(
@@ -2809,16 +2926,12 @@ async def _fetch_belief_address_matches(
     terms: list[str] | tuple[str, ...],
     limit: int,
 ) -> list[asyncpg.Record]:
-    table = await conn.fetchval(
-        "SELECT to_regclass('public.model_belief_addresses')"
-    )
+    table = await conn.fetchval("SELECT to_regclass('public.model_belief_addresses')")
     if table is None:
         return []
     primitive_values = [
         value
-        for value in dict.fromkeys(
-            str(raw or "").strip().upper() for raw in primitives
-        )
+        for value in dict.fromkeys(str(raw or "").strip().upper() for raw in primitives)
         if value
     ]
     if not primitive_values:
@@ -2932,9 +3045,7 @@ async def _fetch_belief_address_matches_via_address_fts(
     query: str,
     limit: int,
 ) -> list[asyncpg.Record]:
-    table = await conn.fetchval(
-        "SELECT to_regclass('public.model_belief_addresses')"
-    )
+    table = await conn.fetchval("SELECT to_regclass('public.model_belief_addresses')")
     if table is None:
         return []
     return await _fetch_bounded_lookup_rows(
@@ -3092,7 +3203,9 @@ async def _fetch_answerability_index_matches(
     )
     if not lookup_groups:
         return []
-    table = await conn.fetchval("SELECT to_regclass('public.model_answerability_index')")
+    table = await conn.fetchval(
+        "SELECT to_regclass('public.model_answerability_index')"
+    )
     if table is None:
         return []
     return await _fetch_bounded_lookup_rows(
@@ -3201,12 +3314,12 @@ def _lexical_activation(
         ]
     )
     answer_lower = _questionless_text(model_text, question)
-    query_tokens = _tokens(
-        " ".join([question or "", trigger.seed_natural_text or ""])
-    )
+    query_tokens = _tokens(" ".join([question or "", trigger.seed_natural_text or ""]))
     model_tokens = _tokens(model_text)
     overlap = query_tokens & model_tokens
-    compact_overlap = _compact_terms(" ".join([question or "", trigger.seed_natural_text or ""])) & _compact_terms(model_text)
+    compact_overlap = _compact_terms(
+        " ".join([question or "", trigger.seed_natural_text or ""])
+    ) & _compact_terms(model_text)
     score = 0.0
     reasons: list[str] = []
     if overlap:
@@ -3273,11 +3386,42 @@ def _model_stable_sort_key(model: ModelRow) -> tuple[str, str, str, str]:
 
 
 _STOPWORDS = {
-    "about", "after", "also", "and", "are", "because", "been", "from",
-    "have", "into", "need", "needs", "that", "the", "their", "this",
-    "with", "without", "what", "which", "would", "should", "actually",
-    "where", "when", "whose", "who", "why", "how", "sure", "only",
-    "here", "there", "current", "company", "fyralis",
+    "about",
+    "after",
+    "also",
+    "and",
+    "are",
+    "because",
+    "been",
+    "from",
+    "have",
+    "into",
+    "need",
+    "needs",
+    "that",
+    "the",
+    "their",
+    "this",
+    "with",
+    "without",
+    "what",
+    "which",
+    "would",
+    "should",
+    "actually",
+    "where",
+    "when",
+    "whose",
+    "who",
+    "why",
+    "how",
+    "sure",
+    "only",
+    "here",
+    "there",
+    "current",
+    "company",
+    "fyralis",
 }
 
 
@@ -3355,11 +3499,17 @@ def _expanded_query_terms(text: str) -> list[str]:
         add("next action", "assigning", "owner", "mitigation")
     if any(term in q for term in ("goal", "affected", "impact")):
         add("goal", "risk", "at risk", "affected", "impact")
-    if any(term in q for term in ("which", "compare", "comparison", "option", "choice", "between")):
+    if any(
+        term in q
+        for term in ("which", "compare", "comparison", "option", "choice", "between")
+    ):
         add("compare", "choice", "option", "selected", "largest", "least", "count")
     if any(term in q for term in ("current", "latest", "final", "last", "as of")):
         add("current", "latest", "final", "state", "status")
-    if any(term in q for term in ("exact", "how many", "number", "count", "price", "quantity")):
+    if any(
+        term in q
+        for term in ("exact", "how many", "number", "count", "price", "quantity")
+    ):
         add("count", "quantity", "number", "price", "value")
     return out[:10]
 
@@ -3465,15 +3615,26 @@ def _question_role_score(
         or any(
             term in q
             for term in (
-                "block", "dependency", "critical path", "risk",
-                "bottleneck", "constrain", "resource",
+                "block",
+                "dependency",
+                "critical path",
+                "risk",
+                "bottleneck",
+                "constrain",
+                "resource",
             )
         )
     ) and any(
         term in model_lower
         for term in (
-            "block", "depend", "critical path", "constraint", "constrain",
-            "bottleneck", "quota", "exhaust",
+            "block",
+            "depend",
+            "critical path",
+            "constraint",
+            "constrain",
+            "bottleneck",
+            "quota",
+            "exhaust",
         )
     ):
         score += 0.12
@@ -3482,31 +3643,67 @@ def _question_role_score(
         "owns" in relation_clues
         or "assigned_to" in relation_clues
         or any(term in q for term in ("owner", "owns", "responsible", "accountable"))
-    ) and any(term in model_lower for term in ("owner", "owns", "assigned", "responsible", "accountable")):
+    ) and any(
+        term in model_lower
+        for term in ("owner", "owns", "assigned", "responsible", "accountable")
+    ):
         score += 0.14
         reasons.append("role:owner")
     if (
         "contradicts" in relation_clues
-        or any(term in q for term in ("contradict", "counterevidence", "disprove", "wrong", "stale"))
-    ) and any(term in model_lower for term in ("contradict", "counter", "disprove", "not blocked", "resolved", "stale")):
-        score += 0.16
-        reasons.append("role:counterevidence")
-    if (
-        "recurring" in relation_clues
         or any(
             term in q
-            for term in (
-                "recurring", "repeat", "repeated", "repeatedly", "again",
-                "pattern", "failed", "failure",
-            )
+            for term in ("contradict", "counterevidence", "disprove", "wrong", "stale")
         )
     ) and any(
         term in model_lower
         for term in (
-            "recurring", "recur", "repeat", "again", "pattern", "every",
-            "stalls", "stall", "failed", "failure",
+            "contradict",
+            "counter",
+            "disprove",
+            "not blocked",
+            "resolved",
+            "stale",
         )
-    ) and not any(term in model_lower for term in ("isolated", "one off", "single retry")):
+    ):
+        score += 0.16
+        reasons.append("role:counterevidence")
+    if (
+        (
+            "recurring" in relation_clues
+            or any(
+                term in q
+                for term in (
+                    "recurring",
+                    "repeat",
+                    "repeated",
+                    "repeatedly",
+                    "again",
+                    "pattern",
+                    "failed",
+                    "failure",
+                )
+            )
+        )
+        and any(
+            term in model_lower
+            for term in (
+                "recurring",
+                "recur",
+                "repeat",
+                "again",
+                "pattern",
+                "every",
+                "stalls",
+                "stall",
+                "failed",
+                "failure",
+            )
+        )
+        and not any(
+            term in model_lower for term in ("isolated", "one off", "single retry")
+        )
+    ):
         score += 0.10
         reasons.append("role:pattern")
     return score
@@ -3516,8 +3713,12 @@ def _looks_like_non_answer_evidence(model_lower: str) -> bool:
     return any(
         term in model_lower
         for term in (
-            "distractor", "mentions not", "generic dashboard",
-            "dashboard hub", "unrelated model", "without actionable synthesis",
+            "distractor",
+            "mentions not",
+            "generic dashboard",
+            "dashboard hub",
+            "unrelated model",
+            "without actionable synthesis",
             "without the target answer",
         )
     )
@@ -3546,8 +3747,12 @@ def _question_echo_penalty(
     model_tokens = _tokens(model_norm)
     overlap_ratio = len(question_tokens & model_tokens) / max(len(question_tokens), 1)
     echo_markers = (
-        "generic dashboard", "dashboard hub", "repeats", "noisy dashboard",
-        "without actionable synthesis", "without the target answer",
+        "generic dashboard",
+        "dashboard hub",
+        "repeats",
+        "noisy dashboard",
+        "without actionable synthesis",
+        "without the target answer",
     )
     if overlap_ratio < 0.75 or not any(marker in model_norm for marker in echo_markers):
         return 0.0

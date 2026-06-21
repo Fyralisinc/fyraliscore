@@ -104,6 +104,7 @@ from .lexical_terms import (
     focused_index_lookup_groups as _focused_index_lookup_groups,  # noqa: F401
     focused_index_terms as _focused_index_terms,  # noqa: F401
     focused_material_tokens as _focused_material_tokens,  # noqa: F401
+    hybrid_lookup_terms as _hybrid_lookup_terms,  # noqa: F401
     hybrid_lexical_terms as _hybrid_lexical_terms,  # noqa: F401
     hybrid_sparse_lookup_groups as _hybrid_sparse_lookup_groups,  # noqa: F401
     hybrid_sparse_lookup_terms as _hybrid_sparse_lookup_terms,  # noqa: F401
@@ -237,6 +238,18 @@ from .retrieval_learning import (
     motif_failure_penalties as _motif_failure_penalties,  # noqa: F401
     penalize_retrieval_motifs as _penalize_retrieval_motifs,  # noqa: F401
 )
+from .reconstruction_state import (
+    apply_reconstruction_to_actions as _apply_reconstruction_to_actions,  # noqa: F401
+    build_reconstruction_state as _build_reconstruction_state,  # noqa: F401
+    evidence_state_for_reader as _evidence_state_for_reader,  # noqa: F401
+    planner_reconstruction_payload as _planner_reconstruction_payload,  # noqa: F401
+    reader_reconstruction_payload as _reader_reconstruction_payload,  # noqa: F401
+    reconstruction_gate_decision as _reconstruction_gate_decision,  # noqa: F401
+    reconstruction_state_for_purpose as _reconstruction_state_for_purpose,  # noqa: F401
+    reconstruction_state_note as _reconstruction_state_note,  # noqa: F401
+    reconstruction_state_payload as _reconstruction_state_payload,  # noqa: F401
+    serialized_payload_size as _serialized_reconstruction_payload_size,  # noqa: F401
+)
 from .reflective_learning import (  # noqa: F401
     ReflectiveRuleAttribution as _ReflectiveRuleAttribution,
     ReflectiveRuleCandidate as _ReflectiveRuleCandidate,
@@ -350,6 +363,7 @@ from .types import (
     ModelRelevance,
     QuestionAnswer,
     QuestionPolicySignal,
+    ReconstructionState,  # noqa: F401
     RetrievalAction,
     RetrievalActionPath,
     SignalRoute,
@@ -465,6 +479,7 @@ async def run_inquiry_retrieval(
         action_timing_notes=bootstrap.action_timing_notes,
         stage_timing_notes=bootstrap.stage_timing_notes,
         question_planning_notes=bootstrap.question_planning_notes,
+        reconstruction_notes=bootstrap.reconstruction_notes,
         baseline_action_cache_notes=bootstrap.baseline_action_cache_notes,
         sage_reader_notes=bootstrap.sage_reader_notes,
         total_started=total_started,

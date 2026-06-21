@@ -87,6 +87,26 @@ class RetrievalAction:
 
 
 @dataclass(frozen=True, slots=True)
+class ReconstructionState:
+    """Compact state used to steer the next memory read."""
+
+    round_index: int
+    summary: str
+    active_cues: tuple[str, ...] = ()
+    active_tags: tuple[str, ...] = ()
+    unresolved_slots: tuple[str, ...] = ()
+    known_model_ids: tuple[str, ...] = ()
+    known_observation_ids: tuple[str, ...] = ()
+    supporting_refs: tuple[str, ...] = ()
+    counterevidence_refs: tuple[str, ...] = ()
+    answered_questions: tuple[str, ...] = ()
+    inconclusive_questions: tuple[str, ...] = ()
+    operator_bias: tuple[str, ...] = ()
+    hypothesis_status: dict[str, dict[str, Any]] = field(default_factory=dict)
+    recent_evidence: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryDecisionCandidate:
     """Typed, advisory decision surface for final Think reasoning.
 
@@ -233,6 +253,7 @@ __all__ = [
     "ModelRelevance",
     "QuestionAnswer",
     "QuestionPolicySignal",
+    "ReconstructionState",
     "RetrievalAction",
     "RetrievalActionPath",
     "SignalRoute",

@@ -29,10 +29,12 @@ same trigger re-processed after idempotency short-circuit doesn't
 double-fire post-commit. A new pending row after the previous one was
 processed is allowed (NULL vs non-NULL don't collide).
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 from uuid import UUID
@@ -46,6 +48,11 @@ from .diff_schema import ValidatedDiff
 
 
 _log = structlog.get_logger(__name__)
+
+_DISPATCH_CONN: ContextVar[asyncpg.Connection | None] = ContextVar(
+    "post_commit_dispatch_conn",
+    default=None,
+)
 
 
 # ---------------------------------------------------------------------
@@ -66,6 +73,7 @@ ACTION_KINDS = (
     "schedule_predictions",
     "broadcast_realtime",
     "invalidate_metrics",
+    "discover_model_edges",
 )
 
 
@@ -83,14 +91,17 @@ run should be a no-op for the already-done side effects.
 """
 
 
-# Default handlers are no-ops (publish_anomalies is already committed
-# to `think_anomalies_raw` in `anomaly_integration.py`; Wave 4-B's
-# anomaly_processor consumes from there). Real dispatch wiring is left
-# for the Wave 4-B integration PR. We keep the registry so the worker
-# can be driven end-to-end in tests.
+# Most default handlers are no-ops (publish_anomalies is already
+# committed to `think_anomalies_raw` in `anomaly_integration.py`; Wave
+# 4-B's anomaly_processor consumes from there). `discover_model_edges`
+# is the durable post-commit path for topology candidate generation.
+# We keep the registry so the worker can be driven end-to-end in tests.
+
 
 async def _default_publish_anomalies(
-    payload: dict[str, Any], tenant_id: UUID, trigger_id: UUID,
+    payload: dict[str, Any],
+    tenant_id: UUID,
+    trigger_id: UUID,
 ) -> None:
     _log.info(
         "post_commit.publish_anomalies.dispatched",
@@ -101,7 +112,9 @@ async def _default_publish_anomalies(
 
 
 async def _default_schedule_predictions(
-    payload: dict[str, Any], tenant_id: UUID, trigger_id: UUID,
+    payload: dict[str, Any],
+    tenant_id: UUID,
+    trigger_id: UUID,
 ) -> None:
     _log.info(
         "post_commit.schedule_predictions.dispatched",
@@ -112,7 +125,9 @@ async def _default_schedule_predictions(
 
 
 async def _default_broadcast_realtime(
-    payload: dict[str, Any], tenant_id: UUID, trigger_id: UUID,
+    payload: dict[str, Any],
+    tenant_id: UUID,
+    trigger_id: UUID,
 ) -> None:
     _log.info(
         "post_commit.broadcast_realtime.dispatched",
@@ -122,7 +137,9 @@ async def _default_broadcast_realtime(
 
 
 async def _default_invalidate_metrics(
-    payload: dict[str, Any], tenant_id: UUID, trigger_id: UUID,
+    payload: dict[str, Any],
+    tenant_id: UUID,
+    trigger_id: UUID,
 ) -> None:
     _log.info(
         "post_commit.invalidate_metrics.dispatched",
@@ -132,11 +149,105 @@ async def _default_invalidate_metrics(
     )
 
 
+async def _default_discover_model_edges(
+    payload: dict[str, Any],
+    tenant_id: UUID,
+    trigger_id: UUID,
+) -> None:
+    model_ids = _model_ids_from_payload(payload)
+    if not model_ids:
+        return
+
+    from lib.shared.db import get_pool
+    from services.reasoning.edge_intelligence import promote_pair_evidence_candidates
+    from services.reasoning.topology import LatentTopologyService
+
+    service = LatentTopologyService()
+    candidates_inserted = 0
+    think_triggers_enqueued = 0
+    duplicates_suppressed = 0
+    pair_evidence_scanned = 0
+    pair_evidence_candidates_inserted = 0
+    pair_evidence_candidates_skipped = 0
+    pair_evidence_failed = 0
+    skipped: dict[str, int] = {}
+    errors: list[str] = []
+
+    async def _run(conn: asyncpg.Connection) -> None:
+        nonlocal candidates_inserted
+        nonlocal think_triggers_enqueued
+        nonlocal duplicates_suppressed
+        nonlocal pair_evidence_scanned
+        nonlocal pair_evidence_candidates_inserted
+        nonlocal pair_evidence_candidates_skipped
+        nonlocal pair_evidence_failed
+        for model_id in model_ids:
+            try:
+                async with conn.transaction():
+                    result = await service.generate_for_model_id(
+                        conn,
+                        tenant_id=tenant_id,
+                        model_id=model_id,
+                        enqueue_think=True,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{model_id}: {type(exc).__name__}: {exc}")
+                continue
+
+            candidates_inserted += len(result.inserted_candidates)
+            think_triggers_enqueued += result.enqueued_think_triggers
+            duplicates_suppressed += result.duplicates_suppressed
+            if result.skipped_reason:
+                skipped[result.skipped_reason] = (
+                    skipped.get(result.skipped_reason, 0) + 1
+                )
+
+        promotion_limit = max(20, min(200, len(model_ids) * 12))
+        promotion = await promote_pair_evidence_candidates(
+            conn,
+            tenant_id=tenant_id,
+            limit=promotion_limit,
+            model_ids=model_ids,
+        )
+        pair_evidence_scanned += promotion.scanned_pair_evidence
+        pair_evidence_candidates_inserted += promotion.candidates_inserted
+        pair_evidence_candidates_skipped += promotion.candidates_skipped
+        pair_evidence_failed += promotion.failed_pair_evidence
+        errors.extend(promotion.errors)
+
+    conn = _DISPATCH_CONN.get()
+    if conn is not None:
+        await _run(conn)
+    else:
+        pool = get_pool()
+        async with pool.acquire() as acquired:
+            await _run(acquired)
+
+    _log.info(
+        "post_commit.discover_model_edges.dispatched",
+        tenant_id=str(tenant_id),
+        trigger_id=str(trigger_id),
+        model_count=len(model_ids),
+        candidates_inserted=candidates_inserted,
+        think_triggers_enqueued=think_triggers_enqueued,
+        duplicates_suppressed=duplicates_suppressed,
+        pair_evidence_scanned=pair_evidence_scanned,
+        pair_evidence_candidates_inserted=pair_evidence_candidates_inserted,
+        pair_evidence_candidates_skipped=pair_evidence_candidates_skipped,
+        pair_evidence_failed=pair_evidence_failed,
+        skipped=skipped,
+        error_count=len(errors),
+    )
+    if errors:
+        raise RuntimeError("; ".join(errors[:3]))
+
+
 _DISPATCHERS: dict[str, ActionHandler] = {
     "publish_anomalies": _default_publish_anomalies,
     "schedule_predictions": _default_schedule_predictions,
     "broadcast_realtime": _default_broadcast_realtime,
     "invalidate_metrics": _default_invalidate_metrics,
+    "discover_model_edges": _default_discover_model_edges,
 }
 
 
@@ -158,6 +269,7 @@ def reset_handlers() -> None:
     _DISPATCHERS["schedule_predictions"] = _default_schedule_predictions
     _DISPATCHERS["broadcast_realtime"] = _default_broadcast_realtime
     _DISPATCHERS["invalidate_metrics"] = _default_invalidate_metrics
+    _DISPATCHERS["discover_model_edges"] = _default_discover_model_edges
 
 
 # ---------------------------------------------------------------------
@@ -168,6 +280,9 @@ def reset_handlers() -> None:
 def _summarize_op_count(diff: ValidatedDiff) -> dict[str, int]:
     return {
         "claim_ops": len(diff.claim_ops),
+        "memory_lifecycle_ops": len(diff.memory_lifecycle_ops),
+        "relation_claim_ops": len(diff.relation_claim_ops),
+        "relation_frame_ops": len(diff.relation_frame_ops),
         "edge_ops": len(diff.edge_ops),
         "ontology_gap_ops": len(diff.ontology_gap_ops),
         "act_ops": len(diff.act_ops),
@@ -195,9 +310,24 @@ def _affected_entities(diff: ValidatedDiff) -> list[dict[str, str]]:
             for e in op.entry.get("scope_entities", []) or []:
                 if isinstance(e, dict):
                     _add(e.get("type"), e.get("id"))
+    for op in diff.memory_lifecycle_ops:
+        _add("model", op.model_id)
+        _add("model", op.superseded_by_model_id)
+        for model_id in op.evidence_model_ids:
+            _add("model", model_id)
     for op in diff.edge_ops:
         _add("model", op.source_model_id)
         _add("model", op.target_model_id)
+    for op in diff.relation_claim_ops:
+        _add("model", op.source_model_id)
+        _add("model", op.target_model_id)
+        for model_id in op.evidence_model_ids:
+            _add("model", model_id)
+    for op in diff.relation_frame_ops:
+        for participant in op.participants:
+            _add("model", participant.model_id)
+        for model_id in op.evidence_model_ids:
+            _add("model", model_id)
     for op in diff.ontology_gap_ops:
         _add("model", op.source_model_id)
         _add("model", op.target_model_id)
@@ -208,7 +338,10 @@ def _affected_entities(diff: ValidatedDiff) -> list[dict[str, str]]:
         eid = ent.get("id")
         if op.op.startswith("create_commitment") or op.op == "transition_commitment":
             _add("commitment", eid)
-        elif op.op.startswith("create_goal") or op.op in ("update_goal", "transition_goal"):
+        elif op.op.startswith("create_goal") or op.op in (
+            "update_goal",
+            "transition_goal",
+        ):
             _add("goal", eid)
         elif op.op.startswith("create_decision") or op.op == "transition_decision":
             _add("decision", eid)
@@ -250,6 +383,38 @@ def _predictions_payload(diff: ValidatedDiff) -> dict[str, Any]:
     return {"predictions": preds}
 
 
+def _edge_discovery_payload(
+    applied_model_ids: list[UUID] | tuple[UUID, ...] | None,
+) -> dict[str, Any]:
+    seen: set[UUID] = set()
+    model_ids: list[str] = []
+    for value in applied_model_ids or ():
+        try:
+            model_id = value if isinstance(value, UUID) else UUID(str(value))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        model_ids.append(str(model_id))
+    return {"model_ids": model_ids}
+
+
+def _model_ids_from_payload(payload: dict[str, Any]) -> list[UUID]:
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in payload.get("model_ids") or ():
+        try:
+            model_id = value if isinstance(value, UUID) else UUID(str(value))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        out.append(model_id)
+    return out
+
+
 def _payload_has_content(kind: str, payload: dict[str, Any]) -> bool:
     """Don't enqueue empty actions — keeps the queue tight and avoids
     burning handler cycles on empty broadcasts."""
@@ -263,6 +428,8 @@ def _payload_has_content(kind: str, payload: dict[str, Any]) -> bool:
         return True
     if kind == "invalidate_metrics":
         return bool(payload.get("affected_entities"))
+    if kind == "discover_model_edges":
+        return bool(payload.get("model_ids"))
     return False
 
 
@@ -277,6 +444,7 @@ async def enqueue_post_commit_actions(
     conn: asyncpg.Connection,
     *,
     anomalies: list[dict[str, Any]] | None = None,
+    applied_model_ids: list[UUID] | tuple[UUID, ...] | None = None,
 ) -> list[UUID]:
     """Enqueue post-commit actions derived from `validated_diff`.
 
@@ -294,7 +462,11 @@ async def enqueue_post_commit_actions(
         ("publish_anomalies", _anomalies_payload(anomalies)),
         ("schedule_predictions", _predictions_payload(validated_diff)),
         ("broadcast_realtime", {"diff_summary": _summarize_diff(validated_diff)}),
-        ("invalidate_metrics", {"affected_entities": _affected_entities(validated_diff)}),
+        (
+            "invalidate_metrics",
+            {"affected_entities": _affected_entities(validated_diff)},
+        ),
+        ("discover_model_edges", _edge_discovery_payload(applied_model_ids)),
     ]
 
     inserted: list[UUID] = []
@@ -396,7 +568,8 @@ async def fetch_pending_actions(
             LIMIT $2
             FOR UPDATE SKIP LOCKED
             """,
-            tenant_id, limit,
+            tenant_id,
+            limit,
         )
     return [
         PendingAction(
@@ -424,7 +597,8 @@ def _json_load(value: Any) -> dict[str, Any]:
 
 
 async def mark_action_processed(
-    conn: asyncpg.Connection, action_id: UUID,
+    conn: asyncpg.Connection,
+    action_id: UUID,
 ) -> None:
     await conn.execute(
         """
@@ -471,7 +645,10 @@ async def increment_attempts(
 
 
 async def move_to_dead_letter(
-    conn: asyncpg.Connection, action_id: UUID, *, error: str,
+    conn: asyncpg.Connection,
+    action_id: UUID,
+    *,
+    error: str,
 ) -> None:
     """Mark the row as dead-lettered. It is no longer eligible for the
     worker's poll query (partial index excludes `dead_lettered_at IS
@@ -534,22 +711,29 @@ async def process_batch(
     async with pool.acquire() as conn:
         async with conn.transaction():
             actions = await fetch_pending_actions(
-                conn, limit=limit, tenant_id=tenant_id,
+                conn,
+                limit=limit,
+                tenant_id=tenant_id,
             )
             for action in actions:
                 try:
-                    await dispatch_action(action)
+                    token = _DISPATCH_CONN.set(conn)
+                    try:
+                        await dispatch_action(action)
+                    finally:
+                        _DISPATCH_CONN.reset(token)
                 except Exception as exc:
                     err = f"{type(exc).__name__}: {exc}"
                     new_attempts = await increment_attempts(
-                        conn, action.id, error=err,
+                        conn,
+                        action.id,
+                        error=err,
                     )
                     if new_attempts >= MAX_ATTEMPTS:
                         await move_to_dead_letter(
-                            conn, action.id,
-                            error=(
-                                f"exceeded max attempts ({MAX_ATTEMPTS}): {err}"
-                            ),
+                            conn,
+                            action.id,
+                            error=(f"exceeded max attempts ({MAX_ATTEMPTS}): {err}"),
                         )
                         stats.dead_lettered += 1
                     else:
@@ -588,14 +772,18 @@ async def post_commit_worker(
                 break
             try:
                 await process_batch(
-                    pool, limit=batch_size, stats=stats, tenant_id=tenant_id,
+                    pool,
+                    limit=batch_size,
+                    stats=stats,
+                    tenant_id=tenant_id,
                 )
             except Exception as e:
                 _log.exception("post_commit.worker.iteration_error", error=str(e))
             if stop_event is not None:
                 try:
                     await asyncio.wait_for(
-                        stop_event.wait(), timeout=poll_interval,
+                        stop_event.wait(),
+                        timeout=poll_interval,
                     )
                 except asyncio.TimeoutError:
                     pass

@@ -87,8 +87,7 @@ def test_context_packet_helpers_keep_legacy_inquiry_identity() -> None:
     )
     assert inquiry._candidate_state_changes is context_packet.candidate_state_changes
     assert (
-        inquiry._memory_decision_candidates
-        is context_packet.memory_decision_candidates
+        inquiry._memory_decision_candidates is context_packet.memory_decision_candidates
     )
 
 
@@ -237,6 +236,12 @@ def test_compile_context_packet_model_first_suppresses_redundant_observations() 
     assert "observation:counter" in decisive_refs
     assert "observation:duplicate" not in decisive_refs | supporting_refs
     assert packet["budget"]["evidence_policy"]["suppressed_observation_count"] == 1
+    recon = packet["reconstruction_state"]
+    assert recon["round_index"] == 0
+    assert recon["known_model_count"] == 1
+    assert recon["known_observation_count"] == 1
+    assert recon["hypothesis_status"]["H1"]["support"] == 1
+    assert recon["hypothesis_status"]["H1"]["weakens"] == 1
 
 
 def test_candidate_state_changes_names_act_and_pattern_hints() -> None:
@@ -360,18 +365,122 @@ def test_compile_context_packet_emits_memory_decision_candidates() -> None:
     assert {"claim_update", "edge_insert", "act_update", "no_op"} <= set(by_family)
     assert str(model_id) in by_family["claim_update"]["target_model_ids"]
     assert str(observation_id) in by_family["claim_update"]["source_observation_ids"]
+    assert "blocks" in by_family["claim_update"]["suggested_edge_kinds"]
+    assert "explains" in by_family["claim_update"]["suggested_edge_kinds"]
+    assert (
+        "Q_CRITICAL_PATH:DEPENDENCY=supported"
+        in by_family["claim_update"]["answer_summary"]
+    )
+    assert any(
+        "same_issue_as or analogous_to only as candidate/review similarity" in item
+        for item in by_family["claim_update"]["write_preconditions"]
+    )
     assert str(model_id) in by_family["edge_insert"]["target_model_ids"]
     assert "blocks" in by_family["edge_insert"]["suggested_edge_kinds"]
     assert "explains" in by_family["edge_insert"]["suggested_edge_kinds"]
-    assert "Q_CRITICAL_PATH:DEPENDENCY=supported" in by_family["edge_insert"][
-        "answer_summary"
-    ]
+    assert (
+        "Q_CRITICAL_PATH:DEPENDENCY=supported"
+        in by_family["edge_insert"]["answer_summary"]
+    )
     assert any(
         "Use blocks only" in item
         for item in by_family["edge_insert"]["write_preconditions"]
     )
     assert str(commitment_id) in by_family["act_update"]["target_act_ids"]
     assert by_family["no_op"]["reason"].startswith("Batch may contain")
+
+
+def test_memory_decision_candidates_emit_bounded_relation_slot_candidates() -> None:
+    target_model_id = uuid4()
+    weakener_model_id = uuid4()
+    resolution_model_id = uuid4()
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=uuid4(),
+        observation_id=uuid4(),
+        seed_natural_text=(
+            "Incident opacity contradicts launch confidence, while audit export "
+            "unblocks renewal approval."
+        ),
+    )
+    target_card = _card(
+        "Existing model says launch confidence remains high.",
+        raw_content_ref=f"model:{target_model_id}",
+        source_type="model",
+        source_ref_id=target_model_id,
+        supports={"H1"},
+        score=0.9,
+    )
+    weakener_card = _card(
+        "Incident opacity contradicts launch confidence.",
+        raw_content_ref=f"model:{weakener_model_id}",
+        source_type="model",
+        source_ref_id=weakener_model_id,
+        weakens={"H1"},
+        score=0.95,
+    )
+    resolution_card = _card(
+        "Audit export unblocks renewal approval.",
+        raw_content_ref=f"model:{resolution_model_id}",
+        source_type="model",
+        source_ref_id=resolution_model_id,
+        supports={"H1"},
+        score=0.88,
+    )
+
+    candidates = context_packet.memory_decision_candidates(
+        trigger,
+        (
+            Hypothesis(
+                id="H1",
+                claim="Launch confidence and renewal approval changed.",
+                confidence=0.78,
+                impact_if_true="high",
+                delta_type="update",
+                target_model_ids=(str(target_model_id),),
+            ),
+        ),
+        [_question(primitive="COUNTEREVIDENCE", question_id="Q_COUNTER")],
+        [
+            QuestionAnswer(
+                "Q_COUNTER",
+                "supported",
+                "Counterevidence and resolution evidence found.",
+                supporting_evidence=(str(resolution_card.evidence_id),),
+                counterevidence=(str(weakener_card.evidence_id),),
+            )
+        ],
+        [target_card, weakener_card, resolution_card],
+        SufficiencyVerdict(
+            "sufficient_for_reasoning",
+            "ready",
+            3,
+            0,
+            (),
+        ),
+    )
+
+    slot_candidates = {
+        candidate.suggested_edge_kinds[0]: candidate
+        for candidate in candidates
+        if candidate.candidate_id.startswith("MDC_SLOT_")
+    }
+    assert set(slot_candidates) == {"weakens", "contributes_to_resolution"}
+    weakens = slot_candidates["weakens"]
+    assert weakens.target_model_ids == (str(target_model_id),)
+    assert weakens.evidence_model_ids[:2] == (
+        str(weakener_model_id),
+        str(target_model_id),
+    )
+    assert "weakens" in weakens.proposed_text
+    resolution = slot_candidates["contributes_to_resolution"]
+    assert resolution.suggested_edge_kinds == (
+        "contributes_to_resolution",
+        "supports",
+    )
+    assert "unblocks" in resolution.proposed_text
+    assert len(slot_candidates) == 2
 
 
 def test_memory_decision_candidates_can_be_disabled(monkeypatch) -> None:

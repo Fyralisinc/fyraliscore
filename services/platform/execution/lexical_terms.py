@@ -40,6 +40,46 @@ _RELEVANCE_STOPWORDS = {
     "without",
 }
 
+_HYBRID_LOOKUP_GENERIC_TERMS = {
+    "accountable",
+    "active",
+    "alternate",
+    "assigned",
+    "block",
+    "blocked",
+    "blocking",
+    "blocker",
+    "caused",
+    "commitment",
+    "constraint",
+    "counterevidence",
+    "customer",
+    "dependency",
+    "evidence",
+    "explanation",
+    "goal",
+    "impact",
+    "issue",
+    "launch",
+    "model",
+    "models",
+    "observation",
+    "observations",
+    "owner",
+    "owned",
+    "owns",
+    "pattern",
+    "recent",
+    "recurring",
+    "related",
+    "repeated",
+    "resource",
+    "responsible",
+    "risk",
+    "similar",
+    "status",
+}
+
 _FOCUSED_INDEX_EXTRA_STOPWORDS = {
     "accountable",
     "active",
@@ -246,8 +286,13 @@ def like_patterns_for_terms(terms: list[str] | tuple[str, ...]) -> list[str]:
     return patterns
 
 
-def hybrid_sparse_lookup_terms(terms: list[str] | tuple[str, ...]) -> list[str]:
+def hybrid_lookup_terms(
+    terms: list[str] | tuple[str, ...],
+    *,
+    max_terms: int = 8,
+) -> list[str]:
     out: list[str] = []
+    max_terms = max(1, int(max_terms))
     for raw in terms:
         for token in re.findall(
             r"[a-z0-9][a-z0-9_-]{2,}",
@@ -255,11 +300,22 @@ def hybrid_sparse_lookup_terms(terms: list[str] | tuple[str, ...]) -> list[str]:
         ):
             if token in _RELEVANCE_STOPWORDS or token.isdigit():
                 continue
+            symbol_specific = (
+                "-" in token or "_" in token or any(ch.isdigit() for ch in token)
+            )
+            if token in _HYBRID_LOOKUP_GENERIC_TERMS and not symbol_specific:
+                continue
+            if len(token) < 4 and not symbol_specific:
+                continue
             if token not in out:
                 out.append(token)
-                if len(out) >= 8:
+                if len(out) >= max_terms:
                     return out
-    return out[:8]
+    return out[:max_terms]
+
+
+def hybrid_sparse_lookup_terms(terms: list[str] | tuple[str, ...]) -> list[str]:
+    return hybrid_lookup_terms(terms, max_terms=8)
 
 
 def hybrid_sparse_strong_single_match_terms(terms: list[str]) -> list[str]:
@@ -304,6 +360,7 @@ __all__ = [
     "focused_index_terms",
     "focused_material_tokens",
     "hybrid_lexical_terms",
+    "hybrid_lookup_terms",
     "hybrid_sparse_lookup_groups",
     "hybrid_sparse_lookup_terms",
     "hybrid_sparse_strong_single_match_terms",

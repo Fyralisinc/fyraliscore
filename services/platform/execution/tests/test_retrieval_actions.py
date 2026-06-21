@@ -1,9 +1,32 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
+import pytest
+
 from services.platform.execution import inquiry, retrieval_actions
+from services.reasoning.retrieval.primary import TriggerContext
+
+
+def _trigger(text: str = "Generic customer dependency status") -> TriggerContext:
+    return TriggerContext(
+        kind="T1",
+        tenant_id=uuid4(),
+        seed_entity_ids=[],
+        scope_actors=[],
+        seed_natural_text=text,
+        seed_occurred_at=datetime(2026, 6, 17, 8, 0, tzinfo=timezone.utc),
+    )
+
+
+class _ExplodingConn:
+    async def fetchval(self, *_args: object, **_kwargs: object) -> object:
+        raise AssertionError("generic hybrid lookup should not touch the database")
+
+    async def fetch(self, *_args: object, **_kwargs: object) -> object:
+        raise AssertionError("generic hybrid lookup should not touch the database")
 
 
 def test_inquiry_private_aliases_point_to_retrieval_actions_module() -> None:
@@ -59,3 +82,16 @@ def test_merge_hybrid_semantic_lexical_models_prefers_cross_signal_hits() -> Non
     )
 
     assert [model.id for model in merged] == [cross_signal.id, lexical_only.id]
+
+
+@pytest.mark.asyncio
+async def test_hybrid_lexical_scan_skips_generic_lookup_terms() -> None:
+    hits = await retrieval_actions.hybrid_lexical_model_scan(
+        _trigger(),
+        _ExplodingConn(),  # type: ignore[arg-type]
+        terms=["owner responsible assigned dependency evidence blocker customer"],
+        limit=8,
+        per_term_limit=4,
+    )
+
+    assert hits == []

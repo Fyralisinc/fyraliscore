@@ -39,6 +39,7 @@ def test_reasoning_frame_normalizes_topology_trigger() -> None:
     assert str(member_b) in frame.seed_model_ids
     assert str(retrieved_id) in frame.candidate_model_ids
     assert "act_ops" not in frame.allowed_ops
+    assert "relation_frame_ops" in frame.allowed_ops
     assert "structural_explanation" in frame.priority_dimensions
     assert frame.policy["emit_situation_for_composite_conditions"] is True
 
@@ -82,6 +83,8 @@ def test_reasoning_frame_normalizes_latent_topology_candidate() -> None:
     assert str(member_b) in frame.seed_model_ids
     assert "impact_signature_interaction" in frame.priority_dimensions
     assert frame.policy["treat_topology_as_evidence_not_truth"] is True
+    assert "relation_frame_ops" in frame.allowed_ops
+    assert frame.budget["relation_frame_ops"] == 1
     assert frame.budget["act_ops"] == 0
 
 

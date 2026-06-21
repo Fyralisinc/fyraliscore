@@ -206,6 +206,16 @@ _OPERATIONAL_SPLIT_SUBROLES: frozenset[str] = frozenset({
     "explicit_absence",
 })
 
+_UNSPLITTABLE_CURIOSITY_TAGS: frozenset[str] = frozenset({
+    "curiosity",
+    "coverage_curiosity",
+    "open_question",
+    "operating_question",
+    "strategic_question",
+    "unresolved_unknown",
+    "success_driver",
+})
+
 
 # ---------------------------------------------------------------------
 # Helpers
@@ -376,6 +386,20 @@ def _is_unsplittable_proposition(prop: Any) -> bool:
     kind = prop.get("kind")
     claim_role = prop.get("claim_role")
     legacy_kind = prop.get("legacy_kind")
+    abstraction = prop.get("abstraction_level")
+    tags = _normalized_tags(
+        prop.get("domain_tags"),
+        prop.get("retrieval_tags"),
+        prop.get("coverage_roles"),
+    )
+    if (
+        claim_role == "pattern"
+        or abstraction == "pattern"
+        or tags & {"source_digest", "discovered_pattern", "major_source_window"}
+    ):
+        return True
+    if claim_role == "hypothesis" and tags & _UNSPLITTABLE_CURIOSITY_TAGS:
+        return True
     is_situation = (
         kind == "situation"
         or claim_role == "situation"
@@ -389,6 +413,38 @@ def _is_unsplittable_proposition(prop: Any) -> bool:
         or claim_role in {"recommendation"}
         or legacy_kind in {"recommendation"}
     )
+
+
+def _is_compound_reporting_exempt(prop: Any) -> bool:
+    """Return True when scoring should preserve a compact pattern as atomic."""
+    if not isinstance(prop, dict):
+        return False
+    claim_role = prop.get("claim_role")
+    abstraction = prop.get("abstraction_level")
+    tags = _normalized_tags(
+        prop.get("domain_tags"),
+        prop.get("retrieval_tags"),
+        prop.get("coverage_roles"),
+    )
+    return bool(
+        claim_role == "pattern"
+        or abstraction == "pattern"
+        or tags & {"source_digest", "discovered_pattern", "major_source_window"}
+        or (claim_role == "hypothesis" and tags & _UNSPLITTABLE_CURIOSITY_TAGS)
+    )
+
+
+def _normalized_tags(*groups: Any) -> set[str]:
+    tags: set[str] = set()
+    for group in groups:
+        if group is None:
+            continue
+        values = group if isinstance(group, (list, tuple, set)) else (group,)
+        for raw in values:
+            tag = re.sub(r"[^a-z0-9_]+", "_", str(raw).strip().casefold()).strip("_")
+            if tag:
+                tags.add(tag)
+    return tags
 
 
 def _operational_source_text(entry: dict[str, Any]) -> str:
@@ -708,6 +764,8 @@ def is_compound(entry: dict[str, Any]) -> tuple[bool, list[str]]:
         universal operational facts in one proposed Model.
     """
     if not isinstance(entry, dict):
+        return False, []
+    if _is_compound_reporting_exempt(entry.get("proposition")):
         return False, []
     text = _claim_text(entry)
     if not text:

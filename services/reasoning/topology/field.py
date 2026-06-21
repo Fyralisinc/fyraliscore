@@ -8,11 +8,13 @@ The accepted-memory graph topology from earlier migrations is kept as
 schema compatibility only; this module is the live topology path used
 from Model insertion.
 """
+
 from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Iterable
 from uuid import UUID
@@ -24,7 +26,9 @@ from services.domain.triggers import enqueue_trigger
 from services.reasoning.judgment.scoring import JudgmentScores, clamp_score
 from services.reasoning.relationships.candidates import (
     TOPOLOGY_EMITTABLE_EDGE_KINDS,
+    ModelSignal,
     RelationshipCandidate,
+    generate_scope_overlap_candidates,
     make_edge_candidate,
     make_edge_type_candidate,
     make_situation_candidate,
@@ -39,67 +43,168 @@ from services.reasoning.relationships.repo import RelationshipCandidatesRepo
 # than plain text.
 _FLOW_TERMS: dict[str, tuple[str, ...]] = {
     "work": (
-        "ship", "deliver", "delivery", "roadmap", "release", "launch",
-        "implementation", "execution", "ticket", "milestone",
+        "ship",
+        "deliver",
+        "delivery",
+        "roadmap",
+        "release",
+        "launch",
+        "implementation",
+        "execution",
+        "ticket",
+        "milestone",
     ),
     "money": (
-        "revenue", "arr", "renewal", "contract", "invoice", "billing",
-        "pipeline", "deal", "churn", "expansion", "forecast",
+        "revenue",
+        "arr",
+        "renewal",
+        "contract",
+        "invoice",
+        "billing",
+        "pipeline",
+        "deal",
+        "churn",
+        "expansion",
+        "forecast",
     ),
     "trust": (
-        "trust", "confidence", "champion", "relationship", "reputation",
-        "customer sentiment", "escalation", "dissatisfied",
+        "trust",
+        "confidence",
+        "champion",
+        "relationship",
+        "reputation",
+        "customer sentiment",
+        "escalation",
+        "dissatisfied",
     ),
     "risk": (
-        "risk", "security", "soc2", "legal", "compliance", "privacy",
-        "incident", "outage", "fraud", "audit", "regulatory",
+        "risk",
+        "security",
+        "soc2",
+        "legal",
+        "compliance",
+        "privacy",
+        "incident",
+        "outage",
+        "fraud",
+        "audit",
+        "regulatory",
     ),
     "capacity": (
-        "capacity", "bandwidth", "overloaded", "understaffed", "blocked",
-        "queue", "backlog", "bottleneck", "constraint",
+        "capacity",
+        "bandwidth",
+        "overloaded",
+        "understaffed",
+        "blocked",
+        "queue",
+        "backlog",
+        "bottleneck",
+        "constraint",
     ),
     "decision": (
-        "decision", "approve", "approval", "sign off", "revisit",
-        "option", "tradeoff", "prioritize", "priority",
+        "decision",
+        "approve",
+        "approval",
+        "sign off",
+        "revisit",
+        "option",
+        "tradeoff",
+        "prioritize",
+        "priority",
     ),
     "attention": (
-        "meeting", "escalate", "dashboard", "focus", "urgent",
-        "attention", "review", "follow up",
+        "meeting",
+        "escalate",
+        "dashboard",
+        "focus",
+        "urgent",
+        "attention",
+        "review",
+        "follow up",
     ),
 }
 
 _PRESSURE_TERMS: dict[str, tuple[str, ...]] = {
     "blocker": (
-        "block", "blocked", "blocking", "waiting on", "stuck", "cannot",
-        "dependency", "depends on", "prevent",
+        "block",
+        "blocked",
+        "blocking",
+        "waiting on",
+        "stuck",
+        "cannot",
+        "dependency",
+        "depends on",
+        "prevent",
     ),
     "overload": (
-        "overload", "overloaded", "capacity", "bandwidth", "burnout",
-        "queue", "backlog", "understaffed",
+        "overload",
+        "overloaded",
+        "capacity",
+        "bandwidth",
+        "burnout",
+        "queue",
+        "backlog",
+        "understaffed",
     ),
     "deadline": (
-        "deadline", "due", "by friday", "by monday", "end of week",
-        "q1", "q2", "q3", "q4", "slip", "delayed", "late",
+        "deadline",
+        "due",
+        "by friday",
+        "by monday",
+        "end of week",
+        "q1",
+        "q2",
+        "q3",
+        "q4",
+        "slip",
+        "delayed",
+        "late",
     ),
     "contradiction": (
-        "contradict", "inconsistent", "but", "however", "cannot both",
-        "conflict", "mismatch", "disagree",
+        "contradict",
+        "inconsistent",
+        "but",
+        "however",
+        "cannot both",
+        "conflict",
+        "mismatch",
+        "disagree",
     ),
     "dependency": (
-        "depends", "dependency", "requires", "prerequisite", "needs",
+        "depends",
+        "dependency",
+        "requires",
+        "prerequisite",
+        "needs",
         "waiting on",
     ),
     "decay": (
-        "worse", "decline", "dropping", "losing", "decay", "stale",
-        "churn", "degraded",
+        "worse",
+        "decline",
+        "dropping",
+        "losing",
+        "decay",
+        "stale",
+        "churn",
+        "degraded",
     ),
     "acceleration": (
-        "accelerate", "increasing", "surge", "spike", "growing",
-        "expanding", "faster",
+        "accelerate",
+        "increasing",
+        "surge",
+        "spike",
+        "growing",
+        "expanding",
+        "faster",
     ),
     "opportunity": (
-        "opportunity", "unlock", "enable", "upsell", "expansion",
-        "improve", "leverage",
+        "opportunity",
+        "unlock",
+        "enable",
+        "upsell",
+        "expansion",
+        "improve",
+        "leverage",
     ),
 }
 
@@ -124,6 +229,48 @@ _PAIR_EDGE_KIND_BY_PRESSURE: dict[str, str] = {
     "decay": "early_warning_for",
     "deadline": "early_warning_for",
 }
+
+# Some ontology-gap shapes have useful extra semantics but are still
+# operationally representable by an existing registered edge. Fold those into
+# normal edge candidates and keep the gap details as metadata for later
+# ontology analysis.
+_REGISTERED_EDGE_FALLBACK_BY_GAP: dict[str, str] = {
+    "gated_by_decision": "blocks",
+}
+
+_PRECISE_SCOPE_RULE_EDGE_KINDS: frozenset[str] = frozenset(
+    {
+        "blocks",
+        "early_warning_for",
+        "explains",
+        "weakens",
+        "contributes_to_resolution",
+    }
+)
+_PRECISE_SCOPE_RULE_EDGE_PRIORITY: dict[str, int] = {
+    "blocks": 0,
+    "explains": 1,
+    "contributes_to_resolution": 2,
+    "weakens": 3,
+    "early_warning_for": 4,
+}
+
+_MODEL_TOPOLOGY_COLUMNS = """
+    id, tenant_id, born_from_event_id, proposition,
+    "natural" AS natural, embedding, scope_actors,
+    scope_entities, scope_temporal, confidence,
+    activation, falsifier, signal_readings,
+    reading_contestable, supporting_event_ids,
+    supporting_model_ids, evidential_weight, status,
+    archived_at, archive_reason, created_at,
+    last_retrieved_at, retrieval_count, evaluate_at,
+    resolution_criteria, contributing_models,
+    visible_to_subjects, proposition_kind,
+    confirmed_count, contested_count, last_confirmed_at,
+    confidence_at_assertion, resolved_at,
+    resolution_outcome, activation_coefficient,
+    target_actor_id, caused_act_change_id
+"""
 
 
 @dataclass(frozen=True)
@@ -226,6 +373,7 @@ class TopologyGenerationResult:
     enqueued_think_triggers: int = 0
     skipped_reason: str | None = None
     neighbors_considered: int = 0
+    scope_rule_candidates_scored: int = 0
     pair_candidates_scored: int = 0
     situation_candidates_scored: int = 0
     candidates_ranked: int = 0
@@ -301,20 +449,29 @@ class LatentTopologyService:
             seed_sig=seed_sig,
             neighbors=neighbors,
         )
+        scope_rule_candidates = self._scope_rule_candidates(
+            model=model,
+            seed_sig=seed_sig,
+            neighbors=neighbors,
+        )
         situation_candidates = self._situation_candidates(
             model=model,
             seed_sig=seed_sig,
             neighbors=neighbors,
         )
-        ranked_candidates = rank_candidates(
-            [
-                *pair_candidates,
-                *situation_candidates,
-            ],
+        ranked_candidates = _rank_topology_insert_candidates(
+            _dedupe_candidates_prefer_scope_rules(
+                [
+                    *scope_rule_candidates,
+                    *pair_candidates,
+                    *situation_candidates,
+                ]
+            ),
             limit=self.candidate_insert_limit,
         )
         candidates = [
-            c for c in ranked_candidates
+            c
+            for c in ranked_candidates
             if c.judgment_leverage_score >= self.min_insert_score
         ]
         inserted: list[dict[str, Any]] = []
@@ -328,8 +485,17 @@ class LatentTopologyService:
         enqueued = 0
         skipped_low_score = 0
         if enqueue_think and inserted:
-            for record in inserted[: self.think_enqueue_limit]:
-                if float(record.get("judgment_leverage_score") or 0.0) < self.min_think_score:
+            for record in _rank_records_for_think_enqueue(inserted):
+                if enqueued >= self.think_enqueue_limit:
+                    break
+                min_think_score = _think_enqueue_threshold(
+                    record,
+                    default=self.min_think_score,
+                )
+                if (
+                    float(record.get("judgment_leverage_score") or 0.0)
+                    < min_think_score
+                ):
                     skipped_low_score += 1
                     continue
                 ok = await self._enqueue_think_for_candidate(conn, record)
@@ -340,11 +506,40 @@ class LatentTopologyService:
             inserted_candidates=inserted,
             enqueued_think_triggers=enqueued,
             neighbors_considered=len(neighbors),
+            scope_rule_candidates_scored=len(scope_rule_candidates),
             pair_candidates_scored=len(pair_candidates),
             situation_candidates_scored=len(situation_candidates),
             candidates_ranked=len(ranked_candidates),
             duplicates_suppressed=duplicates_suppressed,
             think_triggers_skipped_low_score=skipped_low_score,
+        )
+
+    async def generate_for_model_id(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        tenant_id: UUID,
+        model_id: UUID,
+        enqueue_think: bool = True,
+    ) -> TopologyGenerationResult:
+        """Load one Model and run bounded topology candidate discovery."""
+        row = await conn.fetchrow(
+            f"""
+            SELECT {_MODEL_TOPOLOGY_COLUMNS}
+            FROM models
+            WHERE tenant_id = $1
+              AND id = $2
+            """,
+            tenant_id,
+            model_id,
+        )
+        if row is None:
+            return TopologyGenerationResult(skipped_reason="model_not_found")
+        model = ModelRow.model_validate(_row_to_modelish_dict(row))
+        return await self.generate_for_model(
+            conn,
+            model=model,
+            enqueue_think=enqueue_think,
         )
 
     async def sweep_tenant(
@@ -363,21 +558,8 @@ class LatentTopologyService:
         than doing all-pairs computation.
         """
         rows = await conn.fetch(
-            """
-            SELECT id, tenant_id, born_from_event_id, proposition,
-                   "natural" AS natural, embedding, scope_actors,
-                   scope_entities, scope_temporal, confidence,
-                   activation, falsifier, signal_readings,
-                   reading_contestable, supporting_event_ids,
-                   supporting_model_ids, evidential_weight, status,
-                   archived_at, archive_reason, created_at,
-                   last_retrieved_at, retrieval_count, evaluate_at,
-                   resolution_criteria, contributing_models,
-                   visible_to_subjects, proposition_kind,
-                   confirmed_count, contested_count, last_confirmed_at,
-                   confidence_at_assertion, resolved_at,
-                   resolution_outcome, activation_coefficient,
-                   target_actor_id, caused_act_change_id
+            f"""
+            SELECT {_MODEL_TOPOLOGY_COLUMNS}
             FROM models
             WHERE tenant_id = $1
               AND status = 'active'
@@ -514,10 +696,12 @@ class LatentTopologyService:
         # narrow and cheap. They often reveal hidden dependency chains
         # that neither text nor scope will recall reliably.
         evidence_ids = list(
-            dict.fromkeys([
-                *list(model.supporting_model_ids or []),
-                *list(model.contributing_models or []),
-            ])
+            dict.fromkeys(
+                [
+                    *list(model.supporting_model_ids or []),
+                    *list(model.contributing_models or []),
+                ]
+            )
         )
         evidence_rows = await conn.fetch(
             """
@@ -585,6 +769,66 @@ class LatentTopologyService:
                 signature=existing.signature,
             )
 
+    def _scope_rule_candidates(
+        self,
+        *,
+        model: ModelRow,
+        seed_sig: ImpactSignature,
+        neighbors: list[_CandidateNeighbor],
+    ) -> list[RelationshipCandidate]:
+        """Run precise per-edge-kind rules on the bounded same-scope frontier."""
+
+        signals = [
+            _model_signal_from_modelish(
+                {
+                    "id": model.id,
+                    "proposition": model.proposition,
+                    "natural": model.natural,
+                    "embedding": model.embedding,
+                    "scope_actors": model.scope_actors,
+                    "scope_entities": model.scope_entities,
+                    "scope_temporal": model.scope_temporal,
+                    "confidence": model.confidence,
+                    "activation": model.activation,
+                    "supporting_event_ids": model.supporting_event_ids,
+                    "supporting_model_ids": model.supporting_model_ids,
+                    "contributing_models": model.contributing_models,
+                    "proposition_kind": model.proposition_kind,
+                    "polarity": getattr(model, "polarity", None),
+                    "created_at": model.created_at,
+                },
+                signature=seed_sig,
+            )
+        ]
+        for neighbor in neighbors:
+            signals.append(
+                _model_signal_from_modelish(
+                    neighbor.row,
+                    signature=neighbor.signature,
+                )
+            )
+        signals = _augment_leading_signal_history(signals)
+        candidates = generate_scope_overlap_candidates(
+            tenant_id=model.tenant_id,
+            models=signals,
+            max_candidates=max(512, self.candidate_insert_limit * 64),
+        )
+        touching_seed = [
+            candidate
+            for candidate in candidates
+            if candidate.candidate_kind == "edge"
+            and model.id
+            in {
+                candidate.source_model_id,
+                candidate.target_model_id,
+                *candidate.member_model_ids,
+            }
+        ]
+        return _rank_scope_rule_candidates(
+            touching_seed,
+            limit=self.candidate_insert_limit,
+        )
+
     async def _pair_candidates(
         self,
         conn: asyncpg.Connection,
@@ -620,36 +864,53 @@ class LatentTopologyService:
                 score=score,
             )
             if ontology_gap is not None:
-                metadata = make_topology_candidate_metadata(
-                    proposal_kind="edge_type",
-                    pattern_kind="edge_type",
-                    selection_sources=neighbor.sources,
-                    score_components=score.as_dict(),
-                    impact_signatures=[
-                        seed_sig.as_dict(),
-                        other_sig.as_dict(),
-                    ],
-                )
-                candidate = make_edge_type_candidate(
-                    tenant_id=model.tenant_id,
-                    proposed_edge_kind=ontology_gap.proposed_edge_kind,
-                    description=ontology_gap.description,
-                    relationship_summary=ontology_gap.relationship_summary,
-                    parent_kind=ontology_gap.parent_kind,
-                    nearest_existing_kind=ontology_gap.nearest_existing_kind,
-                    directionality=ontology_gap.directionality,  # type: ignore[arg-type]
-                    dropped_dimensions=ontology_gap.dropped_dimensions,
-                    example_source_model_id=model.id,
-                    example_target_model_id=neighbor.row["id"],
-                    scores=_judgment_from_topology(score),
-                    source="latent_topology",
-                    metadata=metadata,
-                )
-                candidates.append(candidate)
-                continue
-            edge_kind = _edge_kind_for_interaction(seed_sig, other_sig)
+                fallback_edge_kind = _registered_edge_fallback_for_gap(ontology_gap)
+                if fallback_edge_kind is not None:
+                    edge_kind = fallback_edge_kind
+                    folded_ontology_gap = ontology_gap
+                else:
+                    metadata = make_topology_candidate_metadata(
+                        proposal_kind="edge_type",
+                        pattern_kind="edge_type",
+                        selection_sources=neighbor.sources,
+                        score_components=score.as_dict(),
+                        impact_signatures=[
+                            seed_sig.as_dict(),
+                            other_sig.as_dict(),
+                        ],
+                    )
+                    candidate = make_edge_type_candidate(
+                        tenant_id=model.tenant_id,
+                        proposed_edge_kind=ontology_gap.proposed_edge_kind,
+                        description=ontology_gap.description,
+                        relationship_summary=ontology_gap.relationship_summary,
+                        parent_kind=ontology_gap.parent_kind,
+                        nearest_existing_kind=ontology_gap.nearest_existing_kind,
+                        directionality=ontology_gap.directionality,  # type: ignore[arg-type]
+                        dropped_dimensions=ontology_gap.dropped_dimensions,
+                        example_source_model_id=model.id,
+                        example_target_model_id=neighbor.row["id"],
+                        scores=_judgment_from_topology(score),
+                        source="latent_topology",
+                        metadata=metadata,
+                    )
+                    candidates.append(candidate)
+                    continue
+            else:
+                edge_kind = _edge_kind_for_interaction(seed_sig, other_sig)
+                folded_ontology_gap = None
             if edge_kind not in TOPOLOGY_EMITTABLE_EDGE_KINDS:
                 # Topology never fabricates LLM-only kinds.
+                continue
+            if not _edge_candidate_evidence_gate(
+                left=model,
+                right=neighbor.row,
+                left_sig=seed_sig,
+                right_sig=other_sig,
+                selection_sources=neighbor.sources,
+                edge_kind=edge_kind,
+                folded_ontology_gap=folded_ontology_gap,
+            ):
                 continue
             source_model_id, target_model_id = _orient_for_edge_kind(
                 model.id,
@@ -669,10 +930,24 @@ class LatentTopologyService:
                     other_sig.as_dict(),
                 ],
             )
+            if folded_ontology_gap is not None:
+                metadata["ontology_gap"] = _folded_ontology_gap_metadata(
+                    folded_ontology_gap,
+                    retrieval_fallback_kind=edge_kind,
+                )
+                topology_meta = metadata.get("topology")
+                if isinstance(topology_meta, dict):
+                    topology_meta["folded_ontology_gap"] = True
+                    topology_meta["folded_proposed_edge_kind"] = (
+                        folded_ontology_gap.proposed_edge_kind
+                    )
+                explanation = (
+                    f"{explanation} Folded proposed edge type "
+                    f"`{folded_ontology_gap.proposed_edge_kind}` into registered "
+                    f"`{edge_kind}` for durable edge adjudication."
+                )
             kwargs: dict[str, Any] = {}
-            justification = _edge_kind_justification(
-                edge_kind, seed_sig, other_sig
-            )
+            justification = _edge_kind_justification(edge_kind, seed_sig, other_sig)
             if justification:
                 metadata.update(justification.get("metadata", {}))
                 kwargs.update(justification.get("kwargs", {}))
@@ -681,7 +956,9 @@ class LatentTopologyService:
                 source_model_id=source_model_id,
                 target_model_id=target_model_id,
                 edge_kind=edge_kind,
-                basis=justification.get("basis", "topology_suggested") if justification else "topology_suggested",
+                basis=justification.get("basis", "topology_suggested")
+                if justification
+                else "topology_suggested",
                 explanation=explanation,
                 scores=_judgment_from_topology(score),
                 evidence_model_ids=(model.id, neighbor.row["id"]),
@@ -702,7 +979,9 @@ class LatentTopologyService:
         grouped: dict[tuple[str, str], list[_CandidateNeighbor]] = {}
         for neighbor in neighbors:
             shared_flows = _intersect(seed_sig.flows, neighbor.signature.flows)
-            shared_pressures = _intersect(seed_sig.pressures, neighbor.signature.pressures)
+            shared_pressures = _intersect(
+                seed_sig.pressures, neighbor.signature.pressures
+            )
             if not shared_flows and not shared_pressures:
                 continue
             flow = shared_flows[0] if shared_flows else "mixed_flow"
@@ -786,9 +1065,7 @@ class LatentTopologyService:
             )
             return row is not None
         if candidate.candidate_kind == "edge_type":
-            proposed = (candidate.proposed_proposition or {}).get(
-                "proposed_edge_kind"
-            )
+            proposed = (candidate.proposed_proposition or {}).get("proposed_edge_kind")
             row = await conn.fetchval(
                 """
                 SELECT 1
@@ -864,6 +1141,7 @@ class LatentTopologyService:
         # no parent trigger is a lineage root at depth 1) so the worker's
         # cascade-bound check applies to insert-time T4 candidates too.
         from services.reasoning.think.cascade import propagate_cascade_depth
+
         payload.update(propagate_cascade_depth(parent_payload))
         await enqueue_trigger(
             conn,
@@ -930,12 +1208,18 @@ def _score_interaction(
     flow_overlap = _overlap_score(left_sig.flows, right_sig.flows)
     pressure_overlap = _overlap_score(left_sig.pressures, right_sig.pressures)
     stake_overlap = _overlap_score(left_sig.stakes, right_sig.stakes)
-    consequence = clamp_score(0.45 * flow_overlap + 0.40 * pressure_overlap + 0.15 * stake_overlap)
+    consequence = clamp_score(
+        0.45 * flow_overlap + 0.40 * pressure_overlap + 0.15 * stake_overlap
+    )
     scope_fit = _overlap_score(left_sig.surfaces, right_sig.surfaces)
     temporal = _temporal_score(left.created_at, right.get("created_at"))
-    leverage = _business_leverage(left_sig, right_sig, left.activation, right.get("activation"))
+    leverage = _business_leverage(
+        left_sig, right_sig, left.activation, right.get("activation")
+    )
     surprise = clamp_score(latent_affinity * (1.0 - min(scope_fit, 0.8)))
-    evidence = clamp_score((left_sig.evidence_strength + right_sig.evidence_strength) / 2.0)
+    evidence = clamp_score(
+        (left_sig.evidence_strength + right_sig.evidence_strength) / 2.0
+    )
     actionability = _actionability(left_sig, right_sig)
     novelty = 0.15 if existing_edge else 0.80
     explanation_gap = 0.10 if existing_edge else 0.75
@@ -968,10 +1252,16 @@ def _situation_score(
         )
         for n in group
     ]
-    scope_scores = [_overlap_score(seed_sig.surfaces, n.signature.surfaces) for n in group]
-    temporal_scores = [_temporal_score(seed.created_at, n.row.get("created_at")) for n in group]
+    scope_scores = [
+        _overlap_score(seed_sig.surfaces, n.signature.surfaces) for n in group
+    ]
+    temporal_scores = [
+        _temporal_score(seed.created_at, n.row.get("created_at")) for n in group
+    ]
     leverage_scores = [
-        _business_leverage(seed_sig, n.signature, seed.activation, n.row.get("activation"))
+        _business_leverage(
+            seed_sig, n.signature, seed.activation, n.row.get("activation")
+        )
         for n in group
     ]
     return TopologyScore(
@@ -981,7 +1271,12 @@ def _situation_score(
         temporal_coupling=_avg(temporal_scores),
         business_leverage=max(leverage_scores or [0.0]),
         structural_surprise=clamp_score(_avg(affinities) * (1.0 - _avg(scope_scores))),
-        evidence_quality=_avg([seed_sig.evidence_strength, *[n.signature.evidence_strength for n in group]]),
+        evidence_quality=_avg(
+            [
+                seed_sig.evidence_strength,
+                *[n.signature.evidence_strength for n in group],
+            ]
+        ),
         actionability=_avg([_actionability(seed_sig, n.signature) for n in group]),
         novelty=0.75,
         existing_explanation_gap=0.70,
@@ -993,7 +1288,9 @@ def _judgment_from_topology(score: TopologyScore) -> JudgmentScores:
         novelty=score.novelty,
         impact=score.business_leverage,
         actionability=score.actionability,
-        urgency=clamp_score(0.60 * score.temporal_coupling + 0.40 * score.business_leverage),
+        urgency=clamp_score(
+            0.60 * score.temporal_coupling + 0.40 * score.business_leverage
+        ),
         uncertainty=clamp_score(1.0 - score.evidence_quality),
         authority_required=clamp_score(0.35 + 0.45 * score.business_leverage),
         reversibility=0.45,
@@ -1016,12 +1313,14 @@ def _ontology_gap_for_interaction(
     """Return a richer proposed edge type when a generic edge would lose value."""
     if score.total < 0.40:
         return None
-    text = " ".join([
-        str(left.natural or ""),
-        str(right.get("natural") or ""),
-        json.dumps(left.proposition or {}, sort_keys=True, default=str),
-        json.dumps(right.get("proposition") or {}, sort_keys=True, default=str),
-    ]).lower()
+    text = " ".join(
+        [
+            str(left.natural or ""),
+            str(right.get("natural") or ""),
+            json.dumps(left.proposition or {}, sort_keys=True, default=str),
+            json.dumps(right.get("proposition") or {}, sort_keys=True, default=str),
+        ]
+    ).lower()
     flows = set(left_sig.flows + right_sig.flows)
     pressures = set(left_sig.pressures + right_sig.pressures)
 
@@ -1044,7 +1343,9 @@ def _ontology_gap_for_interaction(
             dropped_dimensions=dropped,
         )
 
-    if _has_any(text, ("obscure", "obscures", "hides", "hidden", "masked", "shadow")) and _has_any(
+    if _has_any(
+        text, ("obscure", "obscures", "hides", "hidden", "masked", "shadow")
+    ) and _has_any(
         text, ("attention", "focus", "urgent", "loud", "noisy", "dashboard")
     ):
         return spec(
@@ -1056,8 +1357,11 @@ def _ontology_gap_for_interaction(
         )
 
     if (
-        ("decision" in flows or _has_any(text, ("approval", "approve", "sign off", "decision", "decide")))
-        and ({"blocker", "dependency"} & pressures or _has_any(text, ("waiting on", "cannot", "blocked", "requires")))
+        "decision" in flows
+        or _has_any(text, ("approval", "approve", "sign off", "decision", "decide"))
+    ) and (
+        {"blocker", "dependency"} & pressures
+        or _has_any(text, ("waiting on", "cannot", "blocked", "requires"))
     ):
         return spec(
             "gated_by_decision",
@@ -1067,9 +1371,9 @@ def _ontology_gap_for_interaction(
             dropped=("authority surface", "decision dependency", "approval state"),
         )
 
-    if _has_any(text, ("assumption", "premise", "if ", "unless", "only holds", "conditional")) and _has_any(
-        text, ("forecast", "plan", "depends", "requires", "expected")
-    ):
+    if _has_any(
+        text, ("assumption", "premise", "if ", "unless", "only holds", "conditional")
+    ) and _has_any(text, ("forecast", "plan", "depends", "requires", "expected")):
         return spec(
             "depends_on_assumption",
             "A forecast or plan only holds if another uncertain premise holds.",
@@ -1078,8 +1382,12 @@ def _ontology_gap_for_interaction(
             dropped=("assumption status", "conditional truth", "fragility"),
         )
 
-    if _has_any(text, ("tradeoff", "trade-off", "frontier", "worsens", "at the cost", "cost of")) or (
-        "decision" in flows and "contradiction" in pressures and _has_any(text, ("both", "valid", "true"))
+    if _has_any(
+        text, ("tradeoff", "trade-off", "frontier", "worsens", "at the cost", "cost of")
+    ) or (
+        "decision" in flows
+        and "contradiction" in pressures
+        and _has_any(text, ("both", "valid", "true"))
     ):
         return spec(
             "trades_off_with",
@@ -1090,7 +1398,9 @@ def _ontology_gap_for_interaction(
             dropped=("both can be true", "optimization frontier", "choice cost"),
         )
 
-    if _has_any(text, ("priority", "prioritize", "compete", "capacity", "bandwidth", "focus")) and _has_any(
+    if _has_any(
+        text, ("priority", "prioritize", "compete", "capacity", "bandwidth", "focus")
+    ) and _has_any(
         text, ("queue", "backlog", "attention", "limited", "same team", "same owner")
     ):
         return spec(
@@ -1102,16 +1412,26 @@ def _ontology_gap_for_interaction(
             dropped=("resource contention", "capacity limit", "both valid"),
         )
 
-    if _has_any(text, ("mitigation", "mitigate", "reduces", "offset", "dampen", "dampens", "relieve")):
+    if _has_any(
+        text,
+        ("mitigation", "mitigate", "reduces", "offset", "dampen", "dampens", "relieve"),
+    ):
         return spec(
             "dampens",
             "One intervention reduces another pressure without falsifying it.",
             "Topology found a mitigation relation; `weakens` would confuse residual truth with counterevidence.",
             parent="weakens",
-            dropped=("operational mitigation", "residual truth", "intervention surface"),
+            dropped=(
+                "operational mitigation",
+                "residual truth",
+                "intervention surface",
+            ),
         )
 
-    if _has_any(text, ("transfer", "transfers", "shift", "moves", "pushes")) and "risk" in flows:
+    if (
+        _has_any(text, ("transfer", "transfers", "shift", "moves", "pushes"))
+        and "risk" in flows
+    ):
         return spec(
             "transfers_risk_to",
             "Resolving one risk moves exposure to another owner or scope.",
@@ -1120,7 +1440,17 @@ def _ontology_gap_for_interaction(
             dropped=("risk movement", "recipient scope", "second-order cost"),
         )
 
-    if _has_any(text, ("proxy", "proxy for", "indicator", "weak signal", "indirect evidence", "measurement")):
+    if _has_any(
+        text,
+        (
+            "proxy",
+            "proxy for",
+            "indicator",
+            "weak signal",
+            "indirect evidence",
+            "measurement",
+        ),
+    ):
         return spec(
             "proxy_for",
             "One weak signal is a proxy for a harder-to-observe state.",
@@ -1129,9 +1459,10 @@ def _ontology_gap_for_interaction(
             dropped=("proxy validity", "measurement gap", "not necessarily future"),
         )
 
-    if _has_any(text, ("lag", "lags", "lagging", "after", "delay", "delayed response", "leading")) and _has_any(
-        text, ("metric", "indicator", "responds", "signal", "state")
-    ):
+    if _has_any(
+        text,
+        ("lag", "lags", "lagging", "after", "delay", "delayed response", "leading"),
+    ) and _has_any(text, ("metric", "indicator", "responds", "signal", "state")):
         return spec(
             "lags",
             "One metric or state responds after another with a predictable delay.",
@@ -1140,9 +1471,9 @@ def _ontology_gap_for_interaction(
             dropped=("delay shape", "lagging indicator", "temporal offset"),
         )
 
-    if _has_any(text, ("leverage", "amplify", "amplifies", "multiplier", "sequence")) and (
-        "opportunity" in pressures or "opportunity" in text or "unlock" in text
-    ):
+    if _has_any(
+        text, ("leverage", "amplify", "amplifies", "multiplier", "sequence")
+    ) and ("opportunity" in pressures or "opportunity" in text or "unlock" in text):
         return spec(
             "amplifies_leverage_of",
             "One Model makes an intervention on another much more valuable.",
@@ -1151,7 +1482,9 @@ def _ontology_gap_for_interaction(
             dropped=("marginal value", "sequence leverage", "intervention ordering"),
         )
 
-    if _has_any(text, ("precedent", "policy", "similar future", "future cases", "reuse")):
+    if _has_any(
+        text, ("precedent", "policy", "similar future", "future cases", "reuse")
+    ):
         return spec(
             "sets_precedent_for",
             "A specific case should shape future treatment of similar cases.",
@@ -1160,7 +1493,19 @@ def _ontology_gap_for_interaction(
             dropped=("normative precedent", "future policy", "scope of reuse"),
         )
 
-    if _has_any(text, ("portfolio", "roll up", "rollup", "contains", "broader", "narrower", "account-level", "local issue")):
+    if _has_any(
+        text,
+        (
+            "portfolio",
+            "roll up",
+            "rollup",
+            "contains",
+            "broader",
+            "narrower",
+            "account-level",
+            "local issue",
+        ),
+    ):
         return spec(
             "contains_scope",
             "A broader situation contains a narrower local issue.",
@@ -1169,10 +1514,9 @@ def _ontology_gap_for_interaction(
             dropped=("hierarchy", "containment", "roll-up semantics"),
         )
 
-    if (
-        {"overload", "decay", "acceleration"} & pressures
-        and len(flows & {"money", "trust", "risk", "capacity"}) >= 2
-    ):
+    if {"overload", "decay", "acceleration"} & pressures and len(
+        flows & {"money", "trust", "risk", "capacity"}
+    ) >= 2:
         return spec(
             "reinforces",
             "Two pressures amplify each other as a compounding loop.",
@@ -1182,9 +1526,17 @@ def _ontology_gap_for_interaction(
             dropped=("loop directionality", "mutual amplification", "runaway dynamic"),
         )
 
-    if _has_any(text, ("owner", "accountable", "responsible", "no clear owner", "ownership", "escalation")) and (
-        {"blocker", "dependency", "overload"} & pressures
-    ):
+    if _has_any(
+        text,
+        (
+            "owner",
+            "accountable",
+            "responsible",
+            "no clear owner",
+            "ownership",
+            "escalation",
+        ),
+    ) and ({"blocker", "dependency", "overload"} & pressures):
         return spec(
             "accountable_for",
             "A Model says an actor or team is accountable for resolving another Model.",
@@ -1194,6 +1546,28 @@ def _ontology_gap_for_interaction(
         )
 
     return None
+
+
+def _registered_edge_fallback_for_gap(gap: OntologyGapSpec) -> str | None:
+    edge_kind = _REGISTERED_EDGE_FALLBACK_BY_GAP.get(gap.proposed_edge_kind)
+    if edge_kind in TOPOLOGY_EMITTABLE_EDGE_KINDS:
+        return edge_kind
+    return None
+
+
+def _folded_ontology_gap_metadata(
+    gap: OntologyGapSpec,
+    *,
+    retrieval_fallback_kind: str,
+) -> dict[str, Any]:
+    return {
+        "proposed_edge_kind": gap.proposed_edge_kind,
+        "nearest_existing_kind": gap.nearest_existing_kind,
+        "parent_kind": gap.parent_kind or gap.nearest_existing_kind,
+        "dropped_dimensions": list(gap.dropped_dimensions),
+        "retrieval_fallback_kind": retrieval_fallback_kind,
+        "folded_into_edge_candidate": True,
+    }
 
 
 def _has_any(text: str, terms: tuple[str, ...]) -> bool:
@@ -1214,6 +1588,130 @@ def _edge_kind_for_interaction(
     return "same_issue_as"
 
 
+def _edge_candidate_evidence_gate(
+    *,
+    left: ModelRow,
+    right: dict[str, Any],
+    left_sig: ImpactSignature,
+    right_sig: ImpactSignature,
+    selection_sources: Iterable[str],
+    edge_kind: str,
+    folded_ontology_gap: OntologyGapSpec | None,
+) -> bool:
+    """Keep topology pair edges precise enough for downstream adjudication.
+
+    Broad consequence recall is valuable for situation discovery, but a typed
+    edge needs a tighter bridge than "these both look risky". Without this gate
+    the topology layer floods T4 with cross-account `blocks` candidates that the
+    LLM correctly rejects.
+    """
+    if _has_conflicting_account_scope(left_sig, right_sig):
+        return False
+
+    shared_surface = _overlap_score(left_sig.surfaces, right_sig.surfaces) > 0.0
+    direct_evidence = "evidence" in set(selection_sources)
+    folded_decision_gate = folded_ontology_gap is not None
+    shared_mechanism = _salient_mechanism_overlap(left, right)
+
+    if edge_kind in {"blocks", "enables"}:
+        return (
+            shared_surface
+            or direct_evidence
+            or folded_decision_gate
+            or shared_mechanism >= 2
+        )
+    if edge_kind in {"early_warning_for", "contradicts", "same_issue_as"}:
+        return shared_surface or direct_evidence or shared_mechanism >= 2
+    return shared_surface or direct_evidence or shared_mechanism >= 3
+
+
+def _has_conflicting_account_scope(
+    left: ImpactSignature,
+    right: ImpactSignature,
+) -> bool:
+    left_accounts = _account_surfaces(left.surfaces)
+    right_accounts = _account_surfaces(right.surfaces)
+    return bool(
+        left_accounts and right_accounts and left_accounts.isdisjoint(right_accounts)
+    )
+
+
+def _account_surfaces(surfaces: Iterable[str]) -> set[str]:
+    out: set[str] = set()
+    for surface in surfaces:
+        typ, _, value = surface.partition(":")
+        if value and ("customer" in typ or "account" in typ):
+            out.add(surface)
+    return out
+
+
+_GENERIC_MECHANISM_TOKENS = {
+    "account",
+    "assertion",
+    "approval",
+    "approve",
+    "blocked",
+    "blocker",
+    "blocks",
+    "cannot",
+    "concern",
+    "customer",
+    "decision",
+    "delayed",
+    "depends",
+    "enterprise",
+    "eval",
+    "issue",
+    "kind",
+    "launch",
+    "model",
+    "nature",
+    "needs",
+    "pressure",
+    "pricing",
+    "requires",
+    "review",
+    "risk",
+    "signal",
+    "situation",
+    "subject",
+    "topology",
+    "waiting",
+}
+
+
+def _salient_mechanism_overlap(left: ModelRow, right: dict[str, Any]) -> int:
+    left_tokens = _salient_mechanism_tokens(
+        left.natural,
+        left.proposition,
+    )
+    right_tokens = _salient_mechanism_tokens(
+        str(right.get("natural") or ""),
+        right.get("proposition") or {},
+    )
+    return len(left_tokens & right_tokens)
+
+
+def _salient_mechanism_tokens(
+    natural: str | None,
+    proposition: dict[str, Any] | None,
+) -> set[str]:
+    text = " ".join(
+        [
+            str(natural or ""),
+            json.dumps(proposition or {}, sort_keys=True, default=str),
+        ]
+    ).lower()
+    tokens = set(re.findall(r"[a-z][a-z0-9_]{3,}", text))
+    return {
+        token
+        for token in tokens
+        if token not in _GENERIC_MECHANISM_TOKENS
+        and not token.endswith("ing")
+        and not token.endswith("tion")
+    }
+
+
 def _edge_kind_justification(
     edge_kind: str,
     seed_sig: ImpactSignature,
@@ -1228,8 +1726,10 @@ def _edge_kind_justification(
     if edge_kind == "blocks":
         pressures = sorted(set(seed_sig.pressures + other_sig.pressures))
         basis_reason = (
-            "blocker" if "blocker" in pressures
-            else "dependency" if "dependency" in pressures
+            "blocker"
+            if "blocker" in pressures
+            else "dependency"
+            if "dependency" in pressures
             else "topology_pressure_overlap"
         )
         mechanism = (
@@ -1300,7 +1800,9 @@ def _orient_for_edge_kind(
     right_sig: ImpactSignature,
 ) -> tuple[UUID, UUID]:
     if edge_kind in {"contradicts", "same_issue_as", "co_occurs_with", "analogous_to"}:
-        return (left_id, right_id) if str(left_id) < str(right_id) else (right_id, left_id)
+        return (
+            (left_id, right_id) if str(left_id) < str(right_id) else (right_id, left_id)
+        )
     left_pressure = _pressure_priority(left_sig)
     right_pressure = _pressure_priority(right_sig)
     if right_pressure > left_pressure:
@@ -1354,11 +1856,7 @@ async def _existing_edge_pairs(
 
 
 def _row_to_modelish_dict(row: asyncpg.Record) -> dict[str, Any]:
-    embedding = row["embedding"]
-    if embedding is None:
-        embedding_list: list[float] = []
-    else:
-        embedding_list = [float(v) for v in embedding]
+    embedding_list = _embedding_to_float_list(row["embedding"])
     return {
         "id": row["id"],
         "tenant_id": row["tenant_id"],
@@ -1372,10 +1870,9 @@ def _row_to_modelish_dict(row: asyncpg.Record) -> dict[str, Any]:
         "confidence": float(row["confidence"] or 0.5),
         "activation": float(row["activation"] or 0.0),
         "falsifier": _decode_json(_record_value(row, "falsifier")),
-        "signal_readings": _decode_json(_record_value(row, "signal_readings", [])) or [],
-        "reading_contestable": bool(
-            _record_value(row, "reading_contestable", True)
-        ),
+        "signal_readings": _decode_json(_record_value(row, "signal_readings", []))
+        or [],
+        "reading_contestable": bool(_record_value(row, "reading_contestable", True)),
         "supporting_event_ids": list(
             _record_value(row, "supporting_event_ids", []) or []
         ),
@@ -1391,9 +1888,7 @@ def _row_to_modelish_dict(row: asyncpg.Record) -> dict[str, Any]:
         "last_retrieved_at": _record_value(row, "last_retrieved_at"),
         "retrieval_count": int(_record_value(row, "retrieval_count", 0) or 0),
         "evaluate_at": _record_value(row, "evaluate_at"),
-        "resolution_criteria": _decode_json(
-            _record_value(row, "resolution_criteria")
-        ),
+        "resolution_criteria": _decode_json(_record_value(row, "resolution_criteria")),
         "contributing_models": list(
             _record_value(row, "contributing_models", []) or []
         ),
@@ -1412,6 +1907,406 @@ def _row_to_modelish_dict(row: asyncpg.Record) -> dict[str, Any]:
         "target_actor_id": _record_value(row, "target_actor_id"),
         "caused_act_change_id": _record_value(row, "caused_act_change_id"),
     }
+
+
+_BLOCKER_REF_PATTERN = re.compile(
+    r"\b(?:blocked by|blocked on|blocked until|waiting on|depends on|"
+    r"dependency on|requires|prerequisite)\s+(?:the\s+|a\s+|an\s+)?([^.;,\n]+)",
+    re.IGNORECASE,
+)
+
+_NEGATIVE_POLARITY_TERMS = (
+    "blocked",
+    "blocking",
+    "risk",
+    "concern",
+    "stale",
+    "delayed",
+    "delay",
+    "missing",
+    "gap",
+    "issue",
+    "exception",
+    "churn",
+    "slipped",
+    "slipping",
+    "down",
+    "declined",
+    "weaken",
+    "undermine",
+    "no longer",
+    "waiting on",
+)
+
+_POSITIVE_POLARITY_TERMS = (
+    "approved",
+    "available",
+    "cleared",
+    "closed",
+    "complete",
+    "completed",
+    "confident",
+    "fixed",
+    "improved",
+    "mitigated",
+    "on track",
+    "resolved",
+    "unblocked",
+)
+
+_LEADING_INDICATOR_TERMS = (
+    "adoption",
+    "churn",
+    "decline",
+    "down",
+    "drop",
+    "early warning",
+    "indicator",
+    "leading",
+    "proxy",
+    "risk signal",
+    "sentiment",
+    "stale",
+    "trend",
+    "usage",
+    "warning",
+)
+
+
+def _model_signal_from_modelish(
+    row: dict[str, Any],
+    *,
+    signature: ImpactSignature,
+) -> ModelSignal:
+    proposition = row.get("proposition") or {}
+    if not isinstance(proposition, dict):
+        proposition = {}
+    natural = str(row.get("natural") or "")
+    leading = _is_leading_indicator_text(natural, proposition)
+    return ModelSignal(
+        id=row["id"],
+        natural=natural,
+        proposition_kind=str(
+            row.get("proposition_kind")
+            or proposition.get("kind")
+            or proposition.get("claim_role")
+            or "belief"
+        ),
+        confidence=float(row.get("confidence") or 0.5),
+        activation=float(row.get("activation") or 0.0),
+        scope_entities=tuple(
+            _model_signal_scope_entities(row.get("scope_entities") or [])
+        ),
+        scope_actors=tuple(
+            actor
+            for actor in (
+                _coerce_uuid(value) for value in row.get("scope_actors") or []
+            )
+            if actor is not None
+        ),
+        created_at=row.get("created_at"),
+        embedding=tuple(_embedding_to_float_list(row.get("embedding"))),
+        workstream=_signal_workstream(proposition),
+        time_shape="leading"
+        if leading
+        else _time_shape(natural.lower(), row.get("scope_temporal") or {}),
+        polarity=_signal_polarity(
+            natural,
+            proposition,
+            raw=row.get("polarity"),
+        ),
+        proposition=proposition,
+        is_leading_indicator=leading,
+        blocker_targets=tuple(_signal_blocker_targets(row, proposition)),
+        blocker_text_refs=tuple(_blocker_text_refs(natural)),
+        capability_surface=_signal_capability_surface(proposition, signature),
+        evidence_event_ids=tuple(
+            event_id
+            for event_id in (
+                _coerce_uuid(value) for value in row.get("supporting_event_ids") or []
+            )
+            if event_id is not None
+        ),
+    )
+
+
+def _model_signal_scope_entities(
+    raw_scope_entities: Iterable[dict[str, Any]],
+) -> list[tuple[str, UUID]]:
+    out: list[tuple[str, UUID]] = []
+    for entity in raw_scope_entities:
+        if not isinstance(entity, dict):
+            continue
+        typ = entity.get("type")
+        eid = _coerce_uuid(entity.get("id"))
+        if typ and eid is not None:
+            out.append((str(typ), eid))
+    return list(dict.fromkeys(out))
+
+
+def _augment_leading_signal_history(
+    signals: list[ModelSignal],
+) -> list[ModelSignal]:
+    out: list[ModelSignal] = []
+    for signal in signals:
+        if not signal.is_leading_indicator or signal.historical_cooccurrence_with:
+            out.append(signal)
+            continue
+        scope = set(signal.scope_entities)
+        related = tuple(
+            other.id
+            for other in signals
+            if other.id != signal.id and bool(scope & set(other.scope_entities))
+        )
+        out.append(
+            replace(signal, historical_cooccurrence_with=related) if related else signal
+        )
+    return out
+
+
+def _signal_workstream(proposition: dict[str, Any]) -> str | None:
+    for key in ("workstream", "project", "program", "initiative"):
+        value = proposition.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    return None
+
+
+def _signal_polarity(
+    natural: str,
+    proposition: dict[str, Any],
+    *,
+    raw: Any,
+) -> str | None:
+    raw_value = raw or proposition.get("polarity")
+    if raw_value in {"positive", "negative"}:
+        return str(raw_value)
+    if proposition.get("claim_role") == "concern":
+        return "negative"
+    text = " ".join(
+        [
+            natural,
+            json.dumps(proposition, sort_keys=True, default=str),
+        ]
+    ).lower()
+    positive = any(term in text for term in _POSITIVE_POLARITY_TERMS)
+    negative = any(term in text for term in _NEGATIVE_POLARITY_TERMS)
+    if negative and not positive:
+        return "negative"
+    if positive and not negative:
+        return "positive"
+    return None
+
+
+def _is_leading_indicator_text(
+    natural: str,
+    proposition: dict[str, Any],
+) -> bool:
+    text = " ".join(
+        [
+            natural,
+            json.dumps(proposition, sort_keys=True, default=str),
+        ]
+    ).lower()
+    return any(term in text for term in _LEADING_INDICATOR_TERMS)
+
+
+def _signal_blocker_targets(
+    row: dict[str, Any],
+    proposition: dict[str, Any],
+) -> list[UUID]:
+    values: list[Any] = []
+    for key in (
+        "blocker_model_ids",
+        "blocked_by_model_ids",
+        "dependency_model_ids",
+        "depends_on_model_ids",
+    ):
+        raw = proposition.get(key)
+        if isinstance(raw, list):
+            values.extend(raw)
+    values.extend(row.get("blocker_targets") or [])
+    return list(
+        dict.fromkeys(
+            value
+            for value in (_coerce_uuid(raw) for raw in values)
+            if value is not None
+        )
+    )
+
+
+def _blocker_text_refs(natural: str) -> list[str]:
+    refs: list[str] = []
+    for match in _BLOCKER_REF_PATTERN.finditer(natural):
+        ref = " ".join(match.group(1).split())
+        ref = re.split(
+            r"\b(?:before|after|and then|once|so that)\b",
+            ref,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip()
+        if ref:
+            refs.append(ref[:120])
+    return list(dict.fromkeys(refs))
+
+
+def _signal_capability_surface(
+    proposition: dict[str, Any],
+    signature: ImpactSignature,
+) -> str | None:
+    for key in ("capability_surface", "capability_id", "resource", "surface"):
+        value = proposition.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    return signature.action_surface
+
+
+def _coerce_uuid(value: Any) -> UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_precise_scope_rule_edge_record(record: dict[str, Any]) -> bool:
+    return (
+        record.get("candidate_kind") == "edge"
+        and record.get("source") == "relationship_candidate_service"
+        and record.get("edge_kind") in _PRECISE_SCOPE_RULE_EDGE_KINDS
+    )
+
+
+def _is_precise_scope_rule_edge_candidate(candidate: RelationshipCandidate) -> bool:
+    return (
+        candidate.candidate_kind == "edge"
+        and candidate.source == "relationship_candidate_service"
+        and candidate.edge_kind in _PRECISE_SCOPE_RULE_EDGE_KINDS
+    )
+
+
+def _precise_scope_rule_edge_priority(edge_kind: str | None) -> int:
+    return _PRECISE_SCOPE_RULE_EDGE_PRIORITY.get(str(edge_kind or ""), 99)
+
+
+def _candidate_dedupe_key(candidate: RelationshipCandidate) -> tuple[Any, ...]:
+    if candidate.candidate_kind == "edge":
+        return (
+            "edge",
+            candidate.source_model_id,
+            candidate.target_model_id,
+            candidate.edge_kind,
+        )
+    if candidate.candidate_kind == "edge_type":
+        proposed = (candidate.proposed_proposition or {}).get("proposed_edge_kind")
+        return (
+            "edge_type",
+            proposed,
+            tuple(sorted(candidate.member_model_ids, key=str)),
+        )
+    return (
+        candidate.candidate_kind,
+        tuple(sorted(candidate.member_model_ids, key=str)),
+    )
+
+
+def _candidate_precedence(candidate: RelationshipCandidate) -> tuple[int, int, float]:
+    return (
+        0 if _is_precise_scope_rule_edge_candidate(candidate) else 1,
+        _precise_scope_rule_edge_priority(candidate.edge_kind),
+        -candidate.judgment_leverage_score,
+    )
+
+
+def _dedupe_candidates_prefer_scope_rules(
+    candidates: list[RelationshipCandidate],
+) -> list[RelationshipCandidate]:
+    by_key: dict[tuple[Any, ...], RelationshipCandidate] = {}
+    for candidate in candidates:
+        key = _candidate_dedupe_key(candidate)
+        existing = by_key.get(key)
+        if existing is None or _candidate_precedence(candidate) < _candidate_precedence(
+            existing
+        ):
+            by_key[key] = candidate
+    return list(by_key.values())
+
+
+def _rank_scope_rule_candidates(
+    candidates: list[RelationshipCandidate],
+    *,
+    limit: int | None = None,
+) -> list[RelationshipCandidate]:
+    ordered = sorted(
+        candidates,
+        key=lambda candidate: (
+            _precise_scope_rule_edge_priority(candidate.edge_kind),
+            -candidate.judgment_leverage_score,
+            -clamp_score(candidate.scores.impact),
+            -clamp_score(candidate.scores.confidence),
+            str(candidate.id),
+        ),
+    )
+    return ordered[:limit] if limit is not None else ordered
+
+
+def _rank_topology_insert_candidates(
+    candidates: list[RelationshipCandidate],
+    *,
+    limit: int | None = None,
+) -> list[RelationshipCandidate]:
+    ordered = sorted(
+        candidates,
+        key=lambda candidate: (
+            0 if _is_precise_scope_rule_edge_candidate(candidate) else 1,
+            _precise_scope_rule_edge_priority(candidate.edge_kind),
+            -candidate.judgment_leverage_score,
+            -clamp_score(candidate.scores.impact),
+            -clamp_score(candidate.scores.confidence),
+            str(candidate.id),
+        ),
+    )
+    return ordered[:limit] if limit is not None else ordered
+
+
+def _rank_records_for_think_enqueue(
+    records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return sorted(
+        records,
+        key=lambda record: (
+            0 if _is_precise_scope_rule_edge_record(record) else 1,
+            _precise_scope_rule_edge_priority(record.get("edge_kind")),
+            -float(record.get("judgment_leverage_score") or 0.0),
+            str(record.get("id") or ""),
+        ),
+    )
+
+
+def _think_enqueue_threshold(record: dict[str, Any], *, default: float) -> float:
+    if _is_precise_scope_rule_edge_record(record):
+        return min(default, 0.54)
+    return default
+
+
+def _embedding_to_float_list(value: Any) -> list[float]:
+    if value is None:
+        return []
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8")
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw.startswith("[") and raw.endswith("]"):
+            raw = raw[1:-1]
+        if not raw:
+            return []
+        return [float(part.strip()) for part in raw.split(",") if part.strip()]
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    return [float(v) for v in value]
 
 
 def _record_value(row: asyncpg.Record, key: str, default: Any = None) -> Any:
@@ -1447,8 +2342,7 @@ def _text_for_signature(row: dict[str, Any]) -> str:
 
 def _matched_labels(text: str, lookup: dict[str, tuple[str, ...]]) -> tuple[str, ...]:
     out = [
-        label for label, terms in lookup.items()
-        if any(term in text for term in terms)
+        label for label, terms in lookup.items() if any(term in text for term in terms)
     ]
     return tuple(out[:4])
 
@@ -1492,7 +2386,9 @@ def _surfaces(
     return tuple(dict.fromkeys(out))
 
 
-def _normalized_scope_entities(scope_entities: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+def _normalized_scope_entities(
+    scope_entities: Iterable[dict[str, Any]],
+) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for entity in scope_entities:
         if not isinstance(entity, dict):
@@ -1549,8 +2445,16 @@ def _signature_recall_affinity(
     pressure = _overlap_score(left.pressures, right.pressures)
     stake = _overlap_score(left.stakes, right.stakes)
     surface = _overlap_score(left.surfaces, right.surfaces)
-    action = 1.0 if left.action_surface and left.action_surface == right.action_surface else 0.0
-    time = 1.0 if left.time_shape == right.time_shape and left.time_shape != "unspecified" else 0.0
+    action = (
+        1.0
+        if left.action_surface and left.action_surface == right.action_surface
+        else 0.0
+    )
+    time = (
+        1.0
+        if left.time_shape == right.time_shape and left.time_shape != "unspecified"
+        else 0.0
+    )
     kind = 0.5 if left.proposition_kind == right.proposition_kind else 0.0
     return clamp_score(
         0.30 * flow
@@ -1596,15 +2500,24 @@ def _business_leverage(
     left_activation: float,
     right_activation: Any,
 ) -> float:
-    stake_score = _overlap_score(left.stakes or ("execution",), right.stakes or ("execution",))
-    flow_score = 1.0 if {"money", "trust", "risk"} & set(left.flows + right.flows) else 0.35
+    stake_score = _overlap_score(
+        left.stakes or ("execution",), right.stakes or ("execution",)
+    )
+    flow_score = (
+        1.0 if {"money", "trust", "risk"} & set(left.flows + right.flows) else 0.35
+    )
     activation = max(float(left_activation or 0.0), float(right_activation or 0.0))
     return clamp_score(0.45 * stake_score + 0.35 * flow_score + 0.20 * activation)
 
 
 def _actionability(left: ImpactSignature, right: ImpactSignature) -> float:
     action_surface = 1.0 if left.action_surface or right.action_surface else 0.35
-    pressure = 1.0 if {"blocker", "dependency", "opportunity"} & set(left.pressures + right.pressures) else 0.45
+    pressure = (
+        1.0
+        if {"blocker", "dependency", "opportunity"}
+        & set(left.pressures + right.pressures)
+        else 0.45
+    )
     return clamp_score(0.55 * pressure + 0.45 * action_surface)
 
 

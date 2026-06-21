@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import uuid4
 
 import asyncpg
 import pytest
@@ -64,6 +65,44 @@ class _FakeConn:
         if self.error is not None:
             raise self.error
         return self.rows
+
+
+class _ExplodingConn:
+    async def fetchval(self, *_args: object, **_kwargs: object) -> object:
+        raise AssertionError("generic reader lookup should not touch the database")
+
+    async def fetch(self, *_args: object, **_kwargs: object) -> object:
+        raise AssertionError("generic reader lookup should not touch the database")
+
+
+def test_sage_sparse_lookup_terms_skip_generic_words_but_keep_identifiers() -> None:
+    terms = reader_mod._sparse_lookup_terms(
+        [
+            "owner responsible assigned dependency evidence blocker customer launch",
+            "customer-95 Borealis renewal",
+        ],
+        max_terms=8,
+    )
+
+    assert "owner" not in terms
+    assert "dependency" not in terms
+    assert "launch" not in terms
+    assert "customer-95" in terms
+    assert "borealis" in terms
+    assert "renewal" in terms
+
+
+@pytest.mark.asyncio
+async def test_sage_search_document_lookup_skips_generic_terms_without_db() -> None:
+    rows = await reader_mod._fetch_search_document_matches(
+        _ExplodingConn(),  # type: ignore[arg-type]
+        tenant_id=uuid4(),
+        terms=["owner responsible assigned dependency evidence blocker customer"],
+        limit=8,
+        microquery_enabled=True,
+    )
+
+    assert rows == []
 
 
 @pytest.mark.asyncio

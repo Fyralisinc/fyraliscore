@@ -70,6 +70,7 @@ async def _execute_sage_reader_actions_for_round(
     substrate: Any | None,
     hypotheses: tuple[Hypothesis, ...],
     read_pool: asyncpg.Pool | None,
+    evidence_state: dict[str, Any] | None = None,
 ) -> tuple[dict[str, RetrievalResult], dict[str, Any]]:
     if not questions or not cfg.sage_reader_enabled or reader is None:
         return {}, {
@@ -96,6 +97,7 @@ async def _execute_sage_reader_actions_for_round(
                 reader=reader,
                 substrate=substrate,
                 hypotheses=hypotheses,
+                evidence_state=evidence_state,
             )
             if result is not None:
                 results[question.question_id] = result
@@ -120,6 +122,7 @@ async def _execute_sage_reader_actions_for_round(
                     reader=reader,
                     substrate=substrate,
                     hypotheses=hypotheses,
+                    evidence_state=evidence_state,
                 )
                 return question.question_id, result
 
@@ -146,6 +149,7 @@ async def _execute_sage_reader_action(
     hypotheses: tuple[Hypothesis, ...],
     reader: Any | None = None,
     substrate: Any | None = None,
+    evidence_state: dict[str, Any] | None = None,
 ) -> RetrievalResult | None:
     if not cfg.sage_reader_enabled:
         return None
@@ -163,6 +167,7 @@ async def _execute_sage_reader_action(
             question_primitive=question.primitive,
             hypotheses=hypotheses,
             substrate=substrate,
+            evidence_state=evidence_state,
         )
     except (asyncpg.PostgresError, ValidationError):
         raise
@@ -205,6 +210,7 @@ async def _execute_sage_reader_action(
                 "activation_trace_count": len(read.activations),
                 "debug": read.debug,
                 "activations": [_jsonable(asdict(trace)) for trace in read.activations],
+                "reconstruction_state": _jsonable(evidence_state or {}),
             },
         },
         model_scores=dict(read.model_scores),

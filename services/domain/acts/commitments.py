@@ -282,7 +282,7 @@ async def _create_inner(
     row = await tx.fetchrow(
         "SELECT * FROM commitments WHERE id = $1", commitment_id
     )
-    return CommitmentRow.model_validate(dict(row))
+    return _commitment_row_from_record(row)
 
 
 async def _validate_commitment_create_references(
@@ -457,6 +457,31 @@ async def _insert_constrained_by_edges(
 
 def _json_or_none(value: dict[str, Any] | None) -> str | None:
     return json.dumps(value) if value is not None else None
+
+
+def _commitment_row_from_record(row: asyncpg.Record | dict[str, Any]) -> CommitmentRow:
+    data = dict(row)
+    for key in ("success_criteria", "external_counterparty_ref", "estimated_capacity"):
+        data[key] = _json_obj_or_none(data.get(key))
+    return CommitmentRow.model_validate(data)
+
+
+def _json_obj_or_none(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode()
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        if decoded is None:
+            return None
+        return dict(decoded) if isinstance(decoded, dict) else {}
+    return {}
 
 
 async def _require_active_actor(
@@ -757,7 +782,7 @@ async def transition(
             cause_event_id=cause_event_id,
         )
 
-        return CommitmentRow.model_validate(dict(updated))
+        return _commitment_row_from_record(updated)
 
     if conn is None:
         async def _run() -> CommitmentRow:
@@ -957,7 +982,7 @@ async def get(
     else:
         async with transaction() as tx:
             row = await tx.fetchrow(q, commitment_id)
-    return CommitmentRow.model_validate(dict(row)) if row else None
+    return _commitment_row_from_record(row) if row else None
 
 
 __all__ = [

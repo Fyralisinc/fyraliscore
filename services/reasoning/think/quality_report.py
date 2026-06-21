@@ -71,8 +71,11 @@ def _augment_noop_trace_context(
         return context
     total_ops = (
         _as_int(context.get("edge_ops_count"))
+        + _as_int(context.get("relation_claim_ops_count"))
+        + _as_int(context.get("relation_frame_ops_count"))
         + _as_int(context.get("ontology_gap_ops_count"))
         + _as_int(context.get("claim_ops_count"))
+        + _as_int(context.get("memory_lifecycle_ops_count"))
         + _as_int(context.get("act_ops_count"))
         + _as_int(context.get("resource_ops_count"))
     )
@@ -221,8 +224,17 @@ def _run_summary(row: asyncpg.Record, context: dict[str, Any]) -> dict[str, Any]
             context.get("graph_selected_model_count")
         ),
         "edge_ops_count": _as_int(context.get("edge_ops_count")),
+        "relation_claim_ops_count": _as_int(
+            context.get("relation_claim_ops_count")
+        ),
+        "relation_frame_ops_count": _as_int(
+            context.get("relation_frame_ops_count")
+        ),
         "ontology_gap_ops_count": _as_int(context.get("ontology_gap_ops_count")),
         "claim_ops_count": _as_int(context.get("claim_ops_count")),
+        "memory_lifecycle_ops_count": _as_int(
+            context.get("memory_lifecycle_ops_count")
+        ),
         "act_ops_count": _as_int(context.get("act_ops_count")),
         "retrieval_model_count": row["retrieval_model_count"],
         "retrieval_observation_count": row["retrieval_observation_count"],
@@ -252,11 +264,23 @@ def _flags_for_context(
     )
     graph_selected = _as_int(context.get("graph_selected_model_count"))
     edge_ops = _as_int(context.get("edge_ops_count"))
+    relation_claim_ops = _as_int(context.get("relation_claim_ops_count"))
+    relation_frame_ops = _as_int(context.get("relation_frame_ops_count"))
     ontology_gap_ops = _as_int(context.get("ontology_gap_ops_count"))
     claim_ops = _as_int(context.get("claim_ops_count"))
+    memory_lifecycle_ops = _as_int(context.get("memory_lifecycle_ops_count"))
     act_ops = _as_int(context.get("act_ops_count"))
     resource_ops = _as_int(context.get("resource_ops_count"))
-    total_ops = edge_ops + ontology_gap_ops + claim_ops + act_ops + resource_ops
+    total_ops = (
+        relation_claim_ops
+        + relation_frame_ops
+        + edge_ops
+        + ontology_gap_ops
+        + claim_ops
+        + memory_lifecycle_ops
+        + act_ops
+        + resource_ops
+    )
     selected_count = _as_int(context.get("selected_context_count"))
     graph_used = bool(context.get("graph_context_used"))
     trace_used = bool(context.get("reasoning_trace_context_used"))

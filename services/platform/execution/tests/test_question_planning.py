@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -13,7 +15,11 @@ from services.platform.execution.question_planning_schemas import (
     LLMCompactQuestionSpec,
     LLMInquiryQuestionSpec,
 )
-from services.platform.execution.types import Hypothesis, InquiryQuestion
+from services.platform.execution.types import (
+    Hypothesis,
+    InquiryQuestion,
+    ReconstructionState,
+)
 from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext
 
 
@@ -288,3 +294,62 @@ async def test_candidate_questions_for_round_falls_back_when_disabled() -> None:
         "DEPENDENCY",
         "OWNERSHIP",
     }
+
+
+@pytest.mark.asyncio
+async def test_generate_llm_question_plan_includes_reconstruction_state() -> None:
+    class Provider:
+        config = SimpleNamespace(provider="codex", model="gpt-5.3-codex-spark")
+
+        def __init__(self) -> None:
+            self.payload: dict[str, object] = {}
+
+        async def structured(self, *, user: str, schema: object, **_kwargs: object):
+            self.payload = json.loads(user)
+            return LLMCompactQuestionPlan(
+                r="Counterevidence is still open.",
+                d=[
+                    LLMCompactBeliefDeltaSpec(
+                        i="D1",
+                        claim="HarborRail launch may still be blocked",
+                        type="update",
+                    )
+                ],
+                q=[
+                    LLMCompactQuestionSpec(
+                        p="COUNTEREVIDENCE",
+                        q="What evidence weakens the HarborRail blocker premise?",
+                        v=0.9,
+                        c=0.2,
+                    )
+                ],
+            )
+
+    provider = Provider()
+    trigger = _trigger("HarborRail launch blocker")
+    state = ReconstructionState(
+        round_index=2,
+        summary="counterevidence unresolved",
+        active_cues=("HarborRail", "counterevidence"),
+        unresolved_slots=("counterevidence",),
+        known_model_ids=("model-1",),
+        operator_bias=("semantic:counterevidence",),
+    )
+
+    await question_planning.generate_llm_question_plan(
+        trigger,
+        RetrievalResult(trigger=trigger),
+        (_hypothesis(),),
+        {},
+        {"counterevidence"},
+        llm_provider=provider,
+        config=InquiryConfig(),
+        reconstruction_state=state,
+    )
+
+    assert provider.payload["recon"]["round_index"] == 2
+    assert provider.payload["recon"]["active_cues"] == [
+        "HarborRail",
+        "counterevidence",
+    ]
+    assert provider.payload["recon"]["known_model_count"] == 1

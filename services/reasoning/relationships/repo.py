@@ -270,6 +270,13 @@ class RelationshipCandidatesRepo:
             list(accepted_edge_ids),
             _jsonb(metadata_patch),
         )
+        if row is not None:
+            await _record_candidate_edge_feedback(
+                conn,
+                row=row,
+                review_status=review_status,
+                decision_metadata=decision_metadata,
+            )
         return _row_to_dict(row) if row is not None else None
 
 
@@ -290,6 +297,120 @@ def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
     out["proposed_proposition"] = _decode_jsonb(out.get("proposed_proposition"))
     out["metadata"] = _decode_jsonb(out.get("metadata"))
     return out
+
+
+async def _record_candidate_edge_feedback(
+    conn: asyncpg.Connection,
+    *,
+    row: asyncpg.Record,
+    review_status: str,
+    decision_metadata: dict[str, Any] | None,
+) -> None:
+    """Teach the edge kernel from candidate decisions best-effort."""
+    if row["candidate_kind"] != "edge":
+        return
+    source_model_id = row["source_model_id"]
+    target_model_id = row["target_model_id"]
+    edge_kind = row["edge_kind"]
+    if source_model_id is None or target_model_id is None or edge_kind is None:
+        return
+    try:
+        from lib.shared.edge_registry import EDGE_REGISTRY
+        from services.reasoning.edge_intelligence.repo import EdgeIntelligenceRepo
+        from services.reasoning.edge_intelligence.types import (
+            PairEvidenceObservation,
+            RelationEvidence,
+        )
+    except Exception:  # noqa: BLE001
+        return
+
+    metadata = _decode_jsonb(row["metadata"])
+    primitive = _primitive_from_candidate(edge_kind, metadata)
+    decision = decision_metadata if isinstance(decision_metadata, dict) else {}
+    is_t4_decision = bool(decision.get("decision_reason"))
+    accepted = review_status == "accepted"
+    rejected = review_status == "rejected"
+    needs_review = review_status == "needs_review"
+    if not (accepted or rejected or needs_review):
+        return
+
+    spec = EDGE_REGISTRY.get(str(edge_kind))
+    directed_source = source_model_id if spec is None or spec.is_directed else None
+    directed_target = target_model_id if spec is None or spec.is_directed else None
+    repo = EdgeIntelligenceRepo()
+    try:
+        async with conn.transaction():
+            await repo.record_pair_observation(
+                conn,
+                PairEvidenceObservation(
+                    tenant_id=row["tenant_id"],
+                    left_model_id=source_model_id,
+                    right_model_id=target_model_id,
+                    primitive=primitive,
+                    t4_accept_delta=1 if accepted and is_t4_decision else 0,
+                    t4_reject_delta=1 if rejected and is_t4_decision else 0,
+                    no_edge_delta=1 if rejected else 0,
+                    positive_outcome_delta=1 if accepted else 0,
+                    negative_outcome_delta=1 if rejected else 0,
+                    directed_source_model_id=directed_source,
+                    directed_target_model_id=directed_target,
+                    edge_kind_hint=str(edge_kind),
+                    metadata={
+                        "relationship_candidate_id": str(row["id"]),
+                        "candidate_review_status": review_status,
+                        "decision": decision,
+                    },
+                ),
+            )
+            if accepted:
+                await repo.insert_relation_evidence(
+                    conn,
+                    RelationEvidence(
+                        tenant_id=row["tenant_id"],
+                        source_model_id=source_model_id,
+                        target_model_id=target_model_id,
+                        predicate=str(edge_kind),
+                        edge_kind_hint=str(edge_kind),
+                        direction=(
+                            "source_to_target"
+                            if spec is None or spec.is_directed
+                            else "symmetric"
+                        ),
+                        evidence_text=row["explanation"],
+                        confidence=float(row["confidence_score"] or 0.0),
+                        extraction_method="relationship_candidate_decision",
+                        metadata={
+                            "relationship_candidate_id": str(row["id"]),
+                            "review_status": review_status,
+                            "decision": decision,
+                        },
+                    ),
+                )
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _primitive_from_candidate(edge_kind: str, metadata: Any) -> str:
+    if isinstance(metadata, dict):
+        edge_intel = metadata.get("edge_intelligence")
+        if isinstance(edge_intel, dict) and edge_intel.get("primitive"):
+            return str(edge_intel["primitive"]).upper()
+        lifecycle = metadata.get("candidate_lifecycle")
+        if isinstance(lifecycle, dict) and lifecycle.get("primitive"):
+            return str(lifecycle["primitive"]).upper()
+    return {
+        "blocks": "DEPENDENCY",
+        "enables": "ENABLEMENT",
+        "weakens": "COUNTEREVIDENCE",
+        "contradicts": "COUNTEREVIDENCE",
+        "same_issue_as": "RECURRENCE",
+        "supports": "GOAL_IMPACT",
+        "early_warning_for": "PREDICTION",
+        "predicts": "PREDICTION",
+        "causes": "CAUSAL",
+        "explains": "EXPLANATION",
+        "contributes_to_resolution": "RESOLUTION",
+    }.get(edge_kind, "UNKNOWN")
 
 
 @dataclass(frozen=True)

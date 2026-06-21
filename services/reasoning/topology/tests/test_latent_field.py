@@ -12,7 +12,11 @@ from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.sage.reader import SynthesisReader
 from services.reasoning.think.diff_schema import ClaimOp
 from services.reasoning.topology import ExpectedPair, run_topology_eval
-from services.reasoning.topology.field import LatentTopologyService, impact_signature
+from services.reasoning.topology.field import (
+    LatentTopologyService,
+    _embedding_to_float_list,
+    impact_signature,
+)
 
 
 def _model(natural: str, *, kind: str = "concern") -> ModelRow:
@@ -54,6 +58,11 @@ def test_impact_signature_tracks_consequence_not_just_text() -> None:
     assert any(surface.startswith("customer:") for surface in sig.surfaces)
     assert "revenue" in sig.stakes
     assert sig.time_shape == "deadline_bound"
+
+
+def test_embedding_to_float_list_accepts_pgvector_text_without_codec() -> None:
+    assert _embedding_to_float_list("[0.1,0.2,-0.3]") == [0.1, 0.2, -0.3]
+    assert _embedding_to_float_list("") == []
 
 
 def test_relocate_claim_op_is_not_part_of_active_topology() -> None:
@@ -119,11 +128,13 @@ async def test_latent_topology_generates_candidates_and_t4_trigger(
             mid,
             tenant,
             born_from_event,
-            json.dumps({
-                "kind": "concern",
-                "subject": "Nimbus",
-                "assertion": natural,
-            }),
+            json.dumps(
+                {
+                    "kind": "concern",
+                    "subject": "Nimbus",
+                    "assertion": natural,
+                }
+            ),
             natural,
             _model(natural).embedding,
             [actor_id],
@@ -235,11 +246,13 @@ async def test_latent_topology_sweep_is_bounded_and_inserts_candidates(
             uuid7(),
             tenant,
             born_from_event,
-            json.dumps({
-                "kind": "concern",
-                "subject": "Nimbus",
-                "assertion": natural,
-            }),
+            json.dumps(
+                {
+                    "kind": "concern",
+                    "subject": "Nimbus",
+                    "assertion": natural,
+                }
+            ),
             natural,
             _model(natural).embedding,
             [actor_id],
@@ -349,6 +362,199 @@ async def test_topology_eval_finds_hidden_pair_without_shared_scope(
     assert "consequence" in metadata["topology"]["selection_sources"]
 
 
+async def test_latent_topology_rejects_cross_account_shared_pressure_edge(
+    tx_conn,
+    tenant,
+    born_from_event,
+) -> None:
+    left = await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural="Atlas renewal approval is blocked by missing security evidence",
+        embedding=_axis_embedding(12),
+        scope_entities=[{"type": "customer", "id": str(uuid7())}],
+    )
+    right = await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural="Northstar pricing approval is blocked by legal review",
+        embedding=_axis_embedding(13),
+        scope_entities=[{"type": "customer", "id": str(uuid7())}],
+    )
+
+    result = await LatentTopologyService(
+        raw_candidate_limit=20,
+        candidate_insert_limit=6,
+        min_insert_score=0.25,
+        min_think_score=0.95,
+    ).generate_for_model(tx_conn, model=left, enqueue_think=False)
+
+    assert not any(
+        row["candidate_kind"] == "edge"
+        and row["edge_kind"] == "blocks"
+        and {row["source_model_id"], row["target_model_id"]} == {left.id, right.id}
+        for row in result.inserted_candidates
+    )
+
+
+async def test_latent_topology_runs_scope_rule_for_named_blocker_edge(
+    tx_conn,
+    tenant,
+    born_from_event,
+) -> None:
+    customer_id = uuid7()
+    blocked = await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural="HubSpot import is blocked by DPA approval for enterprise data",
+        embedding=_axis_embedding(14),
+        scope_entities=[{"type": "customer", "id": str(customer_id)}],
+    )
+    approval = await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural="DPA approval for enterprise data is waiting on legal review",
+        embedding=_axis_embedding(15),
+        scope_entities=[{"type": "customer", "id": str(customer_id)}],
+    )
+
+    result = await LatentTopologyService(
+        raw_candidate_limit=20,
+        candidate_insert_limit=6,
+        min_insert_score=0.25,
+        min_think_score=0.66,
+    ).generate_for_model(tx_conn, model=blocked)
+
+    edge_rows = [
+        row
+        for row in result.inserted_candidates
+        if row["candidate_kind"] == "edge"
+        and row["edge_kind"] == "blocks"
+        and row["source"] == "relationship_candidate_service"
+        and row["source_model_id"] == approval.id
+        and row["target_model_id"] == blocked.id
+    ]
+    assert edge_rows
+    assert edge_rows[0]["metadata"]["dependency_basis"] == "phrase_and_named_resource"
+    assert result.enqueued_think_triggers == 1
+
+
+async def test_latent_topology_runs_scope_rule_for_resolution_edge(
+    tx_conn,
+    tenant,
+    born_from_event,
+) -> None:
+    customer_id = uuid7()
+    pressure = await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural="Cobalt data migration is blocked by missing audit evidence",
+        embedding=_axis_embedding(16),
+        scope_entities=[{"type": "customer", "id": str(customer_id)}],
+    )
+    resolution = await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural="Audit evidence is now available and unblocked Cobalt migration",
+        embedding=_axis_embedding(17),
+        scope_entities=[{"type": "customer", "id": str(customer_id)}],
+    )
+
+    result = await LatentTopologyService(
+        raw_candidate_limit=20,
+        candidate_insert_limit=6,
+        min_insert_score=0.25,
+        min_think_score=0.66,
+    ).generate_for_model(tx_conn, model=resolution)
+
+    assert any(
+        row["candidate_kind"] == "edge"
+        and row["edge_kind"] == "contributes_to_resolution"
+        and row["source"] == "relationship_candidate_service"
+        and row["source_model_id"] == resolution.id
+        and row["target_model_id"] == pressure.id
+        for row in result.inserted_candidates
+    )
+    assert result.enqueued_think_triggers == 1
+
+
+async def test_scope_rule_priority_keeps_explicit_explanation_edge(
+    tx_conn,
+    tenant,
+    born_from_event,
+) -> None:
+    customer_id = uuid7()
+    seed = await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural=(
+            "Atlas renewal is held in procurement because SOC2 evidence is "
+            "not yet available"
+        ),
+        embedding=_axis_embedding(18),
+        scope_entities=[{"type": "customer", "id": str(customer_id)}],
+    )
+    await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural="Procurement moved the renewal packet to waiting status",
+        embedding=_axis_embedding(19),
+        scope_entities=[{"type": "customer", "id": str(customer_id)}],
+    )
+    await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural="Admin usage is down despite more support attention",
+        embedding=_axis_embedding(20),
+        scope_entities=[{"type": "customer", "id": str(customer_id)}],
+    )
+    await _insert_model_row(
+        tx_conn,
+        tenant=tenant,
+        born_from_event=born_from_event,
+        natural="Finance treats the renewal risk signal as material",
+        embedding=_axis_embedding(21),
+        scope_entities=[{"type": "customer", "id": str(customer_id)}],
+    )
+
+    result = await LatentTopologyService(
+        raw_candidate_limit=20,
+        candidate_insert_limit=3,
+        min_insert_score=0.25,
+        min_think_score=0.66,
+    ).generate_for_model(tx_conn, model=seed)
+
+    explains_rows = [
+        row
+        for row in result.inserted_candidates
+        if row["candidate_kind"] == "edge"
+        and row["edge_kind"] == "explains"
+        and row["source"] == "relationship_candidate_service"
+        and row["source_model_id"] == seed.id
+    ]
+    assert explains_rows
+    trigger = await tx_conn.fetchrow(
+        """
+        SELECT payload
+        FROM think_trigger_queue
+        WHERE tenant_id = $1
+          AND payload->>'relationship_candidate_id' = $2
+        """,
+        tenant,
+        str(explains_rows[0]["id"]),
+    )
+    assert trigger is not None
+
+
 async def test_topology_candidate_selection_uses_evidence_lane(
     tx_conn,
     tenant,
@@ -381,7 +587,8 @@ async def test_topology_candidate_selection_uses_evidence_lane(
 
     assert result.inserted_candidates
     matched = [
-        row for row in result.inserted_candidates
+        row
+        for row in result.inserted_candidates
         if (
             {row["source_model_id"], row["target_model_id"]} == {seed.id, downstream.id}
             if row["candidate_kind"] == "edge"
@@ -393,7 +600,7 @@ async def test_topology_candidate_selection_uses_evidence_lane(
     assert "evidence" in metadata["topology"]["selection_sources"]
 
 
-async def test_latent_topology_generates_edge_type_candidate_for_decision_gate(
+async def test_latent_topology_folds_decision_gate_into_blocks_candidate(
     tx_conn,
     tenant,
     born_from_event,
@@ -428,18 +635,24 @@ async def test_latent_topology_generates_edge_type_candidate_for_decision_gate(
         min_think_score=0.25,
     ).generate_for_model(tx_conn, model=seed)
 
-    edge_type_rows = [
-        row for row in result.inserted_candidates
-        if row["candidate_kind"] == "edge_type"
-        and set(row["member_model_ids"] or []) == {seed.id, decision.id}
+    edge_rows = [
+        row
+        for row in result.inserted_candidates
+        if row["candidate_kind"] == "edge"
+        and row["edge_kind"] == "blocks"
+        and {row["source_model_id"], row["target_model_id"]} == {seed.id, decision.id}
     ]
-    assert edge_type_rows
-    row = edge_type_rows[0]
-    assert row["basis"] == "ontology_gap"
-    assert row["proposed_proposition"]["proposed_edge_kind"] == "gated_by_decision"
-    assert row["proposed_proposition"]["parent_kind"] == "blocks"
+    assert edge_rows
+    row = edge_rows[0]
+    assert row["basis"] == "causal_hypothesis"
+    assert row["metadata"]["ontology_gap"]["proposed_edge_kind"] == (
+        "gated_by_decision"
+    )
     assert row["metadata"]["ontology_gap"]["retrieval_fallback_kind"] == "blocks"
-    assert row["metadata"]["topology"]["object_type"] == "edge_type_candidate"
+    assert row["metadata"]["ontology_gap"]["folded_into_edge_candidate"] is True
+    assert row["metadata"]["topology"]["object_type"] == "pair_candidate"
+    assert row["metadata"]["topology"]["folded_ontology_gap"] is True
+    assert row["metadata"]["dependency_basis"] in {"blocker", "dependency"}
 
     trigger = await tx_conn.fetchrow(
         """
@@ -454,7 +667,7 @@ async def test_latent_topology_generates_edge_type_candidate_for_decision_gate(
     assert trigger is not None
 
 
-async def test_topology_edge_type_candidate_feeds_sage_hidden_model_retrieval(
+async def test_topology_edge_candidate_feeds_sage_hidden_model_retrieval(
     tx_conn,
     tenant,
     born_from_event,
@@ -490,9 +703,9 @@ async def test_topology_edge_type_candidate_feeds_sage_hidden_model_retrieval(
     ).generate_for_model(tx_conn, model=seed)
 
     assert any(
-        row["candidate_kind"] == "edge_type"
-        and row["proposed_proposition"]["proposed_edge_kind"] == "gated_by_decision"
-        and set(row["member_model_ids"] or []) == {seed.id, decision.id}
+        row["candidate_kind"] == "edge"
+        and row["edge_kind"] == "blocks"
+        and {row["source_model_id"], row["target_model_id"]} == {seed.id, decision.id}
         for row in topology_result.inserted_candidates
     )
 
@@ -558,11 +771,13 @@ async def _insert_model_row(
         mid,
         tenant,
         born_from_event,
-        json.dumps({
-            "kind": "concern",
-            "subject": "Topology eval",
-            "assertion": natural,
-        }),
+        json.dumps(
+            {
+                "kind": "concern",
+                "subject": "Topology eval",
+                "assertion": natural,
+            }
+        ),
         natural,
         embedding,
         json.dumps(scope_entities),

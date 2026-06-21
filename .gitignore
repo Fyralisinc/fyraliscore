@@ -79,6 +79,16 @@ id_ed25519*
 *.db
 *.dump
 
+# Local DB dump directory (pg_dump snapshots, restore scripts — not source)
+backups/
+
+# Local skills cache + lockfile (per-machine tooling, not source)
+.agents/
+skills-lock.json
+
+# Scratch refactor transcript (internal dev note, kept local)
+think_refactor.md
+
 
 # Synthesis harness per-run calibration artifacts (the baseline + README are tracked)
 tests/synthesis_harness/runs/

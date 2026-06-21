@@ -139,6 +139,10 @@ class StorylineScore:
     unsupported_bridge_specific_claim_count: int = 0
     bridge_epistemic_marker_hits: list[str] = field(default_factory=list)
     bridge_forbidden_detail_hits: list[str] = field(default_factory=list)
+    relation_frame_count: int = 0
+    accepted_relation_frame_count: int = 0
+    relation_frame_kind_hits: list[str] = field(default_factory=list)
+    relation_frame_projection_count: int = 0
     thesis_judge_score: float | None = None
     thesis_judge_correct: bool | None = None
     thesis_judge_rationale: str | None = None
@@ -727,6 +731,7 @@ def _build_long_horizon_storyline_scenario(
     story_offsets = {story.id: 0 for story in STORYLINES}
     future_offsets = {story.id: 0 for story in STORYLINES}
     noise_offset = 0
+    capability_offset = 0
     horizon_end_batch = horizon_start_batch + target_t1_batches
     warmup_batches = _long_horizon_warmup_batches(horizon_end_batch)
 
@@ -734,6 +739,8 @@ def _build_long_horizon_storyline_scenario(
         sequence_kind = _long_horizon_sequence_kind(batch_index, warmup_batches)
         if sequence_kind == "noise":
             noise_offset += signals_per_batch
+        elif sequence_kind == "capability_probe":
+            capability_offset += signals_per_batch
         elif sequence_kind == "future_validation":
             for item_index in range(signals_per_batch):
                 story = STORYLINES[(batch_index + item_index) % len(STORYLINES)]
@@ -757,6 +764,21 @@ def _build_long_horizon_storyline_scenario(
                 signals.append(signal)
                 signal_index += 1
                 noise_offset += 1
+        elif sequence_kind == "capability_probe":
+            sequence_name = f"capability_probe_wave_{batch_index + 1:03d}"
+            for _item_index in range(signals_per_batch):
+                signal = _make_capability_probe_signal(
+                    signal_index,
+                    capability_offset,
+                )
+                _decorate_long_horizon_signal(
+                    signal,
+                    batch_index=batch_index,
+                    sequence_kind=sequence_kind,
+                )
+                signals.append(signal)
+                signal_index += 1
+                capability_offset += 1
         elif sequence_kind == "future_validation":
             sequence_name = f"future_validation_wave_{batch_index + 1:03d}"
             for item_index in range(signals_per_batch):
@@ -798,6 +820,7 @@ def _build_long_horizon_storyline_scenario(
         "Future validation should update, confirm, or retire earlier inferred memory.",
         "Noise should remain bounded across a long horizon instead of accumulating into durable clutter.",
         "Unobserved transition gaps should become bounded inferred Models, not fabricated facts.",
+        "Capability probe waves should exercise prediction, resource, ontology-gap, archive, evidence, and question-policy lifecycle paths.",
     ]
     scenario.raw = {
         **dict(scenario.raw or {}),
@@ -828,6 +851,8 @@ def _long_horizon_sequence_kind(batch_index: int, warmup_batches: int) -> str:
     batch_number = batch_index + 1
     if batch_index >= warmup_batches and batch_number % 10 == 0:
         return "noise"
+    if batch_index >= warmup_batches and batch_number % 9 == 0:
+        return "capability_probe"
     if batch_index >= warmup_batches and batch_number % 5 == 0:
         return "future_validation"
     return "storyline"
@@ -1180,6 +1205,93 @@ def _make_latent_bridge_future_signal(
     }
 
 
+_ALL_CAPABILITY_PROBE_KINDS: tuple[str, ...] = (
+    "prediction",
+    "resource",
+    "ontology_gap",
+    "archive",
+    "evidence_attachment",
+    "question_policy",
+)
+
+_CAPABILITY_PROBE_KIND_GROUPS: tuple[tuple[str, ...], ...] = (
+    _ALL_CAPABILITY_PROBE_KINDS,
+    ("prediction",),
+    ("resource",),
+    ("ontology_gap",),
+    ("archive",),
+    ("evidence_attachment", "question_policy"),
+)
+
+_CAPABILITY_PROBE_TEXT: dict[str, str] = {
+    "prediction": (
+        "prediction lifecycle: create a Prediction model with an explicit "
+        "evaluate_at deadline for Friday's enterprise-control launch decision."
+    ),
+    "resource": (
+        "resource_ops lifecycle: create a constrained capacity Resource for "
+        "security-review hours so action-resource planning is exercised."
+    ),
+    "ontology_gap": (
+        "ontology_gap_ops lifecycle: propose a missing edge type for a "
+        "regulatory exemption that gates launch progress more precisely than "
+        "plain blocks."
+    ),
+    "archive": (
+        "archive lifecycle: retire or archive stale memory when newer launch "
+        "evidence supersedes an older assumption."
+    ),
+    "evidence_attachment": (
+        "evidence attachment lifecycle: attach this low-durability repeated "
+        "review feeling as evidence to existing memory instead of creating "
+        "another durable Model."
+    ),
+    "question_policy": (
+        "question_policy lifecycle: record whether a missing-context question "
+        "would have helped, so future retrieval learns when to ask."
+    ),
+}
+
+
+def _make_capability_probe_signal(
+    signal_index: int,
+    local_index: int,
+) -> dict[str, Any]:
+    kinds = _CAPABILITY_PROBE_KIND_GROUPS[
+        local_index % len(_CAPABILITY_PROBE_KIND_GROUPS)
+    ]
+    kind_text = " ".join(_CAPABILITY_PROBE_TEXT[kind] for kind in kinds)
+    kind_csv = ",".join(kinds)
+    text = (
+        "Capability probe for storyline_batch. "
+        f"capability_probe=true capability_probe_kinds={kind_csv}. "
+        f"{kind_text} "
+        "Use the normal Think path and emit the concrete lifecycle write if "
+        "the retrieved context provides a valid target."
+    )
+    content = {
+        "text": text,
+        "benchmark": "storyline_batch",
+        "family": "capability_probe",
+        "phase": "capability_probe",
+        "capability_probe": True,
+        "capability_probe_kind": kinds[0],
+        "capability_probe_kinds": list(kinds),
+        "signal_index": signal_index,
+        "local_index": local_index,
+        "entity_names": {},
+    }
+    return {
+        "channel": "ops:capability-probe",
+        "actor": "Maya Chen",
+        "delay_minutes": float(signal_index * 3),
+        "content": text,
+        "content_dict": content,
+        "trust_tier": "authoritative",
+        "external_id": f"storyline:capability_probe:{local_index:03d}",
+    }
+
+
 def _make_noise_signal(signal_index: int, local_index: int) -> dict[str, Any]:
     text = (
         "General operational chatter: lunch logistics, duplicated dashboard "
@@ -1519,7 +1631,11 @@ async def _prepare_storyline_benchmark_tenant(
 ) -> _PreparedBenchmarkTenant:
     if not args.skip_migrations:
         async with pool.acquire() as conn:
-            await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+            await apply_migrations_dir(
+                conn,
+                REPO_ROOT / "db" / "migrations",
+                on_error="warn",
+            )
     actor_repo = ActorRepo(pool)
     alias_repo = EntityAliasRepo(pool)
     if append_context:
@@ -1724,6 +1840,7 @@ async def _collect_storyline_benchmark_summary(
     waves: list[dict[str, Any]],
     post_commit_status: dict[str, Any],
     topology_status: dict[str, Any],
+    adaptive_drain_status: dict[str, Any],
     append_context: dict[str, Any] | None,
     horizon_start_batch: int,
     started: float,
@@ -1743,16 +1860,27 @@ async def _collect_storyline_benchmark_summary(
         topology_optimizer_status=topology_status,
         elapsed_seconds=time.monotonic() - started,
     )
+    model_summary["adaptive_drain_status"] = adaptive_drain_status
     model_summary["future_validation_events"] = await _count_future_validation_events(
+        pool, tenant_id=tenant_id
+    )
+    model_summary["capability_probe_counts"] = await _collect_capability_probe_counts(
         pool, tenant_id=tenant_id
     )
     model_summary["edge_lifecycle"] = await _collect_edge_lifecycle_report(
         pool,
         tenant_id=tenant_id,
     )
+    model_summary["relation_frame_lifecycle"] = (
+        await _collect_relation_frame_lifecycle_report(
+            pool,
+            tenant_id=tenant_id,
+        )
+    )
     model_summary["think_edge_ops_stats"] = await _collect_think_edge_ops_report(
         pool,
         tenant_id=tenant_id,
+        future_trigger_ids=_future_wave_trigger_ids(waves),
     )
     model_summary[
         "question_planner_reflective_report"
@@ -1806,6 +1934,7 @@ async def _write_storyline_benchmark_outputs(
         waves=waves,
         elapsed_seconds=time.monotonic() - started,
     )
+    _write_json(report_dir / "benchmark_summary.json", benchmark_summary)
     _write_json(report_dir / "storyline_scores.json", benchmark_summary)
     (report_dir / "benchmark_summary.md").write_text(
         _render_benchmark_markdown(benchmark_summary)
@@ -1866,19 +1995,14 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             run_id=run_id,
             report_dir=benchmark_inputs.report_dir,
         )
-        post_commit_status = await drain_post_commit_actions(
-            runtime.pool,
+        adaptive_drain = await _drain_adaptive_work_to_quiescence(
+            args,
+            pool=runtime.pool,
+            worker=worker,
             tenant_id=tenant_id,
-            timeout_seconds=args.post_commit_timeout,
         )
-        if not args.skip_topology_optimizer:
-            topology_status = await drain_topology_optimizer(
-                runtime.pool,
-                tenant_id=tenant_id,
-                timeout_seconds=args.topology_optimizer_timeout,
-                batch_size=args.topology_optimizer_batch_size,
-                lookback_hours=args.topology_optimizer_lookback_hours,
-            )
+        post_commit_status = adaptive_drain["post_commit_status"]
+        topology_status = adaptive_drain["topology_status"]
         model_summary = await _collect_storyline_benchmark_summary(
             args,
             pool=runtime.pool,
@@ -1892,6 +2016,7 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             waves=waves,
             post_commit_status=post_commit_status,
             topology_status=topology_status,
+            adaptive_drain_status=adaptive_drain,
             append_context=benchmark_inputs.append_context,
             horizon_start_batch=benchmark_inputs.horizon_start_batch,
             started=started,
@@ -2146,6 +2271,151 @@ async def _drain_downstream_limited(
     return out
 
 
+def _merge_numeric_status(
+    total: dict[str, Any],
+    status: dict[str, Any],
+    *,
+    metric_key: str | None = None,
+) -> None:
+    for key, value in status.items():
+        if key == metric_key or isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            total[key] = int(total.get(key) or 0) + value
+        elif isinstance(value, float):
+            total[key] = float(total.get(key) or 0.0) + value
+    if metric_key:
+        merged_metrics = total.setdefault(metric_key, {})
+        metrics = status.get(metric_key) or {}
+        if isinstance(metrics, dict):
+            for key, value in metrics.items():
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, int):
+                    merged_metrics[key] = int(merged_metrics.get(key) or 0) + value
+                elif isinstance(value, float):
+                    merged_metrics[key] = float(merged_metrics.get(key) or 0.0) + value
+
+
+async def _pending_trigger_count(pool: asyncpg.Pool, *, tenant_id: UUID) -> int:
+    async with pool.acquire() as conn:
+        value = await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM think_trigger_queue
+            WHERE tenant_id = $1
+              AND completed_at IS NULL
+              AND batch_parent_id IS NULL
+            """,
+            tenant_id,
+        )
+    return int(value or 0)
+
+
+async def _pending_post_commit_count(pool: asyncpg.Pool, *, tenant_id: UUID) -> int:
+    async with pool.acquire() as conn:
+        value = await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM pending_post_commit_actions
+            WHERE tenant_id = $1
+              AND processed_at IS NULL
+              AND dead_lettered_at IS NULL
+              AND scheduled_at <= now()
+            """,
+            tenant_id,
+        )
+    return int(value or 0)
+
+
+async def _drain_adaptive_work_to_quiescence(
+    args: argparse.Namespace,
+    *,
+    pool: asyncpg.Pool,
+    worker: ThinkWorker,
+    tenant_id: UUID,
+) -> dict[str, Any]:
+    post_commit_status: dict[str, Any] = {
+        "processed": 0,
+        "failed": 0,
+        "dead_lettered": 0,
+        "iterations": 0,
+    }
+    topology_status: dict[str, Any] = {
+        "status": "skipped" if args.skip_topology_optimizer else "drained",
+        "processed": 0,
+        "completed": 0,
+        "failed": 0,
+        "iterations": 0,
+        "metrics": {},
+    }
+    cycles: list[dict[str, Any]] = []
+    max_cycles = max(1, int(args.adaptive_drain_cycles))
+    for cycle in range(max_cycles):
+        before_triggers = await _pending_trigger_count(pool, tenant_id=tenant_id)
+        before_post_commit = await _pending_post_commit_count(pool, tenant_id=tenant_id)
+        downstream = await _drain_downstream_limited(
+            pool,
+            worker,
+            tenant_id=tenant_id,
+            steps=max(0, int(args.adaptive_drain_steps_per_cycle)),
+            force_window_elapsed_s=args.downstream_batch_window_s + 1.0,
+        )
+        post_commit = await drain_post_commit_actions(
+            pool,
+            tenant_id=tenant_id,
+            timeout_seconds=args.post_commit_timeout,
+        )
+        _merge_numeric_status(post_commit_status, post_commit)
+        topology: dict[str, Any] = {
+            "status": "skipped",
+            "processed": 0,
+            "completed": 0,
+            "failed": 0,
+            "iterations": 0,
+            "metrics": {},
+        }
+        if not args.skip_topology_optimizer:
+            topology = await drain_topology_optimizer(
+                pool,
+                tenant_id=tenant_id,
+                timeout_seconds=args.topology_optimizer_timeout,
+                batch_size=args.topology_optimizer_batch_size,
+                lookback_hours=args.topology_optimizer_lookback_hours,
+            )
+            _merge_numeric_status(topology_status, topology, metric_key="metrics")
+            topology_status["status"] = topology.get("status", topology_status["status"])
+        after_triggers = await _pending_trigger_count(pool, tenant_id=tenant_id)
+        after_post_commit = await _pending_post_commit_count(pool, tenant_id=tenant_id)
+        cycle_status = {
+            "cycle": cycle + 1,
+            "before_triggers": before_triggers,
+            "after_triggers": after_triggers,
+            "before_post_commit": before_post_commit,
+            "after_post_commit": after_post_commit,
+            "downstream_steps": len(downstream),
+            "post_commit_processed": int(post_commit.get("processed") or 0),
+            "topology_processed": int(topology.get("processed") or 0),
+        }
+        cycles.append(cycle_status)
+        if after_triggers == 0 and after_post_commit == 0:
+            break
+        if (
+            cycle > 0
+            and before_triggers == after_triggers
+            and before_post_commit == after_post_commit
+            and int(post_commit.get("processed") or 0) == 0
+            and int(topology.get("processed") or 0) == 0
+            and not downstream
+        ):
+            break
+    return {
+        "cycles": cycles,
+        "post_commit_status": post_commit_status,
+        "topology_status": topology_status,
+    }
+
+
 async def _run_for_trigger(
     pool: asyncpg.Pool, trigger_id: UUID
 ) -> dict[str, Any] | None:
@@ -2182,6 +2452,44 @@ async def _count_future_validation_events(
             tenant_id,
         )
     return int(value or 0)
+
+
+async def _collect_capability_probe_counts(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT content
+            FROM observations
+            WHERE tenant_id = $1
+              AND content->>'benchmark' = 'storyline_batch'
+              AND content->>'phase' = 'capability_probe'
+            """,
+            tenant_id,
+        )
+    for row in rows:
+        content = row["content"]
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except json.JSONDecodeError:
+                content = {}
+        if not isinstance(content, dict):
+            continue
+        kinds = content.get("capability_probe_kinds")
+        if isinstance(kinds, list):
+            for kind in kinds:
+                if isinstance(kind, str) and kind:
+                    counts[kind] += 1
+            continue
+        kind = content.get("capability_probe_kind")
+        if isinstance(kind, str) and kind:
+            counts[kind] += 1
+    return dict(counts)
 
 
 async def _collect_edge_lifecycle_report(
@@ -2252,17 +2560,142 @@ async def _collect_edge_lifecycle_report(
     return report
 
 
-async def _collect_think_edge_ops_report(
+async def _collect_relation_frame_lifecycle_report(
     pool: asyncpg.Pool,
     *,
     tenant_id: UUID,
 ) -> dict[str, Any]:
+    async with pool.acquire() as conn:
+        if not await _table_exists(conn, "relation_instances"):
+            return {
+                "available": False,
+                "total_relation_frames": 0,
+                "accepted_relation_frames": 0,
+                "projectable_relation_frames": 0,
+                "relation_participants": 0,
+                "relation_edge_projections": 0,
+                "relation_frame_kind_distribution": {},
+                "relation_frame_status_distribution": {},
+                "relation_frame_write_policy_distribution": {},
+                "relation_projection_kind_distribution": {},
+            }
+        frame_row = await conn.fetchrow(
+            """
+            SELECT
+              COUNT(*)::bigint AS total_relation_frames,
+              COUNT(*) FILTER (WHERE status = 'accepted')::bigint
+                AS accepted_relation_frames,
+              COUNT(*) FILTER (WHERE write_policy = 'project_edges')::bigint
+                AS projectable_relation_frames,
+              COUNT(*) FILTER (WHERE participant_binding_status = 'bound')::bigint
+                AS bound_relation_frames,
+              COUNT(*) FILTER (WHERE status IN ('candidate', 'needs_review'))::bigint
+                AS open_relation_frames,
+              COALESCE(AVG(confidence), 0)::float AS avg_relation_frame_confidence
+            FROM relation_instances
+            WHERE tenant_id = $1
+            """,
+            tenant_id,
+        )
+        participant_count = await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM relation_participants
+            WHERE tenant_id = $1
+            """,
+            tenant_id,
+        )
+        projection_count = await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM relation_edge_projections
+            WHERE tenant_id = $1
+            """,
+            tenant_id,
+        )
+        kind_distribution = await _fetch_distribution(
+            conn,
+            """
+            SELECT relation_kind AS key, COUNT(*)::bigint AS value
+            FROM relation_instances
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
+        status_distribution = await _fetch_distribution(
+            conn,
+            """
+            SELECT status AS key, COUNT(*)::bigint AS value
+            FROM relation_instances
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
+        write_policy_distribution = await _fetch_distribution(
+            conn,
+            """
+            SELECT write_policy AS key, COUNT(*)::bigint AS value
+            FROM relation_instances
+            WHERE tenant_id = $1
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
+        projection_kind_distribution = await _fetch_distribution(
+            conn,
+            """
+            SELECT edge_kind AS key, COUNT(*)::bigint AS value
+            FROM relation_edge_projections
+            WHERE tenant_id = $1
+              AND status = 'active'
+            GROUP BY 1
+            ORDER BY 2 DESC, 1 ASC
+            """,
+            tenant_id,
+        )
+    report = _record_to_dict(frame_row)
+    report["available"] = True
+    report["relation_participants"] = int(participant_count or 0)
+    report["relation_edge_projections"] = int(projection_count or 0)
+    report["relation_frame_kind_distribution"] = kind_distribution
+    report["relation_frame_status_distribution"] = status_distribution
+    report["relation_frame_write_policy_distribution"] = write_policy_distribution
+    report["relation_projection_kind_distribution"] = projection_kind_distribution
+    return report
+
+
+def _future_wave_trigger_ids(waves: list[dict[str, Any]]) -> set[str]:
+    trigger_ids: set[str] = set()
+    for wave in waves:
+        if not str(wave.get("sequence") or "").startswith("future_validation"):
+            continue
+        t1_batch = wave.get("t1_batch") or {}
+        if t1_batch.get("trigger_id"):
+            trigger_ids.add(str(t1_batch["trigger_id"]))
+        for downstream in wave.get("downstream") or []:
+            if downstream.get("trigger_id"):
+                trigger_ids.add(str(downstream["trigger_id"]))
+    return trigger_ids
+
+
+async def _collect_think_edge_ops_report(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    future_trigger_ids: set[str] | None = None,
+) -> dict[str, Any]:
     stats = _empty_edge_ops_stats()
     trigger_kind_counts: Counter[str] = Counter()
+    future_trigger_ids = future_trigger_ids or set()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT trigger_kind, ops_applied
+            SELECT trigger_id, trigger_kind, ops_applied
             FROM think_runs
             WHERE tenant_id = $1
               AND status = 'success'
@@ -2276,7 +2709,7 @@ async def _collect_think_edge_ops_report(
         _accumulate_edge_ops_stats(
             stats,
             _json_obj(row["ops_applied"]),
-            is_future=False,
+            is_future=str(row["trigger_id"]) in future_trigger_ids,
         )
     stats["think_run_count"] = int(sum(trigger_kind_counts.values()))
     stats["trigger_kind_counts"] = dict(trigger_kind_counts)
@@ -2554,6 +2987,7 @@ async def _queue_counts(pool: asyncpg.Pool, tenant_id: UUID) -> list[dict[str, A
 class _StorylineScoringData:
     models: list[dict[str, Any]]
     edges: list[dict[str, Any]]
+    relation_frames: list[dict[str, Any]]
     candidates: list[dict[str, Any]]
     observations: list[dict[str, Any]]
 
@@ -2589,6 +3023,10 @@ class _EdgeReviewScoring:
     scoped_edge_count: int
     edge_kind_hits: list[str]
     missing_edge_kinds: list[str]
+    relation_frame_count: int
+    accepted_relation_frame_count: int
+    relation_frame_kind_hits: list[str]
+    relation_frame_projection_count: int
     review_candidate_count: int
     accepted_count: int
     needs_review_count: int
@@ -2635,6 +3073,46 @@ async def _fetch_storyline_scoring_data(
             """,
             tenant_id,
         )
+        if await _table_exists(conn, "relation_instances"):
+            relation_frame_rows = await conn.fetch(
+                """
+                SELECT
+                  ri.id,
+                  ri.relation_kind,
+                  ri.status,
+                  ri.write_policy,
+                  ri.participant_binding_status,
+                  ri.evidence_model_ids,
+                  COALESCE(
+                    array_agg(DISTINCT rp.model_id)
+                      FILTER (WHERE rp.model_id IS NOT NULL),
+                    '{}'::uuid[]
+                  ) AS participant_model_ids,
+                  COALESCE(
+                    array_agg(DISTINCT rep.edge_kind)
+                      FILTER (
+                        WHERE rep.edge_kind IS NOT NULL
+                          AND rep.status = 'active'
+                      ),
+                    '{}'::text[]
+                  ) AS projected_edge_kinds,
+                  COUNT(DISTINCT rep.id)
+                    FILTER (WHERE rep.status = 'active')
+                    AS active_projection_count
+                FROM relation_instances ri
+                LEFT JOIN relation_participants rp
+                  ON rp.tenant_id = ri.tenant_id
+                 AND rp.relation_id = ri.id
+                LEFT JOIN relation_edge_projections rep
+                  ON rep.tenant_id = ri.tenant_id
+                 AND rep.relation_id = ri.id
+                WHERE ri.tenant_id = $1
+                GROUP BY ri.id
+                """,
+                tenant_id,
+            )
+        else:
+            relation_frame_rows = []
         observation_rows = await conn.fetch(
             """
             SELECT id, external_id, content
@@ -2647,6 +3125,7 @@ async def _fetch_storyline_scoring_data(
     return _StorylineScoringData(
         models=[_record_to_dict(row) for row in model_rows],
         edges=[_record_to_dict(row) for row in edge_rows],
+        relation_frames=[_record_to_dict(row) for row in relation_frame_rows],
         candidates=[_record_to_dict(row) for row in candidate_rows],
         observations=[_record_to_dict(row) for row in observation_rows],
     )
@@ -2793,6 +3272,7 @@ def _score_storyline_edges_and_review(
     *,
     spec: StorylineSpec,
     edges: list[dict[str, Any]],
+    relation_frames: list[dict[str, Any]],
     candidates: list[dict[str, Any]],
     relevant_model_ids: set[str],
 ) -> _EdgeReviewScoring:
@@ -2812,13 +3292,41 @@ def _score_storyline_edges_and_review(
         and edge.get("review_status") == "accepted"
         and edge.get("edge_kind")
     }
+    relevant_frames = [
+        frame
+        for frame in relation_frames
+        if (
+            set(map(str, frame.get("participant_model_ids") or []))
+            | set(map(str, frame.get("evidence_model_ids") or []))
+        )
+        & relevant_model_ids
+    ]
+    accepted_frames = [
+        frame
+        for frame in relevant_frames
+        if frame.get("status") == "accepted"
+    ]
+    frame_projected_edge_kinds = {
+        str(edge_kind)
+        for frame in accepted_frames
+        for edge_kind in frame.get("projected_edge_kinds") or []
+        if edge_kind
+    }
+    frame_kind_hits = sorted(
+        {
+            str(frame.get("relation_kind"))
+            for frame in accepted_frames
+            if frame.get("relation_kind")
+        }
+    )
     expected_edge_kinds = {
         relation
         for relation in spec.expected_relationships
         if relation != "needs_review"
     }
-    edge_kind_hits = sorted(expected_edge_kinds & relevant_edge_kinds)
-    missing_edge_kinds = sorted(expected_edge_kinds - relevant_edge_kinds)
+    structural_edge_kinds = relevant_edge_kinds | frame_projected_edge_kinds
+    edge_kind_hits = sorted(expected_edge_kinds & structural_edge_kinds)
+    missing_edge_kinds = sorted(expected_edge_kinds - structural_edge_kinds)
     review_candidates = [
         candidate
         for candidate in candidates
@@ -2835,11 +3343,21 @@ def _score_storyline_edges_and_review(
         if candidate.get("review_status") == "needs_review"
     )
     edge_kind_score = _ratio(len(edge_kind_hits), len(expected_edge_kinds))
-    edge_presence_score = 1.0 if scoped_edge_count else 0.0
+    relation_frame_projection_count = sum(
+        int(frame.get("active_projection_count") or 0)
+        for frame in relevant_frames
+    )
+    edge_presence_score = (
+        1.0 if scoped_edge_count or relevant_frames else 0.0
+    )
     return _EdgeReviewScoring(
         scoped_edge_count=scoped_edge_count,
         edge_kind_hits=edge_kind_hits,
         missing_edge_kinds=missing_edge_kinds,
+        relation_frame_count=len(relevant_frames),
+        accepted_relation_frame_count=len(accepted_frames),
+        relation_frame_kind_hits=frame_kind_hits,
+        relation_frame_projection_count=relation_frame_projection_count,
         review_candidate_count=len(review_candidates),
         accepted_count=accepted,
         needs_review_count=needs_review,
@@ -2968,6 +3486,7 @@ async def _score_one_storyline(
     edge_review = _score_storyline_edges_and_review(
         spec=spec,
         edges=data.edges,
+        relation_frames=data.relation_frames,
         candidates=data.candidates,
         relevant_model_ids=relevant_model_ids,
     )
@@ -3017,6 +3536,12 @@ async def _score_one_storyline(
             scoped_edge_count=edge_review.scoped_edge_count,
             edge_kind_hits=edge_review.edge_kind_hits,
             missing_edge_kinds=edge_review.missing_edge_kinds,
+            relation_frame_count=edge_review.relation_frame_count,
+            accepted_relation_frame_count=edge_review.accepted_relation_frame_count,
+            relation_frame_kind_hits=edge_review.relation_frame_kind_hits,
+            relation_frame_projection_count=(
+                edge_review.relation_frame_projection_count
+            ),
             review_candidate_count=edge_review.review_candidate_count,
             accepted_candidate_count=edge_review.accepted_count,
             needs_review_candidate_count=edge_review.needs_review_count,
@@ -3548,6 +4073,7 @@ def _retrieval_usefulness_dimension(
             "avg_observations_per_t1_batch": avg_retrieved_observations,
             "avg_trigger_observations_per_t1_batch": avg_trigger_observations,
             "avg_historical_observations_per_t1_batch": avg_historical_observations,
+            "retrieval_budget_fit_score": retrieved_model_score,
             "accounted_selected_context_count": accounted_selected_context_count,
             "unused_selected_context_count": unused_context,
         },
@@ -3597,6 +4123,7 @@ def _edge_intelligence_dimension(
     *,
     accepted_edge_coverage: float,
     precise_edge_coverage: float,
+    relation_frame_score: float,
     storyline_edge_kind_coverage: float,
     storyline_edge_presence: float,
     accepted_candidate_ratio: float,
@@ -3618,13 +4145,14 @@ def _edge_intelligence_dimension(
     return _dimension(
         score=_avg(
             [
-                0.20 * accepted_edge_coverage
-                + 0.18 * precise_edge_coverage
-                + 0.13 * storyline_edge_kind_coverage
-                + 0.09 * storyline_edge_presence
-                + 0.10 * accepted_candidate_ratio
-                + 0.10 * edge_lifecycle_score
-                + 0.10 * graph_relation_contract_score
+                0.18 * accepted_edge_coverage
+                + 0.16 * precise_edge_coverage
+                + 0.10 * relation_frame_score
+                + 0.11 * storyline_edge_kind_coverage
+                + 0.08 * storyline_edge_presence
+                + 0.09 * accepted_candidate_ratio
+                + 0.09 * edge_lifecycle_score
+                + 0.09 * graph_relation_contract_score
                 + 0.05 * ontology_gap_discipline_score
                 + 0.05 * (1.0 - generic_overuse_penalty),
             ]
@@ -3632,6 +4160,7 @@ def _edge_intelligence_dimension(
         metrics={
             "required_registered_edge_kind_coverage": accepted_edge_coverage,
             "precise_required_edge_kind_coverage": precise_edge_coverage,
+            "relation_frame_score": relation_frame_score,
             "storyline_edge_kind_coverage": storyline_edge_kind_coverage,
             "storyline_edge_presence": storyline_edge_presence,
             "accepted_relationship_candidate_ratio": accepted_candidate_ratio,
@@ -3645,6 +4174,16 @@ def _edge_intelligence_dimension(
             "future_validation_edge_ops": int(
                 edge_ops_stats.get("future_edge_ops") or 0
             ),
+            "relation_frame_ops": int(edge_ops_stats.get("relation_frame_ops") or 0),
+            "accepted_relation_frame_ops": int(
+                edge_ops_stats.get("accepted_relation_frame_ops") or 0
+            ),
+            "relation_frame_projected_edges_from_ops": int(
+                edge_ops_stats.get("relation_frame_projected_edges") or 0
+            ),
+            "future_validation_relation_frame_ops": int(
+                edge_ops_stats.get("future_relation_frame_ops") or 0
+            ),
             "reconfirmation_events": edge_reconfirmation_events,
             "retired_or_inert_edges": retired_or_inert_edges,
             "generic_support_share": generic_support_share,
@@ -3655,6 +4194,7 @@ def _edge_intelligence_dimension(
         findings=[
             "Separates existing registered edge usage from ontology-gap proposals.",
             "Rewards precise edge kinds, accepted candidates, and later edge evolution.",
+            "Rewards accepted N-ary relation frames when binary edges would lose role semantics.",
         ],
     )
 
@@ -3699,6 +4239,56 @@ def _temporal_improvement_dimension(
         findings=[
             "Current evidence is proxy-only unless future validation events exist.",
             "The ideal proof is earlier memory improving later retrieval and decisions.",
+        ],
+    )
+
+
+def _adaptive_lifecycle_dimension(
+    *,
+    feedback_learning_score: float,
+    policy_feedback_score: float,
+    negative_learning_score: float,
+    relation_adaptation_score: float,
+    temporal_closure_score: float,
+    autonomous_maintenance_score: float,
+    efficiency_guardrail_score: float,
+    adaptive_feedback_events: float,
+    question_policy_updates: float,
+    negative_learning_events: float,
+    future_relation_evolution_events: float,
+    post_commit_processed: int,
+    post_commit_dead_lettered: int,
+) -> dict[str, Any]:
+    return _dimension(
+        score=_avg(
+            [
+                0.20 * feedback_learning_score
+                + 0.15 * policy_feedback_score
+                + 0.10 * negative_learning_score
+                + 0.20 * relation_adaptation_score
+                + 0.20 * temporal_closure_score
+                + 0.10 * autonomous_maintenance_score
+                + 0.05 * efficiency_guardrail_score,
+            ]
+        ),
+        metrics={
+            "feedback_learning_score": feedback_learning_score,
+            "policy_feedback_score": policy_feedback_score,
+            "negative_learning_score": negative_learning_score,
+            "relation_adaptation_score": relation_adaptation_score,
+            "temporal_closure_score": temporal_closure_score,
+            "autonomous_maintenance_score": autonomous_maintenance_score,
+            "efficiency_guardrail_score": efficiency_guardrail_score,
+            "adaptive_feedback_events": adaptive_feedback_events,
+            "question_policy_updates": question_policy_updates,
+            "negative_learning_events": negative_learning_events,
+            "future_relation_evolution_events": future_relation_evolution_events,
+            "post_commit_processed": post_commit_processed,
+            "post_commit_dead_lettered": post_commit_dead_lettered,
+        },
+        findings=[
+            "Measures closed-loop adaptation across retrieval, reasoning, writes, later validation, and autonomous maintenance.",
+            "Scores zero for temporal closure until future validation proves later behavior changed.",
         ],
     )
 
@@ -3802,6 +4392,9 @@ def _company_scorecard_base_metrics(
             retrieval_observation_counts=retrieval_observation_counts,
         ),
         "future_stats": _future_validation_stats(waves),
+        "capability_probe_counts": _json_obj(
+            model_summary.get("capability_probe_counts")
+        ),
         "graph_health": _json_obj(model_summary.get("graph_health")),
         "context_distribution": _json_obj(
             model_summary.get("context_use_distribution")
@@ -3820,6 +4413,9 @@ def _company_scorecard_base_metrics(
             model_summary.get("topology_optimizer_metric_totals")
         ),
         "edge_lifecycle": _json_obj(model_summary.get("edge_lifecycle")),
+        "relation_frame_lifecycle": _json_obj(
+            model_summary.get("relation_frame_lifecycle")
+        ),
         "edge_ops_stats": (
             _json_obj(model_summary.get("think_edge_ops_stats"))
             or _edge_ops_stats(waves)
@@ -3842,14 +4438,25 @@ def _company_storyline_edge_metrics(
         if relation != "needs_review"
     }
     edge_lifecycle = metrics["edge_lifecycle"]
+    relation_frame_lifecycle = metrics["relation_frame_lifecycle"]
     edge_distribution = _json_obj(model_summary.get("edge_kind_distribution"))
     accepted_edge_distribution = (
         _json_obj(edge_lifecycle.get("accepted_edge_kind_distribution"))
         or edge_distribution
     )
+    relation_projection_distribution = _json_obj(
+        relation_frame_lifecycle.get("relation_projection_kind_distribution")
+    )
+    structural_edge_kind_distribution = {
+        **accepted_edge_distribution,
+        **{
+            key: int(accepted_edge_distribution.get(key) or 0) + int(value or 0)
+            for key, value in relation_projection_distribution.items()
+        },
+    }
     precise_required_edge_kinds = required_edge_kinds - {"supports"}
     precise_edge_coverage = _ratio(
-        len(precise_required_edge_kinds & set(accepted_edge_distribution)),
+        len(precise_required_edge_kinds & set(structural_edge_kind_distribution)),
         len(precise_required_edge_kinds),
     )
     accepted_relationship_candidates = float(
@@ -3864,8 +4471,26 @@ def _company_storyline_edge_metrics(
     )
     retired_or_inert_edges = float(edge_lifecycle.get("retired_or_inert_edges") or 0.0)
     edge_ops_stats = metrics["edge_ops_stats"]
+    accepted_relation_frames = float(
+        relation_frame_lifecycle.get("accepted_relation_frames") or 0.0
+    )
+    projectable_relation_frames = float(
+        relation_frame_lifecycle.get("projectable_relation_frames") or 0.0
+    )
+    relation_frame_projections = float(
+        relation_frame_lifecycle.get("relation_edge_projections") or 0.0
+    )
+    relation_frame_score = _clamp01(
+        (
+            accepted_relation_frames
+            + 0.5 * projectable_relation_frames
+            + 0.25 * relation_frame_projections
+        )
+        / max(1.0, float(len(storyline_scores)))
+    )
     lifecycle_signal_count = (
         float(edge_ops_stats.get("future_edge_ops") or 0.0)
+        + float(edge_ops_stats.get("future_relation_frame_ops") or 0.0)
         + float(edge_ops_stats.get("retire_ops") or 0.0)
         + edge_reconfirmation_events
         + retired_or_inert_edges
@@ -3877,7 +4502,7 @@ def _company_storyline_edge_metrics(
     ontology_gap_ops = int(edge_ops_stats.get("ontology_gap_ops") or 0)
     ontology_proposals = int(edge_lifecycle.get("ontology_proposals") or 0)
     missing_registered_edges = sorted(
-        required_edge_kinds - set(accepted_edge_distribution)
+        required_edge_kinds - set(structural_edge_kind_distribution)
     )
     ontology_gap_discipline_score = 1.0
     if ontology_gap_ops and missing_registered_edges:
@@ -3905,11 +4530,20 @@ def _company_storyline_edge_metrics(
         "edge_distribution": edge_distribution,
         "run_edge_distribution": run_edge_distribution,
         "accepted_edge_distribution": accepted_edge_distribution,
+        "structural_edge_kind_distribution": structural_edge_kind_distribution,
+        "relation_projection_distribution": relation_projection_distribution,
         "accepted_edge_coverage": _ratio(
-            len(required_edge_kinds & set(accepted_edge_distribution)),
+            len(required_edge_kinds & set(structural_edge_kind_distribution)),
             len(required_edge_kinds),
         ),
         "precise_edge_coverage": precise_edge_coverage,
+        "relation_frame_score": relation_frame_score,
+        "accepted_relation_frames": accepted_relation_frames,
+        "projectable_relation_frames": projectable_relation_frames,
+        "relation_frame_projections": relation_frame_projections,
+        "relation_frame_kind_distribution": _json_obj(
+            relation_frame_lifecycle.get("relation_frame_kind_distribution")
+        ),
         "storyline_edge_kind_coverage": _avg(
             [
                 _ratio(
@@ -3920,7 +4554,11 @@ def _company_storyline_edge_metrics(
             ]
         ),
         "storyline_edge_presence": _ratio(
-            sum(1 for score in storyline_scores if score.scoped_edge_count > 0),
+            sum(
+                1
+                for score in storyline_scores
+                if score.scoped_edge_count > 0 or score.relation_frame_count > 0
+            ),
             len(storyline_scores),
         ),
         "accepted_candidate_ratio": _ratio(
@@ -3977,6 +4615,10 @@ def _company_memory_context_metrics(
     avg_historical_observations = float(
         metrics["context_stats"].get("avg_historical_observations_per_t1_batch") or 0.0
     )
+    avg_retrieved_models = _avg(retrieval_model_counts)
+    retrieval_budget_fit_score = _retrieval_context_budget_fit_score(
+        avg_retrieved_models
+    )
     return {
         "model_inserts": model_inserts,
         "model_updates": model_updates,
@@ -4009,12 +4651,13 @@ def _company_memory_context_metrics(
             + int(context_distribution.get("model_context_used") or 0),
             context_total,
         ),
-        "avg_retrieved_models": _avg(retrieval_model_counts),
+        "avg_retrieved_models": avg_retrieved_models,
         "avg_retrieved_observations": _avg(retrieval_observation_counts),
         "avg_historical_observations": avg_historical_observations,
         "historical_observation_leakage_score": 1.0
         - _clamp01(max(0.0, avg_historical_observations - 4.0) / 12.0),
-        "retrieved_model_score": _clamp01(_avg(retrieval_model_counts) / 20.0),
+        "retrieved_model_score": retrieval_budget_fit_score,
+        "retrieval_budget_fit_score": retrieval_budget_fit_score,
         "unused_context": unused_context,
     }
 
@@ -4039,7 +4682,12 @@ def _company_reasoning_temporal_operational_metrics(
         len(storyline_scores),
     )
     useful_write_count = (
-        int(ops["claim_ops"]) + int(ops["edge_ops"]) + int(ops["act_ops"])
+        int(ops["claim_ops"])
+        + int(ops["memory_lifecycle_ops"])
+        + int(ops["relation_claim_ops"])
+        + int(ops["relation_frame_ops"])
+        + int(ops["edge_ops"])
+        + int(ops["act_ops"])
     )
     future_validation_events = int(
         model_summary.get("future_validation_events")
@@ -4088,6 +4736,75 @@ def _company_reasoning_temporal_operational_metrics(
         int(metrics["cost"].get("llm_calls") or 0),
         metrics["total_signals"],
     )
+    negative_learning_events = float(
+        metrics["discovery_counts"].get("negative_memory") or 0
+    ) + float(topology_metrics.get("negative_memory_inserts") or 0)
+    question_policy_update_events = float(
+        topology_metrics.get("question_policy_updates") or 0
+    )
+    question_policy_stats = float(
+        metrics["discovery_counts"].get("question_policy_stats") or 0
+    )
+    shortcut_events = float(topology_metrics.get("shortcut_creates_or_bumps") or 0)
+    affordance_events = float(topology_metrics.get("affordance_reinforces") or 0)
+    adaptive_feedback_events = (
+        negative_learning_events
+        + question_policy_update_events
+        + shortcut_events
+        + affordance_events
+    )
+    feedback_learning_score = _clamp01(
+        adaptive_feedback_events / max(4.0, float(metrics["total_signals"]) * 0.10)
+    )
+    policy_feedback_score = 1.0 if (
+        question_policy_update_events > 0 or question_policy_stats > 0
+    ) else 0.0
+    negative_learning_score = 1.0 if negative_learning_events > 0 else 0.0
+    future_relation_evolution_events = float(
+        metrics["edge_ops_stats"].get("future_edge_ops") or 0
+    ) + float(metrics["edge_ops_stats"].get("future_relation_frame_ops") or 0)
+    temporal_closure_score = (
+        _avg(
+            [
+                float(future_stats.get("success_rate") or 0.0),
+                future_validation_memory_use_score,
+                future_validation_update_score,
+                1.0 if future_relation_evolution_events > 0 else 0.0,
+            ]
+        )
+        if future_validation_events
+        else 0.0
+    )
+    relation_adaptation_score = _avg(
+        [
+            metrics["edge_lifecycle_score"],
+            metrics["graph_relation_contract_score"],
+            metrics["precise_edge_coverage"],
+            metrics["relation_frame_score"],
+        ]
+    )
+    post_commit_status = metrics["post_commit_status"]
+    post_commit_processed = int(post_commit_status.get("processed") or 0)
+    post_commit_dead_lettered = int(post_commit_status.get("dead_lettered") or 0)
+    autonomous_maintenance_score = _avg(
+        [
+            1.0 if post_commit_processed > 0 else 0.0,
+            1.0 if post_commit_dead_lettered == 0 else 0.0,
+            0.0 if int(post_commit_status.get("timed_out") or 0) else 1.0,
+            _clamp01(float(metrics["relationship_status"].get("accepted") or 0) / 3.0),
+        ]
+    )
+    amplification_score = 1.0 - _clamp01(think_runs_per_signal / 0.20)
+    llm_call_score = 1.0 - _clamp01(llm_calls_per_signal / 0.20)
+    latency_score = 1.0 - _clamp01((wave_stats["max_t1_elapsed_s"] - 90.0) / 810.0)
+    cost_per_signal = _ratio(
+        float(metrics["cost"].get("cost_usd") or 0.0),
+        metrics["total_signals"],
+    )
+    cost_score = 1.0 - _clamp01(cost_per_signal / 0.01)
+    efficiency_guardrail_score = _avg(
+        [amplification_score, llm_call_score, latency_score, cost_score]
+    )
     return {
         "recommendation_coverage": recommendation_coverage,
         "situation_coverage": situation_coverage,
@@ -4131,22 +4848,24 @@ def _company_reasoning_temporal_operational_metrics(
         "topology_integrity_score": 1.0 - _clamp01(topology_missing_model_skips / 10.0),
         "think_runs_per_signal": think_runs_per_signal,
         "llm_calls_per_signal": llm_calls_per_signal,
-        "latency_score": 1.0
-        - _clamp01((wave_stats["max_t1_elapsed_s"] - 90.0) / 810.0),
-        "amplification_score": 1.0 - _clamp01(think_runs_per_signal / 0.20),
-        "llm_call_score": 1.0 - _clamp01(llm_calls_per_signal / 0.20),
-        "cost_per_signal": _ratio(
-            float(metrics["cost"].get("cost_usd") or 0.0),
-            metrics["total_signals"],
-        ),
-        "cost_score": 1.0
-        - _clamp01(
-            _ratio(
-                float(metrics["cost"].get("cost_usd") or 0.0),
-                metrics["total_signals"],
-            )
-            / 0.01
-        ),
+        "latency_score": latency_score,
+        "amplification_score": amplification_score,
+        "llm_call_score": llm_call_score,
+        "cost_per_signal": cost_per_signal,
+        "cost_score": cost_score,
+        "adaptive_feedback_events": adaptive_feedback_events,
+        "adaptive_feedback_score": feedback_learning_score,
+        "policy_feedback_score": policy_feedback_score,
+        "negative_learning_events": negative_learning_events,
+        "negative_learning_score": negative_learning_score,
+        "question_policy_update_events": question_policy_update_events,
+        "relation_adaptation_score": relation_adaptation_score,
+        "temporal_closure_score": temporal_closure_score,
+        "future_relation_evolution_events": future_relation_evolution_events,
+        "post_commit_processed": post_commit_processed,
+        "post_commit_dead_lettered": post_commit_dead_lettered,
+        "autonomous_maintenance_score": autonomous_maintenance_score,
+        "efficiency_guardrail_score": efficiency_guardrail_score,
     }
 
 
@@ -4220,6 +4939,23 @@ def _company_scorecard_dimensions(
             ops=metrics["ops"],
             topology_metrics=metrics["topology_metrics"],
         ),
+        "adaptive_lifecycle": _adaptive_lifecycle_dimension(
+            feedback_learning_score=metrics["adaptive_feedback_score"],
+            policy_feedback_score=metrics["policy_feedback_score"],
+            negative_learning_score=metrics["negative_learning_score"],
+            relation_adaptation_score=metrics["relation_adaptation_score"],
+            temporal_closure_score=metrics["temporal_closure_score"],
+            autonomous_maintenance_score=metrics["autonomous_maintenance_score"],
+            efficiency_guardrail_score=metrics["efficiency_guardrail_score"],
+            adaptive_feedback_events=metrics["adaptive_feedback_events"],
+            question_policy_updates=metrics["question_policy_update_events"],
+            negative_learning_events=metrics["negative_learning_events"],
+            future_relation_evolution_events=metrics[
+                "future_relation_evolution_events"
+            ],
+            post_commit_processed=metrics["post_commit_processed"],
+            post_commit_dead_lettered=metrics["post_commit_dead_lettered"],
+        ),
         "robustness": _robustness_dimension(
             wave_success_score=metrics["wave_success_score"],
             drain_score=metrics["drain_score"],
@@ -4253,6 +4989,7 @@ def _company_edge_intelligence_dimension(
     return _edge_intelligence_dimension(
         accepted_edge_coverage=metrics["accepted_edge_coverage"],
         precise_edge_coverage=metrics["precise_edge_coverage"],
+        relation_frame_score=metrics["relation_frame_score"],
         storyline_edge_kind_coverage=metrics["storyline_edge_kind_coverage"],
         storyline_edge_presence=metrics["storyline_edge_presence"],
         accepted_candidate_ratio=metrics["accepted_candidate_ratio"],
@@ -4298,6 +5035,7 @@ def _company_scorecard_product_value_evals(
         situation_coverage=metrics["situation_coverage"],
         accepted_edge_coverage=metrics["accepted_edge_coverage"],
         precise_edge_coverage=metrics["precise_edge_coverage"],
+        relation_frame_score=metrics["relation_frame_score"],
         latent_avg=metrics["latent_avg"],
         concrete_latent_ratio=metrics["concrete_latent_ratio"],
         evidence_avg=metrics["evidence_avg"],
@@ -4315,14 +5053,15 @@ def _company_scorecard_product_value_evals(
 
 def _company_scorecard_weights() -> dict[str, float]:
     return {
-        "memory_truth": 0.18,
-        "compression": 0.12,
-        "retrieval_usefulness": 0.14,
-        "reasoning_value": 0.16,
+        "memory_truth": 0.16,
+        "compression": 0.10,
+        "retrieval_usefulness": 0.12,
+        "reasoning_value": 0.14,
         "edge_intelligence": 0.12,
-        "temporal_improvement": 0.14,
-        "robustness": 0.09,
-        "efficiency": 0.05,
+        "temporal_improvement": 0.12,
+        "adaptive_lifecycle": 0.14,
+        "robustness": 0.07,
+        "efficiency": 0.03,
     }
 
 
@@ -4330,6 +5069,7 @@ def _company_scorecard_proof_coverage(
     *,
     storyline_scores: list[StorylineScore],
     metrics: dict[str, Any],
+    dimensions: dict[str, dict[str, Any]],
     product_value_evals: dict[str, Any],
 ) -> dict[str, Any]:
     return {
@@ -4348,6 +5088,8 @@ def _company_scorecard_proof_coverage(
         "avg_historical_observations_per_t1_batch": metrics[
             "avg_historical_observations"
         ],
+        "avg_models_per_t1_batch": metrics["avg_retrieved_models"],
+        "retrieval_budget_fit_score": metrics["retrieval_budget_fit_score"],
         "latent_storylines_with_evidence_backed_model": sum(
             1
             for score in storyline_scores
@@ -4357,14 +5099,22 @@ def _company_scorecard_proof_coverage(
         "accepted_edge_kinds_observed": sorted(
             set(metrics["accepted_edge_distribution"])
         ),
+        "structural_edge_kinds_observed": sorted(
+            set(metrics["structural_edge_kind_distribution"])
+        ),
         "missing_registered_edge_kinds": metrics["missing_registered_edges"],
         "precise_required_edge_kind_coverage": metrics["precise_edge_coverage"],
         "edge_lifecycle": metrics["edge_lifecycle"],
+        "relation_frame_lifecycle": metrics["relation_frame_lifecycle"],
+        "relation_frame_score": metrics["relation_frame_score"],
+        "accepted_relation_frames": metrics["accepted_relation_frames"],
+        "relation_frame_projections": metrics["relation_frame_projections"],
         "edge_ops": metrics["edge_ops_stats"],
         "context_use_relation_contract": metrics["context_contract"],
         "prediction_models": int(
             metrics["model_kind_distribution"].get("prediction") or 0
         ),
+        "memory_lifecycle_ops": int(metrics["ops"]["memory_lifecycle_ops"]),
         "resource_ops": int(metrics["ops"]["resource_ops"]),
         "ontology_gap_ops": int(metrics["ops"]["ontology_gap_ops"]),
         "negative_memory_inserts": float(
@@ -4373,6 +5123,7 @@ def _company_scorecard_proof_coverage(
         "question_policy_updates": float(
             metrics["topology_metrics"].get("question_policy_updates") or 0
         ),
+        "adaptive_lifecycle": dimensions["adaptive_lifecycle"]["metrics"],
         "shortcut_missing_model_skips": float(
             metrics["topology_metrics"].get("shortcut_missing_model_skips") or 0
         ),
@@ -4443,11 +5194,12 @@ def _company_intelligence_scorecard(
         wave_stats=metrics["wave_stats"],
         ops=metrics["ops"],
         required_edge_kinds=metrics["required_edge_kinds"],
-        edge_distribution=metrics["accepted_edge_distribution"],
+        edge_distribution=metrics["structural_edge_kind_distribution"],
         model_kind_distribution=metrics["model_kind_distribution"],
         discovery_counts=metrics["discovery_counts"],
         future_stats=metrics["future_stats"],
         edge_intelligence=dimensions["edge_intelligence"],
+        capability_probe_counts=metrics["capability_probe_counts"],
     )
     return {
         "overall_score": overall,
@@ -4457,6 +5209,7 @@ def _company_intelligence_scorecard(
         "proof_coverage": _company_scorecard_proof_coverage(
             storyline_scores=storyline_scores,
             metrics=metrics,
+            dimensions=dimensions,
             product_value_evals=product_value_evals,
         ),
         "product_value_evals": product_value_evals,
@@ -4467,6 +5220,10 @@ def _company_intelligence_scorecard(
 def _aggregate_wave_ops(waves: list[dict[str, Any]]) -> dict[str, float]:
     totals: dict[str, float] = {
         "claim_ops": 0,
+        "memory_lifecycle_ops": 0,
+        "relation_claim_ops": 0,
+        "relation_frame_ops": 0,
+        "relation_frame_projected_edges": 0,
         "edge_ops": 0,
         "act_ops": 0,
         "resource_ops": 0,
@@ -4484,6 +5241,17 @@ def _aggregate_wave_ops(waves: list[dict[str, Any]]) -> dict[str, float]:
     for wave in waves:
         ops = ((wave.get("t1_batch") or {}).get("run") or {}).get("ops_applied") or {}
         totals["claim_ops"] += len(ops.get("claim_ops") or [])
+        totals["memory_lifecycle_ops"] += len(
+            ops.get("memory_lifecycle_ops") or []
+        )
+        relation_frame_ops = ops.get("relation_frame_ops") or []
+        totals["relation_claim_ops"] += len(ops.get("relation_claim_ops") or [])
+        totals["relation_frame_ops"] += len(relation_frame_ops)
+        totals["relation_frame_projected_edges"] += sum(
+            int(op.get("projected_edge_count") or 0)
+            for op in relation_frame_ops
+            if isinstance(op, dict)
+        )
         totals["edge_ops"] += len(ops.get("edge_ops") or [])
         totals["act_ops"] += len(ops.get("act_ops") or [])
         totals["resource_ops"] += len(ops.get("resource_ops") or [])
@@ -4511,8 +5279,14 @@ def _empty_edge_ops_stats() -> dict[str, Any]:
         "future_edge_ops": 0,
         "accepted_edge_ops": 0,
         "candidate_or_review_edge_ops": 0,
+        "relation_frame_ops": 0,
+        "accepted_relation_frame_ops": 0,
+        "projectable_relation_frame_ops": 0,
+        "relation_frame_projected_edges": 0,
+        "future_relation_frame_ops": 0,
         "ontology_gap_ops": 0,
         "edge_kinds_from_ops": {},
+        "relation_frame_kinds_from_ops": {},
     }
 
 
@@ -4524,6 +5298,8 @@ def _accumulate_edge_ops_stats(
 ) -> None:
     edge_kinds: Counter[str] = Counter()
     edge_kinds.update(_json_obj(stats.get("edge_kinds_from_ops")))
+    relation_frame_kinds: Counter[str] = Counter()
+    relation_frame_kinds.update(_json_obj(stats.get("relation_frame_kinds_from_ops")))
     edge_ops = ops.get("edge_ops") or []
     if not isinstance(edge_ops, list):
         edge_ops = []
@@ -4544,10 +5320,33 @@ def _accumulate_edge_ops_stats(
             stats["candidate_or_review_edge_ops"] += 1
         if kind:
             edge_kinds[kind] += 1
+    relation_frame_ops = ops.get("relation_frame_ops") or []
+    if not isinstance(relation_frame_ops, list):
+        relation_frame_ops = []
+    for frame_op in relation_frame_ops:
+        if not isinstance(frame_op, dict):
+            continue
+        stats["relation_frame_ops"] += 1
+        if frame_op.get("status") == "accepted":
+            stats["accepted_relation_frame_ops"] += 1
+        if frame_op.get("write_policy") == "project_edges":
+            stats["projectable_relation_frame_ops"] += 1
+        if is_future:
+            stats["future_relation_frame_ops"] += 1
+        try:
+            stats["relation_frame_projected_edges"] += int(
+                frame_op.get("projected_edge_count") or 0
+            )
+        except (TypeError, ValueError):
+            pass
+        relation_kind = str(frame_op.get("relation_kind") or "")
+        if relation_kind:
+            relation_frame_kinds[relation_kind] += 1
     ontology_gap_ops = ops.get("ontology_gap_ops") or []
     if isinstance(ontology_gap_ops, list):
         stats["ontology_gap_ops"] += len(ontology_gap_ops)
     stats["edge_kinds_from_ops"] = dict(edge_kinds)
+    stats["relation_frame_kinds_from_ops"] = dict(relation_frame_kinds)
 
 
 def _edge_ops_stats(waves: list[dict[str, Any]]) -> dict[str, Any]:
@@ -4598,11 +5397,48 @@ def _noise_noop_score(waves: list[dict[str, Any]]) -> float:
     scores: list[float] = []
     for wave in noise_waves:
         run = (wave.get("t1_batch") or {}).get("run") or {}
-        ops = run.get("ops_applied") or {}
+        ops = _json_obj(run.get("ops_applied"))
         state_changes = int(ops.get("state_changes_emitted") or 0)
-        grade = (ops.get("context_use") or {}).get("context_use_grade") or ""
+        mutating_ops = sum(
+            len(ops.get(key) or [])
+            for key in (
+                "claim_ops",
+                "memory_lifecycle_ops",
+                "relation_claim_ops",
+                "relation_frame_ops",
+                "edge_ops",
+                "act_ops",
+                "resource_ops",
+                "ontology_gap_ops",
+                "new_predictions",
+            )
+        )
+        trace = str(ops.get("reasoning_trace") or "").lower()
+        synthesis = json.dumps(
+            ops.get("synthesis_decisions") or [],
+            sort_keys=True,
+            default=str,
+        ).lower()
+        explicit_noop = any(
+            marker in f"{trace}\n{synthesis}"
+            for marker in (
+                "packet_obligations_skipped:explicit_noop",
+                "discard_as_noise",
+                "empty diff",
+                "no durable diff",
+                "no durable write",
+            )
+        )
+        validation_errors = int(run.get("validation_error_count") or 0)
         scores.append(
-            1.0 if state_changes == 0 and "noop" in str(grade).lower() else 0.0
+            1.0
+            if (
+                state_changes == 0
+                and mutating_ops == 0
+                and validation_errors == 0
+                and explicit_noop
+            )
+            else 0.0
         )
     return _avg(scores)
 
@@ -4694,6 +5530,9 @@ def _future_validation_stats(waves: list[dict[str, Any]]) -> dict[str, float]:
         aggregation = _json_obj(ops.get("memory_aggregation"))
         memory_touch_ops += (
             len(ops.get("edge_ops") or [])
+            + len(ops.get("memory_lifecycle_ops") or [])
+            + len(ops.get("relation_claim_ops") or [])
+            + len(ops.get("relation_frame_ops") or [])
             + len(ops.get("act_ops") or [])
             + len(ops.get("resource_ops") or [])
             + len(ops.get("ontology_gap_ops") or [])
@@ -4755,28 +5594,56 @@ def _product_value_proof_gaps(
     customer_scope_count: int,
     customer_scoped_models: int,
     precise_edge_coverage: float,
+    relation_frame_score: float,
+    capability_probe_counts: dict[str, Any],
 ) -> list[str]:
     proof_gaps: list[str] = []
+    def probed(kind: str) -> bool:
+        try:
+            return int(capability_probe_counts.get(kind) or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
     if recommendation_coverage < 0.75 or act_ops == 0:
         proof_gaps.append(
             "Decision impact eval is weak: recommendations/actions did not cover most storylines."
         )
     if resource_ops == 0:
-        proof_gaps.append(
-            "Decision impact eval did not exercise resource or action-resource operations."
-        )
+        if probed("resource"):
+            proof_gaps.append(
+                "Decision impact eval ran a resource/action-resource probe but produced no resource ops."
+            )
+        else:
+            proof_gaps.append(
+                "Decision impact eval did not exercise resource or action-resource operations."
+            )
     if model_archives == 0:
-        proof_gaps.append(
-            "Memory lifecycle eval did not exercise archival or stale-memory cleanup."
-        )
+        if probed("archive"):
+            proof_gaps.append(
+                "Memory lifecycle eval ran an archive probe but produced no archival cleanup."
+            )
+        else:
+            proof_gaps.append(
+                "Memory lifecycle eval did not exercise archival or stale-memory cleanup."
+            )
     if evidence_attachments == 0:
-        proof_gaps.append(
-            "Memory lifecycle eval did not exercise evidence attachment behavior."
-        )
+        if probed("evidence_attachment"):
+            proof_gaps.append(
+                "Memory lifecycle eval ran an evidence probe but produced no evidence attachment."
+            )
+        else:
+            proof_gaps.append(
+                "Memory lifecycle eval did not exercise evidence attachment behavior."
+            )
     if prediction_models < max(1, total_storylines // 2):
-        proof_gaps.append(
-            "Prediction lifecycle eval has too few Prediction models for company-scale proof."
-        )
+        if probed("prediction"):
+            proof_gaps.append(
+                "Prediction lifecycle eval ran a prediction probe but still has too few Prediction models for company-scale proof."
+            )
+        else:
+            proof_gaps.append(
+                "Prediction lifecycle eval has too few Prediction models for company-scale proof."
+            )
     if not prediction_models or not future_validation_events:
         proof_gaps.append(
             "Prediction lifecycle eval lacks explicit outcome validation over time."
@@ -4834,16 +5701,21 @@ def _product_value_proof_gaps(
             "Negative learning eval did not create durable negative memory."
         )
     if question_policy_events == 0:
-        proof_gaps.append(
-            "Question policy eval did not exercise question-policy learning."
-        )
+        if probed("question_policy"):
+            proof_gaps.append(
+                "Question policy eval ran a probe but did not produce policy stats or updates."
+            )
+        else:
+            proof_gaps.append(
+                "Question policy eval did not exercise question-policy learning."
+            )
     if customer_scope_count == 0 and customer_scoped_models == 0:
         proof_gaps.append(
             "Customer value eval did not prove customer-scoped account-health memory."
         )
-    if precise_edge_coverage < 0.8:
+    if precise_edge_coverage < 0.8 and relation_frame_score < 0.5:
         proof_gaps.append(
-            "Customer value eval lacks enough precise edge semantics for high-confidence account health."
+            "Customer value eval lacks enough precise edge or relation-frame semantics for high-confidence account health."
         )
     return proof_gaps
 
@@ -4886,6 +5758,9 @@ def _product_value_operation_context_metrics(
     context_distribution: dict[str, Any],
 ) -> dict[str, Any]:
     act_ops = int(ops["act_ops"])
+    memory_lifecycle_ops = int(ops["memory_lifecycle_ops"])
+    relation_claim_ops = int(ops["relation_claim_ops"])
+    relation_frame_ops = int(ops["relation_frame_ops"])
     resource_ops = int(ops["resource_ops"])
     model_inserts = int(ops["model_inserts"])
     model_updates = int(ops["model_updates"])
@@ -4914,6 +5789,9 @@ def _product_value_operation_context_metrics(
     )
     return {
         "act_ops": act_ops,
+        "memory_lifecycle_ops": memory_lifecycle_ops,
+        "relation_claim_ops": relation_claim_ops,
+        "relation_frame_ops": relation_frame_ops,
         "resource_ops": resource_ops,
         "model_inserts": model_inserts,
         "model_updates": model_updates,
@@ -4941,6 +5819,7 @@ def _product_value_learning_scope_metrics(
     question_policy_count = int(discovery_counts.get("question_policy_stats") or 0)
     question_policy_updates = int(topology_metrics.get("question_policy_updates") or 0)
     question_policy_events = question_policy_count + question_policy_updates
+    capability_probe_counts = _json_obj(model_summary.get("capability_probe_counts"))
 
     customer_scope_rows = _json_list(model_summary.get("top_customer_model_scopes"))
     customer_scope_count = len(customer_scope_rows)
@@ -4967,6 +5846,9 @@ def _product_value_learning_scope_metrics(
         "question_policy_count": question_policy_count,
         "question_policy_updates": question_policy_updates,
         "question_policy_events": question_policy_events,
+        "question_policy_probe_count": int(
+            capability_probe_counts.get("question_policy") or 0
+        ),
         "customer_scope_rows": customer_scope_rows,
         "customer_scope_count": customer_scope_count,
         "customer_scoped_models_from_rows": customer_scoped_models_from_rows,
@@ -5166,6 +6048,7 @@ def _product_value_metrics(
     situation_coverage: float,
     accepted_edge_coverage: float,
     precise_edge_coverage: float,
+    relation_frame_score: float,
     latent_avg: float,
     concrete_latent_ratio: float,
     evidence_avg: float,
@@ -5179,10 +6062,14 @@ def _product_value_metrics(
 ) -> dict[str, Any]:
     metrics = {
         "total_storylines": len(storyline_scores),
+        "capability_probe_counts": _json_obj(
+            model_summary.get("capability_probe_counts")
+        ),
         "recommendation_coverage": recommendation_coverage,
         "situation_coverage": situation_coverage,
         "accepted_edge_coverage": accepted_edge_coverage,
         "precise_edge_coverage": precise_edge_coverage,
+        "relation_frame_score": relation_frame_score,
         "latent_avg": latent_avg,
         "concrete_latent_ratio": concrete_latent_ratio,
         "evidence_avg": evidence_avg,
@@ -5485,6 +6372,7 @@ def _product_value_learning_customer_evals(
                 "question_policy_stats": metrics["question_policy_count"],
                 "question_policy_updates": metrics["question_policy_updates"],
                 "question_policy_events": metrics["question_policy_events"],
+                "question_policy_probe_count": metrics["question_policy_probe_count"],
                 "context_use_score": metrics["context_use_score"],
                 "unused_selected_context_count": metrics["unused_context"],
                 "unused_context_avoidance_score": (
@@ -5502,8 +6390,9 @@ def _product_value_learning_customer_evals(
                 + 0.15 * metrics["customer_scope_share"]
                 + 0.20 * metrics["recommendation_coverage"]
                 + 0.15 * metrics["customer_account_health_score"]
-                + 0.15 * metrics["accepted_edge_coverage"]
-                + 0.10 * metrics["precise_edge_coverage"]
+                + 0.12 * metrics["accepted_edge_coverage"]
+                + 0.08 * metrics["precise_edge_coverage"]
+                + 0.05 * metrics["relation_frame_score"]
             ),
             metrics={
                 "gold_customer_count": metrics["gold_customer_count"],
@@ -5519,6 +6408,8 @@ def _product_value_learning_customer_evals(
                 "precise_expected_edge_kind_coverage": (
                     metrics["precise_edge_coverage"]
                 ),
+                "relation_frame_score": metrics["relation_frame_score"],
+                "relation_frame_ops": metrics["relation_frame_ops"],
                 "edge_lifecycle_events": metrics["edge_lifecycle_events"],
                 "customer_account_health_score": (
                     metrics["customer_account_health_score"]
@@ -5549,6 +6440,7 @@ def _product_value_evals(
     situation_coverage: float,
     accepted_edge_coverage: float,
     precise_edge_coverage: float,
+    relation_frame_score: float,
     latent_avg: float,
     concrete_latent_ratio: float,
     evidence_avg: float,
@@ -5577,6 +6469,7 @@ def _product_value_evals(
         situation_coverage=situation_coverage,
         accepted_edge_coverage=accepted_edge_coverage,
         precise_edge_coverage=precise_edge_coverage,
+        relation_frame_score=relation_frame_score,
         latent_avg=latent_avg,
         concrete_latent_ratio=concrete_latent_ratio,
         evidence_avg=evidence_avg,
@@ -5624,6 +6517,8 @@ def _product_value_evals(
         customer_scope_count=metrics["customer_scope_count"],
         customer_scoped_models=metrics["customer_scoped_models"],
         precise_edge_coverage=metrics["precise_edge_coverage"],
+        relation_frame_score=metrics["relation_frame_score"],
+        capability_probe_counts=metrics["capability_probe_counts"],
     )
 
     overall = round(
@@ -5668,8 +6563,15 @@ def _company_intelligence_proof_gaps(
     discovery_counts: dict[str, Any],
     future_stats: dict[str, float],
     edge_intelligence: dict[str, Any],
+    capability_probe_counts: dict[str, Any],
 ) -> list[str]:
     gaps: list[str] = []
+    def probed(kind: str) -> bool:
+        try:
+            return int(capability_probe_counts.get(kind) or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
     if wave_stats["timeout_like_t1_batches"]:
         gaps.append("At least one T1 batch timed out before producing a Think run.")
     if dimensions["temporal_improvement"]["metrics"]["future_validation_events"] == 0:
@@ -5688,7 +6590,8 @@ def _company_intelligence_proof_gaps(
     missing_edges = sorted(required_edge_kinds - set(edge_distribution))
     if missing_edges:
         gaps.append(
-            "Expected registered edge kinds not observed as accepted durable edges: "
+            "Expected registered edge kinds not observed as accepted durable "
+            "edges or projected relation-frame structure: "
             + ", ".join(missing_edges)
         )
     edge_metrics = _json_obj(edge_intelligence.get("metrics"))
@@ -5697,6 +6600,28 @@ def _company_intelligence_proof_gaps(
             "Precise registered edge kinds are underused; check whether Think "
             "is collapsing blocks/weakens/explains/resolution edges into prose "
             "or generic support."
+        )
+    if float(edge_metrics.get("relation_frame_score") or 0.0) == 0.0:
+        gaps.append(
+            "N-ary relation frames were not exercised; cross-model connection "
+            "quality is only proven for binary edges/candidates."
+        )
+    retrieval_metrics = _json_obj(
+        dimensions.get("retrieval_usefulness", {}).get("metrics")
+    )
+    avg_models = float(retrieval_metrics.get("avg_models_per_t1_batch") or 0.0)
+    retrieval_budget_fit = float(
+        retrieval_metrics.get("retrieval_budget_fit_score") or 0.0
+    )
+    if avg_models > 16.0 and retrieval_budget_fit < 0.8:
+        gaps.append(
+            "Selected Model context is above the efficient batch budget; "
+            "retrieval should prove usefulness or compact before Think."
+        )
+    elif 0.0 < avg_models < 6.0 and retrieval_budget_fit < 0.8:
+        gaps.append(
+            "Selected Model context is too sparse for reliable cross-model "
+            "reasoning in batch mode."
         )
     context_contract = _json_obj(model_summary.get("context_use_relation_contract"))
     graph_selected_runs = int(context_contract.get("graph_selected_runs") or 0)
@@ -5716,8 +6641,14 @@ def _company_intelligence_proof_gaps(
             "Graph-selected context never produced durable relationship ops; "
             "verify Think is not leaving graph insight only in reasoning prose."
         )
-    if float(edge_metrics.get("future_validation_edge_ops") or 0.0) == 0.0:
-        gaps.append("Future validation did not evolve or reconfirm durable edges.")
+    if (
+        float(edge_metrics.get("future_validation_edge_ops") or 0.0) == 0.0
+        and float(edge_metrics.get("future_validation_relation_frame_ops") or 0.0)
+        == 0.0
+    ):
+        gaps.append(
+            "Future validation did not evolve binary edges or N-ary relation frames."
+        )
     if float(edge_metrics.get("ontology_gap_ops") or 0.0) > 0.0 and missing_edges:
         gaps.append(
             "Ontology-gap ops occurred while registered expected edge kinds "
@@ -5725,19 +6656,61 @@ def _company_intelligence_proof_gaps(
             "where existing kinds fit."
         )
     if int(model_kind_distribution.get("prediction") or 0) < 5:
-        gaps.append("Prediction memory is barely exercised.")
+        if probed("prediction"):
+            gaps.append("Prediction probe ran, but prediction memory is still thin.")
+        else:
+            gaps.append("Prediction memory is barely exercised.")
     if int(ops["resource_ops"]) == 0:
-        gaps.append("Resource/action-resource operations are untested.")
+        if probed("resource"):
+            gaps.append(
+                "Resource/action-resource probe ran, but no resource ops survived."
+            )
+        else:
+            gaps.append("Resource/action-resource operations are untested.")
     if int(ops["ontology_gap_ops"]) == 0:
-        gaps.append("Ontology-gap write path is untested by this run.")
+        if probed("ontology_gap"):
+            gaps.append("Ontology-gap probe ran, but no ontology-gap op survived.")
+        else:
+            gaps.append("Ontology-gap write path is untested by this run.")
     if int(ops["model_archives"]) == 0:
-        gaps.append("Model archival/staleness cleanup is untested.")
+        if probed("archive"):
+            gaps.append("Archive probe ran, but no model archive survived.")
+        else:
+            gaps.append("Model archival/staleness cleanup is untested.")
     if int(ops["evidence_attachments"]) == 0:
-        gaps.append("Evidence attachment behavior is untested.")
+        if probed("evidence_attachment"):
+            gaps.append("Evidence probe ran, but no evidence attachment survived.")
+        else:
+            gaps.append("Evidence attachment behavior is untested.")
     if float(discovery_counts.get("negative_memory") or 0) == 0:
         gaps.append("Negative memory behavior is untested.")
     if float(discovery_counts.get("question_policy_stats") or 0) == 0:
-        gaps.append("Question-policy learning is untested.")
+        if probed("question_policy"):
+            gaps.append(
+                "Question-policy probe ran, but no policy stats were updated."
+            )
+        else:
+            gaps.append("Question-policy learning is untested.")
+    adaptive_metrics = _json_obj(
+        dimensions.get("adaptive_lifecycle", {}).get("metrics")
+    )
+    if float(adaptive_metrics.get("feedback_learning_score") or 0.0) < 0.5:
+        gaps.append(
+            "Adaptive feedback is weak: retrieval/writer outcomes are not "
+            "creating enough durable shortcut, affordance, policy, or negative "
+            "learning signals."
+        )
+    if float(adaptive_metrics.get("temporal_closure_score") or 0.0) < 0.5:
+        gaps.append(
+            "Adaptive temporal closure is weak: future validation has not "
+            "proven that prior memory changes later retrieval, writes, or edge "
+            "evolution."
+        )
+    if float(adaptive_metrics.get("autonomous_maintenance_score") or 0.0) < 0.5:
+        gaps.append(
+            "Autonomous maintenance is weak: post-commit/background work is "
+            "not yet proving reliable self-maintenance for this run."
+        )
     topology_metrics = _json_obj(model_summary.get("topology_optimizer_metric_totals"))
     shortcut_skips = float(topology_metrics.get("shortcut_missing_model_skips") or 0)
     structural_skips = float(
@@ -5769,6 +6742,27 @@ def _ratio(numerator: float, denominator: float) -> float:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
+
+
+def _retrieval_context_budget_fit_score(
+    avg_models_per_t1_batch: float,
+    *,
+    useful_floor: float = 6.0,
+    useful_ceiling: float = 16.0,
+    hard_ceiling: float = 28.0,
+) -> float:
+    """Reward enough selected Models without rewarding context bloat."""
+    avg_models = max(0.0, float(avg_models_per_t1_batch))
+    if avg_models <= 0.0:
+        return 0.0
+    if avg_models < useful_floor:
+        return _clamp01(avg_models / useful_floor)
+    if avg_models <= useful_ceiling:
+        return 1.0
+    return 1.0 - _clamp01(
+        (avg_models - useful_ceiling)
+        / max(1.0, hard_ceiling - useful_ceiling)
+    )
 
 
 def _round_floats(value: Any) -> Any:
@@ -5892,6 +6886,9 @@ def _benchmark_summary(
             "active_models": model_summary.get("active_models"),
             "archived_models": model_summary.get("archived_models"),
             "model_edges": model_summary.get("model_edges"),
+            "relation_frame_lifecycle": model_summary.get(
+                "relation_frame_lifecycle"
+            ),
             "relationship_candidates": model_summary.get("relationship_candidates"),
             "relationship_candidate_lifecycle": model_summary.get(
                 "relationship_candidate_lifecycle"
@@ -5984,14 +6981,14 @@ def _render_benchmark_markdown(summary: dict[str, Any]) -> str:
             "```",
             "",
             "## Storyline Scores",
-            "| Storyline | Score | Pattern | Pattern Models | Models | Situations | Recommendations | Edges | Edge Kinds Hit | Missing Edge Kinds | Review Debt | Missing Keywords |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | --- |",
+            "| Storyline | Score | Pattern | Pattern Models | Models | Situations | Recommendations | Edges | Frames | Edge Kinds Hit | Missing Edge Kinds | Review Debt | Missing Keywords |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: | --- |",
         ]
     )
     for score in summary.get("storyline_scores") or []:
         lines.append(
             "| {title} | {score:.2f} | {pattern:.2f} | {pattern_models} | "
-            "{models} | {situations} | {recommendations} | {edges} | "
+            "{models} | {situations} | {recommendations} | {edges} | {frames} | "
             "{edge_hits} | {missing_edges} | {review} | {missing} |".format(
                 title=score["title"],
                 score=float(score["score"]),
@@ -6003,6 +7000,7 @@ def _render_benchmark_markdown(summary: dict[str, Any]) -> str:
                 situations=score["situation_model_count"],
                 recommendations=score["recommendation_model_count"],
                 edges=score["scoped_edge_count"],
+                frames=score.get("relation_frame_count") or 0,
                 edge_hits=", ".join(score.get("edge_kind_hits") or []) or "-",
                 missing_edges=", ".join(score.get("missing_edge_kinds") or []) or "-",
                 review=score["needs_review_candidate_count"],
@@ -6398,6 +7396,8 @@ def _run_config(
         "t2_batch_max_size",
         "t4_batch_max_size",
         "downstream_steps_per_wave",
+        "adaptive_drain_cycles",
+        "adaptive_drain_steps_per_cycle",
         "skip_migrations",
         "skip_topology_optimizer",
         "enable_thesis_judge",
@@ -6629,6 +7629,25 @@ def parse_args() -> argparse.Namespace:
             "backlog rather than intentionally skipped downstream work."
         ),
     )
+    parser.add_argument(
+        "--adaptive-drain-cycles",
+        type=int,
+        default=3,
+        help=(
+            "After all waves, cycle downstream Think drains, post-commit work, and "
+            "topology optimization until adaptive work reaches quiescence or this "
+            "cycle cap is reached."
+        ),
+    )
+    parser.add_argument(
+        "--adaptive-drain-steps-per-cycle",
+        type=int,
+        default=12,
+        help=(
+            "Maximum T2/T3/T4 Think dispatch steps to run in each final adaptive "
+            "drain cycle."
+        ),
+    )
     parser.add_argument("--worker-poll-batch", type=int, default=6)
     parser.add_argument("--run-timeout", type=float, default=900.0)
     parser.add_argument("--post-commit-timeout", type=int, default=600)
@@ -6700,6 +7719,10 @@ def parse_args() -> argparse.Namespace:
         raise SystemExit("--future-validation-signals-per-storyline must be >= 0")
     if args.thesis_judge_limit < 0:
         raise SystemExit("--thesis-judge-limit must be >= 0")
+    if args.adaptive_drain_cycles < 1:
+        raise SystemExit("--adaptive-drain-cycles must be >= 1")
+    if args.adaptive_drain_steps_per_cycle < 0:
+        raise SystemExit("--adaptive-drain-steps-per-cycle must be >= 0")
     if args.mode == "variance-report":
         if len(args.variance_run_ids or []) < 2:
             raise SystemExit(

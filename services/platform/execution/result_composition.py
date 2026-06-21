@@ -258,6 +258,8 @@ def _select_relevant_models(
         if material_signal or broad_signal
         else 0
     )
+    if broad_signal:
+        min_material = min(top_n, len(scored), max(min_material, 40))
     diversity_candidate_cap = _relevance_diversity_candidate_cap(
         len(scored),
         top_n,
@@ -860,7 +862,7 @@ def _apply_relevance_diversity(
         # Broad portfolio questions need representative breadth before
         # redundancy pruning. A same-cluster set can still describe many
         # independent customers, constraints, or instances of a trend.
-        floor = min(target_limit, max(floor, min(20, len(selected_pairs))))
+        floor = min(target_limit, max(floor, min(32, len(selected_pairs))))
     model_pathways = model_pathways or {}
     model_questions = model_questions or {}
     remaining = list(selected_pairs)
@@ -940,7 +942,7 @@ def _coverage_compaction_target(
     if weak_signal:
         return min(top_n, 8)
     if broad_signal:
-        return min(top_n, max(20, min(32, selected_count)))
+        return min(top_n, max(40, min(48, selected_count)))
     if selected_count >= 32:
         return min(top_n, 18)
     return min(top_n, selected_count)

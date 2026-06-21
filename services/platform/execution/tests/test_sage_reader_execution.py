@@ -66,7 +66,11 @@ async def test_execute_sage_reader_action_returns_none_when_disabled() -> None:
 @pytest.mark.asyncio
 async def test_execute_sage_reader_action_wraps_reader_result() -> None:
     class Reader:
+        def __init__(self) -> None:
+            self.kwargs = {}
+
         async def read(self, **kwargs):
+            self.kwargs = kwargs
             return SimpleNamespace(
                 observations=[],
                 models=[],
@@ -79,17 +83,25 @@ async def test_execute_sage_reader_action_wraps_reader_result() -> None:
                 model_scores={},
             )
 
+    reader = Reader()
+    evidence_state = {
+        "summary": "counterevidence unresolved",
+        "known_model_ids": ["m1"],
+    }
     result = await sage_reader_execution._execute_sage_reader_action(
         _question(),
         _trigger(),
         None,
         InquiryConfig(sage_reader_enabled=True, result_model_limit=7),
         hypotheses=(),
-        reader=Reader(),
+        reader=reader,
+        evidence_state=evidence_state,
     )
 
     assert result is not None
+    assert reader.kwargs["evidence_state"] == evidence_state
     assert result.notes["pathways_run"] == ["sage_reader"]
     assert result.notes["action"]["path"] == "sage_reader"
     assert result.notes["action"]["budget"] == 7
     assert result.notes["sage_reader"]["question_primitive"] == "DEPENDENCY"
+    assert result.notes["sage_reader"]["reconstruction_state"] == evidence_state

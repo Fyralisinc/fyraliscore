@@ -18,6 +18,7 @@ SynthesisDecisionKind = Literal[
     "discard_as_noise",
     "attach_evidence_to_existing_model",
     "update_existing_model",
+    "resolve_existing_model",
     "archive_model",
     "create_atomic_model",
     "create_or_update_edge",
@@ -46,6 +47,35 @@ def summarize_synthesis_decisions(diff: ValidatedDiff) -> list[dict[str, Any]]:
     for index, op in enumerate(diff.claim_ops):
         decisions.append(_claim_decision(op, index=index, bucket="claim_ops"))
 
+    for index, op in enumerate(diff.memory_lifecycle_ops):
+        if op.action in {"archive", "supersede"}:
+            decision: SynthesisDecisionKind = "archive_model"
+        elif op.action in {"confirm", "falsify"}:
+            decision = "resolve_existing_model"
+        elif op.action == "unchanged":
+            decision = "attach_evidence_to_existing_model"
+        else:
+            decision = "update_existing_model"
+        decisions.append({
+            "bucket": "memory_lifecycle_ops",
+            "index": index,
+            "decision": decision,
+            "op": op.op,
+            "action": op.action,
+            "model_id": str(op.model_id),
+            "superseded_by_model_id": (
+                str(op.superseded_by_model_id)
+                if op.superseded_by_model_id
+                else None
+            ),
+            "evidence_event_ids": [
+                str(event_id) for event_id in op.evidence_event_ids
+            ],
+            "evidence_model_ids": [
+                str(model_id) for model_id in op.evidence_model_ids
+            ],
+        })
+
     for index, op in enumerate(diff.edge_ops):
         decisions.append({
             "bucket": "edge_ops",
@@ -58,6 +88,24 @@ def summarize_synthesis_decisions(diff: ValidatedDiff) -> list[dict[str, Any]]:
             "edge_kind": op.edge_kind,
             "source_model_id": str(op.source_model_id),
             "target_model_id": str(op.target_model_id),
+        })
+
+    for index, op in enumerate(diff.relation_claim_ops):
+        decisions.append({
+            "bucket": "relation_claim_ops",
+            "index": index,
+            "decision": "create_or_update_edge",
+            "relation_claim": True,
+            "edge_kind": op.edge_kind,
+            "predicate": op.predicate,
+            "source_model_id": (
+                str(op.source_model_id) if op.source_model_id else None
+            ),
+            "target_model_id": (
+                str(op.target_model_id) if op.target_model_id else None
+            ),
+            "endpoint_binding_status": op.endpoint_binding_status,
+            "write_policy": op.write_policy,
         })
 
     for index, op in enumerate(diff.ontology_gap_ops):

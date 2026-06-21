@@ -1,11 +1,21 @@
+import argparse
+import asyncio
+import json
+
+from scripts import run_storyline_batch_benchmark as benchmark
 from scripts.run_storyline_batch_benchmark import (
     _LATENT_BRIDGE_STORYLINE_ID,
     _PRODUCT_VALUE_EVAL_KEYS,
     STORYLINES,
     StorylineScore,
+    _accumulate_edge_ops_stats,
     _benchmark_summary,
     _company_intelligence_scorecard,
+    _empty_edge_ops_stats,
+    _future_wave_trigger_ids,
     _latent_pattern_assessment,
+    _noise_noop_score,
+    _retrieval_context_budget_fit_score,
     _render_benchmark_markdown,
     _render_variance_markdown,
     _story_id_from_external_id,
@@ -13,7 +23,61 @@ from scripts.run_storyline_batch_benchmark import (
     build_variance_report,
     build_storyline_scenario,
 )
-import json
+
+
+class _StopAfterMigration(Exception):
+    pass
+
+
+class _FakeAcquire:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakePool:
+    def acquire(self):
+        return _FakeAcquire()
+
+
+def test_prepare_benchmark_tenant_uses_warn_migration_policy(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    async def _fake_apply_migrations_dir(conn, migrations_dir, *, on_error="stop"):
+        calls.append({
+            "conn": conn,
+            "migrations_dir": migrations_dir,
+            "on_error": on_error,
+        })
+        raise _StopAfterMigration
+
+    monkeypatch.setattr(
+        benchmark,
+        "apply_migrations_dir",
+        _fake_apply_migrations_dir,
+    )
+    args = argparse.Namespace(skip_migrations=False)
+
+    try:
+        asyncio.run(
+            benchmark._prepare_storyline_benchmark_tenant(
+                args,
+                pool=_FakePool(),
+                scenario=None,
+                append_context=None,
+                run_id="unit-migration-policy",
+                horizon_start_batch=0,
+            )
+        )
+    except _StopAfterMigration:
+        pass
+    else:  # pragma: no cover - this helper must stop before tenant seeding.
+        raise AssertionError("expected migration sentinel")
+
+    assert calls
+    assert calls[0]["on_error"] == "warn"
 
 
 def test_storyline_scenario_builds_expected_batch_waves() -> None:
@@ -63,6 +127,10 @@ def test_storyline_scenario_builds_long_horizon_400_t1_batches() -> None:
         name.startswith("future_validation_wave_") for name in scenario.signal_sequences
     )
     assert any(
+        name.startswith("capability_probe_wave_")
+        for name in scenario.signal_sequences
+    )
+    assert any(
         name.startswith("background_noise_wave_") for name in scenario.signal_sequences
     )
     assert (scenario.raw or {})["scenario_mode"] == "long_horizon"
@@ -84,6 +152,26 @@ def test_storyline_scenario_builds_long_horizon_10_t1_batches_with_validation() 
     assert any(
         name.startswith("future_validation_wave_") for name in scenario.signal_sequences
     )
+    probe_waves = {
+        name: signals
+        for name, signals in scenario.signal_sequences.items()
+        if name.startswith("capability_probe_wave_")
+    }
+    assert probe_waves
+    probe_kinds = {
+        kind
+        for signals in probe_waves.values()
+        for signal in signals
+        for kind in signal["content_dict"]["capability_probe_kinds"]
+    }
+    assert probe_kinds == {
+        "prediction",
+        "resource",
+        "ontology_gap",
+        "archive",
+        "evidence_attachment",
+        "question_policy",
+    }
     assert (scenario.raw or {})["scenario_mode"] == "long_horizon"
     assert (scenario.raw or {})["warmup_batches"] < 10
 
@@ -151,6 +239,48 @@ def test_latent_bridge_storyline_has_sensor_gap_without_initial_hallway_leak() -
     assert "before and after states" in bridge_text
     assert "hallway" not in bridge_text
     assert "hallway" in future_bridge_text
+
+
+def test_future_wave_trigger_ids_mark_future_edge_evolution() -> None:
+    waves = [
+        {
+            "sequence": "atlas_wave_001",
+            "t1_batch": {"trigger_id": "ordinary-trigger"},
+        },
+        {
+            "sequence": "future_validation_wave_005",
+            "t1_batch": {"trigger_id": "future-trigger"},
+            "downstream": [{"trigger_id": "future-downstream"}],
+        },
+    ]
+    future_trigger_ids = _future_wave_trigger_ids(waves)
+    assert future_trigger_ids == {"future-trigger", "future-downstream"}
+
+    stats = _empty_edge_ops_stats()
+    _accumulate_edge_ops_stats(
+        stats,
+        {
+            "edge_ops": [
+                {
+                    "op": "add",
+                    "edge_kind": "weakens",
+                    "review_status": "accepted",
+                }
+            ],
+            "relation_frame_ops": [
+                {
+                    "status": "accepted",
+                    "write_policy": "project_edges",
+                    "relation_kind": "blocked_workstream",
+                    "projected_edge_count": 3,
+                }
+            ],
+        },
+        is_future="future-trigger" in future_trigger_ids,
+    )
+
+    assert stats["future_edge_ops"] == 1
+    assert stats["future_relation_frame_ops"] == 1
 
 
 def test_storyline_signal_metadata_does_not_persist_gold_answers() -> None:
@@ -226,6 +356,108 @@ def test_latent_pattern_assessment_scores_concrete_model_coverage() -> None:
     assert assessment["missing"] == []
 
 
+def test_noise_noop_score_credits_explicit_empty_diff_without_noop_grade() -> None:
+    assert (
+        _noise_noop_score(
+            [
+                {
+                    "sequence": "background_noise_wave_010",
+                    "t1_batch": {
+                        "run": {
+                            "validation_error_count": 0,
+                            "ops_applied": {
+                                "claim_ops": [],
+                                "relation_claim_ops": [],
+                                "relation_frame_ops": [],
+                                "edge_ops": [],
+                                "act_ops": [],
+                                "resource_ops": [],
+                                "ontology_gap_ops": [],
+                                "state_changes_emitted": 0,
+                                "context_use": {
+                                    "context_use_grade": "unused_selected_context"
+                                },
+                                "reasoning_trace": (
+                                    "Empty diff; "
+                                    "relation_lifecycle_kernel="
+                                    "packet_obligations_skipped:explicit_noop"
+                                ),
+                                "synthesis_decisions": [
+                                    {
+                                        "bucket": "diff",
+                                        "decision": "discard_as_noise",
+                                    }
+                                ],
+                            },
+                        }
+                    },
+                }
+            ]
+        )
+        == 1.0
+    )
+
+
+def test_noise_noop_score_rejects_zero_state_change_relation_writes() -> None:
+    assert (
+        _noise_noop_score(
+            [
+                {
+                    "sequence": "background_noise_wave_010",
+                    "t1_batch": {
+                        "run": {
+                            "validation_error_count": 0,
+                            "ops_applied": {
+                                "claim_ops": [],
+                                "relation_claim_ops": [
+                                    {"edge_kind": "weakens", "op": "upsert"}
+                                ],
+                                "relation_frame_ops": [],
+                                "edge_ops": [],
+                                "act_ops": [],
+                                "resource_ops": [],
+                                "ontology_gap_ops": [],
+                                "state_changes_emitted": 0,
+                                "reasoning_trace": "No durable diff emitted.",
+                            },
+                        }
+                    },
+                }
+            ]
+        )
+        == 0.0
+    )
+
+
+def test_retrieval_context_budget_fit_score_rewards_efficient_band() -> None:
+    assert _retrieval_context_budget_fit_score(0) == 0.0
+    assert _retrieval_context_budget_fit_score(3) == 0.5
+    assert _retrieval_context_budget_fit_score(8) == 1.0
+    assert _retrieval_context_budget_fit_score(16) == 1.0
+    assert _retrieval_context_budget_fit_score(22) == 0.5
+    assert _retrieval_context_budget_fit_score(28) == 0.0
+
+
+def test_company_intelligence_scorecard_penalizes_over_budget_context() -> None:
+    scorecard = _company_intelligence_scorecard(
+        model_summary=_sample_model_summary(),
+        storyline_scores=[_sample_storyline_score()],
+        waves=[_sample_success_wave()],
+        retrieval_model_counts=[24],
+        retrieval_observation_counts=[29],
+        validation_errors=0,
+    )
+
+    retrieval = scorecard["dimensions"]["retrieval_usefulness"]
+
+    assert retrieval["metrics"]["retrieval_budget_fit_score"] < 0.5
+    assert scorecard["proof_coverage"]["retrieval_budget_fit_score"] < 0.5
+    assert any(
+        "Selected Model context is above the efficient batch budget" in gap
+        for gap in scorecard["proof_gaps"]
+    )
+
+
 def test_company_intelligence_scorecard_reports_dimensions_and_gaps() -> None:
     scorecard = _company_intelligence_scorecard(
         model_summary=_sample_model_summary(),
@@ -244,6 +476,7 @@ def test_company_intelligence_scorecard_reports_dimensions_and_gaps() -> None:
         "reasoning_value",
         "temporal_improvement",
         "edge_intelligence",
+        "adaptive_lifecycle",
         "robustness",
         "efficiency",
     } == set(scorecard["dimensions"])
@@ -252,6 +485,36 @@ def test_company_intelligence_scorecard_reports_dimensions_and_gaps() -> None:
         "Resource/action-resource operations are untested" in gap
         for gap in scorecard["proof_gaps"]
     )
+
+
+def test_company_intelligence_scorecard_distinguishes_probed_from_untested() -> None:
+    model_summary = _sample_model_summary()
+    model_summary["capability_probe_counts"] = {
+        "prediction": 1,
+        "resource": 1,
+        "ontology_gap": 1,
+        "archive": 1,
+        "evidence_attachment": 1,
+        "question_policy": 1,
+    }
+
+    scorecard = _company_intelligence_scorecard(
+        model_summary=model_summary,
+        storyline_scores=[_sample_storyline_score()],
+        waves=[_sample_success_wave()],
+        retrieval_model_counts=[22],
+        retrieval_observation_counts=[29],
+        validation_errors=0,
+    )
+
+    gaps = "\n".join(scorecard["proof_gaps"])
+    assert "Resource/action-resource probe ran" in gaps
+    assert "Ontology-gap probe ran" in gaps
+    assert "Archive probe ran" in gaps
+    assert "Evidence probe ran" in gaps
+    assert "Question-policy probe ran" in gaps
+    assert "Resource/action-resource operations are untested" not in gaps
+    assert "Ontology-gap write path is untested" not in gaps
 
 
 def test_company_intelligence_scorecard_flags_topology_missing_model_skips() -> None:
@@ -309,6 +572,52 @@ def test_company_intelligence_scorecard_scores_future_validation_evidence() -> N
     )
 
 
+def test_company_intelligence_scorecard_reports_adaptive_lifecycle() -> None:
+    model_summary = _sample_model_summary()
+    model_summary["future_validation_events"] = 24
+    model_summary["discovery_layer_counts"] = {
+        "negative_memory": 2,
+        "question_policy_stats": 1,
+    }
+    model_summary["topology_optimizer_metric_totals"] = {
+        **model_summary["topology_optimizer_metric_totals"],
+        "shortcut_creates_or_bumps": 12,
+        "affordance_reinforces": 10,
+        "negative_memory_inserts": 1,
+        "question_policy_updates": 1,
+    }
+    model_summary["post_commit_status"] = {
+        "processed": 5,
+        "failed": 0,
+        "dead_lettered": 0,
+        "iterations": 2,
+    }
+
+    scorecard = _company_intelligence_scorecard(
+        model_summary=model_summary,
+        storyline_scores=[_sample_storyline_score()],
+        waves=[_sample_success_wave(), _sample_future_validation_wave()],
+        retrieval_model_counts=[22, 24],
+        retrieval_observation_counts=[29, 28],
+        validation_errors=0,
+    )
+
+    adaptive = scorecard["dimensions"]["adaptive_lifecycle"]
+
+    assert adaptive["score"] > 0.65
+    assert adaptive["metrics"]["policy_feedback_score"] == 1.0
+    assert adaptive["metrics"]["negative_learning_score"] == 1.0
+    assert adaptive["metrics"]["temporal_closure_score"] > 0.0
+    assert (
+        scorecard["proof_coverage"]["adaptive_lifecycle"]
+        == adaptive["metrics"]
+    )
+    assert not any(
+        "Adaptive temporal closure is weak" in gap
+        for gap in scorecard["proof_gaps"]
+    )
+
+
 def test_company_intelligence_scorecard_reports_edge_intelligence() -> None:
     model_summary = _sample_model_summary()
     model_summary["edge_kind_distribution"] = {
@@ -355,6 +664,59 @@ def test_company_intelligence_scorecard_reports_edge_intelligence() -> None:
     assert edge["metrics"]["reconfirmation_events"] == 2.0
     assert edge["metrics"]["graph_relation_contract_score"] == 1.0
     assert "missing_registered_edge_kinds" in scorecard["proof_coverage"]
+
+
+def test_company_intelligence_scorecard_counts_relation_frames_as_structure() -> None:
+    model_summary = _sample_model_summary()
+    model_summary["edge_kind_distribution"] = {"supports": 1}
+    model_summary["edge_lifecycle"] = {
+        **model_summary["edge_lifecycle"],
+        "accepted_edge_kind_distribution": {"supports": 1},
+    }
+    model_summary["relation_frame_lifecycle"] = {
+        "available": True,
+        "total_relation_frames": 1,
+        "accepted_relation_frames": 1,
+        "projectable_relation_frames": 1,
+        "bound_relation_frames": 1,
+        "relation_participants": 5,
+        "relation_edge_projections": 3,
+        "relation_frame_kind_distribution": {"blocked_workstream": 1},
+        "relation_projection_kind_distribution": {
+            "blocks": 1,
+            "early_warning_for": 1,
+            "contributes_to_resolution": 1,
+        },
+    }
+    story = _sample_storyline_score()
+    story.scoped_edge_count = 0
+    story.relation_frame_count = 1
+    story.accepted_relation_frame_count = 1
+    story.relation_frame_projection_count = 3
+    story.relation_frame_kind_hits = ["blocked_workstream"]
+
+    scorecard = _company_intelligence_scorecard(
+        model_summary=model_summary,
+        storyline_scores=[story],
+        waves=[_sample_success_wave_with_relation_frame()],
+        retrieval_model_counts=[22],
+        retrieval_observation_counts=[29],
+        validation_errors=0,
+    )
+
+    edge = scorecard["dimensions"]["edge_intelligence"]
+    proof = scorecard["proof_coverage"]
+
+    assert edge["metrics"]["relation_frame_score"] > 0
+    assert edge["metrics"]["storyline_edge_presence"] == 1.0
+    assert edge["metrics"]["relation_frame_ops"] == 1
+    assert edge["metrics"]["relation_frame_projected_edges_from_ops"] == 3
+    assert proof["accepted_relation_frames"] == 1.0
+    assert "blocks" in proof["structural_edge_kinds_observed"]
+    assert not any(
+        "N-ary relation frames were not exercised" in gap
+        for gap in scorecard["proof_gaps"]
+    )
 
 
 def test_company_intelligence_scorecard_flags_graph_relation_contract_failure() -> None:
@@ -418,6 +780,32 @@ def test_company_intelligence_scorecard_reports_product_value_evals() -> None:
     assert any(
         "Latent bridge inference eval" in gap for gap in product_value["proof_gaps"]
     )
+
+
+def test_product_value_gaps_distinguish_probed_from_untested() -> None:
+    model_summary = _sample_model_summary()
+    model_summary["capability_probe_counts"] = {
+        "resource": 1,
+        "archive": 1,
+        "evidence_attachment": 1,
+        "question_policy": 1,
+    }
+
+    scorecard = _company_intelligence_scorecard(
+        model_summary=model_summary,
+        storyline_scores=[_sample_storyline_score()],
+        waves=[_sample_success_wave()],
+        retrieval_model_counts=[22],
+        retrieval_observation_counts=[29],
+        validation_errors=0,
+    )
+
+    gaps = "\n".join(scorecard["product_value_evals"]["proof_gaps"])
+    assert "resource/action-resource probe" in gaps
+    assert "archive probe" in gaps
+    assert "evidence probe" in gaps
+    assert "Question policy eval ran a probe" in gaps
+    assert "Question policy eval did not exercise" not in gaps
 
 
 def test_company_intelligence_scorecard_scores_latent_bridge_inference() -> None:
@@ -680,6 +1068,7 @@ def _sample_model_summary() -> dict:
         "model_edges": 3,
         "relationship_candidates": 1,
         "relationship_candidate_status_distribution": {"accepted": 1},
+        "capability_probe_counts": {},
         "model_kind_distribution": {"belief": 15005},
         "context_use_distribution": {"graph_context_used": 1},
         "context_use_relation_contract": {
@@ -768,6 +1157,29 @@ def _sample_success_wave() -> dict:
             },
         },
     }
+
+
+def _sample_success_wave_with_relation_frame() -> dict:
+    wave = json.loads(json.dumps(_sample_success_wave()))
+    ops = wave["t1_batch"]["run"]["ops_applied"]
+    ops["relation_claim_ops"] = [
+        {
+            "op": "upsert",
+            "relation_kind": "blocked_workstream",
+            "status": "accepted",
+        }
+    ]
+    ops["relation_frame_ops"] = [
+        {
+            "op": "upsert",
+            "relation_kind": "blocked_workstream",
+            "status": "accepted",
+            "write_policy": "project_edges",
+            "participant_count": 5,
+            "projected_edge_count": 3,
+        }
+    ]
+    return wave
 
 
 def _sample_future_validation_wave() -> dict:

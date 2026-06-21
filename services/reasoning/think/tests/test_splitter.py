@@ -155,6 +155,82 @@ def test_explicit_norm_passes_through_unchanged():
     assert out == [op]
 
 
+def test_source_digest_pattern_passes_through_unsplit():
+    natural = (
+        "The aws:event source is showing a source cadence: 10 observations "
+        "form a major source window. This should be represented as a compact "
+        "source-pattern baseline, not left as independent low-level events."
+    )
+    op = _make_op(
+        natural=natural,
+        prop_kind="state",
+        extra_prop={
+            "kind": "belief",
+            "claim_role": "pattern",
+            "abstraction_level": "pattern",
+            "time_mode": "recurring",
+            "signature": "aws:event recurring source pattern",
+            "observed_tendency": "10 observations form a major source window.",
+            "domain_tags": ["source_digest", "major_source_window"],
+        },
+    )
+
+    out = split_compound_claim_op(op)
+    flag, reasons = is_compound(op.entry or {})
+
+    assert out == [op]
+    assert flag is False
+    assert reasons == []
+
+
+def test_curiosity_hypothesis_passes_through_unsplit():
+    natural = (
+        "Open operating questions remain for Atlas launch: who owns the next "
+        "action, whether the blocker is on the critical path, and what would "
+        "disconfirm the risk pattern. These questions should stay durable."
+    )
+    op = _make_op(
+        natural=natural,
+        prop_kind="state",
+        extra_prop={
+            "kind": "belief",
+            "claim_role": "hypothesis",
+            "abstraction_level": "atomic",
+            "time_mode": "current",
+            "modality": "inferred",
+            "polarity": "neutral",
+            "hypothesis_text": natural,
+            "test_conditions": (
+                "Resolve by finding owner, critical path status, and "
+                "disconfirming evidence."
+            ),
+            "important_unknowns": [
+                "responsible owner",
+                "whether the blocker is on the critical path",
+            ],
+            "coverage_roles": ["curiosity", "epistemic", "intervention"],
+            "retrieval_tags": [
+                "open_question",
+                "unresolved_unknown",
+                "coverage_curiosity",
+                "success_driver",
+            ],
+            "domain_tags": [
+                "open_question",
+                "coverage_curiosity",
+                "success_driver",
+            ],
+        },
+    )
+
+    out = split_compound_claim_op(op)
+    flag, reasons = is_compound(op.entry or {})
+
+    assert out == [op]
+    assert flag is False
+    assert reasons == []
+
+
 # ---------------------------------------------------------------------
 # 2. 4-clause compound -> 4 atomic + 1 situation
 # ---------------------------------------------------------------------

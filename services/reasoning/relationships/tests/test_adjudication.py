@@ -19,7 +19,12 @@ from services.reasoning.relationships import (
     make_situation_candidate,
 )
 from services.reasoning.retrieval.primary import TriggerContext
-from services.reasoning.think.diff_schema import ClaimOp, EdgeOp, ValidatedDiff
+from services.reasoning.think.diff_schema import (
+    ClaimOp,
+    EdgeOp,
+    RelationClaimOp,
+    ValidatedDiff,
+)
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -29,6 +34,7 @@ def _diff(
     tenant_id,
     *,
     claim_ops=None,
+    relation_claim_ops=None,
     edge_ops=None,
     dropped_op_count: int = 0,
 ) -> ValidatedDiff:
@@ -36,6 +42,7 @@ def _diff(
         trigger_ref=uuid7(),
         tenant_id=tenant_id,
         claim_ops=claim_ops or [],
+        relation_claim_ops=relation_claim_ops or [],
         edge_ops=edge_ops or [],
         dropped_op_count=dropped_op_count,
         dropped_op_errors=["bad op"] if dropped_op_count else [],
@@ -626,6 +633,73 @@ async def test_adjudication_blocks_without_mechanism_marks_needs_review(
     md = row["metadata"]["latest_adjudication"]
     assert md["decision_reason"] == "needs_review_missing_mechanism"
     assert "mechanism_or_dependency_basis" in md["missing_fields"]
+
+
+async def test_adjudication_marks_needs_review_for_relation_claim_only_outcome(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    left = uuid7()
+    right = uuid7()
+    repo = RelationshipCandidatesRepo()
+    candidate = make_edge_candidate(
+        tenant_id=tenant_id,
+        source_model_id=left,
+        target_model_id=right,
+        edge_kind="supports",
+        basis="topology_suggested",
+        explanation="Topology found a relation worth preserving for review.",
+        scores=JudgmentScores(impact=0.55, confidence=0.55),
+        source="latent_topology",
+    )
+
+    async with fresh_db.acquire() as conn:
+        await repo.insert(conn, candidate)
+        result = await adjudicate_candidate_for_trigger(
+            conn,
+            trigger=_trigger(tenant_id, candidate.id, [left, right]),
+            diff=_diff(
+                tenant_id,
+                relation_claim_ops=[
+                    RelationClaimOp(
+                        op="upsert",
+                        source_model_id=left,
+                        target_model_id=right,
+                        subject_ref={"kind": "model", "model_id": str(left)},
+                        object_ref={"kind": "model", "model_id": str(right)},
+                        predicate="supports",
+                        edge_kind="supports",
+                        endpoint_binding_status="bound",
+                        write_policy="needs_review",
+                        status="needs_review",
+                        confidence=0.55,
+                        binding_confidence=0.9,
+                        explanation="Relation is plausible but not accepted truth.",
+                    )
+                ],
+            ),
+            applied={
+                "relation_claim_ops": [
+                    {
+                        "op": "upsert",
+                        "edge_kind": "supports",
+                        "source_model_id": str(left),
+                        "target_model_id": str(right),
+                        "write_policy": "needs_review",
+                        "status": "needs_review",
+                    }
+                ],
+                "edge_ops": [],
+                "claim_ops": [],
+            },
+        )
+        row = await repo.get(conn, candidate_id=candidate.id, tenant_id=tenant_id)
+
+    assert result is not None
+    assert result.review_status == "needs_review"
+    assert result.decision_reason == "needs_review_partial_evidence"
+    assert row is not None
+    assert row["review_status"] == "needs_review"
 
 
 async def test_adjudication_early_warning_without_lead_time_marks_needs_review(

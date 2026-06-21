@@ -149,3 +149,142 @@ async def test_promoter_preserves_null_weight_for_resolution_edges(
     assert edge["review_status"] == "accepted"
     assert decided is not None
     assert decided["review_status"] == "accepted"
+
+
+async def test_promoter_accepts_direct_edge_intelligence_candidate_below_generic_gate(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    repo = RelationshipCandidatesRepo()
+
+    async with fresh_db.acquire() as conn:
+        await register_vector(conn)
+        obs_id = await _insert_observation(conn, tenant_id)
+        source = await _insert_model(
+            conn,
+            tenant_id=tenant_id,
+            born_from_event_id=obs_id,
+            natural="DPA approval is pending.",
+        )
+        target = await _insert_model(
+            conn,
+            tenant_id=tenant_id,
+            born_from_event_id=obs_id,
+            natural="HubSpot import is blocked.",
+        )
+        candidate = make_edge_candidate(
+            tenant_id=tenant_id,
+            source_model_id=source,
+            target_model_id=target,
+            edge_kind="blocks",
+            basis="observed",
+            explanation="Direct pair evidence shows DPA approval blocks import.",
+            scores=JudgmentScores(
+                impact=0.74,
+                actionability=0.52,
+                urgency=0.50,
+                authority_required=0.45,
+                novelty=0.35,
+                confidence=0.72,
+                uncertainty=0.45,
+            ),
+            evidence_event_ids=(obs_id,),
+            evidence_model_ids=(source, target),
+            source="edge_intelligence_kernel",
+            metadata={
+                "edge_intelligence": {
+                    "counts": {
+                        "co_retrieved": 0,
+                        "co_used_valid_diff": 1,
+                        "explicit_relation": 1,
+                        "think_edge_op": 1,
+                        "t4_accept": 0,
+                        "t4_reject": 0,
+                        "no_edge": 0,
+                        "positive_outcome": 1,
+                        "negative_outcome": 0,
+                    }
+                }
+            },
+        )
+        await repo.insert(conn, candidate)
+
+        report = await promote_high_confidence_edges(conn, tenant_id=tenant_id)
+        edge = await conn.fetchrow(
+            """
+            SELECT edge_kind, review_status, confidence
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND edge_kind = 'blocks'
+            """,
+            tenant_id,
+            source,
+            target,
+        )
+        decided = await repo.get(conn, candidate_id=candidate.id, tenant_id=tenant_id)
+
+    assert report.promoted_candidates == 1
+    assert report.failed_candidates == 0
+    assert edge is not None
+    assert edge["review_status"] == "accepted"
+    assert edge["confidence"] == pytest.approx(0.72)
+    assert decided is not None
+    assert decided["review_status"] == "accepted"
+
+
+async def test_promoter_keeps_non_edge_intelligence_candidate_on_generic_gate(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    repo = RelationshipCandidatesRepo()
+
+    async with fresh_db.acquire() as conn:
+        await register_vector(conn)
+        obs_id = await _insert_observation(conn, tenant_id)
+        source = await _insert_model(
+            conn,
+            tenant_id=tenant_id,
+            born_from_event_id=obs_id,
+            natural="DPA approval is pending.",
+        )
+        target = await _insert_model(
+            conn,
+            tenant_id=tenant_id,
+            born_from_event_id=obs_id,
+            natural="HubSpot import is blocked.",
+        )
+        candidate = make_edge_candidate(
+            tenant_id=tenant_id,
+            source_model_id=source,
+            target_model_id=target,
+            edge_kind="blocks",
+            basis="observed",
+            explanation="Low-priority topology candidate.",
+            scores=JudgmentScores(
+                impact=0.74,
+                actionability=0.52,
+                urgency=0.50,
+                authority_required=0.45,
+                novelty=0.35,
+                confidence=0.72,
+                uncertainty=0.45,
+            ),
+            evidence_event_ids=(obs_id,),
+            source="latent_topology",
+        )
+        await repo.insert(conn, candidate)
+
+        report = await promote_high_confidence_edges(conn, tenant_id=tenant_id)
+        edge_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM model_edges WHERE tenant_id = $1",
+            tenant_id,
+        )
+        undecided = await repo.get(conn, candidate_id=candidate.id, tenant_id=tenant_id)
+
+    assert report.promoted_candidates == 0
+    assert report.failed_candidates == 0
+    assert edge_count == 0
+    assert undecided is not None
+    assert undecided["review_status"] == "candidate"

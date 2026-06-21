@@ -372,7 +372,11 @@ def _adjudicate(
 
     op_count = (
         len(applied.get("claim_ops") or [])
+        + len(applied.get("memory_lifecycle_ops") or [])
+        + len(applied.get("relation_claim_ops") or [])
+        + len(applied.get("relation_frame_ops") or [])
         + len(applied.get("edge_ops") or [])
+        + len(applied.get("ontology_gap_ops") or [])
         + len(applied.get("act_ops") or [])
         + len(applied.get("resource_ops") or [])
     )
@@ -497,6 +501,21 @@ def _has_needs_review_edge(
         if summary.get("op") != "add":
             continue
         if summary.get("review_status") not in {"candidate", "needs_review"}:
+            continue
+        left = _coerce_uuid(summary.get("source_model_id"))
+        right = _coerce_uuid(summary.get("target_model_id"))
+        if left is not None and right is not None and {left, right}.issubset(
+            candidate_members
+        ):
+            return True
+    for summary in applied.get("relation_claim_ops") or []:
+        if summary.get("write_policy") not in {"candidate", "needs_review"}:
+            continue
+        if summary.get("status") not in {None, "candidate", "needs_review"}:
+            continue
+        edge_kind = summary.get("edge_kind")
+        candidate_kind = candidate.get("edge_kind")
+        if candidate_kind and edge_kind != candidate_kind:
             continue
         left = _coerce_uuid(summary.get("source_model_id"))
         right = _coerce_uuid(summary.get("target_model_id"))

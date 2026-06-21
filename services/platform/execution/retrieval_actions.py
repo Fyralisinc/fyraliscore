@@ -20,6 +20,7 @@ from .lexical_terms import (
     SPARSE_STRONG_SINGLE_MATCH_MAX_DF as _SPARSE_STRONG_SINGLE_MATCH_MAX_DF,
     focused_index_lookup_groups as _focused_index_lookup_groups,
     focused_index_terms as _focused_index_terms,
+    hybrid_lookup_terms as _hybrid_lookup_terms,
     hybrid_lexical_terms as _hybrid_lexical_terms,
     hybrid_sparse_lookup_terms as _hybrid_sparse_lookup_terms,
     hybrid_sparse_strong_single_match_terms as _hybrid_sparse_strong_single_match_terms,
@@ -535,6 +536,15 @@ async def execute_semantic_hybrid_action(
         hybrid_note["reason"] = "no_lexical_terms"
         result.notes["semantic_hybrid_lexical"] = hybrid_note
         return result
+    lookup_terms = _hybrid_lookup_terms(
+        terms,
+        max_terms=max(1, int(cfg.semantic_hybrid_lexical_terms)),
+    )
+    hybrid_note["lookup_terms"] = lookup_terms
+    if not lookup_terms:
+        hybrid_note["reason"] = "no_specific_lexical_terms"
+        result.notes["semantic_hybrid_lexical"] = hybrid_note
+        return result
 
     lexical_limit = min(
         max(1, int(cfg.semantic_hybrid_lexical_max_candidates)),
@@ -544,7 +554,7 @@ async def execute_semantic_hybrid_action(
     lexical_hits = await hybrid_lexical_model_scan(
         trigger,
         conn,
-        terms=terms,
+        terms=lookup_terms,
         limit=lexical_limit,
         per_term_limit=per_term_limit,
     )
@@ -598,17 +608,20 @@ async def hybrid_lexical_model_scan(
     limit: int,
     per_term_limit: int,
 ) -> list[tuple[ModelRow, int]]:
+    lookup_terms = _hybrid_lookup_terms(terms)
+    if not lookup_terms or limit <= 0:
+        return []
     sparse_hits = await hybrid_sparse_model_scan(
         trigger,
         conn,
-        terms=terms,
+        terms=lookup_terms,
         limit=limit,
         per_term_limit=per_term_limit,
     )
     if sparse_hits:
         return sparse_hits
 
-    patterns = _like_patterns_for_terms(terms)
+    patterns = _like_patterns_for_terms(lookup_terms)
     if not patterns or limit <= 0:
         return []
     table = await conn.fetchval("SELECT to_regclass('public.model_search_documents')")

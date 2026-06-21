@@ -240,6 +240,7 @@ async def test_assemble_reasoning_context_expands_region_with_augmented_acts(
     trigger = _trigger()
     commitment_id = uuid4()
     decision_id = uuid4()
+    candidate_actor_id = uuid4()
     bundle = ContextBundle()
     retrieval_result = RetrievalResult(trigger=trigger)
     context_plan = context_planner.ContextPlan(
@@ -315,6 +316,37 @@ async def test_assemble_reasoning_context_expands_region_with_augmented_acts(
         lambda contexts: "actor-summary",
     )
 
+    async def fake_build_substrate_candidates(
+        conn,
+        *,
+        tenant_id,
+        observations,
+        models,
+        run_id=None,
+    ):
+        assert isinstance(conn, FakeConn)
+        assert tenant_id == trigger.tenant_id
+        assert observations is bundle.observations
+        assert models is bundle.models
+        assert run_id is None
+        return [
+            {
+                "id": str(candidate_actor_id),
+                "kind": "actor",
+                "label": "Candidate Actor",
+                "scope_ref": {
+                    "type": "candidate_actor",
+                    "id": str(candidate_actor_id),
+                },
+            }
+        ]
+
+    monkeypatch.setattr(
+        context_planner,
+        "build_substrate_candidates",
+        fake_build_substrate_candidates,
+    )
+
     async def fake_augment_context(*, conn, trigger, bundle, allowed_region):
         commitments = await conn.fetch("FROM commitments", trigger.tenant_id)
         decisions = await conn.fetch("FROM decisions", trigger.tenant_id)
@@ -350,6 +382,12 @@ async def test_assemble_reasoning_context_expands_region_with_augmented_acts(
         str(commitment_id),
     ) in reasoning_context.allowed_region
     assert ("decision", str(decision_id)) in reasoning_context.allowed_region
+    assert (
+        "candidate_actor",
+        str(candidate_actor_id),
+    ) in reasoning_context.allowed_region
+    assert bundle.notes["substrate_candidate_region_count"] == 1
+    assert bundle.notes["substrate_candidates"][0]["kind"] == "actor"
     assert bundle.acts_summary["commitments"][0].title == (
         "Ship onboarding checklist"
     )

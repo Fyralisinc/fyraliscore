@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -29,6 +30,21 @@ _PRECISE_DURABLE_KINDS = {
     "weakens",
 }
 _AUTO_ACCEPT_MIN_CONFIDENCE = 0.68
+_GENERIC_EDGE_KINDS = {"supports", "co_occurs_with", "analogous_to"}
+_GENERIC_SOURCE_TAGS = {
+    "source_digest",
+    "major_source_window",
+    "source_observability",
+    "source_coverage",
+}
+_MECHANISM_RE = re.compile(
+    r"\b("
+    r"because|due to|causes?|blocks?|enables?|depends?\s+on|requires?|"
+    r"weakens?|contradicts?|explains?|predicts?|early warning|root cause|"
+    r"therefore|mechanism|as a result"
+    r")\b",
+    re.I,
+)
 
 _BLOCKING_RE = re.compile(
     r"\b("
@@ -78,6 +94,17 @@ _EXPLAINS_RE = re.compile(
 class EdgeEndpointText:
     source: str = ""
     target: str = ""
+
+
+@dataclass(frozen=True)
+class EdgeSpecificityAssessment:
+    status: str
+    score: float
+    reasons: tuple[str, ...] = ()
+
+    @property
+    def needs_review(self) -> bool:
+        return self.status in {"needs_review", "rejected"}
 
 
 async def canonicalize_edge_semantics(
@@ -163,7 +190,11 @@ async def canonicalize_edge_semantics(
     )
 
 
-def normalize_edge_review_status(op: EdgeOp) -> EdgeOp:
+def normalize_edge_review_status(
+    op: EdgeOp,
+    *,
+    endpoint_models_verified: bool = False,
+) -> EdgeOp:
     """Promote explicit, evidence-backed precise edges to durable memory.
 
     The LLM often marks useful precise edges as ``candidate`` out of caution.
@@ -182,15 +213,129 @@ def normalize_edge_review_status(op: EdgeOp) -> EdgeOp:
         return op
     if not (op.explanation or "").strip():
         return op
-    if not (op.evidence_event_ids or op.evidence_model_ids):
+    if not (
+        op.evidence_event_ids
+        or op.evidence_model_ids
+        or endpoint_models_verified
+    ):
         return op
 
     metadata = dict(op.metadata or {})
     metadata.setdefault("review_status_promoted_by", "edge_semantic_refiner")
-    metadata.setdefault("review_status_promoted_reason", "explicit_evidence_backed_precise_edge")
+    metadata.setdefault(
+        "review_status_promoted_reason",
+        "explicit_evidence_backed_precise_edge",
+    )
+    if endpoint_models_verified and not (
+        op.evidence_event_ids or op.evidence_model_ids
+    ):
+        metadata.setdefault("review_status_promoted_evidence", "verified_endpoint_models")
     return op.model_copy(
         update={
             "review_status": "accepted",
+            "metadata": metadata,
+        }
+    )
+
+
+def assess_edge_specificity(
+    op: EdgeOp,
+    *,
+    source_model: Any | None = None,
+    target_model: Any | None = None,
+) -> EdgeSpecificityAssessment:
+    """Score whether an edge is specific enough to be durable structure."""
+
+    if op.op != "add":
+        return EdgeSpecificityAssessment(status="ok", score=1.0)
+
+    reasons: list[str] = []
+    score = 0.35
+    explanation = (op.explanation or "").strip()
+    if explanation:
+        score += 0.15
+        if len(explanation) < 36:
+            reasons.append("explanation_too_short")
+            score -= 0.10
+    else:
+        reasons.append("missing_explanation")
+        score -= 0.15
+
+    if op.evidence_event_ids or op.evidence_model_ids:
+        score += 0.20
+    else:
+        reasons.append("missing_edge_evidence")
+        score -= 0.10
+
+    if op.edge_kind not in _GENERIC_EDGE_KINDS:
+        score += 0.20
+    else:
+        reasons.append("generic_edge_kind")
+
+    endpoint_scope = _endpoint_scope_count(source_model) + _endpoint_scope_count(
+        target_model
+    )
+    if endpoint_scope > 0:
+        score += 0.10
+    else:
+        reasons.append("endpoints_without_scope")
+
+    source_tags = _endpoint_tags(source_model)
+    target_tags = _endpoint_tags(target_model)
+    generic_source_endpoint = bool(
+        (source_tags | target_tags) & _GENERIC_SOURCE_TAGS
+    )
+    if generic_source_endpoint and op.edge_kind in _GENERIC_EDGE_KINDS:
+        reasons.append("generic_source_digest_endpoint")
+        score -= 0.25
+
+    if explanation and _MECHANISM_RE.search(explanation):
+        score += 0.15
+    elif op.edge_kind not in _GENERIC_EDGE_KINDS:
+        reasons.append("missing_mechanism_language")
+        score -= 0.05
+
+    score = max(0.0, min(1.0, round(score, 4)))
+    if "generic_source_digest_endpoint" in reasons and score < 0.70:
+        return EdgeSpecificityAssessment(
+            status="needs_review",
+            score=score,
+            reasons=tuple(reasons),
+        )
+    if score < 0.45:
+        return EdgeSpecificityAssessment(
+            status="needs_review",
+            score=score,
+            reasons=tuple(reasons),
+        )
+    return EdgeSpecificityAssessment(status="ok", score=score, reasons=tuple(reasons))
+
+
+def enforce_edge_specificity(
+    op: EdgeOp,
+    *,
+    source_model: Any | None = None,
+    target_model: Any | None = None,
+) -> EdgeOp:
+    """Downgrade vague accepted edges so they do not become silent truth."""
+
+    assessment = assess_edge_specificity(
+        op,
+        source_model=source_model,
+        target_model=target_model,
+    )
+    if not assessment.needs_review:
+        metadata = dict(op.metadata or {})
+        metadata.setdefault("edge_specificity_score", assessment.score)
+        return op.model_copy(update={"metadata": metadata})
+
+    metadata = dict(op.metadata or {})
+    metadata.setdefault("edge_specificity_score", assessment.score)
+    metadata.setdefault("edge_specificity_reasons", list(assessment.reasons))
+    metadata.setdefault("review_status_downgraded_by", "edge_specificity_guard")
+    return op.model_copy(
+        update={
+            "review_status": "needs_review",
             "metadata": metadata,
         }
     )
@@ -266,4 +411,61 @@ def _endpoint_semantic_text(endpoint_text: EdgeEndpointText) -> str:
     )
 
 
-__all__ = ["canonicalize_edge_semantics", "normalize_edge_review_status"]
+def _endpoint_scope_count(model: Any | None) -> int:
+    if model is None:
+        return 0
+    scope_actors = _model_value(model, "scope_actors") or []
+    scope_entities = _model_value(model, "scope_entities") or []
+    return _safe_len(scope_actors) + _safe_len(scope_entities)
+
+
+def _endpoint_tags(model: Any | None) -> set[str]:
+    if model is None:
+        return set()
+    tags: set[str] = set()
+    for value in _string_list(_model_value(model, "domain_tags")):
+        tags.add(_tagify(value))
+    prop = _model_value(model, "proposition")
+    if isinstance(prop, dict):
+        for key in ("coverage_roles", "retrieval_tags", "domain_tags"):
+            for value in _string_list(prop.get(key)):
+                tags.add(_tagify(value))
+        claim_role = prop.get("claim_role")
+        if claim_role:
+            tags.add(_tagify(str(claim_role)))
+    claim_role = _model_value(model, "claim_role")
+    if claim_role:
+        tags.add(_tagify(str(claim_role)))
+    return tags
+
+
+def _model_value(model: Any, key: str) -> Any:
+    if isinstance(model, dict):
+        return model.get(key)
+    try:
+        return model[key]
+    except (TypeError, KeyError, IndexError):
+        return getattr(model, key, None)
+
+
+def _safe_len(value: Any) -> int:
+    return len(value) if isinstance(value, (list, tuple, set, dict)) else 0
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    return [str(item) for item in value if str(item or "").strip()]
+
+
+def _tagify(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+
+
+__all__ = [
+    "EdgeSpecificityAssessment",
+    "assess_edge_specificity",
+    "canonicalize_edge_semantics",
+    "enforce_edge_specificity",
+    "normalize_edge_review_status",
+]

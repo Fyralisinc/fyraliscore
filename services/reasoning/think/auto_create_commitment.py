@@ -221,6 +221,8 @@ def maybe_inject_future_prediction(
     """
     if trigger.kind != "T1" or trigger.observation_id is None:
         return raw_diff
+    if trigger.subkind == "event_batch" or trigger.member_trigger_ids:
+        return raw_diff
     if _has_prediction_for_trigger(raw_diff, trigger.observation_id):
         return raw_diff
 

@@ -65,6 +65,7 @@ _ACTS_COMPILED_DECISION_CHAR_BUDGET = _env_int(
     3000,
 )
 _RESOURCES_CHAR_BUDGET = _env_int("THINK_RESOURCES_CHAR_BUDGET", 1000)
+_SUBSTRATE_CHAR_BUDGET = _env_int("THINK_SUBSTRATE_CHAR_BUDGET", 3500)
 # Previously-unbudgeted sections (cost-plan §1.3 tail protection). The
 # relationship-candidates cap layers a char budget on top of the existing
 # count cap; both fold into the same "omitted" marker.
@@ -96,9 +97,15 @@ Core discipline:
   evidence.
 - Scope every inserted Model. Empty scope_actors plus empty scope_entities makes
   memory invisible and should be rare.
-- Keep diffs small. Most single events warrant 0-3 claim_ops, 0-1 edge_ops,
-  and 0 act_ops. Batch or graph-anchor calls may legitimately need 2-4
-  edge_ops when several selected Model relationships changed. Empty diffs are
+- <candidate_substrate> contains evidence-backed provisional company objects.
+  You may use its exact `scope_ref` values in scope_entities when canonical
+  actors/customers/workstreams/commitments/systems/vendors/patterns are not yet
+  available. Candidate refs are not canonical truth: never put candidate UUIDs
+  in scope_actors, and never rewrite a candidate UUID into another type.
+- Keep diffs small. Most single events warrant 0-3 claim_ops, 0-1
+  relation_claim_ops/edge_ops, 0-1 relation_frame_ops, and 0 act_ops. Batch
+  or graph-anchor calls may legitimately need 2-4 relation claims when several
+  selected Model relationships changed. Empty diffs are
   valid when memory already captures the event and no state/action/relationship
   should change.
 - For T1 event batches, read the whole batch as evidence but do not emit an op
@@ -136,6 +143,9 @@ Diff schema (you produce EXACTLY this JSON shape):
   "trigger_ref": "<uuid echoed from triggering_event>",
   "tenant_id": "<uuid echoed from triggering_event>",
   "claim_ops": [],
+  "memory_lifecycle_ops": [],
+  "relation_claim_ops": [],
+  "relation_frame_ops": [],
   "edge_ops": [],
   "ontology_gap_ops": [],
   "act_ops": [],
@@ -153,7 +163,7 @@ claim_ops.insert entry shape (you produce EXACTLY these fields):
     "natural": "<human-readable 1-2 sentence restatement>",
     "confidence": 0.05-0.95,
     "scope_actors": ["<uuid>", ...],
-    "scope_entities": [{"type":"customer|commitment|goal|decision|resource","id":"<uuid>"}],
+    "scope_entities": [{"type":"customer|commitment|goal|decision|resource|candidate_actor|candidate_actor_alias|candidate_customer|candidate_workstream|candidate_system|candidate_vendor|candidate_commitment|candidate_pattern","id":"<uuid>"}],
     "scope_temporal": {"valid_from":"<ISO-8601>","valid_until":"<ISO-8601|null>"},
     "falsifier": {"kind":"<falsifier kind>", "...":"..."} | null
   }
@@ -221,7 +231,7 @@ Stance/grammar rubric:
 - Use `belief` + `claim_role="situation"` when multiple selected Models/edges
   form one operational condition that matters as a composite. Situation
   member_model_ids must be existing Model ids from <models>; do not use
-  situations for simple pairwise links that should be edge_ops.
+  situations for simple pairwise links that should be relation_claim_ops.
 - Use `belief` + `claim_role="capability"` for evidenced skill/capacity/trust,
   `claim_role="pattern"` for repeated behavior, and `claim_role="hypothesis"`
   for uncertain motive or constraint explanations.
@@ -257,6 +267,10 @@ Model Scope:
   handles (PR #847, ENG-501) to the matching commitment UUID in <acts>. Customer
   names resolve to relational resources. Customer-specific commitment signals
   should usually include both customer and commitment entities.
+- When no canonical UUID exists, use an exact candidate `scope_ref` from
+  <candidate_substrate> in scope_entities. This is preferred over leaving scope
+  empty for meaningful actor/customer/workstream/system/vendor/commitment/pattern
+  claims, but it remains provisional and should not be treated as canonical.
 - If a signal names a commitment/customer/goal/decision by title, handle, or
   obvious phrase, include the matching UUID from context. Never use raw ticket
   ids or PR numbers as scope entity ids.
@@ -298,18 +312,114 @@ Model granularity:
   distinct claims such as "approved" and "edge case needs a test".
 - Before inserting a same-scope claim, check selected Models for an existing
   belief that the signal confirms, updates, weakens, contradicts, or supersedes.
-  Prefer claim_ops.update, archive, or edge_ops over a duplicate sibling Model.
+  Prefer memory_lifecycle_ops, claim_ops.update, archive, or relation_claim_ops
+  over a duplicate sibling Model.
   Archive only with a registered lifecycle reason such as `decay`, `superseded`,
   `contested_incorrect`, `resolved_confirmed`, or `severe_drift`.
 - Repeated evidence for the same operational reality should strengthen the
   existing Model's evidence trail; only insert a new Model when the signal adds
   a materially new belief, forecast, blocker, or causal explanation.
+- Repeated wording is not enough to call two facts duplicates. First bind the
+  observation to actor/action/object/work-item/repo/source/thread/time context.
+  "raised a PR" for different actors, issues, repos, threads, or workstreams is
+  different company meaning and should become distinct evidence, distinct
+  models, or a recurrence/pattern model rather than a silent no-op.
+- When repetition itself is meaningful, prefer a pattern/source-digest claim
+  with `claim_role="pattern"`, `time_mode="recurring"`, and domain tags such as
+  contextual_recurrence, source_digest, review_loop, delivery_risk,
+  coordination_debt, finance_flow, or operational_churn.
 - A new T1 signal that asserts progress, approval, review feedback, a blocker,
   a concrete concern, a customer stance, or a dated plan usually deserves a
   claim_ops.insert even when no act transition is warranted. Do not no-op merely
   because the event is "only" a review, comment, suggestion, progress update, or
   plan. No-op T1 only when the observation is non-substantive or an existing
   selected Model already captures the same fact at suitable confidence.
+
+memory_lifecycle_ops:
+{ "op":"reconcile",
+  "model_id":"<existing model uuid>",
+  "action":"confirm|falsify|revise|unchanged|archive|supersede",
+  "evidence_event_ids":["<observation uuid>",...],
+  "evidence_model_ids":["<model uuid>",...],
+  "confidence_delta":-1.0-1.0|null,
+  "confidence":0.0-1.0|null,
+  "resolution_outcome":true|false|null,
+  "rationale":"<why this existing memory changed or was checked>",
+  "reason":"<archive reason|null>",
+  "superseded_by_model_id":"<replacement model uuid|null>",
+  "metadata":{} }
+- Use memory_lifecycle_ops when a selected existing prediction, situation,
+  pattern, concern, recommendation, or compressed memory is confirmed,
+  contradicted, resolved, revised, unchanged after review, archived, or
+  superseded by the triggering evidence.
+- Use action="confirm" or "falsify" for predictions whose outcome is now known.
+  This compiles to confidence/count updates plus resolution_outcome for
+  prediction Models.
+- Use action="revise" when new evidence materially changes confidence or
+  evidence support without requiring a new sibling Model. Use action="unchanged"
+  when a selected memory was explicitly evaluated and remains valid.
+- Use action="archive" only with a registered lifecycle reason. Use
+  action="supersede" with superseded_by_model_id when a replacement Model exists.
+
+relation_claim_ops:
+{ "op":"upsert",
+  "source_model_id":"<model uuid|null>",
+  "target_model_id":"<model uuid|null>",
+  "subject_ref":{"kind":"model|text","model_id":"<uuid optional>","text":"<span optional>"},
+  "object_ref":{"kind":"model|text","model_id":"<uuid optional>","text":"<span optional>"},
+  "predicate":"<relation verb, usually same as edge_kind>",
+  "edge_kind":"supports|contradicts|weakens|causes|explains|predicts|blocks|enables|same_issue_as|co_occurs_with|analogous_to|alternative_to|early_warning_for|instance_of|contributes_to_resolution|superseded_by",
+  "direction":"source_to_target|target_to_source|symmetric|unknown",
+  "endpoint_binding_status":"bound|partially_bound|unbound|ambiguous",
+  "write_policy":"accepted_edge|candidate|needs_review|no_edge",
+  "status":"active|accepted|candidate|needs_review|rejected|retired",
+  "confidence":0.0-1.0, "binding_confidence":0.0-1.0,
+  "evidence_event_ids":["<observation uuid>",...],
+  "evidence_model_ids":["<model uuid>",...],
+  "evidence_text":"<grounded evidence span>",
+  "explanation":"<why this relation is true>", "metadata":{} }
+- Prefer relation_claim_ops for relationship-bearing facts. A bound,
+  high-confidence relation claim with write_policy="accepted_edge" writes a
+  durable model_edges row in the same transaction, while preserving the
+  relation claim lifecycle for future learning.
+- Use write_policy="candidate" or "needs_review" when the predicate is valuable
+  but endpoint binding, direction, or mechanism is not decisive enough.
+- Use write_policy="no_edge" only when explicitly recording why a tempting
+  relation should not become graph truth.
+
+relation_frame_ops:
+{ "op":"upsert",
+  "relation_kind":"blocked_workstream",
+  "participants":[
+    {"model_id":"<uuid>","role":"blocker","binding_confidence":0.0-1.0},
+    {"model_id":"<uuid>","role":"blocked_work","binding_confidence":0.0-1.0},
+    {"model_id":"<uuid>","role":"owner","binding_confidence":0.0-1.0},
+    {"model_id":"<uuid>","role":"downstream_risk","binding_confidence":0.0-1.0},
+    {"model_id":"<uuid>","role":"possible_resolution","binding_confidence":0.0-1.0}
+  ],
+  "participant_binding_status":"bound|partially_bound|unbound|ambiguous",
+  "write_policy":"project_edges|candidate|needs_review|no_projection",
+  "status":"active|candidate|accepted|needs_review|disputed|rejected|retired",
+  "confidence":0.0-1.0,
+  "evidence_event_ids":["<observation uuid>",...],
+  "evidence_model_ids":["<model uuid>",...],
+  "evidence_text":"<grounded evidence span>",
+  "explanation":"<why these Models participate in one relation frame>" }
+- Use relation_frame_ops when one relation needs 3+ typed participant roles,
+  not just one source and one target. Example: a DPA blocker, a HubSpot import,
+  the owner, a launch-date risk, and a legal approval path are one
+  blocked_workstream frame.
+- Use relation_claim_ops for simple pairwise relationships. Do not wrap a
+  two-model `blocks`, `contradicts`, or `supports` relation in a frame.
+- Use relation_kind="blocked_workstream" only when the roles are clear. With
+  write_policy="project_edges" and status="accepted", the system stores the
+  frame and deterministically projects only precise binary edges:
+  blocker->blocked_work as blocks, blocked_work->downstream_risk as
+  early_warning_for, and possible_resolution->blocker as
+  contributes_to_resolution. Owner/accountable roles remain frame participants
+  unless an explicit registered edge kind is also warranted.
+- Use write_policy="candidate" or "needs_review" when the group relation is
+  meaningful but one participant role, mechanism, or projection is uncertain.
 
 edge_ops:
 { "op":"add|retire", "source_model_id":"<uuid>", "target_model_id":"<uuid>",
@@ -319,10 +429,18 @@ edge_ops:
   "evidence_model_ids":["<model uuid>",...],
   "explanation":"<grounded reason>", "metadata":{},
   "review_status":"accepted|candidate|needs_review|disputed", "reason":"<for retire>" }
-- Use edge_ops for relationships between Models: support, contradiction,
+- Direct edge_ops are the compatibility surface for relationships between Models:
+  support, contradiction,
   weakening, causal/explanatory links, blockers/enablers, shared issues,
   co-occurrence, analogy, alternatives, early warnings, instance_of,
   contributes_to_resolution, superseded_by.
+- Treat operational edge kinds as the durable graph backbone, preferably via
+  relation_claim_ops:
+  blocks, explains, weakens, contradicts, early_warning_for,
+  contributes_to_resolution, enables, and supports. Similarity kinds
+  (same_issue_as, analogous_to, co_occurs_with) are weak/review-only and
+  should not substitute for a real blocker, warning, contradiction,
+  explanation, or resolution relation.
 - Relationship decision contract: when graph-selected Models or candidate
   member Models are relevant, explicitly choose one of:
   (a) emit the sharpest registered edge_op;
@@ -334,6 +452,9 @@ edge_ops:
 - Prefer the sharpest true edge. Use co_occurs_with/same_issue_as/analogous_to
   only when the evidence does not justify a causal, blocking, explanatory,
   weakening, contradiction, warning, enabling, or resolution relationship.
+- If the explanation would say "similar but not a direct dependency/causal
+  relation", prefer `no edge:` unless the similarity itself is
+  decision-relevant enough to keep as a candidate.
 - Quick edge-kind guide: `blocks` = source prevents target progress;
   `explains` = source is the mechanism/reason for target; `weakens` =
   source is counterevidence against target; `contradicts` = both cannot be
@@ -387,7 +508,7 @@ ontology_gap_ops:
   and grounded, but no registered edge_kind preserves its decision-relevant
   semantics. This writes a pre-truth edge-type candidate, not an accepted edge.
 - Do NOT use ontology_gap_ops for registered edge kinds. If `supports`,
-  `blocks`, `contradicts`, etc. is precise enough, use edge_ops.
+  `blocks`, `contradicts`, etc. is precise enough, use relation_claim_ops.
 - Good examples: `gated_by_decision`, `depends_on_assumption`,
   `trades_off_with`, `competes_for_priority_with`, `transfers_risk_to`,
   `obscures`, `proxy_for`, `lags`, `accountable_for`, `reinforces`.
@@ -402,8 +523,8 @@ Return only well-formed JSON, no prose outside the JSON object.
 _CLAIMS_ONLY_SYSTEM_PROMPT = """\
 You are the reasoning component of Company OS. This compact pass can only emit
 claim_ops.insert entries or an empty diff. Do not emit edge_ops, act_ops,
-resource_ops, or predictions in this pass; explain omitted action/edge reasoning
-briefly in reasoning_trace when relevant.
+resource_ops, memory_lifecycle_ops, or predictions in this pass; explain omitted
+action/edge/lifecycle reasoning briefly in reasoning_trace when relevant.
 
 Core discipline:
 - Every claim must be traceable to the triggering Observation or an existing
@@ -415,6 +536,9 @@ Core discipline:
 - Self-report is not verification; do not mark work verified from self-report.
 - Scope every inserted Model. Empty scope_actors plus empty scope_entities makes
   memory invisible and should be rare.
+- <candidate_substrate> contains evidence-backed provisional company objects.
+  Use its exact `scope_ref` values in scope_entities when no canonical UUID is
+  available; never place candidate UUIDs in scope_actors.
 - Empty diffs are valid only when selected memory already captures the signal or
   the signal is non-substantive. If selected context is irrelevant to an empty
   or non-empty diff, reasoning_trace must cite at least one selected full UUID
@@ -428,6 +552,11 @@ Core discipline:
   no-op candidates as the primary advisory decision surface. Do not emit edge,
   act, resource, or prediction ops from this compact schema; mention omitted
   non-claim candidates in reasoning_trace when relevant.
+- If a selected prediction, situation, pattern, recommendation, or compressed
+  memory should be confirmed, falsified, revised, archived, or superseded, do
+  not create a duplicate claim just because this compact schema cannot emit
+  memory_lifecycle_ops. Cite the exact Model UUID and the omitted lifecycle
+  action in reasoning_trace.
 
 Return exactly this JSON shape:
 {
@@ -446,7 +575,7 @@ claim_ops.insert entry shape:
     "natural": "<human-readable 1-2 sentence restatement>",
     "confidence": 0.05-0.95,
     "scope_actors": ["<uuid>", ...],
-    "scope_entities": [{"type":"customer|commitment|goal|decision|resource","id":"<uuid>"}],
+    "scope_entities": [{"type":"customer|commitment|goal|decision|resource|candidate_actor|candidate_actor_alias|candidate_customer|candidate_workstream|candidate_system|candidate_vendor|candidate_commitment|candidate_pattern","id":"<uuid>"}],
     "scope_temporal": {"valid_from":"<ISO-8601>","valid_until":"<ISO-8601|null>"},
     "falsifier": {"kind":"<falsifier kind>", "...":"..."} | null
   }
@@ -503,9 +632,10 @@ Scope:
   commitment owner, or <actors_in_context>. External senders usually use [].
 - Actor claims must be directly evidenced or supported by repeated actor
   context; do not infer motives or hidden psychology from one message.
-- scope_entities comes from <acts>, <resources>, or customer_context. Resolve PR
-  numbers and ticket IDs to matching commitment UUIDs in <acts>; customer names
-  to relational resources; goal phrases to goals. Never invent UUIDs.
+- scope_entities comes from <acts>, <resources>, customer_context, or exact
+  candidate refs in <candidate_substrate>. Resolve PR numbers and ticket IDs to
+  matching commitment UUIDs in <acts>; customer names to relational resources;
+  goal phrases to goals. Never invent UUIDs.
 - Customer-specific commitment signals should usually include both customer and
   commitment entities when both are available.
 
@@ -597,6 +727,14 @@ def _packet_suppresses_t1_raw_observations(
 def _suppress_raw_trigger_text(trigger: TriggerContext, bundle: ContextBundle) -> bool:
     if not trigger.is_batch:
         return False
+    notes = bundle.notes if isinstance(bundle.notes, dict) else {}
+    selection = notes.get("observation_selection")
+    if (
+        isinstance(selection, dict)
+        and selection.get("floor_reason")
+        == "explicit_t1_event_batch_raw_evidence_floor"
+    ):
+        return False
     return _packet_suppresses_t1_raw_observations(_inquiry_context_packet(bundle))
 
 
@@ -610,6 +748,9 @@ _DIFF_SHAPE_SKELETON = """Diff schema (you produce EXACTLY this JSON shape):
   "trigger_ref": "<uuid echoed from triggering_event>",
   "tenant_id": "<uuid echoed from triggering_event>",
   "claim_ops": [],
+  "memory_lifecycle_ops": [],
+  "relation_claim_ops": [],
+  "relation_frame_ops": [],
   "edge_ops": [],
   "ontology_gap_ops": [],
   "act_ops": [],
@@ -620,9 +761,11 @@ _DIFF_SHAPE_SKELETON = """Diff schema (you produce EXACTLY this JSON shape):
 
 _DIFF_SHAPE_POINTER = (
     "Diff schema: the strict tool schema enforces the exact top-level shape "
-    "(trigger_ref, tenant_id, claim_ops, edge_ops, ontology_gap_ops, resource_ops, "
-    "new_predictions, reasoning_trace). Act ops are available in the full RawDiff "
-    "schema but omitted from this strict tool surface."
+    "(trigger_ref, tenant_id, claim_ops, memory_lifecycle_ops, relation_claim_ops, "
+    "relation_frame_ops, edge_ops, "
+    "ontology_gap_ops, resource_ops, new_predictions, reasoning_trace). Act ops "
+    "are available in the full RawDiff schema but omitted from this strict tool "
+    "surface."
 )
 
 
@@ -1141,7 +1284,8 @@ def _build_context_section(
         )
         if used + len(piece) > acts_budget:
             break
-        act_parts.append(piece); used += len(piece)
+        act_parts.append(piece)
+        used += len(piece)
     for c in bundle.acts_summary.get("commitments", []):
         if c.owner_id is not None:
             actor_mentions[str(c.owner_id)] = (
@@ -1154,7 +1298,8 @@ def _build_context_section(
         )
         if used + len(piece) > acts_budget:
             break
-        act_parts.append(piece); used += len(piece)
+        act_parts.append(piece)
+        used += len(piece)
     for d in bundle.acts_summary.get("decisions", []):
         piece = (
             f"    - decision id={d.id} state={d.state} "
@@ -1162,7 +1307,8 @@ def _build_context_section(
         )
         if used + len(piece) > acts_budget:
             break
-        act_parts.append(piece); used += len(piece)
+        act_parts.append(piece)
+        used += len(piece)
     act_parts.append("  </acts>")
     lines.extend(act_parts)
 
@@ -1180,9 +1326,12 @@ def _build_context_section(
         )
         if used + len(piece) > _RESOURCES_CHAR_BUDGET:
             break
-        res_parts.append(piece); used += len(piece)
+        res_parts.append(piece)
+        used += len(piece)
     res_parts.append("  </resources>")
     lines.extend(res_parts)
+
+    lines.extend(_build_candidate_substrate_section(bundle))
 
     # Actors in context — distinct actor UUIDs drawn from observations,
     # existing Models' scope, and commitment owners. This is the
@@ -1313,6 +1462,64 @@ def _build_compiled_observation_manifest(
             "(bodies omitted by compiled decision prompt)"
         )
     lines.append("  </observations>")
+    return lines
+
+
+def _build_candidate_substrate_section(bundle: ContextBundle) -> list[str]:
+    lines = ["  <candidate_substrate>"]
+    candidates = []
+    notes = bundle.notes if isinstance(bundle.notes, dict) else {}
+    raw_candidates = notes.get("substrate_candidates") or []
+    if isinstance(raw_candidates, list):
+        candidates = [item for item in raw_candidates if isinstance(item, dict)]
+    if not candidates:
+        lines.append(
+            "    [no provisional substrate candidates available from this "
+            "context]"
+        )
+        lines.append("  </candidate_substrate>")
+        return lines
+
+    used = 0
+    for candidate in candidates:
+        scope_ref = candidate.get("scope_ref")
+        kind = str(candidate.get("kind") or "").strip()
+        candidate_id = str(candidate.get("id") or "").strip()
+        if not isinstance(scope_ref, dict) and kind and candidate_id:
+            scope_ref = {"type": f"candidate_{kind}", "id": candidate_id}
+        if not isinstance(scope_ref, dict):
+            continue
+        aliases = candidate.get("aliases") or []
+        evidence_ids = candidate.get("evidence_observation_ids") or []
+        metadata = candidate.get("metadata") or {}
+        compact_metadata = {
+            key: metadata.get(key)
+            for key in (
+                "basis",
+                "source_root",
+                "action",
+                "object_key",
+                "count_in_context",
+                "actor_fingerprints",
+            )
+            if isinstance(metadata, dict) and metadata.get(key) not in (None, [], {})
+        }
+        piece = (
+            "    - "
+            f"scope_ref={json.dumps(scope_ref, sort_keys=True)} "
+            f"label={_trunc(str(candidate.get('label') or ''), 120)} "
+            f"confidence={candidate.get('confidence')} "
+            f"status={candidate.get('status') or 'proposed'} "
+            f"aliases={_trunc(json.dumps(aliases[:3], default=str), 360)} "
+            f"evidence_observation_ids={evidence_ids[:6]} "
+            f"metadata={_trunc(json.dumps(compact_metadata, default=str), 360)}"
+        )
+        if used + len(piece) > _SUBSTRATE_CHAR_BUDGET:
+            lines.append("    - [truncated — more candidate substrate omitted]")
+            break
+        lines.append(piece)
+        used += len(piece)
+    lines.append("  </candidate_substrate>")
     return lines
 
 
@@ -1447,15 +1654,34 @@ def _format_model_row(
     return (
         f"    - id={model_id} detail={detail_label} "
         f"kind={getattr(model, 'proposition_kind', 'unknown')} "
+        f"role={getattr(model, 'claim_role', None) or 'unknown'} "
         f"retrieval={_retrieval_tags(model_id, selected_model_ids, graph_model_ids)} "
         f"conf={_score(getattr(model, 'confidence', None))} "
         f"act={_score(getattr(model, 'activation', None))} "
         f"falsifier={falsifier_kind} "
         f"status={getattr(model, 'status', 'unknown')} "
+        f"lifecycle={_model_lifecycle_repr(model)} "
         f"scope_actors={scope_actors_repr} "
         f"scope_entities={scope_entities_repr} "
         f"{text_label}={_trunc(natural, text_limit)}"
     )
+
+
+def _model_lifecycle_repr(model: Any) -> str:
+    parts: list[str] = []
+    for key in (
+        "evaluate_at",
+        "resolved_at",
+        "resolution_outcome",
+        "last_confirmed_at",
+        "confirmed_count",
+        "contested_count",
+    ):
+        value = getattr(model, key, None)
+        if value is None:
+            continue
+        parts.append(f"{key}={value}")
+    return "{" + ",".join(parts) + "}" if parts else "{}"
 
 
 def _model_id(model: Any) -> str:
@@ -1708,7 +1934,8 @@ def _build_retrieval_guidance_section(
             )
             lines.append(
                 "    For candidate target/evidence Models, emit the sharpest "
-                "needed edge/update or write no-op rationale by candidate id."
+                "needed relation claim/frame/update or write no-op rationale "
+                "by candidate id."
             )
         lines.append("  </retrieval_priority>")
         return lines
@@ -1731,16 +1958,19 @@ def _build_retrieval_guidance_section(
             "connections. Before returning an empty diff or an observation-only "
             "claim, test whether the trigger confirms, weakens, contradicts, "
             "blocks, enables, explains, or warns about any graph_anchor Models. "
-            "If it does, use existing Model UUIDs in claim_ops.update, "
-            "edge_ops, act confidence_basis, or evidence_model_ids."
+            "If it does, use existing Model UUIDs in memory_lifecycle_ops, "
+            "claim_ops.update, relation_claim_ops, relation_frame_ops, act "
+            "confidence_basis, or evidence_model_ids."
         )
         lines.append(
             "    Co-selection is NOT itself a stored graph connection. If the "
             "trigger explicitly says one graph-anchor Model blocks, causes, "
-            "enables, explains, warns about, or contradicts another, add an "
-            "edge_ops entry. For 'blocked by', missing prerequisite, or 'at "
-            "risk because' language, prefer edge_kind='blocks' or 'causes' "
-            "over generic supports/explains."
+            "enables, explains, warns about, or contradicts another, add a "
+            "relation_claim_ops entry. If the relation has 3+ typed roles "
+            "that matter together, use relation_frame_ops instead. For "
+            "'blocked by', missing prerequisite, or 'at risk because' "
+            "language, prefer edge_kind='blocks' or 'causes' over generic "
+            "supports/explains."
         )
         lines.append(
             "    Preserve explicit relationship semantics. Use 'blocks' for "
@@ -1787,16 +2017,18 @@ def _build_retrieval_guidance_section(
         lines.append(
             "    Relationship decision contract: for each important graph "
             "anchor pair or new-claim-to-anchor link, emit the sharpest "
-            "edge_op, emit an ontology_gap_op, update/archive the existing "
-            "Model if that is stronger, or write `no edge:` with the full "
-            "UUIDs and reason in reasoning_trace. A relational insight should "
-            "not remain only as prose."
+            "relation_claim_op or relation_frame_op, emit an ontology_gap_op, "
+            "update/archive the existing Model if that is stronger, or write "
+            "`no edge:` with the full UUIDs and reason in reasoning_trace. A "
+            "relational insight should not remain only as prose."
         )
     lines.append(
         "    Context accountability: for every non-empty diff, selected "
-        "context should either appear in claim_ops.update, edge_ops, "
-        "evidence_model_ids, evidence_event_ids, act confidence_basis, or "
-        "resource reasoning. If selected context is irrelevant, "
+        "context should either appear in memory_lifecycle_ops, claim_ops.update, "
+        "relation_claim_ops, relation_frame_ops, evidence_model_ids, "
+        "evidence_event_ids, act confidence_basis, or resource reasoning. "
+        "If selected context is "
+        "irrelevant, "
         "reasoning_trace must name at least one selected/graph Model or "
         "selected Observation by full UUID and briefly say why that context "
         "did not warrant a state change, edge, action, or resource change."
@@ -2142,10 +2374,11 @@ def _internal_reflection_instructions(trigger: TriggerContext) -> str:
             header
             + "\n\n"
             "Intent: evaluate an existing prediction Model whose "
-            "evaluate_at has passed. Resolve the prediction: update "
-            "confidence, set resolved_at / resolution_outcome, adjust "
-            "contributors, and propagate only materially supported "
-            "dependent updates."
+            "evaluate_at has passed. Resolve the prediction with "
+            "memory_lifecycle_ops action='confirm' or action='falsify' when "
+            "possible; otherwise use claim_ops.update to set confidence, "
+            "resolved_at, resolution_outcome, contributors, and propagate only "
+            "materially supported dependent updates."
         )
     if job.intent == "explain_inconsistency":
         return (
@@ -2294,10 +2527,11 @@ def _build_instructions(trigger: TriggerContext) -> str:
         "Reminder before you emit each claim_ops.insert entry: populate "
         "scope_actors and scope_entities by pulling UUIDs from the context "
         "sections above (observations' actor_id, acts, resources, "
-        "customer_context, actors_in_context). If the signal names a PR or "
-        "ticket (e.g., 'PR #847', 'ENG-501'), resolve the handle to the "
-        "commitment in <acts> and include that commitment's UUID in "
-        "scope_entities. Do NOT invent UUIDs."
+        "customer_context, actors_in_context, and candidate_substrate). If "
+        "the signal names a PR or ticket (e.g., 'PR #847', 'ENG-501'), "
+        "resolve the handle to the commitment in <acts> when present; "
+        "otherwise use the exact candidate_commitment/workstream scope_ref "
+        "from <candidate_substrate>. Do NOT invent UUIDs."
     )
     body.append(
         "Retrieval discipline: when <retrieval_priority> names selected or "

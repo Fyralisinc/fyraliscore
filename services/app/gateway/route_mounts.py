@@ -12,6 +12,7 @@ log = get_logger("gateway")
 
 def register_gateway_routes(app: FastAPI) -> None:
     """Mount route families that used to live inline in ``main.py``."""
+    from services.app.gateway.clarifications_router import build_clarifications_router
     from services.app.gateway.contest_router import build_contest_router
     from services.app.gateway.core_router import build_core_router
     from services.app.gateway.dashboard_router import build_dashboard_router
@@ -28,6 +29,7 @@ def register_gateway_routes(app: FastAPI) -> None:
     from services.app.gateway.whatsapp_router import build_whatsapp_router
 
     app.include_router(build_core_router())
+    app.include_router(build_clarifications_router())
     app.include_router(build_substrate_router())
     app.include_router(build_contest_router())
     app.include_router(build_dashboard_router())

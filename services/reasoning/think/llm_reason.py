@@ -36,6 +36,7 @@ from services.reasoning.retrieval.primary import TriggerContext
 from .compiled_reasoning import (
     BatchMemoryDecisionSet,
     RelationshipCandidateDecisionSet,
+    apply_relation_lifecycle_kernel,
     build_compiled_batch_memory_decision_request,
     build_compiled_relationship_candidate_request,
     compiled_batch_memory_decision_enabled,
@@ -85,6 +86,20 @@ async def llm_reason(
         if compiled is not None:
             from .deterministic import _trigger_ref  # type: ignore
 
+            if not compiled.requires_llm:
+                return (
+                    apply_relation_lifecycle_kernel(
+                        compiled.to_raw_diff(
+                            RelationshipCandidateDecisionSet(decisions=[]),
+                            trigger=trigger,
+                            trigger_ref=_trigger_ref(trigger),
+                        ),
+                        trigger=trigger,
+                        bundle=bundle,
+                    ),
+                    0,
+                )
+
             decision_set, elapsed_ms = await _structured_with_reasoning_retries(
                 provider=provider,
                 system=compiled.system,
@@ -98,10 +113,14 @@ async def llm_reason(
                 max_attempts=max_attempts,
             )
             return (
-                compiled.to_raw_diff(
-                    decision_set,
+                apply_relation_lifecycle_kernel(
+                    compiled.to_raw_diff(
+                        decision_set,
+                        trigger=trigger,
+                        trigger_ref=_trigger_ref(trigger),
+                    ),
                     trigger=trigger,
-                    trigger_ref=_trigger_ref(trigger),
+                    bundle=bundle,
                 ),
                 elapsed_ms,
             )
@@ -123,10 +142,14 @@ async def llm_reason(
                 max_attempts=max_attempts,
             )
             return (
-                compiled_batch.to_raw_diff(
-                    decision_set,
+                apply_relation_lifecycle_kernel(
+                    compiled_batch.to_raw_diff(
+                        decision_set,
+                        trigger=trigger,
+                        trigger_ref=_trigger_ref(trigger),
+                    ),
                     trigger=trigger,
-                    trigger_ref=_trigger_ref(trigger),
+                    bundle=bundle,
                 ),
                 elapsed_ms,
             )
@@ -159,7 +182,13 @@ async def llm_reason(
         max_tokens=effective_max_tokens,
         max_attempts=max_attempts,
     )
-    return _coerce_raw_diff(diff_like), elapsed_ms
+    raw_diff = _coerce_raw_diff(diff_like)
+    raw_diff = apply_relation_lifecycle_kernel(
+        raw_diff,
+        trigger=trigger,
+        bundle=bundle,
+    )
+    return raw_diff, elapsed_ms
 
 
 async def _structured_with_reasoning_retries(
@@ -309,7 +338,11 @@ def _coerce_raw_diff(diff: RawDiff | RawDiffClaimsOnly) -> RawDiff:
         trigger_ref=diff.trigger_ref,
         tenant_id=diff.tenant_id,
         claim_ops=list(diff.claim_ops),
+        memory_lifecycle_ops=[],
+        relation_claim_ops=[],
+        relation_frame_ops=[],
         edge_ops=[],
+        ontology_gap_ops=[],
         act_ops=[],
         resource_ops=[],
         new_predictions=[],

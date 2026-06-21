@@ -125,7 +125,15 @@ class _DeterministicEmbedder:
 
 async def _run_migrations(conn: asyncpg.Connection) -> None:
     from lib.shared.migrations import apply_migrations_dir
-    await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+    # Match the top-level integration fixture: local dev/test databases are
+    # long-lived, and older runs may predate the schema_migrations ledger. In
+    # that state, replaying an already-superseded migration can fail even
+    # though later migrations already established the final schema.
+    await apply_migrations_dir(
+        conn,
+        REPO_ROOT / "db" / "migrations",
+        on_error="warn",
+    )
 
 
 async def _truncate_all(conn: asyncpg.Connection) -> None:

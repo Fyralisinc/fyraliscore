@@ -52,6 +52,7 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.skip(reason=reason))
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
+_MIGRATIONS_READY = False
 
 
 pytestmark = pytest.mark.integration
@@ -118,9 +119,16 @@ async def db_pool() -> AsyncGenerator[asyncpg.Pool, None]:
         dsn, min_size=1, max_size=15, init=_init_connection,
     )
     async with pool.acquire() as conn:
-        from lib.shared.migrations import apply_migrations_dir
+        from lib.shared.migrations import (
+            apply_migrations_dir,
+            schema_bootstrap_lock,
+        )
 
-        await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+        global _MIGRATIONS_READY
+        async with schema_bootstrap_lock(conn):
+            if not _MIGRATIONS_READY and not await _schema_looks_ready(conn):
+                await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+            _MIGRATIONS_READY = True
     try:
         yield pool
     finally:
@@ -129,6 +137,29 @@ async def db_pool() -> AsyncGenerator[asyncpg.Pool, None]:
 
 async def _init_connection(conn: asyncpg.Connection) -> None:
     await pgvector_pool_init(conn)
+
+
+async def _schema_looks_ready(conn: asyncpg.Connection) -> bool:
+    rows = await conn.fetch(
+        """
+        SELECT to_regclass(name) IS NOT NULL AS exists
+        FROM unnest($1::text[]) AS name
+        """,
+        [
+            "public.observations",
+            "public.models",
+            "public.model_edges",
+            "public.think_trigger_queue",
+            "public.think_runs",
+            "public.relation_claims",
+            "public.relation_instances",
+            "public.relation_participants",
+            "public.relation_edge_projections",
+            "public.relation_evidence",
+            "public.model_pair_evidence",
+        ],
+    )
+    return bool(rows) and all(row["exists"] for row in rows)
 
 
 @pytest_asyncio.fixture
@@ -195,6 +226,12 @@ async def tenant_cleanup(fresh_db: asyncpg.Pool, tenant: uuid.UUID):
         await conn.execute(
             "DELETE FROM think_run_costs WHERE tenant_id = $1", tenant,
         )
+        if await conn.fetchval(
+            "SELECT to_regclass('public.think_representation_ledger')"
+        ):
+            await conn.execute(
+                "DELETE FROM think_representation_ledger WHERE tenant_id = $1", tenant,
+            )
         await conn.execute(
             "DELETE FROM pending_post_commit_actions WHERE tenant_id = $1", tenant,
         )
@@ -203,6 +240,18 @@ async def tenant_cleanup(fresh_db: asyncpg.Pool, tenant: uuid.UUID):
         )
         await conn.execute(
             "DELETE FROM audit_events WHERE tenant_id = $1", tenant,
+        )
+        await conn.execute(
+            "DELETE FROM relation_edge_projections WHERE tenant_id = $1", tenant,
+        )
+        await conn.execute(
+            "DELETE FROM relation_participants WHERE tenant_id = $1", tenant,
+        )
+        await conn.execute(
+            "DELETE FROM relation_instances WHERE tenant_id = $1", tenant,
+        )
+        await conn.execute(
+            "DELETE FROM relation_claims WHERE tenant_id = $1", tenant,
         )
         await conn.execute(
             "DELETE FROM model_edges WHERE tenant_id = $1", tenant,

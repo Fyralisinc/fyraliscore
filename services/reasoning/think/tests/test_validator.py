@@ -19,8 +19,12 @@ from services.reasoning.think.diff_schema import (
     ActOp,
     ClaimOp,
     EdgeOp,
+    MemoryLifecycleOp,
     OntologyGapOp,
     RawDiff,
+    RelationClaimOp,
+    RelationFrameOp,
+    RelationFrameParticipantOp,
 )
 from services.reasoning.think.validator import (
     OutOfRegionError, ValidationFailure, validate,
@@ -141,6 +145,72 @@ async def test_validate_accepts_insert_with_good_falsifier_at_high_conf(fresh_db
         )
         validated = await validate(diff, rr, conn, allowed_region=None)
         assert len(validated.claim_ops) == 1
+
+
+async def test_validate_accepts_memory_lifecycle_confirm_with_evidence(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    model_id, observation_id = await _make_model(
+        fresh_db,
+        tenant,
+        confidence=0.6,
+        prop_kind="prediction",
+    )
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            memory_lifecycle_ops=[
+                MemoryLifecycleOp(
+                    model_id=model_id,
+                    action="confirm",
+                    evidence_event_ids=[observation_id],
+                    rationale="The new observation confirms the predicted outcome.",
+                )
+            ],
+        )
+
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.memory_lifecycle_ops) == 1
+    assert validated.memory_lifecycle_ops[0].action == "confirm"
+    assert validated.dropped_op_count == 0
+
+
+async def test_validate_drops_memory_lifecycle_without_evidence_but_keeps_valid_ops(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    model_id, _ = await _make_model(
+        fresh_db,
+        tenant,
+        confidence=0.6,
+        prop_kind="prediction",
+    )
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            memory_lifecycle_ops=[
+                MemoryLifecycleOp(
+                    model_id=model_id,
+                    action="confirm",
+                    rationale="No evidence is cited, so this must be dropped.",
+                )
+            ],
+            claim_ops=[
+                ClaimOp(op="update", model_id=model_id, changes={"confidence": 0.61})
+            ],
+        )
+
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert validated.memory_lifecycle_ops == []
+    assert len(validated.claim_ops) == 1
+    assert validated.dropped_op_count == 1
 
 
 async def test_validate_accepts_registered_archive_reason(fresh_db, tenant):
@@ -1159,6 +1229,124 @@ async def test_validate_promotes_precise_evidence_backed_candidate_edge(
     assert edge.metadata["review_status_promoted_by"] == "edge_semantic_refiner"
 
 
+async def test_validate_promotes_precise_candidate_edge_with_verified_endpoints(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    a, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    b, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            edge_ops=[
+                EdgeOp(
+                    op="add",
+                    source_model_id=a,
+                    target_model_id=b,
+                    edge_kind="blocks",
+                    weight=0.75,
+                    confidence=0.78,
+                    explanation="The DPA approval blocks the HubSpot import.",
+                    review_status="candidate",
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.edge_ops) == 1
+    edge = validated.edge_ops[0]
+    assert edge.edge_kind == "blocks"
+    assert edge.review_status == "accepted"
+    assert edge.metadata["review_status_promoted_by"] == "edge_semantic_refiner"
+    assert edge.metadata["review_status_promoted_evidence"] == "verified_endpoint_models"
+
+
+async def test_validate_promotes_bound_relation_claim_to_accepted_edge_policy(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    a, obs_id = await _make_model(fresh_db, tenant, confidence=0.6)
+    b, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[
+                RelationClaimOp(
+                    op="upsert",
+                    source_model_id=a,
+                    target_model_id=b,
+                    subject_ref={"kind": "model", "model_id": str(a)},
+                    object_ref={"kind": "model", "model_id": str(b)},
+                    predicate="blocks",
+                    edge_kind="blocks",
+                    endpoint_binding_status="bound",
+                    write_policy="candidate",
+                    status="candidate",
+                    confidence=0.74,
+                    binding_confidence=0.88,
+                    evidence_event_ids=[obs_id],
+                    explanation="The DPA approval blocks the HubSpot import.",
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.relation_claim_ops) == 1
+    relation = validated.relation_claim_ops[0]
+    assert relation.edge_kind == "blocks"
+    assert relation.endpoint_binding_status == "bound"
+    assert relation.write_policy == "accepted_edge"
+    assert relation.status == "accepted"
+
+
+async def test_validate_adds_required_weight_for_accepted_relation_claim(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    a, obs_id = await _make_model(fresh_db, tenant, confidence=0.6)
+    b, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[
+                RelationClaimOp(
+                    op="upsert",
+                    source_model_id=a,
+                    target_model_id=b,
+                    subject_ref={"kind": "model", "model_id": str(a)},
+                    object_ref={"kind": "model", "model_id": str(b)},
+                    predicate="weakens",
+                    edge_kind="weakens",
+                    endpoint_binding_status="bound",
+                    write_policy="accepted_edge",
+                    status="accepted",
+                    confidence=0.72,
+                    binding_confidence=0.88,
+                    evidence_event_ids=[obs_id],
+                    evidence_model_ids=[a, b],
+                    explanation=(
+                        "The fresh counterevidence weakens confidence in the "
+                        "original readiness model."
+                    ),
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.relation_claim_ops) == 1
+    relation = validated.relation_claim_ops[0]
+    assert relation.edge_kind == "weakens"
+    assert relation.weight == 0.72
+    assert relation.write_policy == "accepted_edge"
+    assert relation.status == "accepted"
+
+
 async def test_validate_refines_generic_supports_edge_to_blocks(
     fresh_db,
     tenant,
@@ -1189,6 +1377,135 @@ async def test_validate_refines_generic_supports_edge_to_blocks(
     assert edge.edge_kind == "blocks"
     assert edge.weight == 0.75
     assert edge.metadata["canonicalized_from_edge_kind"] == "supports"
+
+
+async def test_validate_refines_generic_supports_relation_claim_to_blocks(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    source_id, _ = await _make_model(fresh_db, tenant, confidence=0.7)
+    target_id, _ = await _make_model(fresh_db, tenant, confidence=0.7)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[
+                RelationClaimOp(
+                    op="upsert",
+                    source_model_id=source_id,
+                    target_model_id=target_id,
+                    predicate="supports",
+                    edge_kind="supports",
+                    endpoint_binding_status="bound",
+                    write_policy="candidate",
+                    confidence=0.72,
+                    evidence_model_ids=[source_id, target_id],
+                    explanation=(
+                        "The source blocks the target until approval is recorded."
+                    ),
+                ),
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.relation_claim_ops) == 1
+    relation = validated.relation_claim_ops[0]
+    assert relation.edge_kind == "blocks"
+    assert relation.predicate == "blocks"
+    assert relation.write_policy == "accepted_edge"
+    assert relation.status == "accepted"
+    assert relation.metadata["canonicalized_from_edge_kind"] == "supports"
+
+
+async def test_validate_relation_frame_accepts_bound_projectable_frame(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    blocker, oid = await _make_model(fresh_db, tenant, confidence=0.8)
+    work, _ = await _make_model(fresh_db, tenant, confidence=0.8)
+    risk, _ = await _make_model(fresh_db, tenant, confidence=0.8)
+    rr = _retrieval_result(tenant)
+    diff = RawDiff(
+        trigger_ref=uuid7(),
+        tenant_id=tenant,
+        relation_frame_ops=[
+            RelationFrameOp(
+                relation_kind="Blocked Workstream",
+                status="candidate",
+                participant_binding_status="partially_bound",
+                write_policy="project_edges",
+                confidence=0.82,
+                participants=[
+                    RelationFrameParticipantOp(
+                        model_id=blocker,
+                        role="Blocker",
+                        binding_confidence=0.9,
+                    ),
+                    RelationFrameParticipantOp(
+                        model_id=work,
+                        role="Blocked Work",
+                        binding_confidence=0.9,
+                    ),
+                    RelationFrameParticipantOp(
+                        model_id=risk,
+                        role="Downstream Risk",
+                        binding_confidence=0.84,
+                    ),
+                ],
+                evidence_event_ids=[oid],
+                evidence_model_ids=[blocker, work, risk],
+                evidence_text="DPA approval blocks the HubSpot import.",
+            )
+        ],
+    )
+    async with fresh_db.acquire() as conn:
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.relation_frame_ops) == 1
+    frame = validated.relation_frame_ops[0]
+    assert frame.relation_kind == "blocked_workstream"
+    assert frame.status == "accepted"
+    assert frame.participant_binding_status == "bound"
+    assert {participant.role for participant in frame.participants} == {
+        "blocked_work",
+        "blocker",
+        "downstream_risk",
+    }
+
+
+async def test_validate_relation_frame_drops_oversized_participant_set(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    model_ids = []
+    for _ in range(13):
+        model_id, _oid = await _make_model(fresh_db, tenant, confidence=0.8)
+        model_ids.append(model_id)
+    rr = _retrieval_result(tenant)
+    diff = RawDiff(
+        trigger_ref=uuid7(),
+        tenant_id=tenant,
+        relation_frame_ops=[
+            RelationFrameOp(
+                relation_kind="oversized_relation",
+                participants=[
+                    RelationFrameParticipantOp(
+                        model_id=model_id,
+                        role=f"role_{index}",
+                    )
+                    for index, model_id in enumerate(model_ids)
+                ],
+                evidence_model_ids=model_ids,
+                evidence_text="Too many participants.",
+            )
+        ],
+    )
+    async with fresh_db.acquire() as conn:
+        with pytest.raises(ValidationFailure):
+            await validate(diff, rr, conn, allowed_region=None)
 
 
 async def test_validate_accepts_accepted_dynamic_edge_kind(fresh_db, tenant):

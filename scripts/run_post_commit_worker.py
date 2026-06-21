@@ -7,6 +7,7 @@ P2-13: exposes /healthz + /metrics (opt-in via INGESTION_HEALTH_PORT, which
 the compose x-app-env anchor already sets) so a hung poll loop goes 503 and
 the WorkerStats counters are scrapeable instead of log-only.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,6 +33,7 @@ from lib.observability.health import (  # noqa: E402
 )
 from lib.observability.metrics import render_default  # noqa: E402
 from lib.observability.pools import register_pool  # noqa: E402
+from services.app.gateway.db_bootstrap import _register_codecs  # noqa: E402
 from services.reasoning.think.post_commit import (  # noqa: E402
     WorkerStats,
     process_batch,
@@ -60,7 +62,12 @@ async def _main() -> None:
     log = structlog.get_logger("dogfood.post_commit_worker")
     dsn = os.environ["DATABASE_URL"]
     poll_s = float(os.environ.get("POST_COMMIT_WORKER_POLL_INTERVAL_S", "5"))
-    pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=4)
+    pool = await asyncpg.create_pool(
+        dsn=dsn,
+        min_size=2,
+        max_size=4,
+        init=_register_codecs,
+    )
     register_pool("post_commit_worker", pool)
 
     shutdown = asyncio.Event()

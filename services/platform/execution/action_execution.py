@@ -162,7 +162,7 @@ async def _execute_question_retrieval_actions(
     if not plans:
         return {}
     if any(
-        "_motif_stage" in action.filters
+        _action_stage(action) is not None
         for plan in plans
         for action in plan.actions_to_run
     ):
@@ -300,7 +300,7 @@ async def _execute_question_retrieval_actions_staged(
         actions_by_stage: dict[int, list[RetrievalAction]] = {}
         for action in plan.actions_to_run:
             try:
-                stage = max(1, int(action.filters.get("_motif_stage") or 1))
+                stage = max(1, int(_action_stage(action) or 1))
             except (TypeError, ValueError):
                 stage = 1
             actions_by_stage.setdefault(stage, []).append(action)
@@ -418,6 +418,17 @@ def _action_timing_note(
         note["motif_utility_score"] = action.filters.get("_motif_utility_score")
         if action.filters.get("_bound_scope"):
             note["bound_scope"] = action.filters.get("_bound_scope")
+    if action.filters.get("_reconstruction_stage"):
+        note["reconstruction_stage"] = action.filters.get("_reconstruction_stage")
+        note["reconstruction_round"] = action.filters.get("_reconstruction_round")
+        note["reconstruction_cue_count"] = action.filters.get(
+            "_reconstruction_cue_count"
+        )
+        note["reconstruction_active_cues"] = action.filters.get(
+            "_reconstruction_active_cues"
+        )
+        if action.filters.get("_bound_scope"):
+            note["bound_scope"] = action.filters.get("_bound_scope")
     if action.filters.get("_reflective_rule_ids"):
         note["reflective_rule_ids"] = action.filters.get("_reflective_rule_ids")
         note["reflective_rule_match_score"] = action.filters.get(
@@ -426,10 +437,23 @@ def _action_timing_note(
     return note
 
 
+def _action_stage(action: RetrievalAction) -> int | None:
+    raw = action.filters.get("_motif_stage")
+    if raw is None:
+        raw = action.filters.get("_reconstruction_stage")
+    if raw is None:
+        return None
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 1
+
+
 __all__ = [
     "_ActionExecutionRecord",
     "_QuestionRetrievalPlan",
     "_action_timing_note",
+    "_action_stage",
     "_execute_action",
     "_execute_question_retrieval_actions",
     "_execute_question_retrieval_actions_serial",

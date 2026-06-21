@@ -294,6 +294,16 @@ def touched_entity_ids_from_diff(
             if mid is not None:
                 entities.add(("model", str(mid)))
 
+    for op in (getattr(diff, "memory_lifecycle_ops", []) or []):
+        model_id = getattr(op, "model_id", None)
+        if model_id is not None:
+            entities.add(("model", str(model_id)))
+        superseded_by_model_id = getattr(op, "superseded_by_model_id", None)
+        if superseded_by_model_id is not None:
+            entities.add(("model", str(superseded_by_model_id)))
+        for model_id in getattr(op, "evidence_model_ids", None) or []:
+            entities.add(("model", str(model_id)))
+
     for op in (getattr(diff, "edge_ops", []) or []):
         source_id = getattr(op, "source_model_id", None)
         target_id = getattr(op, "target_model_id", None)
@@ -301,6 +311,24 @@ def touched_entity_ids_from_diff(
             entities.add(("model", str(source_id)))
         if target_id is not None:
             entities.add(("model", str(target_id)))
+
+    for op in (getattr(diff, "relation_claim_ops", []) or []):
+        source_id = getattr(op, "source_model_id", None)
+        target_id = getattr(op, "target_model_id", None)
+        if source_id is not None:
+            entities.add(("model", str(source_id)))
+        if target_id is not None:
+            entities.add(("model", str(target_id)))
+        for model_id in getattr(op, "evidence_model_ids", None) or []:
+            entities.add(("model", str(model_id)))
+
+    for op in (getattr(diff, "relation_frame_ops", []) or []):
+        for participant in getattr(op, "participants", None) or []:
+            model_id = getattr(participant, "model_id", None)
+            if model_id is not None:
+                entities.add(("model", str(model_id)))
+        for model_id in getattr(op, "evidence_model_ids", None) or []:
+            entities.add(("model", str(model_id)))
 
     for op in (getattr(diff, "ontology_gap_ops", []) or []):
         source_id = getattr(op, "source_model_id", None)

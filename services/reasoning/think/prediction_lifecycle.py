@@ -40,7 +40,15 @@ def prepare_prediction_entry(entry: dict[str, Any]) -> dict[str, Any]:
     resolution = _json_obj(proposition.get("resolution"))
     falsifier = _json_obj(prepared.get("falsifier"))
 
-    if prepared.get("resolution_criteria") is None:
+    resolution_criteria = _normalize_resolution_criteria(
+        prepared.get("resolution_criteria"),
+        proposition=proposition,
+        resolution=resolution,
+        falsifier=falsifier,
+    )
+    if resolution_criteria is not None:
+        prepared["resolution_criteria"] = resolution_criteria
+    else:
         criteria = _prediction_resolution_criteria(proposition, resolution, falsifier)
         if criteria:
             prepared["resolution_criteria"] = criteria
@@ -226,6 +234,39 @@ def _prediction_resolution_criteria(
     )
     if rule:
         criteria["falsification_rule"] = rule
+    return {k: v for k, v in criteria.items() if v not in (None, {}, [])}
+
+
+def _normalize_resolution_criteria(
+    value: Any,
+    *,
+    proposition: dict[str, Any],
+    resolution: dict[str, Any],
+    falsifier: dict[str, Any],
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode()
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        decoded = None
+    if isinstance(decoded, dict):
+        return decoded
+
+    criteria = _prediction_resolution_criteria(proposition, resolution, falsifier)
+    criteria.setdefault("source", "think_prediction_lifecycle")
+    criteria.setdefault("falsification_rule", text)
+    criteria["natural_language_criteria"] = text
     return {k: v for k, v in criteria.items() if v not in (None, {}, [])}
 
 
