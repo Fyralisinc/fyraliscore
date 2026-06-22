@@ -283,6 +283,35 @@ The richest reuse area. The UI must wrap existing machinery and add a catalog + 
 - For org-wide, use the provider's **admin-consent** install so one grant covers the
   workspace.
 
+#### Consent-grain classification (Q5 audit, 2026-06-22)
+
+A read-only sweep of `services/ingest/integrations/*` classified all 26 connectors. **The
+default is org-wide**: one admin connects on the org's behalf. Only a handful require each
+member to self-connect.
+
+| Grain | Sources | What the connect step does |
+|---|---|---|
+| **Org / workspace-wide** (one admin install = full coverage) | github (App install), discord (bot/guild), gmail · google_calendar · google_drive (domain-wide delegation), notion (workspace bot), miro · figma · linkedin (org/team token), whatsapp (WABA phone-number token), and **all finance/HR/infra**: mercury, quickbooks, brex, ramp, gusto, deel, carta, hibob, ashby, grafana, aws, fireflies | Admin authorizes once; the credential (bot/app/service-account/company token) covers every user, repo, channel, or account under that org/realm/`installation_id`. |
+| **Hybrid** | **slack** | Bot token (`xoxb`, team-wide) covers channels org-wide; a separate per-user token (`xoxp`, `slack_dm_installations.user_id`) is needed *per member* for human↔human DMs. |
+| **Per-user** (each member self-connects their own account) | **telegram** (MTProto user session), **signal** (linked-device session) | One install = one person's account/threads (`telegram_installations.account_label`, signal `account_label`). An admin cannot connect on a member's behalf. |
+| **Account credential** (one admin/service account's token; org-wide *reach*, no per-user fan-out) | **jira** (Atlassian API token) | Connect as a single (ideally admin/service) account; its project permissions determine reach. No per-member consent. |
+
+**Representing the coverage gap to the admin:**
+- **Org-wide / account-credential** sources: one successful install = complete coverage →
+  show simply "Connected (org-wide)".
+- **Per-user sources + Slack DMs**: coverage = *which members have self-connected*. The UI
+  must show a **roster** ("`N` of `M` members connected") and surface the gap (unconnected
+  members) with an invite/nudge action — the admin can request, not grant, these.
+
+**Schema reality (audited):** `provider_installations` (`0050`) is **org-grain only** — no
+`user_id`/`actor_id` — which is correct for the 22 org-wide + jira. The **only existing
+per-user precedent** is `slack_dm_installations` (`0076`: `(tenant_id, team_id, user_id)` +
+`user_token_secret_ref`). `telegram_installations` (`0094`) is per-account but keyed by a
+display-only `account_label` with **no `actor_id` link**. So the per-user grain needs a
+user/actor foreign key — exactly what the new `user_source_connections` table (§8) provides;
+apply it to telegram, signal, and the Slack-DM path, following the `slack_dm_installations`
+pattern.
+
 ### 6.4 Embeddable connector-auth widget (strongly recommended pattern)
 The verified research converges on a **server-driven, embeddable widget** as the standard
 way to onboard connectors. Two reference implementations, same shape:
@@ -441,11 +470,16 @@ demonstrable activation loop.
 - **Q4 — UI home → dedicated onboarding/admin SPA** (React + Vite) mounted via
   `services/app/gateway/extensions.py:mount_extension_routers`, sharing bearer-session auth.
 
-**Still open:**
+- **Q5 — Org-wide consent depth → audited (see §6.3).** 22 of 26 connectors are
+  **org/workspace-wide** (one admin install = full coverage); **slack** is hybrid (org-wide
+  bot + per-user DM token); **telegram** and **signal** are **per-user** (each member
+  self-connects); **jira** is an account credential. Coverage-gap UX: org-wide sources show
+  "Connected (org-wide)"; per-user sources show a member roster (`N of M` connected) with an
+  invite/nudge. Schema: `provider_installations` is org-grain (fine for the 22 + jira); the
+  per-user grain (telegram/signal/Slack-DM) needs a user/actor FK via `user_source_connections`
+  (§8), following the existing `slack_dm_installations` precedent.
 
-- **Q5 — Org-wide consent depth:** which of the 26 sources actually support
-  admin/workspace-wide consent vs per-user only, and how the "coverage gap" is represented
-  to the admin. *(Pending a per-connector audit.)*
+**Still open:** none — Q1–Q5 resolved. Remaining work is implementation (§9).
 
 ---
 
