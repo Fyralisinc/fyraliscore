@@ -47,14 +47,17 @@ in *enforcement/observability seams* that were built ahead of being hooked up.
 
 ## Top themes
 
-1. **The Wave-4 background worker fabric is built but undeployed.** Of 8
-   `services/workers/*` packages, **only `topology_sweeper` has a launcher**. The
-   rest — `anomaly_processor`, `entity_resolver`, `deadline_resolver`, `edge_drift`,
-   `precipitation`, `calibration_updater`, `maintenance` — have no compose service
-   or `scripts/run_*`. This cascades into many dormant features (decay/archival,
-   `T3` anomalies, `T2` deadline resolution, deferred entity resolution, calibration
-   refresh, precipitation inputs) and orphaned tables. See
-   [Wiring gaps](wiring-gaps.md) and [Workers](../architecture/workers.md).
+1. **The Wave-4 background worker fabric is now partially productized.**
+   `housekeeper_worker`, `anomaly_processor_worker`, and
+   `entity_resolver_worker` are wired in compose/runtime manifest. The remaining
+   decisions are mostly schedule/cost choices for expensive jobs such as
+   precipitation, topology sweep, relationship ontology proposals, and SAGE
+   structural features. See [Wiring gaps](wiring-gaps.md) and
+   [Workers](../architecture/workers.md).
+   **Critical architecture TODO:** latent topology/T4 discovery still needs a
+   first-class budgeted hypothesis lifecycle so foreground product drains do not
+   depend on open-ended background inquiry. See
+   [Reasoning](../architecture/reasoning.md#critical-todo-budget-latent-topology-as-background-inquiry).
 2. **Access-control enforcement is mostly dormant.** The `@requires_access`
    decorator is applied on **zero** routes (the gateway does one inline
    `can_read_by_id` on `/dashboard/customer`); the `actor_visible_*` matview refresh

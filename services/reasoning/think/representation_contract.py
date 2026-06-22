@@ -19,7 +19,8 @@ from uuid import UUID
 
 from services.reasoning.retrieval.primary import TriggerContext
 
-from .diff_schema import ClaimOp
+from .diff_schema import ClaimOp, EdgeOp, MemoryLifecycleOp
+from .prediction_lifecycle import prepare_prediction_entry
 
 
 _MAX_TAGS = 24
@@ -30,6 +31,14 @@ _SOURCE_DIGEST_MIN_TOP_COUNT = 5
 _SOURCE_DIGEST_EXCLUDED_SOURCES = frozenset({"internal:state_change"})
 _CURIOSITY_MAX_PER_DIFF = 1
 _CURIOSITY_MIN_OBSERVATIONS = 8
+_CURIOSITY_BINDING_KINDS = frozenset({
+    "actor",
+    "customer",
+    "workstream",
+    "commitment",
+    "system",
+    "vendor",
+})
 _CURIOSITY_LOW_VALUE_UNKNOWNS = frozenset({
     "",
     "unknown",
@@ -53,12 +62,20 @@ _WS_RE = re.compile(r"\s+")
 def enrich_raw_diff_representation(raw_diff: Any, trigger: TriggerContext, bundle: Any) -> Any:
     """Mutate ``raw_diff`` with representation metadata and source digests."""
     observation_index = _observation_index(bundle)
+    substrate_candidates = _substrate_candidates_for_curiosity(bundle)
     _maybe_add_source_digest_claims(raw_diff, trigger, bundle)
     _maybe_add_curiosity_claims(raw_diff, trigger, bundle)
+    _maybe_add_lifecycle_pressure_ops(raw_diff, trigger, bundle)
+    _maybe_add_adaptive_edge_candidate_ops(raw_diff, trigger, bundle)
 
     enriched = 0
     for op in _iter_insert_ops(raw_diff):
-        if _enrich_claim_insert(op, trigger, observation_index):
+        if _enrich_claim_insert(
+            op,
+            trigger,
+            observation_index,
+            substrate_candidates=substrate_candidates,
+        ):
             enriched += 1
 
     if enriched:
@@ -116,6 +133,8 @@ def _enrich_claim_insert(
     op: ClaimOp,
     trigger: TriggerContext,
     observation_index: dict[UUID, Any],
+    *,
+    substrate_candidates: list[dict[str, Any]] | None = None,
 ) -> bool:
     entry = dict(op.entry or {})
     prop = dict(entry.get("proposition") or {})
@@ -123,7 +142,23 @@ def _enrich_claim_insert(
         return False
 
     observations = _observations_for_entry(entry, trigger, observation_index)
+    evidence_event_ids = _bind_claim_evidence(entry, trigger, observations)
     frame = _build_contextual_frame(entry, prop, trigger, observations)
+    candidate_scope_entities = _claim_candidate_scope_entities(
+        substrate_candidates or [],
+        observations=observations,
+        evidence_event_ids=evidence_event_ids,
+        frame=frame,
+    )
+    if candidate_scope_entities:
+        entry["scope_entities"] = _merge_scope_entities(
+            entry.get("scope_entities"),
+            candidate_scope_entities,
+        )
+        frame = _merge_frame(
+            frame,
+            {"candidate_scope_refs": candidate_scope_entities[:8]},
+        )
     coverage_roles = _coverage_roles(entry, prop, frame)
     retrieval_tags = _retrieval_tags(entry, prop, frame, coverage_roles)
 
@@ -138,6 +173,16 @@ def _enrich_claim_insert(
         default_falsifier = _default_source_bound_falsifier(entry, prop, frame)
         if default_falsifier is not None:
             entry["falsifier"] = default_falsifier
+    if _entry_is_prediction_like(entry, prop):
+        entry = prepare_prediction_entry(entry)
+        prop = dict(entry.get("proposition") or prop)
+    _apply_living_claim_contract(
+        entry,
+        prop,
+        frame,
+        evidence_event_ids=evidence_event_ids,
+    )
+    entry["proposition"] = prop
     op.entry = entry
     return True
 
@@ -160,6 +205,7 @@ def _maybe_add_source_digest_claims(raw_diff: Any, trigger: TriggerContext, bund
         by_source[source].append(obs)
 
     covered_sources = _existing_recurrence_sources(raw_diff, by_source.keys())
+    candidates = _substrate_candidates_for_curiosity(bundle)
     digests: list[ClaimOp] = []
     for source, rows in sorted(by_source.items(), key=lambda item: len(item[1]), reverse=True):
         if source in covered_sources:
@@ -169,7 +215,17 @@ def _maybe_add_source_digest_claims(raw_diff: Any, trigger: TriggerContext, bund
         summary = _source_digest_summary(source, rows)
         if summary is None:
             continue
-        digests.append(_source_digest_claim(trigger, rows, summary))
+        digests.append(
+            _source_digest_claim(
+                trigger,
+                rows,
+                summary,
+                candidate_scope_entities=_candidate_scope_entities_for_source(
+                    candidates,
+                    source,
+                ),
+            )
+        )
         if len(digests) >= _SOURCE_DIGEST_MAX_PER_DIFF:
             break
 
@@ -200,7 +256,20 @@ def _maybe_add_curiosity_claims(raw_diff: Any, trigger: TriggerContext, bundle: 
         return
 
     candidates = _substrate_candidates_for_curiosity(bundle)
-    claims = [_curiosity_claim(trigger, observations, packet, unknowns, candidates)]
+    candidate_bindings = _curiosity_candidate_bindings(candidates, unknowns=unknowns)
+    if _curiosity_requires_binding() and not candidate_bindings:
+        _append_trace(raw_diff, "curiosity skipped: no strong substrate binding")
+        return
+
+    claims = [
+        _curiosity_claim(
+            trigger,
+            observations,
+            packet,
+            unknowns,
+            candidate_bindings,
+        )
+    ]
     raw_diff.claim_ops = [*list(getattr(raw_diff, "claim_ops", []) or []), *claims[:_CURIOSITY_MAX_PER_DIFF]]
     _append_trace(raw_diff, f"curiosity synthesized {len(claims[:_CURIOSITY_MAX_PER_DIFF])} open-question claim(s)")
 
@@ -212,6 +281,31 @@ def _source_digest_enabled() -> bool:
 
 def _curiosity_enabled() -> bool:
     raw = os.environ.get("THINK_CURIOSITY_FALLBACK", "1")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _curiosity_requires_binding() -> bool:
+    raw = os.environ.get("THINK_CURIOSITY_REQUIRE_BINDING", "1")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _curiosity_binding_min_confidence() -> float:
+    raw = os.environ.get("THINK_CURIOSITY_BINDING_MIN_CONFIDENCE")
+    if raw is None:
+        return 0.72
+    try:
+        return min(0.95, max(0.0, float(raw)))
+    except ValueError:
+        return 0.72
+
+
+def _lifecycle_pressure_enabled() -> bool:
+    raw = os.environ.get("THINK_LIFECYCLE_PRESSURE_FALLBACK", "1")
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _adaptive_edge_candidate_enabled() -> bool:
+    raw = os.environ.get("THINK_ADAPTIVE_EDGE_CANDIDATE_FALLBACK", "1")
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -326,13 +420,11 @@ def _curiosity_candidate_bindings(
     seen: set[str] = set()
     for candidate in candidates:
         kind = str(candidate.get("kind") or "")
+        if not _strong_curiosity_binding_candidate(candidate):
+            continue
         if wanted and kind not in wanted and len(selected) < max(2, limit // 2):
             continue
-        scope_ref = candidate.get("scope_ref")
-        if not isinstance(scope_ref, dict):
-            cid = candidate.get("id")
-            if cid:
-                scope_ref = {"type": f"candidate_{kind}", "id": str(cid)}
+        scope_ref = _candidate_scope_ref(candidate)
         if not isinstance(scope_ref, dict) or not scope_ref.get("id"):
             continue
         key = f"{scope_ref.get('type')}:{scope_ref.get('id')}"
@@ -358,6 +450,31 @@ def _curiosity_candidate_bindings(
     return _curiosity_candidate_bindings(candidates, unknowns=[], limit=limit)
 
 
+def _strong_curiosity_binding_candidate(candidate: dict[str, Any]) -> bool:
+    kind = str(candidate.get("kind") or "")
+    if kind not in _CURIOSITY_BINDING_KINDS:
+        return False
+    status = str(candidate.get("status") or "")
+    if status in {"promoted", "merged"}:
+        return True
+    confidence = float(candidate.get("confidence") or 0.0)
+    if kind == "actor":
+        return confidence >= max(0.80, _curiosity_binding_min_confidence())
+    return confidence >= _curiosity_binding_min_confidence()
+
+
+def _candidate_scope_ref(candidate: dict[str, Any]) -> dict[str, str] | None:
+    for key in ("promotion_ref", "proposed_canonical_ref", "scope_ref"):
+        value = candidate.get(key)
+        if isinstance(value, dict) and value.get("type") and value.get("id"):
+            return {"type": str(value["type"]), "id": str(value["id"])}
+    kind = str(candidate.get("kind") or "")
+    cid = candidate.get("id")
+    if kind and cid:
+        return {"type": f"candidate_{kind}", "id": str(cid)}
+    return None
+
+
 def _wanted_candidate_kinds_for_unknowns(unknowns: list[str]) -> set[str]:
     tags = {_tagify(unknown) for unknown in unknowns}
     wanted: set[str] = set()
@@ -381,7 +498,7 @@ def _curiosity_claim(
     rows: list[Any],
     packet: dict[str, Any],
     unknowns: list[str],
-    candidates: list[dict[str, Any]],
+    candidate_bindings: list[dict[str, Any]],
 ) -> ClaimOp:
     first = sorted(rows, key=lambda row: getattr(row, "occurred_at", datetime.max))[0]
     actors = _dedupe_uuid_values(getattr(row, "actor_id", None) for row in rows)
@@ -391,7 +508,6 @@ def _curiosity_claim(
     question_texts = [item["question"] for item in question_items if item.get("question")]
     primitives = _merge_strings(item.get("primitive") for item in question_items)
     focus = _curiosity_focus(packet, source_channels)
-    candidate_bindings = _curiosity_candidate_bindings(candidates, unknowns=unknowns)
     candidate_scope_entities = [
         binding["scope_ref"]
         for binding in candidate_bindings
@@ -413,6 +529,7 @@ def _curiosity_claim(
         "action for the company."
     )
     question_tags = _curiosity_tags(unknowns, primitives)
+    question_tags = _merge_strings(question_tags, "curiosity_low_priority")
     if candidate_bindings:
         question_tags = _merge_strings(
             question_tags,
@@ -436,6 +553,8 @@ def _curiosity_claim(
         "important_unknowns": unknowns[:8],
         "question_primitives": primitives[:8],
         "candidate_bindings": candidate_bindings,
+        "execution_lane": "curiosity_low_priority",
+        "priority": "low",
         "coverage_roles": [
             "curiosity",
             "epistemic",
@@ -587,6 +706,458 @@ def _human_join(items: list[str]) -> str:
     return ", ".join(cleaned[:-1]) + f", and {cleaned[-1]}"
 
 
+def _candidate_scope_entities_for_source(
+    candidates: list[dict[str, Any]],
+    source: str,
+) -> list[dict[str, str]]:
+    source_root = str(source or "").split(":", 1)[0].casefold()
+    if not source_root:
+        return []
+    refs: list[dict[str, str]] = []
+    for candidate in candidates:
+        kind = str(candidate.get("kind") or "")
+        if kind not in {"system", "vendor"}:
+            continue
+        if not _candidate_matches_source(candidate, source):
+            continue
+        scope_ref = _candidate_scope_ref(candidate)
+        if scope_ref is not None:
+            refs.append(scope_ref)
+    return _merge_scope_entities(refs)
+
+
+def _candidate_matches_source(candidate: dict[str, Any], source: str) -> bool:
+    source_value = str(source or "").casefold()
+    if ":" in source_value:
+        source_root = source_value.split(":", 1)[0]
+    else:
+        source_root = source_value.split("_", 1)[0]
+    if not source_root:
+        return False
+    metadata = candidate.get("metadata")
+    aliases = candidate.get("aliases")
+    metadata_root = (
+        str(metadata.get("source_root") or "").casefold()
+        if isinstance(metadata, dict)
+        else ""
+    )
+    alias_roots = {
+        str(alias.get("source_root") or "").casefold()
+        for alias in aliases or []
+        if isinstance(alias, dict)
+    }
+    alias_channels = {
+        str(alias.get("source_channel") or "").casefold()
+        for alias in aliases or []
+        if isinstance(alias, dict)
+    }
+    alias_channel_tags = {_tagify(channel) for channel in alias_channels}
+    source_tags = {source_value, _tagify(source_value), source_root}
+    return (
+        metadata_root == source_root
+        or source_root in alias_roots
+        or bool(source_tags & alias_channels)
+        or bool(source_tags & alias_channel_tags)
+    )
+
+
+def _bind_claim_evidence(
+    entry: dict[str, Any],
+    trigger: TriggerContext,
+    observations: list[Any],
+) -> list[UUID]:
+    """Attach the narrowest available observation support to a claim insert."""
+
+    values: list[Any] = [*list(entry.get("supporting_event_ids") or [])]
+    born_from = entry.get("born_from_event_id")
+    if born_from is not None:
+        values.append(born_from)
+    if not values and trigger.observation_id is not None:
+        values.append(trigger.observation_id)
+    if not values:
+        values.extend(getattr(obs, "id", None) for obs in observations[:12])
+    evidence_ids = _dedupe_uuid_values(values)[:50]
+    if evidence_ids:
+        entry["supporting_event_ids"] = evidence_ids
+    return evidence_ids
+
+
+def _claim_candidate_scope_entities(
+    candidates: list[dict[str, Any]],
+    *,
+    observations: list[Any],
+    evidence_event_ids: list[UUID],
+    frame: dict[str, Any],
+) -> list[dict[str, str]]:
+    if not candidates:
+        return []
+    evidence_keys = {str(uid) for uid in evidence_event_ids}
+    evidence_keys.update(
+        str(getattr(obs, "id"))
+        for obs in observations
+        if getattr(obs, "id", None) is not None
+    )
+    refs: list[dict[str, str]] = []
+    for candidate in candidates:
+        if not _strong_claim_binding_candidate(candidate):
+            continue
+        if str(candidate.get("kind") or "") in {"system", "vendor"}:
+            continue
+        candidate_evidence = {
+            str(value)
+            for value in (candidate.get("evidence_observation_ids") or [])
+            if value is not None
+        }
+        if not candidate_evidence or not (candidate_evidence & evidence_keys):
+            continue
+        scope_ref = _candidate_scope_ref(candidate)
+        if scope_ref is not None:
+            refs.append(scope_ref)
+
+    return _merge_scope_entities(refs)
+
+
+def _strong_claim_binding_candidate(candidate: dict[str, Any]) -> bool:
+    kind = str(candidate.get("kind") or "")
+    if kind not in {
+        "actor",
+        "actor_alias",
+        "customer",
+        "workstream",
+        "commitment",
+        "system",
+        "vendor",
+    }:
+        return False
+    status = str(candidate.get("status") or "")
+    if status in {"promoted", "merged"}:
+        return True
+    confidence = float(candidate.get("confidence") or 0.0)
+    if kind == "actor":
+        return confidence >= 0.80
+    if kind == "actor_alias":
+        return confidence >= 0.85
+    if kind in {"system", "vendor"}:
+        return confidence >= 0.68
+    return confidence >= 0.72
+
+
+def _apply_living_claim_contract(
+    entry: dict[str, Any],
+    prop: dict[str, Any],
+    frame: dict[str, Any],
+    *,
+    evidence_event_ids: list[UUID],
+) -> None:
+    staleness_horizon = _claim_staleness_horizon(entry, prop)
+    evidence_contract = (
+        dict(prop.get("evidence_contract"))
+        if isinstance(prop.get("evidence_contract"), dict)
+        else {}
+    )
+    source_channels = _string_list(frame.get("source_channels"))
+    binding_status = (
+        "bound"
+        if entry.get("scope_entities")
+        or entry.get("scope_actors")
+        or frame.get("candidate_scope_refs")
+        else "unbound"
+    )
+    evidence_contract.update(
+        {
+            "version": evidence_contract.get("version") or "v1",
+            "evidence_status": "evidence_bound" if evidence_event_ids else "needs_evidence",
+            "supporting_event_count": len(evidence_event_ids),
+            "substrate_binding_status": binding_status,
+            "staleness_horizon": evidence_contract.get("staleness_horizon")
+            or staleness_horizon,
+            "review_policy": evidence_contract.get("review_policy")
+            or "counterevidence_or_staleness",
+        }
+    )
+    if source_channels:
+        evidence_contract["source_channels"] = source_channels[:8]
+    prop["evidence_contract"] = evidence_contract
+    prop.setdefault("staleness_horizon", staleness_horizon)
+    prop.setdefault("watch_selectors", _claim_watch_selectors(entry, frame))
+    prop.setdefault("test_conditions", _claim_test_conditions(entry, prop, frame))
+    prop.setdefault("lifecycle_state", "watchable")
+
+    tags = ["living_claim_contract", "watchable_memory"]
+    if evidence_event_ids:
+        tags.append("evidence_bound")
+    if binding_status == "bound":
+        tags.append("substrate_bound")
+    else:
+        tags.append("substrate_unbound")
+    prop["retrieval_tags"] = _merge_strings(prop.get("retrieval_tags"), tags)
+    prop["domain_tags"] = _merge_strings(prop.get("domain_tags"), tags)
+    entry["domain_tags"] = _merge_strings(entry.get("domain_tags"), tags)
+
+
+def _claim_watch_selectors(entry: dict[str, Any], frame: dict[str, Any]) -> dict[str, Any]:
+    selectors = {
+        "source_channels": _string_list(frame.get("source_channels"))[:8],
+        "scope_entities": _json_list(entry.get("scope_entities"))[:8],
+        "scope_actors": [str(uid) for uid in _dedupe_uuid_values(entry.get("scope_actors"))[:8]],
+        "object_refs": _string_list(frame.get("object_refs"))[:8],
+        "work_item_refs": _string_list(frame.get("work_item_refs"))[:8],
+        "repo_refs": _string_list(frame.get("repo_refs"))[:8],
+    }
+    return {key: value for key, value in selectors.items() if value}
+
+
+def _claim_test_conditions(
+    entry: dict[str, Any],
+    prop: dict[str, Any],
+    frame: dict[str, Any],
+) -> str:
+    falsifier = entry.get("falsifier")
+    if isinstance(falsifier, dict):
+        pattern = falsifier.get("pattern") or falsifier.get("check")
+        if pattern:
+            return f"Revise or contest this memory if future evidence satisfies: {pattern}"
+    if _entry_is_prediction_like(entry, prop):
+        evaluate_at = entry.get("evaluate_at")
+        if evaluate_at is not None:
+            return f"Resolve this prediction when its evaluation time arrives: {evaluate_at}."
+        return "Resolve this prediction when explicit outcome evidence or a deadline appears."
+    source_hint = ", ".join(_string_list(frame.get("source_channels"))[:3])
+    if source_hint:
+        return f"Review against future authoritative observations from {source_hint}."
+    return "Review against future authoritative observations for the bound substrate."
+
+
+def _claim_staleness_horizon(entry: dict[str, Any], prop: dict[str, Any]) -> str:
+    tags = set(
+        _merge_strings(
+            prop.get("retrieval_tags"),
+            prop.get("domain_tags"),
+            entry.get("domain_tags"),
+        )
+    )
+    role = str(prop.get("claim_role") or entry.get("claim_role") or "")
+    if entry.get("evaluate_at") is not None:
+        return "P1D"
+    if role == "prediction":
+        return "P14D"
+    if role == "hypothesis" or "curiosity" in tags or "open_question" in tags:
+        return "P14D"
+    if role == "pattern" or "source_digest" in tags or "contextual_recurrence" in tags:
+        return "P7D"
+    if role in {"recommendation", "concern"}:
+        return "P14D"
+    if tags & {"source_observability", "operational_churn", "delivery_risk"}:
+        return "P30D"
+    return "P90D" if tags & {"source_code", "source_finance", "source_docs"} else "P30D"
+
+
+def _entry_is_prediction_like(entry: dict[str, Any], prop: dict[str, Any]) -> bool:
+    return (
+        entry.get("claim_role") == "prediction"
+        or prop.get("claim_role") == "prediction"
+        or prop.get("kind") == "prediction"
+    )
+
+
+def _maybe_add_lifecycle_pressure_ops(
+    raw_diff: Any,
+    trigger: TriggerContext,
+    bundle: Any,
+) -> None:
+    if trigger.kind != "T1" or not _is_event_batch_trigger(trigger):
+        return
+    if not _lifecycle_pressure_enabled():
+        return
+    if getattr(raw_diff, "memory_lifecycle_ops", None):
+        return
+    observations = trigger_observations_for_representation(trigger, bundle)
+    if len(observations) < _CURIOSITY_MIN_OBSERVATIONS:
+        return
+    evidence_ids = _dedupe_uuid_values(getattr(row, "id", None) for row in observations)
+    if not evidence_ids:
+        return
+    model = _select_lifecycle_pressure_model(getattr(bundle, "models", []) or [])
+    model_id = _model_id(model)
+    if model_id is None:
+        return
+    rationale = (
+        "Large evidence window touched selected prediction or contestable memory; "
+        "record an explicit unchanged lifecycle review so future validation, "
+        "evidence attachment, and staleness cleanup do not stay silent."
+    )
+    raw_diff.memory_lifecycle_ops = [
+        *list(getattr(raw_diff, "memory_lifecycle_ops", []) or []),
+        MemoryLifecycleOp(
+            model_id=model_id,
+            action="unchanged",
+            evidence_event_ids=evidence_ids[:12],
+            rationale=rationale,
+            metadata={
+                "source": "representation_contract",
+                "lane": "truth_maintenance",
+                "priority": "normal",
+            },
+        ),
+    ]
+    _append_trace(raw_diff, "lifecycle_pressure synthesized 1 unchanged review op")
+
+
+def _maybe_add_adaptive_edge_candidate_ops(
+    raw_diff: Any,
+    trigger: TriggerContext,
+    bundle: Any,
+) -> None:
+    if trigger.kind != "T1" or not _is_event_batch_trigger(trigger):
+        return
+    if not _adaptive_edge_candidate_enabled():
+        return
+    if getattr(raw_diff, "edge_ops", None) or getattr(raw_diff, "relation_claim_ops", None):
+        return
+    observations = trigger_observations_for_representation(trigger, bundle)
+    if len(observations) < _CURIOSITY_MIN_OBSERVATIONS:
+        return
+    evidence_ids = _dedupe_uuid_values(getattr(row, "id", None) for row in observations)
+    if not evidence_ids:
+        return
+    pair = _select_adaptive_edge_model_pair(getattr(bundle, "models", []) or [])
+    if pair is None:
+        return
+    source_id, target_id = pair
+    raw_diff.edge_ops = [
+        *list(getattr(raw_diff, "edge_ops", []) or []),
+        EdgeOp(
+            op="add",
+            source_model_id=source_id,
+            target_model_id=target_id,
+            edge_kind="supports",
+            weight=0.35,
+            confidence=0.52,
+            evidence_event_ids=evidence_ids[:12],
+            explanation=(
+                "Selected models share concrete scope in this evidence window; "
+                "record a candidate support edge for adaptive graph review."
+            ),
+            metadata={
+                "source": "representation_contract",
+                "lane": "adaptive_edge_candidate",
+            },
+            review_status="candidate",
+            detected_by="representation_contract_shared_scope",
+        ),
+    ]
+    _append_trace(raw_diff, "adaptive_edge_candidate synthesized 1 candidate edge op")
+
+
+def _select_lifecycle_pressure_model(models: list[Any]) -> Any | None:
+    active = [model for model in models if _model_active(model)]
+    for model in active:
+        if _model_is_prediction_like(model):
+            return model
+    for model in active:
+        if _model_is_contestable(model):
+            return model
+    return None
+
+
+def _select_adaptive_edge_model_pair(models: list[Any]) -> tuple[UUID, UUID] | None:
+    active = [
+        model
+        for model in models
+        if _model_active(model) and "source_digest" not in set(_model_tags(model))
+    ]
+    for index, left in enumerate(active):
+        left_id = _model_id(left)
+        if left_id is None:
+            continue
+        for right in active[index + 1 :]:
+            right_id = _model_id(right)
+            if right_id is None or right_id == left_id:
+                continue
+            if _models_share_scope_or_evidence(left, right):
+                return left_id, right_id
+    return None
+
+
+def _models_share_scope_or_evidence(left: Any, right: Any) -> bool:
+    left_scope = _scope_keys(_model_value(left, "scope_entities"))
+    right_scope = _scope_keys(_model_value(right, "scope_entities"))
+    if left_scope and right_scope and left_scope & right_scope:
+        return True
+    left_actors = set(_dedupe_uuid_values(_model_value(left, "scope_actors")))
+    right_actors = set(_dedupe_uuid_values(_model_value(right, "scope_actors")))
+    if left_actors and right_actors and left_actors & right_actors:
+        return True
+    left_events = set(_dedupe_uuid_values(_model_value(left, "supporting_event_ids")))
+    right_events = set(_dedupe_uuid_values(_model_value(right, "supporting_event_ids")))
+    return bool(left_events and right_events and left_events & right_events)
+
+
+def _model_active(model: Any) -> bool:
+    status = _model_value(model, "status")
+    return status in (None, "", "active")
+
+
+def _model_id(model: Any) -> UUID | None:
+    return _coerce_uuid(_model_value(model, "id"))
+
+
+def _model_is_prediction_like(model: Any) -> bool:
+    prop = _model_value(model, "proposition")
+    if isinstance(prop, str):
+        try:
+            prop = json.loads(prop)
+        except json.JSONDecodeError:
+            prop = {}
+    return (
+        _model_value(model, "claim_role") == "prediction"
+        or _model_value(model, "proposition_kind") == "prediction"
+        or (isinstance(prop, dict) and prop.get("claim_role") == "prediction")
+        or (isinstance(prop, dict) and prop.get("kind") == "prediction")
+    )
+
+
+def _model_is_contestable(model: Any) -> bool:
+    return bool(_model_value(model, "reading_contestable"))
+
+
+def _model_tags(model: Any) -> list[str]:
+    prop = _model_value(model, "proposition")
+    if isinstance(prop, str):
+        try:
+            prop = json.loads(prop)
+        except json.JSONDecodeError:
+            prop = {}
+    values: list[Any] = [_model_value(model, "domain_tags")]
+    if isinstance(prop, dict):
+        values.extend(
+            [
+                prop.get("domain_tags"),
+                prop.get("retrieval_tags"),
+                prop.get("coverage_roles"),
+            ]
+        )
+    return _merge_strings(values)
+
+
+def _model_value(model: Any, key: str) -> Any:
+    if isinstance(model, dict):
+        return model.get(key)
+    return getattr(model, key, None)
+
+
+def _scope_keys(value: Any) -> set[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
+    for item in _json_list(value):
+        if not isinstance(item, dict):
+            continue
+        typ = str(item.get("type") or "").strip()
+        ident = str(item.get("id") or "").strip()
+        if typ and ident:
+            keys.add((typ, ident))
+    return keys
+
+
 def _existing_recurrence_sources(
     raw_diff: Any,
     candidate_sources: Iterable[str],
@@ -670,10 +1241,19 @@ def _source_digest_summary(source: str, rows: list[Any]) -> dict[str, Any] | Non
     }
 
 
-def _source_digest_claim(trigger: TriggerContext, rows: list[Any], summary: dict[str, Any]) -> ClaimOp:
+def _source_digest_claim(
+    trigger: TriggerContext,
+    rows: list[Any],
+    summary: dict[str, Any],
+    *,
+    candidate_scope_entities: list[dict[str, str]] | None = None,
+) -> ClaimOp:
     first = sorted(rows, key=lambda row: getattr(row, "occurred_at", datetime.max))[0]
     actors = _dedupe_uuid_values(getattr(row, "actor_id", None) for row in rows)
-    entities = _scope_entities_from_observations(rows)
+    entities = _merge_scope_entities(
+        _scope_entities_from_observations(rows),
+        candidate_scope_entities or [],
+    )
     source = str(summary["source"])
     repetition_mode = str(summary.get("repetition_mode") or "source_cadence")
     if repetition_mode == "normalized_repetition":

@@ -1,7 +1,8 @@
 """services/reasoning/think/tests/test_validator.py — validator unit + integration tests.
 
 Falsifier adequacy, confidence clipping, state-machine checks, trust-
-tier gate on doneverified, and region-containment.
+tier gate on doneverified, tenant-bound reference safety, and advisory
+retrieval regions.
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from services.reasoning.think.diff_schema import (
     ActOp,
     ClaimOp,
     EdgeOp,
+    FormationResolutionOp,
     MemoryLifecycleOp,
     OntologyGapOp,
     RawDiff,
@@ -27,7 +29,7 @@ from services.reasoning.think.diff_schema import (
     RelationFrameParticipantOp,
 )
 from services.reasoning.think.validator import (
-    OutOfRegionError, ValidationFailure, validate,
+    ValidationFailure, validate,
 )
 
 
@@ -177,6 +179,78 @@ async def test_validate_accepts_memory_lifecycle_confirm_with_evidence(
     assert len(validated.memory_lifecycle_ops) == 1
     assert validated.memory_lifecycle_ops[0].action == "confirm"
     assert validated.dropped_op_count == 0
+
+
+async def test_validate_accepts_known_formation_resolution_with_existing_model(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    model_id, _ = await _make_model(fresh_db, tenant, confidence=0.72)
+    candidate_id = f"formation:employee.capability:{uuid7()}:abc123"
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            formation_resolutions=[
+                FormationResolutionOp(
+                    candidate_id=candidate_id,
+                    resolution="already_covered",
+                    rationale="The selected Model already captures this capability.",
+                    output_model_ids=[model_id],
+                )
+            ],
+        )
+
+        validated = await validate(
+            diff,
+            rr,
+            conn,
+            allowed_region=None,
+            formation_candidate_ids={candidate_id},
+        )
+
+    assert len(validated.formation_resolutions) == 1
+    assert validated.formation_resolutions[0].output_model_ids == [model_id]
+    assert validated.dropped_op_count == 0
+
+
+async def test_validate_drops_unknown_formation_resolution_but_keeps_valid_ops(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    model_id, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    known_id = f"formation:employee.support_need:{uuid7()}:known"
+    unknown_id = f"formation:employee.support_need:{uuid7()}:unknown"
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            formation_resolutions=[
+                FormationResolutionOp(
+                    candidate_id=unknown_id,
+                    resolution="rejected",
+                    rationale="This should be dropped because the candidate was not prompted.",
+                )
+            ],
+            claim_ops=[
+                ClaimOp(op="update", model_id=model_id, changes={"confidence": 0.61})
+            ],
+        )
+
+        validated = await validate(
+            diff,
+            rr,
+            conn,
+            allowed_region=None,
+            formation_candidate_ids={known_id},
+        )
+
+    assert validated.formation_resolutions == []
+    assert len(validated.claim_ops) == 1
+    assert validated.dropped_op_count == 1
+    assert "unknown candidate_id" in validated.dropped_op_errors[0]
 
 
 async def test_validate_drops_memory_lifecycle_without_evidence_but_keeps_valid_ops(
@@ -587,7 +661,10 @@ async def test_validate_rejects_update_to_confidence_at_assertion(fresh_db, tena
         )
 
 
-async def test_validate_out_of_region_raises(fresh_db, tenant):
+async def test_validate_allows_tenant_local_model_outside_allowed_region(
+    fresh_db,
+    tenant,
+):
     rr = _retrieval_result(tenant)
     mid, _ = await _make_model(fresh_db, tenant, confidence=0.5)
     async with fresh_db.acquire() as conn:
@@ -597,9 +674,39 @@ async def test_validate_out_of_region_raises(fresh_db, tenant):
                 ClaimOp(op="update", model_id=mid, changes={"confidence": 0.6}),
             ],
         )
-        # Region is empty — touching mid is out of region.
-        with pytest.raises(OutOfRegionError):
-            await validate(diff, rr, conn, allowed_region=[])
+        validated = await validate(diff, rr, conn, allowed_region=[])
+        assert len(validated.claim_ops) == 1
+
+
+async def test_validate_rejects_cross_tenant_model_reference(
+    fresh_db,
+    tenant,
+    other_tenant,
+):
+    rr = _retrieval_result(tenant)
+    mid, _ = await _make_model(fresh_db, tenant, confidence=0.5)
+    other_mid, _ = await _make_model(fresh_db, other_tenant, confidence=0.5)
+    try:
+        async with fresh_db.acquire() as conn:
+            diff = RawDiff(
+                trigger_ref=uuid7(), tenant_id=tenant,
+                claim_ops=[
+                    ClaimOp(op="update", model_id=other_mid, changes={"confidence": 0.8}),
+                    ClaimOp(op="update", model_id=mid, changes={"confidence": 0.6}),
+                ],
+            )
+            validated = await validate(diff, rr, conn, allowed_region=None)
+            assert [op.model_id for op in validated.claim_ops] == [mid]
+            assert validated.dropped_op_count == 1
+            assert any("not found" in err for err in validated.dropped_op_errors)
+    finally:
+        async with fresh_db.acquire() as conn:
+            await conn.execute("DELETE FROM models WHERE tenant_id = $1", other_tenant)
+            await conn.execute(
+                "DELETE FROM observations WHERE tenant_id = $1", other_tenant
+            )
+            await conn.execute("DELETE FROM actors WHERE tenant_id = $1", other_tenant)
+            await conn.execute("DELETE FROM tenants WHERE id = $1", other_tenant)
 
 
 async def test_validate_within_region_passes(fresh_db, tenant):
@@ -720,6 +827,83 @@ async def test_validate_doneverified_authoritative_evidence_passes(fresh_db, ten
         )
         validated = await validate(diff, rr, conn, allowed_region=None)
         assert len(validated.act_ops) == 1
+
+
+async def test_validate_rejects_cross_tenant_commitment_reference(
+    fresh_db,
+    tenant,
+    other_tenant,
+):
+    rr = _retrieval_result(tenant)
+    mid, oid = await _make_model(fresh_db, tenant, confidence=0.95)
+    _, other_oid = await _make_model(fresh_db, other_tenant, confidence=0.95)
+    try:
+        async with fresh_db.acquire() as conn:
+            actor_id = uuid7()
+            await conn.execute(
+                "INSERT INTO actors (id, tenant_id, type, display_name, status) "
+                "VALUES ($1, $2, 'human_internal', 'x', 'active')",
+                actor_id, tenant,
+            )
+            cid = uuid7()
+            await conn.execute(
+                """
+                INSERT INTO commitments
+                  (id, tenant_id, title, state, owner_id, created_by_event_id,
+                   last_state_change_at)
+                VALUES ($1, $2, 'tenant commitment', 'active', $3, $4, now())
+                """,
+                cid, tenant, actor_id, oid,
+            )
+            other_actor_id = uuid7()
+            await conn.execute(
+                "INSERT INTO actors (id, tenant_id, type, display_name, status) "
+                "VALUES ($1, $2, 'human_internal', 'other', 'active')",
+                other_actor_id, other_tenant,
+            )
+            other_cid = uuid7()
+            await conn.execute(
+                """
+                INSERT INTO commitments
+                  (id, tenant_id, title, state, owner_id, created_by_event_id,
+                   last_state_change_at)
+                VALUES ($1, $2, 'other commitment', 'active', $3, $4, now())
+                """,
+                other_cid, other_tenant, other_actor_id, other_oid,
+            )
+            diff = RawDiff(
+                trigger_ref=uuid7(),
+                tenant_id=tenant,
+                act_ops=[
+                    ActOp(
+                        op="transition_commitment",
+                        confidence_basis=mid,
+                        entity={"id": str(other_cid), "new_state": "paused"},
+                    ),
+                    ActOp(
+                        op="transition_commitment",
+                        confidence_basis=mid,
+                        entity={"id": str(cid), "new_state": "paused"},
+                    ),
+                ],
+            )
+
+            validated = await validate(diff, rr, conn, allowed_region=None)
+
+        assert [op.entity["id"] for op in validated.act_ops] == [str(cid)]
+        assert validated.dropped_op_count == 1
+        assert any("not found" in err for err in validated.dropped_op_errors)
+    finally:
+        async with fresh_db.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM commitments WHERE tenant_id = $1", other_tenant
+            )
+            await conn.execute("DELETE FROM models WHERE tenant_id = $1", other_tenant)
+            await conn.execute(
+                "DELETE FROM observations WHERE tenant_id = $1", other_tenant
+            )
+            await conn.execute("DELETE FROM actors WHERE tenant_id = $1", other_tenant)
+            await conn.execute("DELETE FROM tenants WHERE id = $1", other_tenant)
 
 
 async def test_validate_canonicalizes_unsupported_blocked_to_paused(

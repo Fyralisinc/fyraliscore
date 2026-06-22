@@ -148,6 +148,22 @@ def _referenced_model_ids(diff: RawDiff | ValidatedDiff) -> set[UUID]:
             if model_id is not None:
                 referenced.add(model_id)
 
+    for op in getattr(diff, "open_question_ops", []) or []:
+        for value in (
+            getattr(op, "model_id", None),
+            getattr(op, "resolution_model_id", None),
+            *(getattr(op, "source_model_ids", None) or []),
+        ):
+            model_id = _coerce_uuid(value)
+            if model_id is not None:
+                referenced.add(model_id)
+
+    for op in getattr(diff, "formation_resolutions", []) or []:
+        for value in getattr(op, "output_model_ids", None) or []:
+            model_id = _coerce_uuid(value)
+            if model_id is not None:
+                referenced.add(model_id)
+
     for op in diff.act_ops:
         model_id = _coerce_uuid(getattr(op, "confidence_basis", None))
         if model_id is not None:
@@ -363,6 +379,8 @@ def summarize_context_use(
         + len(getattr(diff, "relation_frame_ops", []) or [])
         + len(diff.edge_ops)
         + len(getattr(diff, "ontology_gap_ops", []) or [])
+        + len(getattr(diff, "open_question_ops", []) or [])
+        + len(getattr(diff, "formation_resolutions", []) or [])
         + len(diff.act_ops)
         + len(diff.resource_ops)
     )
@@ -464,10 +482,27 @@ def summarize_context_use(
         for op in diff.act_ops
         if _coerce_uuid(getattr(op, "confidence_basis", None)) in graph_model_ids
     )
+    open_question_ops = getattr(diff, "open_question_ops", []) or []
+    formation_resolutions = getattr(diff, "formation_resolutions", []) or []
+    graph_open_question_reference_count = sum(
+        1
+        for op in open_question_ops
+        if _coerce_uuid(getattr(op, "model_id", None)) in graph_model_ids
+    )
+    graph_formation_resolution_reference_count = sum(
+        1
+        for op in formation_resolutions
+        if any(
+            _coerce_uuid(model_id) in graph_model_ids
+            for model_id in getattr(op, "output_model_ids", None) or []
+        )
+    )
     graph_non_relation_op_count = (
         graph_claim_op_reference_count
         + graph_memory_lifecycle_op_reference_count
         + graph_act_op_reference_count
+        + graph_open_question_reference_count
+        + graph_formation_resolution_reference_count
     )
     graph_trace_reference_count = len(trace_referenced_models & graph_model_ids)
     graph_trace_accounted = graph_trace_reference_count > 0 and total_ops == 0
@@ -580,6 +615,10 @@ def summarize_context_use(
             graph_memory_lifecycle_op_reference_count
         ),
         "graph_act_op_reference_count": graph_act_op_reference_count,
+        "graph_open_question_reference_count": graph_open_question_reference_count,
+        "graph_formation_resolution_reference_count": (
+            graph_formation_resolution_reference_count
+        ),
         "graph_trace_reference_count": graph_trace_reference_count,
         "graph_selected_without_relation_ops": (
             graph_selected_without_relation_ops
@@ -589,6 +628,8 @@ def summarize_context_use(
         "graph_relation_contract_basis": graph_relation_contract_basis,
         "claim_ops_count": len(diff.claim_ops),
         "memory_lifecycle_ops_count": len(memory_lifecycle_ops),
+        "open_question_ops_count": len(open_question_ops),
+        "formation_resolutions_count": len(formation_resolutions),
         "act_ops_count": len(diff.act_ops),
         "resource_ops_count": len(diff.resource_ops),
     }

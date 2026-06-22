@@ -79,6 +79,7 @@ class InquiryConfig:
     reflective_rule_limit: int = 5
     reflective_rule_match_threshold: float = 0.42
     reflective_rule_score_boost: float = 0.12
+    read_prep_parallel_enabled: bool = True
     question_action_parallel_enabled: bool = True
     question_action_parallelism: int = 6
     structural_max_hops: int = 2
@@ -212,6 +213,9 @@ class InquiryConfig:
             ),
             reflective_rule_score_boost=float(
                 os.environ.get("INQUIRY_REFLECTIVE_RULE_SCORE_BOOST", "0.12")
+            ),
+            read_prep_parallel_enabled=_env_bool(
+                "INQUIRY_READ_PREP_PARALLEL_ENABLED", True
             ),
             question_action_parallel_enabled=_env_bool(
                 "INQUIRY_QUESTION_ACTION_PARALLEL_ENABLED", True

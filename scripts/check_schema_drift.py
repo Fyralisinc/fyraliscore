@@ -125,7 +125,6 @@ EXPECTED_TABLES: dict[str, Table] = {
         indexes={
             "observations_pkey",
             "observations_tenant_source_external_occurred_key",
-            "obs_embedding_idx",
             "obs_actor_time_idx",
             "obs_channel_time_idx",
             "obs_kind_idx",

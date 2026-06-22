@@ -72,7 +72,7 @@ def _envelope_msg(tenant_id: UUID, s3: _TrackingS3, i: int) -> MagicMock:
         tenant_id=tenant_id,
         raw_s3_key=key,
         content_hash=h,
-        ingested_at=dt.datetime(2026, 5, 17, 12, 0, 0, tzinfo=dt.timezone.utc),
+        ingested_at=dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0),
         ingress_kind="webhook",
     )
     m = MagicMock()

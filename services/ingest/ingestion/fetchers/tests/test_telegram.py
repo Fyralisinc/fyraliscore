@@ -96,7 +96,7 @@ async def test_onboarding_and_reconciler_cover_telegram():
 
     assert "telegram_installations" in _LOAD_ACTIVE_SOURCES_SQL
     rec_src = inspect.getsource(_rec)
-    assert "telegram_reconciler_mod.set_pool_provider" in rec_src
+    assert "register_pool_provider(pool)" in rec_src
 
 
 async def test_backward_paging_full_sweep(monkeypatch):

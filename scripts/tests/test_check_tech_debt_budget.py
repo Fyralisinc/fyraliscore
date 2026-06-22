@@ -13,7 +13,7 @@ def test_tech_debt_budget_allows_counts_at_limit(tmp_path: Path) -> None:
 
     report = build_report(repo_root=tmp_path)
 
-    assert check_budget(report, TechDebtBudget()) == []
+    assert check_budget(report, TechDebtBudget(), repo_root=tmp_path) == []
 
 
 def test_tech_debt_budget_flags_hotspot_growth(tmp_path: Path) -> None:
@@ -35,6 +35,7 @@ def test_tech_debt_budget_flags_hotspot_growth(tmp_path: Path) -> None:
             files_over_threshold=0,
             functions_over_threshold=0,
         ),
+        repo_root=tmp_path,
     )
 
     assert [(violation.metric, violation.actual) for violation in violations] == [
@@ -116,7 +117,7 @@ def test_tech_debt_budget_flags_queue_owner_ratchet_growth(
     )
     report = build_report(repo_root=tmp_path)
 
-    violations = check_budget(report, TechDebtBudget())
+    violations = check_budget(report, TechDebtBudget(), repo_root=tmp_path)
 
     assert [(violation.metric, violation.actual) for violation in violations] == [
         ("raw_pending_post_commit_action_insert_violations", 1),

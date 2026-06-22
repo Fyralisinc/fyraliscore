@@ -29,6 +29,7 @@ def _draft(
     scope_entities: list[dict[str, Any]] | None = None,
     supporting_model_ids: list[uuid.UUID] | None = None,
     contributing_models: list[uuid.UUID] | None = None,
+    semantic_terms: list[str] | None = None,
 ) -> ModelCreate:
     tenant_id = tenant or uuid.uuid4()
     event_id = born_from_event or uuid.uuid4()
@@ -49,6 +50,7 @@ def _draft(
         confidence_at_assertion=0.6,
         supporting_model_ids=supporting_model_ids or [],
         contributing_models=contributing_models or [],
+        semantic_terms=semantic_terms or [],
     )
 
 
@@ -283,6 +285,57 @@ async def test_insert_many_orders_dependencies_and_preserves_side_effects(
         [situation, dependent, right, left],
     )
     assert state_changes == 4
+
+
+async def test_insert_many_bulk_preserves_semantic_terms(
+    repo: ModelsRepo,
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    actor_id: uuid.UUID,
+    born_from_event: uuid.UUID,
+) -> None:
+    drafts = [
+        _draft(
+            tenant=tenant,
+            born_from_event=born_from_event,
+            actor_id=actor_id,
+            natural="Partial refund edge case creates duplicate invoice reversal.",
+            semantic_terms=[
+                "partial refund edge case",
+                "duplicate invoice reversal",
+            ],
+        ),
+        _draft(
+            tenant=tenant,
+            born_from_event=born_from_event,
+            actor_id=actor_id,
+            natural="Founder review bandwidth limits enterprise renewal timing.",
+            semantic_terms=[
+                "founder review bandwidth",
+                "enterprise renewal timing",
+            ],
+        ),
+    ]
+
+    with notify_scope():
+        rows = await repo.insert_many(drafts, conn=tx_conn)
+
+    assert "partial refund edge case" in rows[0].semantic_terms
+    assert "duplicate invoice reversal" in rows[0].semantic_terms
+    assert "founder review bandwidth" in rows[1].semantic_terms
+    assert "enterprise renewal timing" in rows[1].semantic_terms
+
+    stored = await tx_conn.fetch(
+        """
+        SELECT model_id AS id, semantic_terms
+        FROM model_semantic_terms
+        WHERE model_id = ANY($1::uuid[])
+        ORDER BY array_position($1::uuid[], model_id)
+        """,
+        [row.id for row in rows],
+    )
+    assert "partial refund edge case" in stored[0]["semantic_terms"]
+    assert "founder review bandwidth" in stored[1]["semantic_terms"]
 
 
 async def test_insert_many_rejects_cycle_without_partial_writes(

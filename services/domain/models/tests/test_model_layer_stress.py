@@ -663,12 +663,23 @@ async def test_model_layer_stress_insert_time_topology_is_bounded_and_tenant_saf
         """,
         tenant,
     )
-    candidate_ids = {str(row["id"]) for row in candidate_rows}
+    queued_candidate_ids = {
+        str(row["id"])
+        for row in await tx_conn.fetch(
+            """
+            SELECT id
+            FROM relationship_candidates
+            WHERE tenant_id = $1
+              AND source IN ('latent_topology', 'relationship_candidate_service')
+            """,
+            tenant,
+        )
+    }
     for row in trigger_rows:
         payload = row["payload"]
         if isinstance(payload, str):
             payload = json.loads(payload)
-        assert payload["relationship_candidate_id"] in candidate_ids
+        assert payload["relationship_candidate_id"] in queued_candidate_ids
 
     found = await topology_repo.search_by_embedding(
         base_embedding,

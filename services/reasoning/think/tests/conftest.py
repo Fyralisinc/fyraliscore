@@ -157,9 +157,36 @@ async def _schema_looks_ready(conn: asyncpg.Connection) -> bool:
             "public.relation_edge_projections",
             "public.relation_evidence",
             "public.model_pair_evidence",
+            "public.pending_post_commit_actions",
+            "public.model_events",
+            "public.model_open_questions",
+            "public.projection_checkpoints",
+            "public.projection_snapshots",
         ],
     )
-    return bool(rows) and all(row["exists"] for row in rows)
+    tables_ready = bool(rows) and all(row["exists"] for row in rows)
+    if not tables_ready:
+        return False
+    return bool(
+        await conn.fetchval(
+            """
+            SELECT EXISTS (
+              SELECT 1
+              FROM pg_constraint
+              WHERE conrelid = 'pending_post_commit_actions'::regclass
+                AND contype = 'c'
+                AND pg_get_constraintdef(oid) LIKE '%search_open_questions%'
+            )
+            AND EXISTS (
+              SELECT 1
+              FROM pg_constraint
+              WHERE conrelid = 'model_events'::regclass
+                AND contype = 'c'
+                AND pg_get_constraintdef(oid) LIKE '%model.open_question_changed%'
+            )
+            """
+        )
+    )
 
 
 @pytest_asyncio.fixture
@@ -256,6 +283,12 @@ async def tenant_cleanup(fresh_db: asyncpg.Pool, tenant: uuid.UUID):
         await conn.execute(
             "DELETE FROM model_edges WHERE tenant_id = $1", tenant,
         )
+        if await conn.fetchval(
+            "SELECT to_regclass('public.model_open_questions')"
+        ):
+            await conn.execute(
+                "DELETE FROM model_open_questions WHERE tenant_id = $1", tenant,
+            )
         await conn.execute(
             "DELETE FROM model_scope_actors WHERE tenant_id = $1", tenant,
         )

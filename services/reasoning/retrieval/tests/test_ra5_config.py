@@ -44,6 +44,8 @@ def test_ra5_config_defaults_match_spec():
     assert cfg.structural_k_per_entity == 5
     assert cfg.semantic_k == 20
     assert cfg.semantic_hnsw_ef_search == 80
+    assert cfg.semantic_terms_enabled is True
+    assert cfg.semantic_terms_k == 40
     assert cfg.temporal_window_minutes == 60
     assert cfg.temporal_include_entity_mentions is True
     assert cfg.context_budget_tokens == 100_000
@@ -68,6 +70,7 @@ def test_ra5_config_defaults_match_spec():
 def test_ra5_config_env_overrides_int(monkeypatch):
     monkeypatch.setenv("RETRIEVAL_SEMANTIC_K", "40")
     monkeypatch.setenv("RETRIEVAL_SEMANTIC_HNSW_EF_SEARCH", "200")
+    monkeypatch.setenv("RETRIEVAL_SEMANTIC_TERMS_K", "60")
     monkeypatch.setenv("RETRIEVAL_ASSEMBLER_BUDGET_MODELS", "18")
     monkeypatch.setenv("RETRIEVAL_TRIGGER_OBSERVATION_CAP", "25")
     monkeypatch.setenv("RETRIEVAL_HISTORICAL_OBSERVATION_CAP", "2")
@@ -75,6 +78,7 @@ def test_ra5_config_env_overrides_int(monkeypatch):
     cfg = RetrievalConfig.from_env()
     assert cfg.semantic_k == 40
     assert cfg.semantic_hnsw_ef_search == 200
+    assert cfg.semantic_terms_k == 60
     assert cfg.assembler_budget_models == 18
     assert cfg.trigger_observation_cap == 25
     assert cfg.historical_observation_cap == 2
@@ -95,11 +99,15 @@ def test_ra5_config_env_overrides_retrieval_tuning_knobs(monkeypatch):
 
 def test_ra5_config_env_overrides_bool(monkeypatch):
     monkeypatch.setenv("RETRIEVAL_TEMPORAL_INCLUDE_ENTITY_MENTIONS", "false")
+    monkeypatch.setenv("RETRIEVAL_SEMANTIC_TERMS_ENABLED", "false")
     cfg = RetrievalConfig.from_env()
     assert cfg.temporal_include_entity_mentions is False
+    assert cfg.semantic_terms_enabled is False
     monkeypatch.setenv("RETRIEVAL_TEMPORAL_INCLUDE_ENTITY_MENTIONS", "1")
+    monkeypatch.setenv("RETRIEVAL_SEMANTIC_TERMS_ENABLED", "1")
     cfg = RetrievalConfig.from_env()
     assert cfg.temporal_include_entity_mentions is True
+    assert cfg.semantic_terms_enabled is True
     monkeypatch.setenv("RETRIEVAL_MODEL_FIRST_CONTEXT_ENABLED", "false")
     cfg = RetrievalConfig.from_env()
     assert cfg.model_first_context_enabled is False

@@ -72,6 +72,37 @@ provides the shared `judgment_leverage` attention score.
 (`contest_model`, reached via gateway `POST /contest/{model_id}`). `dynamics/`
 emits ephemeral signals only — no new truth table.
 
+### Critical TODO: budget latent topology as background inquiry
+
+> **TODO(critical):** Give topology-discovered latent T4 work a first-class,
+> budgeted hypothesis lifecycle instead of treating it like foreground queue work.
+>
+> The structural weakness is lifecycle confusion. Foreground Think work is finite:
+> signals enter, Models update, projections materialize, and product-visible state
+> should drain. Latent topology is different: it is open-ended search pressure over
+> the model field. Better Models and better retrieval naturally create more
+> non-obvious relationship candidates, which is useful intelligence, but it is not
+> a bounded product request.
+>
+> The fix is to separate the phases explicitly:
+>
+> 1. **Discovery:** broad, cheap, noisy pattern search creates candidate pressure.
+> 2. **Triage:** deterministic scoring/dedupe/budgeting decides which candidates are
+>    worth expensive adjudication.
+> 3. **Adjudication:** only high-expected-value candidates become LLM-backed T4 work.
+> 4. **Materialization:** accepted candidates become durable edges, situation Models,
+>    or ontology gaps.
+>
+> Product E2E gates should require foreground Think, projection materialization, and
+> product-visible post-commit work to drain. They should not require exploratory
+> topology/search/open-question background inquiry to reach zero. Full maintenance
+> drains can exist as separate health checks with explicit budgets, priority, and
+> timeout semantics.
+>
+> This is one of the highest-priority architecture debts because it decides whether
+> improving retrieval/model quality creates compounding intelligence or unbounded
+> queue pressure.
+
 ## How it's wired
 
 ```mermaid

@@ -453,7 +453,8 @@ drives cascade and realtime NOTIFY.
 
 [services/observations/repo.py](services/observations/repo.py). The
 `observations` table is append-only, **range-partitioned monthly on
-`occurred_at`**, and vector-searchable (768-d HNSW).
+`occurred_at`**. Its 768-d embedding is retained as an optional T1 seed vector;
+the hot semantic ANN surface is the Model layer.
 
 Salient columns: `kind` (e.g. `state_change`, `contestation`), `source_channel`,
 `actor_id`, `content` / `content_text`, `embedding` (+ `embedding_pending`

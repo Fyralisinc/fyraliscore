@@ -124,7 +124,7 @@ The database schema starts in [0001_foundation.sql](db/migrations/0001_foundatio
 | Area | Tables | Purpose |
 |---|---|---|
 | Queues | `think_trigger_queue`, `model_reeval_queue`, `pending_post_commit_actions` | Durable work queues polled with `FOR UPDATE SKIP LOCKED`. The retired `topo_dirty_queue` table was dropped by migration `0127`. |
-| Idempotency | `applied_triggers`, `dedup_keys_seen` | Prevent duplicate application of the same trigger/diff. |
+| Idempotency | `applied_triggers` plus per-feature unique keys | Prevent duplicate application of the same trigger/diff. The old `dedup_keys_seen` table was dropped by migration `0155`. |
 | Think observability | `think_runs`, `think_run_costs`, `think_run_artifacts`, `think_anomalies_raw` | Run status, cost, debug capture, anomaly staging. |
 | Reconciliation/audit | `reconciliation_events`, `audit_events` | Duplicate-model decisions and model state-change chain. |
 | CEO view | `view_ceo_cache`, `view_render_costs`, `viewer_state`, `card_conversations`, `card_exchanges` | Cached product payloads, render costs, per-viewer last-seen state, card probes. |

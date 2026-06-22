@@ -527,6 +527,8 @@ def _add_entity_candidates(
         if entity_kind is None:
             continue
         confidence = 0.74 if entity_kind in {"system", "workstream"} else 0.62
+        if entity_kind == "customer" and _explicit_customer_entity(entity):
+            confidence = 0.74
         key = accumulator.add(
             kind=entity_kind,
             label=label,
@@ -586,7 +588,7 @@ def _add_text_candidates(
             kind="commitment",
             label=f"{jira_key} work item",
             fingerprint=f"commitment:jira:{jira_key.lower()}",
-            confidence=0.74,
+            confidence=0.79,
             observation_id=observation_id,
             aliases=[{"issue_key": jira_key, "source_channel": source_channel}],
             metadata={"basis": "jira_issue_key", "source_root": source_root},
@@ -865,6 +867,14 @@ def _entity_kind(
     if "alpen" not in label_lower and _ORG_SUFFIX_RE.search(label):
         return "customer"
     return None
+
+
+def _explicit_customer_entity(entity: dict[str, Any]) -> bool:
+    raw_kind = " ".join(
+        str(entity.get(key) or "")
+        for key in ("type", "kind", "entity_type", "object_type")
+    ).casefold()
+    return "customer" in raw_kind or "account" in raw_kind
 
 
 def _first_action(text: str) -> str | None:

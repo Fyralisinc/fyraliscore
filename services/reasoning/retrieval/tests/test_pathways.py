@@ -31,6 +31,7 @@ from services.reasoning.retrieval.pathways import (
     pathway_c_temporal,
     pathway_d_pattern,
     pathway_g_model_edges,
+    pathway_l_semantic_terms,
 )
 
 from services.reasoning.retrieval.tests._fixtures import build_fixture, make_embedding
@@ -270,6 +271,46 @@ async def test_pathway_b_real_ollama_semantic_cluster(
         )
     assert result.notes["vector_source"] == "ollama"
     assert len(result.models) <= 10
+
+
+# =====================================================================
+# Pathway L — semantic terms
+# =====================================================================
+
+
+async def test_pathway_l_semantic_terms_uses_model_specific_lexical_tags(
+    tx_conn,
+    fresh_db,
+    tenant,
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db, n_models=8)
+    tagged_model_id = fs.model_ids[0]
+    await tx_conn.execute(
+        """
+        INSERT INTO model_semantic_terms (
+          tenant_id, model_id, semantic_terms
+        ) VALUES ($1, $2, $3::text[])
+        ON CONFLICT (tenant_id, model_id) DO UPDATE
+        SET semantic_terms = EXCLUDED.semantic_terms
+        """,
+        tenant,
+        tagged_model_id,
+        [
+            "refund replay drift",
+            "duplicate invoice reversal",
+            "idempotency key collision",
+        ],
+    )
+
+    result = await pathway_l_semantic_terms(
+        "refund replay drift caused an idempotency key collision",
+        tenant,
+        tx_conn,
+    )
+
+    assert result.source_pathway == "L"
+    assert tagged_model_id in {model.id for model in result.models}
+    assert "refund replay drift" in result.notes["query_terms"]
 
 
 # =====================================================================

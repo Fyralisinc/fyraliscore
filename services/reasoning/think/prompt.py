@@ -31,6 +31,7 @@ from typing import Any
 
 from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.retrieval.primary import TriggerContext
+from services.domain.models.formation import build_model_formation_candidates
 
 from .reasoning_frame import ReasoningFrame, reasoning_job_from_trigger
 
@@ -117,6 +118,11 @@ Core discipline:
   candidate, accept it through the right op, update/merge/reject it, or no-op it
   in reasoning_trace. Add a missing op only when the packet missed a durable
   memory change.
+- If <model_formation_candidates> appears, each listed candidate is a required
+  belief-formation decision. For every candidate, emit exactly one
+  formation_resolutions item with resolution formed, updated, deferred,
+  rejected, or already_covered. Use claim_ops/memory_lifecycle_ops for any
+  durable Model change; formation_resolutions is accountability, not a write.
 - If <inquiry_context_packet> says mode=compiled_memory_decision_boundary, do
   not reconstruct the hidden planner path. The packet has already compressed the
   batch; adjudicate the listed candidates, use the minimal cited evidence/model
@@ -148,6 +154,8 @@ Diff schema (you produce EXACTLY this JSON shape):
   "relation_frame_ops": [],
   "edge_ops": [],
   "ontology_gap_ops": [],
+  "open_question_ops": [],
+  "formation_resolutions": [],
   "act_ops": [],
   "resource_ops": [],
   "new_predictions": [],
@@ -165,12 +173,18 @@ claim_ops.insert entry shape (you produce EXACTLY these fields):
     "scope_actors": ["<uuid>", ...],
     "scope_entities": [{"type":"customer|commitment|goal|decision|resource|candidate_actor|candidate_actor_alias|candidate_customer|candidate_workstream|candidate_system|candidate_vendor|candidate_commitment|candidate_pattern","id":"<uuid>"}],
     "scope_temporal": {"valid_from":"<ISO-8601>","valid_until":"<ISO-8601|null>"},
+    "semantic_terms": ["<specific lexical phrase>", ...],
     "falsifier": {"kind":"<falsifier kind>", "...":"..."} | null
   }
 }
 Do NOT include title, description, embedding, id, claim, or unknown fields.
 - update: {"op":"update","model_id":"<uuid>","changes":{...}}
 - archive: {"op":"archive","model_id":"<uuid>","reason":"decay|falsifier_triggered|contested_incorrect|contested_reading_incorrect|superseded|manual|resolved_confirmed|resolved_violated|severe_drift|deprecated|acted_upon|dismissed_by_user"}
+
+formation_resolutions item shape:
+{"op":"resolve","candidate_id":"<candidate_id from model_formation_candidates>","resolution":"formed|updated|deferred|rejected|already_covered","rationale":"<why>","output_model_ids":["<existing model uuid>",...],"follow_up_question":"<question|null>"}
+For newly inserted Models, do not invent output_model_ids; leave it empty and
+cite the created claim in rationale.
 
 Proposition stance and grammar:
 - `kind` has only four valid values: observation, belief, prediction, norm.
@@ -199,6 +213,20 @@ Payload examples:
 - norm/recommendation -> {"kind":"norm","claim_role":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
 Do NOT invent new proposition kinds. Preserve nuance with `claim_role`,
 `domain_tags`, and the other grammar axes.
+
+Semantic terms:
+- `semantic_terms` are top-level Model fields, not proposition fields.
+- Add 6-16 compact lexical handles that make this exact belief findable by
+  surface-language retrieval, e.g. "partial refund edge case",
+  "idempotency key collision", "founder review bandwidth", "enterprise
+  renewal delay".
+- Prefer specific 2-4 word phrases over broad categories.
+- Do NOT include actor names, customer/company/system/vendor names, UUIDs,
+  PR/ticket handles, source channels, dates/times, exact `domain_tags`,
+  `claim_role`, or anything already represented in `scope_actors`,
+  `scope_entities`, or grammar axes.
+- Every term must be grounded in the claim's natural text, proposition,
+  falsifier, or resolution criteria. Do not invent SEO-like keywords.
 
 Situation compositional fields (mandatory when emitting `kind="belief", claim_role="situation"`):
 - `pressure_type` MUST be one of capacity, trust, revenue, compliance,
@@ -262,6 +290,15 @@ Model Scope:
 - Actor claims must be evidenced. Do not psychologize from a single signal:
   write capability/constraint/support claims only when the signal directly says
   so or the retrieved actor context shows a repeated pattern.
+- Employee formation lens: when selected observations or <actor_context> show
+  repeated evidence about the same internal actor, form actor-scoped Models that
+  make the operating profile useful. Use `capability` for demonstrated skills
+  or capacity, `relation` for stable work-style/preferences/collaboration
+  contexts, `concern` for support needs or load risks, and `pattern` for
+  recurring behavior. Prefer specific operational claims ("needs uninterrupted
+  design blocks before architecture review") over personality labels. If new
+  evidence weakens an older employee belief, use lifecycle/supersession instead
+  of adding a conflicting sibling.
 - scope_entities: {"type":"customer|commitment|goal|decision|resource",
   "id":"<uuid>"} from <acts>, <resources>, or customer_context. Resolve PR/ticket
   handles (PR #847, ENG-501) to the matching commitment UUID in <acts>. Customer
@@ -360,6 +397,34 @@ memory_lifecycle_ops:
   when a selected memory was explicitly evaluated and remains valid.
 - Use action="archive" only with a registered lifecycle reason. Use
   action="supersede" with superseded_by_model_id when a replacement Model exists.
+
+open_question_ops:
+{ "op":"insert|resolve|archive",
+  "id":"<optional question uuid for insert|null>",
+  "question_id":"<existing question uuid for resolve/archive|null>",
+  "model_id":"<target model uuid or same-diff born_from_event_id>",
+  "question":"<specific unresolved question|null>",
+  "question_type":"evidence_gap|temporal_status|causal_mechanism|constraint_boundary|owner_or_decision|impact_scope|contradiction_check|projection_gap|other",
+  "rationale":"<why answering this materially improves the belief|null>",
+  "priority":0.0-1.0,
+  "expected_resolution_signal":{"signal_shape":"<what kind of evidence would answer it>"},
+  "search_signature":{"semantic_terms":["<specific phrase>",...],"hints":["<search hint>",...]},
+  "source_model_ids":["<model uuid>",...],
+  "resolution_model_id":"<model uuid that answers it|null>",
+  "resolution_note":"<why it is resolved/archived|null>",
+  "status":"resolved|stale|superseded|duplicate|archived|null" }
+- Use open_question_ops only when an unresolved question would materially change
+  confidence, scope, falsifiability, projection, or actionability of a Model.
+  Do not write generic "need more data" questions.
+- Do not duplicate information already represented by scope_actors,
+  scope_entities, domain_tags, semantic_terms, or grammar axes. The question is
+  the missing evidence boundary, not another label for the Model.
+- `search_signature` should contain specific lexical handles and search hints
+  for retrieval. Avoid actor/customer/company/system names, UUIDs, source
+  channels, broad categories, and fields already represented elsewhere.
+- Prefer question_type="constraint_boundary" for missing resource/runway/owner
+  limits, "temporal_status" for stale current-state uncertainty, and
+  "contradiction_check" when the next useful search is for counterevidence.
 
 relation_claim_ops:
 { "op":"upsert",
@@ -563,6 +628,7 @@ Return exactly this JSON shape:
   "trigger_ref": "<uuid echoed from triggering_event>",
   "tenant_id": "<uuid echoed from triggering_event>",
   "claim_ops": [],
+  "formation_resolutions": [],
   "reasoning_trace": "<brief rationale>"
 }
 
@@ -577,10 +643,17 @@ claim_ops.insert entry shape:
     "scope_actors": ["<uuid>", ...],
     "scope_entities": [{"type":"customer|commitment|goal|decision|resource|candidate_actor|candidate_actor_alias|candidate_customer|candidate_workstream|candidate_system|candidate_vendor|candidate_commitment|candidate_pattern","id":"<uuid>"}],
     "scope_temporal": {"valid_from":"<ISO-8601>","valid_until":"<ISO-8601|null>"},
+    "semantic_terms": ["<specific lexical phrase>", ...],
     "falsifier": {"kind":"<falsifier kind>", "...":"..."} | null
   }
 }
 Do NOT include title, description, embedding, id, claim, or unknown fields.
+
+formation_resolutions item shape:
+{"op":"resolve","candidate_id":"<candidate_id from model_formation_candidates>","resolution":"formed|updated|deferred|rejected|already_covered","rationale":"<why>","output_model_ids":["<existing model uuid>",...],"follow_up_question":"<question|null>"}
+If <model_formation_candidates> appears, every candidate requires exactly one
+formation_resolutions item. Use claim_ops.insert for formed beliefs; do not
+invent Model UUIDs for new inserts.
 
 Proposition stance:
 - `kind` has only four valid values: observation, belief, prediction, norm.
@@ -606,6 +679,11 @@ edge case/customer pushback/missing evidence; prediction=dated plan, ETA, future
 deploy, expected slip, conditional outcome; relation=dependency or causal link;
 hypothesis=uncertain explanation needing investigation; situation=composite
 condition across multiple selected Models. Do not flatten every claim into fact.
+Semantic terms: add 6-16 top-level `semantic_terms` per inserted claim. They
+must be specific belief phrases, not actor/entity names, UUIDs, PR/ticket
+handles, source channels, dates, exact `domain_tags`, `claim_role`, or anything
+already captured by scope/grammar. Prefer phrases like "partial refund edge
+case", "idempotency key collision", "founder review bandwidth".
 
 Falsifier kinds:
 - observation_pattern: {"kind":"observation_pattern","pattern":"specific signal shape, >=20 chars","within_window":"ISO-8601 duration"}
@@ -632,6 +710,12 @@ Scope:
   commitment owner, or <actors_in_context>. External senders usually use [].
 - Actor claims must be directly evidenced or supported by repeated actor
   context; do not infer motives or hidden psychology from one message.
+- Employee formation lens: when there is repeated evidence about one internal
+  actor, create specific actor-scoped Models for demonstrated capability,
+  work-style/preference, support need, load risk, relationship/collaboration
+  pattern, or recurring behavior. Avoid generic personality labels. If the new
+  signal changes an older employee belief, prefer lifecycle/supersession over a
+  duplicate conflicting sibling.
 - scope_entities comes from <acts>, <resources>, customer_context, or exact
   candidate refs in <candidate_substrate>. Resolve PR numbers and ticket IDs to
   matching commitment UUIDs in <acts>; customer names to relational resources;
@@ -753,6 +837,8 @@ _DIFF_SHAPE_SKELETON = """Diff schema (you produce EXACTLY this JSON shape):
   "relation_frame_ops": [],
   "edge_ops": [],
   "ontology_gap_ops": [],
+  "open_question_ops": [],
+  "formation_resolutions": [],
   "act_ops": [],
   "resource_ops": [],
   "new_predictions": [],
@@ -763,9 +849,9 @@ _DIFF_SHAPE_POINTER = (
     "Diff schema: the strict tool schema enforces the exact top-level shape "
     "(trigger_ref, tenant_id, claim_ops, memory_lifecycle_ops, relation_claim_ops, "
     "relation_frame_ops, edge_ops, "
-    "ontology_gap_ops, resource_ops, new_predictions, reasoning_trace). Act ops "
-    "are available in the full RawDiff schema but omitted from this strict tool "
-    "surface."
+    "ontology_gap_ops, open_question_ops, formation_resolutions, resource_ops, "
+    "new_predictions, reasoning_trace). Act ops are available in the full "
+    "RawDiff schema but omitted from this strict tool surface."
 )
 
 
@@ -1230,6 +1316,10 @@ def _build_context_section(
     if inquiry_packet:
         lines.extend(inquiry_packet)
 
+    formation_candidates = _build_model_formation_candidates_section(trigger, bundle)
+    if formation_candidates:
+        lines.extend(formation_candidates)
+
     # Observations
     if compiled_decision_mode:
         lines.extend(_build_compiled_observation_manifest(bundle, actor_mentions))
@@ -1520,6 +1610,32 @@ def _build_candidate_substrate_section(bundle: ContextBundle) -> list[str]:
         lines.append(piece)
         used += len(piece)
     lines.append("  </candidate_substrate>")
+    return lines
+
+
+def _build_model_formation_candidates_section(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+) -> list[str]:
+    candidates = build_model_formation_candidates(trigger, bundle)
+    if not candidates:
+        return []
+    lines = ["  <model_formation_candidates>"]
+    lines.append(f"    required_decision_count: {len(candidates)}")
+    used = 0
+    for candidate in candidates:
+        payload = candidate.to_prompt_dict()
+        rendered = json.dumps(payload, sort_keys=True, default=str)
+        if used + len(rendered) > _CANDIDATES_CHAR_BUDGET and used > 0:
+            remaining = len(candidates) - len(lines) + 2
+            if remaining > 0:
+                lines.append(
+                    f"    [truncated - {remaining} formation candidates omitted]"
+                )
+            break
+        lines.append(f"    - {rendered}")
+        used += len(rendered)
+    lines.append("  </model_formation_candidates>")
     return lines
 
 
@@ -2419,6 +2535,42 @@ def _internal_reflection_instructions(trigger: TriggerContext) -> str:
             "  - Explain the consequence: which flow/pressure/customer/"
             "actor/commitment changes meaning if this candidate is true."
         )
+    if job.intent == "repair_representation_gap":
+        signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+        warning_code = str(signature.get("audit_warning_code") or "unknown")
+        repair_intent = str(signature.get("repair_intent") or "repair")
+        return (
+            header
+            + "\n\n"
+            "Intent: repair a representation gap detected by a previous "
+            "Think run's audit or by an authoritative outcome oracle. "
+            "The trigger payload names "
+            f"audit_warning_code={warning_code!r} and "
+            f"repair_intent={repair_intent!r}.\n"
+            "\n"
+            "Use selected observations and Models to exercise the missing "
+            "loop directly:\n"
+            "  - human_correction_submitted / apply_human_correction: treat "
+            "oracle_outcome_fact as authoritative user feedback. Update, "
+            "archive, contest, split, or attach counterevidence to the matching "
+            "Models instead of restating the submitted correction.\n"
+            "  - prediction_lifecycle_not_exercised: emit "
+            "memory_lifecycle_ops action='confirm', 'falsify', 'revise', "
+            "'archive', or 'unchanged' for the selected prediction-like Model.\n"
+            "  - truth_pressure_absent_for_contestable_memory: emit a "
+            "counterevidence relation, negative lifecycle op, or contested "
+            "claim update only when supported by evidence.\n"
+            "  - missing_curiosity_coverage: emit a bounded curiosity/unknown "
+            "claim tied to concrete entities or commitments.\n"
+            "  - missing_source_coverage, selected_raw_evidence_too_low, or "
+            "selected_model_support_runaway: attach evidence, split overloaded "
+            "claims, absorb near-duplicates, or no-op if the audit was already "
+            "satisfied.\n"
+            "\n"
+            "Do not create recap facts solely to appease the audit. If the "
+            "retrieved context does not support a repair, return an empty diff "
+            "and explain the missing evidence in reasoning_trace."
+        )
     if job.intent == "reorganize_memory":
         return (
             header
@@ -2532,6 +2684,13 @@ def _build_instructions(trigger: TriggerContext) -> str:
         "resolve the handle to the commitment in <acts> when present; "
         "otherwise use the exact candidate_commitment/workstream scope_ref "
         "from <candidate_substrate>. Do NOT invent UUIDs."
+    )
+    body.append(
+        "Also populate top-level semantic_terms for every claim_ops.insert: "
+        "6-16 specific lexical phrases grounded in the claim text that improve "
+        "surface-language retrieval. Do not include names/UUIDs/handles/source "
+        "channels/dates, exact domain_tags, claim_role, or anything already "
+        "stored in scope_actors, scope_entities, or grammar axes."
     )
     body.append(
         "Retrieval discipline: when <retrieval_priority> names selected or "

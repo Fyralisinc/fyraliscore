@@ -6,7 +6,7 @@ BUILD-PLAN.md §2 Prompt 1.A item 1:
         existing on conflict; computes embedding; embedding_pending=True
         fallback if Ollama is down.
       - get_by_id(id, tenant_id)
-      - search_by_embedding(vec, tenant_id, k, filters) — HNSW cosine
+      - search_by_embedding(vec, tenant_id, k, filters) — cosine order
       - by_actor_time_range
       - by_channel_time_range
       - by_entities
@@ -369,7 +369,7 @@ class ObservationRepository:
         return _hydrate_row(row) if row is not None else None
 
     # -----------------------------------------------------------------
-    # Method 3: search_by_embedding (HNSW cosine)
+    # Method 3: search_by_embedding (cosine)
     # -----------------------------------------------------------------
     async def search_by_embedding(
         self,
@@ -381,7 +381,10 @@ class ObservationRepository:
         conn: asyncpg.Connection | None = None,
     ) -> list[ObservationRow]:
         """
-        Cosine-similarity nearest-neighbour search, HNSW-indexed.
+        Cosine-similarity nearest-neighbour search over raw observations.
+        The direct observation HNSW index was retired in migration 0155; the
+        hot semantic path searches Model embeddings instead. Keep this API for
+        low-volume/debug callers and tests.
         Always filters embedding_pending = FALSE (pending rows have
         NULL vectors that would throw off the operator anyway) and
         tenant_id = $tenant_id for isolation.
@@ -624,7 +627,7 @@ async def _exact_embedding_fallback(
     params: list[Any],
     indexed_rows: list[asyncpg.Record],
 ) -> list[asyncpg.Record]:
-    """Retry vector search as an exact scan when HNSW post-filter recall is low."""
+    """Retry vector search as an exact scan when an ANN index under-recovers."""
     async with conn.transaction():
         await conn.execute("SET LOCAL enable_indexscan = off")
         await conn.execute("SET LOCAL enable_bitmapscan = off")

@@ -2425,6 +2425,7 @@ _BELIEF_ADDRESS_FTS_GENERIC_TERMS = {
     "alternate",
     "assigned",
     "block",
+    "blocks",
     "blocked",
     "blocker",
     "capacity",
@@ -2471,8 +2472,12 @@ _LEXICAL_DISCOVERY_GENERIC_TERMS = {
     "status",
 }
 _SPARSE_LOOKUP_ALLOWED_GENERIC_TERMS = {
-    # Generic alone, valuable in combination. The sparse query still requires
-    # multi-term overlap unless the token is symbol-specific.
+    # Expanded answer-side discriminator for blocker questions. The surface
+    # question verb "blocks" remains generic; "blocked" helps find stored
+    # assertions phrased as "X is blocked by Y".
+    "blocked",
+    # Evidence is generic alone, but useful as a discriminator in bounded
+    # multi-term sparse lookups such as procurement/security evidence.
     "evidence",
 }
 
@@ -2527,16 +2532,31 @@ def _sparse_lookup_terms(
 ) -> list[str]:
     out: list[str] = []
     for raw in terms:
-        for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", str(raw or "").casefold()):
+        raw_tokens = [
+            token
+            for token in re.findall(
+                r"[a-z0-9][a-z0-9_-]{2,}", str(raw or "").casefold()
+            )
+            if token not in _STOPWORDS and not token.isdigit()
+        ]
+        has_specific_term = any(
+            token not in _LEXICAL_DISCOVERY_GENERIC_TERMS
+            or "-" in token
+            or "_" in token
+            or any(ch.isdigit() for ch in token)
+            for token in raw_tokens
+        )
+        for token in raw_tokens:
             if token in _STOPWORDS or token.isdigit():
                 continue
             symbol_specific = (
                 "-" in token or "_" in token or any(ch.isdigit() for ch in token)
             )
+            allowed_generic = token in _SPARSE_LOOKUP_ALLOWED_GENERIC_TERMS
             if (
                 token in _LEXICAL_DISCOVERY_GENERIC_TERMS
                 and not symbol_specific
-                and token not in _SPARSE_LOOKUP_ALLOWED_GENERIC_TERMS
+                and (not allowed_generic or not has_specific_term)
             ):
                 continue
             if len(token) < 4 and not symbol_specific:
@@ -3637,7 +3657,7 @@ def _question_role_score(
             "exhaust",
         )
     ):
-        score += 0.12
+        score += 0.16
         reasons.append("role:blocker")
     if (
         "owns" in relation_clues

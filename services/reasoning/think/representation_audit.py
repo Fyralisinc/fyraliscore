@@ -102,6 +102,7 @@ def build_representation_audit(
     relation_claim_count = len(getattr(validated, "relation_claim_ops", []) or [])
     relation_frame_count = len(getattr(validated, "relation_frame_ops", []) or [])
     edge_op_count = len(getattr(validated, "edge_ops", []) or [])
+    open_question_count = len(getattr(validated, "open_question_ops", []) or [])
     source_digest_count = _source_digest_count(validated)
     curiosity_count = _curiosity_count(validated)
     coverage_roles = _collect_claim_list_values(validated, "coverage_roles")
@@ -123,6 +124,7 @@ def build_representation_audit(
         + evidence_attachment_count
         + near_duplicate_absorption_count
         + lifecycle_count
+        + open_question_count
     )
     edge_adaptiveness = (
         edge_op_count
@@ -135,6 +137,7 @@ def build_representation_audit(
     metrics = {
         "lifecycle_ops": lifecycle_count,
         "ontology_gap_ops": len(getattr(validated, "ontology_gap_ops", []) or []),
+        "open_question_ops": open_question_count,
         "act_ops": len(getattr(validated, "act_ops", []) or []),
         "resource_ops": len(getattr(validated, "resource_ops", []) or []),
         "claim_ops_validated": len(getattr(validated, "claim_ops", []) or []),

@@ -142,6 +142,7 @@ async def test_worker_config_defaults_are_batch_first(monkeypatch):
     assert cfg.downstream_batch_min_size == 2
     assert cfg.t2_batch_max_size == 8
     assert cfg.t4_batch_max_size == 4
+    assert cfg.process_background_triggers is True
 
 
 async def _seed_model(
@@ -1967,6 +1968,62 @@ async def test_queue_depth_counts_pending_rows(fresh_db, tenant, tenant_cleanup)
     worker = ThinkWorker(fresh_db, config=WorkerConfig(tenant_filter=tenant))
     depth = await worker._queue_depth()
     assert depth >= 5
+
+
+async def test_queue_depth_ignores_t4_when_background_disabled(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs = await _seed_signal_observation(fresh_db, tenant)
+    await _enqueue_trigger_row(fresh_db, tenant, obs)
+    for _ in range(7):
+        await _enqueue_t4_latent_candidate(
+            fresh_db,
+            tenant,
+            candidate_id=uuid7(),
+            member_model_ids=[],
+        )
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            tenant_filter=tenant,
+            process_background_triggers=False,
+        ),
+    )
+    depth = await worker._queue_depth()
+    assert depth == 1
+
+
+async def test_poll_skips_t4_when_background_disabled(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    trigger_id = await _enqueue_t4_latent_candidate(
+        fresh_db,
+        tenant,
+        candidate_id=uuid7(),
+        member_model_ids=[],
+    )
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=5,
+            tenant_filter=tenant,
+            process_background_triggers=False,
+        ),
+    )
+
+    await worker._poll_and_dispatch()
+
+    assert not worker._in_flight
+    async with fresh_db.acquire() as conn:
+        locked_by = await conn.fetchval(
+            "SELECT locked_by FROM think_trigger_queue WHERE id = $1",
+            trigger_id,
+        )
+    assert locked_by is None
 
 
 async def test_backpressure_does_not_prevent_enqueue(

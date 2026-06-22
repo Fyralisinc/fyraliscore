@@ -16,7 +16,8 @@
 #   consume : normalizer, observation_writer, dlq_writer,
 #             summarization_worker, summarization_batch_worker,
 #             embedding_worker
-#   app     : think_worker, post_commit_worker
+#   app     : think_worker, post_commit_worker, anomaly_processor_worker,
+#             entity_resolver_worker
 #   (UI + TLS edge live in the demo overlay repo's docker-compose.demo.yml)
 #
 # Secrets (per-source creds, MASTER_KEK, OAuth/HMAC keys) live in
@@ -432,6 +433,28 @@ services:
     container_name: company_os_post_commit_worker
     command: python scripts/run_post_commit_worker.py
     healthcheck: *consumer-healthcheck
+
+  anomaly_processor_worker:
+    <<: *worker
+    container_name: company_os_anomaly_processor_worker
+    command: python scripts/run_anomaly_processor_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      ANOMALY_POLL_INTERVAL_S: "30"
+      ANOMALY_T3_BUDGET_PER_MIN: "20"
+      ANOMALY_PROMOTE_EVERY_N_CYCLES: "10"
+
+  entity_resolver_worker:
+    <<: *worker
+    container_name: company_os_entity_resolver_worker
+    command: python scripts/run_entity_resolver_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      ENTITY_RESOLVER_POLL_INTERVAL_S: "30"
+      ENTITY_RESOLVER_BATCH_SIZE: "25"
+      ENTITY_RESOLVER_LLM_BUDGET_PER_MIN: "30"
 
   # ---- retrieval/memory feature workers (ported from dev) -----------
   sage_structural_features_worker:

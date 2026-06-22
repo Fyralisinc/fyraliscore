@@ -231,6 +231,16 @@ class EntityResolverWorker:
                 )
                 decision = "dropped"
             results.append((phrase, decision))
+        handled_phrases = {
+            phrase for phrase, decision in results if decision != "rate_limited"
+        }
+        if handled_phrases:
+            await self._clear_unresolved_phrases(
+                observation_id=observation_id,
+                tenant_id=tenant_id,
+                phrases=handled_phrases,
+                conn=conn,
+            )
         return results
 
     # -----------------------------------------------------------------
@@ -635,6 +645,52 @@ class EntityResolverWorker:
             json.dumps([entity_ref]),
         )
 
+    async def _clear_unresolved_phrases(
+        self,
+        *,
+        observation_id: UUID,
+        tenant_id: UUID,
+        phrases: set[str],
+        conn: asyncpg.Connection | None,
+    ) -> None:
+        """Remove handled unresolved phrases so poll mode is durable."""
+        if not phrases:
+            return
+        row = await self._fetchrow(
+            conn,
+            """
+            SELECT content FROM observations
+            WHERE id = $1 AND tenant_id = $2
+            """,
+            observation_id,
+            tenant_id,
+        )
+        if row is None:
+            return
+        content = row["content"]
+        if isinstance(content, (bytes, bytearray)):
+            content = content.decode()
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except json.JSONDecodeError:
+                return
+        if not isinstance(content, dict):
+            return
+        if not _remove_unresolved_phrases(content, phrases):
+            return
+        await self._execute(
+            conn,
+            """
+            UPDATE observations
+            SET content = $3::jsonb
+            WHERE id = $1 AND tenant_id = $2
+            """,
+            observation_id,
+            tenant_id,
+            json.dumps(content),
+        )
+
     async def _emit_state_change(
         self,
         *,
@@ -890,6 +946,37 @@ def _extract_unresolved_phrases(content: dict[str, Any]) -> list[str]:
         if isinstance(metadata, dict):
             add(metadata.get("_unresolved_phrases"))
     return phrases
+
+
+def _remove_unresolved_phrases(
+    content: dict[str, Any],
+    phrases: set[str],
+) -> bool:
+    cleaned_phrases = {p.strip() for p in phrases if p.strip()}
+    if not cleaned_phrases:
+        return False
+    changed = False
+
+    def prune(container: dict[str, Any]) -> None:
+        nonlocal changed
+        raw = container.get("_unresolved_phrases")
+        if not isinstance(raw, list):
+            return
+        kept = [
+            phrase
+            for phrase in raw
+            if not isinstance(phrase, str) or phrase.strip() not in cleaned_phrases
+        ]
+        if kept != raw:
+            container["_unresolved_phrases"] = kept
+            changed = True
+
+    prune(content)
+    for metadata_key in ("metadata", "_metadata"):
+        metadata = content.get(metadata_key)
+        if isinstance(metadata, dict):
+            prune(metadata)
+    return changed
 
 
 __all__ = [

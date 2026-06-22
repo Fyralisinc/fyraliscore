@@ -1134,9 +1134,14 @@ def merge_llm_and_safety_questions(
         force_high_value_safety = question.primitive in {
             "CONSTRAINT",
             "DEPENDENCY",
+            "OWNERSHIP",
             "GOAL_IMPACT",
             "RECURRENCE",
         } and (question.expected_value >= 0.86 or question.score >= 0.75)
+        if question.primitive == "OWNERSHIP":
+            force_high_value_safety = (
+                question.expected_value >= 0.70 or question.score >= 0.62
+            )
         if (
             question.primitive == "COUNTEREVIDENCE"
             or len(by_primitive) < 4

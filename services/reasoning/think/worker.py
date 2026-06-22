@@ -510,6 +510,7 @@ class WorkerConfig:
     t2_batch_max_size: int = 8
     t4_batch_max_size: int = 4
     prune_low_value_downstream_triggers: bool = True
+    process_background_triggers: bool = True
     t4_topology_min_judgment_leverage: float = 0.70
     t4_topology_min_impact: float = 0.50
     t4_topology_min_actionability: float = 0.40
@@ -555,6 +556,12 @@ class WorkerConfig:
             t4_batch_max_size=int(os.environ.get("THINK_T4_BATCH_MAX_SIZE", 4)),
             prune_low_value_downstream_triggers=(
                 os.environ.get("THINK_PRUNE_LOW_VALUE_DOWNSTREAM_TRIGGERS", "1")
+                .strip()
+                .lower()
+                not in {"0", "false", "no", "off"}
+            ),
+            process_background_triggers=(
+                os.environ.get("THINK_PROCESS_BACKGROUND_TRIGGERS", "1")
                 .strip()
                 .lower()
                 not in {"0", "false", "no", "off"}
@@ -694,6 +701,8 @@ class ThinkWorker:
         completes (we wire this by making processed_at-update a part
         of the trigger-completion path, see `_mark_trigger_complete`).
         """
+        if not self.config.process_background_triggers:
+            return
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 if self.config.tenant_filter is None:
@@ -798,6 +807,7 @@ class ThinkWorker:
                         FROM think_trigger_queue
                         WHERE completed_at IS NULL
                           AND batch_parent_id IS NULL
+                          AND ($6::boolean OR trigger_kind != 'T4')
                           AND (
                             locked_by IS NULL
                             OR locked_at < now() - ($3 || ' seconds')::interval
@@ -842,6 +852,7 @@ class ThinkWorker:
                         str(self.config.trigger_lock_timeout_s),
                         self._t1_batch_window_arg(),
                         self._downstream_batch_window_arg(),
+                        self.config.process_background_triggers,
                     )
                 else:
                     poll_rows = await conn.fetch(
@@ -858,6 +869,7 @@ class ThinkWorker:
                           AND scheduled_for <= now()
                           AND attempts < $1
                           AND tenant_id = $2
+                          AND ($7::boolean OR trigger_kind != 'T4')
                           AND (
                             $5 = '0'
                             OR trigger_kind != 'T1'
@@ -897,6 +909,7 @@ class ThinkWorker:
                         str(self.config.trigger_lock_timeout_s),
                         self._t1_batch_window_arg(),
                         self._downstream_batch_window_arg(),
+                        self.config.process_background_triggers,
                     )
                 rows.extend(poll_rows)
                 leased_ids = [r["id"] for r in rows]
@@ -1148,12 +1161,15 @@ class ThinkWorker:
         return str(max(0.0, self.config.t1_batch_window_s))
 
     def _downstream_batching_enabled(self) -> bool:
+        t4_batch_max_size = (
+            self.config.t4_batch_max_size
+            if self.config.process_background_triggers
+            else 0
+        )
         return (
             self.config.downstream_batch_window_s > 0
             and self.config.downstream_batch_min_size >= 2
-            and (
-                self.config.t2_batch_max_size >= 2 or self.config.t4_batch_max_size >= 2
-            )
+            and (self.config.t2_batch_max_size >= 2 or t4_batch_max_size >= 2)
         )
 
     def _downstream_batch_window_arg(self) -> str:
@@ -1165,6 +1181,8 @@ class ThinkWorker:
         if kind == "T2" and subkind == "belief_updated":
             return max(0, self.config.t2_batch_max_size)
         if kind == "T4" and subkind == "latent_relationship_candidate":
+            if not self.config.process_background_triggers:
+                return 0
             return max(0, self.config.t4_batch_max_size)
         return 0
 
@@ -1178,7 +1196,11 @@ class ThinkWorker:
             return []
         largest_batch = max(
             self.config.t2_batch_max_size,
-            self.config.t4_batch_max_size,
+            (
+                self.config.t4_batch_max_size
+                if self.config.process_background_triggers
+                else 0
+            ),
             0,
         )
         if largest_batch < self.config.downstream_batch_min_size:
@@ -1204,7 +1226,8 @@ class ThinkWorker:
                     (trigger_kind = 'T2'
                      AND trigger_subkind = 'belief_updated'
                      AND model_id IS NOT NULL)
-                    OR (trigger_kind = 'T4'
+                    OR ($4::boolean
+                        AND trigger_kind = 'T4'
                         AND trigger_subkind = 'latent_relationship_candidate'
                         AND payload ? 'relationship_candidate_id')
                   )
@@ -1215,6 +1238,7 @@ class ThinkWorker:
                 self.config.trigger_max_attempts,
                 str(self.config.trigger_lock_timeout_s),
                 limit,
+                self.config.process_background_triggers,
             )
         else:
             candidates = await conn.fetch(
@@ -1237,7 +1261,8 @@ class ThinkWorker:
                     (trigger_kind = 'T2'
                      AND trigger_subkind = 'belief_updated'
                      AND model_id IS NOT NULL)
-                    OR (trigger_kind = 'T4'
+                    OR ($5::boolean
+                        AND trigger_kind = 'T4'
                         AND trigger_subkind = 'latent_relationship_candidate'
                         AND payload ? 'relationship_candidate_id')
                   )
@@ -1249,6 +1274,7 @@ class ThinkWorker:
                 self.config.tenant_filter,
                 str(self.config.trigger_lock_timeout_s),
                 limit,
+                self.config.process_background_triggers,
             )
         if not candidates:
             return []
@@ -2627,7 +2653,9 @@ class ThinkWorker:
                     SELECT COUNT(*) FROM think_trigger_queue
                     WHERE completed_at IS NULL
                       AND batch_parent_id IS NULL
-                    """
+                      AND ($1::boolean OR trigger_kind != 'T4')
+                    """,
+                    self.config.process_background_triggers,
                 )
             else:
                 n = await conn.fetchval(
@@ -2636,8 +2664,10 @@ class ThinkWorker:
                     WHERE completed_at IS NULL
                       AND batch_parent_id IS NULL
                       AND tenant_id = $1
+                      AND ($2::boolean OR trigger_kind != 'T4')
                     """,
                     self.config.tenant_filter,
+                    self.config.process_background_triggers,
                 )
             depth = int(n or 0)
             METRICS.set_queue_depth("all", depth)

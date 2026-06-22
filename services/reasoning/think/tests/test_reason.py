@@ -6,7 +6,7 @@ Covers Wave 3-B Outstanding #1 + #10 + #11:
   * T1 happy path with second-pass expansion (the caller can still
     run Think successfully; `think` transparently uses second-pass
     context when the retriever yields enough signal).
-  * T1 out-of-region diff → validator rejects + retrieval re-runs.
+  * T1 hallucinated model update → validator rejects without a region retry.
   * Authoritative T1 state_change path routed through deterministic
     handler — no LLM call.
   * Idempotency — same trigger_id twice returns skipped_idempotent.
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import UUID
 
 import asyncpg
@@ -32,11 +33,198 @@ from services.reasoning.think.reason import ThinkRunOutcome, think
 from services.reasoning.think.tests.conftest import ScriptedProvider, make_embedding
 
 
-async def test_narrow_inferential_transactions_are_opt_in_by_default(monkeypatch):
+async def test_narrow_inferential_transactions_are_default(monkeypatch):
     monkeypatch.delenv("THINK_NARROW_INFERENTIAL_TX", raising=False)
+    assert reason_mod._narrow_inferential_transaction_enabled() is True
+    monkeypatch.setenv("THINK_NARROW_INFERENTIAL_TX", "0")
     assert reason_mod._narrow_inferential_transaction_enabled() is False
     monkeypatch.setenv("THINK_NARROW_INFERENTIAL_TX", "1")
     assert reason_mod._narrow_inferential_transaction_enabled() is True
+
+
+async def test_think_attempt_passes_read_pool_only_for_narrow_runs(monkeypatch):
+    class FakeTransaction:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeConn:
+        def transaction(self):
+            return FakeTransaction()
+
+    class FakeAcquire:
+        async def __aenter__(self):
+            return FakeConn()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakePool:
+        def acquire(self):
+            return FakeAcquire()
+
+    trigger = TriggerContext(kind="T1", tenant_id=uuid7())
+    record = reason_mod.ThinkRunRecord(
+        id=uuid7(),
+        tenant_id=trigger.tenant_id,
+        trigger_id=uuid7(),
+        trigger_kind="T1",
+    )
+    seen: list[object | None] = []
+
+    async def fake_run_once(**kwargs):
+        seen.append(kwargs.get("read_pool"))
+        return ThinkRunOutcome(
+            run_id=record.id,
+            trigger_id=record.trigger_id,
+            trigger_kind=record.trigger_kind,
+            status="success",
+        )
+
+    monkeypatch.setattr(reason_mod, "is_authoritative", lambda _trigger: False)
+    monkeypatch.setattr(reason_mod, "_run_once", fake_run_once)
+
+    fake_pool = FakePool()
+    monkeypatch.setattr(
+        reason_mod,
+        "_narrow_inferential_transaction_enabled",
+        lambda: True,
+    )
+    await reason_mod._run_think_attempt(
+        fake_pool,
+        trigger=trigger,
+        llm_provider=None,
+        embedder=None,
+        access_context=None,
+        triggering_content=None,
+        reason_for_trigger=None,
+        record=record,
+        expanded_region=None,
+        reason_cache={},
+    )
+
+    monkeypatch.setattr(
+        reason_mod,
+        "_narrow_inferential_transaction_enabled",
+        lambda: False,
+    )
+    await reason_mod._run_think_attempt(
+        fake_pool,
+        trigger=trigger,
+        llm_provider=None,
+        embedder=None,
+        access_context=None,
+        triggering_content=None,
+        reason_for_trigger=None,
+        record=record,
+        expanded_region=None,
+        reason_cache={},
+    )
+
+    assert seen == [fake_pool, None]
+
+
+async def test_representation_repair_payloads_prioritize_severe_audit_gaps(monkeypatch):
+    monkeypatch.setenv("THINK_REPRESENTATION_REPAIR_MAX_TRIGGERS", "2")
+    tenant_id = uuid7()
+    trigger_id = uuid7()
+    run_id = uuid7()
+    obs_id = uuid7()
+    model_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=obs_id,
+        model_id=model_id,
+        seed_entity_ids=[{"type": "customer", "id": str(uuid7())}],
+        seed_signature={"cascade_depth": 1},
+    )
+    audit = SimpleNamespace(
+        tenant_id=tenant_id,
+        trigger_id=trigger_id,
+        run_id=run_id,
+        trigger_kind="T1:event_batch",
+        source_channels=["github:webhook", "slack:event"],
+        warnings=[
+            {"code": "missing_source_coverage", "message": "source gap"},
+            {"code": "non_repair_warning", "message": "ignored"},
+            {
+                "code": "prediction_lifecycle_not_exercised",
+                "message": "prediction gap",
+            },
+            {
+                "code": "truth_pressure_absent_for_contestable_memory",
+                "message": "truth gap",
+            },
+        ],
+    )
+
+    payloads = reason_mod._representation_repair_payloads_from_audit(trigger, audit)
+
+    assert [payload["audit_warning_code"] for payload in payloads] == [
+        "prediction_lifecycle_not_exercised",
+        "truth_pressure_absent_for_contestable_memory",
+    ]
+    first = payloads[0]
+    assert first["repair_intent"] == "exercise_prediction_lifecycle"
+    assert first["source_trigger_id"] == str(trigger_id)
+    assert first["source_run_id"] == str(run_id)
+    assert first["observation_ids"] == [str(obs_id)]
+    assert first["model_ids"] == [str(model_id)]
+    assert first["cascade_depth"] == 2
+    assert "github:webhook" in first["seed_natural_text"]
+
+
+async def test_representation_repair_payloads_do_not_loop_on_repair_trigger():
+    trigger = TriggerContext(kind="T4", tenant_id=uuid7(), subkind="representation_repair")
+    audit = SimpleNamespace(
+        trigger_id=uuid7(),
+        run_id=uuid7(),
+        trigger_kind="T4:representation_repair",
+        warnings=[{"code": "prediction_lifecycle_not_exercised"}],
+    )
+
+    assert reason_mod._representation_repair_payloads_from_audit(trigger, audit) == []
+
+
+async def test_enqueue_representation_repair_triggers_dedupes_existing(monkeypatch):
+    tenant_id = uuid7()
+    trigger = TriggerContext(kind="T1", tenant_id=tenant_id, observation_id=uuid7())
+    audit = SimpleNamespace(
+        tenant_id=tenant_id,
+        trigger_id=uuid7(),
+        run_id=uuid7(),
+        trigger_kind="T1:event_batch",
+        source_channels=[],
+        warnings=[{"code": "missing_curiosity_coverage", "message": "curiosity gap"}],
+    )
+    existing_id = uuid7()
+
+    class FakeConn:
+        async def fetchval(self, *_args, **_kwargs):
+            return existing_id
+
+    async def fail_enqueue(*_args, **_kwargs):
+        raise AssertionError("enqueue_trigger should not run for deduped repair")
+
+    monkeypatch.setattr(reason_mod, "enqueue_trigger", fail_enqueue)
+
+    queued = await reason_mod._enqueue_representation_repair_triggers(
+        conn=FakeConn(),
+        trigger=trigger,
+        audit=audit,
+    )
+
+    assert queued == [
+        {
+            "id": str(existing_id),
+            "repair_key": f"{audit.trigger_id}:missing_curiosity_coverage",
+            "audit_warning_code": "missing_curiosity_coverage",
+            "deduped": True,
+        }
+    ]
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
@@ -327,23 +515,21 @@ async def test_think_idempotency_two_think_runs_both_recorded(
 
 
 # =====================================================================
-# Out-of-region diff → validator rejects, retrieval re-runs
+# Hallucinated model reference → validator rejects without region retry
 # =====================================================================
 
 
-async def test_think_out_of_region_triggers_rerun(
+async def test_think_hallucinated_model_reference_fails_without_region_retry(
     fresh_db, tenant, tenant_cleanup,
 ):
     """
-    The LLM returns a diff mutating an entity outside the pre-declared
-    region. think() catches OutOfRegionError and re-runs retrieval with
-    the expanded region. Because max_retrieval_reruns=0 here we expect
-    a failed outcome with the expected error code.
+    The LLM returns a diff mutating a model ID that does not exist for
+    this tenant. The validator should treat this as a hard invalid
+    reference, not as an out-of-region retrieval expansion opportunity.
     """
     obs = await _seed_observation(fresh_db, tenant)
     trigger_id = uuid7()
-    # LLM claims an update on a Model ID the retrieval didn't surface
-    # and which therefore isn't in the locked region.
+    # LLM claims an update on a Model ID the tenant does not own.
     foreign_model = uuid7()
     bad_diff = {
         "trigger_ref": str(trigger_id),
@@ -356,7 +542,7 @@ async def test_think_out_of_region_triggers_rerun(
         "act_ops": [],
         "resource_ops": [],
         "new_predictions": [],
-        "reasoning_trace": "out-of-region attempt",
+        "reasoning_trace": "invalid model reference attempt",
     }
     provider = ScriptedProvider(
         responses=[json.dumps(bad_diff)] * 10,  # enough for retries
@@ -375,9 +561,14 @@ async def test_think_out_of_region_triggers_rerun(
         max_retrieval_reruns=0,
     )
     assert outcome.status == "failed"
-    # The validator raised OutOfRegionError which the outer think() logs
-    # as `out_of_region_after_N_reruns`.
-    assert "out_of_region" in (outcome.error or "")
+    assert "ValidationFailure" in (outcome.error or "")
+    assert outcome.exception is not None
+    assert any(
+        "not found" in err
+        for err in getattr(outcome.exception, "context", {}).get("errors", [])
+    )
+    assert "out_of_region" not in (outcome.error or "")
+    assert len(provider.calls) == 1
 
 
 # =====================================================================

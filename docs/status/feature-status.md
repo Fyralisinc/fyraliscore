@@ -23,16 +23,16 @@ LLM-heavy workers still need deliberate deployment decisions. See
 
 | Feature | Expected | Current status | Severity |
 |---------|----------|----------------|:--------:|
-| Worker deployment | 8 worker packages run as compose/cron processes | **Partially resolved (2026-06-12).** `housekeeper_worker` is now in `docker-compose.yml` and the runtime manifest; it runs low-frequency lifecycle jobs by default and keeps expensive jobs opt-in. Anomaly/entity-resolution deployment is still open. | medium |
+| Worker deployment | 8 worker packages run as compose/cron processes | ✅ **Resolved for default production workers (2026-06-22).** `housekeeper_worker`, `anomaly_processor_worker`, and `entity_resolver_worker` are now in `docker-compose.yml` and the runtime manifest. Housekeeper still keeps expensive jobs opt-in. | ✅ resolved |
 | Activation decay + archival | `hourly_decay`/`archive_decayed` run via maintenance worker | ✅ **Resolved (2026-06-12).** Housekeeper schedules `hourly_decay` and `archive_decayed` through the existing `MaintenanceScheduler`, so Models can decay/archive outside tests. | ✅ resolved |
 | Maintenance scheduler (Wave-4-D) | In-proc scheduler runs daily/weekly/monthly upkeep | ✅ **Resolved for default lifecycle jobs (2026-06-12).** `housekeeper_worker` instantiates `MaintenanceScheduler` for deadline resolution, obligations, decay/archive, relationship maintenance, calibration, and edge drift. Monthly/expensive jobs remain separately flagged. | ✅ resolved |
-| Anomaly → `T3` generation | `anomaly_processor` detects 6 kinds, debounces, enqueues `T3` | Fully implemented, not-wired → **no `T3` anomaly triggers in prod**; `signal_memory_fabric` never accumulates | high |
+| Anomaly → `T3` generation | `anomaly_processor` detects 6 kinds, debounces, enqueues `T3` | ✅ **Resolved (2026-06-22).** `anomaly_processor_worker` now runs as a compose/runtime-manifest process with health/metrics wiring. | ✅ resolved |
 | Deadline → `T2` generation | `deadline_resolver` polls overdue predictions → `T2` | ✅ **Resolved (2026-06-12).** Housekeeper runs `DeadlineResolver.run_once()` on `HOUSEKEEPER_DEADLINE_RESOLVER_INTERVAL_S`. | ✅ resolved |
-| Deferred entity resolution | `entity_resolver` resolves `_unresolved_phrases` → aliases + `T1` re-enqueue | Implemented, not-wired → unresolved phrases never aliased/re-triggered; `entity_review_queue` has no consumer | high |
+| Deferred entity resolution | `entity_resolver` resolves `_unresolved_phrases` → aliases + `T1` re-enqueue | ✅ **Resolved (2026-06-22).** `entity_resolver_worker` now runs as a compose/runtime-manifest process. Poll mode clears handled unresolved phrases while preserving rate-limited phrases for retry. | ✅ resolved |
 | Calibration pipeline | `calibration_updater` refreshes `calibration_offsets` weekly | ✅ **Resolved (2026-06-12).** Housekeeper runs `calibration_updater.run_once()` weekly by default, so offsets are no longer test/manual-only. | ✅ resolved |
 | Precipitation pattern formation | Nightly clustering writes `pattern_candidates` + `T4` | Partially wired: housekeeper can run precipitation, but it is disabled by default behind `HOUSEKEEPER_ENABLE_PRECIPITATION` / `HOUSEKEEPER_ENABLE_EXPENSIVE_JOBS` until runtime cost is characterized. | medium |
 | `edge_drift` parity check | Worker samples `model_edges` vs. legacy arrays to catch divergence | ✅ **Resolved (2026-06-12).** Housekeeper runs `edge_drift.run_once()` on `HOUSEKEEPER_EDGE_DRIFT_INTERVAL_S`. | ✅ resolved |
-| `entity_aliases` slow path | `insert_alias`/`record_usage`/`list_ambiguous` driven by `entity_resolver` | Live ingest uses only `fast_path_resolve`; slow-path funcs consumed only by the unwired worker | medium |
+| `entity_aliases` slow path | `insert_alias`/`record_usage`/`list_ambiguous` driven by `entity_resolver` | ✅ **Resolved (2026-06-22).** The deployed `entity_resolver_worker` is now the production consumer for resolver-written aliases and review rows. | ✅ resolved |
 | `actor_visible_*` matview refresh | Daily `refresh_all` keeps scope views current; `checks.py` reads them | Sole caller is the undeployed `maintenance/daily.py` → matviews **never refreshed** at runtime (stale/empty scope data) | high |
 
 ## 🔴 Access control & authorization
@@ -110,9 +110,10 @@ Mostly polish, cosmetics, and small inconsistencies. Notable clusters:
 - **Dead/duplicate code:** a duplicate `@app.get('/v1/history')` handler (the second
   is shadowed/unreachable).
 - **Orphaned helpers:** `query/prefetch.py` (named caller "Agent-GRT" doesn't exist).
-- **Schema/migration tidy-ups:** orphan tables from `0021` (`anomaly_thresholds`,
-  `dedup_keys_seen`); tables for undeployed workers
-  (`entity_review_queue`, `signal_memory_fabric`, `orphan_log`).
+- **Schema/migration tidy-ups:** remaining staged maintenance table
+  (`orphan_log`). `entity_review_queue` and `signal_memory_fabric` are now owned
+  by deployed workers. Orphan `0021` tables were dropped by `0155`; host-owned
+  GitHub/code-intel residue was dropped by `0156`.
 
 These are itemized in [Wiring gaps](wiring-gaps.md) and
 [Legacy & test-only](dead-legacy.md).

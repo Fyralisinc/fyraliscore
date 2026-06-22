@@ -192,7 +192,7 @@ def _envelope_bytes_for(i: int, *, s3: _InMemoryS3) -> bytes:
         tenant_id=tenant,
         raw_s3_key=s3_key,
         content_hash=content_hash,
-        ingested_at=dt.datetime(2026, 5, 17, 12, 0, 0, tzinfo=dt.timezone.utc),
+        ingested_at=dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0),
         ingress_kind="webhook",
         ingress_metadata={"i": i},
     )

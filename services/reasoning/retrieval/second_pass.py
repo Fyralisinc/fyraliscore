@@ -33,6 +33,7 @@ Invariants:
 """
 from __future__ import annotations
 
+import asyncio
 import math
 from dataclasses import dataclass, field
 from typing import Any, Sequence
@@ -91,6 +92,15 @@ class SecondPassDecision:
     trigger_condition: str
     suggested_dimensions: list[str] = field(default_factory=list)
     reason_detail: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class _SecondPassDimensionResult:
+    dimension: str
+    hops: int
+    models: dict[UUID, ModelRow]
+    observations: dict[UUID, ObservationRow]
+    commitments: dict[UUID, CommitmentRow]
 
 
 def _context_is_saturated(
@@ -273,6 +283,7 @@ async def second_pass_expand(
     *,
     models_repo: ModelsRepo | None = None,
     max_hops: int = _SECOND_PASS_MAX_HOPS,
+    read_pool: asyncpg.Pool | None = None,
 ) -> RetrievalResult:
     """
     Expand first_result along the named dimensions and return a new
@@ -304,48 +315,73 @@ async def second_pass_expand(
         "hops_used": {},
     }
 
+    dimensions_to_process: list[str] = []
     for dim in missing_dimensions:
         if dim not in _SUPPORTED_DIMENSIONS:
             notes["dimensions_unknown"].append(dim)
             _log.warning("second_pass.unknown_dimension", dimension=dim)
             continue
+        dimensions_to_process.append(dim)
 
-        if dim == "dependency_context":
-            hops = await _expand_dependency_context(
-                conn,
-                tenant_id,
-                original_commit_ids,
-                original_model_ids,
-                new_commitments,
-                new_models,
-                max_hops=max_hops,
-            )
-            notes["hops_used"][dim] = hops
+    if _second_pass_read_fanout_enabled(conn, read_pool) and len(dimensions_to_process) > 1:
+        assert read_pool is not None
+        dimension_results = await _expand_dimensions_fanout(
+            dimensions_to_process,
+            first_result=first_result,
+            tenant_id=tenant_id,
+            original_commit_ids=original_commit_ids,
+            original_model_ids=original_model_ids,
+            original_obs_ids=original_obs_ids,
+            max_hops=max_hops,
+            read_pool=read_pool,
+        )
+        for item in dimension_results:
+            for model_id, model in item.models.items():
+                new_models.setdefault(model_id, model)
+            for observation_id, observation in item.observations.items():
+                new_observations.setdefault(observation_id, observation)
+            for commitment_id, commitment in item.commitments.items():
+                new_commitments.setdefault(commitment_id, commitment)
+            notes["hops_used"][item.dimension] = item.hops
+            notes["dimensions_processed"].append(item.dimension)
+    else:
+        for dim in dimensions_to_process:
+            if dim == "dependency_context":
+                hops = await _expand_dependency_context(
+                    conn,
+                    tenant_id,
+                    original_commit_ids,
+                    original_model_ids,
+                    new_commitments,
+                    new_models,
+                    max_hops=max_hops,
+                )
+                notes["hops_used"][dim] = hops
 
-        elif dim == "supporting_evidence":
-            await _expand_supporting_evidence(
-                conn,
-                tenant_id,
-                first_result.models,
-                original_obs_ids,
-                original_model_ids,
-                new_observations,
-                new_models,
-            )
-            notes["hops_used"][dim] = 1
+            elif dim == "supporting_evidence":
+                await _expand_supporting_evidence(
+                    conn,
+                    tenant_id,
+                    first_result.models,
+                    original_obs_ids,
+                    original_model_ids,
+                    new_observations,
+                    new_models,
+                )
+                notes["hops_used"][dim] = 1
 
-        elif dim == "adjacent_commitments":
-            await _expand_adjacent_commitments(
-                conn,
-                tenant_id,
-                original_commit_ids,
-                new_commitments,
-                new_models,
-                original_model_ids,
-            )
-            notes["hops_used"][dim] = 1
+            elif dim == "adjacent_commitments":
+                await _expand_adjacent_commitments(
+                    conn,
+                    tenant_id,
+                    original_commit_ids,
+                    new_commitments,
+                    new_models,
+                    original_model_ids,
+                )
+                notes["hops_used"][dim] = 1
 
-        notes["dimensions_processed"].append(dim)
+            notes["dimensions_processed"].append(dim)
 
     # Reconsolidate newly-surfaced Models. First-pass Models were
     # reconsolidated by primary_retrieve; do not re-bump them here
@@ -402,6 +438,88 @@ async def second_pass_expand(
         notes=expansion_notes,
         model_scores=merged_scores,
     )
+
+
+def _second_pass_read_fanout_enabled(
+    conn: asyncpg.Connection,
+    read_pool: asyncpg.Pool | None,
+) -> bool:
+    if read_pool is None:
+        return False
+    in_transaction = getattr(conn, "is_in_transaction", None)
+    if callable(in_transaction) and in_transaction():
+        return False
+    max_size = getattr(read_pool, "get_max_size", None)
+    if callable(max_size):
+        try:
+            return int(max_size()) > 1
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+async def _expand_dimensions_fanout(
+    dimensions: Sequence[str],
+    *,
+    first_result: RetrievalResult,
+    tenant_id: UUID,
+    original_commit_ids: set[UUID],
+    original_model_ids: set[UUID],
+    original_obs_ids: set[UUID],
+    max_hops: int,
+    read_pool: asyncpg.Pool,
+) -> list[_SecondPassDimensionResult]:
+    async def run_dimension(dim: str) -> _SecondPassDimensionResult:
+        local_models: dict[UUID, ModelRow] = {}
+        local_observations: dict[UUID, ObservationRow] = {}
+        local_commitments: dict[UUID, CommitmentRow] = {}
+        async with read_pool.acquire() as read_conn:
+            if dim == "dependency_context":
+                hops = await _expand_dependency_context(
+                    read_conn,
+                    tenant_id,
+                    original_commit_ids,
+                    original_model_ids,
+                    local_commitments,
+                    local_models,
+                    max_hops=max_hops,
+                )
+            elif dim == "supporting_evidence":
+                await _expand_supporting_evidence(
+                    read_conn,
+                    tenant_id,
+                    first_result.models,
+                    original_obs_ids,
+                    original_model_ids,
+                    local_observations,
+                    local_models,
+                )
+                hops = 1
+            elif dim == "adjacent_commitments":
+                await _expand_adjacent_commitments(
+                    read_conn,
+                    tenant_id,
+                    original_commit_ids,
+                    local_commitments,
+                    local_models,
+                    original_model_ids,
+                )
+                hops = 1
+            else:  # Defensive: callers filter dimensions before fanout.
+                hops = 0
+        return _SecondPassDimensionResult(
+            dimension=dim,
+            hops=hops,
+            models=local_models,
+            observations=local_observations,
+            commitments=local_commitments,
+        )
+
+    tasks: list[asyncio.Task[_SecondPassDimensionResult]] = []
+    async with asyncio.TaskGroup() as task_group:
+        for dim in dimensions:
+            tasks.append(task_group.create_task(run_dimension(dim)))
+    return [task.result() for task in tasks]
 
 
 def _second_pass_expansion_score(first_pass_max_score: float, rank: int) -> float:

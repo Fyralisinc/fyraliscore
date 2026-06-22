@@ -51,13 +51,19 @@ from lib.shared.types import (
     ObservationRow,
     ResourceRow,
 )
+from services.domain.models.read_shapes import (
+    MODEL_ROW_SELECT_COLS,
+    MODEL_ROW_SELECT_SQL,
+    hydrate_model_row,
+)
+from services.domain.models.semantic_terms import derive_query_semantic_terms
 
 
 # ---------------------------------------------------------------------
 # Constants + types
 # ---------------------------------------------------------------------
 
-PathwayName = Literal["A", "B", "C", "D", "G"]
+PathwayName = Literal["A", "B", "C", "D", "G", "L"]
 
 _DEFAULT_K_SEMANTIC = 40
 _DEFAULT_TEMPORAL_WINDOW_DAYS = 7
@@ -69,6 +75,7 @@ _STRUCTURAL_MAX_SCOPE_ENTITY_FILTERS = 64
 _TEMPORAL_MAX_OBSERVATIONS = 300
 _PATTERN_MAX_INSTANCES = 200
 _TAG_RESCUE_LIMIT = 80
+_SEMANTIC_TERMS_LIMIT = 80
 _DEFAULT_EDGE_MAX_HOPS = 2
 _EDGE_MAX_MODELS = 120
 _EDGE_TRAVERSAL_KINDS = (
@@ -155,60 +162,8 @@ def _append_timing(
     _INNER_DURATION.observe(elapsed_ms / 1000.0, stage=stage)
 
 
-# ModelRow SELECT columns must match models/repo.py._SELECT_COLS exactly
-# so that hydrated rows share shape. We copy the list verbatim — a
-# deliberate duplication (deviation (b)) noted in the BUILD-LOG; the
-# public ModelsRepo API does not yet expose a raw SQL `retrieve_by_...`
-# that returns ModelRow by scope, so retrieval composes its own queries
-# against the columns list. Wave 5 could refactor this into a thin
-# public method on ModelsRepo.
-_MODEL_SELECT_COLS = (
-    "id",
-    "tenant_id",
-    "born_from_event_id",
-    "proposition",
-    '"natural" AS natural',
-    "embedding",
-    "scope_actors",
-    "scope_entities",
-    "scope_temporal",
-    "confidence",
-    "activation",
-    "falsifier",
-    "signal_readings",
-    "reading_contestable",
-    "supporting_event_ids",
-    "supporting_model_ids",
-    "evidential_weight",
-    "status",
-    "archived_at",
-    "archive_reason",
-    "created_at",
-    "last_retrieved_at",
-    "retrieval_count",
-    "evaluate_at",
-    "resolution_criteria",
-    "contributing_models",
-    "visible_to_subjects",
-    "proposition_kind",
-    "claim_role",
-    "abstraction_level",
-    "time_mode",
-    "modality",
-    "polarity",
-    "domain_tags",
-    "memory_grammar_version",
-    "confirmed_count",
-    "contested_count",
-    "last_confirmed_at",
-    "confidence_at_assertion",
-    "resolved_at",
-    "resolution_outcome",
-    "activation_coefficient",
-    "target_actor_id",
-    "caused_act_change_id",
-)
-_MODEL_SELECT_SQL = ", ".join(_MODEL_SELECT_COLS)
+_MODEL_SELECT_COLS = MODEL_ROW_SELECT_COLS
+_MODEL_SELECT_SQL = MODEL_ROW_SELECT_SQL
 
 _OBS_SELECT_COLS = (
     "id",
@@ -273,44 +228,11 @@ class PathwayResult:
 
 
 def _hydrate_model(record: asyncpg.Record) -> ModelRow:
-    raw = dict(record)
-    for key in list(raw.keys()):
-        if str(key).startswith("_"):
-            raw.pop(key, None)
-    for key in (
-        "proposition",
-        "scope_entities",
-        "scope_temporal",
-        "falsifier",
-        "signal_readings",
-        "resolution_criteria",
-    ):
-        v = raw.get(key)
-        if isinstance(v, (bytes, bytearray)):
-            v = v.decode()
-        if isinstance(v, str):
-            try:
-                raw[key] = json.loads(v)
-            except json.JSONDecodeError:
-                pass
-    emb = raw.get("embedding")
-    if emb is not None and not isinstance(emb, list):
-        # pgvector values come back as string literals like "[0.1, 0.2, ...]"
-        # when no vector codec is registered on the pool. Parse them before
-        # passing into ModelRow / ObservationRow validators.
-        if isinstance(emb, (bytes, bytearray)):
-            emb = emb.decode()
-        if isinstance(emb, str):
-            try:
-                raw["embedding"] = json.loads(emb)
-            except (json.JSONDecodeError, ValueError):
-                raw["embedding"] = None
-        else:
-            try:
-                raw["embedding"] = [float(x) for x in emb]
-            except (TypeError, ValueError):
-                raw["embedding"] = None
-    return ModelRow.model_validate(raw)
+    return hydrate_model_row(
+        record,
+        drop_internal_fields=True,
+        null_invalid_embedding=True,
+    )
 
 
 def _model_temporally_valid(model: ModelRow, *, now: datetime | None = None) -> bool:
@@ -2279,6 +2201,90 @@ async def pathway_b_representation_tags(
 
 
 # =====================================================================
+# Pathway L — Lexical semantic-term overlap
+# =====================================================================
+
+
+async def pathway_l_semantic_terms(
+    seed_natural_text: str | None,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    seed_signature: dict[str, Any] | None = None,
+    scope_actors: Sequence[UUID] | None = None,
+    scope_entities: Sequence[dict[str, Any]] | None = None,
+    limit: int = _SEMANTIC_TERMS_LIMIT,
+) -> PathwayResult:
+    """Retrieve active Models through model-specific semantic terms."""
+    query_terms = derive_query_semantic_terms(
+        seed_natural_text,
+        seed_signature=seed_signature,
+    )
+    notes: dict[str, Any] = {
+        "query_terms": query_terms,
+        "limit": int(limit),
+    }
+    if not query_terms:
+        return PathwayResult(source_pathway="L", notes={**notes, "reason": "no_terms"})
+
+    actor_list = _pathway_b_actor_scope(scope_actors)
+    entity_list = _pathway_b_entity_scope(scope_entities)
+    params: list[Any] = [tenant_id, query_terms, max(1, int(limit))]
+    scope_clauses: list[str] = []
+    if actor_list:
+        params.append(actor_list)
+        scope_clauses.append(f"scope_actors && ${len(params)}::uuid[]")
+    for entity in entity_list:
+        params.append(_jsonb([entity]))
+        scope_clauses.append(f"scope_entities @> ${len(params)}::jsonb")
+    notes["scope_filter"] = {
+        "event_actors_count": len(actor_list),
+        "event_entities_count": len(entity_list),
+        "applied": bool(scope_clauses),
+    }
+    scope_sql = ""
+    if scope_clauses:
+        scope_sql = "  AND (" + " OR ".join(scope_clauses) + ")\n"
+
+    rows = await conn.fetch(
+        f"""
+        SELECT {_MODEL_SELECT_SQL},
+               (
+                 SELECT count(*)::int
+                 FROM unnest(mst.semantic_terms) AS term
+                 WHERE term = ANY($2::text[])
+               ) AS _semantic_term_overlap
+        FROM models
+        JOIN (
+          SELECT model_id, semantic_terms
+          FROM model_semantic_terms
+          WHERE tenant_id = $1
+        ) mst ON mst.model_id = models.id
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND mst.semantic_terms && $2::text[]
+        {scope_sql}
+        ORDER BY _semantic_term_overlap DESC,
+                 activation DESC,
+                 confirmed_count DESC,
+                 created_at DESC
+        LIMIT $3
+        """,
+        *params,
+    )
+    models = _hydrate_many(rows, _hydrate_model, notes, "models")
+    notes["models_returned"] = len(models)
+    return PathwayResult(
+        models=models,
+        observations=[],
+        acts={"goals": [], "commitments": [], "decisions": []},
+        resources=[],
+        source_pathway="L",
+        notes=notes,
+    )
+
+
+# =====================================================================
 # Pathway C — Temporal recency (Observations + Models in a time window)
 # =====================================================================
 
@@ -3003,6 +3009,7 @@ __all__ = [
     "pathway_a_structural",
     "pathway_b_semantic",
     "pathway_b_representation_tags",
+    "pathway_l_semantic_terms",
     "pathway_c_temporal",
     "pathway_d_pattern",
     "pathway_g_model_edges",

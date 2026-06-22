@@ -74,6 +74,7 @@ def _augment_noop_trace_context(
         + _as_int(context.get("relation_claim_ops_count"))
         + _as_int(context.get("relation_frame_ops_count"))
         + _as_int(context.get("ontology_gap_ops_count"))
+        + _as_int(context.get("open_question_ops_count"))
         + _as_int(context.get("claim_ops_count"))
         + _as_int(context.get("memory_lifecycle_ops_count"))
         + _as_int(context.get("act_ops_count"))
@@ -231,6 +232,9 @@ def _run_summary(row: asyncpg.Record, context: dict[str, Any]) -> dict[str, Any]
             context.get("relation_frame_ops_count")
         ),
         "ontology_gap_ops_count": _as_int(context.get("ontology_gap_ops_count")),
+        "open_question_ops_count": _as_int(
+            context.get("open_question_ops_count")
+        ),
         "claim_ops_count": _as_int(context.get("claim_ops_count")),
         "memory_lifecycle_ops_count": _as_int(
             context.get("memory_lifecycle_ops_count")
@@ -267,6 +271,7 @@ def _flags_for_context(
     relation_claim_ops = _as_int(context.get("relation_claim_ops_count"))
     relation_frame_ops = _as_int(context.get("relation_frame_ops_count"))
     ontology_gap_ops = _as_int(context.get("ontology_gap_ops_count"))
+    open_question_ops = _as_int(context.get("open_question_ops_count"))
     claim_ops = _as_int(context.get("claim_ops_count"))
     memory_lifecycle_ops = _as_int(context.get("memory_lifecycle_ops_count"))
     act_ops = _as_int(context.get("act_ops_count"))
@@ -276,6 +281,7 @@ def _flags_for_context(
         + relation_frame_ops
         + edge_ops
         + ontology_gap_ops
+        + open_question_ops
         + claim_ops
         + memory_lifecycle_ops
         + act_ops
@@ -296,6 +302,7 @@ def _flags_for_context(
         graph_selected > 0
         and edge_ops == 0
         and ontology_gap_ops == 0
+        and open_question_ops == 0
         and total_ops > 0
         and not _graph_relation_contract_satisfied(context)
     ):

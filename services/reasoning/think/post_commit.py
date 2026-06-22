@@ -44,7 +44,7 @@ import structlog
 
 from services.reasoning.retrieval.primary import TriggerContext
 
-from .diff_schema import ValidatedDiff
+from .diff_schema import ClaimOp, ValidatedDiff
 
 
 _log = structlog.get_logger(__name__)
@@ -73,7 +73,9 @@ ACTION_KINDS = (
     "schedule_predictions",
     "broadcast_realtime",
     "invalidate_metrics",
+    "materialize_projections",
     "discover_model_edges",
+    "search_open_questions",
 )
 
 
@@ -146,6 +148,88 @@ async def _default_invalidate_metrics(
         tenant_id=str(tenant_id),
         trigger_id=str(trigger_id),
         affected_count=len(payload.get("affected_entities", [])),
+    )
+
+
+async def _projection_tables_ready(conn: asyncpg.Connection) -> bool:
+    rows = await conn.fetch(
+        """
+        SELECT to_regclass(name) IS NOT NULL AS exists
+        FROM unnest($1::text[]) AS name
+        """,
+        [
+            "public.model_events",
+            "public.projection_checkpoints",
+            "public.projection_snapshots",
+        ],
+    )
+    return bool(rows) and all(row["exists"] for row in rows)
+
+
+async def _default_materialize_projections(
+    payload: dict[str, Any],
+    tenant_id: UUID,
+    trigger_id: UUID,
+) -> None:
+    model_ids = _model_ids_from_payload(payload)
+    if not model_ids:
+        return
+
+    from lib.shared.db import get_pool
+    from services.domain.projections import ProjectionRunReport, ProjectionRunner
+    from services.domain.projections.catalog import projectors_for
+
+    raw_limit = payload.get("limit")
+    try:
+        limit = (
+            int(raw_limit) if raw_limit is not None else max(100, len(model_ids) * 8)
+        )
+    except (TypeError, ValueError):
+        limit = max(100, len(model_ids) * 8)
+    limit = max(1, min(limit, 1000))
+    projection_names = payload.get("projection_names")
+    if not isinstance(projection_names, list) or not projection_names:
+        projection_names = ["all"]
+    runner = ProjectionRunner(projectors_for(projection_names))
+
+    async def _run(conn: asyncpg.Connection) -> ProjectionRunReport:
+        if not await _projection_tables_ready(conn):
+            _log.info(
+                "post_commit.materialize_projections.skipped",
+                tenant_id=str(tenant_id),
+                trigger_id=str(trigger_id),
+                reason="projection_tables_missing",
+            )
+            return ProjectionRunReport()
+        return await runner.run_once_detailed(conn, tenant_id=tenant_id, limit=limit)
+
+    conn = _DISPATCH_CONN.get()
+    if conn is not None:
+        report = await _run(conn)
+    else:
+        pool = get_pool()
+        async with pool.acquire() as acquired:
+            report = await _run(acquired)
+
+    _log.info(
+        "post_commit.materialize_projections.dispatched",
+        tenant_id=str(tenant_id),
+        trigger_id=str(trigger_id),
+        model_count=len(model_ids),
+        limit=limit,
+        processed_events=report.processed_events,
+        failed_events=report.failed_events,
+        projection_errors=[
+            {
+                "projection_name": error.projection_name,
+                "projection_version": error.projection_version,
+                "event_id": str(error.event_id),
+                "model_id": str(error.model_id),
+                "stage": error.stage,
+                "message": error.message,
+            }
+            for error in report.errors[:5]
+        ],
     )
 
 
@@ -242,12 +326,101 @@ async def _default_discover_model_edges(
         raise RuntimeError("; ".join(errors[:3]))
 
 
+async def _default_search_open_questions(
+    payload: dict[str, Any],
+    tenant_id: UUID,
+    trigger_id: UUID,
+) -> None:
+    model_ids = _model_ids_from_payload(payload)
+    question_ids = _uuid_list_from_payload(payload, "open_question_ids")
+    if not model_ids and not question_ids:
+        return
+
+    from lib.shared.db import get_pool
+    from services.domain.models.open_questions import ModelOpenQuestionsRepo
+    from services.domain.triggers import enqueue_trigger
+
+    repo = ModelOpenQuestionsRepo()
+    raw_limit = payload.get("limit")
+    try:
+        limit = int(raw_limit) if raw_limit is not None else 50
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 200))
+    enqueued = 0
+    deduped = 0
+    searched_ids: list[UUID] = []
+
+    async def _run(conn: asyncpg.Connection) -> None:
+        nonlocal enqueued
+        nonlocal deduped
+        questions = await repo.list_due_for_search(
+            conn,
+            tenant_id=tenant_id,
+            question_ids=question_ids,
+            model_ids=model_ids,
+            limit=limit,
+        )
+        for question in questions:
+            key = f"{question.model_id}:{question.id}"
+            existing = await conn.fetchval(
+                """
+                SELECT id
+                FROM think_trigger_queue
+                WHERE tenant_id = $1
+                  AND trigger_kind = 'T4'
+                  AND trigger_subkind = 'open_question_search'
+                  AND completed_at IS NULL
+                  AND payload->>'open_question_key' = $2
+                LIMIT 1
+                """,
+                tenant_id,
+                key,
+            )
+            if existing is not None:
+                deduped += 1
+                searched_ids.append(question.id)
+                continue
+            await enqueue_trigger(
+                conn,
+                tenant_id=tenant_id,
+                trigger_kind="T4",
+                trigger_subkind="open_question_search",
+                model_id=question.model_id,
+                payload=_open_question_trigger_payload(question, key),
+            )
+            enqueued += 1
+            searched_ids.append(question.id)
+        await repo.mark_searched(conn, question_ids=searched_ids)
+
+    conn = _DISPATCH_CONN.get()
+    if conn is not None:
+        await _run(conn)
+    else:
+        pool = get_pool()
+        async with pool.acquire() as acquired:
+            async with acquired.transaction():
+                await _run(acquired)
+
+    _log.info(
+        "post_commit.search_open_questions.dispatched",
+        tenant_id=str(tenant_id),
+        trigger_id=str(trigger_id),
+        model_count=len(model_ids),
+        question_count=len(question_ids),
+        enqueued=enqueued,
+        deduped=deduped,
+    )
+
+
 _DISPATCHERS: dict[str, ActionHandler] = {
     "publish_anomalies": _default_publish_anomalies,
     "schedule_predictions": _default_schedule_predictions,
     "broadcast_realtime": _default_broadcast_realtime,
     "invalidate_metrics": _default_invalidate_metrics,
+    "materialize_projections": _default_materialize_projections,
     "discover_model_edges": _default_discover_model_edges,
+    "search_open_questions": _default_search_open_questions,
 }
 
 
@@ -269,7 +442,9 @@ def reset_handlers() -> None:
     _DISPATCHERS["schedule_predictions"] = _default_schedule_predictions
     _DISPATCHERS["broadcast_realtime"] = _default_broadcast_realtime
     _DISPATCHERS["invalidate_metrics"] = _default_invalidate_metrics
+    _DISPATCHERS["materialize_projections"] = _default_materialize_projections
     _DISPATCHERS["discover_model_edges"] = _default_discover_model_edges
+    _DISPATCHERS["search_open_questions"] = _default_search_open_questions
 
 
 # ---------------------------------------------------------------------
@@ -285,6 +460,7 @@ def _summarize_op_count(diff: ValidatedDiff) -> dict[str, int]:
         "relation_frame_ops": len(diff.relation_frame_ops),
         "edge_ops": len(diff.edge_ops),
         "ontology_gap_ops": len(diff.ontology_gap_ops),
+        "open_question_ops": len(diff.open_question_ops),
         "act_ops": len(diff.act_ops),
         "resource_ops": len(diff.resource_ops),
     }
@@ -333,6 +509,11 @@ def _affected_entities(diff: ValidatedDiff) -> list[dict[str, str]]:
         _add("model", op.target_model_id)
         for model_id in op.evidence_model_ids:
             _add("model", model_id)
+    for op in diff.open_question_ops:
+        _add("model", op.model_id)
+        _add("model", op.resolution_model_id)
+        for model_id in op.source_model_ids:
+            _add("model", model_id)
     for op in diff.act_ops:
         ent = op.entity or {}
         eid = ent.get("id")
@@ -368,19 +549,66 @@ def _anomalies_payload(anomalies: list[dict[str, Any]] | None) -> dict[str, Any]
 
 def _predictions_payload(diff: ValidatedDiff) -> dict[str, Any]:
     preds: list[dict[str, Any]] = []
-    for op in diff.new_predictions:
+    seen: set[str] = set()
+    for source, op in _iter_prediction_claim_inserts(diff):
         if op.op != "insert" or not isinstance(op.entry, dict):
             continue
         entry = op.entry
+        dedupe_key = _prediction_payload_key(entry)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
         preds.append(
             {
                 "tenant_id": str(diff.tenant_id),
                 "trigger_ref": str(diff.trigger_ref),
+                "source": source,
                 "entry": entry,
                 "evaluate_at": entry.get("evaluate_at"),
             }
         )
     return {"predictions": preds}
+
+
+def _iter_prediction_claim_inserts(
+    diff: ValidatedDiff,
+) -> list[tuple[str, ClaimOp]]:
+    out: list[tuple[str, ClaimOp]] = []
+    out.extend(("new_predictions", op) for op in diff.new_predictions)
+    out.extend(
+        ("claim_ops", op)
+        for op in diff.claim_ops
+        if op.op == "insert"
+        and isinstance(op.entry, dict)
+        and _entry_is_prediction_like(op.entry)
+    )
+    return out
+
+
+def _entry_is_prediction_like(entry: dict[str, Any]) -> bool:
+    proposition = entry.get("proposition")
+    prop = proposition if isinstance(proposition, dict) else {}
+    falsifier = entry.get("falsifier")
+    falsifier_kind = falsifier.get("kind") if isinstance(falsifier, dict) else None
+    return (
+        entry.get("claim_role") == "prediction"
+        or prop.get("claim_role") == "prediction"
+        or prop.get("kind") == "prediction"
+        or falsifier_kind == "prediction_deadline"
+    )
+
+
+def _prediction_payload_key(entry: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "natural": entry.get("natural"),
+            "proposition": entry.get("proposition"),
+            "evaluate_at": entry.get("evaluate_at"),
+            "resolution_criteria": entry.get("resolution_criteria"),
+        },
+        sort_keys=True,
+        default=str,
+    )
 
 
 def _edge_discovery_payload(
@@ -400,6 +628,60 @@ def _edge_discovery_payload(
     return {"model_ids": model_ids}
 
 
+def _projection_materialization_payload(
+    applied_model_ids: list[UUID] | tuple[UUID, ...] | None,
+) -> dict[str, Any]:
+    payload = _edge_discovery_payload(applied_model_ids)
+    model_count = len(payload["model_ids"])
+    return {
+        **payload,
+        "projection_names": ["all"],
+        "limit": max(100, min(1000, model_count * 8 if model_count else 0)),
+    }
+
+
+def _open_questions_payload(
+    validated_diff: ValidatedDiff,
+    *,
+    applied_model_ids: list[UUID] | tuple[UUID, ...] | None,
+    applied_open_question_ids: list[UUID] | tuple[UUID, ...] | None,
+) -> dict[str, Any]:
+    model_ids: list[UUID] = []
+    seen_models: set[UUID] = set()
+    for value in applied_model_ids or ():
+        try:
+            model_id = value if isinstance(value, UUID) else UUID(str(value))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if model_id not in seen_models:
+            seen_models.add(model_id)
+            model_ids.append(model_id)
+    has_insert = False
+    for op in validated_diff.open_question_ops:
+        if op.op == "insert":
+            has_insert = True
+        if op.model_id is not None and op.model_id not in seen_models:
+            seen_models.add(op.model_id)
+            model_ids.append(op.model_id)
+    question_ids: list[UUID] = []
+    seen_questions: set[UUID] = set()
+    for value in applied_open_question_ids or ():
+        try:
+            question_id = value if isinstance(value, UUID) else UUID(str(value))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if question_id not in seen_questions:
+            seen_questions.add(question_id)
+            question_ids.append(question_id)
+    if not has_insert and not question_ids:
+        return {"model_ids": [], "open_question_ids": []}
+    return {
+        "model_ids": [str(model_id) for model_id in model_ids],
+        "open_question_ids": [str(question_id) for question_id in question_ids],
+        "limit": max(20, min(200, max(1, len(question_ids) + len(model_ids)) * 12)),
+    }
+
+
 def _model_ids_from_payload(payload: dict[str, Any]) -> list[UUID]:
     out: list[UUID] = []
     seen: set[UUID] = set()
@@ -415,6 +697,58 @@ def _model_ids_from_payload(payload: dict[str, Any]) -> list[UUID]:
     return out
 
 
+def _uuid_list_from_payload(payload: dict[str, Any], key: str) -> list[UUID]:
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    values = payload.get(key)
+    if not isinstance(values, list):
+        return []
+    for value in values:
+        try:
+            uid = value if isinstance(value, UUID) else UUID(str(value))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if uid in seen:
+            continue
+        seen.add(uid)
+        out.append(uid)
+    return out
+
+
+def _open_question_trigger_payload(question: Any, key: str) -> dict[str, Any]:
+    search_signature = (
+        question.search_signature if isinstance(question.search_signature, dict) else {}
+    )
+    expected_signal = (
+        question.expected_resolution_signal
+        if isinstance(question.expected_resolution_signal, dict)
+        else {}
+    )
+    seed_parts = [f"Open question search: {question.question}"]
+    if question.rationale:
+        seed_parts.append(str(question.rationale))
+    signal_shape = expected_signal.get("signal_shape") or expected_signal.get("answer")
+    if signal_shape:
+        seed_parts.append(str(signal_shape))
+    source_model_ids = [str(model_id) for model_id in question.source_model_ids]
+    return {
+        "open_question_key": key,
+        "open_question_id": str(question.id),
+        "source_model_id": str(question.model_id),
+        "source_model_ids": source_model_ids,
+        "model_ids": [str(question.model_id)],
+        "question": question.question,
+        "question_type": question.question_type,
+        "rationale": question.rationale,
+        "priority": question.priority,
+        "expected_resolution_signal": expected_signal,
+        "search_signature": search_signature,
+        "seed_natural_text": " ".join(part for part in seed_parts if part)[:2000],
+        "seed_occurred_at": question.created_at.isoformat(),
+        "question_primitive": "OPEN_QUESTION",
+    }
+
+
 def _payload_has_content(kind: str, payload: dict[str, Any]) -> bool:
     """Don't enqueue empty actions — keeps the queue tight and avoids
     burning handler cycles on empty broadcasts."""
@@ -428,8 +762,12 @@ def _payload_has_content(kind: str, payload: dict[str, Any]) -> bool:
         return True
     if kind == "invalidate_metrics":
         return bool(payload.get("affected_entities"))
+    if kind == "materialize_projections":
+        return bool(payload.get("model_ids"))
     if kind == "discover_model_edges":
         return bool(payload.get("model_ids"))
+    if kind == "search_open_questions":
+        return bool(payload.get("model_ids") or payload.get("open_question_ids"))
     return False
 
 
@@ -445,6 +783,7 @@ async def enqueue_post_commit_actions(
     *,
     anomalies: list[dict[str, Any]] | None = None,
     applied_model_ids: list[UUID] | tuple[UUID, ...] | None = None,
+    applied_open_question_ids: list[UUID] | tuple[UUID, ...] | None = None,
 ) -> list[UUID]:
     """Enqueue post-commit actions derived from `validated_diff`.
 
@@ -466,7 +805,19 @@ async def enqueue_post_commit_actions(
             "invalidate_metrics",
             {"affected_entities": _affected_entities(validated_diff)},
         ),
+        (
+            "materialize_projections",
+            _projection_materialization_payload(applied_model_ids),
+        ),
         ("discover_model_edges", _edge_discovery_payload(applied_model_ids)),
+        (
+            "search_open_questions",
+            _open_questions_payload(
+                validated_diff,
+                applied_model_ids=applied_model_ids,
+                applied_open_question_ids=applied_open_question_ids,
+            ),
+        ),
     ]
 
     inserted: list[UUID] = []

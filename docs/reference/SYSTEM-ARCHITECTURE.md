@@ -1,6 +1,6 @@
 # Fyralis Core System Architecture
 
-Last reviewed from code: 2026-06-10
+Last reviewed from code: 2026-06-22
 
 This document explains the Fyralis Core backend at several levels of abstraction: what the system is, how its processes interact at runtime, how data moves through the system, which modules own which responsibilities, and how the codebase is laid out on disk.
 
@@ -16,7 +16,7 @@ The repository is backend-first:
 - FastAPI gateway for HTTP, WebSocket, integrations, and product APIs.
 - Postgres plus pgvector as the primary system of record and vector store.
 - Kafka and S3-compatible storage for the newer durable ingestion data plane.
-- Redis, Temporal client dependencies, LLM providers, and embedding providers as optional runtime integrations.
+- Redis, Temporal client dependencies, LLM providers, embedding providers, and the extension host API as runtime integration points.
 - Docker Compose manifests for local and production-like backend stacks.
 - Evaluation, replay, integration, and contract tests.
 
@@ -33,7 +33,7 @@ services/product/
 services/workers/
 ```
 
-There are also older top-level `services/<name>/` directories such as `services/gateway`, `services/models`, `services/think`, and `services/query`. In this checkout most of those are legacy residue, test residue, or `__pycache__` remnants. The current code path is the layered package structure above.
+Older docs and status files may still mention former top-level service names such as `services/gateway`, `services/models`, `services/think`, or `services/query`. In this checkout the active service tree is the layered package structure above; do not assume an older name is active unless current imports prove it.
 
 The local `ui/` directory contains generated or residual frontend artifacts such as `dist`, `.vite`, `node_modules`, and test output. Its source directories are empty in this checkout, and the README states that the demo/UI overlay lives outside core. Treat this repository as the backend source of truth.
 
@@ -44,10 +44,10 @@ At the highest level Fyralis is a loop:
 1. External systems send events or are polled/backfilled.
 2. Ingestion converts raw source payloads into canonical `Observation` rows.
 3. Observation inserts enqueue Think triggers.
-4. The Think worker retrieves relevant context, asks deterministic and LLM-backed reasoning code to propose changes, validates those changes, and applies them to domain tables.
-5. Domain tables store evolving organizational memory: models, relationships, acts, resources, predictions, decisions, commitments, goals, and state changes.
-6. Product APIs read and render that memory into user-facing views, answers, cards, traces, deltas, and recommendations.
-7. Post-commit and realtime workers fan out updates, invalidate cache, and refresh product views.
+4. The Think worker retrieves relevant context, including projection-first context when available, asks deterministic and LLM-backed reasoning code to propose changes, validates those changes, and applies them to domain tables.
+5. Domain tables store evolving organizational memory: models, relationships, acts, resources, predictions, decisions, commitments, goals, state changes, model events, and rebuildable projection snapshots.
+6. Product APIs read and render that memory into user-facing views, answers, cards, traces, deltas, recommendations, and resolution workflows.
+7. Post-commit, projection, extension, and realtime workers fan out updates, materialize read views, invalidate cache, and refresh product surfaces.
 
 The compact architecture looks like this:
 
@@ -55,7 +55,8 @@ The compact architecture looks like this:
 External sources
   Slack, GitHub, Discord, Gmail, Calendar, Drive, Jira, Mercury,
   QuickBooks, Grafana, Telegram, Brex, Ramp, Gusto, Deel, Fireflies,
-  Signal, AWS, Miro, Figma, Carta, HiBob, Ashby, LinkedIn, synthetic
+  Signal, WhatsApp, AWS, Miro, Figma, Carta, HiBob, Ashby, LinkedIn,
+  synthetic
         |
         v
 FastAPI gateway / source workers / onboarding workflows
@@ -71,7 +72,8 @@ handler -> ObservationDraft       RawEnvelope -> NormalizedEnvelope
                        v
                 Domain repositories
         observations, actors, aliases, models,
-        edges, goals, commitments, decisions, resources
+        edges, goals, commitments, decisions, resources,
+        model_events, projection_snapshots
                        |
                        v
               think_trigger_queue
@@ -84,7 +86,10 @@ handler -> ObservationDraft       RawEnvelope -> NormalizedEnvelope
              validated diff applier
                        |
                        v
-       updated memory graph and product state
+       updated memory graph + model event outbox
+                       |
+                       v
+       post-commit projection/realtime actions
                        |
                        v
 Product surfaces and realtime delivery
@@ -93,7 +98,7 @@ forecasts, history, model trace, decision deltas,
 resolution threads, WebSocket streams
 ```
 
-The core abstraction is not "chat over documents." It is an event-sourced memory and reasoning system. Observations are the raw inputs; Models and edges are durable beliefs; acts and resources are operational commitments; product views are projections of that evolving state.
+The core abstraction is not "chat over documents." It is an event-sourced memory and reasoning system. Observations are raw inputs; Models and edges are durable beliefs; acts and resources are operational commitments; model events are the neutral belief-change outbox; projection snapshots and product views are rebuildable operating views over that evolving state.
 
 ## 3. Layered Architecture
 
@@ -116,11 +121,11 @@ The intended layering is:
 
 | Layer | Main directories | Responsibility |
 | --- | --- | --- |
-| Shared library | `lib/shared`, `lib/llm`, `lib/embeddings`, `lib/integrations` | IDs, DB helpers, typed schemas, LLM providers, embeddings, secrets, registries, cross-cutting primitives. |
-| Domain | `services/domain/*` | Canonical repositories and invariants for observations, models, actors, aliases, acts, resources, bridge queries. |
-| Ingest | `services/ingest/*` | Source handlers, raw/normalized Kafka pipeline, integrations, onboarding, backfills, synthetic data, code/GitHub intelligence ingestion. |
-| Platform | `services/platform/*` | Access control, execution routing, adaptive inquiry runtime, process manifest utilities. |
-| Reasoning | `services/reasoning/*` | Think loop, retrieval, diff validation/application, topology, relationship discovery, Sage, calibration, dynamics, contestability. |
+| Shared library | `lib/shared`, `lib/llm`, `lib/embeddings`, `lib/extensions`, `lib/integrations`, `lib/nexus`, `lib/observability` | IDs, DB helpers, typed schemas, LLM providers, embeddings, extension host APIs, observability helpers, secrets, registries, cross-cutting primitives. |
+| Domain | `services/domain/*` | Canonical repositories and invariants for observations, models, model events, projections, actors, aliases, acts, resources, bridge queries. |
+| Ingest | `services/ingest/*` | Source handlers, raw/normalized Kafka pipeline, integrations, onboarding, backfills, synthetic data, draft-enricher seams for external source intelligence. |
+| Platform | `services/platform/*` | Access control, extension governance/egress, execution routing, adaptive inquiry runtime, process manifest utilities. |
+| Reasoning | `services/reasoning/*` | Think loop, retrieval, projection-first context, diff validation/application, topology, relationship discovery, Sage, oracle/outcome facts, calibration, dynamics, contestability. |
 | Product | `services/product/*` | User-facing application behavior: CEO view, Ask, query answering, rendering, today, recommendations, forecasts, history, model trace. |
 | App | `services/app/*` | FastAPI gateway composition, middleware, route mounting, webhooks, realtime WebSocket transport. |
 | Workers | `services/workers/*`, scripts | Long-running background jobs and schedulers around reasoning, topology, calibration, anomalies, maintenance, and post-commit processing. |
@@ -131,6 +136,8 @@ The intended layering is:
 - Core code must not import demo or simulation overlays.
 - `lib` must remain independent of `services`, with a small whitelist for lazy LLM integration points.
 - Reasoning core must not directly import app, product, or ingest.
+- Domain and ingest have ratchet contracts that prevent new upward imports into reasoning/product or app code beyond explicit allowlists.
+- `lib.extensions` must stay independent of `services` so extension manifests, host APIs, and background-worker discovery remain stable external contracts.
 
 There are still known architectural edges. For example, `services/domain/models/repo.py` reaches upward into reasoning modules for topology and affordance policy behavior. That is current code, but it is a dependency worth treating carefully when refactoring.
 
@@ -158,12 +165,13 @@ The main backend processes are:
 
 - `gateway`: FastAPI app at `services.app.gateway.main:app`.
 - `think_worker`: drains `think_trigger_queue` and applies reasoning diffs.
-- `post_commit_worker`: handles pending post-commit product/update actions.
-- `github_intel_worker`: processes GitHub intelligence queue work.
+- `post_commit_worker`: handles pending post-commit actions, including realtime broadcasts, metric invalidation, edge discovery, open-question search, and projection materialization.
+- `extension_workers`: discovers `company_os.workers` contributions and supervises installed extension background workers behind one health/metrics surface.
 - Ingestion workflow workers: OAuth poller, tenant onboarding, source onboarding, shard fetch, reconciler, onboarding monitor, periodic reconciler.
-- Kafka ingestion consumers: normalizer, observation writer, DLQ writer, embedding worker, embedding backlog, circuit breaker.
+- Kafka ingestion consumers: normalizer, observation writer, DLQ writer, summarization worker, summarization batch worker, embedding worker, embedding backlog, circuit breaker.
 - Live source workers: Discord gateway, Telegram gateway, Signal gateway, Gmail/Google Calendar/Google Drive watch and poll workers.
-- Sage/reasoning workers: structural features, topology optimizer, relationship ontology proposals.
+- Application/reasoning workers: anomaly processor, entity resolver, Sage structural features, Sage topology optimizer, housekeeper, relationship ontology proposals.
+- Optional observability profile: Prometheus, Grafana, Postgres exporter, Kafka exporter, and Redis exporter.
 
 Local dogfood scripts may also start `topology_sweeper`, which is implemented under `services/workers/topology_sweeper` and `scripts/run_topology_sweeper.py`. The current main Compose file does not run that sweeper as a service.
 
@@ -195,7 +203,7 @@ The gateway is a composition root. Most dependencies are built there and passed 
 - Core health and utility routes: `/healthz`, `/readyz`, `/metrics`, `/auth/session`, `/ingest/{channel:path}`.
 - Domain substrate routes: `/observations`, `/models`, `/commitments`, `/goals`, `/decisions`, `/resources`.
 - Contestability and dashboard routes.
-- Sage internal routes.
+- Document ingest, WhatsApp, Sage internal, clarification, and extension management routes.
 - Recommendations, structure, today, and map routes.
 - Gateway extensions discovered through `services.app.gateway.extensions`.
 - Model page and spec routes.
@@ -203,7 +211,6 @@ The gateway is a composition root. Most dependencies are built there and passed 
 - Webhooks.
 - Integration install/callback routers.
 - Optional finance and Slack DM panels.
-- GitHub intelligence routes.
 
 This makes route mounting explicit, but it also means new product APIs should be added here or through the extension seam.
 
@@ -227,14 +234,16 @@ Postgres is the system of record. It stores:
 - Tenancy and actor identity.
 - Observations and embeddings.
 - Models, model edges, predictions, and reasoning metadata.
+- Model events, projection checkpoints, projection snapshots, semantic terms, and open questions.
 - Goals, commitments, decisions, resources, transactions, deployments, and customer commitments.
 - Integration installation state and encrypted secrets.
 - Ingestion failures, backlog state, workflow state, onboarding state, and source-specific cursors.
 - Think queues, run records, costs, artifacts, applied triggers, dead letters, and post-commit actions.
 - Product view caches, rendering costs, card conversations, recommendation state, forecast state, model traces, and resolution threads.
-- Sage and retrieval artifacts such as structural features, motifs, inquiry evidence, omitted evidence, discovery shortcuts, and topology optimizer runs.
+- Extension manifests/grants, egress outboxes, audit records, and capability state.
+- Sage and retrieval artifacts such as structural features, motifs, inquiry evidence, omitted evidence, discovery shortcuts, negative memory, and topology optimizer runs.
 
-The `db/migrations/` directory is authoritative for schema history. Migrations currently run from the foundation schema through Think trigger batching and parent trigger support.
+The `db/migrations/` directory is authoritative for schema history. Migrations currently run from the foundation schema through dynamic tenant RLS, model events/projection snapshots, post-commit projection materialization, semantic terms, and model open questions.
 
 ### 5.2 pgvector
 
@@ -251,7 +260,7 @@ ingestion.embedding.<source>
 ingestion.dlq.<source>
 ```
 
-Source names come from the raw-tier `SourceLiteral`, which includes Slack, GitHub, Discord, Gmail, Notion, Google Calendar, Google Drive, Jira, Mercury, QuickBooks, Grafana, Telegram, Brex, Ramp, Gusto, Deel, Fireflies, Signal, AWS, Miro, Figma, Carta, HiBob, Ashby, and LinkedIn.
+Source names come from the raw-tier `SourceLiteral`, which includes Slack, GitHub, Discord, Gmail, Notion, Google Calendar, Google Drive, Jira, Mercury, QuickBooks, Grafana, Telegram, Brex, Ramp, Gusto, Deel, Fireflies, Signal, WhatsApp, AWS, Miro, Figma, Carta, HiBob, Ashby, and LinkedIn.
 
 Kafka is also used for onboarding progress and some workflow signals.
 
@@ -284,10 +293,11 @@ source handler returns ObservationDraft
         v
 ingest_from_draft(...)
         |
-        +--> optional GitHub enrichment
+        +--> registered draft enrichers, gated by extension grants
         +--> preassign uuid7 observation id
         +--> resolve actor by source identity
         +--> resolve entity aliases
+        +--> mark large documents for summarization when needed
         +--> compute embedding or mark pending
         +--> build ObservationCreate
         +--> insert observation with dedupe
@@ -310,7 +320,9 @@ Important behavior:
 - NUL bytes are rejected.
 - Missing observation partitions can be self-healed.
 - `(source_channel, external_id)` deduplication prevents duplicate source events.
+- Channel-keyed draft enrichers can augment the draft before persistence; extension enrichers are raw-on-failure and capability-gated.
 - Actor and alias resolution happen before persistence.
+- Large document observations can be converted to pending-summary observations and resumed by summarization workers.
 - Failed embedding generation does not fail ingestion; the observation is marked pending.
 - New observations enqueue `think_trigger_queue` entries.
 - Observation notifications are flushed after commit.
@@ -341,6 +353,9 @@ Kafka topic ingestion.normalized.<source>
         |
         v
 observation writer
+        |
+        +--> optional summarization queue for large documents
+        +--> optional embedding request
         |
         v
 ingest_from_draft(...)
@@ -391,6 +406,7 @@ The writer owns:
 - Normalized envelope parsing.
 - Observation partition self-healing.
 - Actor and alias repo dependencies.
+- Summarization producer integration for large document bodies.
 - Embedding producer integration.
 - Retry vs DLQ classification.
 
@@ -407,7 +423,7 @@ The writer owns:
 7. Falls back to inline ingestion when cutover is unavailable.
 8. Optionally writes shadow raw envelopes after inline success.
 
-Supported webhook provider families include Slack, GitHub, Discord, Jira, Mercury, QuickBooks, Grafana, Brex, Ramp, Gusto, Deel, Fireflies, Miro, Figma, HiBob, and Ashby. Discord has provider-specific response semantics, so it is not cut over in the same way as simple `202` providers.
+Supported generic webhook provider families include Slack, GitHub, Discord, Jira, Mercury, QuickBooks, Grafana, Brex, Ramp, Gusto, Deel, Fireflies, Miro, Figma, HiBob, and Ashby. Discord has provider-specific response semantics, so it is not cut over in the same way as simple `202` providers. WhatsApp uses its own gateway router and maps live Cloud API items onto the same Kafka/handler path; backfill reconciliation is currently deferred.
 
 ### 7.5 Onboarding And Backfill
 
@@ -448,6 +464,7 @@ think(trigger, ...)
         +--> inject safety-net ops
         +--> validate diff
         +--> apply diff in transaction
+        +--> emit neutral model_events for changed models
         +--> adjudicate relationship candidates
         +--> enqueue post-commit actions
         +--> record cost, artifacts, status
@@ -496,6 +513,7 @@ The context planner gathers evidence before reasoning:
 - Active adaptive inquiry through `services.platform.execution.inquiry`.
 - Optional second-pass retrieval.
 - Dynamic signals.
+- Projection-first context from `projection_snapshots`, followed back to source Models.
 - Active goals, commitments, decisions, and actor operating context.
 
 The output is a reasoning frame and context packet that downstream reasoning can consume.
@@ -509,6 +527,7 @@ Reasoning returns a diff, not arbitrary writes. The diff schema can include:
 - `ontology_gap_ops`: propose missing relationship concepts.
 - `act_ops`: mutate goals, commitments, and decisions.
 - `resource_ops`: mutate resources, transactions, deployments, releases, and customer commitments.
+- open-question operations that create, update, or resolve model follow-up questions.
 - `new_predictions`: create forecastable predictions.
 - `reasoning_trace`: explain evidence and reasoning shape.
 
@@ -524,11 +543,27 @@ Important behavior:
 - Model write advisory locks prevent conflicting claim mutation.
 - Claim operations are applied before edge, act, and resource operations.
 - Compound claims can be split into atomic/situation claims.
+- Model writes emit projection-neutral `model_events` with semantic snapshots.
+- Semantic terms and open questions are sidecar state on Models, not separate sources of truth.
 - State-change observations are emitted for meaningful state mutations.
 - Reconciler and quality gates run as part of application.
 - Outcomes are recorded back to `applied_triggers` and `think_runs`.
 
 Think is therefore a controlled mutation pipeline. LLMs propose structured changes; repositories and validators decide what actually reaches durable memory.
+
+### 8.6 Post-Commit Actions And Projections
+
+Think writes post-commit actions into `pending_post_commit_actions` inside the same transaction as the applied diff. The post-commit worker then handles the durable side effects after commit:
+
+- `publish_anomalies`: publish anomaly observations or follow-up signals.
+- `schedule_predictions`: schedule prediction evaluation work.
+- `broadcast_realtime`: notify realtime/product listeners.
+- `invalidate_metrics`: invalidate affected metric/product views.
+- `materialize_projections`: consume `model_events` through `ProjectionRunner` and update `projection_snapshots`.
+- `discover_model_edges`: run edge discovery on changed models.
+- `search_open_questions`: turn model open questions into retrieval/search follow-up.
+
+Projection materialization is deliberately rebuildable. `ModelsRepo` emits neutral `model_events`; projectors such as `constraints`, `resources`, and `employee_profiles` consume those events and write typed `projection_snapshots` keyed by `projection_name`, `projection_version`, and `subject_key`. Retrieval uses snapshots as a compact first pass, then loads the canonical source Models through `ProjectionRepo`.
 
 ## 9. Canonical Data Flow: Product Surfaces
 
@@ -702,11 +737,15 @@ Models are persistent beliefs, claims, predictions, and structured memory items.
 
 - Model creation.
 - Claim canonicalization.
+- Model formation/read-shape hydration.
+- Facet extraction for operational, semantic, and retrieval-facing attributes.
 - Proposition validation.
 - Confidence calibration and clipping.
 - Falsifier adequacy checks for high-confidence claims.
 - Scope actor validation.
+- Semantic term and open-question sidecars.
 - Embedding.
+- Neutral `model_events` emission.
 - State-change emission.
 - Audit events.
 - Search and retrieval counters.
@@ -725,7 +764,26 @@ Edges support:
 
 The older accepted-memory topology queue is retired; some compatibility tables remain.
 
-### 11.7 `services/domain/actors`
+### 11.7 `services/domain/projections`
+
+Projections are rebuildable operating views over canonical Models.
+
+Core projection families currently include:
+
+- `constraints`: runway, financial capacity, operating capacity, and entity-scoped constraints.
+- `resources`: financial, capacity, relational, infrastructure, regulatory, IP, and entity-scoped resources.
+- `employee_profiles`: longitudinal employee/person operating views.
+
+The projection layer owns:
+
+- `ProjectionRunner`, which consumes `model_events` per projector and maintains checkpoints.
+- `ProjectionRepo`, the typed read API for `projection_snapshots` and their backing Models.
+- Projector catalog and `company_os.projections` entry-point discovery.
+- Subject resolver catalog and `company_os.projection_subject_resolvers` entry-point discovery.
+
+Projection snapshots are disposable. Canonical belief state remains in Models and edges; snapshots are compact read/retrieval indexes that can be rebuilt from `model_events`.
+
+### 11.8 `services/domain/actors`
 
 Actors represent users, people, bots, systems, and other source identities.
 
@@ -739,7 +797,7 @@ Actors represent users, people, bots, systems, and other source identities.
 
 Actor resolution is central to multi-source memory because source systems use incompatible identity models.
 
-### 11.8 `services/domain/entity_aliases`
+### 11.9 `services/domain/entity_aliases`
 
 Entity aliases map phrases and source-specific names to canonical entities.
 
@@ -753,7 +811,7 @@ Entity aliases map phrases and source-specific names to canonical entities.
 
 Ingestion stores unresolved phrases when alias resolution cannot decide safely.
 
-### 11.9 `services/domain/acts`
+### 11.10 `services/domain/acts`
 
 Acts are operational objects:
 
@@ -770,7 +828,7 @@ The acts layer owns:
 
 Think can create or update acts through validated `act_ops`.
 
-### 11.10 `services/domain/resources`
+### 11.11 `services/domain/resources`
 
 Resources represent operational and business objects:
 
@@ -782,7 +840,7 @@ Resources represent operational and business objects:
 
 These tables connect memory to business operations such as revenue risk, feasibility, releases, and customer health.
 
-### 11.11 `services/domain/bridge`
+### 11.12 `services/domain/bridge`
 
 Bridge queries provide dashboard-grade joins over domain state.
 
@@ -796,7 +854,7 @@ Examples:
 
 This layer is useful when product surfaces need coherent business projections rather than raw table access.
 
-### 11.12 `services/ingest/ingestion`
+### 11.13 `services/ingest/ingestion`
 
 The core ingestion package owns:
 
@@ -804,10 +862,12 @@ The core ingestion package owns:
 - Shared `ingest_from_draft`.
 - Handler registry.
 - Source-specific handlers.
+- Draft-enricher registry and `company_os.draft_enrichers` discovery.
 - Raw-tier envelopes.
 - Kafka topic definitions.
 - Normalizer worker.
 - Observation writer.
+- Large-document summarization workers.
 - Embedding writer/backlog.
 - DLQ writer.
 - Feature flags and circuit breaker.
@@ -815,7 +875,7 @@ The core ingestion package owns:
 
 Handlers are pure-ish adapters from source payloads to `ObservationDraft`. They should avoid durable writes. Durable writes happen in `ingest_from_draft` and domain repositories.
 
-### 11.13 `services/ingest/integrations`
+### 11.14 `services/ingest/integrations`
 
 Integration modules own source install/callback flows, OAuth state, source-specific clients, and background source workers.
 
@@ -828,30 +888,23 @@ Integration routers include:
 - Jira.
 - Mercury.
 - QuickBooks.
+- Brex, Carta, Deel, Figma, Fireflies, Google Calendar, Google Drive, Grafana, Gusto, Miro, and related source-specific OAuth/client modules.
 
-Additional source workers and services cover Gmail, Google Calendar, Google Drive, Telegram, Signal, and other SaaS systems.
+Additional live source workers and services cover Gmail, Google Calendar, Google Drive, Telegram, Signal, Discord, and WhatsApp paths.
 
-### 11.14 `services/ingest/synthetic`
+### 11.15 `services/ingest/synthetic`
 
 Synthetic ingestion supports generated organizations, signals, scenarios, and test/demo data. It is useful for evaluation and repeatable local behavior but should remain separate from production source handling.
 
-### 11.15 `services/ingest/code_intel`
+### 11.16 Extracted `github_intel` / `code_intel`
 
-Code intelligence indexes repositories into code snapshots, files, symbols, edges, embeddings, and index triggers. It allows the memory system to reason over code structure and GitHub signals.
+GitHub/code intelligence is no longer an active in-core service package. The old `services/ingest/code_intel` and `services/ingest/github_intel` directories are residual/cache-only in this checkout. That capability is represented as an external interface that can reattach through extension seams:
 
-### 11.16 `services/ingest/github_intel`
-
-GitHub intelligence handles GitHub-specific enrichment and queue processing:
-
-- Repository state.
-- Branch state.
-- Pull request state.
-- Issue state.
-- Check state.
-- Signal enrichment.
-- GitHub intelligence queue work.
-
-GitHub webhook ingestion can call best-effort enrichment before writing an observation.
+- `company_os.draft_enrichers` for inline draft enrichment.
+- `company_os.gateway_extensions` for API/read routes.
+- `company_os.interfaces` for extension manifest discovery.
+- `company_os.workers` for extension background jobs.
+- `services/platform/extensions` for grants, access, audit, egress, lifecycle, and marketplace governance.
 
 ### 11.17 `services/platform/access_control`
 
@@ -886,11 +939,25 @@ Execution platform includes:
 
 Routing currently records and can shadow deterministic decisions such as fast path, deep inquiry path, background path, deterministic update, human validation, or ignore/archive. It is not the primary inline ingest control path in current code.
 
-### 11.19 `services/platform/runtime`
+### 11.19 `services/platform/extensions`
+
+The extension platform is the in-core host for external interfaces.
+
+It owns:
+
+- Capability/grant checks for draft enrichers and read APIs.
+- Extension identity, consent, provenance, redaction, and killswitch behavior.
+- Edge ingest for extension-authored signals.
+- Egress planning, projection, delivery, and append-only stores.
+- Marketplace registry/review/signing primitives.
+
+The stable host API lives under `lib/extensions/host_api/v1`; platform code provides the services-backed enforcement.
+
+### 11.20 `services/platform/runtime`
 
 Runtime utilities include process manifest rendering and process-level metadata.
 
-### 11.20 `services/reasoning/think`
+### 11.21 `services/reasoning/think`
 
 Think is the main reasoning loop:
 
@@ -906,19 +973,20 @@ Think is the main reasoning loop:
 
 This is the most important package for understanding how observations become durable beliefs and operations.
 
-### 11.21 `services/reasoning/retrieval`
+### 11.22 `services/reasoning/retrieval`
 
 Retrieval provides low-level pathways:
 
 - Structural graph retrieval.
 - Semantic embedding retrieval.
+- Projection-first retrieval through `ProjectionRepo`.
 - Temporal retrieval.
 - Pattern retrieval.
 - Model-edge retrieval.
 
-Trigger kinds weight these pathways differently. Retrieval can reconsolidate models and produce traces for debugging.
+Trigger kinds weight these pathways differently. Retrieval can reconsolidate models, check projection freshness, fall back when snapshots are missing, and produce traces for debugging.
 
-### 11.22 `services/reasoning/topology`
+### 11.23 `services/reasoning/topology`
 
 Topology is currently centered on `LatentTopologyService`.
 
@@ -931,7 +999,7 @@ It handles:
 
 It is called from model writes and workers. Older accepted-memory topology tables remain as compatibility/history, but the active topology behavior is candidate-oriented.
 
-### 11.23 `services/reasoning/relationships`
+### 11.24 `services/reasoning/relationships`
 
 Relationships code handles:
 
@@ -943,7 +1011,7 @@ Relationships code handles:
 
 Relationship candidate triggers allow Think to reason over likely edges without immediately accepting every inferred relation.
 
-### 11.24 `services/reasoning/sage`
+### 11.25 `services/reasoning/sage`
 
 Sage is the deeper reading, retrieval, and graph-intelligence layer.
 
@@ -963,75 +1031,79 @@ Subareas include:
 
 Sage workers compute structural features, topology optimizer runs, and ontology proposals. Product and Think can use Sage-derived artifacts for better retrieval and reasoning quality.
 
-### 11.25 `services/reasoning/synthesis`
+### 11.26 `services/reasoning/synthesis`
 
 Synthesis owns query understanding and state contracts for higher-level summaries. It helps transform raw memory into operational facets and structured answer material.
 
-### 11.26 `services/reasoning/contestability`
+### 11.27 `services/reasoning/contestability`
 
 Contestability supports reviewing, challenging, and evaluating beliefs. This matters because the model graph contains confidence-weighted claims, not absolute truth.
 
-### 11.27 `services/reasoning/calibration`
+### 11.28 `services/reasoning/calibration`
 
 Calibration manages prediction confidence and outcome-driven confidence adjustment.
 
-### 11.28 `services/reasoning/dynamics`
+### 11.29 `services/reasoning/dynamics`
 
 Dynamics models changing state and drift over time. It supports memory behavior where confidence and relevance evolve.
 
-### 11.29 `services/reasoning/judgment`
+### 11.30 `services/reasoning/judgment`
 
 Judgment contains decision/judgment support primitives used by reasoning and product code.
 
-### 11.30 `services/product/greeting`
+### 11.31 `services/reasoning/oracle`
+
+Oracle contains outcome-fact extraction and outcome-oriented helpers used by reasoning quality loops.
+
+### 11.32 `services/product/greeting`
 
 Greeting owns the CEO home projection, scheduler, cache repo, API, stream publishing, and card composition.
 
-### 11.31 `services/product/rendering`
+### 11.33 `services/product/rendering`
 
 Rendering owns user-facing language generation and rendered fragments. It is product presentation, not durable reasoning.
 
-### 11.32 `services/product/query`
+### 11.34 `services/product/query`
 
 Query owns read-time question answering over memory and retrieval context.
 
-### 11.33 `services/product/ask`
+### 11.35 `services/product/ask`
 
 Ask owns the newer conversational product surface and its router/orchestrator/store.
 
-### 11.34 `services/product/today`
+### 11.36 `services/product/today`
 
 Today owns daily summaries, triage, and near-term operational surfaces.
 
-### 11.35 `services/product/recommendations`
+### 11.37 `services/product/recommendations`
 
 Recommendations owns recommendation generation, persistence, and watcher behavior.
 
-### 11.36 `services/product/decision_deltas`
+### 11.38 `services/product/decision_deltas`
 
 Decision deltas track changes, evidence, and promotion/application flows around decisions.
 
-### 11.37 `services/product/forecasts`
+### 11.39 `services/product/forecasts`
 
 Forecasts expose predictions, accuracy, and forecast pages/APIs.
 
-### 11.38 `services/product/history`
+### 11.40 `services/product/history`
 
 History aggregates and summarizes past state.
 
-### 11.39 `services/product/model_trace`
+### 11.41 `services/product/model_trace`
 
 Model trace lets users inspect why a model exists, where it came from, and how it changed.
 
-### 11.40 `services/product/conversations`
+### 11.42 `services/product/conversations`
 
 Conversations supports card-scoped product discussions and probes.
 
-### 11.41 `services/product/resolution_threads`
+### 11.43 `services/product/resolution_threads`
 
 Resolution threads manage threads around resolving open issues, uncertainties, or contested state.
 
-### 11.42 `services/app/gateway`
+### 11.44 `services/app/gateway`
 
 Gateway is the process composition and HTTP API layer:
 
@@ -1046,7 +1118,7 @@ Gateway is the process composition and HTTP API layer:
 
 Gateway should orchestrate, not own core business logic.
 
-### 11.43 `services/app/webhooks`
+### 11.45 `services/app/webhooks`
 
 Webhooks own public provider event capture:
 
@@ -1060,11 +1132,11 @@ Webhooks own public provider event capture:
 - Inline fallback.
 - Provider-channel mapping.
 
-### 11.44 `services/app/realtime`
+### 11.46 `services/app/realtime`
 
 Realtime owns WebSocket transport, Postgres notification listening, replay cursors, and fan-out.
 
-### 11.45 `services/workers`
+### 11.47 `services/workers`
 
 Worker packages provide background jobs around:
 
@@ -1073,6 +1145,7 @@ Worker packages provide background jobs around:
 - Deadline resolution.
 - Edge drift.
 - Entity resolution.
+- Housekeeper lifecycle jobs.
 - Maintenance.
 - Precipitation.
 - Relationship ontology proposals.
@@ -1080,7 +1153,7 @@ Worker packages provide background jobs around:
 - Sage topology optimization.
 - Topology sweeping.
 
-Not every implemented worker is mounted in the main Compose stack. Current Compose directly runs the Sage structural features worker, Sage topology optimizer worker, and relationship ontology proposals worker from this tree. Other workers may be manual, dormant, script-launched, or future deployment targets.
+Not every implemented worker is mounted in the main Compose stack. Current Compose directly runs anomaly processing, entity resolution, housekeeper, Sage structural features, Sage topology optimizer, and relationship ontology proposals from this tree. Other workers may be manual, dormant, script-launched, or future deployment targets.
 
 ## 12. Database Model At A Glance
 
@@ -1102,11 +1175,14 @@ These tables establish who the memory belongs to and who can read it.
 - observation partitions
 - `models`
 - `model_edges`
+- `model_events`
+- `model_semantic_terms`
+- `model_open_questions`
 - model scope tables
 - model search and sparse term tables
 - model belief address tables
 
-Observations are ingested evidence. Models and edges are durable interpreted memory.
+Observations are ingested evidence. Models and edges are durable interpreted memory. Model events, semantic terms, and open questions are sidecars/outboxes attached to the belief kernel.
 
 ### 12.3 Acts And Operations
 
@@ -1138,8 +1214,10 @@ These tables capture work, obligations, decisions, dependencies, and business ob
 
 These tables provide durable reasoning orchestration, idempotency, cost tracking, and debugging.
 
-### 12.5 Product Projections
+### 12.5 Model And Product Projections
 
+- `projection_checkpoints`
+- `projection_snapshots`
 - `view_ceo_cache`
 - `view_render_costs`
 - `viewer_state`
@@ -1152,7 +1230,7 @@ These tables provide durable reasoning orchestration, idempotency, cost tracking
 - prediction signals
 - calibration tables
 
-These tables make the memory graph usable in product surfaces.
+`projection_snapshots` are rebuildable operating views over Models. The `view_*` and product-specific tables make the memory graph usable in product surfaces.
 
 ### 12.6 Integration And Ingestion State
 
@@ -1163,6 +1241,7 @@ These tables make the memory graph usable in product surfaces.
 - `installation_audit_log`
 - `ingestion_failures`
 - `embedding_backlog_state`
+- summarization batch/job state
 - onboarding run/shard/trigger tables
 - source onboarding run tables
 - workflow state/signal tables
@@ -1171,7 +1250,20 @@ These tables make the memory graph usable in product surfaces.
 
 These tables let the system install integrations, remember cursors, replay data, protect secrets, and operate cutovers.
 
-### 12.7 Sage, Retrieval, And Topology
+### 12.7 Extension Platform
+
+- `extension_grants`
+- `extension_oauth_clients`
+- `extension_egress`
+- `extension_webhook_delivery`
+- `extension_egress_progress`
+- `extension_audit_log`
+- `extension_killswitch`
+- `extension_listings`
+
+These tables let installed interfaces authenticate, receive capability-scoped grants, read/write through governed surfaces, receive egress, and be reviewed or disabled.
+
+### 12.8 Sage, Retrieval, And Topology
 
 - `relationship_candidates`
 - `relationship_ontology_proposals`
@@ -1196,7 +1288,9 @@ These tables let the system install integrations, remember cursors, replay data,
 
 These tables store the artifacts that make retrieval and reasoning more adaptive than simple vector search.
 
-### 12.8 GitHub And Code Intelligence
+### 12.9 GitHub And Code Intelligence
+
+GitHub/code intelligence was extracted from core and should return through the extension platform. Migration history still contains older GitHub and code-intel schema families:
 
 - GitHub repo/branch/PR/issue/check state.
 - GitHub signal enrichment.
@@ -1208,9 +1302,9 @@ These tables store the artifacts that make retrieval and reasoning more adaptive
 - Code embeddings.
 - Code intelligence index triggers.
 
-These support code-aware memory and source-specific GitHub reasoning.
+Treat these as historical/external-interface support rather than active core package ownership in this checkout.
 
-### 12.9 Legacy And Retired Tables
+### 12.10 Legacy And Retired Tables
 
 The migrations include historical demo scaffolding and legacy topology tables. Some demo scaffolding is dropped by later migrations. Some topology tables remain for compatibility/history even though accepted-memory topology has shifted toward latent/candidate behavior.
 
@@ -1250,7 +1344,13 @@ Not all memory has the same trust level. The system stores confidence, claim kin
 
 ## 14. Extension Seams
 
-### 14.1 Gateway Extensions
+### 14.1 Interface Manifests
+
+`lib/extensions/manifest.py` discovers `company_os.interfaces` entry points. A manifest declares the extension id, version, trust tier, compatible host API range, contribution points, activation events, feature flag, and requested capabilities.
+
+Core discovery is cached and failure-isolated: a broken manifest should not break host startup.
+
+### 14.2 Gateway Extensions
 
 `services/app/gateway/extensions.py` discovers `company_os.gateway_extensions` entry points. Extensions can contribute:
 
@@ -1260,15 +1360,36 @@ Not all memory has the same trust level. The system stores confidence, claim kin
 
 The README emphasizes that demo/UI overlays should depend on core through extension seams rather than core importing overlay code.
 
-### 14.2 Reasoning Augmentors
+### 14.3 Draft Enrichers
+
+`services/ingest/ingestion/enrichers.py` discovers `company_os.draft_enrichers` entry points. Enrichers mutate an `ObservationDraft` before persistence, are channel-keyed, and are raw-on-failure. Extension enrichers must carry a manifest id and pass capability/grant checks through `services/platform/extensions/access.py`.
+
+This is the replacement for the old hardcoded GitHub-intel inline hook.
+
+### 14.4 Projection Extensions
+
+The projection layer exposes two extension points:
+
+- `company_os.projections`: projector factories that consume `model_events` and write new projection families.
+- `company_os.projection_subject_resolvers`: retrieval subject resolvers that teach projection-first retrieval how to find extension-owned subjects.
+
+Core projectors and resolvers are registered in `services/domain/projections`; extension discovery is cached and failure-isolated.
+
+### 14.5 Background Workers
+
+`lib/extensions/run_workers.py` discovers `company_os.workers` contributions and supervises every active worker in the `extension_workers` process. A worker whose manifest is missing or host-API-incompatible is skipped. One worker failure is logged and retried without killing sibling workers.
+
+### 14.6 Reasoning Augmentors
 
 The context planner can load reasoning augmentors through entry points such as `company_os.reasoning_augmentors`. This allows additional context enrichment without hard-wiring product or overlay behavior into reasoning core.
 
-### 14.3 Event Subscribers
+### 14.7 Event Subscribers And Egress
 
 Domain writes schedule post-commit notifications, and app/realtime code listens to database notifications. Product schedulers and post-commit workers use this to refresh projections after memory mutation.
 
-### 14.4 Source Handlers
+Extension egress lives under `services/platform/extensions/egress`. It materializes capability-filtered/redacted observation payloads into `extension_egress` for cursor pull and optionally schedules webhook push delivery.
+
+### 14.8 Source Handlers
 
 Adding a source usually means adding:
 
@@ -1285,17 +1406,22 @@ Adding a source usually means adding:
 The system exposes and stores operational state in several places:
 
 - `/healthz`, `/readyz`, and `/metrics` from the gateway.
+- Worker `/healthz` and `/metrics` endpoints on `INGESTION_HEALTH_PORT` for long-running consumers/workers.
+- Optional Prometheus/Grafana/exporter stack behind the Compose `observability` profile.
 - `startup_status` and route-level startup failures.
 - `think_runs`, `think_run_costs`, and `think_run_artifacts`.
 - `applied_triggers` for idempotency and reasoning outcomes.
+- `model_events`, `projection_checkpoints`, and `projection_snapshots` for projection freshness and rebuild debugging.
 - `model_reeval_dead_letter` and Think worker dead-letter behavior.
 - `ingestion_failures` and DLQ topics.
 - Embedding backlog state.
+- Summarization worker/batch state for large documents.
 - Onboarding progress events and onboarding run tables.
-- `audit_events`, `installation_audit_log`, and reconciliation events.
+- `audit_events`, `installation_audit_log`, `extension_audit_log`, and reconciliation events.
 - Rendering cost records.
 - Realtime replay cursors.
 - Circuit breaker tenant flags for Kafka path rollback.
+- Extension grants, killswitch rows, egress rows, and webhook delivery attempts.
 
 The practical debugging path is:
 
@@ -1305,7 +1431,9 @@ The practical debugging path is:
 4. Check observation row and dedupe fields.
 5. Check `think_trigger_queue`.
 6. Check `think_runs` and artifacts.
-7. Check applied domain rows and product cache refresh.
+7. Check `pending_post_commit_actions`, `model_events`, and projection checkpoints/snapshots.
+8. Check applied domain rows and product cache refresh.
+9. For extension-owned behavior, check manifest discovery, grants, killswitch, egress, and extension worker metrics.
 
 ## 16. Testing And Evaluation
 
@@ -1343,7 +1471,8 @@ This is the working source map.
 +-- README.md
 +-- pyproject.toml
 +-- docker-compose.yml
-+-- docker-compose.dev.yml
++-- docker-compose.codex-auth.yml
++-- docker-compose.pgadmin.yml
 +-- docker-compose.per-source.yml
 +-- docker-compose.sandbox.yml
 +-- contracts/
@@ -1359,7 +1488,10 @@ This is the working source map.
 |   +-- shared/
 |   +-- llm/
 |   +-- embeddings/
+|   +-- extensions/
 |   +-- integrations/
+|   +-- nexus/
+|   +-- observability/
 +-- services/
 |   +-- app/
 |   |   +-- gateway/
@@ -1372,22 +1504,24 @@ This is the working source map.
 |   |   +-- entity_aliases/
 |   |   +-- models/
 |   |   +-- observations/
+|   |   +-- projections/
 |   |   +-- resources/
 |   +-- ingest/
-|   |   +-- code_intel/
-|   |   +-- github_intel/
 |   |   +-- ingestion/
 |   |   +-- integrations/
 |   |   +-- synthetic/
 |   +-- platform/
 |   |   +-- access_control/
 |   |   +-- execution/
+|   |   +-- extensions/
 |   |   +-- runtime/
 |   +-- reasoning/
 |   |   +-- calibration/
 |   |   +-- contestability/
 |   |   +-- dynamics/
+|   |   +-- edge_intelligence/
 |   |   +-- judgment/
+|   |   +-- oracle/
 |   |   +-- relationships/
 |   |   +-- retrieval/
 |   |   +-- sage/
@@ -1413,6 +1547,7 @@ This is the working source map.
 |       +-- deadline_resolver/
 |       +-- edge_drift/
 |       +-- entity_resolver/
+|       +-- housekeeper/
 |       +-- maintenance/
 |       +-- precipitation/
 |       +-- relationship_ontology_proposals/
@@ -1428,7 +1563,7 @@ This is the working source map.
 ### 17.1 Root Files
 
 - `README.md`: local setup and high-level backend overview.
-- `pyproject.toml`: package metadata, dependencies, pytest settings, ruff, mypy, import-linter contracts.
+- `pyproject.toml`: package metadata, dependencies, pytest settings, optional dependency groups, and import-linter contracts.
 - `docker-compose*.yml`: local and production-like process graphs.
 - `contracts/http-routes.json`: route contract data.
 
@@ -1550,7 +1685,8 @@ Typical steps:
 
 These are current realities a maintainer should know:
 
-- The active source is layered, but legacy top-level `services/<name>` directories still exist. Do not assume a top-level service directory is active.
+- The active source is layered. Older docs may still name legacy top-level `services/<name>` packages, but this checkout's active tree is under `services/app`, `services/domain`, `services/ingest`, `services/platform`, `services/product`, `services/reasoning`, and `services/workers`.
+- `github_intel` and `code_intel` are extracted interface capabilities in this repo state; residual cache directories or historical migrations are not active core package ownership.
 - Domain currently has a few upward imports into reasoning. Respect them when changing import boundaries.
 - The deterministic execution router exists and records route decisions, but current inline ingestion primarily uses the direct ingest path rather than routing every event through that router.
 - Some worker packages are implemented but not wired into main Compose.
@@ -1569,7 +1705,7 @@ When code, docs, and mental models disagree, prefer this order:
 3. Compose files and scripts for process reality.
 4. Tests and contract fixtures for expected behavior.
 5. Current docs in `docs/architecture`, `docs/ingestion`, and `docs/reference`.
-6. Legacy top-level service directories only when active imports prove they are still used.
+6. Historical docs and migration residue only after checking current imports.
 
 ## 21. Minimal Mental Model For New Engineers
 
@@ -1579,7 +1715,9 @@ If you only remember one thing, remember this:
 Sources become Observations.
 Observations enqueue Think.
 Think mutates Models, Edges, Acts, Resources, and Predictions through validated diffs.
-Product surfaces render those durable states.
+Model writes emit model_events.
+Post-commit workers materialize projections, trigger follow-up work, and broadcast realtime updates.
+Product surfaces render durable states and rebuildable projections.
 Kafka/S3 makes ingestion replayable.
 Postgres is the memory and coordination backbone.
 ```

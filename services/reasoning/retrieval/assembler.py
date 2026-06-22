@@ -42,6 +42,7 @@ SKIPPED — we never truncate mid-item (audit §7 arg 2).
 """
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 from collections import defaultdict
@@ -844,6 +845,7 @@ async def assemble_context(
     budget_acts: int | None = None,
     budget_resources: int | None = None,
     config: RetrievalConfig | None = None,
+    read_pool: asyncpg.Pool | None = None,
 ) -> ContextBundle:
     """
     Compose a size-bounded ContextBundle from the retrieval result.
@@ -864,14 +866,22 @@ async def assemble_context(
         budget_acts=budget_acts,
         budget_resources=budget_resources,
     )
-    model_selection = await _select_context_models(
+    acts_cap = _select_context_acts(
         retrieval_result,
-        access_context,
-        conn,
-        cfg=cfg,
-        budget_models=budgets["models"],
+        tenant_id=access_context.tenant_id,
+        budget_acts=budgets["acts"],
     )
-
+    model_selection, resources_cap, customer_context = (
+        await _select_context_db_facets(
+            retrieval_result,
+            access_context,
+            conn,
+            cfg=cfg,
+            budgets=budgets,
+            acts_cap=acts_cap,
+            read_pool=read_pool,
+        )
+    )
     obs_tenant = [
         o for o in retrieval_result.observations
         if o.tenant_id == access_context.tenant_id
@@ -883,22 +893,6 @@ async def assemble_context(
         budget_observations=budgets["observations"],
         explicit_budget=budgets["explicit_observation_budget"],
         selected_model_count=len(model_selection["models"]),
-    )
-    acts_cap = _select_context_acts(
-        retrieval_result,
-        tenant_id=access_context.tenant_id,
-        budget_acts=budgets["acts"],
-    )
-    resources_cap = await _select_context_resources(
-        retrieval_result,
-        conn,
-        tenant_id=access_context.tenant_id,
-        budget_resources=budgets["resources"],
-    )
-    customer_context = await _compute_customer_context(
-        conn,
-        access_context.tenant_id,
-        acts_cap["commitments"],
     )
     topology_context = None
     notes = _build_context_notes(
@@ -922,6 +916,92 @@ async def assemble_context(
         access_redactions=model_selection["redactions"],
         notes=notes,
     )
+
+
+async def _select_context_db_facets(
+    retrieval_result: RetrievalResult,
+    access_context: AccessContext,
+    conn: asyncpg.Connection,
+    *,
+    cfg: RetrievalConfig,
+    budgets: dict[str, Any],
+    acts_cap: dict[str, list],
+    read_pool: asyncpg.Pool | None,
+) -> tuple[dict[str, Any], list[ResourceRow], dict[str, Any] | None]:
+    if not _assembler_read_fanout_enabled(conn, read_pool):
+        return (
+            await _select_context_models(
+                retrieval_result,
+                access_context,
+                conn,
+                cfg=cfg,
+                budget_models=budgets["models"],
+            ),
+            await _select_context_resources(
+                retrieval_result,
+                conn,
+                tenant_id=access_context.tenant_id,
+                budget_resources=budgets["resources"],
+            ),
+            await _compute_customer_context(
+                conn,
+                access_context.tenant_id,
+                acts_cap["commitments"],
+            ),
+        )
+
+    assert read_pool is not None
+
+    async def select_models() -> dict[str, Any]:
+        async with read_pool.acquire() as read_conn:
+            return await _select_context_models(
+                retrieval_result,
+                access_context,
+                read_conn,
+                cfg=cfg,
+                budget_models=budgets["models"],
+            )
+
+    async def select_resources() -> list[ResourceRow]:
+        async with read_pool.acquire() as read_conn:
+            return await _select_context_resources(
+                retrieval_result,
+                read_conn,
+                tenant_id=access_context.tenant_id,
+                budget_resources=budgets["resources"],
+            )
+
+    async def select_customer_context() -> dict[str, Any] | None:
+        async with read_pool.acquire() as read_conn:
+            return await _compute_customer_context(
+                read_conn,
+                access_context.tenant_id,
+                acts_cap["commitments"],
+            )
+
+    async with asyncio.TaskGroup() as task_group:
+        models_task = task_group.create_task(select_models())
+        resources_task = task_group.create_task(select_resources())
+        customer_task = task_group.create_task(select_customer_context())
+    return models_task.result(), resources_task.result(), customer_task.result()
+
+
+def _assembler_read_fanout_enabled(
+    conn: asyncpg.Connection,
+    read_pool: asyncpg.Pool | None,
+) -> bool:
+    if read_pool is None:
+        return False
+    in_transaction = getattr(conn, "is_in_transaction", None)
+    if callable(in_transaction) and in_transaction():
+        return False
+    max_size = getattr(read_pool, "get_max_size", None)
+    if callable(max_size):
+        try:
+            return int(max_size()) > 1
+        except (TypeError, ValueError):
+            return False
+    return True
 
 
 def _resolve_assembler_budgets(

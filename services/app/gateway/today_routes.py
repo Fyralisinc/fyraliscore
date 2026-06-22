@@ -61,6 +61,10 @@ from fastapi.responses import JSONResponse
 from services.product.decision_deltas import apply as apply_mod
 from services.product.decision_deltas import repo as dd_repo
 from services.product.resolution_threads import repo as resolution_repo
+from services.reasoning.oracle import (
+    enqueue_outcome_representation_repair,
+    human_correction_outcome_fact,
+)
 
 
 # =====================================================================
@@ -1632,6 +1636,7 @@ async def correct_delta(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                submitted_at = datetime.now(timezone.utc)
                 # Promote contested-from-any-eligible-state in one
                 # repo call. The repo enforces transition legality.
                 await dd_repo.update_status(
@@ -1651,12 +1656,32 @@ async def correct_delta(
                         "supporting_link":    supporting,
                         "apply_to_related":   apply_related,
                         "by":                 str(auth.actor_id),
-                        "at":                 _now_iso(),
+                        "at":                 submitted_at.isoformat(),
                     },
                 )
                 view = await dd_repo.get_delta(
                     conn, tenant_id=auth.tenant_id, delta_id=did,
                 )
+                if view is not None:
+                    fact = human_correction_outcome_fact(
+                        tenant_id=auth.tenant_id,
+                        delta_id=did,
+                        actor_id=auth.actor_id,
+                        correction_type=ctype,
+                        explanation=explanation,
+                        supporting_link=supporting,
+                        apply_to_related=apply_related,
+                        occurred_at=submitted_at,
+                        main_assertion=view.main_assertion,
+                        target_node_kind=view.target_node_kind,
+                        target_node_id=view.target_node_id,
+                        evidence=view.evidence,
+                    )
+                    await enqueue_outcome_representation_repair(
+                        conn,
+                        tenant_id=auth.tenant_id,
+                        fact=fact,
+                    )
     except dd_repo.DeltaNotFoundError:
         return _not_found()
     except dd_repo.InvalidStatusTransitionError:

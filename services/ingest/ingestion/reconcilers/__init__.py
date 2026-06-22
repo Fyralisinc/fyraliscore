@@ -266,3 +266,4 @@ from services.ingest.ingestion.reconcilers import carta as _carta  # noqa: E402,
 from services.ingest.ingestion.reconcilers import hibob as _hibob  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import ashby as _ashby  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import linkedin as _linkedin  # noqa: E402,F401
+from services.ingest.ingestion.reconcilers import whatsapp as _whatsapp  # noqa: E402,F401

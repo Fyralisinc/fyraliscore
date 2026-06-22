@@ -40,7 +40,6 @@ from .types import InquiryQuestion, LearnedRetrievalMotif, RetrievalAction
 class _QuestionRetrievalPlan:
     question: InquiryQuestion
     sage_result: Any | None = None
-    sage_action: RetrievalAction | None = None
     action_gate_scope: Literal["all", "broad"] | None = None
     action_gate_reason: str | None = None
     actions_to_run: list[RetrievalAction] = field(default_factory=list)

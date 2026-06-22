@@ -198,19 +198,35 @@ def select_questions(
 
     by_id = {q.question_id: q for q in candidates}
     priority_ids: list[str] = []
+    owner = by_id.get("Q_OWNER")
+    counter = by_id.get("Q_COUNTEREVIDENCE")
+    owner_is_priority = (
+        owner is not None
+        and owner.expected_value >= 0.70
+        and "OWNERSHIP" not in already_asked
+    )
+    counter_is_priority = (
+        questions_per_round >= 2
+        and counter is not None
+        and counter.expected_value >= 0.82
+        and "COUNTEREVIDENCE" not in already_asked
+    )
+    if questions_per_round <= 3 and owner_is_priority and counter_is_priority:
+        for question_id in ("Q_OWNER", "Q_COUNTEREVIDENCE"):
+            question = by_id.get(question_id)
+            if question is not None:
+                add(question, priority=True)
+        if len(selected) >= 2:
+            return selected
     constraint = by_id.get("Q_CONSTRAINT")
     if (
         constraint is not None
         and constraint.expected_value >= 0.86
         and "CONSTRAINT" not in already_asked
+        and "Q_CONSTRAINT" not in priority_ids
     ):
         priority_ids.append("Q_CONSTRAINT")
-    owner = by_id.get("Q_OWNER")
-    if (
-        owner is not None
-        and owner.expected_value >= 0.70
-        and "OWNERSHIP" not in already_asked
-    ):
+    if owner_is_priority and "Q_OWNER" not in priority_ids:
         priority_ids.append("Q_OWNER")
     recurrence = by_id.get("Q_RECURRENCE")
     if (
@@ -219,13 +235,7 @@ def select_questions(
         and "RECURRENCE" not in already_asked
     ):
         priority_ids.append("Q_RECURRENCE")
-    counter = by_id.get("Q_COUNTEREVIDENCE")
-    if (
-        questions_per_round >= 2
-        and counter is not None
-        and counter.expected_value >= 0.82
-        and "COUNTEREVIDENCE" not in already_asked
-    ):
+    if counter_is_priority and "Q_COUNTEREVIDENCE" not in priority_ids:
         priority_ids.append("Q_COUNTEREVIDENCE")
     dependency = by_id.get("Q_CRITICAL_PATH")
     if (

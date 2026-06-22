@@ -37,6 +37,7 @@ from lib.shared.errors import (
     CompanyOSError,
 )
 from lib.shared.ids import uuid7
+from services.domain.triggers import enqueue_trigger
 
 from services.reasoning.retrieval.assembler import (
     AccessContext,
@@ -112,7 +113,26 @@ def _early_idempotency_skip_enabled() -> bool:
 
 
 def _narrow_inferential_transaction_enabled() -> bool:
-    return os.environ.get("THINK_NARROW_INFERENTIAL_TX", "0") != "0"
+    return os.environ.get("THINK_NARROW_INFERENTIAL_TX", "1") != "0"
+
+
+def _representation_repair_triggers_enabled() -> bool:
+    return os.environ.get("THINK_REPRESENTATION_REPAIR_TRIGGERS", "1").strip().lower() in {
+        "1",
+        "on",
+        "true",
+        "yes",
+    }
+
+
+def _representation_repair_max_triggers(default: int = 3) -> int:
+    raw = os.environ.get("THINK_REPRESENTATION_REPAIR_MAX_TRIGGERS")
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
 
 
 @asynccontextmanager
@@ -187,10 +207,10 @@ async def think(
 
     Authoritative/deterministic triggers keep the legacy wide
     transaction because a few deterministic handlers intentionally do
-    side-effectful reasoning. Inferential triggers also default to the
-    wide transaction path so region advisory locks are held before LLM
-    reasoning; set THINK_NARROW_INFERENTIAL_TX=1 only when a stronger
-    freshness protocol is available.
+    side-effectful reasoning. Inferential triggers default to the
+    narrow transaction path so context/substrate locks are not held
+    across LLM reasoning; set THINK_NARROW_INFERENTIAL_TX=0 only when
+    a deployment needs the older strict-lock behavior.
 
     For tests that want to drive everything inside one pre-opened
     transaction (ROLLBACK at teardown), use `think_in_conn` instead —
@@ -435,6 +455,7 @@ async def _run_think_attempt(
             reason_for_trigger=reason_for_trigger,
             record=record,
             expanded_region=expanded_region,
+            read_pool=None if use_wide_transaction else pool,
             reason_cache=reason_cache,
         )
 
@@ -887,6 +908,7 @@ async def _record_apply_observability(
             + len(applied.get("relation_frame_ops", []))
             + len(applied["edge_ops"])
             + len(applied.get("ontology_gap_ops", []))
+            + len(applied.get("open_question_ops", []))
             + len(applied["act_ops"])
             + len(applied["resource_ops"])
         ),
@@ -933,6 +955,10 @@ async def _record_apply_observability(
         METRICS.inc_op(
             f"ontology_gap_{summary.get('op')}_{summary.get('proposed_edge_kind')}"
         )
+    for summary in applied.get("open_question_ops", []):
+        METRICS.inc_op(
+            f"open_question_{summary.get('op')}_{summary.get('question_type')}"
+        )
     for summary in applied.get("act_ops", []):
         METRICS.inc_op(summary.get("op", "act_unknown"))
     for summary in applied.get("resource_ops", []):
@@ -954,6 +980,197 @@ def _primitive_from_trigger(trigger: TriggerContext) -> str | None:
         if value:
             return str(value)
     return trigger.subkind or trigger.kind
+
+
+_REPRESENTATION_REPAIR_WARNING_PRIORITY: dict[str, int] = {
+    "prediction_lifecycle_not_exercised": 10,
+    "truth_pressure_absent_for_contestable_memory": 20,
+    "missing_curiosity_coverage": 30,
+    "company_question_coverage_too_thin": 40,
+    "missing_source_coverage": 50,
+    "missing_discovered_pattern_coverage": 60,
+    "selected_raw_evidence_too_low": 70,
+    "selected_model_support_runaway": 80,
+}
+
+_REPRESENTATION_REPAIR_INTENTS: dict[str, str] = {
+    "prediction_lifecycle_not_exercised": "exercise_prediction_lifecycle",
+    "truth_pressure_absent_for_contestable_memory": "seek_counterevidence",
+    "missing_curiosity_coverage": "cover_unresolved_unknowns",
+    "company_question_coverage_too_thin": "expand_company_question_coverage",
+    "missing_source_coverage": "attach_missing_source_evidence",
+    "missing_discovered_pattern_coverage": "represent_discovered_patterns",
+    "selected_raw_evidence_too_low": "revisit_raw_evidence_selection",
+    "selected_model_support_runaway": "split_or_absorb_overloaded_memory",
+}
+
+
+def _representation_repair_payloads_from_audit(
+    trigger: TriggerContext,
+    audit: Any,
+    *,
+    max_payloads: int | None = None,
+) -> list[dict[str, Any]]:
+    if trigger.kind == "T4" and trigger.subkind == "representation_repair":
+        return []
+    warnings = [
+        warning
+        for warning in (getattr(audit, "warnings", None) or [])
+        if isinstance(warning, dict)
+        and str(warning.get("code") or "") in _REPRESENTATION_REPAIR_WARNING_PRIORITY
+    ]
+    if not warnings:
+        return []
+    warnings.sort(
+        key=lambda warning: _REPRESENTATION_REPAIR_WARNING_PRIORITY[
+            str(warning.get("code") or "")
+        ]
+    )
+    limit = _representation_repair_max_triggers() if max_payloads is None else max_payloads
+    if limit <= 0:
+        return []
+
+    observation_ids = _trigger_observation_seed_ids(trigger)
+    model_ids = _trigger_model_seed_ids(trigger)
+    source_channels = list(getattr(audit, "source_channels", None) or [])
+    payloads: list[dict[str, Any]] = []
+    for warning in warnings[:limit]:
+        code = str(warning.get("code") or "")
+        intent = _REPRESENTATION_REPAIR_INTENTS[code]
+        repair_key = f"{getattr(audit, 'trigger_id')}:{code}"
+        payload: dict[str, Any] = {
+            "repair_key": repair_key,
+            "repair_intent": intent,
+            "audit_warning_code": code,
+            "audit_warning": warning,
+            "source_trigger_id": str(getattr(audit, "trigger_id")),
+            "source_run_id": str(getattr(audit, "run_id")),
+            "source_trigger_kind": str(getattr(audit, "trigger_kind")),
+            "seed_natural_text": _representation_repair_seed_text(
+                intent=intent,
+                warning=warning,
+                source_channels=source_channels,
+            ),
+        }
+        if trigger.seed_entity_ids:
+            payload["seed_entity_ids"] = list(trigger.seed_entity_ids)
+        if trigger.scope_actors:
+            payload["scope_actors"] = [str(actor_id) for actor_id in trigger.scope_actors]
+        if observation_ids:
+            payload["observation_ids"] = [str(observation_id) for observation_id in observation_ids]
+        if model_ids:
+            payload["model_ids"] = [str(model_id) for model_id in model_ids]
+        if trigger.region_spec:
+            payload["region_spec"] = trigger.region_spec
+        cascade_depth = _next_repair_cascade_depth(trigger)
+        if cascade_depth > 0:
+            payload["cascade_depth"] = cascade_depth
+        payloads.append(payload)
+    return payloads
+
+
+def _representation_repair_seed_text(
+    *,
+    intent: str,
+    warning: dict[str, Any],
+    source_channels: list[str],
+) -> str:
+    message = str(warning.get("message") or warning.get("code") or "representation gap")
+    channel_hint = ", ".join(source_channels[:4])
+    parts = [
+        f"Representation repair needed: {intent}.",
+        message,
+    ]
+    if channel_hint:
+        parts.append(f"Source channels: {channel_hint}.")
+    return " ".join(parts)
+
+
+def _trigger_observation_seed_ids(trigger: TriggerContext) -> list[UUID]:
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in [trigger.observation_id, *list(trigger.observation_ids or [])]:
+        if value is None or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _trigger_model_seed_ids(trigger: TriggerContext) -> list[UUID]:
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in [trigger.model_id, *list(trigger.member_model_ids or [])]:
+        if value is None or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _next_repair_cascade_depth(trigger: TriggerContext) -> int:
+    signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    raw = signature.get("cascade_depth", 0)
+    try:
+        return max(0, int(raw)) + 1
+    except (TypeError, ValueError):
+        return 1
+
+
+async def _enqueue_representation_repair_triggers(
+    *,
+    conn: asyncpg.Connection,
+    trigger: TriggerContext,
+    audit: Any,
+) -> list[dict[str, Any]]:
+    if not _representation_repair_triggers_enabled():
+        return []
+    payloads = _representation_repair_payloads_from_audit(trigger, audit)
+    queued: list[dict[str, Any]] = []
+    for payload in payloads:
+        repair_key = str(payload["repair_key"])
+        existing_id = await conn.fetchval(
+            """
+            SELECT id
+            FROM think_trigger_queue
+            WHERE tenant_id = $1
+              AND trigger_kind = 'T4'
+              AND trigger_subkind = 'representation_repair'
+              AND completed_at IS NULL
+              AND payload->>'repair_key' = $2
+            LIMIT 1
+            """,
+            audit.tenant_id,
+            repair_key,
+        )
+        if existing_id is not None:
+            queued.append(
+                {
+                    "id": str(existing_id),
+                    "repair_key": repair_key,
+                    "audit_warning_code": payload["audit_warning_code"],
+                    "deduped": True,
+                }
+            )
+            continue
+        trigger_id = await enqueue_trigger(
+            conn,
+            tenant_id=audit.tenant_id,
+            trigger_kind="T4",
+            trigger_subkind="representation_repair",
+            observation_id=trigger.observation_id,
+            model_id=trigger.model_id,
+            payload=payload,
+        )
+        queued.append(
+            {
+                "id": str(trigger_id),
+                "repair_key": repair_key,
+                "audit_warning_code": payload["audit_warning_code"],
+                "deduped": False,
+            }
+        )
+    return queued
 
 
 async def _publish_anomalies_and_enqueue_post_commit(
@@ -983,6 +1200,13 @@ async def _publish_anomalies_and_enqueue_post_commit(
         conn,
         anomalies=anomaly_dicts,
         applied_model_ids=applied.get("applied_model_ids") or [],
+        applied_open_question_ids=[
+            summary["open_question_id"]
+            for summary in applied.get("open_question_ops", [])
+            if isinstance(summary, dict)
+            and summary.get("op") == "insert"
+            and summary.get("open_question_id")
+        ],
     )
     await assert_tx_usable(conn, "post_commit_enqueue")
     return anomalies
@@ -1010,11 +1234,20 @@ async def _record_representation_audit(
     applied["representation_audit"] = audit.to_dict()
     await persist_representation_audit(conn, audit)
     await assert_tx_usable(conn, "representation_audit")
+    repair_triggers = await _enqueue_representation_repair_triggers(
+        conn=conn,
+        trigger=trigger,
+        audit=audit,
+    )
+    if repair_triggers:
+        applied["representation_repair_triggers"] = repair_triggers
+        await assert_tx_usable(conn, "representation_repair_enqueue")
     emit(
         "think.representation_audit",
         run_id=str(record.id),
         status=audit.budget_status,
         warnings=len(audit.warnings),
+        repair_triggers=len(repair_triggers),
         model_adaptiveness=audit.model_adaptiveness,
         edge_adaptiveness=audit.edge_adaptiveness,
         coverage_roles=audit.coverage_roles,
@@ -1065,6 +1298,7 @@ async def _finalize_successful_run(
             + len(applied.get("relation_frame_ops", []))
             + len(applied["edge_ops"])
             + len(applied.get("ontology_gap_ops", []))
+            + len(applied.get("open_question_ops", []))
             + len(applied["act_ops"])
             + len(applied["resource_ops"])
         ),
@@ -1093,6 +1327,7 @@ async def _run_once(
     record: ThinkRunRecord,
     expanded_region: set[tuple[str, str]] | None,
     embedder: Any | None = None,
+    read_pool: asyncpg.Pool | None = None,
     reason_cache: dict[str, Any] | None = None,
 ) -> ThinkRunOutcome:
     """
@@ -1116,6 +1351,7 @@ async def _run_once(
         trigger_kind_full=trigger_kind_full,
         expanded_region=expanded_region,
         embedder=embedder,
+        read_pool=read_pool,
     )
     raw = await build_raw_reasoning_output(
         conn=conn,

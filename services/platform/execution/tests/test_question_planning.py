@@ -268,6 +268,59 @@ def test_merge_llm_and_safety_questions_keeps_counterevidence_and_stronger_score
     assert goal.score == pytest.approx(0.83)
 
 
+def test_merge_llm_and_safety_questions_force_includes_high_value_ownership() -> None:
+    llm_questions = [
+        _question(
+            primitive="CONSTRAINT",
+            question_id="Q_CONSTRAINT",
+            question="Which constraint is binding?",
+            expected_value=0.90,
+            expected_cost=0.24,
+            score=0.78,
+        ),
+        _question(
+            primitive="COUNTEREVIDENCE",
+            question_id="Q_COUNTEREVIDENCE",
+            question="What counterevidence exists?",
+            expected_value=0.84,
+            expected_cost=0.30,
+            score=0.66,
+        ),
+        _question(
+            primitive="DEPENDENCY",
+            question_id="Q_CRITICAL_PATH",
+            question="Is this a dependency?",
+            expected_value=0.88,
+            expected_cost=0.24,
+            score=0.76,
+        ),
+        _question(
+            primitive="COMMITMENT",
+            question_id="Q_ACTIVE_COMMITMENT",
+            question="Which commitment changes?",
+            expected_value=0.78,
+            expected_cost=0.18,
+            score=0.72,
+        ),
+    ]
+    owner = _question(
+        primitive="OWNERSHIP",
+        question_id="Q_OWNER",
+        question="Who owns the next action?",
+        expected_value=0.72,
+        expected_cost=0.22,
+        score=0.65,
+    )
+
+    merged, added = question_planning.merge_llm_and_safety_questions(
+        llm_questions,
+        [owner],
+    )
+
+    assert added == 1
+    assert "OWNERSHIP" in {question.primitive for question in merged}
+
+
 @pytest.mark.asyncio
 async def test_candidate_questions_for_round_falls_back_when_disabled() -> None:
     trigger = _trigger("HarborRail renewal blocker has owner risk")

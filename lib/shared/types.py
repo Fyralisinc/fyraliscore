@@ -299,6 +299,7 @@ class ModelRow(_Strict):
     modality: Modality | None = None
     polarity: Polarity | None = None
     domain_tags: list[str] = Field(default_factory=list)
+    semantic_terms: list[str] = Field(default_factory=list)
     memory_grammar_version: str = "v1"
     confirmed_count: int = 0
     contested_count: int = 0
@@ -344,6 +345,7 @@ class ModelCreate(_Strict):
     contributing_models: list[UUID] = Field(default_factory=list)
     visible_to_subjects: bool = True
     domain_tags: list[str] = Field(default_factory=list)
+    semantic_terms: list[str] = Field(default_factory=list)
 
 
 # Post-Wave-0 A4 — sidecar table for freeform notes.

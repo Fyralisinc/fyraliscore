@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -197,17 +198,9 @@ def _build_question_read_plans(
             apply_reflective_rules=not state.cfg.reflective_rules_shadow_only,
         )
         sage_result = sage_results_by_qid.get(question.question_id)
-        sage_action: RetrievalAction | None = None
         action_gate_scope: Literal["all", "broad"] | None = None
         action_gate_reason: str | None = None
         if sage_result is not None:
-            sage_action = RetrievalAction(
-                question.question_id,
-                "sage_reader",
-                "synthesis_reader",
-                query=question.question,
-                budget=state.cfg.result_model_limit,
-            )
             action_gate_scope, action_gate_reason = sage_reader_action_gate(
                 sage_result,
                 gate_broad_actions=state.cfg.sage_reader_gate_broad_actions,
@@ -227,7 +220,6 @@ def _build_question_read_plans(
             _QuestionRetrievalPlan(
                 question=question,
                 sage_result=sage_result,
-                sage_action=sage_action,
                 action_gate_scope=action_gate_scope,
                 action_gate_reason=action_gate_reason,
                 actions_to_run=actions_to_run,
@@ -236,6 +228,22 @@ def _build_question_read_plans(
             )
         )
     return question_read_plans
+
+
+def _sage_reader_batch_uses_read_pool(
+    state: _InquiryBootstrapState,
+    *,
+    selected: list[InquiryQuestion],
+    read_pool: asyncpg.Pool | None,
+) -> bool:
+    return (
+        bool(state.cfg.sage_reader_enabled)
+        and state.sage_reader_runtime is not None
+        and bool(state.cfg.sage_reader_parallel_enabled)
+        and read_pool is not None
+        and len(selected) > 1
+        and int(state.cfg.sage_reader_parallelism) > 1
+    )
 
 
 def _append_sage_result(
@@ -260,8 +268,6 @@ def _append_sage_result(
             "source_pathway": "SAGE",
         }
     )
-    if plan.sage_action is not None:
-        state.all_actions.append(plan.sage_action)
     action_results.append(plan.sage_result)
     _add_result_to_reservoir(
         state.evidence_by_key,
@@ -472,28 +478,72 @@ async def _execute_inquiry_round(
             "no high-value unanswered questions remained",
         )
 
-    sage_results_by_qid, sage_batch_note = await _execute_sage_reader_actions_for_round(
-        selected,
-        trigger,
-        conn,
-        state.cfg,
-        reader=state.sage_reader_runtime,
-        substrate=state.sage_reader_substrate,
-        hypotheses=state.hypotheses,
-        read_pool=read_pool,
-        evidence_state=evidence_state_for_reader(reader_reconstruction_state),
-    )
+    sage_kwargs = {
+        "reader": state.sage_reader_runtime,
+        "substrate": state.sage_reader_substrate,
+        "hypotheses": state.hypotheses,
+        "read_pool": read_pool,
+        "evidence_state": evidence_state_for_reader(reader_reconstruction_state),
+    }
+    if (
+        state.cfg.read_prep_parallel_enabled
+        and _sage_reader_batch_uses_read_pool(
+            state,
+            selected=selected,
+            read_pool=read_pool,
+        )
+    ):
+        prep_started = time.perf_counter()
+        async with asyncio.TaskGroup() as task_group:
+            sage_task = task_group.create_task(
+                _execute_sage_reader_actions_for_round(
+                    selected,
+                    trigger,
+                    conn,
+                    state.cfg,
+                    **sage_kwargs,
+                )
+            )
+            motifs_task = task_group.create_task(
+                load_retrieval_motifs_for_questions(
+                    conn,
+                    trigger,
+                    selected,
+                    state.cfg,
+                )
+            )
+        sage_results_by_qid, sage_batch_note = sage_task.result()
+        learned_motifs = motifs_task.result()
+        append_stage_timing(
+            state.stage_timing_notes,
+            "round_read_prep_parallel",
+            prep_started,
+            round_index=round_index,
+            selected=len(selected),
+            sage_returned=len(sage_results_by_qid),
+            motifs=len(learned_motifs),
+        )
+    else:
+        sage_results_by_qid, sage_batch_note = (
+            await _execute_sage_reader_actions_for_round(
+                selected,
+                trigger,
+                conn,
+                state.cfg,
+                **sage_kwargs,
+            )
+        )
+        learned_motifs = await load_retrieval_motifs_for_questions(
+            conn,
+            trigger,
+            selected,
+            state.cfg,
+        )
     state.sage_reader_notes.setdefault("batches", []).append(
         {
             **sage_batch_note,
             "round_index": round_index,
         }
-    )
-    learned_motifs = await load_retrieval_motifs_for_questions(
-        conn,
-        trigger,
-        selected,
-        state.cfg,
     )
     question_read_plans = _build_question_read_plans(
         state,

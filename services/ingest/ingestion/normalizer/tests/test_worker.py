@@ -21,7 +21,7 @@ from services.ingest.ingestion.normalizer.models import NormalizedEnvelope
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
 
 
-_NOW = dt.datetime(2026, 5, 17, 12, 0, 0, tzinfo=dt.timezone.utc)
+_NOW = dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0)
 
 
 def _slack_payload(channel: str = "C01ALICE", text: str = "hi") -> dict:

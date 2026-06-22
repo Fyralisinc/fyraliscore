@@ -117,6 +117,35 @@ def test_customer_commitment_relation_preserves_observation_context() -> None:
     assert relation_metadata["evidence_observation_id"] == str(observation.id)
 
 
+def test_concrete_substrate_candidates_clear_auto_promotion_floors() -> None:
+    observation = _obs(
+        source_channel="jira:issue",
+        source_actor_ref=None,
+        text="STR-101 is blocking the Acme rollout.",
+        entities_mentioned=[
+            {
+                "type": "customer",
+                "name": "Acme Corp",
+            }
+        ],
+    )
+
+    specs = candidate_specs_from_observations([observation])
+
+    source_system = next(
+        spec for spec in specs if spec.kind == "system" and spec.fingerprint == "system:source:jira"
+    )
+    customer = next(spec for spec in specs if spec.kind == "customer")
+    commitment = next(
+        spec
+        for spec in specs
+        if spec.kind == "commitment" and spec.fingerprint == "commitment:jira:str-101"
+    )
+    assert source_system.confidence >= 0.60
+    assert customer.confidence >= 0.72
+    assert commitment.confidence >= 0.78
+
+
 def test_machine_source_actor_becomes_system_not_actor() -> None:
     observations = [
         _obs(

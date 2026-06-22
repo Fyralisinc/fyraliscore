@@ -229,6 +229,7 @@ async def plan_context(
     *,
     embedder: Any | None = None,
     llm_provider: LLMProvider | None = None,
+    read_pool: asyncpg.Pool | None = None,
 ) -> ContextPlan:
     """Build the retrieval/context plan used by Think reasoning.
 
@@ -243,6 +244,7 @@ async def plan_context(
         conn,
         embedder=embedder,
         llm_provider=retrieval_question_planning_provider(llm_provider),
+        read_pool=read_pool,
         mode=_plan_mode_for_trigger(trigger),
         config=_think_inquiry_config(),
     )
@@ -260,6 +262,7 @@ async def plan_context(
         retrieval_result,
         trigger,
         conn,
+        read_pool=read_pool,
     )
     reasoning_frame = ReasoningFrame.from_trigger(
         trigger,
@@ -287,6 +290,7 @@ async def assemble_reasoning_context(
     access_context: AccessContext | None = None,
     expanded_region: set[tuple[str, str]] | None = None,
     run_id: UUID | None = None,
+    read_pool: asyncpg.Pool | None = None,
 ) -> ReasoningContext:
     """Assemble the prompt-facing bundle and final allowed region.
 
@@ -308,6 +312,7 @@ async def assemble_reasoning_context(
         access,
         conn,
         config=_retrieval_config_for_trigger(trigger),
+        read_pool=read_pool,
     )
     _diag_log.warning(
         "augmentation.entry",
@@ -453,6 +458,8 @@ async def _maybe_expand_second_pass(
     retrieval_result: RetrievalResult,
     trigger: TriggerContext,
     conn: asyncpg.Connection,
+    *,
+    read_pool: asyncpg.Pool | None = None,
 ) -> RetrievalResult:
     try:
         decision = should_run_second_pass(
@@ -482,6 +489,7 @@ async def _maybe_expand_second_pass(
                 retrieval_result,
                 decision.suggested_dimensions,
                 conn,
+                read_pool=read_pool,
             )
             retrieval_result.notes["second_pass_decision"] = {
                 "run": decision.run,

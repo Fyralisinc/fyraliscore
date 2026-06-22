@@ -40,8 +40,15 @@ from services.reasoning.think.compiled_reasoning import (
     relation_frame_ops_from_obligations,
     relation_obligations_from_packet,
 )
-from services.reasoning.think.diff_schema import ClaimOp, EdgeOp, RawDiff
+from services.reasoning.think.diff_schema import (
+    ClaimOp,
+    EdgeOp,
+    FormationResolutionOp,
+    RawDiff,
+    RawDiffClaimsOnly,
+)
 from services.reasoning.think.llm_reason import llm_reason, ReasoningFailure
+from services.reasoning.think.llm_reason import _coerce_raw_diff
 from services.reasoning.think.prompt import build_prompt
 from services.reasoning.think.tests.conftest import ScriptedProvider
 
@@ -98,6 +105,63 @@ async def test_build_prompt_emits_all_sections():
     assert "prediction_deadline" in pair.system
     assert "Diff schema" in pair.system
     assert "`confidence_basis` MUST be either an existing Model id" in pair.system
+
+
+async def test_build_prompt_surfaces_model_formation_candidates():
+    tenant_id = uuid7()
+    actor_id = uuid7()
+    observations = [
+        SimpleNamespace(
+            id=uuid7(),
+            actor_id=actor_id,
+            trust_tier="attested_agent",
+            source_channel="slack:message",
+            content_text="Alice needs clearer owner boundaries before starting.",
+            occurred_at=datetime.now(timezone.utc),
+        ),
+        SimpleNamespace(
+            id=uuid7(),
+            actor_id=actor_id,
+            trust_tier="attested_agent",
+            source_channel="slack:message",
+            content_text="Alice was blocked waiting for a product decision.",
+            occurred_at=datetime.now(timezone.utc),
+        ),
+    ]
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=observations[0].id,
+    )
+    pair = build_prompt(trigger, ContextBundle(observations=observations))
+
+    assert "<model_formation_candidates>" in pair.user
+    assert "employee.support_need" in pair.user
+    assert "required_decision_count: 1" in pair.user
+    assert "formation_resolutions" in pair.system
+    assert "already_covered" in pair.system
+
+
+async def test_claims_only_diff_preserves_formation_resolutions_on_coerce():
+    candidate_id = f"formation:employee.capability:{uuid7()}:abc123"
+    compact = RawDiffClaimsOnly(
+        trigger_ref=uuid7(),
+        tenant_id=uuid7(),
+        claim_ops=[],
+        formation_resolutions=[
+            FormationResolutionOp(
+                candidate_id=candidate_id,
+                resolution="rejected",
+                rationale="The evidence repeats words but not a stable capability.",
+            )
+        ],
+        reasoning_trace="resolved formation candidate",
+    )
+
+    full = _coerce_raw_diff(compact)
+
+    assert full.formation_resolutions[0].candidate_id == candidate_id
+    assert full.formation_resolutions[0].resolution == "rejected"
 
 
 async def test_build_prompt_triggering_kind_instructions():
@@ -2474,6 +2538,67 @@ async def test_compiled_batch_skips_preapplied_mandatory_relations_for_noise_noo
     assert "mandatory_relation_frame_obligations=" not in (diff.reasoning_trace or "")
 
 
+async def test_compiled_batch_memory_to_raw_diff_emits_memory_lifecycle_ops():
+    tid = uuid7()
+    trig_id = uuid7()
+    obs_id = uuid7()
+    model_id = uuid7()
+    evidence_model_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tid,
+        observation_id=obs_id,
+        observation_ids=[obs_id],
+        seed_signature={"trigger_id": str(trig_id)},
+        seed_natural_text="Support confirmed that the escalation is resolved.",
+    )
+    candidate = {
+        "candidate_id": "MDC_LIFECYCLE",
+        "op_family": "memory_lifecycle",
+        "proposed_text": "Support confirmed that the escalation is resolved.",
+        "target_model_ids": [str(model_id)],
+        "evidence_model_ids": [str(model_id), str(evidence_model_id)],
+        "source_observation_ids": [str(obs_id)],
+        "suggested_edge_kinds": ["supports"],
+        "confidence": 0.74,
+    }
+    request = CompiledBatchMemoryDecisionRequest(
+        system="system",
+        user="user",
+        candidates=(candidate,),
+    )
+    decisions = BatchMemoryDecisionSet(
+        decisions=[
+            BatchMemoryCandidateDecision(
+                candidate_id="MDC_LIFECYCLE",
+                decision="accept",
+                operation="memory_lifecycle",
+                confidence=0.74,
+                lifecycle_action="confirm",
+                model_id=model_id,
+                resolution_outcome=True,
+                reason="The latest evidence directly confirms this memory.",
+            )
+        ],
+        reasoning_trace="Accepted lifecycle reconciliation.",
+    )
+
+    diff = request.to_raw_diff(decisions, trigger=trigger, trigger_ref=trig_id)
+
+    assert diff.claim_ops == []
+    assert diff.relation_claim_ops == []
+    assert len(diff.memory_lifecycle_ops) == 1
+    op = diff.memory_lifecycle_ops[0]
+    assert op.model_id == model_id
+    assert op.action == "confirm"
+    assert op.evidence_event_ids == [obs_id]
+    assert op.evidence_model_ids == [evidence_model_id]
+    assert op.resolution_outcome is True
+    assert op.metadata["source"] == "compiled_batch_memory_candidate"
+    assert op.metadata["candidate_id"] == "MDC_LIFECYCLE"
+    assert "accepted memory_lifecycle" in (diff.reasoning_trace or "")
+
+
 async def test_llm_reason_broad_path_skips_mandatory_relations_for_noise_noop(
     monkeypatch,
 ):
@@ -2876,6 +3001,7 @@ async def test_llm_reason_compiled_batch_memory_supports_updates_situations_and_
     diff, _ = await llm_reason(trigger, bundle, provider, max_tokens=2048)
 
     assert "claim_update" in provider.calls[0]["user"]
+    assert "memory_lifecycle" in provider.calls[0]["user"]
     assert "situation_and_edge" in provider.calls[0]["schema_hint"]
     assert provider.calls[0]["max_tokens"] == 1200
     assert len(diff.claim_ops) == 2

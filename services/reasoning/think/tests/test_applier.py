@@ -527,6 +527,54 @@ async def test_apply_batch_update_merges_supporting_events(
     assert float(row["confidence"]) == 0.68
 
 
+async def test_apply_claim_update_writes_semantic_terms_sidecar(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(conn, tenant, content_text="semantic terms")
+        mid = await _insert_applier_model(conn, tenant, oid, "refund replay model")
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="update",
+                    model_id=mid,
+                    changes={
+                        "semantic_terms": [
+                            "refund replay drift",
+                            "idempotency key collision",
+                        ],
+                    },
+                ),
+            ],
+        )
+
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+            )
+        terms = await conn.fetchval(
+            """
+            SELECT semantic_terms
+            FROM model_semantic_terms
+            WHERE model_id = $1
+            """,
+            mid,
+        )
+
+    assert result["claim_ops"][0]["op"] == "update"
+    assert "semantic_terms" in result["claim_ops"][0]["changed"]
+    assert terms == ["refund replay drift", "idempotency key collision"]
+
+
 async def test_apply_claim_update_coerces_iso_timestamp_fields(
     fresh_db,
     tenant,

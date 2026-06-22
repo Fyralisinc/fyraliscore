@@ -1845,13 +1845,13 @@ async def test_inquiry_runtime_uses_llm_for_question_planning(
         "COUNTEREVIDENCE",
         "DEPENDENCY",
     ]
-    assert [
-        question.question
-        for question in result.questions
-    ] == [
-        "What fresh evidence would show the Acme SSO issue is not blocking launch?",
-        "Which Acme launch dependency is actually blocked by the SSO permission edge case?",
+    assert [question.primitive for question in result.questions] == [
+        "OWNERSHIP",
+        "COUNTEREVIDENCE",
     ]
+    assert result.questions[1].question == (
+        "What fresh evidence would show the Acme SSO issue is not blocking launch?"
+    )
 
 
 async def test_fast_path_inquiry_stops_after_baseline(tx_conn, fresh_db, tenant):

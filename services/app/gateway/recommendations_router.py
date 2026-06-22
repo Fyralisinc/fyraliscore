@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from lib.shared.errors import CompanyOSError, ValidationError
 from services.app.gateway.auth import AuthContext
@@ -19,6 +21,12 @@ def build_recommendations_router() -> APIRouter:
         "/v1/recommendations",
         list_recommendations,
         methods=["GET"],
+    )
+    router.add_api_route(
+        "/v1/recommendations/stream",
+        stream_recommendations_endpoint,
+        methods=["GET"],
+        response_model=None,
     )
     router.add_api_route(
         "/v1/recommendations/{recommendation_id}/act",
@@ -51,6 +59,52 @@ def build_recommendations_router() -> APIRouter:
         methods=["POST"],
     )
     return router
+
+
+async def stream_recommendations_endpoint(request: Request) -> Any:
+    from lib.shared.events import subscribe, unsubscribe
+
+    auth = _auth(request)
+    if auth is None:
+        return _unauth("missing_bearer")
+
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=100)
+
+    async def _on_event(**payload: Any) -> None:
+        if payload.get("tenant_id") != auth.tenant_id:
+            return
+        actor_id = payload.get("actor_id")
+        if actor_id is not None and actor_id != auth.actor_id:
+            return
+        event_payload = {
+            key: str(value) if isinstance(value, UUID | datetime) else value
+            for key, value in payload.items()
+        }
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        queue.put_nowait(event_payload)
+
+    subscribe("recommendation.event", _on_event)
+
+    async def _events():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except TimeoutError:
+                    yield b": heartbeat\n\n"
+                    continue
+                data = json.dumps(payload, separators=(",", ":"), default=str)
+                yield f"event: recommendation\ndata: {data}\n\n".encode("utf-8")
+        finally:
+            unsubscribe("recommendation.event", _on_event)
+
+    return StreamingResponse(_events(), media_type="text/event-stream")
 
 
 async def list_recommendations(request: Request) -> JSONResponse:

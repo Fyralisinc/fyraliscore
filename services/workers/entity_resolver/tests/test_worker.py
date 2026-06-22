@@ -566,6 +566,66 @@ async def test_process_pending_finds_top_level_unresolved_phrases(
     assert len(provider.calls) == 1
 
 
+async def test_process_pending_clears_handled_unresolved_phrases(
+    resolver_db: asyncpg.Pool, tenant_id: UUID
+):
+    obs_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="NBI renewal is blocked on audit export proof",
+        unresolved_phrases=["NBI"],
+        unresolved_location="top_level",
+    )
+    provider = ScriptedProvider([
+        _resolution_json(type="customer", id="customer-nimbus", confidence=0.94)
+    ])
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+
+    assert await worker.process_pending(limit=1) == 1
+    assert await worker.process_observation(obs_id, tenant_id) == []
+    assert len(provider.calls) == 1
+
+    async with resolver_db.acquire() as conn:
+        content = await conn.fetchval(
+            "SELECT content FROM observations WHERE id = $1",
+            obs_id,
+        )
+    assert content["_unresolved_phrases"] == []
+
+
+async def test_process_pending_keeps_rate_limited_unresolved_phrases(
+    resolver_db: asyncpg.Pool, tenant_id: UUID
+):
+    obs_id = await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="NBI renewal is blocked on audit export proof",
+        unresolved_phrases=["NBI"],
+        unresolved_location="top_level",
+    )
+    provider = ScriptedProvider([])
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+        budget=ResolverLLMBudget(per_minute=0),
+    )
+
+    assert await worker.process_pending(limit=1) == 1
+    assert len(provider.calls) == 0
+
+    async with resolver_db.acquire() as conn:
+        content = await conn.fetchval(
+            "SELECT content FROM observations WHERE id = $1",
+            obs_id,
+        )
+    assert content["_unresolved_phrases"] == ["NBI"]
+
+
 # =====================================================================
 # Idempotency: same phrase + same obs → alias inserted once
 # =====================================================================

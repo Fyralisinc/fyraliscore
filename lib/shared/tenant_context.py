@@ -167,7 +167,8 @@ async def bind_tenant(
 async def current_tenant(conn: asyncpg.Connection) -> UUID | None:
     """Read app.current_tenant from the connection's current transaction.
 
-    Returns None if unset (which RLS policies treat as 'no rows visible').
+    Returns None if unset (which the current permissive-default RLS policies
+    treat as an unbound service/setup path).
     Useful for assertions in repos that want to verify a TenantContext
     was actually used."""
     raw = await conn.fetchval(

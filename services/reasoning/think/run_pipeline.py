@@ -19,6 +19,7 @@ import asyncpg
 from lib.llm.provider import LLMProvider
 from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
+from services.domain.models.formation import formation_candidate_ids
 from services.reasoning.retrieval.assembler import AccessContext
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.sage.inquiry_traces.emitter import (
@@ -119,6 +120,8 @@ def _raw_diff_op_count(diff: Any) -> int:
             "relation_frame_ops",
             "edge_ops",
             "ontology_gap_ops",
+            "open_question_ops",
+            "formation_resolutions",
             "act_ops",
             "resource_ops",
             "new_predictions",
@@ -201,6 +204,7 @@ async def prepare_reasoning_run_state(
     trigger_kind_full: str,
     expanded_region: set[tuple[str, str]] | None,
     embedder: Any | None,
+    read_pool: asyncpg.Pool | None = None,
 ) -> ReasoningRunState:
     from services.reasoning.relationships.adjudication import (
         load_candidate_for_trigger,
@@ -212,6 +216,7 @@ async def prepare_reasoning_run_state(
         conn,
         embedder=embedder,
         llm_provider=llm_provider,
+        read_pool=read_pool,
     )
     inquiry_result = context_plan.inquiry_result
     retrieval_result = context_plan.retrieval_result
@@ -244,6 +249,7 @@ async def prepare_reasoning_run_state(
         access_context=access_context,
         expanded_region=expanded_region,
         run_id=record.id,
+        read_pool=read_pool,
     )
     bundle = reasoning_context.bundle
     allowed_region = reasoning_context.allowed_region
@@ -280,6 +286,7 @@ async def prepare_reasoning_run_state(
             access_context=access_context,
             expanded_region=expanded_region,
             run_id=record.id,
+            read_pool=read_pool,
         )
         locked_region = list(locked_context.allowed_region)
         if set(locked_region) != set(allowed_region):
@@ -426,7 +433,8 @@ async def validate_raw_reasoning_output(
         retrieval_result,
         conn,
         allowed_region=raw.allowed_region,
-        strict_region=True,
+        strict_region=False,
+        formation_candidate_ids=formation_candidate_ids(trigger, bundle),
     )
     validated_context_use = summarize_context_use(bundle, validated)
     METRICS.observe_context_use(trigger_kind_full, validated_context_use)
@@ -454,6 +462,8 @@ async def validate_raw_reasoning_output(
         relation_frame_ops=len(validated.relation_frame_ops),
         edge_ops=len(validated.edge_ops),
         ontology_gap_ops=len(validated.ontology_gap_ops),
+        open_question_ops=len(validated.open_question_ops),
+        formation_resolutions=len(validated.formation_resolutions),
         act_ops=len(validated.act_ops),
         resource_ops=len(validated.resource_ops),
         dropped_ops=validated.dropped_op_count,
@@ -486,6 +496,8 @@ async def validate_raw_reasoning_output(
             "relation_frame_ops": validated.relation_frame_ops,
             "edge_ops": validated.edge_ops,
             "ontology_gap_ops": validated.ontology_gap_ops,
+            "open_question_ops": validated.open_question_ops,
+            "formation_resolutions": validated.formation_resolutions,
             "act_ops": validated.act_ops,
             "resource_ops": validated.resource_ops,
             "dropped_op_count": validated.dropped_op_count,

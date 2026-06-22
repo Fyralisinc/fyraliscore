@@ -81,7 +81,6 @@ from lib.embeddings.ollama import (
     OllamaDimensionMismatch,
     OllamaError,
 )
-from lib.shared.db import RowHydrationError
 from lib.shared.edge_registry import EDGE_REGISTRY, get_spec
 from lib.shared.errors import CompanyOSError, FalsifierInadequateError, ValidationError
 from lib.shared.ids import uuid7
@@ -98,7 +97,20 @@ from services.domain.models.calibration import apply_calibration
 from services.domain.models.batch import ModelBatchPlan, PlannedModel, plan_model_batch
 from services.domain.models.constructor import ConstructedModel, construct_model
 from services.domain.models.edges_repo import EdgesRepo
+from services.domain.models.events import (
+    MODEL_EVENT_ARCHIVED,
+    MODEL_EVENT_CREATED,
+    MODEL_EVENT_UPDATED,
+    emit_model_event,
+    emit_model_events,
+    model_semantic_snapshot,
+)
 from services.domain.models.falsifier import is_adequate_falsifier
+from services.domain.models.read_shapes import (
+    MODEL_ROW_SELECT_COLS,
+    MODEL_ROW_SELECT_SQL,
+    hydrate_model_row,
+)
 from services.domain.models.recommendations import validate_recommendation
 from services.domain.observations.events import NewObservationEvent, schedule_notify
 from services.domain.observations.state_change import (
@@ -170,30 +182,8 @@ _INSERT_COLS = (
 # Canonical read order — always select the same shape so Pydantic
 # hydration never has to reorder. "natural" is quoted because it's a
 # reserved keyword (Wave 0 migration quotes it too).
-_SELECT_COLS = (
-    "id", "tenant_id", "born_from_event_id",
-    "proposition", '"natural" AS natural', "embedding",
-    "scope_actors", "scope_entities", "scope_temporal",
-    "confidence", "activation", "falsifier",
-    "signal_readings", "reading_contestable",
-    "supporting_event_ids", "supporting_model_ids", "evidential_weight",
-    "status", "archived_at", "archive_reason",
-    "created_at", "last_retrieved_at", "retrieval_count",
-    "evaluate_at", "resolution_criteria", "contributing_models",
-    "visible_to_subjects",
-    "proposition_kind",
-    "claim_role", "abstraction_level", "time_mode", "modality", "polarity",
-    "domain_tags", "memory_grammar_version",
-    "confirmed_count", "contested_count", "last_confirmed_at",
-    "confidence_at_assertion",
-    "resolved_at", "resolution_outcome",
-    "activation_coefficient",
-    # Recommendation-kind columns (migration 0022). target_actor_id is
-    # GENERATED from the proposition JSONB; caused_act_change_id is
-    # written by the recommendation act handler.
-    "target_actor_id", "caused_act_change_id",
-)
-_SELECT_COLS_SQL = ", ".join(_SELECT_COLS)
+_SELECT_COLS = MODEL_ROW_SELECT_COLS
+_SELECT_COLS_SQL = MODEL_ROW_SELECT_SQL
 
 _BULK_MODEL_COPY_COLUMNS = [
     "id",
@@ -480,6 +470,50 @@ async def _insert_records_values(
             f"INSERT INTO {table_sql} ({columns_sql}) VALUES {', '.join(values_sql)}",
             *params,
         )
+
+
+async def _upsert_model_semantic_terms(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+    semantic_terms: Sequence[str],
+) -> None:
+    await conn.execute(
+        """
+        INSERT INTO model_semantic_terms (
+          tenant_id, model_id, semantic_terms, updated_at
+        ) VALUES ($1, $2, $3::text[], now())
+        ON CONFLICT (tenant_id, model_id) DO UPDATE
+        SET semantic_terms = EXCLUDED.semantic_terms,
+            updated_at = now()
+        """,
+        tenant_id,
+        model_id,
+        list(semantic_terms or ()),
+    )
+
+
+async def _bulk_upsert_model_semantic_terms(
+    conn: asyncpg.Connection,
+    rows: Sequence[ModelRow],
+) -> None:
+    if not rows:
+        return
+    await conn.executemany(
+        """
+        INSERT INTO model_semantic_terms (
+          tenant_id, model_id, semantic_terms, updated_at
+        ) VALUES ($1, $2, $3::text[], now())
+        ON CONFLICT (tenant_id, model_id) DO UPDATE
+        SET semantic_terms = EXCLUDED.semantic_terms,
+            updated_at = now()
+        """,
+        [
+            (row.tenant_id, row.id, list(row.semantic_terms or []))
+            for row in rows
+        ],
+    )
 
 
 async def _bulk_upsert_default_affordance_profiles(
@@ -1682,44 +1716,7 @@ async def _maybe_auto_accept(
 def _hydrate_row(record: asyncpg.Record) -> ModelRow:
     """asyncpg Record → ModelRow, tolerating JSONB str/bytes codecs
     and pgvector's numpy array return type."""
-    raw = dict(record)
-    for key in (
-        "proposition",
-        "scope_entities",
-        "scope_temporal",
-        "falsifier",
-        "signal_readings",
-        "resolution_criteria",
-    ):
-        v = raw.get(key)
-        if isinstance(v, (bytes, bytearray)):
-            v = v.decode()
-        if isinstance(v, str):
-            try:
-                raw[key] = json.loads(v)
-            except json.JSONDecodeError:
-                pass
-    emb = raw.get("embedding")
-    if emb is not None and not isinstance(emb, list):
-        if isinstance(emb, (bytes, bytearray)):
-            emb = emb.decode()
-        if isinstance(emb, str):
-            try:
-                raw["embedding"] = json.loads(emb)
-            except (json.JSONDecodeError, ValueError):
-                pass
-        else:
-            try:
-                raw["embedding"] = [float(x) for x in emb]
-            except (TypeError, ValueError):
-                pass
-    try:
-        return ModelRow.model_validate(raw)
-    except Exception as e:
-        raise RowHydrationError(
-            f"could not hydrate models row: {e}",
-            row_keys=list(record.keys()),
-        ) from e
+    return hydrate_model_row(record, wrap_errors=True)
 
 
 # ---------------------------------------------------------------------
@@ -1924,12 +1921,19 @@ class ModelsRepo:
             hydrated = [item["row"] for item in prepared]
             rows_by_id.update((row.id, row) for row in hydrated)
 
+            await _bulk_upsert_model_semantic_terms(conn, hydrated)
             await _bulk_sync_model_scope_sidecars(conn, hydrated)
             await _bulk_sync_model_composition_members(conn, hydrated)
             await _bulk_insert_model_relations(conn, hydrated)
             await _bulk_upsert_default_affordance_profiles(conn, hydrated)
             await _bulk_emit_model_state_changes(conn, hydrated)
             await _bulk_emit_model_audits(conn, hydrated)
+            await emit_model_events(
+                conn,
+                models=hydrated,
+                event_type=MODEL_EVENT_CREATED,
+                changed_fields=model_semantic_snapshot(hydrated[0]).keys(),
+            )
 
             if self._run_topology_on_insert:
                 for row in hydrated:
@@ -2029,6 +2033,7 @@ class ModelsRepo:
                 topo_anchor = None
 
             domain_tags = list(proposed.domain_tags or constructed.core.grammar.domain_tags)
+            semantic_terms = list(proposed.semantic_terms or ())
             created_at = datetime.now(timezone.utc)
             row = ModelRow(
                 id=planned.id,
@@ -2065,6 +2070,7 @@ class ModelsRepo:
                 modality=constructed.core.grammar.modality,
                 polarity=constructed.core.grammar.polarity,
                 domain_tags=domain_tags,
+                semantic_terms=semantic_terms,
                 memory_grammar_version="v1",
                 confirmed_count=0,
                 contested_count=0,
@@ -2136,6 +2142,7 @@ class ModelsRepo:
             conf_at_assertion=conf_at_assertion,
             embedding=prepared["embedding"],
             domain_tags=prepared["domain_tags"],
+            semantic_terms=prepared["semantic_terms"],
         )
         await self._sync_insert_sidecars_and_relations(conn, proposed, hydrated)
         await _bulk_upsert_default_affordance_profiles(conn, [hydrated])
@@ -2145,6 +2152,13 @@ class ModelsRepo:
             embedding=prepared["embedding"],
         )
         await self._emit_insert_observability(conn, hydrated)
+        await emit_model_event(
+            conn,
+            model=hydrated,
+            event_type=MODEL_EVENT_CREATED,
+            changed_fields=model_semantic_snapshot(hydrated).keys(),
+            source_event_id=hydrated.born_from_event_id,
+        )
         await self._publish_recommendation_insert(conn, hydrated)
         return hydrated
 
@@ -2196,6 +2210,7 @@ class ModelsRepo:
             "final_conf": _clip_confidence(calibrated_conf),
             "embedding": embedding,
             "domain_tags": list(proposed.domain_tags or grammar.domain_tags),
+            "semantic_terms": list(proposed.semantic_terms or ()),
         }
 
     async def _validate_scope_actors(
@@ -2231,6 +2246,7 @@ class ModelsRepo:
         conf_at_assertion: float,
         embedding: list[float],
         domain_tags: list[str],
+        semantic_terms: list[str],
     ) -> ModelRow:
         row = await conn.fetchrow(
             f"""
@@ -2286,7 +2302,14 @@ class ModelsRepo:
             domain_tags,
         )
         assert row is not None
-        return _hydrate_row(row)
+        hydrated = _hydrate_row(row)
+        await _upsert_model_semantic_terms(
+            conn,
+            tenant_id=hydrated.tenant_id,
+            model_id=hydrated.id,
+            semantic_terms=semantic_terms,
+        )
+        return hydrated.model_copy(update={"semantic_terms": semantic_terms})
 
     async def _sync_insert_sidecars_and_relations(
         self,
@@ -2713,6 +2736,14 @@ class ModelsRepo:
                 cause_id=cause_event_id,
                 changed_fields=diff_changed_fields(previous_state, new_state),
             )
+            await emit_model_event(
+                c,
+                model=hydrated,
+                event_type=MODEL_EVENT_ARCHIVED,
+                changed_fields=["status", "archived_at", "archive_reason"],
+                previous_snapshot=previous_state,
+                source_event_id=cause_event_id,
+            )
             return hydrated
 
         if conn is not None:
@@ -2974,6 +3005,14 @@ class ModelsRepo:
                     previous_state=previous_state,
                     cause_id=cause_event_id,
                     changed_fields=["confidence"],
+                )
+                await emit_model_event(
+                    c,
+                    model=row,
+                    event_type=MODEL_EVENT_UPDATED,
+                    changed_fields=["confidence"],
+                    previous_snapshot=previous_state,
+                    source_event_id=cause_event_id,
                 )
             return hydrated
 

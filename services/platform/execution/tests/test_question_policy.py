@@ -106,3 +106,29 @@ def test_select_questions_prioritizes_high_value_questions() -> None:
         "OWNERSHIP",
     ]
     assert {question.round_index for question in selected} == {3}
+
+
+def test_select_questions_preserves_owner_and_counterevidence_in_bounded_round() -> None:
+    candidates = [
+        _question("Q_OWNER", "OWNERSHIP", score=0.65, expected_value=0.72),
+        _question(
+            "Q_COUNTEREVIDENCE",
+            "COUNTEREVIDENCE",
+            score=0.69,
+            expected_value=0.84,
+            expected_cost=0.30,
+        ),
+        _question("Q_CONSTRAINT", "CONSTRAINT", score=0.81, expected_value=0.90),
+    ]
+
+    selected = question_policy.select_questions(
+        candidates,
+        questions_per_round=3,
+        round_index=1,
+        already_asked=set(),
+    )
+
+    assert [question.primitive for question in selected] == [
+        "OWNERSHIP",
+        "COUNTEREVIDENCE",
+    ]

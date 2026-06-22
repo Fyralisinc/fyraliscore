@@ -15,23 +15,26 @@ registries, compose `command:`, env dispatch) before landing here.
 
 ## Background workers (`services/workers/*`)
 
-The dominant cluster. Only `topology_sweeper` has a launcher; these have none
-(no compose service, no `scripts/run_*`). See [Workers](../architecture/workers.md)
-and the [feature table](feature-status.md).
+This used to be the dominant cluster. `housekeeper_worker`,
+`anomaly_processor_worker`, and `entity_resolver_worker` are now first-class
+compose/runtime-manifest processes. The remaining rows are either resolved
+history, opt-in expensive jobs, or maintenance bundles that still need a
+deliberate cadence decision. See [Workers](../architecture/workers.md) and the
+[feature table](feature-status.md).
 
 | File(s) | What it is | Why not in flow |
 |---------|------------|-----------------|
-| `anomaly_processor/{__init__,worker,detectors,significance,debounce,memory_fabric}.py` | Wave-4-B: 6 anomaly detectors → significance → debounce → `T3` enqueue + `signal_memory_fabric` writes | No launcher/compose; `AnomalyProcessor` constructed only in tests. The post-commit handoff that would feed it is a no-op. |
-| `entity_resolver/{__init__,worker,context}.py` | Deferred LLM resolution of `_unresolved_phrases` → aliases + `T1` re-enqueue | No launcher/compose; `process_observation` invoked only in tests. |
-| `deadline_resolver/{__init__,worker}.py` | Wave-4-A: poll overdue prediction Models → `T2 prediction_overdue` | No launcher/compose; reached only by tests/synthesis-harness. (`evaluators.py` is test-only.) |
-| `edge_drift/{__init__,worker}.py` | Samples `model_edges` vs. legacy array cols → drift metrics | No launcher/compose; only tests call `run_once`. The parity guard for the dual-write migration never runs. |
-| `maintenance/{__init__,daily,weekly,monthly,scheduler}.py` | Wave-4-D: daily decay/archival/cleanup, weekly relationship-maint + calibration + partition-extend, monthly vacuum | `MaintenanceScheduler` never instantiated outside tests → the whole upkeep subsystem is dormant. |
+| ~~`anomaly_processor/{__init__,worker,detectors,significance,debounce,memory_fabric}.py`~~ | Wave-4-B: 6 anomaly detectors → significance → debounce → `T3` enqueue + `signal_memory_fabric` writes | ✅ **Wired (2026-06-22).** `scripts/run_anomaly_processor_worker.py` now launches it as `anomaly_processor_worker` in compose/runtime manifest, with health/metrics wiring. |
+| ~~`entity_resolver/{__init__,worker,context}.py`~~ | Deferred LLM resolution of `_unresolved_phrases` → aliases + `T1` re-enqueue | ✅ **Wired (2026-06-22).** `scripts/run_entity_resolver_worker.py` now launches it as `entity_resolver_worker` in compose/runtime manifest. Poll mode clears handled unresolved phrases and leaves rate-limited phrases pending. |
+| ~~`deadline_resolver/{__init__,worker}.py`~~ | Wave-4-A: poll overdue prediction Models → `T2 prediction_overdue` | ✅ **Wired (2026-06-12).** Scheduled by `housekeeper_worker`. (`evaluators.py` remains test-only.) |
+| ~~`edge_drift/{__init__,worker}.py`~~ | Samples `model_edges` vs. legacy array cols → drift metrics | ✅ **Wired (2026-06-12).** Scheduled by `housekeeper_worker`. |
+| `maintenance/{__init__,daily,weekly,monthly,scheduler}.py` | Wave-4-D: daily decay/archival/cleanup, weekly relationship-maint + calibration + partition-extend, monthly vacuum | Partially wired via `housekeeper_worker`; selected lifecycle jobs run, while full daily/monthly bundles still need an explicit cadence decision. |
 
 ## Domain substrate
 
 | File | What it is | Why not in flow |
 |------|------------|-----------------|
-| `services/domain/models/decay.py` | `hourly_decay` + `archive_decayed` activation/decay UPDATEs | Imported solely by `maintenance/daily.py`, which has no launcher → Models never decay/auto-archive in prod. |
+| ~~`services/domain/models/decay.py`~~ | `hourly_decay` + `archive_decayed` activation/decay UPDATEs | ✅ **Wired (2026-06-12).** Scheduled by `housekeeper_worker`. |
 
 ## Platform (access control + execution)
 
@@ -68,7 +71,7 @@ See [Ingest](../architecture/ingest.md).
 
 | File | What it is | Why not in flow |
 |------|------------|-----------------|
-| `reasoning/retrieval/maintenance.py` | `background_relationship_maintenance` nightly worker | Imported only by `workers/maintenance/weekly.py`, which has no launcher/compose service. |
+| ~~`reasoning/retrieval/maintenance.py`~~ | `background_relationship_maintenance` nightly worker | ✅ **Wired (2026-06-12).** Called through Housekeeper's `relationship_maintenance` job. |
 
 ## Product surfaces
 
@@ -83,10 +86,11 @@ so they're **runtime-orphans** on this branch. See [Legacy & test-only](dead-leg
 
 | Migration | Table(s) | Why orphaned |
 |-----------|----------|--------------|
-| `0005_entity_review_queue.sql` | `entity_review_queue` | Only writer is the not-wired `entity_resolver` worker. |
-| `0009_signal_memory_fabric.sql` | `signal_memory_fabric` | Only owners are the not-wired `anomaly_processor` + `maintenance`. |
+| ~~`0005_entity_review_queue.sql`~~ | `entity_review_queue` | ✅ **No longer runtime-orphaned (2026-06-22).** Written by the deployed `entity_resolver_worker`. |
+| ~~`0009_signal_memory_fabric.sql`~~ | `signal_memory_fabric` | ✅ **No longer runtime-orphaned (2026-06-22).** Written/promoted by the deployed `anomaly_processor_worker`; maintenance decay remains a separate scheduling decision. |
 | `0013_orphan_log.sql` | `orphan_log` | Only writer is the not-wired `maintenance/daily.py`. |
 
-> **TODO(human):** For each cluster, decide *wire it up* (add launcher/route/flag)
-> vs. *leave staged* vs. *remove*. The worker fabric is one decision (deploy the
-> Wave-4 workers) that clears most of this page at once.
+> **TODO(human):** For each remaining cluster, decide *wire it up*
+> (add launcher/route/flag) vs. *leave staged* vs. *remove*. The worker-fabric
+> default path is now deployed; the open decisions are mostly expensive jobs and
+> full maintenance cadence.

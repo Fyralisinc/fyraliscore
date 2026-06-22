@@ -154,7 +154,7 @@ async def test_garbage_envelope_does_not_stall_consumer(monkeypatch):
             tenant_id=bad_tenant,
             raw_s3_key=f"dev/slack/{bad_tenant}/2026-05/{bad_hash[:2].lower()}/{bad_hash.lower()}.json",
             content_hash=bad_hash,
-            ingested_at=dt.datetime(2026, 5, 17, 12, 0, 0, tzinfo=dt.timezone.utc),
+            ingested_at=dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0),
             ingress_kind="webhook",
         )
         raw_producer.produce(
@@ -185,7 +185,7 @@ async def test_garbage_envelope_does_not_stall_consumer(monkeypatch):
             tenant_id=good_tenant,
             raw_s3_key=good_key,
             content_hash=good_hash,
-            ingested_at=dt.datetime(2026, 5, 17, 12, 0, 0, tzinfo=dt.timezone.utc),
+            ingested_at=dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0),
             ingress_kind="webhook",
         )
         raw_producer.produce(

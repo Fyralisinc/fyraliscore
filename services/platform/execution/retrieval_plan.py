@@ -178,7 +178,10 @@ def compile_static_retrieval_plan(
                 question.question_id,
                 "semantic",
                 "owner_evidence",
-                query=f"owner responsible assigned owns dependency {seed_text}",
+                query=(
+                    "owner responsible assigned owns dependency "
+                    f"{q} {seed_text}"
+                ).strip(),
                 budget=semantic_budget,
             ),
         ]

@@ -25,6 +25,14 @@ _SERVER_DSN = os.environ.get(
 async def _make_db() -> str:
     if "://" not in _SERVER_DSN:
         pytest.skip("no DATABASE_URL")
+    from services.platform.extensions.tests._migration_test_helpers import (
+        require_pgvector_server_privilege_or_skip,
+    )
+
+    await require_pgvector_server_privilege_or_skip(
+        _SERVER_DSN,
+        feature="extension governance",
+    )
     admin = await asyncpg.connect(_SERVER_DSN)
     try:
         await admin.execute('DROP DATABASE IF EXISTS fyralis_m5_test WITH (FORCE)')
@@ -38,19 +46,20 @@ async def _make_db() -> str:
 async def wired():
     import lib
     from fastapi import FastAPI
-    from lib.shared.migrations import apply_migrations_dir, schema_bootstrap_lock
     from lib.extensions.host_api.v1 import Capabilities
     from services.app.gateway.db_bootstrap import create_gateway_pool
     from services.app.gateway.extension_router import build_extension_router
     from services.platform.extensions.identity import ExtensionOAuthClientsRepo
     from services.platform.extensions.grants import ExtensionGrantsRepo
+    from services.platform.extensions.tests._migration_test_helpers import (
+        apply_core_migrations_or_skip,
+    )
 
     dsn = await _make_db()
     conn = await asyncpg.connect(dsn)
     try:
         core = pathlib.Path(lib.__file__).resolve().parents[1] / "db" / "migrations"
-        async with schema_bootstrap_lock(conn):
-            await apply_migrations_dir(conn, core)
+        await apply_core_migrations_or_skip(conn, core, feature="extension governance")
     finally:
         await conn.close()
 

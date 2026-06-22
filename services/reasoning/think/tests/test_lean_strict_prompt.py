@@ -83,3 +83,16 @@ def test_lean_keeps_edge_kind_vocabulary(monkeypatch):
     lean = build_prompt(_t1(), ContextBundle(), lean_output_contract=True)
     assert "superseded_by" in lean.system
     assert "contributes_to_resolution" in lean.system
+
+
+def test_prompt_requests_specific_top_level_semantic_terms() -> None:
+    full = build_prompt(_t1(), ContextBundle(), lean_output_contract=False)
+    compact = build_prompt(_t1(), ContextBundle(), claims_only=True)
+
+    for system in (full.system, compact.system):
+        assert '"semantic_terms": ["<specific lexical phrase>", ...]' in system
+        assert "top-level" in system
+        assert "exact `domain_tags`" in system
+        assert "UUIDs" in system
+        assert "scope" in system
+    assert "specific belief phrases" in compact.system
