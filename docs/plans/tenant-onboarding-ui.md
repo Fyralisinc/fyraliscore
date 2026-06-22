@@ -217,9 +217,10 @@ hand-rolling SAML**.
     **Organizations** feature as the foundational primitive for B2B multi-tenant login
     `[R0]`, with org-scoped invitations as the recommended provisioning mechanism `[R1]`.
     If hosted is acceptable, this is the fastest path.
-- **Decision driver:** data-residency / self-hosting requirements. If Fyralis must keep
-  identity in-house → **Ory Polis**. If speed-to-market dominates and hosted is fine →
-  **WorkOS or Auth0 Organizations**. *(Open question Q1.)*
+- **Decision (2026-06-22): Ory Polis (self-host).** Chosen for fit with Fyralis's
+  self-hosted, secret-sovereign posture and to keep customers' directory data in-house; the
+  team accepts operating the identity service. (WorkOS / Auth0 Organizations remain the
+  hosted fallback if operational burden proves too high.)
 
 ### 5.2 Identity model (new tables, see §8)
 - **Org = tenant** (reuse `tenants`; add org profile columns or a sidecar table).
@@ -298,13 +299,12 @@ way to onboard connectors. Two reference implementations, same shape:
   `onSuccess` returns a short-lived `public_token` → backend exchanges it for a permanent
   `account_token`, which is **stored server-side and never held client-side** `[R19][R20]`.
 
-**Recommendation for Fyralis:** mirror this **server-driven session-token pattern** for the
-in-house catalog — the long-lived credential stays in `FernetSecretStore`, only a
-short-lived token reaches the browser. Whether to *embed Nango/Merge* vs. *build the
-in-house equivalent* is a build-vs-buy call (Open question Q2); note that API auth is
-notoriously deep — Nango spent **three years** implementing auth for 800+ APIs because every
-API has non-standard quirks `[R5]`, which argues for embedding a vendor for the long tail
-even if core sources are in-house.
+**Decision (2026-06-22): build the in-house equivalent.** Mirror this **server-driven
+session-token pattern** for the in-house catalog — the long-lived credential stays in
+`FernetSecretStore`, only a short-lived token reaches the browser. The 26 connectors already
+exist, so the widget is thin and no vendor is needed. Caveat to keep in view: API auth is
+notoriously deep — Nango spent **three years** on auth for 800+ APIs `[R5]` — so revisit
+embedding Nango/Merge only if Fyralis later needs to add many new sources quickly.
 
 ### 6.5 Connection health & re-auth
 - Surface per-connection status (healthy / needs-reauth / syncing / error) — there is no
@@ -325,13 +325,10 @@ even if core sources are in-house.
 ## 7. How to build it (architecture)
 
 ### 7.1 Frontend
-- **Stack:** reuse the existing **React + Vite** pattern from `../fyraliscore-demo/ui`. Two
-  viable homes:
-  - **(Recommended)** a dedicated onboarding/admin SPA served by the gateway, mounted via
-    the existing **`extensions.py:mount_extension_routers`** seam, sharing the bearer-session
-    auth.
-  - Or co-locate within the demo overlay repo if the team prefers to keep all UI there
-    (Open question Q4).
+- **Stack:** reuse the existing **React + Vite** pattern from `../fyraliscore-demo/ui`.
+  **Decision (2026-06-22):** a **dedicated onboarding/admin SPA** served by the gateway,
+  mounted via the existing **`extensions.py:mount_extension_routers`** seam, sharing the
+  bearer-session auth — not folded into the single-tenant demo harness.
 - **Wizard as a state machine.** Model the flow with an explicit FSM (e.g. XState):
   states = `signup → org → identity → connect → sync → activated`, with `skip`/`resume`
   transitions. **Server-driven step state** (the backend owns "what step is this tenant
@@ -425,18 +422,30 @@ demonstrable activation loop.
 
 ---
 
-## 10. Open questions
+## 10. Decisions & open questions
 
-- **Q1 — Identity build-vs-buy:** self-hosted **Ory Polis** vs hosted **WorkOS/Auth0
-  Organizations**? Driven by data-residency/self-hosting requirements `[R0][R3][R4]`.
-- **Q2 — Connector widget build-vs-buy:** build the in-house session-token connect for all
-  26, or embed **Nango/Merge** for the long tail given how deep API auth is `[R5]`?
-- **Q3 — User vs actor model:** introduce a separate `users` table, or extend `actors`
-  (`human_internal`) with login capability? Affects every downstream join.
-- **Q4 — UI home:** dedicated onboarding/admin SPA via the gateway extension seam, or extend
-  the existing `fyraliscore-demo` SPA repo?
-- **Q5 — Org-wide consent depth:** which sources actually support admin/workspace-wide
-  consent vs per-user only, and how is the "coverage gap" represented to the admin?
+**Resolved 2026-06-22:**
+
+- **Q1 — Identity → Ory Polis (self-host).** Self-hostable SAML 2.0 / OIDC + SCIM 2.0,
+  abstracting SSO as an OAuth flow `[R3][R4]`. Chosen for fit with Fyralis's fully
+  self-hosted, secret-sovereign posture (own Kafka / secret store) and to keep enterprise
+  customers' directory data in-house. Accepted trade-off: Fyralis operates the identity
+  service.
+- **Q2 — Connector auth → build in-house.** The 26 connectors already exist; the connect
+  widget is a thin **server-driven session-token** flow over the existing
+  `FernetSecretStore` — no new vendor, credentials stay first-party. Revisit Nango/Merge
+  *only* if rapidly expanding well beyond the current 26 sources `[R5]`.
+- **Q3 — User model → separate `users` table linked to `actors`.** Decouples login identity
+  from the signal-participant / AI-agent `actors` model; enables `email:tenant` uniqueness
+  and clean joins (see §8).
+- **Q4 — UI home → dedicated onboarding/admin SPA** (React + Vite) mounted via
+  `services/app/gateway/extensions.py:mount_extension_routers`, sharing bearer-session auth.
+
+**Still open:**
+
+- **Q5 — Org-wide consent depth:** which of the 26 sources actually support
+  admin/workspace-wide consent vs per-user only, and how the "coverage gap" is represented
+  to the admin. *(Pending a per-connector audit.)*
 
 ---
 
