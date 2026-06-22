@@ -147,17 +147,27 @@ flowchart TD
 ```
 
 ### Phase 0 — Sign up / Sign in
-- Email + password and/or social (Google/Microsoft) for the **first** user (the org
-  creator). Enterprise SSO is configured *after* the org exists (chicken-and-egg: you need
-  an org to attach an SSO connection to).
+- Email + password and/or social (Google/Microsoft) for the **first** user, followed by
+  **email verification** (magic link / OTP) before the account is usable. Enterprise SSO is
+  configured *after* the org exists (chicken-and-egg: you need an org to attach an SSO
+  connection to).
+- This first user is a **pending owner** (see §5.0) — owner powers (inviting the company,
+  connecting org-wide sources) stay locked until the domain is verified in Phase 1.
 - **JIT** path: once SSO is configured, subsequent users from the verified domain are
   provisioned automatically on first enterprise login `[R2]`.
 
 ### Phase 1 — Create organization (tenant bootstrap)
-- Capture org name, primary domain, and seed the creator as `owner` (existing role).
-- **Domain verification** (DNS TXT or email) — gates JIT and domain-based auto-join.
-- Backed by a new `POST /tenants` provisioning endpoint (§7) that seeds the `tenants` row
-  + owner actor + role grant in one transaction.
+- Capture org name, primary domain, and seed the creator as a **pending `owner`**.
+- **Domain verification** (DNS TXT or `admin@`/`postmaster@` email) **confirms ownership**
+  and unlocks owner powers; it also gates JIT and domain-based auto-join (see §5.0). If the
+  domain is **already claimed**, the signup instead joins as a **member pending admin
+  approval** (org-squat defense).
+- **Designate the CEO:** the verified owner/admin maps which user is "the CEO" (or it's taken
+  from an IdP `title` claim once SSO is on), binding the seeded CEO actor to a real user — the
+  installer need not be the CEO.
+- Backed by a new `POST /tenants` provisioning endpoint (§7) that seeds the `tenants` row +
+  owner actor (pending) + role grant in one transaction, flipping the owner to **verified** on
+  domain proof.
 
 ### Phase 2 — Identity & access setup
 - **Enterprise SSO setup UX**: pick IdP, exchange metadata (upload XML / paste URL /
@@ -204,6 +214,56 @@ flowchart TD
 
 This is the foundational greenfield layer. The verified research strongly favors **not
 hand-rolling SAML**.
+
+### 5.0 Identity & authority assurance (who is the owner — and the CEO?)
+
+**"CEO" is an authority/role claim, not an identity claim.** The system never tries to
+*prove someone is the CEO*; it verifies **control** and trusts the org's **own authority**.
+Keep two questions separate, assured by different layers:
+
+- **Identity proofing** — does this person control this email / are they who the corporate
+  directory says? → email verification, then enterprise SSO/IdP.
+- **Authority** — may they act as org owner, and who is the exec? → **domain control** and
+  IdP/admin assertion, never self-declaration.
+
+**Assurance ladder** (each layer adds what the one below cannot):
+
+| Layer | Proves | Limit |
+|---|---|---|
+| Email verification (magic link / OTP) | Controls that inbox | Says nothing about role |
+| **Domain verification** (DNS TXT or `admin@`/`postmaster@`) | Controls the org domain → legitimate org authority | Org ownership, not "is the CEO" |
+| Enterprise SSO / IdP (Ory Polis, Q1) | Customer's own directory vouches for the person | Needs SSO configured |
+| IdP `title`/group claim + SCIM | Authoritative role/title from corporate HR/IT | Not all orgs populate it |
+| Admin designation | A verified admin maps "this user = CEO actor" (auditable) | Trusts the (domain-verified) admin |
+| Human / white-glove (sales-assist) | CS confirms the exec out-of-band | Manual; reserve for high-value |
+
+**The anchor is domain verification, not email** — whoever controls `acme.com` DNS is, by
+construction, an IT/admin authority (the model Google Workspace, Slack Enterprise, Vanta, and
+WorkOS all use).
+
+**Two model changes this forces:**
+
+1. **Ownership is conditional.** The first `@domain` signup is a **pending owner** — it
+   cannot invite the company or connect org-wide sources until the **domain is verified**
+   (Phase 1). Owner powers unlock on domain proof, not on signup.
+2. **Installer ≠ CEO.** An EA / IT admin / chief-of-staff often onboards *on behalf of* the
+   CEO. Separate the two actors:
+   - **Tenant owner/admin** = whoever proves domain control (email + domain + ideally SSO +
+     MFA).
+   - **"The CEO"** = a distinct **designated actor**, assigned by the verified admin and/or
+     taken from an IdP `title` claim, whose own identity is SSO-assured on first login (JIT).
+     This binds the seeded CEO actor (`actors.human_internal`) to a real authenticated user
+     instead of a self-typed email — load-bearing because Fyralis's product surfaces are
+     CEO-facing.
+
+**Org-squatting defense** (the failure mode of "first signup owns the org"):
+
+- Domain verification gates ownership (above).
+- If a domain is already claimed, new same-domain signups join as **members pending admin
+  approval**, not a competing org.
+- Notify existing admins on same-domain signups; a domain-verified admin can reclaim/override.
+- **MFA / step-up** on the owner account and on sensitive actions (org-wide connect, SSO
+  change).
 
 ### 5.1 Build-vs-buy recommendation
 - **Recommended: adopt an SSO/SCIM abstraction rather than implement SAML directly.**
@@ -416,8 +476,9 @@ embedding Nango/Merge only if Fyralis later needs to add many new sources quickl
 
 | Table | Purpose |
 |---|---|
-| `users` (+ `user_actor_links`) | Humans who log in; link to `actors`; `email:tenant` unique |
-| `org_profiles` (or columns on `tenants`) | Company name, domain(s), verification state |
+| `users` (+ `user_actor_links`) | Humans who log in; link to `actors` (incl. the **designated CEO actor**); `email:tenant` unique |
+| `org_profiles` (or columns on `tenants`) | Company name, domain(s), domain-verification state, **owner status (pending/verified)**, designated CEO |
+| `domain_join_requests` | Same-domain signups awaiting admin approval (org-squat defense, §5.0) |
 | `sso_connections` | Per-org IdP type, metadata, status, last-tested |
 | `scim_endpoints` | Per-org SCIM base URL/token, last-sync |
 | `invitations` | Email, role, token, status, expiry |

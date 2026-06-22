@@ -171,8 +171,8 @@ const TEAM_SIZE = 5;     // mock member count for per-user rosters
 
 const state = {
   step: 0,
-  user: { email: null, authed: false },
-  org:  { name: null, domain: null, domainVerified: false, role: null },
+  user: { email: null, authed: false, emailVerified: false },
+  org:  { name: null, domain: null, domainVerified: false, role: null, ownerStatus: 'none', ceo: null }, // ownerStatus: none|pending|verified
   identity: { sso: 'none', scim: false, invites: [] },   // sso: none|configured|tested
   connections: {},  // key -> {grain, status, members?:{connected,total}}
   sync: {},         // key -> {pct, phase}   phase: connecting|syncing|landed
@@ -214,9 +214,9 @@ function renderSteps(){
 
 function renderChecklist(){
   const items = [
-    ['Account created', state.user.authed],
-    ['Organization set up', !!state.org.name && state.org.domainVerified],
-    ['Identity configured', state.identity.sso!=='none' || state.identity.invites.length>0],
+    ['Email verified', state.user.authed && state.user.emailVerified],
+    ['Owner confirmed (domain)', !!state.org.name && state.org.domainVerified],
+    ['Identity / CEO set', state.identity.sso!=='none' || state.identity.invites.length>0 || !!state.org.ceo],
     ['First source connected', connectedCount()>0],
     ['Signals landing 🎉', state.activated],
   ];
@@ -232,14 +232,20 @@ function renderStage(){
 
 /* Phase 0 — account */
 function stepAccount(){
+  if(state.user.authed && !state.user.emailVerified){
+    return `<h1>Verify your email</h1>
+      <p class="sub">We sent a magic link to <b>${state.user.email}</b>. Verifying proves you control the inbox — the first assurance layer (§5.0). It says nothing about role yet.</p>
+      <div class="card"><h3>📧 Check your inbox</h3><p class="h">After verifying you become a <b>pending owner</b> — owner powers stay locked until you verify your <i>domain</i> in Phase 1.</p>
+      <div class="actions"><span class="spacer"></span><button class="btn" data-action="verify-email">Simulate clicking the link</button></div></div>`;
+  }
   if(state.user.authed){
     return `<h1>You're signed in</h1>
-      <p class="sub">${state.user.email} · the org creator. Enterprise SSO is configured later (you need an org first).</p>
-      <div class="card"><h3>✓ Account ready</h3><p class="h">Next: create your organization.</p>
+      <p class="sub">${state.user.email} · <span class="pill warn">pending owner</span> — ownership is confirmed by <b>domain verification</b>, not email (§5.0).</p>
+      <div class="card"><h3>✓ Email verified</h3><p class="h">Next: create your organization and verify your domain to unlock owner powers.</p>
       <div class="actions"><span class="spacer"></span><button class="btn" data-action="goto" data-step="1">Continue →</button></div></div>`;
   }
   return `<h1>Create your account</h1>
-    <p class="sub">Hybrid onboarding: self-serve signup → guided setup. This first user becomes the org <b>owner</b>.</p>
+    <p class="sub">Hybrid onboarding: self-serve signup → guided setup. This first user becomes a <b>pending owner</b> — confirmed only after domain verification (§5.0). The installer need not be the CEO.</p>
     <div class="card">
       <label>Work email</label>
       <input id="email" placeholder="you@company.com" value="ceo@acme.com"/>
@@ -258,7 +264,7 @@ function stepAccount(){
 function stepOrg(){
   if(!state.org.name){
     return `<h1>Create your organization</h1>
-      <p class="sub">Seeds the tenant + you as <b>owner</b>. Domain verification gates JIT &amp; auto-join.</p>
+      <p class="sub">Seeds the tenant + you as a <b>pending owner</b>. <b>Domain verification confirms ownership</b> and unlocks owner powers (§5.0).</p>
       <div class="card">
         <label>Organization name</label>
         <input id="orgname" placeholder="Acme Inc." value="Acme Inc."/>
@@ -268,18 +274,20 @@ function stepOrg(){
       </div>`;
   }
   const v = state.org.domainVerified;
+  const ownerPill = v ? `<span class="pill ok">owner · verified</span>` : `<span class="pill warn">pending owner</span>`;
   return `<h1>${state.org.name}</h1>
-    <p class="sub">Tenant provisioned · you are <span class="pill ok">owner</span></p>
+    <p class="sub">Tenant provisioned · ${ownerPill}</p>
     <div class="card">
       <h3>Verify domain — ${state.org.domain}</h3>
-      <p class="h">Add this TXT record so we can offer SSO &amp; domain auto-join.</p>
-      <div class="scopelist"><div><span class="pill">TXT</span> fyralis-verify=${'9f3a1c'} </div></div>
+      <p class="h">Whoever controls <b>${state.org.domain}</b> DNS is the legitimate org authority — this, not your email, is what confers <b>owner powers</b> (invite the company, connect org-wide sources).</p>
+      <div class="scopelist"><div><span class="pill">TXT</span> fyralis-verify=9f3a1c</div></div>
       <div class="actions">
-        ${v ? `<span class="pill ok">✓ Domain verified</span>` : `<button class="btn" data-action="verify-domain">I've added the record · Verify</button>`}
+        ${v ? `<span class="pill ok">✓ Domain verified · owner confirmed</span>` : `<button class="btn" data-action="verify-domain">I've added the record · Verify</button>`}
         <span class="spacer"></span>
-        <button class="btn ${v?'':'ghost'}" data-action="goto" data-step="2" ${v?'':''}>Continue →</button>
+        <button class="btn ${v?'':'ghost'}" data-action="goto" data-step="2">Continue →</button>
       </div>
-    </div>`;
+    </div>
+    ${v?'':`<div class="empty">Until the domain is verified you're a <b>pending owner</b>: inviting the company and connecting org-wide sources stay locked. (If this domain were already claimed, you'd instead join as a member pending admin approval — org-squat defense.)</div>`}`;
 }
 
 /* Phase 2 — identity & access */
@@ -318,6 +326,15 @@ function stepIdentity(){
       ${id.invites.length? `<div class="hr"></div>` + id.invites.map(iv=>`<div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0"><span>${iv.email}</span><span class="pill">${iv.role} · invited</span></div>`).join('') : ''}
     </div>
 
+    <div class="card">
+      <div class="top" style="display:flex;justify-content:space-between"><h3>Designate the CEO</h3>${state.org.ceo?`<span class="pill ok">★ ${state.org.ceo}</span>`:`<span class="pill">not set</span>`}</div>
+      <p class="h">The installer need not be the CEO. Map the seeded CEO actor to a real, SSO-assured user — or take it from an IdP <code>title</code> claim once SSO is on (§5.0).</p>
+      <div class="row">
+        <select id="ceopick">${[state.user.email, ...id.invites.map(i=>i.email)].filter(Boolean).map(e=>`<option ${state.org.ceo===e?'selected':''}>${e}</option>`).join('')}</select>
+        <button class="btn sm" data-action="designate-ceo" style="flex:0 0 auto">Designate as CEO</button>
+      </div>
+    </div>
+
     <div class="actions"><button class="btn ghost" data-action="goto" data-step="1">← Back</button><span class="spacer"></span>
       <button class="btn ghost" data-action="goto" data-step="3">Skip for now</button>
       <button class="btn" data-action="goto" data-step="3">Continue →</button></div>`;
@@ -330,7 +347,10 @@ function stepConnect(){
     const badge = `<span class="pill ${src.grain}">${grainLabel(src.grain)}</span>`;
     let body, action;
     if(!c){
-      action = `<button class="btn sm" data-action="connect" data-src="${src.key}">Connect</button>`;
+      const locked = src.grain!=='user' && !state.org.domainVerified;  // owner power gated on domain verification
+      action = locked
+        ? `<button class="btn sm" disabled title="Verify your domain (Phase 1) to connect org-wide sources">🔒 Connect</button>`
+        : `<button class="btn sm" data-action="connect" data-src="${src.key}">Connect</button>`;
       body = `<div class="scopes">${src.scopes.join(' · ')}</div>`;
     } else if(c.grain==='user' || (c.grain==='hybrid' && c.members)){
       const m = c.members;
@@ -350,11 +370,15 @@ function stepConnect(){
   }).join('');
 
   const n = connectedCount();
+  const gate = !state.org.domainVerified
+    ? `<div class="banner" style="background:linear-gradient(90deg,#3a2a10,#3a3012);border-color:#5e4a22"><span class="big">🔒</span><div><h3 style="color:var(--warn)">Pending owner — org-wide sources locked</h3><span class="muted">Verify your domain in Phase 1 to unlock org-wide / account installs. Per-user sources can still self-connect (they're personal).</span></div></div>`
+    : '';
   return `<h1>Connect data sources</h1>
     <p class="sub">Org-aware: <span class="pill org">Org-wide</span> = one admin install covers everyone ·
       <span class="pill user">Per-user</span> = each member self-connects ·
       <span class="pill hybrid">Hybrid</span> ·
       <span class="pill account">Account</span>. Connect ≥1 to activate.</p>
+    ${gate}
     <div class="grid">${cards}</div>
     <div class="empty" style="margin-top:12px">+ ${MORE_SOURCES} more connectors (26 total) — finance, HR, infra…</div>
     <div class="actions">
@@ -432,6 +456,7 @@ function closeConsent(){ $('#scrim').classList.remove('on'); }
 
 function doConnect(key){
   const src = SOURCES.find(x=>x.key===key);
+  if(src.grain!=='user' && !state.org.domainVerified){ logEvent('blocked', key+' · org-wide locked until domain verified'); return; }
   if(src.grain==='user'){
     // per-user: no admin consent; create a roster
     state.connections[key] = {grain:'user', status:'partial', members:{connected:0,total:TEAM_SIZE}};
@@ -494,19 +519,30 @@ document.addEventListener('click', e=>{
   switch(a){
     case 'signup': {
       const email = ($('#email')||{}).value || 'ceo@acme.com';
-      state.user = {email, authed:true}; logEvent('sign_up', email+' · email/password'); render(); break;
+      state.user = {email, authed:true, emailVerified:false};
+      logEvent('sign_up', email+' · email/password'); logEvent('email_sent', 'magic link → '+email); render(); break;
     }
     case 'social': {
-      state.user = {email:'ceo@acme.com', authed:true};
-      logEvent('sign_up', 'social · '+el.dataset.prov); render(); break;
+      state.user = {email:'ceo@acme.com', authed:true, emailVerified:false};
+      logEvent('sign_up', 'social · '+el.dataset.prov); logEvent('email_sent', 'verification via '+el.dataset.prov); render(); break;
+    }
+    case 'verify-email': {
+      state.user.emailVerified=true; state.org.ownerStatus='pending';
+      logEvent('email_verified', 'inbox control proven'); logEvent('owner_pending', 'pending owner — needs domain proof'); render(); break;
     }
     case 'create-org': {
       state.org.name = ($('#orgname')||{}).value || 'Acme Inc.';
       state.org.domain = ($('#orgdomain')||{}).value || 'acme.com';
-      state.org.role = 'owner';
-      logEvent('org_created', `${state.org.name} · owner seeded`); render(); break;
+      state.org.role = 'owner'; state.org.ownerStatus = 'pending';
+      logEvent('org_created', `${state.org.name} · pending owner seeded`); render(); break;
     }
-    case 'verify-domain': state.org.domainVerified=true; logEvent('domain_verified', state.org.domain); render(); break;
+    case 'verify-domain': {
+      state.org.domainVerified=true; state.org.ownerStatus='verified';
+      logEvent('domain_verified', state.org.domain); logEvent('owner_confirmed', 'owner powers unlocked'); render(); break;
+    }
+    case 'designate-ceo': {
+      const pick=($('#ceopick')||{}).value; if(pick){ state.org.ceo=pick; logEvent('ceo_designated', pick+' · bound to CEO actor'); render(); } break;
+    }
     case 'config-sso': state.identity.sso='configured'; logEvent('sso_metadata', 'IdP metadata loaded'); render(); break;
     case 'test-sso': state.identity.sso='tested'; logEvent('sso_tested', 'test connection OK · JIT on'); render(); break;
     case 'enable-scim': state.identity.scim=true; logEvent('scim_enabled', 'endpoint + token generated'); render(); break;
@@ -523,7 +559,7 @@ document.addEventListener('click', e=>{
     case 'goto': setStep(+el.dataset.step); break;
     case 'reset': {
       if(syncTimer){clearInterval(syncTimer);syncTimer=null;}
-      Object.assign(state,{step:0,user:{email:null,authed:false},org:{name:null,domain:null,domainVerified:false,role:null},
+      Object.assign(state,{step:0,user:{email:null,authed:false,emailVerified:false},org:{name:null,domain:null,domainVerified:false,role:null,ownerStatus:'none',ceo:null},
         identity:{sso:'none',scim:false,invites:[]},connections:{},sync:{},activated:false});
       log.length=0; _t=0; logEvent('reset','flow restarted'); render(); break;
     }
