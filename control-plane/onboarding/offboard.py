@@ -116,13 +116,14 @@ def offboard(
             client = None
         if client is not None:
             try:
-                app = getattr(client, "app", None)
-                if app is not None and hasattr(app, "state") and hasattr(app.state, "store"):
-                    deregistered = app.state.store.remove(deployment_id)
-                    _log(f"[2/3] deregistered {deployment_id} from console" if deregistered
-                         else f"[2/3] {deployment_id} not present in console (already gone)")
-                else:
-                    _log("[2/3] real console has no DELETE verb; record will age to red/expired")
+                # Idempotent DELETE verb — the same deregister path onboarding's
+                # rollback takes. Works for both the real console (over HTTP) and
+                # the embedded/ASGI fake console, so no store-internals reach-in.
+                deregistered = client.deregister(deployment_id)
+                _log(f"[2/3] deregistered {deployment_id} from console" if deregistered
+                     else f"[2/3] {deployment_id} not present in console (already gone)")
+            except cc.ConsoleError as exc:
+                _log(f"[2/3] console deregister failed (best-effort): {exc}")
             finally:
                 client.close()
     else:

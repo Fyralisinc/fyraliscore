@@ -194,6 +194,25 @@ def create_app(deployment_store: DeploymentStore | None = None) -> FastAPI:
             )
         return JSONResponse(content=rec.to_registry_dict())
 
+    @application.delete(
+        "/api/v1/deployments/{deployment_id}",
+        tags=["console"],
+        summary="Deregister (remove) a deployment row. Idempotent.",
+    )
+    def delete_deployment(deployment_id: str) -> JSONResponse:
+        """Idempotent deregistration (FR-E onboarding rollback / offboard).
+
+        Removes the row from the registry. Returns 200 with ``{removed: true}``
+        when a row was deleted and 200 with ``{removed: false}`` when the row was
+        already absent — deregistration is idempotent, so re-issuing the DELETE
+        (e.g. a retried rollback) is never an error. The store remains the single
+        source of truth; no health is derived here.
+        """
+        removed = st.delete(deployment_id)
+        return JSONResponse(
+            content={"deployment_id": deployment_id, "removed": removed}
+        )
+
     @application.get("/healthz", tags=["ops"], summary="Liveness probe.")
     def healthz() -> dict:
         return {"status": "ok", "fleet_size": len(st)}

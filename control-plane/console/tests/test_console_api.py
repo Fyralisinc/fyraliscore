@@ -164,6 +164,46 @@ def test_get_one_deployment_and_404(client: TestClient):
     assert missing.status_code == 404
 
 
+# --- deregister (DELETE) ----------------------------------------------------
+
+
+def test_delete_deployment_removes_row(client: TestClient):
+    """DELETE /api/v1/deployments/{id} removes the row (FR-E onboarding rollback)."""
+    resp = client.post(
+        "/api/v1/register", json={"tenant_id": "acme", "region": "us-east-1"}
+    )
+    dep_id = resp.json()["deployment_id"]
+    assert len(client.get("/api/v1/deployments").json()) == 1
+
+    d = client.delete(f"/api/v1/deployments/{dep_id}")
+    assert d.status_code == 200, d.text
+    assert d.json()["removed"] is True
+    assert d.json()["deployment_id"] == dep_id
+
+    # The row is gone: list is empty and GET is a 404.
+    assert client.get("/api/v1/deployments").json() == []
+    assert client.get(f"/api/v1/deployments/{dep_id}").status_code == 404
+
+
+def test_delete_deployment_is_idempotent(client: TestClient):
+    """Deleting an absent (or already-deleted) deployment is NOT an error — a
+    retried rollback must not blow up. The endpoint answers 200 removed=false."""
+    # Never-existed id.
+    d0 = client.delete("/api/v1/deployments/never-existed-0000")
+    assert d0.status_code == 200, d0.text
+    assert d0.json()["removed"] is False
+
+    # Register, delete twice: first removes, second is a no-op (still 200).
+    dep_id = client.post(
+        "/api/v1/register", json={"tenant_id": "globex", "region": "eu-west-1"}
+    ).json()["deployment_id"]
+    assert client.delete(f"/api/v1/deployments/{dep_id}").json()["removed"] is True
+    d2 = client.delete(f"/api/v1/deployments/{dep_id}")
+    assert d2.status_code == 200
+    assert d2.json()["removed"] is False
+    assert client.get("/api/v1/deployments").json() == []
+
+
 def test_heartbeat_rejects_malformed_record(client: TestClient):
     # Missing required fields -> 422 (the agent's bug surfaces, console stays up).
     r = client.post("/api/v1/heartbeat", json={"tenant_id": "acme"})

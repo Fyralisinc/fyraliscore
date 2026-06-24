@@ -243,6 +243,16 @@ def onboard(
             reg = client.register(region=region, plan=plan, tenant_id=tenant)
             tenant_id = reg["tenant_id"]
             deployment_id = reg["deployment_id"]
+            # A real console's POST /api/v1/register CREATES a row immediately
+            # (the fake console only mints ids until the first heartbeat). Either
+            # way, push the console-deregister undo NOW — right after register —
+            # so a failure at ANY later step (cert/license/bundle/heartbeat/
+            # confirm) undoes the console row too (FR-E). Without this, a failure
+            # between register and heartbeat would orphan the console row.
+            ledger.push(
+                f"console-deployment[{deployment_id}]",
+                lambda _c=client, _d=deployment_id: _best_effort_console_remove(_c, _d),
+            )
             _log(f"[1/6] registered with console: tenant={tenant_id} deployment={deployment_id}")
         else:
             tenant_id = tenant
@@ -336,11 +346,9 @@ def onboard(
         if use_console:
             assert client is not None
             client.heartbeat(record.to_registry_dict())
-            # If a later step fails, also remove it from the console.
-            ledger.push(
-                f"console-deployment[{deployment_id}]",
-                lambda: _best_effort_console_remove(client, deployment_id),
-            )
+            # The console-deregister undo was already pushed right after register
+            # (step 1), so it covers this heartbeat-written row too — no second
+            # ledger entry needed here.
             _log(f"[5/6] seeded heartbeat (health={record.health.value})")
         else:
             _log(f"[5/6] seeded heartbeat locally (no console; health={record.health.value})")
@@ -392,19 +400,29 @@ def onboard(
 
 
 def _best_effort_console_remove(client: "cc.ConsoleClient", deployment_id: str) -> None:
-    """Try to delete a deployment from the console during rollback.
+    """Remove a deployment from the console during rollback (FR-E).
 
-    The P4 contract has no DELETE verb (consoles upsert via heartbeat). The fake
-    console exposes a removal hook via its FleetStore; for a real console we
-    cannot delete, so we just log. Rollback stays best-effort."""
-    # Embedded (ASGI) client: reach the app's FleetStore to remove the row.
-    app = getattr(client, "app", None)
-    if app is not None and hasattr(app, "state") and hasattr(app.state, "store"):
-        app.state.store.remove(deployment_id)
-        return
-    # Real console: no delete verb in the P4 contract. Leave a note; the record
-    # will age to red/expired and can be reaped by the console operator.
-    _log(f"    (console has no DELETE verb; deployment {deployment_id} will age out)")
+    The console now exposes an **idempotent** ``DELETE /api/v1/deployments/{id}``
+    verb, so the deployment row created by register/heartbeat is actually removed
+    — no orphaned console row survives a rolled-back onboarding. The same verb
+    works whether the client talks to a real console over HTTP or to an in-process
+    console via ASGI (both the real ``console/app.py`` and the embedded
+    ``fake_console`` expose it), so we route through ``deregister`` uniformly
+    rather than reaching into a particular store's internals.
+
+    Best-effort: any transport/console error (including ``removed=false`` when the
+    row was already gone) is logged and swallowed so it never masks the original
+    onboarding failure that triggered the rollback.
+    """
+    try:
+        removed = client.deregister(deployment_id)
+        _log(
+            f"    deregistered {deployment_id} from console"
+            if removed
+            else f"    {deployment_id} already absent from console (idempotent)"
+        )
+    except Exception as exc:  # best-effort: never let rollback cleanup raise
+        _log(f"    (console deregister of {deployment_id} failed, leaving best-effort: {exc})")
 
 
 # --------------------------------------------------------------------------- #

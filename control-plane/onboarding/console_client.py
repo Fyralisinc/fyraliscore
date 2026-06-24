@@ -148,6 +148,27 @@ class ConsoleClient:
         """True iff the console currently lists ``deployment_id`` (confirm step)."""
         return self.get_deployment(deployment_id) is not None
 
+    def deregister(self, deployment_id: str) -> bool:
+        """DELETE /api/v1/deployments/{id} — remove the deployment row.
+
+        Idempotent: removing an already-absent deployment is **not** an error
+        (the console answers 200 ``{removed: false}`` or 204/404). Returns True
+        iff a row was actually removed. Used by onboarding rollback (FR-E) and
+        offboard to undo the console register/heartbeat side effect.
+        """
+        try:
+            out = self._request("DELETE", f"/api/v1/deployments/{deployment_id}")
+        except ConsoleError as exc:
+            # A console that signals "already gone" via 404/204 is success for an
+            # idempotent deregister, not a failure.
+            if exc.status in (404, 204):
+                return False
+            raise
+        if isinstance(out, dict) and "removed" in out:
+            return bool(out["removed"])
+        # 204 No Content (or any empty 2xx) -> nothing returned; treat as removed.
+        return out is None
+
     def ping(self) -> bool:
         """Best-effort liveness: GET / and treat any 2xx as alive."""
         try:

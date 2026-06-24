@@ -135,6 +135,13 @@ def build_app(store: Optional[FleetStore] = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"no deployment {deployment_id!r}")
         return rec.to_registry_dict()
 
+    @app.delete("/api/v1/deployments/{deployment_id}")
+    def delete_deployment(deployment_id: str) -> dict:
+        """Idempotent deregistration — mirrors the real console's DELETE verb so
+        onboarding rollback / offboard can undo the console row over HTTP."""
+        removed = store.remove(deployment_id)
+        return {"deployment_id": deployment_id, "removed": removed}
+
     @app.get("/", response_class=HTMLResponse)
     def rollup() -> str:
         rows = store.list()

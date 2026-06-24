@@ -264,6 +264,73 @@ def run() -> int:
           f"(got {len(beta_rows)})")
 
     # =====================================================================
+    print("\n== scenario 3b: ROLLBACK against the REAL console (orphan-row guard) ==")
+    # The fake console only mints ids on register (no row until heartbeat), so it
+    # cannot expose the orphaned-console-row bug. The REAL console's
+    # POST /api/v1/register CREATES a row immediately — so this scenario drives
+    # onboarding against console/app.py, forces a failure AFTER register, and
+    # asserts the console has ZERO rows for the tenant, the registry has no active
+    # entry, and no bundle remains (FR-E atomicity, incl. console deregister).
+    _CONSOLE_DIR = os.path.join(_CP_ROOT, "console")
+    if _CONSOLE_DIR not in sys.path:
+        sys.path.insert(0, _CONSOLE_DIR)
+    import app as real_console_app  # console/app.py
+    import store as real_console_store  # console/store.py
+
+    real_store = real_console_store.DeploymentStore(persist=False)
+    real_app = real_console_app.create_app(real_store)
+
+    # Sanity: this console DOES create a row on register (unlike the fake one).
+    pre_client = cc.ASGIConsoleClient(real_app)
+    reg = pre_client.register(region="us-east", plan="standard", tenant_id="gamma")
+    check(pre_client.has_deployment(reg["deployment_id"]),
+          "real console creates a deployment row on register (precondition)")
+    # Clean that probe row up so it doesn't pollute the assertion below.
+    pre_client.deregister(reg["deployment_id"])
+    pre_client.close()
+
+    threw3b = False
+    try:
+        ob.onboard(
+            tenant="gamma",
+            region="us-east",
+            plan="standard",
+            console_app=real_app,            # the REAL console, not the fake
+            bundles_root=bundles_root,
+            pki_dir=pki_dir,
+            registry_path=registry_path,
+            trust_root_path=trust_root,
+            fail_after="cert",               # fail AFTER register + cert
+        )
+    except ob.OnboardError:
+        threw3b = True
+    check(threw3b, "onboard raised on failure after register against the real console")
+
+    # The console must have ZERO rows for gamma (the register-created row + the
+    # heartbeat row, if any, were all deregistered by the rollback).
+    real_client = cc.ASGIConsoleClient(real_app)
+    real_fleet = real_client.list_deployments()
+    gamma_rows = [d for d in real_fleet if d["tenant_id"] == "gamma"]
+    check(len(gamma_rows) == 0,
+          f"real console has ZERO rows for gamma after rollback (got {len(gamma_rows)})")
+    check(len(real_fleet) == 0,
+          f"real console fleet is empty after rollback (got {len(real_fleet)})")
+    real_client.close()
+
+    # The registry has no ACTIVE gamma entry (cert undo ran).
+    gamma_reg = ca_registry.find_by_tenant("gamma", path=registry_path)
+    gamma_active = [r for r in gamma_reg.values() if r.get("status") == "active"]
+    check(len(gamma_active) == 0,
+          f"no active gamma registry entry after rollback (got {len(gamma_active)})")
+    check(len(gamma_reg) == 0,
+          f"no gamma registry row remains at all after rollback (got {len(gamma_reg)})")
+
+    # No bundle remains for gamma (only the happy-path acme bundle).
+    bundle_dirs_3b = sorted(os.listdir(bundles_root)) if os.path.isdir(bundles_root) else []
+    check(bundle_dirs_3b == [happy_deployment_id],
+          f"no gamma bundle remains after rollback (got {bundle_dirs_3b})")
+
+    # =====================================================================
     print("\n== scenario 4: offboard the happy-path tenant ==")
     import offboard as off
 
