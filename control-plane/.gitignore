@@ -1,0 +1,15 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — .gitignore
+# Never commit generated secrets (CA keys, signing keys, tenant private keys).
+# ============================================================================
+
+# --- generated secrets / keys ----------------------------------------------
+**/keys/
+**/*.key
+**/*-key.pem
+**/certs/private/
+
+# --- python ----------------------------------------------------------------
+__pycache__/
+*.pyc
+.venv/

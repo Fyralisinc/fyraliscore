@@ -1,0 +1,142 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — compose skeleton
+# ----------------------------------------------------------------------------
+# One-command bring-up for the VENDOR-owned control plane. Each phase fills in
+# its service section below. Until then this file defines the shared networks
+# and a single no-op `cp-scaffold` marker service so that
+# `docker compose -f docker-compose.control-plane.yml config` parses cleanly.
+#
+# Networks (see SPRINT_PLAN.md → Shared Contracts → C5):
+#   cp-net        internal network shared by all control-plane services.
+#   dataplane-net the LOCAL data-plane network the control plane also attaches
+#                 to for single-host dev/demo scraping. Declared external so a
+#                 missing data plane does not break `up`; create it with
+#                 `docker network create dataplane-net` for local scraping, or
+#                 leave it absent in CP-only deployments.
+#
+# Mimir multi-tenancy is keyed by X-Scope-OrgID, injected by the auth proxy
+# from the verified client-cert tenant_id — never accepted from outside cp-net.
+# ============================================================================
+
+name: fyralis-control-plane
+
+networks:
+  cp-net:
+    driver: bridge
+  dataplane-net:
+    external: true
+
+volumes:
+  mimir-data:
+  loki-data:
+  grafana-data:
+  ca-data:
+  audit-data:
+
+services:
+  # --- scaffold marker -------------------------------------------------------
+  # Real services replace/augment this as phases land. Kept so the compose file
+  # is always valid YAML with at least one service. `up` exits immediately.
+  cp-scaffold:
+    image: busybox:1.36
+    command: ["sh", "-c", "echo 'fyralis control-plane scaffold — fill in services per SPRINT_PLAN.md'"]
+    networks:
+      - cp-net
+    restart: "no"
+
+  # ==========================================================================
+  # Phase 2 — auth-proxy + boundary + egress
+  # ==========================================================================
+  # auth-proxy:
+  #   build: ./auth-proxy
+  #   # Terminates mTLS, verifies client cert against the Fyralis CA, extracts
+  #   # tenant_id from the spiffe://fyralis/tenant/<id> URI SAN (C1), checks the
+  #   # tenant_registry.json revocation list, injects X-Scope-OrgID, and routes
+  #   # to Mimir/Loki. NEVER trusts a tenant_id from a request header (I4).
+  #   ports:
+  #     - "8443:8443"   # mTLS ingress for agent dial-home
+  #   volumes:
+  #     - ./ca/certs:/etc/fyralis/ca:ro
+  #     - ./ca/tenant_registry.json:/etc/fyralis/tenant_registry.json:ro
+  #   networks:
+  #     - cp-net
+  #   depends_on:
+  #     - mimir
+  #     - loki
+
+  # ==========================================================================
+  # Phase 3 — Mimir / Loki / Grafana + fleet-SLI
+  # ==========================================================================
+  # mimir:
+  #   image: grafana/mimir:latest
+  #   # Multi-tenant metrics store. Tenant scoping via X-Scope-OrgID injected by
+  #   # the auth-proxy (C5). Only reachable from inside cp-net (behind the proxy).
+  #   command: ["-config.file=/etc/mimir/mimir.yaml"]
+  #   volumes:
+  #     - ./mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
+  #     - mimir-data:/data
+  #   networks:
+  #     - cp-net
+
+  # loki:
+  #   image: grafana/loki:latest
+  #   # Multi-tenant log store for T2 redacted logs. Tenant scoping via
+  #   # X-Scope-OrgID, same injection contract as Mimir.
+  #   command: ["-config.file=/etc/loki/loki.yaml"]
+  #   volumes:
+  #     - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+  #     - loki-data:/data
+  #   networks:
+  #     - cp-net
+
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   # Cross-tenant dashboards. Datasources point at Mimir/Loki THROUGH the
+  #   # auth-proxy so every query carries the correct X-Scope-OrgID.
+  #   volumes:
+  #     - ./grafana/provisioning:/etc/grafana/provisioning:ro
+  #     - grafana-data:/var/lib/grafana
+  #   ports:
+  #     - "3000:3000"
+  #   networks:
+  #     - cp-net
+  #     # also attach to the local data plane for single-host dev scraping:
+  #     - dataplane-net
+  #   depends_on:
+  #     - mimir
+  #     - loki
+
+  # ==========================================================================
+  # Phase 2 (customer-VPC side) — boundary OTel Collector
+  # ==========================================================================
+  # NOTE: the boundary collector runs INSIDE the customer VPC alongside the data
+  # plane, not in the vendor control plane. It is documented here for the
+  # single-host dev/demo topology only; in production it ships with the agent.
+  # otel-collector:
+  #   image: otel/opentelemetry-collector-contrib:latest
+  #   # Enforces telemetry tiers (C3): T1 metrics only by default; drops logs
+  #   # unless T2; drops traces unless T3. Redacts before any egress (I1).
+  #   command: ["--config=/etc/otelcol/config.yaml"]
+  #   volumes:
+  #     - ./boundary/config.yaml:/etc/otelcol/config.yaml:ro
+  #   networks:
+  #     - dataplane-net
+
+  # ==========================================================================
+  # Phase 4 — console (operator UI/API over the fleet registry)
+  # ==========================================================================
+  # console:
+  #   build: ./console
+  #   # Operator surface over the fleet registry (C4 deployment records):
+  #   # list deployments, health, license expiry, telemetry tier, revoke certs.
+  #   environment:
+  #     - FLEET_REGISTRY_URL=http://fleet:8000
+  #   ports:
+  #     - "8080:8080"
+  #   networks:
+  #     - cp-net
+
+  # ==========================================================================
+  # Phase 5 — release / config-dist / metering / audit (filled in later)
+  # ==========================================================================
+  # (services added per SPRINT_PLAN.md → P5)
