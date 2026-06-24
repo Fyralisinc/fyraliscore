@@ -88,6 +88,7 @@ from typing import Any
 import asyncpg
 from aiokafka import AIOKafkaConsumer
 
+from lib.observability.metrics import WRITER_SHADOW_DROP
 from lib.shared.errors import ValidationError
 from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
@@ -292,6 +293,12 @@ async def _record_shadow_event(env: NormalizedEnvelope) -> None:
     # logged at ERROR as defense-in-depth for F1's invariant.
     is_backfill = event.ingress_kind == "backfill"
     _bump("writer.shadow_drop")
+    # BYOC §12 G6 — promote this silent-data-loss log line to a fleet-scraped
+    # counter (the in-process `_metrics` dict above resets on restart and is
+    # not a real Prometheus family). ingress_kind label lets the control plane
+    # alert hard on backfill (invariant violation) vs. tolerate live (the
+    # inline path persists those when kafka_path_enabled is FALSE).
+    WRITER_SHADOW_DROP.inc(ingress_kind=event.ingress_kind)
     (log.error if is_backfill else log.warning)(
         "writer.shadow_drop",
         extra={
