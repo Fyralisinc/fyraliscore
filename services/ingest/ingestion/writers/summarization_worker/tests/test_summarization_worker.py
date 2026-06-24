@@ -218,7 +218,8 @@ async def _read_observation(
                 str(tenant_id),
             )
             row = await conn.fetchrow(
-                "SELECT content, content_text, embedding_pending, embedding "
+                "SELECT content, content_text, embedding_pending, embedding, "
+                "entities_mentioned "
                 "FROM observations WHERE id = $1",
                 obs_id,
             )
@@ -226,6 +227,8 @@ async def _read_observation(
     data = dict(row)
     if isinstance(data["content"], str):
         data["content"] = json.loads(data["content"])
+    if isinstance(data.get("entities_mentioned"), str):
+        data["entities_mentioned"] = json.loads(data["entities_mentioned"])
     return data
 
 
@@ -650,7 +653,7 @@ async def test_structured_summary_is_persisted_to_content(
         source="google_drive",
         observation_id=obs_id,
         raw_s3_key=raw_s3_key,
-        ingress_kind="live",
+        ingress_kind="gateway",
         enqueued_at=_NOW,
     )
 
@@ -702,7 +705,7 @@ async def test_summary_without_structured_omits_structured_key(
         source="google_drive",
         observation_id=obs_id,
         raw_s3_key=raw_s3_key,
-        ingress_kind="live",
+        ingress_kind="gateway",
         enqueued_at=_NOW,
     )
 
@@ -719,3 +722,234 @@ async def test_summary_without_structured_omits_structured_key(
     assert status == "summarized"
     row = await _read_observation(fresh_db, tenant_id=tenant_id, obs_id=obs_id)
     assert "structured" not in row["content"]["summarization"]
+
+
+# ---------------------------------------------------------------------------
+# Layer 2 (Phase 1) — INGEST_DOC_MEMORY_ENABLED scope re-resolution + enriched
+# T1. These exercise the worker's document-memory path end-to-end against a real
+# DB: entities_mentioned is rewritten from the structured summary, and the T1
+# payload carries the structured extraction + resolved scope.
+# ---------------------------------------------------------------------------
+
+
+_ACME_CUSTOMER_ID = "11111111-1111-1111-1111-111111111111"
+
+
+async def _seed_acme_alias(pool: asyncpg.Pool, tenant_id: UUID) -> None:
+    from services.domain.entity_aliases.repo import EntityAliasRepo
+
+    repo = EntityAliasRepo(pool)
+    await repo.insert_alias(
+        phrase="Acme",
+        resolved_entity_ref={"type": "customer", "id": _ACME_CUSTOMER_ID},
+        source="manual",
+        confidence=1.0,
+        tenant_id=tenant_id,
+    )
+
+
+def _acme_structured() -> dict[str, Any]:
+    return {
+        "summary": "Acme renewal planning brief.",
+        "key_points": ["Globex onboarding mentioned in passing"],
+        "decisions": ["Ship the billing revamp before the Sept 30 Acme renewal"],
+        "action_items": [
+            {"who": "Priya", "what": "send Acme the revised SOW", "due": "2026-06-17"}
+        ],
+        "risks": ["SOC2 audit slip endangers the Acme renewal"],
+    }
+
+
+async def _run_doc_memory_summary(
+    pool: asyncpg.Pool, *, tenant_id: UUID, obs_id: UUID, raw_s3_key: str
+):
+    s3 = FakeS3Client()
+    s3.store[raw_s3_key] = orjson.dumps(
+        {"record": {"_fyralis_extracted_text": "Acme renewal; Priya owns the SOW."}}
+    )
+    producer = _FakeProducer()
+    summarizer = _StructuredSummarizer("Acme renewal planning brief.", _acme_structured())
+    env = SummarizationEnvelope(
+        tenant_id=tenant_id,
+        source="google_drive",
+        observation_id=obs_id,
+        raw_s3_key=raw_s3_key,
+        ingress_kind="gateway",
+        enqueued_at=_NOW,
+    )
+    sw.reset_metrics()
+    status = await sw.summarize_and_update(
+        env=env,
+        pool=pool,
+        summarizer=summarizer,
+        dlq_producer=producer,
+        embedding_producer=producer,
+        s3=s3,
+    )
+    return status
+
+
+async def _read_t1_payload(
+    pool: asyncpg.Pool, *, tenant_id: UUID, obs_id: UUID
+) -> dict[str, Any]:
+    trigger = await pool.fetchrow(
+        "SELECT payload FROM think_trigger_queue "
+        "WHERE tenant_id = $1 AND observation_id = $2",
+        tenant_id,
+        obs_id,
+    )
+    assert trigger is not None
+    payload = trigger["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    return payload
+
+
+async def test_doc_memory_enriches_entities_and_t1_when_enabled(
+    fresh_db: asyncpg.Pool, monkeypatch
+) -> None:
+    monkeypatch.setenv("INGEST_DOC_MEMORY_ENABLED", "1")
+    await _ensure_partition(fresh_db)
+    tenant_id = await _seed_tenant(fresh_db)
+    await _seed_acme_alias(fresh_db, tenant_id)
+    obs_id = uuid4()
+    raw_s3_key = f"dev/google_drive/{tenant_id}/2026-05/g1/{'1' * 40}.json.zst"
+    await _insert_pending_observation(
+        fresh_db, tenant_id=tenant_id, obs_id=obs_id, raw_s3_key=raw_s3_key
+    )
+
+    status = await _run_doc_memory_summary(
+        fresh_db, tenant_id=tenant_id, obs_id=obs_id, raw_s3_key=raw_s3_key
+    )
+    assert status == "summarized"
+
+    # entities_mentioned now carries the Acme ref resolved from the structured
+    # summary (the placeholder content_text never named Acme).
+    row = await _read_observation(fresh_db, tenant_id=tenant_id, obs_id=obs_id)
+    ids = {(e.get("type"), e.get("id")) for e in row["entities_mentioned"]}
+    assert ("customer", _ACME_CUSTOMER_ID) in ids
+
+    # The T1 payload carries the structured extraction + resolved scope so Think
+    # can mint the document Models.
+    payload = await _read_t1_payload(fresh_db, tenant_id=tenant_id, obs_id=obs_id)
+    assert payload["summarized"] is True
+    assert "doc_structured_summary" in payload
+    assert payload["doc_structured_summary"]["action_items"][0]["due"] == "2026-06-17"
+    assert {"type": "customer", "id": _ACME_CUSTOMER_ID} in payload["doc_scope_entities"]
+    # seed_entity_ids carries the resolved refs for Pathway A scoping.
+    assert {"type": "customer", "id": _ACME_CUSTOMER_ID} in payload["seed_entity_ids"]
+    # "Priya" did not resolve to an actor UUID -> stays as text, NOT in scope.
+    assert "doc_scope_actors" not in payload or all(
+        a != "Priya" for a in payload.get("doc_scope_actors", [])
+    )
+    assert "Priya" in payload.get("doc_unresolved_actor_refs", [])
+
+    metrics = sw.get_metrics()
+    assert metrics["summarization_worker.doc_memory.scope_resolved"] == 1
+    assert metrics["summarization_worker.doc_memory.scope_failed"] == 0
+
+
+async def test_doc_memory_disabled_leaves_t1_and_entities_untouched(
+    fresh_db: asyncpg.Pool, monkeypatch
+) -> None:
+    monkeypatch.delenv("INGEST_DOC_MEMORY_ENABLED", raising=False)
+    await _ensure_partition(fresh_db)
+    tenant_id = await _seed_tenant(fresh_db)
+    await _seed_acme_alias(fresh_db, tenant_id)
+    obs_id = uuid4()
+    raw_s3_key = f"dev/google_drive/{tenant_id}/2026-05/g2/{'2' * 40}.json.zst"
+    await _insert_pending_observation(
+        fresh_db, tenant_id=tenant_id, obs_id=obs_id, raw_s3_key=raw_s3_key
+    )
+
+    status = await _run_doc_memory_summary(
+        fresh_db, tenant_id=tenant_id, obs_id=obs_id, raw_s3_key=raw_s3_key
+    )
+    assert status == "summarized"
+
+    # Flag off: no re-resolution, no enrichment. entities_mentioned untouched and
+    # the T1 payload carries no doc_* keys (but the structured summary is still
+    # persisted to content by Layer 0).
+    row = await _read_observation(fresh_db, tenant_id=tenant_id, obs_id=obs_id)
+    assert row["entities_mentioned"] == []
+    assert row["content"]["summarization"]["structured"]["risks"]  # Layer 0 intact
+
+    payload = await _read_t1_payload(fresh_db, tenant_id=tenant_id, obs_id=obs_id)
+    assert "doc_structured_summary" not in payload
+    assert "doc_scope_entities" not in payload
+    metrics = sw.get_metrics()
+    assert metrics["summarization_worker.doc_memory.scope_resolved"] == 0
+
+
+async def test_doc_memory_resolves_action_item_owner_to_scope_actor(
+    fresh_db: asyncpg.Pool, monkeypatch
+) -> None:
+    # When the action-item owner resolves to a real actor, it lands in
+    # scope_actors (resolved UUIDs only — §8 scope-actor existence).
+    monkeypatch.setenv("INGEST_DOC_MEMORY_ENABLED", "1")
+    await _ensure_partition(fresh_db)
+    tenant_id = await _seed_tenant(fresh_db)
+    await _seed_acme_alias(fresh_db, tenant_id)
+
+    # Seed an actor + identity mapping so "Priya" (channel google_drive)
+    # resolves through ActorRepo.resolve_by_source_actor_ref. The owner is
+    # written as a channel-qualified ref ("google_drive:Priya"), which is what a
+    # resolvable owner looks like; resolve_actor_ref then partitions it to
+    # (google_drive, Priya).
+    from services.domain.actors.repo import ActorRepo
+
+    actor_repo = ActorRepo(fresh_db)
+    actor = await actor_repo.create_actor(
+        email=None,
+        display_name="Priya",
+        type="human_internal",
+        tenant_id=tenant_id,
+    )
+    actor_id = actor.id
+    await actor_repo.add_identity_mapping(
+        actor_id=actor_id,
+        source_channel="google_drive",
+        source_actor_ref="Priya",
+        confidence=1.0,
+    )
+
+    obs_id = uuid4()
+    raw_s3_key = f"dev/google_drive/{tenant_id}/2026-05/g3/{'3' * 40}.json.zst"
+    await _insert_pending_observation(
+        fresh_db, tenant_id=tenant_id, obs_id=obs_id, raw_s3_key=raw_s3_key
+    )
+
+    structured = _acme_structured()
+    structured["action_items"] = [
+        {"who": "google_drive:Priya", "what": "send Acme the revised SOW", "due": "2026-06-17"}
+    ]
+    s3 = FakeS3Client()
+    s3.store[raw_s3_key] = orjson.dumps(
+        {"record": {"_fyralis_extracted_text": "Acme renewal; Priya owns the SOW."}}
+    )
+    producer = _FakeProducer()
+    summarizer = _StructuredSummarizer("Acme renewal planning brief.", structured)
+    env = SummarizationEnvelope(
+        tenant_id=tenant_id,
+        source="google_drive",
+        observation_id=obs_id,
+        raw_s3_key=raw_s3_key,
+        ingress_kind="gateway",
+        enqueued_at=_NOW,
+    )
+    sw.reset_metrics()
+    status = await sw.summarize_and_update(
+        env=env,
+        pool=fresh_db,
+        summarizer=summarizer,
+        dlq_producer=producer,
+        embedding_producer=producer,
+        s3=s3,
+    )
+    assert status == "summarized"
+
+    payload = await _read_t1_payload(fresh_db, tenant_id=tenant_id, obs_id=obs_id)
+    assert str(actor_id) in payload.get("doc_scope_actors", [])
+    assert str(actor_id) in payload.get("scope_actors", [])
+    # Resolved -> NOT in the unresolved-text bucket.
+    assert "google_drive:Priya" not in payload.get("doc_unresolved_actor_refs", [])
