@@ -1,0 +1,9 @@
+# Onboarding-local ignores.
+#
+# Assembled agent BUNDLES contain a tenant PRIVATE KEY and a signed license —
+# they are per-tenant runtime artifacts shipped to the customer VPC, NEVER git.
+bundles/
+
+# Compiled python.
+__pycache__/
+*.pyc
