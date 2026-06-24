@@ -231,10 +231,11 @@ A document Model is only as retrievable as what we give it (see Pathways A/B/G):
    `risks=["SOC2 slip endangers renewal"]`.
 3. **Layer 2 scope:** worker re-resolves over the structured text → entity `Acme`, actor `Priya`
    (if resolvable); updates `entities_mentioned`.
-4. **Layer 2 mint (Option C):** direct-mint a `situation` anchor Model (`scope_entities=[Acme]`,
-   `born_from_event_id=obs`). Enriched T1 → **Think** mints: a `prediction` commitment
-   (`evaluate_at=2026-06-17`, deadline falsifier), a `concern` risk, a `recommendation` decision —
-   all Acme-scoped, edge-linked, `supporting_event_ids=[obs]`.
+4. **Layer 2 mint (Think-mediated, ratified A):** the worker re-resolves scope and enqueues an
+   enriched T1; **Think** mints a `situation` anchor Model plus a `prediction` commitment
+   (`evaluate_at=2026-06-17`, deadline falsifier), a `concern` risk, and a `recommendation` decision —
+   all Acme-scoped, edge-linked, `born_from_event_id`/`supporting_event_ids=[obs]` — deduping against
+   any existing Acme Models in the same retrieval context.
 5. **June 17 (proactive, if `deadline_resolver` deployed):** commitment is overdue → T2 fires
    *before* anyone asks.
 6. **June 24 trigger** ("Acme asking where the SOW is"): Pathway A (scope=Acme) + Pathway B
@@ -260,43 +261,41 @@ or a new claim_role — would touch migrations.)
 ## 7. Implementation phases
 
 **Phase 0 — Layer 0 (prerequisite, low risk).**
-1. Extend `SummaryResult` + `parse_summary_text`/`summarize` to retain the parsed schema. (`llm.py`)
-2. Persist `content.summarization.structured` in `_write_summary_and_enqueue`. (`summarization_worker.py`)
+1. ✅ **DONE** — Extend `SummaryResult` + `parse_summary_text`/`summarize` to retain the parsed
+   schema. (`llm.py`) — commit `<this branch>`; carried by both live + batch lanes.
+2. ✅ **DONE** — Persist `content.summarization.structured` in `_write_summary_and_enqueue`.
+   (`summarization_worker.py`)
 3. (Optional) structured `action_items` schema with back-compat. (`llm.py`)
 4. Map-reduce helper + live-lane wiring + batch input-cap guard + new env knobs. (`llm.py`,
    `batch_api.py`)
-5. Tests: structured persistence (live+batch), map-reduce fidelity, threshold unchanged.
+5. ✅ unit tests added (`summarization/tests/test_llm.py`); still TODO: DB-level persistence test
+   (live+batch), map-reduce fidelity, threshold unchanged.
 
-**Phase 1 — Layer 2 scope + anchor (Option C direct-mint).**
-6. Re-resolution helper over structured text; update `entities_mentioned`. (worker + reuse
+**Phase 1 — Layer 2 via Think (ratified A).**
+6. Re-resolution helper over the structured text; update `entities_mentioned`. (worker + reuse
    `core.py` resolvers — factor shared helpers out of `core.py`.)
-7. Direct-mint the `situation` anchor Model inside the apply transaction (confidence ≤ 0.7, no
-   falsifier; precomputed embedding via the embedder already used for models). (`summarization_worker.py`
-   + `ModelsRepo`)
-8. Feature-flag the whole Layer-2 path (`INGEST_DOC_MEMORY_ENABLED`, default off).
-9. Tests: anchor Model created, scoped, retrievable by Pathway A/B in a think-retrieval test.
+7. Enriched T1 payload carrying the structured extraction; surface it to Think's context builder.
+   (`summarization_worker` trigger enqueue + `services/reasoning/think/*` context)
+8. Think representation-contract/prompt: recognize "document structured summary" evidence → emit a
+   `situation` anchor + `prediction`/`concern`/`recommendation` claim_ops with deadlines + edges,
+   deduping against retrieved Models. (`services/reasoning/think`, `edge_intelligence` if relevant)
+9. Feature-flag the Layer-2 path (`INGEST_DOC_MEMORY_ENABLED`, default off).
+10. Tests: a think run over a doc observation produces the expected anchor + claim Models + edges;
+    commitment carries `evaluate_at` + falsifier; claims are retrievable by Pathway A/B.
 
-**Phase 2 — Layer 2 sharp claims via Think (Option A).**
-10. Enriched T1 payload carrying the structured extraction; surface it to Think's context builder.
-    (`summarization_worker` trigger enqueue + `services/reasoning/think/*` context)
-11. Think representation-contract/prompt: recognize "document structured summary" evidence → emit
-    `prediction`/`concern`/`recommendation` claim_ops with deadlines + edges. (`services/reasoning/think`,
-    `edge_intelligence` if relevant)
-12. Tests: think run over a doc observation produces the expected claim Models + edges;
-    commitment carries `evaluate_at` + falsifier.
-
-**Phase 3 — Proactive + observability.**
-13. Add `deadline_resolver` to docker-compose; verify T2 fires on an overdue commitment.
-14. Metrics: `doc_memory.anchor_minted`, `doc_memory.claims_minted`, `doc_memory.scope_unresolved`,
-    map-reduce section counts; dashboards/alerts.
+**Phase 2 — Proactive + observability.**
+11. Add `deadline_resolver` to docker-compose; verify T2 fires on an overdue commitment.
+12. Metrics: `doc_memory.models_minted`, `doc_memory.scope_unresolved`, map-reduce section counts;
+    dashboards/alerts.
 
 ---
 
 ## 8. Invariants & edge cases to respect
-- **Idempotency:** apply path is re-run-safe today (status guard). Anchor mint must be idempotent
-  (skip if a doc-anchor Model already exists for `born_from_event_id`).
-- **Falsifier adequacy:** keep anchor `confidence ≤ 0.7` to avoid the falsifier requirement; Think
-  supplies proper falsifiers for `prediction` claims.
+- **Idempotency:** apply path is re-run-safe today (status guard). A re-fired T1 must not duplicate
+  Models — Think dedups in retrieval context (and may key on `born_from_event_id`).
+- **Falsifier adequacy:** Think supplies proper falsifiers; the `situation` anchor stays
+  `confidence ≤ 0.7` to avoid the falsifier requirement, `prediction` commitments carry a deadline
+  falsifier.
 - **Scope-actor existence:** only resolved actor UUIDs go in `scope_actors`; unresolved → text only.
 - **Both lanes:** every Layer-0/2 change must hold for live **and** batch (shared apply path —
   verify in tests).
@@ -321,29 +320,27 @@ or a new claim_role — would touch migrations.)
 ## 10. Rollout, flags, observability
 - `INGEST_DOC_MEMORY_ENABLED` (default **off**) gates all of Layer 2; Layer 0 persistence is safe to
   enable first (additive JSONB).
-- Stage: enable Layer 0 → backfill-spot-check structured fields → enable Layer 2 anchor on one tenant
-  → enable Think claims → deploy `deadline_resolver`.
-- Metrics per Phase 3; alert on `doc_memory.mint_failure` and scope-unresolved rate.
+- Stage: enable Layer 0 → backfill-spot-check structured fields → enable the Think-mediated Layer 2
+  on one tenant → deploy `deadline_resolver`.
+- Metrics per Phase 2; alert on `doc_memory.mint_failure` and scope-unresolved rate.
 
 ## 11. Open decisions & risks
-- **D1 (pivotal):** mint path — **A (Think-mediated, RECOMMENDED)** / B / C. Rationale in §4.1.
-  Under A, "Phase 1 (anchor)" in §7 folds into the Think-mediated phase; §7/§12 to be rewritten on
-  ratification.
+- **D1 (pivotal): RATIFIED 2026-06-24 → A (Think-mediated).** Rationale in §4.1. The separate
+  direct-mint anchor phase is dropped; the `situation` anchor + claim Models are all minted by Think.
 - **D2:** batch-lane map-reduce now (multi-stage) vs input-cap guard now + defer (recommended).
 - **D3:** structured `action_items` schema change now vs keep `list[str]` and parse owner/due
   heuristically.
 - **D4:** ship a `derived_from` edge kind, or rely on `born_from_event_id`/`supporting_event_ids`
   (recommended: rely on provenance fields this phase).
-- **Risk:** `deadline_resolver` not deployed ⇒ no proactive firing until Phase 3 (reactive recall
+- **Risk:** `deadline_resolver` not deployed ⇒ no proactive firing until Phase 2 (reactive recall
   still works).
 - **Risk:** entity resolution weak for large docs ⇒ scoped recall degrades to semantic-only; mitigated
   by §4.3 re-resolution + Pathway B.
 - **Risk:** Model-table volume if key_points minted indiscriminately ⇒ salience gating (§8).
 
 ## 12. Build order & rough size
-1. **Phase 0 (Layer 0)** — small, additive, migration-free. *Highest value-to-risk; do first.*
-2. **Phase 1 (anchor)** — medium; introduces the first non-Think `insert` (gated).
-3. **Phase 2 (Think claims)** — largest; touches the reasoning layer/contract.
-4. **Phase 3 (proactive + obs)** — small/ops.
+1. **Phase 0 (Layer 0)** — small, additive, migration-free. *Highest value-to-risk; in progress (0.1–0.2 done).*
+2. **Phase 1 (Layer 2 via Think)** — largest; scope re-resolution + enriched T1 + Think contract.
+3. **Phase 2 (proactive + obs)** — small/ops.
 
 Layer 1 (chunked drill-down) and Layer 3 (agentic recall) build on top of this substrate later.

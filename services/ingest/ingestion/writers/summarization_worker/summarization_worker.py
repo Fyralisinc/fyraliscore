@@ -144,6 +144,12 @@ async def _write_summary_and_enqueue(
         }
     )
     summary.pop("source_text", None)
+    # Retain the structured extraction (decisions/commitments/risks) instead of
+    # discarding it after rendering content_text. Feeds the document-memory
+    # substrate (docs/plans/document-memory-substrate.md). Live + batch lanes
+    # both reach here via apply_summary_to_observation.
+    if result.structured is not None:
+        summary["structured"] = result.structured
     content["summarization"] = summary
     content["summary_provenance"] = "llm_summarizer"
 

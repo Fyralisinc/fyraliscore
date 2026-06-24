@@ -18,6 +18,11 @@ DEFAULT_SUMMARY_MAX_TOKENS = 1200
 class SummaryResult(BaseModel):
     summary_text: str
     model: str | None = None
+    # Structured extraction (summary/key_points/decisions/action_items/risks),
+    # retained verbatim instead of being discarded after render_summary().
+    # Persisted to content.summarization.structured; consumed by the
+    # document-memory substrate (see docs/plans/document-memory-substrate.md).
+    structured: dict[str, Any] | None = None
 
 
 class Summarizer(Protocol):
@@ -105,6 +110,7 @@ def parse_summary_text(
     return SummaryResult(
         summary_text=render_summary(parsed, max_chars=max_chars),
         model=model,
+        structured=parsed.model_dump(),
     )
 
 
@@ -138,6 +144,7 @@ class LLMSummarizer:
         return SummaryResult(
             summary_text=render_summary(out, max_chars=self._max_chars),
             model=self.model_name,
+            structured=out.model_dump(),
         )
 
 
