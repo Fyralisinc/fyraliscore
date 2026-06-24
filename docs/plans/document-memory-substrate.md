@@ -159,9 +159,27 @@ native calibration/edges/falsifiers.
 A's only weakness — "least deterministic" — is small and cheaply mitigated: the worker **already
 enqueues a T1** post-summary (Think is guaranteed to run), so the risk reduces to "will Think emit
 good claim_ops," handled by the representation contract + golden tests + a `doc → models_minted`
-metric with T1 replay. Pick **C** only if the Think-contract change is too slow to land and an
-immediate recallable artifact is required — but Phase 0 (structured persistence) is the better
+conversion metric with T1 replay. Pick **C** only if the Think-contract change is too slow to land
+and an immediate recallable artifact is required — but Phase 0 (structured persistence) is the better
 "ship sooner" lever, so a stopgap anchor isn't needed.
+
+> **Metric semantics (Phase 2, 2026-06-24 review).** The `doc → models_minted`
+> conversion has **two** distinct families, not one:
+> - `doc_memory_enriched_t1_total` (worker DISPATCH, by source) — bumped when the
+>   summary worker enriches a T1 and hands the document to Think. This is what the
+>   worker can see; it is *not* a mint count. (Renamed from the former, misleading
+>   `doc_memory_models_minted_total`, which counted dispatches.)
+> - `doc_memory_models_minted_total` (TRUE mint, by source) — bumped once per
+>   document-derived Model that **Think actually inserts** (`born_from_event_id` is
+>   the document observation). Conversion rate = `models_minted / enriched_t1`.
+>
+> Under ratified A, the only place a document Model is *actually* inserted is
+> Think's apply path (`services/reasoning/think/applier.py::_apply_claim_insert`).
+> That file is owned by the parallel reasoning/BYOC track, so wiring the increment
+> there from this branch would create a new cross-branch intersection. The metric
+> + a one-line, provenance-keyed helper (`record_doc_memory_model_minted`) are
+> therefore provided ready-to-call in `lib/observability/metrics.py`; the single
+> call at the mint site is left for whichever track owns the applier to drop in.
 
 Under A, the separate direct-mint anchor phase collapses into the Think-mediated phase: §4.2–§4.6
 describe the claim_role mapping, scope resolution, provenance, and deadlines that **Think** applies;
@@ -285,8 +303,9 @@ or a new claim_role — would touch migrations.)
 
 **Phase 2 — Proactive + observability.**
 11. Add `deadline_resolver` to docker-compose; verify T2 fires on an overdue commitment.
-12. Metrics: `doc_memory.models_minted`, `doc_memory.scope_unresolved`, map-reduce section counts;
-    dashboards/alerts.
+12. Metrics: `doc_memory_enriched_t1_total` (DISPATCH), `doc_memory_models_minted_total` (TRUE mint;
+    see the metric-semantics note in §4.1), `doc_memory_scope_unresolved_total`,
+    `doc_memory_mint_failure_total`, map-reduce section counts; dashboards/alerts.
 
 ---
 
@@ -328,10 +347,21 @@ or a new claim_role — would touch migrations.)
 - **D1 (pivotal): RATIFIED 2026-06-24 → A (Think-mediated).** Rationale in §4.1. The separate
   direct-mint anchor phase is dropped; the `situation` anchor + claim Models are all minted by Think.
 - **D2:** batch-lane map-reduce now (multi-stage) vs input-cap guard now + defer (recommended).
-- **D3:** structured `action_items` schema change now vs keep `list[str]` and parse owner/due
-  heuristically.
+- **D3: RESOLVED 2026-06-24 → keep the structured `list[ActionItem]{who,what,due}` schema.** The
+  nested schema it produces is sent to the OpenAI Batch API as `text.format` of type `json_schema`
+  with **`strict: False`**, which tolerates nested objects + `$defs`/`$ref` (the `action_items` array
+  items `$ref` `#/$defs/ActionItem`). Verified well-formed + dangling-ref-free by
+  `summarization/tests/test_batch_api.py`. No incompatibility ⇒ no flag/guard needed. (If the strict
+  Structured-Outputs mode is ever turned on, that path *does* restrict nesting/`$ref` and would need
+  an inlined schema — out of scope here, noted for whenever `strict` flips to `True`.)
 - **D4:** ship a `derived_from` edge kind, or rely on `born_from_event_id`/`supporting_event_ids`
   (recommended: rely on provenance fields this phase).
+- **Owner resolution (FIXED 2026-06-24).** A bare action-item `who` ("Priya") is not a
+  `<channel>:<ref>` identity, so the source-ref path almost never resolves it. `resolve_owner_actor`
+  (scope_resolution.py) now also matches `who` against an **active actor's `display_name`**
+  (case/whitespace-insensitive, read-only, exact-after-normalization, refuses ambiguous multi-match)
+  before falling back to text. Never invents IDs; only resolved UUIDs enter `scope_actors` (§8).
+  Covered by `tests/test_scope_resolution.py` + `tests/test_doc_memory.py`.
 - **Risk:** `deadline_resolver` not deployed ⇒ no proactive firing until Phase 2 (reactive recall
   still works).
 - **Risk:** entity resolution weak for large docs ⇒ scoped recall degrades to semantic-only; mitigated
