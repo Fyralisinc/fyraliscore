@@ -1,0 +1,124 @@
+# =============================================================================
+# control-plane / self-obs / cp-prometheus.yml  —  WS-SELFOBS (NFR-10)
+# -----------------------------------------------------------------------------
+# A DEDICATED Prometheus that watches the CONTROL PLANE ITSELF. This is NOT the
+# fleet/customer-metrics path (that is central Mimir, multi-tenant, scraped via
+# the auth-proxy). This Prometheus only ever sees the vendor's own CP services
+# on cp-net, so it can page when the control plane goes dark even if Mimir/the
+# fleet pipeline is exactly what is broken. (You cannot use the thing you are
+# monitoring to tell you that thing is down.)
+#
+# WHAT IT SCRAPES
+#   1. cp-self-obs-exporter  — the ACTIVE prober (cp_exporter.py). This is the
+#      authoritative per-service up/latency source and the home of the
+#      ingest-path-alive synthetic + the silence heartbeat. Scraped on a tight
+#      interval because the silence alert keys off its freshness.
+#   2. Prometheus itself      — so the self-monitor is itself monitored.
+#   3. The CP services that EXPOSE Prometheus metrics or a plain health endpoint
+#      DIRECTLY on cp-net (mimir /metrics, loki /metrics, grafana /metrics). The
+#      `up` series Prometheus synthesises for each is a SECOND, independent
+#      liveness opinion next to the exporter's probe.
+#
+# WHAT IT DOES NOT SCRAPE DIRECTLY
+#   * auth-proxy:8443 — mTLS-ONLY (CERT_REQUIRED). A plain Prometheus scrape is
+#     rejected at the TLS handshake, so a direct job would show a permanently-
+#     down target and tell us nothing. Auth-proxy liveness comes ONLY from the
+#     exporter's TLS-handshake probe (cp_service_up{service="auth-proxy"}).
+#   * The FastAPI control services (console/config-dist/release-registry) do not
+#     export a /metrics endpoint, so they are observed via the exporter probe,
+#     not a direct scrape. (If they later add prometheus_client /metrics, add a
+#     job here — the exporter probe stays as the readiness signal.)
+#
+# Rule files (recording + alert, incl. the control-plane silence page) live in
+# cp_rules.yml, loaded below. Alertmanager wiring is left to the Assemble step;
+# the `alerting` block points at the conventional cp-net name `alertmanager`
+# and is a no-op until one exists.
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    plane: control
+    monitor: cp-self-obs
+
+rule_files:
+  - /etc/prometheus/cp_rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            # Optional; resolves only if an alertmanager is wired on cp-net.
+            - alertmanager:9093
+      # Do not fail evaluation if alertmanager is absent in a CP-only bring-up.
+      scheme: http
+      timeout: 10s
+
+scrape_configs:
+  # --------------------------------------------------------------------------
+  # 1) The active prober. Tight interval: the silence alert (NFR-10) fires when
+  #    THIS scrape goes stale, so we want a fast, predictable cadence here.
+  # --------------------------------------------------------------------------
+  - job_name: cp-self-obs-exporter
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    static_configs:
+      - targets:
+          - cp-self-obs-exporter:9110
+        labels:
+          plane: control
+          role: prober
+
+  # --------------------------------------------------------------------------
+  # 2) Self-monitor the monitor.
+  # --------------------------------------------------------------------------
+  - job_name: cp-prometheus
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - localhost:9090
+        labels:
+          plane: control
+          role: monitor
+
+  # --------------------------------------------------------------------------
+  # 3) Direct /metrics scrape of the CP telemetry stores + UI. These produce a
+  #    Prometheus-native `up` series per target as a second opinion alongside
+  #    the exporter's cp_service_up probe.
+  #
+  #    Mimir requires X-Scope-OrgID on its DATA APIs, but the operational
+  #    /metrics endpoint is served WITHOUT a tenant header, so a plain scrape
+  #    works. Same for Loki /metrics and Grafana /metrics.
+  # --------------------------------------------------------------------------
+  - job_name: cp-mimir
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - mimir:9009
+        labels:
+          plane: control
+          component: metrics
+          cp_service: mimir
+
+  - job_name: cp-loki
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - loki:3100
+        labels:
+          plane: control
+          component: logs
+          cp_service: loki
+
+  - job_name: cp-grafana
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - grafana:3000
+        labels:
+          plane: control
+          component: ui
+          cp_service: grafana
