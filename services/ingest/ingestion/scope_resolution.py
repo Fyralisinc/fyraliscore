@@ -107,6 +107,60 @@ async def resolve_actor_ref(
     )
 
 
+def _display_name_key(name: str) -> str:
+    """Casefold + collapse internal whitespace for display-name matching."""
+    return " ".join(name.split()).casefold()
+
+
+async def resolve_owner_actor(
+    who: str | None,
+    source_channel: str,
+    tenant_id: UUID,
+    actor_repo: ActorRepo | None,
+) -> tuple[UUID | None, str | None]:
+    """Resolve an action-item owner (e.g. ``"Priya"``) to an actor UUID.
+
+    A summarizer ``who`` is a bare display string, not a ``<channel>:<ref>``
+    identity, so the channel-prefixed source-ref path (``resolve_actor_ref``)
+    almost never hits an ``actor_identity_mappings`` row. This widens the
+    resolution: when the source-ref path misses, try matching ``who`` against an
+    active actor's ``display_name`` (case-insensitive, whitespace-normalized) for
+    this tenant — the only additional, **read-only**, never-inventing way a bare
+    name can become a real actor UUID.
+
+    Returns ``(actor_id, unresolved_owner)``: at most one is non-None. The
+    display-name match is intentionally exact-after-normalization and bails on
+    ambiguity (two active actors sharing the name) so we never guess which
+    "Priya" was meant — an ambiguous or unmatched name stays text-only (§8
+    scope-actor existence: only resolved UUIDs may enter ``scope_actors``).
+    """
+    if not who or not who.strip() or actor_repo is None:
+        return None, (who.strip() if who and who.strip() else None)
+
+    # 1) Existing path: treat the bare name as a source ref (works when the
+    #    summarizer happens to emit a channel-qualified handle).
+    resolved, unresolved = await resolve_actor_ref(who, source_channel, actor_repo)
+    if resolved is not None:
+        return resolved, None
+
+    # 2) Display-name fallback (the actual fix). Read-only scan of this tenant's
+    #    active actors; match on normalized display_name. Never invents an ID.
+    key = _display_name_key(who)
+    try:
+        actors = await actor_repo.list_active_actors(tenant_id)
+    except Exception:  # noqa: BLE001 — resolution must never raise into the worker
+        return None, who.strip()
+    matches = [
+        a for a in actors
+        if getattr(a, "display_name", None)
+        and _display_name_key(a.display_name) == key
+    ]
+    if len(matches) == 1:
+        return matches[0].id, None
+    # 0 matches → unresolved; >1 → ambiguous, refuse to guess (text-only).
+    return None, who.strip()
+
+
 async def resolve_entities_in_text(
     text: str,
     alias_repo: EntityAliasRepo | None,
@@ -149,5 +203,6 @@ __all__ = [
     "candidate_phrases",
     "looks_like_entity",
     "resolve_actor_ref",
+    "resolve_owner_actor",
     "resolve_entities_in_text",
 ]

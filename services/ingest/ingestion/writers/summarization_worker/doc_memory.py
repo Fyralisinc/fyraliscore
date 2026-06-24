@@ -33,8 +33,8 @@ import asyncpg
 from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.ingest.ingestion.scope_resolution import (
-    resolve_actor_ref,
     resolve_entities_in_text,
+    resolve_owner_actor,
 )
 
 
@@ -102,12 +102,12 @@ def structured_scope_text(structured: dict[str, Any]) -> str:
 
 
 def _action_item_owner_refs(structured: dict[str, Any]) -> list[str]:
-    """Owner phrases from action_items, as `<channel>:<ref>` actor references.
+    """Owner phrases from action_items (bare display strings like "Priya").
 
-    The summarizer's `who` is a display string (e.g. "Priya"), not a channel
-    ref, so it rarely resolves to a UUID. We still pass it through the actor
-    resolver (it may match an alias-backed mapping); whatever does not resolve
-    stays as unresolved text — never invented into scope_actors (§8).
+    The summarizer's `who` is a display string, not a channel ref, so the
+    channel-prefixed source-ref path rarely resolves it. ``resolve_owner_actor``
+    therefore also tries an active-actor display-name match (read-only, never
+    invents IDs); whatever still does not resolve stays as unresolved text (§8).
     """
     refs: list[str] = []
     items = structured.get("action_items")
@@ -176,12 +176,12 @@ async def resolve_document_scope(
         scope_actors.append(str(actor_id))
     unresolved_actor_refs: list[str] = []
     for owner_ref in _action_item_owner_refs(structured):
-        resolved, unresolved = await resolve_actor_ref(
-            owner_ref, source_channel, actor_repo
+        resolved, unresolved = await resolve_owner_actor(
+            owner_ref, source_channel, tenant_id, actor_repo
         )
         if resolved is not None and str(resolved) not in scope_actors:
             scope_actors.append(str(resolved))
-        elif unresolved is not None and owner_ref not in unresolved_actor_refs:
+        elif resolved is None and owner_ref not in unresolved_actor_refs:
             # Keep the bare owner display string (not the channel-prefixed ref)
             # so Think can still surface "Priya" in the natural text.
             unresolved_actor_refs.append(owner_ref)

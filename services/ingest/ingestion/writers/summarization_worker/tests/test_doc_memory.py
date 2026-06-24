@@ -9,6 +9,7 @@ and key_points are noise-gated out of the resolution text (§8).
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from uuid import UUID
 
 import pytest
@@ -26,20 +27,48 @@ _PRIYA_ACTOR = "22222222-2222-2222-2222-222222222222"
 
 
 class _FakePool:
-    """Minimal asyncpg.Pool stand-in for the two resolver queries.
+    """Minimal asyncpg.Pool stand-in for the resolver queries.
 
-    - ``fetch`` backs EntityAliasRepo.fast_path_resolve_many: it returns a row
-      for any normalized alias present in ``alias_map``.
-    - ``fetchval`` backs ActorRepo.resolve_by_source_actor_ref: it returns a
-      UUID for any (channel, ref) present in ``actor_map``.
+    - ``fetch`` over the entity-alias query backs
+      EntityAliasRepo.fast_path_resolve_many: a row per normalized alias in
+      ``alias_map``.
+    - ``fetch`` over the ``FROM actors`` query backs
+      ActorRepo.list_active_actors: rows built from ``display_name_map``
+      (display_name -> actor UUID) for the display-name owner fallback.
+    - ``fetchval`` backs ActorRepo.resolve_by_source_actor_ref: a UUID for any
+      (channel, ref) present in ``actor_map``.
     """
 
-    def __init__(self, alias_map: dict[str, dict], actor_map: dict[tuple[str, str], str]):
+    def __init__(
+        self,
+        alias_map: dict[str, dict],
+        actor_map: dict[tuple[str, str], str],
+        display_name_map: dict[str, str] | None = None,
+    ):
         self._alias_map = alias_map
         self._actor_map = actor_map
+        self._display_name_map = display_name_map or {}
 
     async def fetch(self, query: str, *args):
-        # args = (tenant_id, norms_list)
+        if "FROM actors" in query:
+            # ActorRepo.list_active_actors(tenant_id) -> active actor rows.
+            tenant_id = args[0]
+            return [
+                {
+                    "id": UUID(actor_id),
+                    "tenant_id": tenant_id,
+                    "type": "human_internal",
+                    "display_name": name,
+                    "email": None,
+                    "status": "active",
+                    "metadata": "{}",
+                    "specification_id": None,
+                    "created_at": datetime(2026, 6, 1, tzinfo=timezone.utc),
+                    "last_seen_at": None,
+                }
+                for name, actor_id in self._display_name_map.items()
+            ]
+        # EntityAliasRepo.fast_path_resolve_many: args = (tenant_id, norms_list)
         norms = args[1]
         rows = []
         for norm in norms:
@@ -129,6 +158,63 @@ async def test_unresolved_owner_stays_text_never_in_scope_actors():
     # Every scope_actor that IS present must be a valid UUID string.
     for actor in scope.scope_actors:
         UUID(actor)  # raises if not a UUID
+
+
+@pytest.mark.asyncio
+async def test_owner_resolves_by_display_name_when_source_ref_misses():
+    # The summarizer's `who` ("Priya") is NOT a channel-qualified handle, so the
+    # source-ref path (fireflies:Priya) misses. The display-name fallback (Task
+    # #4) matches an active actor's display_name and resolves it to a real UUID.
+    pool = _FakePool(
+        alias_map={"acme": {"type": "customer", "id": _ACME_ID}},
+        actor_map={},  # no actor_identity_mappings row for fireflies:Priya
+        display_name_map={"Priya": _PRIYA_ACTOR},
+    )
+    scope = await resolve_document_scope(
+        pool=pool,  # type: ignore[arg-type]
+        tenant_id=UUID("33333333-3333-3333-3333-333333333333"),
+        source_channel="fireflies",
+        structured=_STRUCTURED,
+    )
+    assert _PRIYA_ACTOR in scope.scope_actors
+    assert "Priya" not in scope.unresolved_actor_refs
+
+
+@pytest.mark.asyncio
+async def test_owner_display_name_match_is_case_insensitive():
+    pool = _FakePool(
+        alias_map={},
+        actor_map={},
+        display_name_map={"PRIYA": _PRIYA_ACTOR},  # cased differently than "Priya"
+    )
+    scope = await resolve_document_scope(
+        pool=pool,  # type: ignore[arg-type]
+        tenant_id=UUID("33333333-3333-3333-3333-333333333333"),
+        source_channel="fireflies",
+        structured=_STRUCTURED,
+    )
+    assert _PRIYA_ACTOR in scope.scope_actors
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_display_name_stays_text_not_invented():
+    # Two active actors share the display name -> refuse to guess; never invent.
+    pool = _FakePool(
+        alias_map={},
+        actor_map={},
+        display_name_map={
+            "Priya": _PRIYA_ACTOR,
+            "priya ": "55555555-5555-5555-5555-555555555555",  # normalizes equal
+        },
+    )
+    scope = await resolve_document_scope(
+        pool=pool,  # type: ignore[arg-type]
+        tenant_id=UUID("33333333-3333-3333-3333-333333333333"),
+        source_channel="fireflies",
+        structured=_STRUCTURED,
+    )
+    assert scope.scope_actors == []
+    assert "Priya" in scope.unresolved_actor_refs
 
 
 @pytest.mark.asyncio
