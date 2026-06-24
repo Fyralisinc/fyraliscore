@@ -32,7 +32,12 @@ def _sign_into(ring: sl.Keyring, path: str, content: bytes, kind: str, version: 
     with open(path, "wb") as fh:
         fh.write(content)
     signed_bytes = sl.canonical_bytes_for_file(path, kind)
-    key_id, raw_sig = ring.sign_with_active(signed_bytes)
+    key_id = ring.active_key_id
+    # I6: sign the canonical manifest binding (not the raw bytes) so relabels are rejected.
+    payload = sl.signed_payload_for(
+        artifact_kind=kind, version=version, key_id=key_id, signed_bytes=signed_bytes
+    )
+    _, raw_sig = ring.sign_with_active(payload)
     with open(path + ".sig", "w", encoding="utf-8") as fh:
         fh.write(sl.b64e(raw_sig) + "\n")
     manifest = sl.build_manifest(
@@ -95,6 +100,45 @@ def run_selftest(verbose: bool = True) -> bool:
         json.dump(m, open(lic + ".manifest.json", "w"))
         check("unknown key_id FAILS verification", not verify_file(lic, trust_root_path=tr).ok)
 
+        # 3b. I6 RELABEL: swap a manifest identity field while keeping the artifact bytes
+        #     intact -> the v2 binding no longer matches the signed payload -> REJECT.
+        relabel = os.path.join(work, "relabel-config.json")
+        _sign_into(ring, relabel, sl.canonical_json_bytes({"tier": "T1"}), "config", "7")
+        check("freshly-signed relabel target verifies OK", verify_file(relabel, trust_root_path=tr).ok)
+
+        # (i) relabel the VERSION (e.g. claim a different release version), bytes unchanged
+        rm = json.load(open(relabel + ".manifest.json"))
+        rm_orig = dict(rm)
+        rm["version"] = "9999"
+        json.dump(rm, open(relabel + ".manifest.json", "w"))
+        check(
+            "RELABELED version FAILS verification (I6)",
+            not verify_file(relabel, trust_root_path=tr).ok,
+        )
+
+        # (ii) relabel the ARTIFACT-KIND (config -> license), bytes unchanged
+        rm2 = dict(rm_orig)
+        rm2["artifact"] = "license"
+        rm2["version"] = rm_orig["version"]  # keep version honest; only kind swapped
+        json.dump(rm2, open(relabel + ".manifest.json", "w"))
+        check(
+            "RELABELED artifact-kind FAILS verification (I6)",
+            not verify_file(relabel, trust_root_path=tr).ok,
+        )
+
+        # (iii) restore the original manifest -> verifies again (relabel was the only change)
+        json.dump(rm_orig, open(relabel + ".manifest.json", "w"))
+        check("restored manifest verifies OK again", verify_file(relabel, trust_root_path=tr).ok)
+
+        # (iv) the artifact bytes themselves are still bound (via sha256 in the binding):
+        #      tamper the bytes, keep the manifest -> REJECT.
+        with open(relabel, "wb") as fh:
+            fh.write(sl.canonical_json_bytes({"tier": "T3"}))
+        check(
+            "tampered bytes (manifest unchanged) FAILS verification (I6)",
+            not verify_file(relabel, trust_root_path=tr).ok,
+        )
+
         # 4. rotate -> old + new both verify.
         # Re-sign a clean A1 with K1 first, then rotate to K2 and sign A2.
         a1 = os.path.join(work, "config-A1.json")
@@ -133,6 +177,83 @@ def test_core_primitives_roundtrip():
     sig = sl.sign(data, priv)
     assert sl.verify(data, sig, pub) is True
     assert sl.verify(data + b"!", sig, pub) is False
+
+
+def test_relabel_rejected_i6():
+    """I6: a signed bundle relabeled in the manifest (version / kind / key_id) must REJECT,
+    while the artifact bytes are byte-for-byte unchanged."""
+    with tempfile.TemporaryDirectory(prefix="signing-relabel-") as work:
+        tr = os.path.join(work, "trust_root.json")
+        ring = sl.Keyring()
+        ring.generate_active_key("cp-signing-2026-06")
+
+        cfg = os.path.join(work, "agent-config.json")
+        _sign_into(ring, cfg, sl.canonical_json_bytes({"tier": "T1"}), "config", "7")
+        _publish_trust_root(ring, tr)
+
+        # baseline: verifies, and is marked v2-bound
+        res = verify_file(cfg, trust_root_path=tr)
+        assert res.ok, res.reason
+        man = json.load(open(cfg + ".manifest.json"))
+        assert man["sig_binding"] == sl.SIG_BINDING_V2
+
+        orig_bytes = open(cfg, "rb").read()
+
+        # relabel version, keep artifact bytes -> REJECT
+        m = dict(man); m["version"] = "42"
+        json.dump(m, open(cfg + ".manifest.json", "w"))
+        assert not verify_file(cfg, trust_root_path=tr).ok
+        assert open(cfg, "rb").read() == orig_bytes  # bytes untouched
+
+        # relabel artifact-kind, keep artifact bytes -> REJECT
+        m = dict(man); m["artifact"] = "release"
+        json.dump(m, open(cfg + ".manifest.json", "w"))
+        assert not verify_file(cfg, trust_root_path=tr).ok
+
+        # restore original manifest -> verifies again
+        json.dump(man, open(cfg + ".manifest.json", "w"))
+        assert verify_file(cfg, trust_root_path=tr).ok
+
+
+def test_legacy_v1_backcompat_and_require_binding():
+    """A legacy v1 bundle (signature over raw artifact bytes, no sig_binding field) still
+    verifies by default, but is rejected when binding is required — AND a v1 bundle cannot
+    be relabeled with a forged v2 marker (its signature won't match the v2 payload)."""
+    with tempfile.TemporaryDirectory(prefix="signing-v1-") as work:
+        tr = os.path.join(work, "trust_root.json")
+        ring = sl.Keyring()
+        ring.generate_active_key("cp-signing-2026-06")
+        _publish_trust_root(ring, tr)
+
+        cfg = os.path.join(work, "legacy-config.json")
+        body = sl.canonical_json_bytes({"tier": "T1"})
+        with open(cfg, "wb") as fh:
+            fh.write(body)
+        signed_bytes = sl.canonical_bytes_for_file(cfg, "config")
+        # LEGACY signing: signature over the raw canonical bytes, manifest WITHOUT sig_binding.
+        _, raw_sig = ring.sign_with_active(signed_bytes)
+        with open(cfg + ".sig", "w") as fh:
+            fh.write(sl.b64e(raw_sig) + "\n")
+        legacy_manifest = {
+            "artifact": "config",
+            "version": "7",
+            "sha256": sl.sha256_hex(signed_bytes),
+            "key_id": ring.active_key_id,
+            "algo": sl.ALGO,
+            "signed_at": sl.now_rfc3339(),
+        }
+        json.dump(legacy_manifest, open(cfg + ".manifest.json", "w"))
+
+        # default: legacy v1 accepted (back-compat)
+        assert verify_file(cfg, trust_root_path=tr).ok
+        # require-binding: legacy v1 rejected
+        assert not verify_file(cfg, trust_root_path=tr, allow_legacy_v1=False).ok
+
+        # forge a v2 marker onto the legacy manifest -> the legacy sig won't match the v2
+        # payload, so it's rejected (can't upgrade a v1 sig to a v2 claim).
+        m = dict(legacy_manifest); m["sig_binding"] = sl.SIG_BINDING_V2
+        json.dump(m, open(cfg + ".manifest.json", "w"))
+        assert not verify_file(cfg, trust_root_path=tr).ok
 
 
 if __name__ == "__main__":

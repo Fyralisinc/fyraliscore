@@ -22,17 +22,52 @@ Pure Python, depends only on [`cryptography`](https://cryptography.io) (ed25519)
 | `license`     | `license-acme.json`    | **compact-canonical UTF-8 JSON** (sorted keys, no whitespace) |
 | `config`      | `agent-config.json`    | **compact-canonical UTF-8 JSON** (sorted keys, no whitespace) |
 
-The signed quantity is the **ed25519 signature over those canonical bytes**. For JSON artifacts
-we canonicalize first, so a verifier accepts a license/config that was merely **re-pretty-printed
-or had its keys re-ordered** but rejects any change to the actual content. (Tarballs are signed
-byte-for-byte.) The `sha256` in the manifest is a **redundant** integrity check over the same
-canonical bytes — verifiers MUST check the ed25519 signature and MAY additionally check `sha256`.
+For JSON artifacts we canonicalize first, so a verifier accepts a license/config that was merely
+**re-pretty-printed or had its keys re-ordered** but rejects any change to the actual content.
+(Tarballs are canonicalized byte-for-byte.) The `sha256` in the manifest is the digest of those
+canonical bytes.
+
+### Manifest binding — what the signature actually covers (I6, `sig_binding: v2`)
+
+The ed25519 signature does **not** cover the raw canonical artifact bytes directly. Doing so left a
+**relabel gap**: because the manifest's `version` / `artifact` / `key_id` were *outside* the signed
+quantity, a signed bundle could be **relabeled** — e.g. a release manifest swapped to claim a
+different version or artifact-kind — and still verify, because the artifact bytes (and therefore the
+old signature) were unchanged.
+
+To close this, the signature now covers a **canonical binding** of the manifest identity:
+
+```
+signed_payload = canonical_json({
+  "binding": "v2",
+  "algo": "ed25519",
+  "artifact": <kind>,            # release | license | config
+  "version": <version>,
+  "key_id": <key_id>,
+  "artifact_sha256": sha256(canonical artifact bytes)   # binds the content, indirectly
+})
+```
+
+(see `signing_lib.signing_payload` / `signed_payload_for`). A verifier recomputes this binding from
+**(artifact + manifest)** and ed25519-verifies it, so:
+
+* tampering the **artifact** changes `artifact_sha256` → reject;
+* relabeling the **version**, **artifact-kind**, or **key_id** changes the binding → reject;
+* re-pretty-printing / key-reordering a JSON artifact is still accepted (canonicalized).
+
+`sha256` in the manifest remains a redundant cross-check (and is the value fed into the binding).
+
+**Schema version & back-compat.** Manifests now carry `"sig_binding": "v2"`. A manifest **without**
+`sig_binding` is treated as **legacy v1** (signature over raw canonical bytes — relabel-vulnerable)
+and is still accepted by `verify_file` for backward compatibility; pass `allow_legacy_v1=False`
+(CLI `--require-binding`) to reject it and require the bound v2 form. A legacy v1 bundle cannot be
+"upgraded" by stamping a `v2` marker onto its manifest — its signature won't match the v2 payload.
 
 For each signed `<file>` we emit two siblings:
 
 ```
-<file>.sig             # base64 of the raw 64-byte ed25519 signature (detached)
-<file>.manifest.json   # { artifact, version, sha256, key_id, algo:"ed25519", signed_at }
+<file>.sig             # base64 of the raw 64-byte ed25519 signature (detached, over the v2 binding)
+<file>.manifest.json   # { artifact, version, sha256, key_id, algo:"ed25519", sig_binding:"v2", signed_at }
 ```
 
 Manifest shape (C2):
@@ -44,6 +79,7 @@ Manifest shape (C2):
   "sha256": "267070fb…",
   "key_id": "cp-signing-2026-06",
   "algo": "ed25519",
+  "sig_binding": "v2",
   "signed_at": "2026-06-24T11:38:42Z"
 }
 ```
@@ -108,7 +144,7 @@ $PY selftest.py            # or: pytest selftest.py
 
 ```python
 from verify_bundle import verify_file
-res = verify_file("agent-config.json")          # checks sig + key_id policy + sha256
+res = verify_file("agent-config.json")          # checks bound sig (v2) + key_id policy + sha256
 if not res.ok:
     audit_log.record("rejected", reason=res.reason)   # NEVER apply
     raise RuntimeError(res.reason)

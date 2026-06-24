@@ -425,7 +425,13 @@ def _sign_bundle(bundle_path: str, *, key_dir: Optional[str] = None,
         raise RuntimeError("signing libs unavailable; cannot --sign")
     ring = _load_cp_keyring(key_dir)
     raw = open(bundle_path, "rb").read()
-    key_id, sig = ring.sign_with_active(raw)
+    key_id = ring.active_key_id
+    # I6: sign the canonical manifest binding, not the raw bundle bytes, so the manifest
+    # fields (artifact/version/key_id) can't be relabeled while the signature still verifies.
+    payload = sl.signed_payload_for(
+        artifact_kind="config", version=version, key_id=key_id, signed_bytes=raw
+    )
+    _, sig = ring.sign_with_active(payload)
     manifest = sl.build_manifest(
         artifact_kind="config", version=version, signed_bytes=raw, key_id=key_id
     )
@@ -457,9 +463,25 @@ def _verify_bundle_signature(bundle_path: str, *,
     raw = open(bundle_path, "rb").read()
     sig = sl.b64d(open(sig_path, "r", encoding="utf-8").read().strip())
     kid = manifest.get("key_id")
-    if not ring.verify_with(kid, raw, sig):
+    # I6: reconstruct the signed payload per the manifest binding version so a relabeled
+    # manifest (swapped artifact/version/key_id) fails the cryptographic check below.
+    digest = sl.sha256_hex(raw)
+    sig_binding = manifest.get("sig_binding", sl.SIG_BINDING_V1)
+    if sig_binding == sl.SIG_BINDING_V2:
+        payload = sl.signing_payload_from_manifest(manifest, digest)
+    elif sig_binding == sl.SIG_BINDING_V1:
+        payload = raw  # legacy unbound signature (back-compat)
+    else:
+        return OverlapResult(
+            False, f"unknown manifest sig_binding {sig_binding!r} (key_id={kid}) — do NOT load"
+        )
+    if not ring.verify_with(kid, payload, sig):
         return OverlapResult(
             False, f"ed25519 signature INVALID for bundle (key_id={kid}) — do NOT load"
+        )
+    if manifest.get("sha256") and manifest["sha256"] != digest:
+        return OverlapResult(
+            False, f"bundle sha256 mismatch (key_id={kid}) — do NOT load"
         )
     return OverlapResult(True, f"bundle signature OK (key_id={kid})")
 

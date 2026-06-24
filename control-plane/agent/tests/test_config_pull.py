@@ -109,6 +109,28 @@ def test_transport_failure_is_nonfatal(signing_fabric, tmp_path):
     assert "transport" in res.reason.lower()
 
 
+def test_relabeled_manifest_is_rejected_i6(signing_fabric, tmp_path):
+    """I6: a correctly config-signed bundle whose manifest is RELABELED (version swapped)
+    while the artifact bytes are byte-for-byte unchanged must be rejected by the agent's
+    verify-before-apply path (the v2 manifest binding no longer matches the signature)."""
+    bundle = make_config_bundle(
+        signing_fabric, tmp_path / "bundle.json", payload={"interval_s": 99}, version="12"
+    )
+    man_path = bundle.parent / (bundle.name + ".manifest.json")
+    body_before = bundle.read_bytes()
+
+    man = json.loads(man_path.read_text())
+    assert man["sig_binding"] == "v2"
+    man["version"] = "9999"  # relabel only the manifest version; do NOT touch the artifact
+    man_path.write_text(json.dumps(man), encoding="utf-8")
+    assert bundle.read_bytes() == body_before  # artifact bytes untouched
+
+    puller = _puller(signing_fabric, _staged_fetcher(bundle), tmp_path / "applied")
+    res = puller.pull_and_apply("https://console/config")
+    assert not res.ok and not res.applied, res.reason
+    assert puller.load_applied_config() is None
+
+
 def test_release_bundle_not_accepted_as_config(signing_fabric, tmp_path):
     # Signed, but artifact kind is 'release' not 'config'.
     bundle = make_config_bundle(

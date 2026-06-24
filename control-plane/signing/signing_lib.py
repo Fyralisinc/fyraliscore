@@ -42,6 +42,16 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 
 ALGO = "ed25519"
 
+# Manifest binding schema (I6). ``v1`` = legacy: ed25519 signature covered ONLY the
+# canonical artifact bytes, so a signed bundle could be RELABELED (manifest version /
+# artifact-kind swapped) while the signature still verified. ``v2`` binds the manifest
+# identity fields into the signed payload: we sign a canonical binding over
+# {binding, algo, artifact, version, key_id, artifact_sha256} instead of the raw bytes,
+# so any manifest relabel changes the signed payload and fails verification.
+SIG_BINDING_V1 = "v1"  # legacy: signature over canonical artifact bytes only
+SIG_BINDING_V2 = "v2"  # bound: signature over canonical {manifest-fields + artifact_sha256}
+SIG_BINDING_CURRENT = SIG_BINDING_V2
+
 # --------------------------------------------------------------------------- #
 # Small shared primitives (kept local so signing_lib has no cross-dir imports) #
 # --------------------------------------------------------------------------- #
@@ -392,22 +402,104 @@ def canonical_bytes_for_file(path: str, kind: str) -> bytes:
     return raw
 
 
+def signing_payload(
+    *, artifact_kind: str, version: str, key_id: str, artifact_sha256: str
+) -> bytes:
+    """Return the **canonical binding bytes** that the ed25519 signature covers (I6, v2).
+
+    The signed quantity is no longer the raw artifact bytes; it is a deterministic,
+    order-independent JSON binding of the artifact's *identity*:
+
+        {binding, algo, artifact, version, key_id, artifact_sha256}
+
+    where ``artifact_sha256`` is the sha256 of the canonical artifact bytes (so the
+    artifact content is still cryptographically bound, indirectly via its digest). Signing
+    this binding means a verifier who recomputes it from (artifact + manifest) detects:
+
+      * artifact tamper      -> ``artifact_sha256`` changes -> binding changes -> REJECT
+      * version relabel       -> ``version`` changes        -> binding changes -> REJECT
+      * artifact-kind relabel -> ``artifact`` changes       -> binding changes -> REJECT
+      * key_id relabel        -> ``key_id`` changes         -> binding changes -> REJECT
+
+    ``artifact_kind``/``version``/``key_id`` are stringified so the binding is stable
+    regardless of how the manifest happened to type them.
+    """
+    return canonical_json_bytes(
+        {
+            "binding": SIG_BINDING_V2,
+            "algo": ALGO,
+            "artifact": str(artifact_kind),
+            "version": str(version),
+            "key_id": str(key_id),
+            "artifact_sha256": str(artifact_sha256),
+        }
+    )
+
+
+def signing_payload_from_manifest(manifest: dict, artifact_sha256: str) -> bytes:
+    """Recompute the v2 signing binding from a parsed ``manifest`` + the artifact digest.
+
+    The verifier calls this with the freshly-recomputed ``artifact_sha256`` of the
+    canonical artifact bytes so that a relabeled manifest yields a different binding than
+    what was actually signed.
+    """
+    return signing_payload(
+        artifact_kind=manifest.get("artifact"),
+        version=manifest.get("version"),
+        key_id=manifest.get("key_id"),
+        artifact_sha256=artifact_sha256,
+    )
+
+
 def build_manifest(
     *, artifact_kind: str, version: str, signed_bytes: bytes, key_id: str
 ) -> dict:
-    """Construct the C2 manifest dict for ``signed_bytes``."""
+    """Construct the C2 manifest dict for ``signed_bytes``.
+
+    Records ``sig_binding: "v2"`` so verifiers know the ed25519 signature covers the
+    canonical *binding* (manifest identity fields + artifact sha256), not just the raw
+    artifact bytes. ``sha256`` remains the digest of the canonical artifact bytes (the
+    redundant integrity check AND the value that feeds the signed binding)."""
     return {
         "artifact": artifact_kind,
         "version": version,
         "sha256": sha256_hex(signed_bytes),
         "key_id": key_id,
         "algo": ALGO,
+        "sig_binding": SIG_BINDING_V2,
         "signed_at": now_rfc3339(),
     }
 
 
+def signed_payload_for(
+    *,
+    artifact_kind: str,
+    version: str,
+    key_id: str,
+    signed_bytes: bytes,
+) -> bytes:
+    """Convenience for signers: the exact bytes to hand to :func:`sign` for a v2 bundle.
+
+    Equivalent to ``signing_payload(..., artifact_sha256=sha256_hex(signed_bytes))``.
+    Centralizes the "sign the binding, not the raw bytes" rule so every signing call
+    site (sign_bundle, release, upgrade trust-bundle) stays consistent.
+    """
+    return signing_payload(
+        artifact_kind=artifact_kind,
+        version=version,
+        key_id=key_id,
+        artifact_sha256=sha256_hex(signed_bytes),
+    )
+
+
 __all__ = [
     "ALGO",
+    "SIG_BINDING_V1",
+    "SIG_BINDING_V2",
+    "SIG_BINDING_CURRENT",
+    "signing_payload",
+    "signing_payload_from_manifest",
+    "signed_payload_for",
     "now_rfc3339",
     "sha256_hex",
     "canonical_json_bytes",

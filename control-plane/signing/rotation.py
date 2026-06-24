@@ -43,7 +43,12 @@ def _write_signed(ring: sl.Keyring, path: str, content: bytes, kind: str, versio
     with open(path, "wb") as fh:
         fh.write(content)
     signed_bytes = sl.canonical_bytes_for_file(path, kind)
-    key_id, raw_sig = ring.sign_with_active(signed_bytes)
+    key_id = ring.active_key_id
+    # I6: sign the canonical manifest binding (not the raw bytes) so relabels are rejected.
+    payload = sl.signed_payload_for(
+        artifact_kind=kind, version=version, key_id=key_id, signed_bytes=signed_bytes
+    )
+    _, raw_sig = ring.sign_with_active(payload)
     with open(path + ".sig", "w", encoding="utf-8") as fh:
         fh.write(sl.b64e(raw_sig) + "\n")
     manifest = sl.build_manifest(

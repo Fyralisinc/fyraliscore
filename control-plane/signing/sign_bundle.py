@@ -10,13 +10,21 @@ Outputs (next to ``<file>``)
     <file>.sig             # base64 of the raw 64-byte ed25519 signature over the canonical bytes
     <file>.manifest.json   # { artifact, version, sha256, key_id, algo:"ed25519", signed_at }
 
-Canonical signed bytes (C2)
----------------------------
+Canonical artifact bytes (C2)
+-----------------------------
 * release tarballs / opaque blobs  -> the exact file bytes.
 * license / config JSON            -> compact-canonical UTF-8 JSON (sorted keys, no whitespace),
                                       so signing is independent of key order / formatting.
-The ``sha256`` in the manifest is a *redundant* integrity check over those same canonical bytes;
-the signed quantity is the ed25519 signature, not the hash.
+
+Signed payload (I6, manifest binding — ``sig_binding: v2``)
+-----------------------------------------------------------
+The ed25519 signature does NOT cover the raw canonical artifact bytes directly. It covers a
+canonical BINDING of the manifest identity: ``{binding, algo, artifact, version, key_id,
+artifact_sha256}`` where ``artifact_sha256`` is the sha256 of the canonical artifact bytes
+above (see ``signing_lib.signing_payload``). This closes the relabel gap: swapping the
+manifest's ``version`` or ``artifact`` (or ``key_id``) while keeping the artifact bytes now
+changes the signed payload, so the signature no longer verifies. The ``sha256`` in the
+manifest remains the redundant integrity check AND is the value fed into the signed binding.
 
 Usage
 -----
@@ -93,8 +101,16 @@ def sign_file(
     artifact_kind = kind or sl.infer_artifact_kind(path)
     signed_bytes = sl.canonical_bytes_for_file(path, artifact_kind)
 
-    # Sign the canonical bytes; sanity-check the signer matches the trust-root pubkey.
-    raw_sig = sl.sign(signed_bytes, priv)
+    # I6: sign a canonical BINDING over {artifact_sha256, artifact_kind, version, key_id},
+    # not the raw artifact bytes — so a relabeled manifest (swapped version / kind / key_id)
+    # no longer verifies even though the artifact bytes are unchanged.
+    payload = sl.signed_payload_for(
+        artifact_kind=artifact_kind,
+        version=str(version),
+        key_id=key_id,
+        signed_bytes=signed_bytes,
+    )
+    raw_sig = sl.sign(payload, priv)
     expected_pub = doc["keys"][key_id]["pubkey"]
     if sl.public_key_to_b64(priv.public_key()) != expected_pub:
         raise RuntimeError(

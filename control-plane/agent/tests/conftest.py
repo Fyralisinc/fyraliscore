@@ -71,7 +71,13 @@ class SigningFabric:
     def sign(self, path: "str | Path", *, kind: str, version: str = "1") -> Path:
         path = Path(path)
         signed_bytes = sl.canonical_bytes_for_file(str(path), kind)
-        key_id, raw_sig = self.ring.sign_with_active(signed_bytes)
+        key_id = self.ring.active_key_id
+        # I6: sign the canonical manifest binding (matching production sign_bundle), so a
+        # relabeled manifest is rejected by verify_bundle.
+        payload = sl.signed_payload_for(
+            artifact_kind=kind, version=str(version), key_id=key_id, signed_bytes=signed_bytes
+        )
+        _, raw_sig = self.ring.sign_with_active(payload)
         (path.parent / (path.name + ".sig")).write_text(
             sl.b64e(raw_sig) + "\n", encoding="utf-8"
         )

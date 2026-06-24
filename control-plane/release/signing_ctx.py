@@ -207,7 +207,12 @@ class SigningContext:
         priv = self._load_private_key(key_id)
 
         signed_bytes = sl.canonical_bytes_for_file(path, kind)
-        raw_sig = sl.sign(signed_bytes, priv)
+        # I6: sign the canonical manifest binding (artifact_sha256 + kind + version + key_id),
+        # not the raw artifact bytes — keeps verify_bundle's relabel rejection in lock-step.
+        payload = sl.signed_payload_for(
+            artifact_kind=kind, version=str(version), key_id=key_id, signed_bytes=signed_bytes
+        )
+        raw_sig = sl.sign(payload, priv)
 
         # Sanity: the signer's pubkey must match the trust-root pubkey for this key.
         expected_pub = doc["keys"][key_id]["pubkey"]

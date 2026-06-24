@@ -9,14 +9,22 @@ is unknown/retired, is never applied."*
 Verification steps (all must pass)
 ----------------------------------
  1. Load ``<file>``, ``<file>.sig`` (base64 detached sig), ``<file>.manifest.json``.
- 2. Recompute the **canonical signed bytes** for the artifact kind in the manifest.
+ 2. Recompute the **canonical artifact bytes** for the artifact kind in the manifest.
  3. Resolve ``manifest.key_id`` in ``trust_root.json``. Unknown key_id  -> REJECT.
     Key present but ``status == "retired"`` -> REJECT *for new applies* (still cryptographically
     valid, but the policy is "don't apply artifacts signed by a retired key"); ``--allow-retired``
     relaxes this for the rotation/back-verify case.
  4. ``algo`` must be ``ed25519``.
- 5. ed25519-verify the signature over the canonical bytes with the trust-root pubkey. Fail -> REJECT.
- 6. Recompute sha256 of the canonical bytes and compare to ``manifest.sha256`` (redundant). Fail -> REJECT.
+ 5. Recompute the **signed payload**:
+      * ``sig_binding == "v2"`` (default for newly-signed bundles, I6): the canonical binding
+        ``{binding, algo, artifact, version, key_id, artifact_sha256}`` — so a RELABELED manifest
+        (version / artifact-kind / key_id swapped, artifact bytes unchanged) yields a different
+        payload and FAILS here. This is the relabel-rejection enforcement point.
+      * no ``sig_binding`` (legacy v1 bundles): the canonical artifact bytes directly. Accepted
+        only when ``allow_legacy_v1`` is set (default True for back-compat), so old pre-binding
+        bundles still verify; pass ``allow_legacy_v1=False`` to require v2 binding.
+    ed25519-verify the signature over that payload with the trust-root pubkey. Fail -> REJECT.
+ 6. Recompute sha256 of the canonical artifact bytes and compare to ``manifest.sha256``. Fail -> REJECT.
 
 On success: prints an OK line and exits 0. On ANY failure: prints a clear ``VERIFY FAILED: ...``
 message to stderr and exits non-zero (the caller must NOT apply the artifact).
@@ -75,6 +83,7 @@ def verify_file(
     sig_path: str | None = None,
     manifest_path: str | None = None,
     allow_retired: bool = False,
+    allow_legacy_v1: bool = True,
 ) -> VerifyResult:
     """Verify ``path`` against the trust root. Returns a :class:`VerifyResult` (never raises
     for a *bad* artifact — only for genuinely missing inputs / unreadable trust root)."""
@@ -119,11 +128,13 @@ def verify_file(
             key_id, artifact_kind, version,
         )
 
-    # --- recompute canonical bytes + load signature --------------------------------------
+    # --- recompute canonical artifact bytes + load signature -----------------------------
     try:
         signed_bytes = sl.canonical_bytes_for_file(path, artifact_kind or "release")
     except Exception as exc:
         return VerifyResult(False, f"could not read/canonicalize artifact: {exc}", key_id, artifact_kind, version)
+
+    digest = sl.sha256_hex(signed_bytes)
 
     with open(sig_path, "r", encoding="utf-8") as fh:
         sig_text = fh.read().strip()
@@ -132,17 +143,41 @@ def verify_file(
     except Exception:
         return VerifyResult(False, "signature file is not valid base64", key_id, artifact_kind, version)
 
-    # --- the actual cryptographic check (this is what authenticity rests on) -------------
-    if not ring.verify_with(key_id, signed_bytes, raw_sig):
+    # --- determine the signed payload per the manifest binding version (I6) --------------
+    sig_binding = manifest.get("sig_binding", sl.SIG_BINDING_V1)
+    if sig_binding == sl.SIG_BINDING_V2:
+        # The signature covers the canonical binding of the manifest identity fields +
+        # artifact sha256. Recomputing it from the (possibly relabeled) manifest means any
+        # swapped field (version / artifact-kind / key_id) produces a payload that was never
+        # signed -> the ed25519 check below REJECTS the relabeled bundle.
+        signed_payload = sl.signing_payload_from_manifest(manifest, digest)
+    elif sig_binding == sl.SIG_BINDING_V1:
+        if not allow_legacy_v1:
+            return VerifyResult(
+                False,
+                "manifest has legacy unbound signature (sig_binding=v1) but v2 manifest "
+                "binding is required — re-sign with the current signer (refusing to apply)",
+                key_id, artifact_kind, version,
+            )
+        # Legacy: signature is over the raw canonical artifact bytes (relabel-vulnerable).
+        signed_payload = signed_bytes
+    else:
         return VerifyResult(
             False,
-            "ed25519 signature INVALID — artifact tampered, wrong key, or corrupt signature "
-            "(refusing to apply)",
+            f"unknown manifest sig_binding {sig_binding!r} (refusing to apply)",
+            key_id, artifact_kind, version,
+        )
+
+    # --- the actual cryptographic check (this is what authenticity rests on) -------------
+    if not ring.verify_with(key_id, signed_payload, raw_sig):
+        return VerifyResult(
+            False,
+            "ed25519 signature INVALID — artifact tampered, manifest relabeled, wrong key, "
+            "or corrupt signature (refusing to apply)",
             key_id, artifact_kind, version,
         )
 
     # --- redundant integrity cross-check (sha256 in manifest) ----------------------------
-    digest = sl.sha256_hex(signed_bytes)
     if manifest.get("sha256") and digest != manifest["sha256"]:
         return VerifyResult(
             False,
@@ -174,9 +209,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="accept signatures from a retired key (rotation back-verify); default rejects",
     )
+    vp.add_argument(
+        "--require-binding",
+        action="store_true",
+        help="reject legacy v1 (unbound) manifests; require the v2 manifest binding (I6)",
+    )
     args = ap.parse_args(argv)
 
-    res = verify_file(args.file, trust_root_path=args.trust_root, allow_retired=args.allow_retired)
+    res = verify_file(
+        args.file,
+        trust_root_path=args.trust_root,
+        allow_retired=args.allow_retired,
+        allow_legacy_v1=not args.require_binding,
+    )
     if res.ok:
         print(f"VERIFY OK: {res.reason}")
         return 0
