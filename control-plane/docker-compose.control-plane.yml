@@ -65,46 +65,169 @@ services:
   #     - loki
 
   # ==========================================================================
-  # Phase 3 — Mimir / Loki / Grafana + fleet-SLI
+  # Phase 3 — Mimir / Loki / Grafana + fleet-SLI   (WS-MIMIR / WS-LOKI-T2 /
+  #           central Grafana / WS-FLEETSLI — merged from each dir's
+  #           service.compose.yml fragment)
   # ==========================================================================
-  # mimir:
-  #   image: grafana/mimir:latest
-  #   # Multi-tenant metrics store. Tenant scoping via X-Scope-OrgID injected by
-  #   # the auth-proxy (C5). Only reachable from inside cp-net (behind the proxy).
-  #   command: ["-config.file=/etc/mimir/mimir.yaml"]
-  #   volumes:
-  #     - ./mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
-  #     - mimir-data:/data
-  #   networks:
-  #     - cp-net
 
-  # loki:
-  #   image: grafana/loki:latest
-  #   # Multi-tenant log store for T2 redacted logs. Tenant scoping via
-  #   # X-Scope-OrgID, same injection contract as Mimir.
-  #   command: ["-config.file=/etc/loki/loki.yaml"]
-  #   volumes:
-  #     - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
-  #     - loki-data:/data
-  #   networks:
-  #     - cp-net
+  # --- Mimir: central MULTI-TENANT metrics store (WS-MIMIR + WS-MIMIR-CARD) --
+  # multitenancy_enabled=true ⇒ every request needs X-Scope-OrgID (injected by
+  # the auth-proxy from the verified cert SAN; a request without it gets 401).
+  # Service name MUST be `mimir` — the auth-proxy reverse-proxies to
+  # http://mimir:9009 (auth-proxy/config.py DEFAULT_UPSTREAM_URL). Only reachable
+  # from inside cp-net (behind the proxy). The grafana/mimir image is DISTROLESS
+  # (no shell/curl) so there is no in-container healthcheck — readiness is the
+  # HTTP endpoint GET /ready, probed by the ruler-loader below.
+  mimir:
+    image: grafana/mimir:2.13.0
+    command:
+      - -config.file=/etc/mimir/mimir.yaml
+    volumes:
+      # Main config (multitenancy, all-in-one target, filesystem storage, the
+      # per-tenant cardinality budget DEFAULTS in `limits`).
+      - ./mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
+      # Per-tenant cardinality budget overrides — hot-reloaded every 15s.
+      - ./mimir/runtime_overrides.yaml:/etc/mimir/runtime_overrides.yaml:ro
+      # Fleet-SLI rule files (read-only). NOT auto-discovered off disk — the
+      # filesystem ruler backend stores each group as its own object and does
+      # NOT load a directory of multi-group YAML; the rules are PUSHED in by the
+      # mimir-ruler-loader below (mimirtool rules load -> ruler API). Mounted
+      # here for parity/inspection; the loader is the authoritative path.
+      - ./fleet-sli:/etc/mimir/fleet-sli:ro
+      # Blocks (tsdb/blocks/compactor), ruler tenant storage, alertmanager.
+      - mimir-data:/data
+    expose:
+      - "9009"   # HTTP API (push + query + ruler) — reached via auth-proxy on cp-net
+    ports:
+      # Operator-local convenience only. In PRODUCTION do NOT publish this — all
+      # access goes through the auth-proxy so X-Scope-OrgID is enforced server-side.
+      - "9009:9009"
+    networks:
+      - cp-net
+    restart: unless-stopped
 
-  # grafana:
-  #   image: grafana/grafana:latest
-  #   # Cross-tenant dashboards. Datasources point at Mimir/Loki THROUGH the
-  #   # auth-proxy so every query carries the correct X-Scope-OrgID.
-  #   volumes:
-  #     - ./grafana/provisioning:/etc/grafana/provisioning:ro
-  #     - grafana-data:/var/lib/grafana
-  #   ports:
-  #     - "3000:3000"
-  #   networks:
-  #     - cp-net
-  #     # also attach to the local data plane for single-host dev scraping:
-  #     - dataplane-net
-  #   depends_on:
-  #     - mimir
-  #     - loki
+  # --- ruler loader: PUSH fleet-sli rules into the __fleet__ ruler tenant -----
+  # One-shot. Waits for Mimir /ready, then uses mimirtool to load EVERY fleet-sli
+  # rule file (golden-12 recording + alert + SLO burn-rate groups + the
+  # WS-MIMIR-CARD cardinality watchdog) into the synthetic `__fleet__` ruler
+  # tenant via the ruler API. This is the canonical loader (a raw filesystem copy
+  # yields "no rule groups found"), and it globs BOTH *.yml and *.yaml, so it
+  # covers the WS-FLEETSLI *.yml deliverables — superseding the fleet-sli
+  # busybox bootstrap (whose disk-copy approach Mimir's ruler does not read).
+  mimir-ruler-loader:
+    image: grafana/mimirtool:2.13.0
+    entrypoint:
+      - /bin/sh
+      - -c
+      # `$$` => a literal `$` to the shell (compose interpolates single `$`).
+      - |
+        set -e
+        echo "waiting for mimir /ready ..."
+        i=0
+        until wget -q -O- http://mimir:9009/ready 2>/dev/null | grep -qi ready; do
+          i=$$((i+1))
+          if [ "$$i" -gt 60 ]; then echo "mimir not ready after 120s — giving up"; exit 1; fi
+          sleep 2
+        done
+        echo "mimir ready — loading fleet-sli rules into tenant __fleet__"
+        files=""
+        for f in /rules/*.yml /rules/*.yaml; do
+          [ -e "$$f" ] || continue
+          case "$$f" in
+            */service.compose.yml|*/docker-compose*.yml) continue ;;
+          esac
+          files="$$files $$f"
+        done
+        if [ -z "$$files" ]; then
+          echo "WARN: no fleet-sli rule files found under /rules — ruler will have no groups"
+          exit 0
+        fi
+        echo "loading:$$files"
+        mimirtool rules load $$files --address=http://mimir:9009 --id=__fleet__
+        echo "loaded. current groups:"
+        mimirtool rules list --address=http://mimir:9009 --id=__fleet__
+    volumes:
+      - ./fleet-sli:/rules:ro
+    networks:
+      - cp-net
+    depends_on:
+      - mimir
+    restart: "no"
+
+  # --- Loki: Tier-2 central MULTI-TENANT log store (WS-LOKI-T2) ---------------
+  # auth_enabled=true ⇒ every request needs X-Scope-OrgID. Logs arrive ALREADY
+  # REDACTED (boundary OTel Collector strips PII before egress, I1); Loki is the
+  # sink, not the redactor. Same injection contract as Mimir (proxy on ingest,
+  # operator Grafana on query). Single-binary (-target=all), filesystem storage
+  # under /data, compactor-owned retention.
+  loki:
+    image: grafana/loki:3.4.2
+    container_name: cp-loki
+    command:
+      - "-config.file=/etc/loki/loki.yaml"
+      - "-target=all"
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+      # Per-tenant runtime overrides (limits/retention) — hot-reloaded; the dir
+      # may be empty, the file is optional. Mount the dir so the path resolves.
+      - ./loki/overrides:/etc/loki/overrides:ro
+      # Persistent store: TSDB index + chunks + compactor + WAL, all under /data.
+      - loki-data:/data
+    ports:
+      # In production reached ONLY through the auth-proxy on cp-net; host publish
+      # is for single-host dev/demo + healthcheck.
+      - "3100:3100"
+    networks:
+      - cp-net
+    # The official image's entrypoint handles uid 10001; keep the volume writable.
+    user: "10001:10001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  # --- Grafana: central operator UI (fleet + per-customer views) -------------
+  # Datasources (provisioned) query Mimir/Loki DIRECTLY over cp-net and set
+  # X-Scope-OrgID themselves — the trusted internal OPERATOR QUERY PATH, distinct
+  # from the agent mTLS INGEST PATH through the auth-proxy. Per-customer dashboard
+  # re-scopes via the ${tenant_scope} variable; fleet view uses __fleet__.
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: cp-grafana
+    restart: unless-stopped
+    depends_on:
+      - mimir
+      - loki
+    environment:
+      # ---- operator auth (CHANGE in any real deployment) --------------------
+      GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-fyralis-operator}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # ---- fleet/admin org id used by the "(fleet)" datasources -------------
+      FYRALIS_FLEET_ORG_ID: ${FYRALIS_FLEET_ORG_ID:-__fleet__}
+      # ---- provisioning paths -----------------------------------------------
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_FEATURE_TOGGLES_ENABLE: ""
+      # ---- UX ----------------------------------------------------------------
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/fleet/fleet-overview.json
+      GF_DATE_FORMATS_DEFAULT_TIMEZONE: utc
+    volumes:
+      # provisioning (datasources + dashboard providers) — read-only
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # dashboard JSON tree (fleet/ + tenant/ subdirs the providers point at)
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # persistent Grafana state (annotations, prefs)
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - cp-net
+      # also attach to the local data plane for single-host dev/demo scraping
+      - dataplane-net
 
   # ==========================================================================
   # Phase 2 (customer-VPC side) — boundary OTel Collector

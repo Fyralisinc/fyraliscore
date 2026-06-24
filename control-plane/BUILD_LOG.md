@@ -111,3 +111,83 @@ relevant phase heading. Keep entries terse and dated; newest within a phase goes
   dedicated `${FYRALIS_AUTH_PROXY_GRPC}` host:port var. Compose follow-up: the compose mounts
   `./boundary/config.yaml` but the deliverable is `otel-collector-config.yaml` — symlink/copy or
   update the mount at deploy time (documented in `boundary/README.md`).
+
+## Phase 3 — Central stores + fleet SLIs
+
+- 2026-06-24 — **WS-MIMIR + WS-MIMIR-CARD** — Central multi-tenant metrics store (`control-plane/mimir/`,
+  Grafana Mimir 2.13.0). `mimir.yaml`: `multitenancy_enabled: true` (every request needs X-Scope-OrgID;
+  anonymous → 401), `target: all` (monolithic distributor/ingester/querier/query-frontend/ruler/
+  compactor/store-gateway), filesystem blocks + ruler + alertmanager under `/data`, remote-write RECEIVE
+  via the distributor (`POST /api/v1/push` + OTLP), HTTP on 9009 (the auth-proxy upstream). `limits`
+  holds the per-tenant cardinality budget DEFAULTS (max_global_series_per_user 150000, ingestion_rate
+  25000/burst 50000, max_label_names_per_series 30 + per-metric/query guardrails); `runtime_config`
+  hot-reloads `runtime_overrides.yaml` every 15s for per-tenant overrides (worked examples: acme 500k,
+  globex 50k, the `__fleet__` ruler tenant). `cardinality.md` is the MEASURE-then-ENFORCE method
+  (cardinality analysis APIs + 4xx series-cap / 429 rate backpressure). Verified: `validate.py` exit 0,
+  real `grafana/mimir:2.13.0` boot clean (caught two config bugs the binary rejects: `auth_enabled` is
+  not a Mimir key — `multitenancy_enabled` is its successor; per-tenant override config belongs under
+  `runtime_config`, not `limits`), and an 8/8 contract suite against a live cluster (no header → 401,
+  with header → 200; runtime overrides applied; ruler evaluating all fleet-sli groups under `__fleet__`).
+
+- 2026-06-24 — **WS-LOKI-T2** — Tier-2 central log store (`control-plane/loki/`, Grafana Loki 3.4.2,
+  `-target=all`). `loki.yaml`: `auth_enabled: true` (C5 — X-Scope-OrgID required on every request),
+  filesystem storage local under `/data` (TSDB schema v13, chunks/index/compactor/ruler WAL on
+  `loki-data`), compactor-owned retention 744h (31d), per-tenant `limits_config` (ingestion 8MB/16MB,
+  per_stream 3MB/8MB, max_streams 10000, max_label_names 30, max_line 256KiB, reject_old 168h),
+  `runtime_config` hook for hot-reloaded per-tenant overrides (`overrides/loki-overrides.yaml`, empty by
+  default), analytics reporting off. Trust boundary (README): T2 logs arrive ALREADY REDACTED — the
+  boundary OTel Collector strips PII before egress (I1); Loki is the sink, not the redactor. Verified:
+  yaml.safe_load assertions green, real `grafana/loki:3.4.2 -verify-config` → "config is valid" exit 0,
+  `docker compose config` exit 0.
+
+- 2026-06-24 — **central Grafana** — Operator Grafana provisioning (`control-plane/grafana/`,
+  grafana 11.1.0). 4 provisioned datasources (`provisioning/datasources/datasources.yaml`): `Mimir`
+  (prometheus type, `http://mimir:9009/prometheus`, isDefault) + `Loki` (`http://loki:3100`) carry
+  `X-Scope-OrgID: ${tenant_scope}` (templated per-customer scope) and `Mimir (fleet)` + `Loki (fleet)`
+  carry `${FYRALIS_FLEET_ORG_ID:__fleet__}` for cross-fleet reads — `access: proxy` so the scope header
+  attaches inside cp-net and never reaches the browser. Datasources point DIRECTLY at Mimir/Loki over
+  cp-net (the trusted OPERATOR QUERY PATH, distinct from the agent mTLS INGEST PATH through the
+  auth-proxy — the operator side has no per-tenant client cert). Two dashboard providers →
+  `fleet/fleet-overview.json` (uid fyralis-fleet-overview: green/yellow/red deployment census + worst
+  heartbeat age + a health-colored deployments table + golden-12 fleet panels) and
+  `tenant/tenant-drilldown.json` (uid fyralis-tenant-drilldown: templated by the `tenant_scope`
+  variable = the X-Scope-OrgID value, hard-scoping every panel to one customer + a Loki logs panel).
+  Health derived at query time from `worker_heartbeat_age_seconds` (green ≤90s/yellow ≤300s/red >300s)
+  + SLI flags, using only boundary-allowlist metric names with C4 labels. Verified: `validate.py`
+  ("ALL CHECKS PASSED") asserts X-Scope-OrgID on all 4 datasources, the per-customer dashboard declares
+  `tenant_scope`, dashboards reference only provisioned DS uids, and the fragment exposes :3000 on
+  cp-net+dataplane-net / depends_on mimir+loki.
+
+- 2026-06-24 — **WS-FLEETSLI** — Fleet-level SLI/alert/SLO rules (`control-plane/fleet-sli/`), evaluated
+  CENTRALLY in the Mimir ruler under the synthetic `__fleet__` tenant over every tenant's remote-written
+  metrics; every series is per-deployment via the C4 `tenant_id`/`deployment_id`/`region` labels.
+  `recording_rules.yml` (58 rules, 10 groups): golden-12 SLIs both PER-DEPLOYMENT (`fyralis:*`) and
+  FLEET-WIDE (`fleet:*` roll-ups) — worker up/heartbeat, kafka lag, DLQ/dead-letter, ingest/backfill,
+  shadow-drop silent-loss, think queue/failure, embedding backlog/failure, LLM breaker + $/hr, DB pool +
+  schema version + partition coverage, OAuth/webhook/gateway 5xx — plus `fyralis:health_code` (0/1/2
+  matching `lib/deployment.py derive_health`) and a fleet red/yellow census. `alert_rules.yml` (17): all
+  13 deployment alerts ported to fleet scope (per-deployment annotations) + shadow-drop page +
+  llm-breaker-open, with G1/G2/G3/G5 gap-metric alerts (schema drift, OAuth refresh, breaker, worker
+  missing). `slo_burnrate_rules.yml` (11) + `slo.md`: NFR-5 SLOs as Google-SRE multi-window
+  multi-burn-rate alerts (availability 99.5%/0.5% budget — fast 14.4x@5m+1h page within 2 min, slow
+  6x@30m+6h ticket; liveness heartbeat>90s/30s page). Verified: `promtool check rules --lint=all`
+  exit 0 (88 rules across the 4 files), a real Prometheus loaded all 22 groups and evaluated every rule
+  with health==ok / zero lastError (catches eval-time join/bool errors a static parse misses).
+
+- 2026-06-24 — **integrate** — Merged each dir's `service.compose.yml` into
+  `docker-compose.control-plane.yml`: filled in the `mimir`, `loki`, `grafana` services (replacing the
+  Phase-3 placeholder comments) on `cp-net`, wired the `mimir-data`/`loki-data`/`grafana-data` named
+  volumes and `cp-net`+`dataplane-net` networks (already top-level-declared), grafana `depends_on`
+  mimir+loki and attaches to both networks. The fleet-sli rules are loaded by the **`mimir-ruler-loader`
+  one-shot (mimirtool `rules load` → ruler API, tenant `__fleet__`)** mounting `./fleet-sli -> /rules`:
+  this is the authoritative ruler path — Mimir's filesystem ruler backend does NOT auto-discover a
+  directory of multi-group YAML, so the WS-FLEETSLI `fleet-sli-ruler-bootstrap` busybox disk-copy was
+  intentionally NOT carried over (its copies would yield "no rule groups found"). The mimirtool loader
+  globs BOTH `*.yml` and `*.yaml`, so it covers the WS-FLEETSLI `*.yml` deliverables and resolves the
+  glob-mismatch caveat the fleet-sli agent flagged. Auth-proxy / boundary / console placeholders left
+  intact (still commented). No new Python deps (all Phase-3 components are container images; the
+  `validate.py` scripts use only stdlib + already-present `pyyaml`) — `requirements.txt` unchanged.
+  Verified: `docker compose -f docker-compose.control-plane.yml config` exit 0 with all 3 new services
+  + the ruler loader present; a yaml.safe_load assertion pass over the rendered config (mimir/loki on
+  cp-net with config+data mounts, grafana on cp-net+dataplane-net depends_on mimir+loki, ruler-loader
+  depends_on mimir mounting fleet-sli→/rules, all named volumes + networks declared).
