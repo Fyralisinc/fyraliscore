@@ -185,7 +185,9 @@ def test_registry_roundtrip() -> None:
     except TenantNotFoundError:
         _check(True, "unknown fp → TenantNotFoundError")
     _check(reg.is_active(fp_unknown) is False, "unknown fp is_active False")
-    _check(reg.is_revoked(fp_unknown) is False, "unknown fp is_revoked False")
+    # is_revoked is now a FAIL-CLOSED deny predicate (matches ca/registry):
+    # an unknown fingerprint is "not authorized" ⇒ True. (See lib/test_tenant_failclosed.py)
+    _check(reg.is_revoked(fp_unknown) is True, "unknown fp is_revoked True (fail-closed)")
 
     # Live revocation pickup (mtime cache invalidation): flip active → revoked.
     sample[fp_active]["status"] = "revoked"

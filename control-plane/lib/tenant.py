@@ -288,14 +288,27 @@ class TenantRegistry:
         return rec.is_active
 
     def is_revoked(self, fingerprint: str) -> bool:
-        """True iff the fingerprint is present AND status is ``revoked``.
+        """True if the fingerprint is **unknown** OR explicitly ``revoked``.
 
-        An unknown fingerprint returns ``False`` (it is "not revoked" because it
-        was never issued); callers that must reject the unknown case use
-        :meth:`tenant_for_fingerprint`, which rejects unknown AND revoked.
+        **Fail-closed (deny) predicate.** This is the proxy's reject test and it
+        matches ``ca/registry.is_revoked``: a cert is "revoked-or-not-authorized"
+        unless there is an explicit ``active`` registry row for it. An *unknown*
+        fingerprint therefore returns ``True`` (treated as not-authorized) — an
+        absent registry entry must never authorize a request (Invariant I4).
+
+        Rationale for the change from the previous fail-OPEN behavior: returning
+        ``False`` for an unknown fingerprint meant ``if reg.is_revoked(fp):
+        reject()`` would *let an unregistered cert through*. Two reader surfaces
+        in this repo (this one and ``ca/registry``) disagreed; both are now
+        fail-closed so any caller inherits the safe answer. If you specifically
+        need "present AND status == revoked" (e.g. an operator listing that
+        distinguishes unknown from revoked), use :meth:`record_for_fingerprint`
+        / :meth:`tenant_for_fingerprint`, which surface the precise reason.
         """
         try:
             rec = self.record_for_fingerprint(fingerprint)
         except TenantNotFoundError:
-            return False
-        return rec.is_revoked
+            # Fail closed: unknown ⇒ not authorized ⇒ "revoked" for deny purposes.
+            return True
+        # Only an explicit ``active`` row is authorized; anything else denies.
+        return not rec.is_active
