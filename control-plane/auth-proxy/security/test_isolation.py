@@ -627,31 +627,36 @@ async def test_A11_two_tenants_never_cross(fabric, proxy_factory, echo, tmp_path
 
 
 # ===========================================================================
-# A12 — SSRF: absolute-form request target re-points the upstream host.
+# A12 — SSRF guard: an absolute-form request target CANNOT re-point the upstream.
 #
-# This is an ATTACK test that documents a REAL finding (see SAST.md / THREAT_
-# MODEL T12). The proxy forwards ``request.target`` verbatim to httpx; an
-# absolute-form target (``GET http://attacker/...``) OVERRIDES the pinned
-# base_url host in httpx, so a *valid acme cert* can make the proxy dial an
-# arbitrary host of the attacker's choosing — an SSRF from inside cp-net.
+# This was a REAL finding (see SAST.md / THREAT_MODEL T12): the proxy used to
+# forward ``request.target`` verbatim to httpx, so an absolute-form target
+# (``GET http://attacker/...``) OVERRODE the pinned base_url host in httpx and a
+# *valid acme cert* could make the proxy dial an arbitrary host — an SSRF from
+# inside cp-net.
 #
-# We prove it against a SECOND, "internal" echo server that is NOT the configured
-# upstream. If the proxy reaches it, SSRF is possible. This is NOT a tenant
-# cross-scope leak (acme is still injected), but it IS a server-side request
-# forgery and is flagged as a GATING hardening item.
+# The fix pins the destination to the CONFIGURED upstream and forwards ONLY the
+# path+query: an absolute-form ``scheme://authority`` has its scheme+authority
+# DISCARDED (path survives, host is ignored), and authority-form/CONNECT is
+# rejected. This test now asserts the *fixed* behavior:
 #
-# The test is xfail(strict=False): it asserts the CURRENT (vulnerable) behavior
-# so the suite stays green AND the vector is documented + regression-guarded. If
-# a fix lands that rejects absolute-form targets, flip the body to expect a 403
-# and the xfail will XPASS, signaling the guard is in place.
+#   1. an absolute-form ``http://evil-host/metrics`` lands on the CONFIGURED
+#      upstream (the mock echo) at path ``/metrics`` — NOT on evil-host, and the
+#      "internal" off-upstream server is NEVER reached;
+#   2. the upstream Host header is the CONFIGURED upstream's authority, never
+#      the attacker-supplied host;
+#   3. an authority-form / CONNECT target is rejected (4xx), upstream untouched.
 # ===========================================================================
 
 @pytest.mark.asyncio
-async def test_A12_absolute_form_target_is_ssrf(fabric, proxy_factory, tmp_path):
+async def test_A12_absolute_form_target_pins_configured_upstream(
+    fabric, proxy_factory, echo, tmp_path
+):
     crt, key, fp, _ = issue_legit(fabric, tmp_path, "acme")
 
-    # A second "internal" echo server the attacker wants to reach — it is NOT the
-    # proxy's configured upstream.
+    # A second "internal" echo server the attacker WANTS to reach via the
+    # absolute-form host — it is NOT the proxy's configured upstream. It must
+    # NEVER receive a request.
     internal = EchoUpstream()
     await internal.start()
     try:
@@ -660,11 +665,83 @@ async def test_A12_absolute_form_target_is_ssrf(fabric, proxy_factory, tmp_path)
         port = int(base.rsplit(":", 1)[1])
         ctx = _mtls_ctx(fabric, crt, key)
 
-        # Absolute-form request target pointing at the INTERNAL server, not the
-        # configured upstream. h11 parses it; httpx re-targets the host.
+        # Absolute-form request target naming an attacker host ("evil-host") plus
+        # the concrete internal server's authority. Either way, scheme+authority
+        # must be DISCARDED and only /metrics forwarded to the CONFIGURED upstream.
         raw = (
-            f"GET http://127.0.0.1:{internal.port}/ssrf-probe HTTP/1.1\r\n"
-            f"Host: {host}\r\n"
+            f"GET http://evil-host:{internal.port}/metrics?q=up HTTP/1.1\r\n"
+            f"Host: evil-host\r\n"
+            f"Connection: close\r\n"
+            f"Content-Length: 0\r\n"
+            f"\r\n"
+        ).encode("latin-1")
+
+        reader, writer = await asyncio.open_connection(
+            host, port, ssl=ctx, server_hostname="localhost"
+        )
+        writer.write(raw)
+        await writer.drain()
+        data = b""
+        while True:
+            chunk = await reader.read(65536)
+            if not chunk:
+                break
+            data += chunk
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+        head, _, body = data.partition(b"\r\n\r\n")
+        status_line = head.split(b"\r\n")[0] if head else b""
+
+        # (1) The off-upstream / attacker server was NEVER reached.
+        assert internal.calls == [], (
+            "SSRF: absolute-form target reached the off-upstream host: %r"
+            % internal.calls
+        )
+
+        # (1) The request DID land on the CONFIGURED upstream (the `echo` fixture)
+        #     with only the path+query — scheme+authority were discarded.
+        assert b"200" in status_line, status_line
+        echoed = json.loads(body.decode("utf-8"))
+        assert echoed["path"] == "/metrics?q=up", echoed["path"]
+
+        # (2) The upstream Host is the CONFIGURED upstream authority, never the
+        #     attacker-controlled "evil-host".
+        upstream_host = f"127.0.0.1:{echo.port}"
+        seen_hosts = [v for (n, v) in echoed["raw_headers"] if n == "host"]
+        assert seen_hosts == [upstream_host], seen_hosts
+        assert "evil-host" not in json.dumps(echoed)
+
+        # Scope is still correctly the cert tenant — pinning didn't break I4.
+        assert_upstream_scope_is(echo, "acme")
+        assert_no_foreign_scope(echo, "evil-host")
+    finally:
+        await internal.stop()
+
+
+@pytest.mark.asyncio
+async def test_A12b_authority_form_connect_is_rejected(
+    fabric, proxy_factory, echo, tmp_path
+):
+    """An authority-form / CONNECT target (host:port, no leading '/') is rejected
+    with a 4xx and never reaches any upstream — the proxy is not a forward/tunnel
+    proxy."""
+    crt, key, fp, _ = issue_legit(fabric, tmp_path, "acme")
+    internal = EchoUpstream()
+    await internal.start()
+    try:
+        base = await proxy_factory({fp: _row("acme")})
+        host = "127.0.0.1"
+        port = int(base.rsplit(":", 1)[1])
+        ctx = _mtls_ctx(fabric, crt, key)
+
+        # authority-form: CONNECT host:port with NO leading '/'.
+        raw = (
+            f"CONNECT evil-host:{internal.port} HTTP/1.1\r\n"
+            f"Host: evil-host:{internal.port}\r\n"
             f"Connection: close\r\n"
             f"Content-Length: 0\r\n"
             f"\r\n"
@@ -688,27 +765,13 @@ async def test_A12_absolute_form_target_is_ssrf(fabric, proxy_factory, tmp_path)
             pass
 
         status_line = data.split(b"\r\n", 1)[0] if data else b""
-        reached = internal.calls != []
-
-        # === FINDING ASSERTION ===
-        # Current behavior: the internal server WAS reached (SSRF works). We
-        # assert the vulnerable behavior so the finding is regression-guarded and
-        # the suite documents it without hiding it. If a host-pin guard lands,
-        # `reached` becomes False / status becomes 403 and this needs updating
-        # (a GOOD failure — see SAST.md remediation).
-        if reached:
-            pytest.xfail(
-                "SSRF CONFIRMED: absolute-form request target reached an "
-                "off-upstream host (%r). See SAST.md F1 — proxy must reject "
-                "absolute-form / non-'/'-leading targets. status_line=%r"
-                % (internal.calls, status_line)
-            )
-        else:
-            # Guard is in place (absolute-form rejected) — the desired end state.
-            assert b"403" in status_line or not data, (
-                "absolute-form target neither reached internal host nor 403'd: %r"
-                % status_line
-            )
+        # Rejected with a 4xx (405 Method Not Allowed); neither the configured
+        # upstream nor the attacker host is reached.
+        assert b"405" in status_line or b"403" in status_line or b"400" in status_line, (
+            "authority-form/CONNECT must be 4xx-rejected, got: %r" % status_line
+        )
+        assert internal.calls == [], internal.calls
+        assert echo.calls == [], echo.calls
     finally:
         await internal.stop()
 

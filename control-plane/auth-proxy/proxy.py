@@ -41,6 +41,7 @@ import ssl
 import sys
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import h11
 import httpx
@@ -106,6 +107,66 @@ class _Http403(Exception):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+class _Http405(Exception):
+    """Internal signal to emit a flat 405 (carries an audit reason only)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _safe_upstream_path(target: str) -> str:
+    """Reduce a client request target to a forwardable **path?query** only (SSRF guard).
+
+    h11 accepts every RFC 7230 request-target form, including *absolute-form*
+    (``GET http://evil-host/path HTTP/1.1``) and *authority-form*
+    (``CONNECT evil-host:443``). If the raw target were handed to httpx, an
+    absolute-form scheme://authority would OVERRIDE the pinned upstream host and
+    let an authenticated tenant re-point the destination — an SSRF.
+
+    This function pins the destination by keeping **only** the path and query:
+
+    * **origin-form** (``/path?query``)  -> returned as-is.
+    * **absolute-form** (``scheme://authority/path?query``) -> scheme+authority
+      are DISCARDED; only ``path?query`` survives.
+    * **authority-form / CONNECT** (``host:port``, no leading ``/``, no scheme)
+      -> rejected with 405 (a forward/tunnel proxy verb we never serve).
+    * **asterisk-form** (``*``) -> rejected (only valid for server-wide OPTIONS,
+      not something we proxy to Mimir).
+
+    The returned value always begins with ``/`` (an empty path becomes ``/``) and
+    never carries a scheme or authority, so the caller can safely join it onto the
+    configured upstream base URL.
+    """
+    if not target:
+        raise _Http403("empty_request_target")
+
+    # asterisk-form (server-wide OPTIONS) — not proxyable to an upstream path.
+    if target == "*":
+        raise _Http405("asterisk_form_target")
+
+    # origin-form: the ONLY form we proxy. It must start with '/'. Anything else
+    # (absolute-form scheme://authority/..., authority-form host:port, or a bare
+    # ``scheme:opaque`` that urlsplit mis-parses) is handled below.
+    if target.startswith("/"):
+        split = urlsplit(target)
+        # Drop any scheme/authority/fragment defensively; keep only path+query.
+        return urlunsplit(("", "", split.path or "/", split.query, ""))
+
+    split = urlsplit(target)
+
+    if split.scheme and split.netloc:
+        # absolute-form: a real scheme AND authority are present. DISCARD both and
+        # keep only path+query. This is the SSRF-defeating step — the attacker's
+        # host can never reach httpx; we always dial the configured upstream.
+        return urlunsplit(("", "", split.path or "/", split.query, ""))
+
+    # Everything else is authority-form (``CONNECT host:port``), a bare
+    # ``scheme:opaque`` with no authority, asterisk-form, or otherwise malformed.
+    # We are not a forward/tunnel proxy — reject rather than guess a destination.
+    raise _Http405("authority_form_or_non_origin_target")
 
 
 class AuthProxy:
@@ -230,6 +291,12 @@ class AuthProxy:
             # ---- forward upstream with the injected scope header ----------
             try:
                 await self._proxy_upstream(conn, writer, request, body, resolved)
+            except _Http403 as exc:
+                logger.warning("403 reject: reason=%s", exc.reason)
+                await self._send_simple(conn, writer, 403, b"Forbidden\n")
+            except _Http405 as exc:
+                logger.warning("405 reject: reason=%s", exc.reason)
+                await self._send_simple(conn, writer, 405, b"Method Not Allowed\n")
             except httpx.HTTPError as exc:
                 logger.warning("upstream error: %s", exc)
                 await self._send_simple(conn, writer, 502, b"Bad Gateway\n")
@@ -267,13 +334,27 @@ class AuthProxy:
         resolved: ResolvedTenant,
     ) -> None:
         method = request.method.decode("latin-1")
-        target = request.target.decode("latin-1")
+        # SSRF guard (Invariant I4 / T12): reduce the client target to a path+query
+        # ONLY. An absolute-form target (scheme://authority/...) has its scheme and
+        # authority discarded; authority-form/CONNECT is rejected. The destination
+        # host:port:scheme is ALWAYS the configured upstream — never client input.
+        safe_path = _safe_upstream_path(request.target.decode("latin-1"))
         out_headers = self._sanitize_headers(request.headers, resolved.tenant_id)
+        # Pin the outgoing Host header to the CONFIGURED upstream authority so no
+        # attacker-controlled Host can influence the destination or upstream routing.
+        upstream_host = urlsplit(self.config.upstream_url).netloc
+        if upstream_host:
+            out_headers.append(("host", upstream_host))
 
         assert self._client is not None
+        # Build the upstream URL from the CONFIGURED base + the path-only target.
+        # Passing an absolute httpx.URL whose authority equals the client's base_url
+        # means there is no field left through which the target could re-point us.
+        upstream_base = self.config.upstream_url.rstrip("/")
+        upstream_url = upstream_base + safe_path
         upstream = await self._client.request(
             method,
-            target,
+            upstream_url,
             headers=out_headers,
             content=body if body else None,
         )

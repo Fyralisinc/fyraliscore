@@ -38,12 +38,20 @@ def _row(tenant_id: str, status: str = "active") -> dict:
     }
 
 
-def _client_verify(ca_fabric) -> ssl.SSLContext:
-    """A client-side SSL context that trusts the test CA root (verifies proxy)."""
+def _client_verify(ca_fabric, crt=None, key=None) -> ssl.SSLContext:
+    """A client-side SSL context that trusts the test CA root (verifies proxy).
+
+    When ``crt``/``key`` are supplied the context ALSO presents that client cert
+    (mTLS) via ``load_cert_chain`` — the httpx-supported mechanism. (httpx 0.28
+    deprecated the ``cert=(crt, key)`` client kwarg in favour of a configured
+    ``ssl.SSLContext`` passed as ``verify=``.)
+    """
     ctx = ssl.create_default_context(cafile=str(ca_fabric["root_path"]))
     # The proxy's intermediate must be presented or trusted; our server cert is
     # signed by the intermediate, so also load the full chain as trust.
     ctx.load_verify_locations(cafile=str(ca_fabric["chain_path"]))
+    if crt is not None and key is not None:
+        ctx.load_cert_chain(certfile=str(crt), keyfile=str(key))
     return ctx
 
 
@@ -52,10 +60,8 @@ async def test_valid_cert_injects_scope(ca_fabric, proxy_factory, tmp_path):
     crt, key, fp, _leaf = issue_client(ca_fabric, tmp_path, "acme")
     base_url, _reg = await proxy_factory({fp: _row("acme")})
 
-    ctx = _client_verify(ca_fabric)
-    async with httpx.AsyncClient(
-        verify=ctx, cert=(str(crt), str(key))
-    ) as client:
+    ctx = _client_verify(ca_fabric, crt, key)
+    async with httpx.AsyncClient(verify=ctx) as client:
         resp = await client.get(f"{base_url}/prometheus/api/v1/query?q=up")
     assert resp.status_code == 200
     echoed = resp.json()
@@ -70,8 +76,8 @@ async def test_client_supplied_scope_is_overridden(ca_fabric, proxy_factory, tmp
     crt, key, fp, _leaf = issue_client(ca_fabric, tmp_path, "acme")
     base_url, _reg = await proxy_factory({fp: _row("acme")})
 
-    ctx = _client_verify(ca_fabric)
-    async with httpx.AsyncClient(verify=ctx, cert=(str(crt), str(key))) as client:
+    ctx = _client_verify(ca_fabric, crt, key)
+    async with httpx.AsyncClient(verify=ctx) as client:
         resp = await client.get(
             f"{base_url}/prometheus/api/v1/query?q=up",
             headers={"X-Scope-OrgID": "globex"},  # the spoof attempt
@@ -89,8 +95,8 @@ async def test_case_variant_scope_header_is_stripped(ca_fabric, proxy_factory, t
     crt, key, fp, _leaf = issue_client(ca_fabric, tmp_path, "acme")
     base_url, _reg = await proxy_factory({fp: _row("acme")})
 
-    ctx = _client_verify(ca_fabric)
-    async with httpx.AsyncClient(verify=ctx, cert=(str(crt), str(key))) as client:
+    ctx = _client_verify(ca_fabric, crt, key)
+    async with httpx.AsyncClient(verify=ctx) as client:
         resp = await client.get(
             f"{base_url}/x",
             headers={
@@ -111,8 +117,8 @@ async def test_revoked_cert_gets_403(ca_fabric, proxy_factory, tmp_path):
     crt, key, fp, _leaf = issue_client(ca_fabric, tmp_path, "acme")
     base_url, _reg = await proxy_factory({fp: _row("acme", status="revoked")})
 
-    ctx = _client_verify(ca_fabric)
-    async with httpx.AsyncClient(verify=ctx, cert=(str(crt), str(key))) as client:
+    ctx = _client_verify(ca_fabric, crt, key)
+    async with httpx.AsyncClient(verify=ctx) as client:
         resp = await client.get(f"{base_url}/prometheus/api/v1/query?q=up")
     assert resp.status_code == 403
     # No upstream JSON echo leaked through — body is the flat 403.
@@ -124,8 +130,8 @@ async def test_unknown_cert_gets_403(ca_fabric, proxy_factory, tmp_path):
     """A cert that chains to the CA but has NO registry row is denied (fail-closed)."""
     crt, key, fp, _leaf = issue_client(ca_fabric, tmp_path, "acme")
     base_url, _reg = await proxy_factory({})  # empty registry
-    ctx = _client_verify(ca_fabric)
-    async with httpx.AsyncClient(verify=ctx, cert=(str(crt), str(key))) as client:
+    ctx = _client_verify(ca_fabric, crt, key)
+    async with httpx.AsyncClient(verify=ctx) as client:
         resp = await client.get(f"{base_url}/x")
     assert resp.status_code == 403
 
@@ -162,8 +168,8 @@ async def test_post_body_and_status_round_trip(ca_fabric, proxy_factory, tmp_pat
     crt, key, fp, _leaf = issue_client(ca_fabric, tmp_path, "acme")
     base_url, _reg = await proxy_factory({fp: _row("acme")})
 
-    ctx = _client_verify(ca_fabric)
-    async with httpx.AsyncClient(verify=ctx, cert=(str(crt), str(key))) as client:
+    ctx = _client_verify(ca_fabric, crt, key)
+    async with httpx.AsyncClient(verify=ctx) as client:
         resp = await client.post(
             f"{base_url}/api/v1/push",
             content=b"metric_data_blob",
@@ -184,11 +190,12 @@ async def test_two_tenants_are_isolated(ca_fabric, proxy_factory, tmp_path):
     base_url, _reg = await proxy_factory(
         {acme_fp: _row("acme"), globex_fp: _row("globex")}
     )
-    ctx = _client_verify(ca_fabric)
+    actx = _client_verify(ca_fabric, acme_crt, acme_key)
+    gctx = _client_verify(ca_fabric, globex_crt, globex_key)
 
-    async with httpx.AsyncClient(verify=ctx, cert=(str(acme_crt), str(acme_key))) as c:
+    async with httpx.AsyncClient(verify=actx) as c:
         r1 = await c.get(f"{base_url}/x")
-    async with httpx.AsyncClient(verify=ctx, cert=(str(globex_crt), str(globex_key))) as c:
+    async with httpx.AsyncClient(verify=gctx) as c:
         r2 = await c.get(f"{base_url}/x")
 
     assert r1.json()["headers"].get("x-scope-orgid") == "acme"
