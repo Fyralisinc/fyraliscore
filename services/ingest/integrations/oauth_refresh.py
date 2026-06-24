@@ -51,6 +51,10 @@ import httpx
 import structlog
 
 from lib.observability import counter, histogram
+from lib.observability.metrics import (
+    OAUTH_REFRESH_FAILURES,
+    OAUTH_TOKEN_EXPIRES_IN_SECONDS,
+)
 
 
 log = structlog.get_logger("integrations.oauth_refresh")
@@ -75,6 +79,16 @@ _DURATION = histogram(
     ("provider",),
     buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
 )
+
+
+def _record_refresh_failure(provider: str, outcome: str) -> None:
+    """BYOC §12 G2: mirror a non-success local `outcome` onto the fleet-canonical
+    fyralis_oauth_refresh_failures_total{provider,reason}. The local _OUTCOMES
+    family stays for fine-grained per-deployment debugging; this is the bounded,
+    control-plane-named counter the SLI engine alerts on. `transport_error` maps
+    to the documented `transport` reason; all other outcomes pass through 1:1."""
+    reason = "transport" if outcome == "transport_error" else outcome
+    OAUTH_REFRESH_FAILURES.inc(provider=provider, reason=reason)
 
 
 class OAuthRefreshError(Exception):
@@ -234,6 +248,7 @@ async def refresh_access_token(
     if config.grant_type == "refresh_token":
         if not refresh_token:
             _OUTCOMES.inc(provider=config.provider, outcome="bad_request_config")
+            _record_refresh_failure(config.provider, "bad_request_config")
             raise OAuthRefreshError(
                 config.provider, "refresh_token grant requires a refresh_token",
             )
@@ -251,6 +266,7 @@ async def refresh_access_token(
     if config.auth_style == "basic":
         if not (client_id and client_secret):
             _OUTCOMES.inc(provider=config.provider, outcome="bad_request_config")
+            _record_refresh_failure(config.provider, "bad_request_config")
             raise OAuthRefreshError(
                 config.provider,
                 "missing client_id/client_secret for Basic auth "
@@ -273,6 +289,7 @@ async def refresh_access_token(
     except httpx.TransportError as exc:
         _DURATION.observe(time.monotonic() - started, provider=config.provider)
         _OUTCOMES.inc(provider=config.provider, outcome="transport_error")
+        _record_refresh_failure(config.provider, "transport_error")
         raise OAuthRefreshError(
             config.provider, f"transport error: {type(exc).__name__}",
         ) from exc
@@ -281,10 +298,9 @@ async def refresh_access_token(
     if resp.status_code // 100 != 2:
         # 400 invalid_grant (revoked / stale rotated refresh token) and 401
         # (bad client creds) are the auth-degraded signals.
-        _OUTCOMES.inc(
-            provider=config.provider,
-            outcome="http_5xx" if resp.status_code >= 500 else "http_4xx",
-        )
+        http_outcome = "http_5xx" if resp.status_code >= 500 else "http_4xx"
+        _OUTCOMES.inc(provider=config.provider, outcome=http_outcome)
+        _record_refresh_failure(config.provider, http_outcome)
         raise OAuthRefreshError(
             config.provider,
             f"token endpoint returned {resp.status_code}",
@@ -294,12 +310,14 @@ async def refresh_access_token(
     body = _safe_json(resp)
     if not isinstance(body, dict):
         _OUTCOMES.inc(provider=config.provider, outcome="invalid_response")
+        _record_refresh_failure(config.provider, "invalid_response")
         raise OAuthRefreshError(
             config.provider, "token endpoint response was not a JSON object",
         )
     access = body.get("access_token")
     if not isinstance(access, str) or not access:
         _OUTCOMES.inc(provider=config.provider, outcome="invalid_response")
+        _record_refresh_failure(config.provider, "invalid_response")
         raise OAuthRefreshError(
             config.provider, "token endpoint response missing access_token",
         )
@@ -312,6 +330,12 @@ async def refresh_access_token(
         new_refresh = returned if isinstance(returned, str) and returned else refresh_token
 
     expires_in = _coerce_int(body.get("expires_in"), config.default_expires_in)
+
+    # BYOC §12 G2: a freshly-minted token has `expires_in` seconds of life. The
+    # control plane alerts when this per-provider gauge drops below the refresh
+    # skew (token-expiry-soon) — the leading indicator of a source about to go
+    # silent. `needs_refresh` also pushes the live remaining-seconds reading.
+    OAUTH_TOKEN_EXPIRES_IN_SECONDS.set(float(expires_in), provider=config.provider)
 
     return RefreshedToken(
         access_token=access,
@@ -326,11 +350,21 @@ def needs_refresh(
     *,
     now: datetime,
     skew_seconds: int = DEFAULT_REFRESH_SKEW_SECONDS,
+    provider: str | None = None,
 ) -> bool:
     """Proactive trigger: refresh when the access token is missing an expiry
-    (unknown → refresh defensively) or is within `skew_seconds` of expiring."""
+    (unknown → refresh defensively) or is within `skew_seconds` of expiring.
+
+    When `provider` is supplied, publish the live seconds-to-expiry onto the
+    fleet gauge (BYOC §12 G2) so the proactive sweep surfaces token-expiry-soon
+    even for tokens it is NOT about to refresh this tick — the leading indicator
+    of an OAuth source silently going dark."""
     if token_expires_at is None:
         return True
+    if provider is not None:
+        OAUTH_TOKEN_EXPIRES_IN_SECONDS.set(
+            (token_expires_at - now).total_seconds(), provider=provider,
+        )
     return token_expires_at <= now + timedelta(seconds=skew_seconds)
 
 
@@ -444,7 +478,9 @@ async def ensure_fresh_access_token(
     `OAuthRefreshError` if a needed refresh fails (→ caller marks degraded).
     """
     now = now or datetime.now(timezone.utc)
-    if force or needs_refresh(token_expires_at, now=now, skew_seconds=skew_seconds):
+    if force or needs_refresh(
+        token_expires_at, now=now, skew_seconds=skew_seconds, provider=provider,
+    ):
         refreshed = await refresh_and_persist(
             provider=provider, pool=pool, secret_store=secret_store, http=http,
             tenant_id=tenant_id, install_row_id=install_row_id,
