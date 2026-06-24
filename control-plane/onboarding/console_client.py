@@ -71,9 +71,13 @@ class ConsoleClient:
     (real base-url transport vs. in-process ASGI transport).
     """
 
-    def __init__(self, client: httpx.Client, *, label: str) -> None:
+    def __init__(self, client: httpx.Client, *, label: str, token: Optional[str] = None) -> None:
         self._client = client
         self._label = label
+        # Bearer token for the console WRITE path (I4). Applied to write requests
+        # (register/heartbeat/deregister); reads do not require it. Stored here so
+        # both transports (HTTP + in-process ASGI) authenticate identically.
+        self._token = token or None
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -89,8 +93,13 @@ class ConsoleClient:
     # --- low-level ---------------------------------------------------------
 
     def _request(self, method: str, path: str, *, json: Any = None) -> Any:
+        # Attach the bearer token on writes (the console requires it on
+        # register/heartbeat/delete, I4); GET reads tolerate but do not need it.
+        headers = None
+        if self._token and method.upper() in ("POST", "PUT", "DELETE", "PATCH"):
+            headers = {"Authorization": f"Bearer {self._token}"}
         try:
-            resp = self._client.request(method, path, json=json)
+            resp = self._client.request(method, path, json=json, headers=headers)
         except httpx.HTTPError as exc:  # connect/timeout/etc. — console unreachable
             raise ConsoleError(
                 f"console {self._label} unreachable: {method} {path}: {exc}"
@@ -181,9 +190,9 @@ class ConsoleClient:
 class HttpConsoleClient(ConsoleClient):
     """Console client over a real network base URL (e.g. ``http://console:8080``)."""
 
-    def __init__(self, base_url: str, *, timeout: float = 10.0) -> None:
+    def __init__(self, base_url: str, *, timeout: float = 10.0, token: Optional[str] = None) -> None:
         client = httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout)
-        super().__init__(client, label=base_url)
+        super().__init__(client, label=base_url, token=token)
 
 
 class ASGIConsoleClient(ConsoleClient):
@@ -199,13 +208,15 @@ class ASGIConsoleClient(ConsoleClient):
     in-memory FleetStore to deregister a deployment.
     """
 
-    def __init__(self, app: Any, *, base_url: str = "http://embedded-console") -> None:
+    def __init__(
+        self, app: Any, *, base_url: str = "http://embedded-console", token: Optional[str] = None
+    ) -> None:
         from starlette.testclient import TestClient  # deferred: test/dev only
 
         # raise_server_exceptions=False -> HTTP 4xx/5xx come back as responses
         # (so our _request maps 404 -> None etc.) instead of re-raising in-process.
         client = TestClient(app, base_url=base_url, raise_server_exceptions=False)
-        super().__init__(client, label="embedded")
+        super().__init__(client, label="embedded", token=token)
         self.app = app
 
 
@@ -213,6 +224,7 @@ def make_console_client(
     *,
     console_url: Optional[str] = None,
     app: Any = None,
+    token: Optional[str] = None,
 ) -> ConsoleClient:
     """Build the appropriate console client.
 
@@ -220,9 +232,12 @@ def make_console_client(
     * else ``console_url``     -> real HTTP client.
     * neither                  -> ``ConsoleError`` (onboarding needs a console target,
                                   or must be told to mint identity locally).
+
+    ``token`` is the console write bearer (I4); it is forwarded to the client so
+    onboarding's register/heartbeat/deregister calls authenticate.
     """
     if app is not None:
-        return ASGIConsoleClient(app)
+        return ASGIConsoleClient(app, token=token)
     if console_url:
-        return HttpConsoleClient(console_url)
+        return HttpConsoleClient(console_url, token=token)
     raise ConsoleError("no console target: pass console_url or an embedded app")

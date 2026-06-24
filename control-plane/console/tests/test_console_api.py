@@ -43,15 +43,34 @@ from lib.primitives import to_rfc3339, utcnow  # noqa: E402
 # --- fixtures ---------------------------------------------------------------
 
 
+# The write-path bearer token used across these tests (I4). The client fixture
+# builds the app WITH this token and auto-attaches it on writes, so the existing
+# happy-path tests authenticate; dedicated tests below exercise the 401/503 paths.
+TEST_TOKEN = "test-console-ingest-token-abc123"
+
+
 @pytest.fixture()
 def store(tmp_path) -> DeploymentStore:
     """A non-persistent store with the NFR-5 thresholds (yellow>90s, red>300s)."""
     return DeploymentStore(data_dir=tmp_path, persist=False)
 
 
+class _AuthClient(TestClient):
+    """A TestClient that auto-attaches the write-path bearer on POST/PUT/DELETE so
+    the happy-path tests don't repeat the header. Reads go through unauthenticated.
+    """
+
+    def request(self, method, url, *args, **kwargs):  # type: ignore[override]
+        if method.upper() in ("POST", "PUT", "DELETE", "PATCH"):
+            headers = dict(kwargs.get("headers") or {})
+            headers.setdefault("Authorization", f"Bearer {TEST_TOKEN}")
+            kwargs["headers"] = headers
+        return super().request(method, url, *args, **kwargs)
+
+
 @pytest.fixture()
 def client(store) -> TestClient:
-    return TestClient(create_app(store))
+    return _AuthClient(create_app(store, ingest_token=TEST_TOKEN))
 
 
 def _record_dict(
@@ -202,6 +221,83 @@ def test_delete_deployment_is_idempotent(client: TestClient):
     assert d2.status_code == 200
     assert d2.json()["removed"] is False
     assert client.get("/api/v1/deployments").json() == []
+
+
+# --- write-path authentication (I4) -----------------------------------------
+
+
+def _raw_client(store, *, ingest_token: str | None = TEST_TOKEN) -> TestClient:
+    """A PLAIN TestClient (no auto-auth) so a test controls headers explicitly."""
+    return TestClient(create_app(store, ingest_token=ingest_token))
+
+
+def test_writes_without_token_are_401(store: DeploymentStore):
+    """register/heartbeat/delete with NO Authorization header -> 401."""
+    c = _raw_client(store)  # token configured, but we send no header
+    now = utcnow()
+    rec = _record_dict(
+        tenant_id="acme",
+        deployment_id="acme-use1-noauth",
+        last_heartbeat_ts=now,
+        license_expiry=now + _dt.timedelta(days=365),
+    )
+    assert c.post("/api/v1/register", json={"region": "us-east-1"}).status_code == 401
+    assert c.post("/api/v1/heartbeat", json=rec).status_code == 401
+    assert c.delete("/api/v1/deployments/acme-use1-noauth").status_code == 401
+    # Nothing was written.
+    assert c.get("/api/v1/deployments").json() == []
+
+
+def test_writes_with_wrong_token_are_401(store: DeploymentStore):
+    c = _raw_client(store)
+    bad = {"Authorization": "Bearer not-the-token"}
+    assert c.post("/api/v1/register", json={"region": "us-east-1"}, headers=bad).status_code == 401
+    # A malformed (non-Bearer) header is also 401.
+    worse = {"Authorization": "Basic Zm9vOmJhcg=="}
+    assert c.post("/api/v1/register", json={"region": "us-east-1"}, headers=worse).status_code == 401
+
+
+def test_writes_with_token_are_200(store: DeploymentStore):
+    """With the correct bearer, register + heartbeat + delete all succeed."""
+    c = _raw_client(store)
+    auth = {"Authorization": f"Bearer {TEST_TOKEN}"}
+    r = c.post("/api/v1/register", json={"tenant_id": "acme", "region": "us-east-1"}, headers=auth)
+    assert r.status_code == 200, r.text
+    dep_id = r.json()["deployment_id"]
+
+    now = utcnow()
+    rec = _record_dict(
+        tenant_id="acme",
+        deployment_id=dep_id,
+        last_heartbeat_ts=now,
+        license_expiry=now + _dt.timedelta(days=365),
+    )
+    assert c.post("/api/v1/heartbeat", json=rec, headers=auth).status_code == 200
+    assert c.delete(f"/api/v1/deployments/{dep_id}", headers=auth).status_code == 200
+
+
+def test_reads_stay_open_without_token(store: DeploymentStore):
+    """Reads (list/get/rollup/healthz) do NOT require the token (operator UI)."""
+    c = _raw_client(store)
+    # Seed a row via an authenticated write first.
+    auth = {"Authorization": f"Bearer {TEST_TOKEN}"}
+    dep_id = c.post(
+        "/api/v1/register", json={"tenant_id": "acme", "region": "us-east-1"}, headers=auth
+    ).json()["deployment_id"]
+    # Reads with NO Authorization header all succeed.
+    assert c.get("/api/v1/deployments").status_code == 200
+    assert c.get(f"/api/v1/deployments/{dep_id}").status_code == 200
+    assert c.get("/").status_code == 200
+    assert c.get("/healthz").status_code == 200
+
+
+def test_writes_fail_closed_when_token_unconfigured(store: DeploymentStore):
+    """A console built with NO token (and no env) refuses ALL writes with 503 —
+    fail-closed, never silently open."""
+    c = _raw_client(store, ingest_token="")  # explicitly unconfigured
+    auth = {"Authorization": "Bearer anything"}
+    assert c.post("/api/v1/register", json={"region": "us-east-1"}, headers=auth).status_code == 503
+    assert c.get("/api/v1/deployments").status_code == 200  # reads still fine
 
 
 def test_heartbeat_rejects_malformed_record(client: TestClient):

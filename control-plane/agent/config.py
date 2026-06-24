@@ -43,6 +43,25 @@ def _env_opt(name: str) -> str | None:
     return v if v not in (None, "") else None
 
 
+def _read_secret(value_name: str, file_name: str) -> str | None:
+    """Resolve a secret from ``$<value_name>`` or, failing that, the file at
+    ``$<file_name>`` (so the token can be mounted as a read-only secret file the
+    way the compose does, without ever putting it on a command line / in `env`).
+    Returns ``None`` if neither is set / the file is empty or unreadable.
+    """
+    direct = _env_opt(value_name)
+    if direct is not None:
+        return direct
+    path = _env_opt(file_name)
+    if path is None:
+        return None
+    try:
+        txt = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return txt or None
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw in (None, ""):
@@ -72,6 +91,14 @@ class AgentConfig(BaseModel):
     console_url: str = Field(
         description="Base URL of the vendor console (outbound https). "
         "Heartbeats POST to <console_url>/api/v1/heartbeat (I2: outbound only)."
+    )
+    # Bearer token the agent presents on the console WRITE path (I4). Shipped in
+    # the onboarding bundle (agent-config.json `console_token`) and mounted as a
+    # secret; without it the console rejects heartbeats with 401. None/"" => the
+    # agent sends no Authorization header (dev consoles with auth disabled).
+    console_token: str | None = Field(
+        default=None,
+        description="Bearer token for the console write path (CONSOLE_INGEST_TOKEN).",
     )
 
     # --- identity of THIS deployment --------------------------------------
@@ -158,6 +185,7 @@ def load_agent_config(**overrides) -> AgentConfig:
     """
     base = dict(
         console_url=_env("AGENT_CONSOLE_URL", "https://console:8080"),
+        console_token=_read_secret("AGENT_CONSOLE_TOKEN", "AGENT_CONSOLE_TOKEN_FILE"),
         tenant_id=_env("AGENT_TENANT_ID", "acme"),
         deployment_id=_env("AGENT_DEPLOYMENT_ID", "acme-use1-0001"),
         region=_env("AGENT_REGION", "us-east-1"),

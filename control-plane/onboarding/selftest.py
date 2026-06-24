@@ -277,11 +277,14 @@ def run() -> int:
     import app as real_console_app  # console/app.py
     import store as real_console_store  # console/store.py
 
+    # The REAL console requires a write-path bearer token (I4); build it with one
+    # and authenticate every onboarding write against it.
+    real_token = "selftest-console-ingest-token"
     real_store = real_console_store.DeploymentStore(persist=False)
-    real_app = real_console_app.create_app(real_store)
+    real_app = real_console_app.create_app(real_store, ingest_token=real_token)
 
     # Sanity: this console DOES create a row on register (unlike the fake one).
-    pre_client = cc.ASGIConsoleClient(real_app)
+    pre_client = cc.ASGIConsoleClient(real_app, token=real_token)
     reg = pre_client.register(region="us-east", plan="standard", tenant_id="gamma")
     check(pre_client.has_deployment(reg["deployment_id"]),
           "real console creates a deployment row on register (precondition)")
@@ -296,6 +299,7 @@ def run() -> int:
             region="us-east",
             plan="standard",
             console_app=real_app,            # the REAL console, not the fake
+            console_token=real_token,        # authenticate writes (I4)
             bundles_root=bundles_root,
             pki_dir=pki_dir,
             registry_path=registry_path,

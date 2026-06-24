@@ -465,6 +465,7 @@ class Stack:
     onboard_result: object = None
     console_app: object = None
     console_store: object = None
+    console_token: Optional[str] = None
     bundle_dir: Optional[Path] = None
     agent: object = None
 
@@ -607,8 +608,13 @@ def step2_onboard(stack: Stack, rep: StepReporter) -> None:
     console_store_mod = _load("store", _CONSOLE_DIR / "store.py")
     console_app_mod = _load("app", _CONSOLE_DIR / "app.py", dir_first=_CONSOLE_DIR)
 
+    # The REAL console requires a write-path bearer token (I4). Build it with one
+    # and thread it through onboarding (which stamps it into the bundle) + the
+    # ASGI clients so every write authenticates.
+    console_token = "e2e-console-ingest-token"
+    stack.console_token = console_token
     store = console_store_mod.DeploymentStore(persist=False)
-    app = console_app_mod.create_app(store)
+    app = console_app_mod.create_app(store, ingest_token=console_token)
     stack.console_app = app
     stack.console_store = store
 
@@ -617,6 +623,7 @@ def step2_onboard(stack: Stack, rep: StepReporter) -> None:
         region="us-east",
         plan="standard",
         console_app=app,  # the REAL console, in-process
+        console_token=console_token,  # authenticate writes (I4)
         bundles_root=str(stack.bundles_root),
         pki_dir=str(stack.pki_dir),
         registry_path=str(stack.registry_path),
@@ -699,7 +706,8 @@ def step3_agent_green(stack: Stack, rep: StepReporter) -> None:
 
     # The agent's heartbeat sender posts to the REAL console in-process (the
     # outbound POST the agent would do over https, dispatched via ASGI here).
-    console = cc.ASGIConsoleClient(app)
+    # The console requires the write token (I4) — present it on the client.
+    console = cc.ASGIConsoleClient(app, token=stack.console_token)
 
     def in_process_sender(record: dict) -> bool:
         try:

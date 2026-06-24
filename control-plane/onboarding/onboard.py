@@ -208,6 +208,7 @@ def onboard(
     telemetry_tier: str = "T1",
     cert_valid_days: int = 90,
     license_valid_days: int = lm.DEFAULT_LICENSE_DAYS,
+    console_token: Optional[str] = None,
     fail_after: Optional[str] = None,
 ) -> OnboardResult:
     """Run the atomic onboarding transaction. Returns :class:`OnboardResult`.
@@ -235,7 +236,9 @@ def onboard(
     try:
         # --- console handle (if used) --------------------------------------
         if use_console:
-            client = cc.make_console_client(console_url=console_url, app=console_app)
+            client = cc.make_console_client(
+                console_url=console_url, app=console_app, token=console_token
+            )
 
         # --- STEP 1: REGISTER (or mint locally) ----------------------------
         if use_console:
@@ -323,6 +326,7 @@ def onboard(
             telemetry_tier=telemetry_tier,
             license_expiry=license_expiry,
             console_url=console_url,
+            console_token=console_token,
             cert=cert,
             lic=lic,
             trust_root_path=trust_root_path,
@@ -439,6 +443,7 @@ def _assemble_bundle_extras(
     telemetry_tier: str,
     license_expiry: str,
     console_url: Optional[str],
+    console_token: Optional[str],
     cert: dict,
     lic: dict,
     trust_root_path: str,
@@ -469,6 +474,10 @@ def _assemble_bundle_extras(
             "key": f"cert/{os.path.basename(cert['key_path'])}",
             "chain": f"cert/{os.path.basename(cert['bundle_path'])}",
         },
+        # Bearer token for the console WRITE path (I4). The agent presents this on
+        # every heartbeat; without it the console answers 401. Stamped into the
+        # bundle so the customer's agent ships with its write credential.
+        "console_token": console_token or "",
         "outbound_only": True,         # I2: agent opens no inbound listener
         "buffer_on_unreachable": True,  # I3: buffer telemetry/config when CP is down
         "verify_before_apply": True,    # I6
@@ -562,6 +571,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--telemetry-tier", default="T1", choices=["T1", "T2", "T3"])
     ap.add_argument("--cert-valid-days", type=int, default=90)
     ap.add_argument("--license-valid-days", type=int, default=lm.DEFAULT_LICENSE_DAYS)
+    ap.add_argument(
+        "--console-token",
+        default=os.environ.get("CONSOLE_INGEST_TOKEN"),
+        help="bearer token for the console write path (I4); stamped into the agent "
+        "bundle and used to authenticate the onboarding register/heartbeat calls. "
+        "Defaults to $CONSOLE_INGEST_TOKEN.",
+    )
     ap.add_argument("--fail-after", default=None,
                     choices=["register", "cert", "license", "bundle", "heartbeat"],
                     help="inject a failure after this step (rollback test only)")
@@ -589,6 +605,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             telemetry_tier=args.telemetry_tier,
             cert_valid_days=args.cert_valid_days,
             license_valid_days=args.license_valid_days,
+            console_token=args.console_token,
             fail_after=args.fail_after,
         )
     except OnboardError as exc:

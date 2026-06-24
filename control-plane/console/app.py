@@ -34,7 +34,9 @@ import os
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, Response
+import hmac
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -104,11 +106,57 @@ def _console_port() -> int:
         return 8080
 
 
-def create_app(deployment_store: DeploymentStore | None = None) -> FastAPI:
+# --- write-path authentication (I4 integrity) -------------------------------
+#
+# The console's WRITE endpoints (register / heartbeat / delete) MUST carry a
+# bearer token — without one anything that can reach console:8080 on cp-net (or
+# the host-published operator port) could enrol, forge heartbeats for, or delete
+# any deployment, corrupting the fleet registry the operator trusts (I4). The
+# token is the shared ``CONSOLE_INGEST_TOKEN`` minted by bootstrap.sh, passed to
+# the console via env and shipped to the agent in its onboarding bundle.
+#
+# READS (GET /api/v1/deployments[/{id}], GET / rollup, /healthz) stay open for
+# the operator UI for now. TODO(next-sprint): put operator READ auth (SSO/VPN
+# session) in front of the read surface too; today reads are assumed to sit
+# behind the operator's network boundary, writes are authenticated in-band.
+
+
+def _resolve_ingest_token(explicit: str | None) -> str | None:
+    """The configured write token: the explicit arg, else ``CONSOLE_INGEST_TOKEN``.
+
+    Returns ``None`` (or empty) when no token is configured at all — in that case
+    the console fails CLOSED on every write (503), never silently open.
+    """
+    if explicit is not None:
+        return explicit
+    return os.environ.get("CONSOLE_INGEST_TOKEN")
+
+
+def _extract_bearer(authorization: str | None) -> str | None:
+    """Pull the token out of an ``Authorization: Bearer <token>`` header."""
+    if not authorization:
+        return None
+    parts = authorization.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    return parts[1].strip() or None
+
+
+def create_app(
+    deployment_store: DeploymentStore | None = None,
+    *,
+    ingest_token: str | None = None,
+) -> FastAPI:
     """Build the console FastAPI app over ``deployment_store`` (a fresh one by
     default). Exposed as a factory so tests can inject a non-persistent store.
+
+    ``ingest_token`` is the bearer token required on every WRITE endpoint (I4). If
+    ``None`` it is read from ``CONSOLE_INGEST_TOKEN``; if that is also unset the
+    console refuses ALL writes with 503 (fail-closed — a misconfigured console
+    never accepts unauthenticated writes).
     """
     st = deployment_store if deployment_store is not None else DeploymentStore()
+    configured_token = _resolve_ingest_token(ingest_token)
 
     application = FastAPI(
         title="Fyralis BYOC — Fleet Console",
@@ -120,6 +168,31 @@ def create_app(deployment_store: DeploymentStore | None = None) -> FastAPI:
     )
     # Stash the store on the app so tests / handlers can reach it.
     application.state.store = st
+    application.state.ingest_token = configured_token
+
+    def require_write_auth(
+        authorization: str | None = Header(default=None),
+    ) -> None:
+        """FastAPI dependency guarding every WRITE endpoint (I4).
+
+        * No token configured on the server -> 503 (fail-closed; the console is
+          misconfigured and must NOT accept unauthenticated writes).
+        * Missing/malformed bearer or a non-matching token -> 401.
+        Comparison is constant-time (``hmac.compare_digest``) to avoid leaking the
+        token via timing.
+        """
+        if not configured_token:
+            raise HTTPException(
+                status_code=503,
+                detail="console write auth not configured (CONSOLE_INGEST_TOKEN unset)",
+            )
+        presented = _extract_bearer(authorization)
+        if presented is None or not hmac.compare_digest(presented, configured_token):
+            raise HTTPException(
+                status_code=401,
+                detail="missing or invalid bearer token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     # ------------------------------------------------------------------ API
 
@@ -128,6 +201,7 @@ def create_app(deployment_store: DeploymentStore | None = None) -> FastAPI:
         response_model=RegisterResponse,
         tags=["console"],
         summary="Register a deployment (mint deployment_id, + tenant_id if absent).",
+        dependencies=[Depends(require_write_auth)],
     )
     def register(body: RegisterRequest) -> RegisterResponse:
         rec = st.register(
@@ -146,6 +220,7 @@ def create_app(deployment_store: DeploymentStore | None = None) -> FastAPI:
         "/api/v1/heartbeat",
         tags=["console"],
         summary="Upsert a heartbeat (DeploymentRecord JSON) and recompute health.",
+        dependencies=[Depends(require_write_auth)],
     )
     async def heartbeat(request: Request) -> JSONResponse:
         # Parse the body into the shared C4 record. A malformed record is a 422
@@ -198,6 +273,7 @@ def create_app(deployment_store: DeploymentStore | None = None) -> FastAPI:
         "/api/v1/deployments/{deployment_id}",
         tags=["console"],
         summary="Deregister (remove) a deployment row. Idempotent.",
+        dependencies=[Depends(require_write_auth)],
     )
     def delete_deployment(deployment_id: str) -> JSONResponse:
         """Idempotent deregistration (FR-E onboarding rollback / offboard).

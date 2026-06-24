@@ -40,7 +40,7 @@ up:
 	$(COMPOSE) -f $(COMPOSE_FILE) up -d --build
 	@echo "Console:  http://localhost:8080"
 	@echo "Grafana:  http://localhost:3000"
-	@echo "CP-Prom:  http://localhost:9091"
+	@echo "(internal stores — Mimir/Loki/CP-Prometheus — are cp-net-only, no host port; reach via Grafana/auth-proxy)"
 
 down:
 	$(COMPOSE) -f $(COMPOSE_FILE) down

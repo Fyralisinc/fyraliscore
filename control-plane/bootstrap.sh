@@ -120,6 +120,28 @@ fi
 [[ -f "$PROXY_KEY" ]] && chmod 0644 "$PROXY_KEY" 2>/dev/null || true
 
 # ============================================================================ #
+# 3b. console write token (CONSOLE_INGEST_TOKEN, I4)                            #
+# ============================================================================ #
+# The console's WRITE endpoints (register/heartbeat/delete) require a bearer
+# token (I4) — without one anything on cp-net could forge fleet state. Generate
+# one ONCE into a gitignored runtime path; the compose passes it to the console
+# (env) and bind-mounts the file into the agent (AGENT_CONSOLE_TOKEN_FILE), and
+# onboarding stamps it into the agent bundle's agent-config.json.
+mkdir -p "$RUNTIME_DIR/secrets"
+TOKEN_FILE="$RUNTIME_DIR/secrets/console_ingest_token"
+if [[ -s "$TOKEN_FILE" ]]; then
+  ok "console ingest token already present ($TOKEN_FILE) — reusing"
+else
+  say "generating the console ingest token (CONSOLE_INGEST_TOKEN, I4) …"
+  "$PYTHON_BIN" -c "import secrets; print(secrets.token_urlsafe(32))" > "$TOKEN_FILE"
+  # The agent container (uid 10010) bind-mounts this read-only; relax so it can
+  # read the gitignored dev/demo token (in prod it is a secrets-manager secret).
+  chmod 0644 "$TOKEN_FILE" 2>/dev/null || true
+  ok "console ingest token at $TOKEN_FILE"
+fi
+CONSOLE_INGEST_TOKEN="$(tr -d '\n' < "$TOKEN_FILE")"
+
+# ============================================================================ #
 # 4. onboard the demo tenant "acme" -> bundle -> _runtime/                     #
 # ============================================================================ #
 mkdir -p "$RUNTIME_DIR/agent" "$RUNTIME_DIR/ca"
@@ -132,8 +154,9 @@ else
   say "onboarding demo tenant '$TENANT' (region=$REGION plan=$PLAN, embedded console) …"
   # onboard.py prints step logs AND the --json result to stdout, so extract the
   # trailing balanced JSON object (raw_decode from the last top-level '{').
-  ONBOARD_OUT="$("$PYTHON_BIN" onboarding/onboard.py \
+  ONBOARD_OUT="$(CONSOLE_INGEST_TOKEN="$CONSOLE_INGEST_TOKEN" "$PYTHON_BIN" onboarding/onboard.py \
     --tenant "$TENANT" --region "$REGION" --plan "$PLAN" \
+    --console-token "$CONSOLE_INGEST_TOKEN" \
     --embedded-console --json)"
   echo "$ONBOARD_OUT"
 
@@ -187,8 +210,18 @@ AGENT_TENANT_ID=$TENANT
 AGENT_DEPLOYMENT_ID=$DEPLOYMENT_ID
 AGENT_REGION=$REGION
 AGENT_TELEMETRY_TIER=T1
+# Console write token (I4) — the console requires it on register/heartbeat/delete;
+# the agent reads it from the mounted token file (AGENT_CONSOLE_TOKEN_FILE).
+CONSOLE_INGEST_TOKEN=$CONSOLE_INGEST_TOKEN
 EOF
   ok "onboarded $TENANT -> $DEPLOYMENT_ID; runtime staged; wrote .env"
+fi
+
+# Ensure CONSOLE_INGEST_TOKEN is in .env even when the tenant was already
+# onboarded on a prior run (the .env block above only runs in the else branch).
+if [[ -f "$ENV_FILE" ]] && ! grep -q '^CONSOLE_INGEST_TOKEN=' "$ENV_FILE"; then
+  printf 'CONSOLE_INGEST_TOKEN=%s\n' "$CONSOLE_INGEST_TOKEN" >> "$ENV_FILE"
+  ok "appended CONSOLE_INGEST_TOKEN to existing .env"
 fi
 
 # ============================================================================ #
@@ -231,10 +264,26 @@ wait_http() {
   done
   ok "$name ready ($url)"
 }
-wait_http "Mimir"   "http://localhost:9009/ready"          90 || true
+# Mimir + cp-prometheus are cp-net-ONLY now (no host ports, I4) — probe them from
+# INSIDE the network via the self-obs exporter container rather than the host.
+wait_incluster() {
+  local name="$1" url="$2" tries="${3:-60}"
+  local i=0
+  until docker compose -f "$COMPOSE_FILE" exec -T cp-self-obs-exporter \
+        python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('$url',timeout=3).status==200 else 1)" \
+        >/dev/null 2>&1; do
+    i=$((i+1))
+    if [[ "$i" -ge "$tries" ]]; then warn "$name not ready after $((tries*2))s ($url, in-cluster)"; return 1; fi
+    sleep 2
+  done
+  ok "$name ready ($url, in-cluster)"
+}
+# Operator-facing surfaces are host-published — probe them on the host.
 wait_http "Console" "http://localhost:8080/healthz"        60 || true
 wait_http "Grafana" "http://localhost:3000/api/health"     90 || true
-wait_http "CP self-obs Prometheus" "http://localhost:9091/-/healthy" 60 || true
+# Internal stores are cp-net-only — probe by service name from within the network.
+wait_incluster "Mimir" "http://mimir:9009/ready"           90 || true
+wait_incluster "CP self-obs Prometheus" "http://cp-prometheus:9090/-/healthy" 60 || true
 
 cat <<EOF
 
@@ -245,7 +294,8 @@ cat <<EOF
 ║  Grafana          : http://localhost:3000      (fleet + per-customer +   ║
 ║                       admin / ${GF_ADMIN_USER:-admin} : ${GF_ADMIN_PASSWORD:-fyralis-operator})              ║
 ║                       Control-Plane folder -> CP self-obs watchdog       ║
-║  CP self-obs Prom : http://localhost:9091      (silence != health)       ║
+║  Internal stores  : cp-net-only (Mimir/Loki/Prometheus have NO host port,║
+║                       I4) — reach them via Grafana / the auth-proxy.      ║
 ║  Demo tenant      : ${TENANT}  (golden-12 metrics flowing via the boundary    ║
 ║                       collector -> mTLS auth-proxy -> Mimir)             ║
 ╚══════════════════════════════════════════════════════════════════════════╝

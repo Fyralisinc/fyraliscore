@@ -18,6 +18,19 @@
 #
 # Mimir multi-tenancy is keyed by X-Scope-OrgID, injected by the auth proxy
 # from the verified client-cert tenant_id — never accepted from outside cp-net.
+#
+# TRUST BOUNDARY (I4 / C5): INTERNAL stores (mimir, loki, config-dist,
+# release-registry, metering, audit, cp-prometheus, the self-obs exporter, the
+# boundary collector, demo-dataplane, the agent, the ruler-loader) publish NO host
+# ports — they are reachable ONLY on the cp-net/dataplane-net internal networks via
+# `expose:`. Host-publishing a store would let anything on the host reach it
+# DIRECTLY with any X-Scope-OrgID, bypassing the auth-proxy and the per-tenant
+# scoping it enforces. ONLY the operator/tenant entrypoints publish host ports:
+#   - auth-proxy  (8443) — the tenant mTLS ingest path (the ONLY thing exposed in
+#                          production; in prod console+grafana sit behind a VPN/SSO)
+#   - console     (8080) — operator UI/API
+#   - grafana     (3000) — operator UI
+# Everything else is internal-only.
 # ============================================================================
 
 name: fyralis-control-plane
@@ -93,6 +106,11 @@ services:
       - ./auth-proxy/tls:/etc/fyralis/tls:ro
     ports:
       # mTLS ingress for agent / boundary-collector dial-home (I2 inbound to CP).
+      # THE ONLY service host-exposed in PRODUCTION — every tenant push lands here
+      # and the proxy injects X-Scope-OrgID from the verified cert SAN (I4). console
+      # + grafana below are also host-published for the OPERATOR, but in prod they
+      # sit behind a VPN/SSO, not the public internet; all internal stores are
+      # cp-net-only (no host ports at all).
       - "8443:8443"
     networks:
       - cp-net
@@ -139,11 +157,10 @@ services:
       # Blocks (tsdb/blocks/compactor), ruler tenant storage, alertmanager.
       - mimir-data:/data
     expose:
-      - "9009"   # HTTP API (push + query + ruler) — reached via auth-proxy on cp-net
-    ports:
-      # Operator-local convenience only. In PRODUCTION do NOT publish this — all
-      # access goes through the auth-proxy so X-Scope-OrgID is enforced server-side.
-      - "9009:9009"
+      # cp-net-ONLY HTTP API (push + query + ruler). NO host `ports:` (I4/C5) — all
+      # access goes through the auth-proxy so X-Scope-OrgID is enforced server-side;
+      # a host publish would let anything on the host push/query any tenant directly.
+      - "9009"
     networks:
       - cp-net
     restart: unless-stopped
@@ -230,10 +247,11 @@ services:
       - ./loki/overrides:/etc/loki/overrides:ro
       # Persistent store: TSDB index + chunks + compactor + WAL, all under /data.
       - loki-data:/data
-    ports:
-      # In production reached ONLY through the auth-proxy on cp-net; host publish
-      # is for single-host dev/demo + healthcheck.
-      - "3100:3100"
+    expose:
+      # cp-net-ONLY (I4/C5). NO host `ports:` — reached only through the auth-proxy
+      # on ingest and Grafana on query; a host publish would bypass X-Scope-OrgID.
+      # Liveness is the container healthcheck below (localhost), not a host port.
+      - "3100"
     networks:
       - cp-net
     # The official image's entrypoint handles uid 10001; keep the volume writable.
@@ -317,8 +335,10 @@ services:
       DEMO_DP_DEPLOYMENT: "${AGENT_DEPLOYMENT_ID:-acme-use1-0001}"
       DEMO_DP_REGION: "${AGENT_REGION:-us-east-1}"
       DEMO_DP_SCENARIO: "${DEMO_DP_SCENARIO:-healthy}"
-    ports:
-      - "9300:9300"
+    expose:
+      # dataplane-net-ONLY (I4/C5). NO host `ports:` — only the boundary collector
+      # scrapes it (by service name on dataplane-net); it is an internal demo target.
+      - "9300"
     networks:
       - dataplane-net
     restart: unless-stopped
@@ -403,6 +423,11 @@ services:
       # Heartbeat-age health thresholds (NFR-5 defaults; override to tune).
       - CP_HEARTBEAT_YELLOW_AFTER_S=90
       - CP_HEARTBEAT_RED_AFTER_S=300
+      # Bearer token required on every WRITE endpoint (register/heartbeat/delete)
+      # — I4. Sourced from .env (bootstrap.sh generates it into _runtime/secrets/
+      # and writes it here). With it UNSET the console fails CLOSED on writes (503),
+      # never silently open. Reads stay open for the operator UI (next-sprint: SSO).
+      - CONSOLE_INGEST_TOKEN=${CONSOLE_INGEST_TOKEN:?set CONSOLE_INGEST_TOKEN (run ./bootstrap.sh)}
     volumes:
       # Durable fleet registry (best-effort JSON persistence under console/data).
       - console-data:/app/console/data
@@ -451,6 +476,10 @@ services:
     # OUTBOUND-ONLY: no ports published, no listener (I2).
     environment:
       AGENT_CONSOLE_URL: "${AGENT_CONSOLE_URL:-http://console:8080}"
+      # Bearer token the agent presents on the console write path (I4). Read from
+      # the read-only file mounted below (kept off the process env / command line);
+      # without it the console answers 401 and the agent buffers + retries (I3).
+      AGENT_CONSOLE_TOKEN_FILE: "/run/secrets/console_ingest_token"
       AGENT_TENANT_ID: "${AGENT_TENANT_ID:-acme}"
       AGENT_DEPLOYMENT_ID: "${AGENT_DEPLOYMENT_ID:-acme-use1-0001}"
       AGENT_REGION: "${AGENT_REGION:-us-east-1}"
@@ -471,6 +500,9 @@ services:
       - ./_runtime/agent/license.json:/run/secrets/license.json:ro
       - ./_runtime/agent/license.json.sig:/run/secrets/license.json.sig:ro
       - ./_runtime/agent/license.json.manifest.json:/run/secrets/license.json.manifest.json:ro
+      # Console write token (I4) — minted by bootstrap.sh into _runtime/secrets/,
+      # mounted read-only; the agent reads it via AGENT_CONSOLE_TOKEN_FILE.
+      - ./_runtime/secrets/console_ingest_token:/run/secrets/console_ingest_token:ro
       # PUBLIC trust root only — the agent verifies, never signs. Written by
       # signing/keygen.py --activate during bootstrap.sh.
       - ./signing/trust_root.json:/app/signing/trust_root.json:ro
@@ -530,10 +562,11 @@ services:
       - "8090"
     volumes:
       - release-registry-data:/app/release/_registry
-    ports:
-      # Host-published on 8091 to avoid colliding with config-dist's 8090; the
-      # container still listens on 8090, so on cp-net it is release-registry:8090.
-      - "8091:8090"
+    expose:
+      # cp-net-ONLY (I4/C5). NO host `ports:` — the agent reaches it by service name
+      # release-registry:8090 on cp-net (through the auth-proxy in prod); nothing on
+      # the host should serve/pull release bundles directly.
+      - "8090"
     networks:
       - cp-net
     healthcheck:
@@ -579,10 +612,11 @@ services:
       - 0.0.0.0
       - --port
       - "8090"
-    ports:
-      # Local/dev inspection only; in production the agent reaches this ONLY
-      # through the auth-proxy on cp-net (mTLS-terminated, tenant-scoped).
-      - "8090:8090"
+    expose:
+      # cp-net-ONLY (I4/C5). NO host `ports:` — the agent reaches this ONLY through
+      # the auth-proxy on cp-net (mTLS-terminated, tenant-scoped); a host publish
+      # would serve any deployment's signed config to anything on the host.
+      - "8090"
     networks:
       - cp-net
     restart: unless-stopped
@@ -716,8 +750,10 @@ services:
       CP_CONSOLE_URL: "http://console:8080/healthz"
       CP_CONFIGDIST_URL: "http://config-dist:8090/healthz"
       CP_RELEASE_URL: "http://release-registry:8090/healthz"
-    ports:
-      - "9110:9110"
+    expose:
+      # cp-net-ONLY (I4/C5). NO host `ports:` — cp-prometheus scrapes /metrics by
+      # service name on cp-net; this watchdog is internal-only.
+      - "9110"
     networks:
       - cp-net
     restart: unless-stopped
@@ -750,8 +786,11 @@ services:
       - ./self-obs/cp-prometheus.yml:/etc/prometheus/cp-prometheus.yml:ro
       - ./self-obs/cp_rules.yml:/etc/prometheus/cp_rules.yml:ro
       - cp-self-obs-data:/prometheus
-    ports:
-      - "9091:9090"
+    expose:
+      # cp-net-ONLY (I4/C5). NO host `ports:` — the CP-self watchdog TSDB is queried
+      # by the operator THROUGH Grafana (provisioned datasource on cp-net), not from
+      # the host. Liveness is the container healthcheck below.
+      - "9090"
     networks:
       - cp-net
     depends_on:

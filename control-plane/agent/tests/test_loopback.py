@@ -21,9 +21,11 @@ from lib import DeploymentRecord
 
 
 class _ConsoleState:
-    def __init__(self) -> None:
+    def __init__(self, *, required_token: str | None = None) -> None:
         self.received: list[dict] = []
+        self.auth_headers: list[str | None] = []
         self.up = True
+        self.required_token = required_token  # if set, enforce Bearer auth (I4)
         self.lock = threading.Lock()
 
 
@@ -43,6 +45,17 @@ def _make_handler(state: _ConsoleState):
                 self.end_headers()
                 self.wfile.write(b'{"error":"down"}')
                 return
+            auth = self.headers.get("Authorization")
+            with state.lock:
+                state.auth_headers.append(auth)
+            # I4: when the console requires a token, reject a missing/wrong bearer.
+            if state.required_token is not None:
+                expected = f"Bearer {state.required_token}"
+                if auth != expected:
+                    self.send_response(401)
+                    self.end_headers()
+                    self.wfile.write(b'{"error":"unauthorized"}')
+                    return
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length) if length else b"{}"
             try:
@@ -61,12 +74,13 @@ def _make_handler(state: _ConsoleState):
     return Handler
 
 
-def _agent_for(console_url: str, fabric, tmp_path: Path) -> Agent:
+def _agent_for(console_url: str, fabric, tmp_path: Path, *, console_token: str | None = None) -> Agent:
     version_file = tmp_path / "VERSION"
     version_file.write_text("2.0.0\n", encoding="utf-8")
     lic = make_license(fabric, tmp_path / "license.json", expires_in_days=365)
     cfg = load_agent_config(
         console_url=console_url,
+        console_token=console_token,
         tenant_id="acme",
         deployment_id="acme-use1-0001",
         region="us-east-1",
@@ -83,7 +97,9 @@ def _agent_for(console_url: str, fabric, tmp_path: Path) -> Agent:
     )
     return Agent(
         cfg,
-        sender=requests_sender(cfg.heartbeat_url, timeout_s=cfg.heartbeat_timeout_s),
+        sender=requests_sender(
+            cfg.heartbeat_url, timeout_s=cfg.heartbeat_timeout_s, token=cfg.console_token
+        ),
         probe=HealthProbe(static_probe(True)),
         license_checker=LicenseChecker(lic, trust_root_path=str(fabric.trust_root_path)),
     )
@@ -130,3 +146,57 @@ def test_console_never_started_does_not_crash(signing_fabric, tmp_path):
     ticks = agent.run_forever(max_ticks=3)
     assert ticks == 3
     assert agent.buffer.count() == 3
+
+
+# --------------------------------------------------------------------------- #
+# I4: the agent carries the console write token; an authed console accepts it   #
+# --------------------------------------------------------------------------- #
+
+
+def test_agent_heartbeat_carries_token_and_is_accepted(signing_fabric, tmp_path):
+    """The agent presents `Authorization: Bearer <token>` and a console that
+    REQUIRES that token accepts the heartbeat (200, record landed)."""
+    token = "secret-console-token-xyz"
+    state = _ConsoleState(required_token=token)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(state))
+    _host, port = server.server_address
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        agent = _agent_for(
+            f"http://127.0.0.1:{port}", signing_fabric, tmp_path, console_token=token
+        )
+        result = agent.tick()
+        assert result.delivered and not result.buffered
+        with state.lock:
+            assert len(state.received) == 1
+            DeploymentRecord(**state.received[0])  # valid C4 record landed
+            assert state.auth_headers == [f"Bearer {token}"]  # the token was sent
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_agent_without_token_is_rejected_and_buffers(signing_fabric, tmp_path):
+    """A console that requires a token rejects an agent that sends NONE (401); the
+    agent treats it as undelivered, buffers, and never crashes (I3)."""
+    token = "secret-console-token-xyz"
+    state = _ConsoleState(required_token=token)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(state))
+    _host, port = server.server_address
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        # Agent built with NO console_token -> sends no Authorization header.
+        agent = _agent_for(
+            f"http://127.0.0.1:{port}", signing_fabric, tmp_path, console_token=None
+        )
+        result = agent.tick()
+        assert not result.delivered and result.buffered
+        assert agent.buffer.count() == 1
+        with state.lock:
+            assert state.received == []          # nothing was accepted
+            assert state.auth_headers == [None]  # no bearer presented -> 401
+    finally:
+        server.shutdown()
+        server.server_close()

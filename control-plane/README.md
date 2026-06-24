@@ -108,7 +108,14 @@ Then look here:
 |---------|-----|--------------|
 | **Operator Console** | http://localhost:8080 | fleet registry + per-deployment health (derived from heartbeats) |
 | **Grafana** | http://localhost:3000 | **Fleet** + **Per-Customer** dashboards (golden-12 SLIs from the demo tenant), and the **Control-Plane** folder = the self-observability watchdog. Login `admin` / `fyralis-operator` |
-| **CP self-obs Prometheus** | http://localhost:9091 | the independent "silence != health" watchdog (NFR-10) |
+
+> **Trust boundary (I4).** Only the three operator/tenant entrypoints above
+> publish host ports — `auth-proxy` (:8443 tenant mTLS ingest), `console` (:8080),
+> `grafana` (:3000). All INTERNAL stores (Mimir, Loki, the CP self-obs
+> Prometheus, config-dist, release-registry, …) are **cp-net-only** with **no host
+> ports**, so nothing on the host can reach them directly with a forged
+> `X-Scope-OrgID`. Reach the CP self-obs watchdog and Mimir/Loki **through
+> Grafana** (provisioned datasources) or the **auth-proxy**, not a host port.
 
 Common operations (see the `Makefile`):
 

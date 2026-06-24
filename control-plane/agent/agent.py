@@ -66,23 +66,39 @@ __all__ = ["Agent", "HeartbeatSender", "requests_sender", "main"]
 HeartbeatSender = Callable[[dict], bool]
 
 
-def requests_sender(heartbeat_url: str, *, timeout_s: float = 5.0) -> HeartbeatSender:
+def requests_sender(
+    heartbeat_url: str, *, timeout_s: float = 5.0, token: str | None = None
+) -> HeartbeatSender:
     """Default OUTBOUND heartbeat sender: POST the record JSON to the console.
 
     ``requests`` is imported lazily so importing this module needs no network
-    stack. Returns ``False`` (retryable) on ANY transport error or non-2xx — the
-    caller buffers and retries; it never raises out to the loop.
+    stack. When ``token`` is set it is presented as an ``Authorization: Bearer``
+    header — the console's write path requires it (I4); without a valid token the
+    console answers 401 and this returns ``False`` (the caller buffers + retries).
+    Returns ``False`` (retryable) on ANY transport error or non-2xx — the caller
+    buffers and retries; it never raises out to the loop.
     """
     import requests  # lazy
 
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+
     def _send(record: dict) -> bool:
         try:
-            resp = requests.post(heartbeat_url, json=record, timeout=timeout_s)
+            resp = requests.post(
+                heartbeat_url, json=record, headers=headers, timeout=timeout_s
+            )
         except Exception as exc:  # connection refused, DNS, timeout, TLS, ...
             LOG.warning("heartbeat POST failed (transport): %s", exc)
             return False
         if 200 <= resp.status_code < 300:
             return True
+        if resp.status_code in (401, 403):
+            LOG.warning(
+                "heartbeat POST rejected: HTTP %s — console write token "
+                "missing/invalid (check AGENT_CONSOLE_TOKEN)",
+                resp.status_code,
+            )
+            return False
         LOG.warning("heartbeat POST rejected: HTTP %s", resp.status_code)
         return False
 
@@ -119,7 +135,9 @@ class Agent:
         cfg = self.config
         if self.sender is None:
             self.sender = requests_sender(
-                cfg.heartbeat_url, timeout_s=cfg.heartbeat_timeout_s
+                cfg.heartbeat_url,
+                timeout_s=cfg.heartbeat_timeout_s,
+                token=cfg.console_token,
             )
         if self.probe is None:
             self.probe = HealthProbe(

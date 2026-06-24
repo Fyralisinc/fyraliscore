@@ -26,14 +26,18 @@ is the cross-component contract every component honors).
 
 ## The REST API contract (P4)
 
-| Method & path | Body | Returns |
-|---|---|---|
-| `POST /api/v1/register` | `{tenant_id?, region, plan}` | `{tenant_id, deployment_id}` — mints a `deployment_id` (and a `tenant_id` if absent), stamps an initial heartbeat (starts **green**) |
-| `POST /api/v1/heartbeat` | a `DeploymentRecord` JSON | the stored record with **health recomputed**; **upsert** keyed by `deployment_id` (a heartbeat replaces the row, never appends) |
-| `GET  /api/v1/deployments` | — | `[DeploymentRecord]`, each with **health derived on read**, worst-health first |
-| `GET  /api/v1/deployments/{deployment_id}` | — | one `DeploymentRecord` (404 if unknown) |
-| `GET  /` | — | minimal **HTML fleet rollup** (table: tenant, deployment, version, region, tier, health badge, last-heartbeat age, license expiry) |
-| `GET  /healthz` | — | `{status, fleet_size}` liveness probe |
+Writes (✎) require `Authorization: Bearer $CONSOLE_INGEST_TOKEN` (I4); reads (○)
+stay open for the operator UI for now.
+
+| Method & path | Auth | Body | Returns |
+|---|---|---|---|
+| `POST /api/v1/register` | ✎ | `{tenant_id?, region, plan}` | `{tenant_id, deployment_id}` — mints a `deployment_id` (and a `tenant_id` if absent), stamps an initial heartbeat (starts **green**) |
+| `POST /api/v1/heartbeat` | ✎ | a `DeploymentRecord` JSON | the stored record with **health recomputed**; **upsert** keyed by `deployment_id` (a heartbeat replaces the row, never appends) |
+| `DELETE /api/v1/deployments/{deployment_id}` | ✎ | — | `{deployment_id, removed}` — idempotent deregistration |
+| `GET  /api/v1/deployments` | ○ | — | `[DeploymentRecord]`, each with **health derived on read**, worst-health first |
+| `GET  /api/v1/deployments/{deployment_id}` | ○ | — | one `DeploymentRecord` (404 if unknown) |
+| `GET  /` | ○ | — | minimal **HTML fleet rollup** (table: tenant, deployment, version, region, tier, health badge, last-heartbeat age, license expiry) |
+| `GET  /healthz` | ○ | — | `{status, fleet_size}` liveness probe |
 
 `DeploymentRecord` wire shape (C4, RFC-3339 UTC, `health ∈ {green,yellow,red}`,
 `telemetry_tier ∈ {T1,T2,T3}`):
@@ -134,11 +138,15 @@ round-trips across a restart.
   **agent's** job before it operates; the console only reads back the
   `license_expiry` the heartbeat reports and uses it to derive health. Treat the
   expiry shown here as advisory until the licensing service is wired in.
-- **No auth on the console API itself.** In the deployed topology the console
-  sits behind the control-plane perimeter on `cp-net`; per I2 it never dials into
-  a customer VPC. The agent reaches it **outbound** (dial-home). Do not publish
-  `:8080` to an untrusted network without fronting it with the auth proxy /
-  operator SSO — `register`/`heartbeat` are unauthenticated as written.
+- **Write auth (I4).** Every WRITE endpoint (`register`/`heartbeat`/`delete`)
+  requires `Authorization: Bearer $CONSOLE_INGEST_TOKEN`; a missing/invalid bearer
+  is **401**, and a console started with **no** token configured fails **closed**
+  (503 on writes) rather than silently accepting them. The token is minted by
+  `bootstrap.sh` (gitignored `_runtime/secrets/`), passed to the console via env,
+  and shipped to the agent in its onboarding bundle. **Reads stay open** for the
+  operator UI for now — next sprint: front the read surface with operator SSO/VPN
+  session auth. Per I2 the console never dials into a customer VPC; the agent
+  reaches it **outbound** (dial-home) and presents the token on each heartbeat.
 - **Persistence is best-effort, single-node.** The JSON file under
   `console/data/` is written atomically (temp-file + `os.replace`) and reloaded on
   start, but it is a single-writer local store, not an HA database. A corrupt or
