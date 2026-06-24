@@ -417,6 +417,37 @@ LLM_PROVIDER_ERRORS = counter(
 
 
 # ---------------------------------------------------------------------
+# Think survival metrics on the DEFAULT registry (BYOC §12 G4).
+#
+# services/reasoning/think/observability.py keeps its own in-process Metrics
+# singleton rendered ONLY on the think worker's concatenated /metrics
+# (render_prometheus_text + render_default). validation_dropped_ops has no DB
+# backing, so it is invisible to any collector that scrapes the canonical
+# default registry (render_default) — and resets on restart. Mirror the two
+# at-risk families onto the default registry under fyralis_-prefixed names
+# (distinct from the think-local think_* names, so the think worker emits no
+# duplicate series) so they are continuously fleet-scraped: the central TSDB
+# then retains the series across a worker restart even as the in-process
+# counter zeroes. Cost is additionally DB-backed in think_run_costs (the §12
+# G4 "rely on think_run_costs" option); this counter is its live mirror.
+# Mirrored at the emission sites: observability.log_dropped_op + record_cost.
+THINK_VALIDATION_DROPPED_OPS = counter(
+    "fyralis_think_validation_dropped_ops_total",
+    "Think ops dropped by validation during apply, by reason and op_type — "
+    "silent correctness loss (the diff the LLM proposed was not fully applied). "
+    "Fleet-canonical mirror of the think-local think_validation_dropped_ops_total "
+    "(in-memory only, no DB backing) so it survives a think-worker restart.",
+    ("reason", "op_type"),
+)
+THINK_LLM_COST_USD = counter(
+    "fyralis_think_llm_cost_usd_total",
+    "Cumulative Think LLM spend in USD by trigger_kind — fleet-canonical mirror "
+    "of the think-local in-memory total (also durably recorded in think_run_costs).",
+    ("trigger_kind",),
+)
+
+
+# ---------------------------------------------------------------------
 # Expected-vs-running worker set (BYOC §12 G5).
 #
 # A deployment can look healthy (every scraped target up) while a whole
@@ -541,4 +572,6 @@ __all__ = [
     "WORKER_COMPOSE_PRESENT",
     "EXPECTED_WORKER_CLASSES",
     "publish_expected_worker_set",
+    "THINK_VALIDATION_DROPPED_OPS",
+    "THINK_LLM_COST_USD",
 ]
