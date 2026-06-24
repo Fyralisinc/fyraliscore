@@ -31,6 +31,7 @@ from uuid import UUID
 
 import asyncpg
 
+from lib.observability.metrics import record_doc_memory_model_minted
 from lib.shared.errors import CompanyOSError, InvariantViolation, ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.memory_grammar import derive_memory_grammar
@@ -79,6 +80,29 @@ from .text_embedding import deterministic_text_embedding, is_zero_embedding
 def _raise_if_postgres_error(exc: Exception) -> None:
     if isinstance(exc, asyncpg.PostgresError):
         raise exc
+
+
+def _doc_memory_source_from_cascade(payload: dict[str, Any] | None) -> str | None:
+    """Return the document source_channel iff this apply is a document-memory mint.
+
+    Under ratified Option A (docs/plans/document-memory-substrate.md §4.1–§4.4),
+    the only document-derived Models are those minted by Think over an enriched
+    T1 trigger — the trigger whose ``seed_signature`` carries the structured
+    document summary. ``apply_diff`` already receives that ``seed_signature`` as
+    ``parent_cascade_payload``, so a non-empty ``doc_structured_summary`` is the
+    provenance marker the worker attached (and is what distinguishes a document
+    Model from any other Model born_from the same observation). The carried
+    ``source_channel`` is returned so the mint counter is keyed by source; a
+    non-document trigger (no ``doc_structured_summary``) returns None and is NOT
+    counted.
+    """
+    if not isinstance(payload, dict):
+        return None
+    structured = payload.get("doc_structured_summary")
+    if not structured:
+        return None
+    source_channel = payload.get("source_channel")
+    return source_channel if isinstance(source_channel, str) else None
 
 
 _RELATION_CLAIM_SUPPORT_SUPERSEDERS = frozenset({
@@ -589,6 +613,7 @@ async def _apply_claim_ops_for_diff(
     trigger_evidence_ids: list[UUID],
     think_run_id: UUID | None,
     ops_summary: dict[str, Any],
+    doc_memory_source: str | None = None,
 ) -> _ClaimOpsApplyResult:
     from .reconciler import reconcile_claim_op
 
@@ -636,6 +661,7 @@ async def _apply_claim_ops_for_diff(
             group_member_ids=group_member_ids,
             ops_summary=ops_summary,
             result=result,
+            doc_memory_source=doc_memory_source,
         )
 
     ops_summary["reconcile_summary"] = reconcile_summary
@@ -661,6 +687,7 @@ async def _apply_one_expanded_claim_op(
     group_member_ids: dict[int, list[UUID]],
     ops_summary: dict[str, Any],
     result: _ClaimOpsApplyResult,
+    doc_memory_source: str | None = None,
 ) -> None:
     op = expanded_op
     recon_result = None
@@ -765,6 +792,7 @@ async def _apply_one_expanded_claim_op(
         cause_event_id=trigger_cause_event_id,
         trigger_supporting_event_ids=trigger_evidence_ids,
         audit_cause_override=("reconciliation_merge" if is_recon_merge else None),
+        doc_memory_source=doc_memory_source,
     )
     _annotate_claim_result_summary(
         apply_result["summary"],
@@ -1340,6 +1368,11 @@ async def apply_diff(
         trigger_supporting_event_ids or (),
         (trigger_cause_event_id,) if trigger_cause_event_id is not None else (),
     )
+    # Document-memory provenance (Option A, §4.4): when the trigger that drove
+    # this apply carried a structured document summary, every Model minted here
+    # is document-derived — count each successful insert at the real mint site
+    # (`_apply_claim_insert`), keyed by the document's source channel.
+    doc_memory_source = _doc_memory_source_from_cascade(parent_cascade_payload)
 
     if models_repo is None:
         models_repo = ModelsRepo(  # type: ignore[arg-type]
@@ -1356,6 +1389,7 @@ async def apply_diff(
         trigger_evidence_ids=trigger_evidence_ids,
         think_run_id=think_run_id,
         ops_summary=ops_summary,
+        doc_memory_source=doc_memory_source,
     )
     applied_model_ids = claim_result.applied_model_ids
     pending_model_ids_by_event_id = claim_result.pending_model_ids_by_event_id
@@ -3813,6 +3847,7 @@ async def _apply_claim_op(
     cause_event_id: UUID | None,
     trigger_supporting_event_ids: list[UUID],
     audit_cause_override: str | None = None,
+    doc_memory_source: str | None = None,
 ) -> dict[str, Any]:
     if op.op == "insert":
         return await _apply_claim_insert(
@@ -3822,6 +3857,7 @@ async def _apply_claim_op(
             tenant_id,
             cause_event_id=cause_event_id,
             trigger_supporting_event_ids=trigger_supporting_event_ids,
+            doc_memory_source=doc_memory_source,
         )
     if op.op == "update":
         return await _apply_claim_update(
@@ -3851,6 +3887,7 @@ async def _apply_claim_insert(
     *,
     cause_event_id: UUID | None,
     trigger_supporting_event_ids: list[UUID],
+    doc_memory_source: str | None = None,
 ) -> dict[str, Any]:
     proposed = _prepare_claim_insert_model(
         op,
@@ -3863,6 +3900,14 @@ async def _apply_claim_insert(
         conn=conn,
         apply_confidence_calibration=False,
     )
+    # Document-memory mint counter (Option A, §4.4): the Model is now durably
+    # inserted, and `doc_memory_source` is set only when this apply was driven by
+    # an enriched-T1 document trigger — so this Model is document-derived. Count
+    # it once per genuine insert, keyed by the document's source channel. Bumped
+    # only on the success path (after `insert` returns); a non-document trigger
+    # leaves `doc_memory_source` None and is never counted.
+    if doc_memory_source is not None:
+        record_doc_memory_model_minted(doc_memory_source)
     prediction_row_id = await materialize_model_prediction(conn, model=row)
     return {
         "summary": {

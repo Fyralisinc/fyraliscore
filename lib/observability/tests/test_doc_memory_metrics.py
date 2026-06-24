@@ -15,6 +15,7 @@ are covered by sibling tests (test_doc_memory_alert.py / test_doc_memory_compose
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -36,6 +37,8 @@ from services.ingest.ingestion.writers.summarization_worker.doc_memory import (
 from services.ingest.ingestion.writers.summarization_worker.summarization_worker import (
     _enrich_t1_payload,
 )
+from services.reasoning.think.applier import _apply_claim_insert
+from services.reasoning.think.diff_schema import ClaimOp
 
 
 @pytest.fixture(autouse=True)
@@ -127,17 +130,98 @@ def test_enriched_t1_dispatch_with_empty_scope_bumps_unresolved():
     )
 
 
-def test_true_mint_counter_increments_at_mint_site_helper():
-    """The TRUE mint site (Think apply path) records via the dedicated helper —
-    once per document-derived Model actually inserted."""
+# A fake ModelsRepo + conn so the REAL `_apply_claim_insert` mint site runs pure
+# python (no DB): `insert` returns a row shaped like the summary builder reads,
+# and the row is a non-prediction so `materialize_model_prediction` short-circuits
+# (returns None) without touching the connection.
+class _FakeModelsRepo:
+    def __init__(self) -> None:
+        self.insert_calls = 0
+
+    async def insert(self, proposed, *, conn, apply_confidence_calibration):  # noqa: ARG002
+        self.insert_calls += 1
+        return SimpleNamespace(
+            id=uuid4(),
+            tenant_id=uuid4(),
+            confidence=0.6,
+            proposition_kind="belief",  # NOT a prediction -> no DB materialization
+            claim_role="concern",
+            abstraction_level="atomic",
+            domain_tags=[],
+            proposition={"claim_role": "concern"},
+            evaluate_at=None,
+        )
+
+
+def _concern_claim_op(tenant, obs_id) -> ClaimOp:
+    """A minimal valid document-derived claim (a concern born_from the doc obs)."""
+    return ClaimOp(
+        op="insert",
+        entry={
+            "tenant_id": str(tenant),
+            "born_from_event_id": str(obs_id),
+            "proposition": {
+                "kind": "belief",
+                "about": "Acme renewal",
+                "nature": "SOC2 audit slip endangers the renewal",
+                "raised_by": "meeting",
+                "claim_role": "concern",
+                "polarity": "negative",
+            },
+            "natural": "SOC2 slip endangers the Acme renewal.",
+            "scope_actors": [],
+            "scope_entities": [{"type": "customer", "id": str(uuid4())}],
+            "scope_temporal": {},
+            "confidence": 0.6,
+            "confidence_at_assertion": 0.6,
+        },
+    )
+
+
+async def _drive_apply_claim_insert(*, doc_memory_source):
+    """Drive the REAL Think mint site `_apply_claim_insert` once."""
+    tenant = uuid4()
+    obs_id = uuid4()
+    repo = _FakeModelsRepo()
+    result = await _apply_claim_insert(
+        _concern_claim_op(tenant, obs_id),
+        conn=object(),  # never touched: non-prediction skips materialization
+        models_repo=repo,
+        tenant_id=tenant,
+        cause_event_id=obs_id,
+        trigger_supporting_event_ids=[obs_id],
+        doc_memory_source=doc_memory_source,
+    )
+    # Sanity: the real insert path actually ran.
+    assert repo.insert_calls == 1
+    assert result["summary"]["op"] == "insert"
+    return result
+
+
+@pytest.mark.asyncio
+async def test_true_mint_counter_increments_at_real_apply_site_for_document_model():
+    """The TRUE mint site is `_apply_claim_insert` (Think apply path), not the
+    helper in isolation. Driving it over a document-provenance claim (the apply
+    was triggered by an enriched-T1 document trigger, so `doc_memory_source` is
+    set) must bump `doc_memory_models_minted_total` once per inserted Model,
+    keyed by source — and must NOT touch the dispatch counter."""
     for _ in range(3):  # e.g. a situation anchor + a prediction + a concern
-        record_doc_memory_model_minted("fireflies:transcript")
+        await _drive_apply_claim_insert(doc_memory_source="fireflies:transcript")
     assert (
         'doc_memory_models_minted_total{source="fireflies"} 3'
         in _metric_lines("doc_memory_models_minted_total")
     )
     # Minting must NOT touch the dispatch counter.
     assert _metric_lines("doc_memory_enriched_t1_total") == []
+
+
+@pytest.mark.asyncio
+async def test_non_document_model_does_not_increment_mint_counter_at_apply_site():
+    """A non-document Model goes through the SAME `_apply_claim_insert` insert
+    path, but its apply was not triggered by a document trigger, so
+    `doc_memory_source` is None and the mint counter must stay empty."""
+    await _drive_apply_claim_insert(doc_memory_source=None)
+    assert _metric_lines("doc_memory_models_minted_total") == []
 
 
 # --- (iii) source-label cardinality collapse -------------------------------
