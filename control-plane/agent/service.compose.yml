@@ -1,0 +1,91 @@
+# ============================================================================
+# Fyralis BYOC — data-plane AGENT fragment (WS-AGENT)
+# ----------------------------------------------------------------------------
+# Standalone compose fragment. The integrate step merges this into the master
+# docker-compose.control-plane.yml. Do NOT edit the master file directly.
+#
+# WHAT THIS DOES
+#   The agent runs IN THE CUSTOMER VPC (data plane). Every AGENT_INTERVAL_S it
+#   collects a C4 DeploymentRecord (version/region/tier/license-expiry + derived
+#   health from a local /healthz SLI probe) and POSTs it to the console's
+#   /api/v1/heartbeat over an OUTBOUND https call. When the console is
+#   unreachable it BUFFERS to a durable local queue and retries with backoff
+#   (I3 — never crashes, never blocks local ops). It pulls + VERIFIES signed
+#   config bundles before applying (I6) and refuses privileged actions when its
+#   local signed license is missing/expired/tampered.
+#
+# I2 — OUTBOUND ONLY
+#   There is NO `ports:` / EXPOSE here, by design. The agent opens no listening
+#   socket; nothing reaches in to it. Its only egress is the outbound POST to the
+#   console (and outbound GETs for signed bundles).
+#
+# NETWORK
+#   The agent sits in the customer data plane. For the single-host dev/demo it
+#   attaches to `dataplane-net` (declared external in the master compose) and
+#   reaches the console by service name on cp-net via the host, OR — for a fully
+#   in-cluster demo — also attach cp-net and set AGENT_CONSOLE_URL=http://console:8080.
+#   In a REAL BYOC deployment this container runs in the customer's VPC and
+#   AGENT_CONSOLE_URL is the public vendor-console URL over TLS.
+#
+# IMPORTANT — build context is the control-plane ROOT (.), not agent/, so the
+#   image can include signing/ (verify_bundle/signing_lib) + lib/ (DeploymentRecord).
+#
+# SECRETS / MOUNTS
+#   - The signed LICENSE bundle (license.json + .sig + .manifest.json) is mounted
+#     read-only; the agent validates it LOCALLY against the trust root (I6).
+#   - The trust root (PUBLIC keys only) is mounted read-only. The PRIVATE signing
+#     key is NEVER given to the agent — it only verifies.
+#   - The heartbeat BUFFER is a named volume so an offline backlog survives a
+#     restart (I3).
+# ============================================================================
+
+services:
+  fyralis-agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    image: fyralis/agent
+    # OUTBOUND-ONLY: no ports published, no listener (I2).
+    environment:
+      # The console to heartbeat to. For an in-cluster demo with the console
+      # service on the same compose, use http://console:8080.
+      AGENT_CONSOLE_URL: "${AGENT_CONSOLE_URL:-http://console:8080}"
+      AGENT_TENANT_ID: "${AGENT_TENANT_ID:-acme}"
+      AGENT_DEPLOYMENT_ID: "${AGENT_DEPLOYMENT_ID:-acme-use1-0001}"
+      AGENT_REGION: "${AGENT_REGION:-us-east-1}"
+      AGENT_TELEMETRY_TIER: "${AGENT_TELEMETRY_TIER:-T1}"
+      AGENT_INTERVAL_S: "${AGENT_INTERVAL_S:-30}"
+      # Local data-plane health endpoint the agent probes for its SLI-derived
+      # health. Point this at the in-VPC data-plane /healthz.
+      AGENT_HEALTHZ_URL: "${AGENT_HEALTHZ_URL:-http://127.0.0.1:8088/healthz}"
+      # Paths inside the container (see mounts below).
+      AGENT_VERSION_FILE: "/app/agent/VERSION"
+      AGENT_LICENSE_PATH: "/run/secrets/license.json"
+      AGENT_TRUST_ROOT: "/app/signing/trust_root.json"
+      AGENT_BUFFER_PATH: "/var/lib/fyralis-agent/buffer.jsonl"
+      AGENT_CONFIG_DIR: "/var/lib/fyralis-agent/applied-config"
+    volumes:
+      # The signed license bundle (license.json + sidecars), validated locally (I6).
+      # Provide the trio at ./agent/deploy/ on the host (gitignored / per-deploy).
+      - ./agent/deploy/license.json:/run/secrets/license.json:ro
+      - ./agent/deploy/license.json.sig:/run/secrets/license.json.sig:ro
+      - ./agent/deploy/license.json.manifest.json:/run/secrets/license.json.manifest.json:ro
+      # PUBLIC trust root only — the agent verifies, never signs.
+      - ./signing/trust_root.json:/app/signing/trust_root.json:ro
+      # Durable buffer + applied-config survive restarts (I3 / I6).
+      - agent-state:/var/lib/fyralis-agent
+    networks:
+      - dataplane-net
+    restart: unless-stopped
+    # NOTE: no healthcheck that opens a port. If desired, a process-liveness
+    # check can read the buffer/log; we keep it minimal to avoid implying a
+    # listener. The control plane observes the agent via its HEARTBEATS, which is
+    # the intended health signal (C4).
+
+volumes:
+  agent-state:
+
+# --- Uncomment ONLY to run this fragment standalone (outside the master compose) ---
+# networks:
+#   dataplane-net:
+#     driver: bridge
