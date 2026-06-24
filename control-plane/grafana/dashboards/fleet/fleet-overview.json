@@ -1,0 +1,648 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Cross-fleet rollup of every Fyralis BYOC deployment. Reads the FLEET/ADMIN Mimir datasource (X-Scope-OrgID = __fleet__, tenant-federation reader). Health is derived from heartbeat age + golden-12 SLI flags per deployment.",
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "Per-Customer drill-down",
+      "tooltip": "Open the per-customer dashboard scoped to one tenant",
+      "type": "dashboards"
+    }
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "panels": [],
+      "title": "Fleet rollup",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "Total deployments reporting a heartbeat in the window (one series per deployment_id).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "text", "value": null } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+          "editorMode": "code",
+          "expr": "count(count by (deployment_id) (max by (deployment_id) (worker_heartbeat_age_seconds)))",
+          "instant": true,
+          "legendFormat": "deployments",
+          "refId": "A"
+        }
+      ],
+      "title": "Deployments",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "GREEN: freshest worker heartbeat per deployment <= 90s AND no SLI flag tripped.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "green" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "id": 2,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+          "editorMode": "code",
+          "expr": "count(\n  (max by (deployment_id) (worker_heartbeat_age_seconds) <= bool 90)\n  *\n  ((max by (deployment_id) (fyralis_dlq_unresolved) <= bool 100))\n  *\n  ((max by (deployment_id) (fyralis_llm_breaker_state) < bool 1))\n  == bool 1\n) or vector(0)",
+          "instant": true,
+          "legendFormat": "green",
+          "refId": "A"
+        }
+      ],
+      "title": "Green",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "YELLOW: freshest heartbeat per deployment between 90s and 300s, OR exactly one SLI flag tripped (degraded but reporting).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "yellow" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "yellow", "value": null } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "id": 3,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+          "editorMode": "code",
+          "expr": "count(\n  (max by (deployment_id) (worker_heartbeat_age_seconds) > bool 90)\n  *\n  (max by (deployment_id) (worker_heartbeat_age_seconds) <= bool 300)\n  == bool 1\n) or vector(0)",
+          "instant": true,
+          "legendFormat": "yellow",
+          "refId": "A"
+        }
+      ],
+      "title": "Yellow",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "RED: freshest heartbeat per deployment > 300s (stale/missing) OR a hard SLI flag (LLM breaker open, DLQ flooded).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "red" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "id": 4,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value_and_name"
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+          "editorMode": "code",
+          "expr": "count(\n  (max by (deployment_id) (worker_heartbeat_age_seconds) > bool 300)\n  or\n  (max by (deployment_id) (fyralis_llm_breaker_state) >= bool 1)\n  or\n  (max by (deployment_id) (fyralis_dlq_unresolved) > bool 100)\n) or vector(0)",
+          "instant": true,
+          "legendFormat": "red",
+          "refId": "A"
+        }
+      ],
+      "title": "Red",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "Worst (oldest) freshest-worker heartbeat age across the whole fleet — the canary for a deployment going dark.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 90 },
+              { "color": "red", "value": 300 }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 1 },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+          "editorMode": "code",
+          "expr": "max(max by (deployment_id) (worker_heartbeat_age_seconds))",
+          "instant": false,
+          "legendFormat": "worst heartbeat age",
+          "refId": "A"
+        }
+      ],
+      "title": "Worst heartbeat age (fleet)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 101,
+      "panels": [],
+      "title": "Deployments",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "One row per deployment. Health column is colored green/yellow/red from heartbeat age + SLI flags. Sortable; click a tenant to drill down.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "text", "value": null } ] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Health" },
+            "properties": [
+              { "id": "mappings", "value": [
+                { "type": "value", "options": { "0": { "color": "green", "index": 0, "text": "GREEN" } } },
+                { "type": "value", "options": { "1": { "color": "yellow", "index": 1, "text": "YELLOW" } } },
+                { "type": "value", "options": { "2": { "color": "red", "index": 2, "text": "RED" } } }
+              ] },
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } },
+              { "id": "custom.width", "value": 90 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Heartbeat age (s)" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 90 },
+                { "color": "red", "value": 300 }
+              ] } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "DLQ unresolved" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 1 },
+                { "color": "red", "value": 100 }
+              ] } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "LLM breaker open" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null },
+                { "color": "red", "value": 1 }
+              ] } }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 11, "w": 24, "x": 0, "y": 6 },
+      "id": 6,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [ { "displayName": "Health", "desc": true } ]
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+          "editorMode": "code",
+          "expr": "max by (deployment_id, tenant_id, region, telemetry_tier) (worker_heartbeat_age_seconds)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "HEARTBEAT"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+          "editorMode": "code",
+          "expr": "max by (deployment_id) (fyralis_schema_version)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "SCHEMA"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+          "editorMode": "code",
+          "expr": "sum by (deployment_id) (fyralis_dlq_unresolved)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "DLQ"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+          "editorMode": "code",
+          "expr": "max by (deployment_id) (fyralis_think_queue_pending)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "THINKQ"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+          "editorMode": "code",
+          "expr": "max by (deployment_id) (max by (deployment_id, provider) (fyralis_llm_breaker_state))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "BREAKER"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+          "editorMode": "code",
+          "expr": "clamp_max(\n  (max by (deployment_id) (worker_heartbeat_age_seconds) > bool 300)\n  + (max by (deployment_id) (fyralis_llm_breaker_state) >= bool 1)\n  + (sum by (deployment_id) (fyralis_dlq_unresolved) > bool 100),\n  1) * 2\n  or\nclamp_max(\n  (max by (deployment_id) (worker_heartbeat_age_seconds) > bool 90),\n  1) * 1\n  or\n(max by (deployment_id) (worker_heartbeat_age_seconds) >= bool 0) * 0",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "__auto",
+          "refId": "HEALTH"
+        }
+      ],
+      "title": "Fleet deployments",
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": { "byField": "deployment_id", "mode": "outer" }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Time 5": true, "Time 6": true, "__name__": true },
+            "indexByName": {},
+            "renameByName": {
+              "deployment_id": "Deployment",
+              "tenant_id": "Tenant",
+              "region": "Region",
+              "telemetry_tier": "Tier",
+              "Value #HEARTBEAT": "Heartbeat age (s)",
+              "Value #SCHEMA": "Schema version",
+              "Value #DLQ": "DLQ unresolved",
+              "Value #THINKQ": "Think queue",
+              "Value #BREAKER": "LLM breaker open",
+              "Value #HEALTH": "Health"
+            }
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "id": 102,
+      "panels": [],
+      "title": "Golden-12 fleet panels",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "G/SLI-1 — Worker liveness. Number of UP scrape targets per deployment (drop = workers dying).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "none" } },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 18 },
+      "id": 10,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" }, "editorMode": "code", "expr": "sum by (deployment_id) (up)", "legendFormat": "{{deployment_id}}", "refId": "A" }
+      ],
+      "title": "SLI-1 · Worker liveness (up targets / deployment)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "G/SLI-2 — Kafka pipeline lag. Max consumer-group lag per deployment (backpressure / stalled normalizer).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 10000 } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 18 },
+      "id": 11,
+      "options": { "legend": { "calcs": ["max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" }, "editorMode": "code", "expr": "max by (deployment_id) (kafka_consumergroup_lag)", "legendFormat": "{{deployment_id}}", "refId": "A" }
+      ],
+      "title": "SLI-2 · Kafka consumer lag (max / deployment)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "G/SLI-3 — DLQ depth. Unresolved dead-letter rows per deployment (data-loss risk).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 100 } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 18 },
+      "id": 12,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" }, "editorMode": "code", "expr": "sum by (deployment_id) (fyralis_dlq_unresolved)", "legendFormat": "{{deployment_id}}", "refId": "A" }
+      ],
+      "title": "SLI-3 · DLQ unresolved (sum / deployment)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "G/SLI-5 — Onboarding/backfill shards in flight per deployment, broken out by status.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "normal" } },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 26 },
+      "id": 13,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" }, "editorMode": "code", "expr": "sum by (status) (fyralis_onboarding_shards)", "legendFormat": "{{status}}", "refId": "A" }
+      ],
+      "title": "SLI-5 · Onboarding shards by status (fleet)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "G/SLI-7+8 — Reasoning. Think queue depth per deployment + fleet think failure rate.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "short"
+        },
+        "overrides": [
+          { "matcher": { "id": "byFrameRefID", "options": "B" }, "properties": [ { "id": "unit", "value": "percentunit" }, { "id": "custom.axisPlacement", "value": "right" } ] }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 26 },
+      "id": 14,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" }, "editorMode": "code", "expr": "max by (deployment_id) (fyralis_think_queue_pending)", "legendFormat": "queue {{deployment_id}}", "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" }, "editorMode": "code", "expr": "sum(rate(think_runs_failed_total[5m])) / clamp_min(sum(rate(think_runs_total[5m])), 1)", "legendFormat": "fleet think failure rate", "refId": "B" }
+      ],
+      "title": "SLI-7/8 · Reasoning (queue + failure rate)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "G/SLI-9 — Embedding backlog pending per deployment.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 26 },
+      "id": 15,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" }, "editorMode": "code", "expr": "max by (deployment_id) (fyralis_embedding_backlog_pending)", "legendFormat": "{{deployment_id}}", "refId": "A" }
+      ],
+      "title": "SLI-9 · Embedding backlog (fleet)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "G/SLI-10 (G3) — LLM circuit-breaker open count across the fleet, by provider. Any non-zero = degraded reasoning.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "bars", "fillOpacity": 60, "lineWidth": 1, "showPoints": "never", "stacking": { "group": "A", "mode": "normal" } },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 34 },
+      "id": 16,
+      "options": { "legend": { "calcs": ["max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" }, "editorMode": "code", "expr": "sum by (provider) (max by (deployment_id, provider) (fyralis_llm_breaker_state) >= bool 1)", "legendFormat": "{{provider}} open", "refId": "A" }
+      ],
+      "title": "SLI-10 · LLM breaker open by provider (G3)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "G/SLI-11 (G1) — Schema integrity. Distinct schema versions live in the fleet (>1 = a deployment is mid-migration or drifted).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 2 } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 34 },
+      "id": 17,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "pluginVersion": "10.4.0",
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" }, "editorMode": "code", "expr": "count(count by (fyralis_schema_version) (fyralis_schema_version))", "legendFormat": "distinct schema versions", "refId": "A" }
+      ],
+      "title": "SLI-11 · Distinct schema versions (G1)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+      "description": "G/SLI-12 (G2) — OAuth token refresh failures across the fleet (rate, by source). Rising = customers losing source connectivity.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 34 },
+      "id": 18,
+      "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" }, "editorMode": "code", "expr": "sum by (source) (rate(fyralis_oauth_token_refresh_failures_total[15m]))", "legendFormat": "{{source}}", "refId": "A" }
+      ],
+      "title": "SLI-12 · OAuth refresh failures by source (G2)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["fyralis", "byoc", "fleet", "golden-12"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Mimir (fleet)", "value": "fyralis-mimir-fleet" },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Fleet metrics datasource",
+        "multi": false,
+        "name": "fleet_ds",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "/.*fleet.*/",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": { "selected": false, "text": "All", "value": "$__all" },
+        "datasource": { "type": "prometheus", "uid": "fyralis-mimir-fleet" },
+        "definition": "label_values(worker_heartbeat_age_seconds, region)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Region",
+        "multi": true,
+        "name": "region",
+        "options": [],
+        "query": { "qryType": 1, "query": "label_values(worker_heartbeat_age_seconds, region)", "refId": "Region" },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "Fyralis Fleet — Overview",
+  "uid": "fyralis-fleet-overview",
+  "version": 1,
+  "weekStart": ""
+}

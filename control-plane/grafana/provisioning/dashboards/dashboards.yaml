@@ -1,0 +1,39 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — Grafana dashboard provider  (P3)
+# ----------------------------------------------------------------------------
+# Loads the JSON dashboards from /var/lib/grafana/dashboards (the directory the
+# compose service mounts grafana/dashboards/ into). Two providers so the fleet
+# and per-customer surfaces appear under their own folders in the operator UI.
+#
+# allowUiUpdates: false → these are GitOps'd; the source of truth is the JSON in
+# grafana/dashboards/, not the Grafana DB. foldersFromFilesStructure: false →
+# folder is set explicitly per provider.
+# ============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: fyralis-fleet
+    orgId: 1
+    folder: Fleet
+    folderUid: fyralis-fleet
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      # Container path — see service.compose.yml volume mount.
+      path: /var/lib/grafana/dashboards/fleet
+      foldersFromFilesStructure: false
+
+  - name: fyralis-tenant
+    orgId: 1
+    folder: Per-Customer
+    folderUid: fyralis-tenant
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards/tenant
+      foldersFromFilesStructure: false
