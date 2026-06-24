@@ -11,14 +11,29 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 
+from lib.observability.metrics import (
+    OAUTH_REFRESH_FAILURES,
+    OAUTH_TOKEN_EXPIRES_IN_SECONDS,
+    reset_default_for_tests,
+)
 from services.ingest.integrations.oauth_refresh import (
+    REFRESH_CONFIGS,
     OAuthRefreshError,
     ensure_fresh_access_token,
     needs_refresh,
+    refresh_access_token,
     refresh_and_persist,
 )
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def _clean_oauth_metrics():
+    # The G2 counters/gauge live on the process-global default registry.
+    reset_default_for_tests()
+    yield
+    reset_default_for_tests()
 
 NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 TENANT = "11111111-1111-1111-1111-111111111111"
@@ -191,3 +206,101 @@ async def test_failed_refresh_raises_degraded_signal(monkeypatch):
     assert exc.value.status == 400
     # nothing persisted on failure — the row keeps its prior (now-stale) token
     assert pool.executed == []
+
+
+# --- BYOC §12 G2: fleet OAuth-health metrics -----------------------------
+#
+# A refresh exchange that fails increments fyralis_oauth_refresh_failures_total
+# (per provider+reason) so a source silently going dark is alertable; a
+# successful exchange (or a proactive needs_refresh evaluation) sets
+# fyralis_oauth_token_expires_in_seconds so the fleet sees token-expiry-soon
+# BEFORE the source stops ingesting.
+
+
+async def test_g2_http_4xx_increments_refresh_failure_counter():
+    config = REFRESH_CONFIGS["quickbooks"]
+    async with _http({"error": "invalid_grant"}, status=400) as http:
+        with pytest.raises(OAuthRefreshError):
+            await refresh_access_token(
+                http, config, client_id="c", client_secret="s",
+                refresh_token="stale", now=NOW,
+            )
+    # 400 → the documented `http_4xx` reason for this provider.
+    assert OAUTH_REFRESH_FAILURES.get(provider="quickbooks", reason="http_4xx") == 1.0
+
+
+async def test_g2_http_5xx_increments_refresh_failure_counter():
+    config = REFRESH_CONFIGS["gusto"]
+    async with _http({"error": "server_error"}, status=503) as http:
+        with pytest.raises(OAuthRefreshError):
+            await refresh_access_token(
+                http, config, client_id="c", client_secret="s",
+                refresh_token="rt", now=NOW,
+            )
+    assert OAUTH_REFRESH_FAILURES.get(provider="gusto", reason="http_5xx") == 1.0
+
+
+async def test_g2_transport_error_maps_to_transport_reason():
+    config = REFRESH_CONFIGS["quickbooks"]
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(boom)) as http:
+        with pytest.raises(OAuthRefreshError):
+            await refresh_access_token(
+                http, config, client_id="c", client_secret="s",
+                refresh_token="rt", now=NOW,
+            )
+    # `transport_error` maps to the documented `transport` reason label.
+    assert OAUTH_REFRESH_FAILURES.get(provider="quickbooks", reason="transport") == 1.0
+
+
+async def test_g2_missing_refresh_token_is_bad_request_config_failure():
+    config = REFRESH_CONFIGS["quickbooks"]  # refresh_token grant
+    # No HTTP call should happen — the config error fails fast.
+    async with httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: (_ for _ in ()).throw(AssertionError("must not call endpoint"))
+    )) as http:
+        with pytest.raises(OAuthRefreshError):
+            await refresh_access_token(
+                http, config, client_id="c", client_secret="s",
+                refresh_token=None, now=NOW,
+            )
+    assert (
+        OAUTH_REFRESH_FAILURES.get(
+            provider="quickbooks", reason="bad_request_config"
+        )
+        == 1.0
+    )
+
+
+async def test_g2_successful_refresh_sets_expiry_gauge():
+    config = REFRESH_CONFIGS["quickbooks"]
+    body = {"access_token": "fresh", "refresh_token": "rot", "expires_in": 3600}
+    async with _http(body) as http:
+        token = await refresh_access_token(
+            http, config, client_id="c", client_secret="s",
+            refresh_token="OLD", now=NOW,
+        )
+    assert token.access_token == "fresh"
+    # The freshly minted token's lifetime is published per-provider.
+    assert OAUTH_TOKEN_EXPIRES_IN_SECONDS.get(provider="quickbooks") == 3600.0
+    # No failure was recorded on the success path.
+    assert OAUTH_REFRESH_FAILURES.get(provider="quickbooks", reason="http_4xx") == 0.0
+
+
+async def test_g2_needs_refresh_publishes_live_seconds_to_expiry():
+    # When `provider` is supplied, needs_refresh pushes the live remaining
+    # seconds even for a token it is NOT about to refresh this tick — the
+    # leading indicator the fleet alerts on.
+    far = NOW + timedelta(seconds=4242)
+    assert needs_refresh(far, now=NOW, provider="ramp") is False
+    assert OAUTH_TOKEN_EXPIRES_IN_SECONDS.get(provider="ramp") == 4242.0
+
+
+async def test_g2_needs_refresh_publishes_negative_when_expired():
+    expired = NOW - timedelta(seconds=10)
+    assert needs_refresh(expired, now=NOW, provider="carta") is True
+    # Negative once expired — the alerting threshold is well below zero here.
+    assert OAUTH_TOKEN_EXPIRES_IN_SECONDS.get(provider="carta") == -10.0

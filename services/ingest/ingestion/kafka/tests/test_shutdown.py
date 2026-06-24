@@ -72,3 +72,67 @@ async def test_install_shutdown_event_sets_on_sigterm() -> None:
     # The asyncio signal handler runs on the loop; give it a tick.
     await asyncio.wait_for(ev.wait(), timeout=2.0)
     assert ev.is_set()
+
+
+# ---------------------------------------------------------------------
+# BYOC §12 G6 — producer stop with undelivered messages must increment the
+# fleet-scraped shutdown-undelivered counter (silent restart-time data loss
+# is now alertable instead of log-only). No broker: a fake confluent Producer
+# whose flush() reports `remaining` undelivered drives the stop() path.
+# ---------------------------------------------------------------------
+
+
+class _FakeConfluentProducer:
+    """Stand-in for confluent_kafka.Producer used by IdempotentProducer.
+
+    flush(timeout) returns `remaining` — the count of messages still in the
+    local queue when the timeout elapsed (0 = all delivered).
+    """
+
+    def __init__(self, remaining: int) -> None:
+        self._remaining = remaining
+        self.flush_calls = 0
+
+    def flush(self, timeout_seconds: float) -> int:
+        self.flush_calls += 1
+        return self._remaining
+
+
+async def test_stop_with_undelivered_increments_shutdown_counter() -> None:
+    from lib.observability.metrics import (
+        KAFKA_PRODUCER_SHUTDOWN_UNDELIVERED,
+        reset_default_for_tests,
+    )
+    from services.ingest.ingestion.kafka.producer import IdempotentProducer
+
+    reset_default_for_tests()
+    prod = IdempotentProducer()
+    # Inject the fake underlying producer so stop() → flush() → 3 undelivered.
+    prod._producer = _FakeConfluentProducer(remaining=3)
+
+    await prod.stop(timeout_seconds=0.01)
+
+    # The counter records the LOSS MAGNITUDE (number of messages), not just
+    # that a stop timed out.
+    assert KAFKA_PRODUCER_SHUTDOWN_UNDELIVERED.get() == 3.0
+    # stop() tore the producer down even though the flush was incomplete.
+    assert prod._producer is None
+    reset_default_for_tests()
+
+
+async def test_stop_with_clean_flush_does_not_increment_shutdown_counter() -> None:
+    from lib.observability.metrics import (
+        KAFKA_PRODUCER_SHUTDOWN_UNDELIVERED,
+        reset_default_for_tests,
+    )
+    from services.ingest.ingestion.kafka.producer import IdempotentProducer
+
+    reset_default_for_tests()
+    prod = IdempotentProducer()
+    prod._producer = _FakeConfluentProducer(remaining=0)  # all delivered
+
+    await prod.stop(timeout_seconds=0.01)
+
+    # A clean shutdown is the common case — no data-loss counter movement.
+    assert KAFKA_PRODUCER_SHUTDOWN_UNDELIVERED.get() == 0.0
+    reset_default_for_tests()

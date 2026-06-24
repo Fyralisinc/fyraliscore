@@ -14,6 +14,10 @@ import asyncio
 
 import pytest
 
+from lib.observability.metrics import (
+    LLM_CIRCUIT_BREAKER_STATE,
+    reset_default_for_tests,
+)
 from services.reasoning.think.circuit_breaker import (
     CircuitOpenError,
     CircuitState,
@@ -33,8 +37,29 @@ from services.reasoning.think.circuit_breaker import (
 @pytest.fixture(autouse=True)
 def _fresh_breakers():
     reset_breakers()
+    reset_default_for_tests()
     yield
     reset_breakers()
+    reset_default_for_tests()
+
+
+def _gauge_for(provider: str) -> dict[str, float]:
+    """Read the (provider, state) gauge into a {state: value} dict."""
+    return {
+        state.value: LLM_CIRCUIT_BREAKER_STATE.get(
+            provider=provider, state=state.value
+        )
+        for state in CircuitState
+    }
+
+
+def _assert_active_state(provider: str, expected: CircuitState) -> None:
+    """The active state series reads 1, the other two read 0 (G3 invariant)."""
+    g = _gauge_for(provider)
+    for state in CircuitState:
+        assert g[state.value] == (1.0 if state == expected else 0.0), (
+            f"provider={provider} expected active {expected.value}, gauge={g}"
+        )
 
 
 async def _ok() -> str:
@@ -236,3 +261,98 @@ async def test_integration_scripted_provider_opens_circuit():
             system="s", user="u", temperature=0.0,
             max_tokens=64, schema_hint="{}",
         )
+
+
+# ---------------------------------------------------------------------
+# BYOC §12 G3 — the breaker transitions drive the fleet state gauge
+# (fyralis_llm_circuit_breaker_state{provider,state}), one series per state:
+# the active state reads 1, the other two read 0. state="open" is then
+# directly alertable as "provider down, all Think runs fast-failing".
+# ---------------------------------------------------------------------
+
+
+async def test_gauge_published_eagerly_on_breaker_creation():
+    """A never-tripped provider still shows up as CLOSED so the control plane
+    tells 'closed/healthy' apart from 'absent/unscraped'. A unique name forces
+    the first-creation publish path (get_breaker only publishes on create)."""
+    get_breaker("gauge_eager_provider")
+    _assert_active_state("gauge_eager_provider", CircuitState.CLOSED)
+
+
+async def test_gauge_tracks_closed_to_open_transition():
+    b = LLMCircuitBreaker(
+        failure_threshold=0.5, window_seconds=60.0,
+        open_duration=10.0, min_samples=5, name="gauge_open",
+    )
+    register_breaker("gauge_open", b)
+    _assert_active_state("gauge_open", CircuitState.CLOSED)
+
+    for _ in range(5):
+        with pytest.raises(RuntimeError):
+            await b.call(_fail)
+
+    assert b.state == CircuitState.OPEN
+    # The gauge now reads open=1, closed=0, half_open=0.
+    _assert_active_state("gauge_open", CircuitState.OPEN)
+
+
+async def test_gauge_tracks_open_half_open_closed_recovery():
+    b = LLMCircuitBreaker(
+        failure_threshold=0.5, open_duration=0.05,
+        min_samples=5, name="gauge_recover",
+    )
+    register_breaker("gauge_recover", b)
+    for _ in range(5):
+        with pytest.raises(RuntimeError):
+            await b.call(_fail)
+    _assert_active_state("gauge_recover", CircuitState.OPEN)
+
+    # Wait past open_duration; the next call probes as HALF_OPEN, then a
+    # success closes the breaker — the gauge must land on closed=1.
+    await asyncio.sleep(0.08)
+    result = await b.call(_ok)
+    assert result == "ok"
+    assert b.state == CircuitState.CLOSED
+    _assert_active_state("gauge_recover", CircuitState.CLOSED)
+
+
+async def test_gauge_tracks_half_open_failure_reopen():
+    b = LLMCircuitBreaker(
+        failure_threshold=0.5, open_duration=0.05,
+        min_samples=5, name="gauge_reopen",
+    )
+    register_breaker("gauge_reopen", b)
+    for _ in range(5):
+        with pytest.raises(RuntimeError):
+            await b.call(_fail)
+    await asyncio.sleep(0.08)
+    # A failing probe re-opens; the gauge must return to open=1.
+    with pytest.raises(RuntimeError):
+        await b.call(_fail)
+    assert b.state == CircuitState.OPEN
+    _assert_active_state("gauge_reopen", CircuitState.OPEN)
+
+
+async def test_gauge_renders_open_series_on_default_scrape():
+    from lib.observability.metrics import render_default
+
+    b = LLMCircuitBreaker(
+        failure_threshold=0.5, open_duration=10.0,
+        min_samples=3, name="gauge_render",
+    )
+    register_breaker("gauge_render", b)
+    for _ in range(3):
+        with pytest.raises(RuntimeError):
+            await b.call(_fail)
+    assert b.state == CircuitState.OPEN
+
+    text = render_default()
+    assert "# TYPE fyralis_llm_circuit_breaker_state gauge" in text
+    assert (
+        'fyralis_llm_circuit_breaker_state'
+        '{provider="gauge_render",state="open"} 1' in text
+    )
+    assert (
+        'fyralis_llm_circuit_breaker_state'
+        '{provider="gauge_render",state="closed"} 0' in text
+    )
