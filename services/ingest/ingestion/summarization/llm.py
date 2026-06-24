@@ -9,6 +9,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, Field, field_validator
 
 from lib.llm.provider import LLMConfig, LLMProvider, build_provider
+from lib.observability.metrics import DOC_MEMORY_MAPREDUCE_SECTIONS
 
 
 log = logging.getLogger(__name__)
@@ -417,6 +418,10 @@ async def summarize_mapreduce(
             "section_overlap": overlap,
         },
     )
+    # Observability (document-memory substrate §7 step 12): record the section
+    # fan-out distribution for map-reduced documents. This is the only site that
+    # knows the section count (it is not surfaced on SummaryResult).
+    DOC_MEMORY_MAPREDUCE_SECTIONS.observe(len(sections))
 
     if len(partials) == 1:
         out = partials[0]

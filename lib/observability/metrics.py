@@ -353,3 +353,86 @@ __all__ = [
     "reset_default_for_tests",
     "PROCESS_STARTED_AT",
 ]
+
+
+# --- doc_memory metrics (document-memory-substrate) ---
+# Phase 2 (proactive + observability) of the document-memory substrate
+# (docs/plans/document-memory-substrate.md §7 step 12 / §10). Registered on the
+# default registry as module-level singletons (same pattern as the per-module
+# instrumentation in services/reasoning/retrieval/* and kafka/producer.py) so
+# they render via render_default() with no extra wiring. Conceptual dotted names
+# from the plan (doc_memory.models_minted / .scope_unresolved / .mint_failure)
+# map to snake_case Prometheus family names with the `_total` counter suffix the
+# rest of the codebase uses. Cardinality: no tenant_id / id labels (§4 rule) —
+# the `source` label is a bounded enum over the doc-memory channel allowlist
+# (google_drive / notion / fireflies / other).
+#
+# Appended as a self-contained block at EOF so this addition never overlaps the
+# file body other tracks edit (zero-conflict guarantee).
+
+# doc_memory.models_minted — a summarized document was handed to Think to mint
+# document Models from (the worker enriched a T1 with the structured summary +
+# resolved scope). Under the ratified Option A, Think is the Model author; this
+# counts the worker-side mint dispatch, which is what `doc → models_minted`
+# observability (§4.1) tracks for T1-replay verification.
+DOC_MEMORY_MODELS_MINTED = counter(
+    "doc_memory_models_minted_total",
+    "Documents dispatched to Think to mint document Models from "
+    "(enriched-T1 mint path), by source channel.",
+    ("source",),
+)
+
+# doc_memory.scope_unresolved — re-resolution ran but produced NO scoped recall
+# surface (no resolved entities and no resolved actors), so the document Models
+# will fall back to semantic-only (Pathway B) recall. Watched as a rate (§10).
+DOC_MEMORY_SCOPE_UNRESOLVED = counter(
+    "doc_memory_scope_unresolved_total",
+    "Documents whose structured-summary scope re-resolution found no entities "
+    "or actors (scoped recall degrades to semantic-only), by source channel.",
+    ("source",),
+)
+
+# doc_memory.mint_failure — the mint path failed in the worker (scope
+# re-resolution raised); strictly failure-isolated so the summary still lands.
+# The §10 alert (DocMemoryMintFailure) fires on a sustained rate of this.
+DOC_MEMORY_MINT_FAILURE = counter(
+    "doc_memory_mint_failure_total",
+    "Document-memory mint-path failures in the summarization worker "
+    "(re-resolution error; summary still succeeds), by source channel.",
+    ("source",),
+)
+
+# map-reduce section counts — distribution of how many sections a large document
+# was split into during map-reduce summarization (Layer 0, §3.2). A histogram so
+# both the section-count distribution and the count of map-reduced documents are
+# queryable. Small integer buckets sized to the realistic section fan-out.
+DOC_MEMORY_MAPREDUCE_SECTIONS = histogram(
+    "doc_memory_mapreduce_sections",
+    "Number of sections a document was split into for map-reduce "
+    "summarization (Layer 0). +Inf bucket counts map-reduced documents.",
+    buckets=(1, 2, 3, 5, 8, 13, 21, 34, 55),
+)
+
+
+def doc_memory_source_label(source_channel: str | None) -> str:
+    """Collapse a free-form source_channel to a bounded doc-memory label value.
+
+    Keeps metric cardinality bounded (§4): the channel allowlist is
+    google_drive:file / notion:object / fireflies:transcript; anything else
+    (or missing) buckets to "other".
+    """
+    if not source_channel:
+        return "other"
+    head = source_channel.split(":", 1)[0].strip().lower()
+    if head in {"google_drive", "notion", "fireflies"}:
+        return head
+    return "other"
+
+
+__all__ += [
+    "DOC_MEMORY_MODELS_MINTED",
+    "DOC_MEMORY_SCOPE_UNRESOLVED",
+    "DOC_MEMORY_MINT_FAILURE",
+    "DOC_MEMORY_MAPREDUCE_SECTIONS",
+    "doc_memory_source_label",
+]

@@ -44,6 +44,12 @@ from services.ingest.ingestion.writers.summarization_worker.doc_memory import (
     doc_memory_enabled,
     resolve_document_scope,
 )
+from lib.observability.metrics import (
+    DOC_MEMORY_MINT_FAILURE,
+    DOC_MEMORY_MODELS_MINTED,
+    DOC_MEMORY_SCOPE_UNRESOLVED,
+    doc_memory_source_label,
+)
 
 
 log = logging.getLogger(__name__)
@@ -243,7 +249,12 @@ async def _write_summary_and_enqueue(
                 "summarized": True,
             }
             if scope is not None:
-                _enrich_t1_payload(payload, scope, result.structured)
+                _enrich_t1_payload(
+                    payload,
+                    scope,
+                    result.structured,
+                    source_channel=updated["source_channel"],
+                )
             await enqueue_trigger(
                 conn,
                 tenant_id=env.tenant_id,
@@ -282,6 +293,11 @@ async def _maybe_resolve_doc_memory_scope(
         )
     except Exception as exc:  # noqa: BLE001 — failure isolation (§8)
         _bump("summarization_worker.doc_memory.scope_failed")
+        DOC_MEMORY_MINT_FAILURE.inc(
+            source=doc_memory_source_label(
+                existing.get("source_channel") or env.source
+            )
+        )
         log.warning(
             "summarization_worker.doc_memory.scope_failed",
             extra={
@@ -298,6 +314,8 @@ def _enrich_t1_payload(
     payload: dict[str, Any],
     scope: DocMemoryScope,
     structured: dict[str, Any] | None,
+    *,
+    source_channel: str | None = None,
 ) -> None:
     """Carry the structured extraction + re-resolved scope onto the T1 payload.
 
@@ -305,8 +323,19 @@ def _enrich_t1_payload(
     document evidence block, and merges ``doc_scope_entities`` /
     ``doc_scope_actors`` into the Models it mints (§4.2–§4.4). ``scope_actors``
     is widened with the resolved doc actors; unresolved owners ride as text.
+
+    Observability (Phase 2, §7 step 12): this is the worker-side mint dispatch —
+    a structured document is handed to Think to mint document Models from — so it
+    bumps ``doc_memory_models_minted_total``. When re-resolution produced no
+    scoped recall surface (no resolved entities AND no resolved actors), the
+    document Models will fall back to semantic-only recall, counted by
+    ``doc_memory_scope_unresolved_total`` (§10 scope-unresolved rate).
     """
     _bump("summarization_worker.doc_memory.scope_resolved")
+    source = doc_memory_source_label(source_channel)
+    DOC_MEMORY_MODELS_MINTED.inc(source=source)
+    if not scope.scope_entities and not scope.scope_actors:
+        DOC_MEMORY_SCOPE_UNRESOLVED.inc(source=source)
     if structured:
         payload["doc_structured_summary"] = structured
     if scope.scope_entities:
