@@ -146,9 +146,26 @@ Think distills the document into Models via its sanctioned path.
 precomputed) for an immediate, deterministic doc-memory object; let **Think** mint the sharp
 `prediction`/`concern`/`recommendation` claims (calibration + deadlines belong there).
 
-**Recommendation:** start with **C**, converging on **A** for the sharp claims. This yields a
-guaranteed retrievable anchor on day one while keeping calibrated, deadline-bearing claims inside
-Think. The plan below is written for **C**; dropping the direct-mint anchor reduces it to **A**.
+**Recommendation: A (Think-mediated).** *(Revised from an earlier C/hybrid lean.)* The decisive
+reason is that Think creates Models **in retrieval context**, so a claim is deduped/updated/contested
+against existing Models — minting without that context (B, and C's anchor) is the core anti-pattern:
+a second meeting restating the Acme SOW should *update* the commitment Model, but an ingest-time mint
+has no retrieval context and blindly inserts a duplicate. C's "deterministic anchor day one" is a
+blind, edge-less, possibly-duplicate `situation` Model that Think must enrich anyway — yet C still
+pays the full cost of being the first non-Think `insert` caller (wiring ModelsRepo + embedder + scope
+into the worker). So A is both cleaner and safer: single Model-author, ingest stays a data pipeline,
+native calibration/edges/falsifiers.
+
+A's only weakness — "least deterministic" — is small and cheaply mitigated: the worker **already
+enqueues a T1** post-summary (Think is guaranteed to run), so the risk reduces to "will Think emit
+good claim_ops," handled by the representation contract + golden tests + a `doc → models_minted`
+metric with T1 replay. Pick **C** only if the Think-contract change is too slow to land and an
+immediate recallable artifact is required — but Phase 0 (structured persistence) is the better
+"ship sooner" lever, so a stopgap anchor isn't needed.
+
+Under A, the separate direct-mint anchor phase collapses into the Think-mediated phase: §4.2–§4.6
+describe the claim_role mapping, scope resolution, provenance, and deadlines that **Think** applies;
+the ingest side only re-resolves scope (§4.3) and enriches the T1.
 
 ### 4.2 claim_role mapping (no new values, no migration)
 | Extracted item | `proposition.kind` | `claim_role` | Extra |
@@ -309,7 +326,9 @@ or a new claim_role — would touch migrations.)
 - Metrics per Phase 3; alert on `doc_memory.mint_failure` and scope-unresolved rate.
 
 ## 11. Open decisions & risks
-- **D1 (pivotal):** mint path — A / B / **C (recommended)**. Ratify before Phase 1.
+- **D1 (pivotal):** mint path — **A (Think-mediated, RECOMMENDED)** / B / C. Rationale in §4.1.
+  Under A, "Phase 1 (anchor)" in §7 folds into the Think-mediated phase; §7/§12 to be rewritten on
+  ratification.
 - **D2:** batch-lane map-reduce now (multi-stage) vs input-cap guard now + defer (recommended).
 - **D3:** structured `action_items` schema change now vs keep `list[str]` and parse owner/due
   heuristically.
