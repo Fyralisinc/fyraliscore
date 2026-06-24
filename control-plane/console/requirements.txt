@@ -1,0 +1,5 @@
+# Fyralis BYOC — console runtime deps (kept tight; the console is a thin
+# FastAPI/uvicorn layer over the C4 deployment registry in control-plane/lib).
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.0
