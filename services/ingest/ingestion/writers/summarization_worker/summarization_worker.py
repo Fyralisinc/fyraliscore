@@ -45,8 +45,8 @@ from services.ingest.ingestion.writers.summarization_worker.doc_memory import (
     resolve_document_scope,
 )
 from lib.observability.metrics import (
+    DOC_MEMORY_ENRICHED_T1,
     DOC_MEMORY_MINT_FAILURE,
-    DOC_MEMORY_MODELS_MINTED,
     DOC_MEMORY_SCOPE_UNRESOLVED,
     doc_memory_source_label,
 )
@@ -324,16 +324,18 @@ def _enrich_t1_payload(
     ``doc_scope_actors`` into the Models it mints (§4.2–§4.4). ``scope_actors``
     is widened with the resolved doc actors; unresolved owners ride as text.
 
-    Observability (Phase 2, §7 step 12): this is the worker-side mint dispatch —
+    Observability (Phase 2, §7 step 12): this is the worker-side mint DISPATCH —
     a structured document is handed to Think to mint document Models from — so it
-    bumps ``doc_memory_models_minted_total``. When re-resolution produced no
-    scoped recall surface (no resolved entities AND no resolved actors), the
-    document Models will fall back to semantic-only recall, counted by
-    ``doc_memory_scope_unresolved_total`` (§10 scope-unresolved rate).
+    bumps ``doc_memory_enriched_t1_total``. This is NOT the mint count: under the
+    ratified Option A, Think (not this worker) mints the Models later, counted by
+    ``doc_memory_models_minted_total`` at Think's apply site. When re-resolution
+    produced no scoped recall surface (no resolved entities AND no resolved
+    actors), the document Models will fall back to semantic-only recall, counted
+    by ``doc_memory_scope_unresolved_total`` (§10 scope-unresolved rate).
     """
     _bump("summarization_worker.doc_memory.scope_resolved")
     source = doc_memory_source_label(source_channel)
-    DOC_MEMORY_MODELS_MINTED.inc(source=source)
+    DOC_MEMORY_ENRICHED_T1.inc(source=source)
     if not scope.scope_entities and not scope.scope_actors:
         DOC_MEMORY_SCOPE_UNRESOLVED.inc(source=source)
     if structured:

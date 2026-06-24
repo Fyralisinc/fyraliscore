@@ -363,24 +363,67 @@ __all__ = [
 # they render via render_default() with no extra wiring. Conceptual dotted names
 # from the plan (doc_memory.models_minted / .scope_unresolved / .mint_failure)
 # map to snake_case Prometheus family names with the `_total` counter suffix the
-# rest of the codebase uses. Cardinality: no tenant_id / id labels (§4 rule) —
+# rest of the codebase uses. The worker-side DISPATCH count is exposed separately
+# as doc_memory_enriched_t1_total (renamed off the former, misleading
+# doc_memory_models_minted_total) while doc_memory_models_minted_total now means
+# the TRUE mint count — see the two definitions below. Cardinality: no
+# tenant_id / id labels (§4 rule) —
 # the `source` label is a bounded enum over the doc-memory channel allowlist
 # (google_drive / notion / fireflies / other).
 #
 # Appended as a self-contained block at EOF so this addition never overlaps the
 # file body other tracks edit (zero-conflict guarantee).
 
-# doc_memory.models_minted — a summarized document was handed to Think to mint
+# doc_memory.enriched_t1 — a summarized document was handed to Think to mint
 # document Models from (the worker enriched a T1 with the structured summary +
-# resolved scope). Under the ratified Option A, Think is the Model author; this
-# counts the worker-side mint dispatch, which is what `doc → models_minted`
-# observability (§4.1) tracks for T1-replay verification.
-DOC_MEMORY_MODELS_MINTED = counter(
-    "doc_memory_models_minted_total",
-    "Documents dispatched to Think to mint document Models from "
-    "(enriched-T1 mint path), by source channel.",
+# resolved scope). Under the ratified Option A, Think — not the worker — is the
+# Model author, so this is the DISPATCH count, NOT a mint count. It remains a
+# useful signal (documents handed to Think for distillation) and is the
+# denominator for a `doc → models_minted` conversion rate (§4.1) once the true
+# mint counter below is wired at Think's apply site. Renamed from the former,
+# misleading `doc_memory_models_minted_total` (which measured dispatches).
+DOC_MEMORY_ENRICHED_T1 = counter(
+    "doc_memory_enriched_t1_total",
+    "Documents dispatched to Think on an enriched T1 to mint document Models "
+    "from (structured summary + re-resolved scope), by source channel. This is "
+    "a DISPATCH count — Think mints the Models later (Option A).",
     ("source",),
 )
+
+# doc_memory.models_minted — the TRUE mint counter: a document-derived Model was
+# actually minted by Think (a Model whose born_from_event_id is the document
+# observation — i.e. document provenance, §4.4). Distinct from the dispatch
+# counter above: this counts Models that Think genuinely inserted, so
+# `models_minted / enriched_t1` is the real distillation conversion rate.
+#
+# WIRING NOTE (cross-branch constraint): under ratified Option A the only place a
+# document-derived Model is actually inserted is Think's apply path
+# (`services/reasoning/think/applier.py::_apply_claim_insert`, via
+# `ModelsRepo.insert`). That file is owned by the parallel reasoning/BYOC track
+# and is NOT one of the document-memory-substrate files — wiring the increment
+# there would create a new cross-branch intersection. The increment helper
+# `record_doc_memory_model_minted()` below is therefore provided ready-to-call
+# (one line, keyed on document provenance) so whichever track owns the applier
+# can drop it in at the mint site without depending on this module's internals.
+# See docs/plans/document-memory-substrate.md §4.1 / §4.4.
+DOC_MEMORY_MODELS_MINTED = counter(
+    "doc_memory_models_minted_total",
+    "Document-derived Models actually minted by Think (born_from_event_id is the "
+    "document observation), by source channel. The real mint count (Option A).",
+    ("source",),
+)
+
+
+def record_doc_memory_model_minted(source_channel: str | None) -> None:
+    """Record that Think actually minted a document-derived Model.
+
+    Call this from the Think apply site exactly once per inserted Model whose
+    provenance is a document observation (born_from_event_id = the document
+    observation). Kept as a tiny helper so the call site stays a single line and
+    does not need to know the metric's label shape. See the WIRING NOTE above for
+    why the call site itself is not wired from this module.
+    """
+    DOC_MEMORY_MODELS_MINTED.inc(source=doc_memory_source_label(source_channel))
 
 # doc_memory.scope_unresolved — re-resolution ran but produced NO scoped recall
 # surface (no resolved entities and no resolved actors), so the document Models
@@ -430,9 +473,11 @@ def doc_memory_source_label(source_channel: str | None) -> str:
 
 
 __all__ += [
+    "DOC_MEMORY_ENRICHED_T1",
     "DOC_MEMORY_MODELS_MINTED",
     "DOC_MEMORY_SCOPE_UNRESOLVED",
     "DOC_MEMORY_MINT_FAILURE",
     "DOC_MEMORY_MAPREDUCE_SECTIONS",
     "doc_memory_source_label",
+    "record_doc_memory_model_minted",
 ]
