@@ -81,15 +81,83 @@ control-plane/
 └── docs/          architecture, runbook, security model
 ```
 
-## Bringing it up
+## QUICKSTART — the one-command bring-up
 
-> The compose file is scaffolded now and filled in phase-by-phase (see `SPRINT_PLAN.md` → P6). Once
-> the services land, the whole control plane comes up with one command:
+The whole control plane comes up with a single first-run command. It mints the
+trust roots, onboards a demo tenant (`acme`), and brings up every service:
 
 ```bash
-# (placeholder — wired in Phase 6)
-docker compose -f docker-compose.control-plane.yml up
+cd control-plane
+./bootstrap.sh           # CA + signing keys + demo-tenant onboard, then `up`
 ```
+
+`bootstrap.sh` is **idempotent** (safe to re-run) and does, in order:
+
+1. generate the **CA** (`ca/bootstrap_ca.py`) → `ca/pki/*`
+2. generate **+ activate** the CP **signing key** (`signing/keygen.py --activate`)
+   → `signing/trust_root.json` (the private key stays gitignored)
+3. mint the **auth-proxy server cert** (`auth-proxy/gen_server_cert.py`)
+4. **onboard the demo tenant `acme`** → a signed bundle (cert + license +
+   agent-config), staging the runtime material the compose mounts into
+   `./_runtime/` (gitignored) and writing a `.env`
+5. `docker compose up -d`, wait for health, print the URLs
+
+Then look here:
+
+| Surface | URL | What you see |
+|---------|-----|--------------|
+| **Operator Console** | http://localhost:8080 | fleet registry + per-deployment health (derived from heartbeats) |
+| **Grafana** | http://localhost:3000 | **Fleet** + **Per-Customer** dashboards (golden-12 SLIs from the demo tenant), and the **Control-Plane** folder = the self-observability watchdog. Login `admin` / `fyralis-operator` |
+| **CP self-obs Prometheus** | http://localhost:9091 | the independent "silence != health" watchdog (NFR-10) |
+
+Common operations (see the `Makefile`):
+
+```bash
+make up                 # bring the stack up (build + -d)
+make smoke              # end-to-end smoke (tests/e2e_smoke.py — no docker needed)
+make onboard TENANT=globex REGION=eu-west   # onboard another tenant
+make logs               # tail the stack
+make down               # stop the stack
+make clean              # full reset (down -v + wipe generated CA/keys/runtime)
+```
+
+### Offline / CI path (no docker)
+
+```bash
+./bootstrap.sh --no-docker   # CA + signing + demo onboard + the python e2e smoke
+```
+
+This exercises the real control-plane code paths (CA chain, ed25519 signing,
+onboarding, the agent license/config-verify gates, and the auth-proxy mTLS
+tenant-isolation contract) with Mimir mocked — no containers required.
+
+### Data flow (what the demo exercises)
+
+```
+  CUSTOMER VPC (demo)                         VENDOR CONTROL PLANE
+  ──────────────────                          ────────────────────
+  demo-dataplane :9300  ── scrape ─▶  boundary OTel Collector
+   (golden-12 fyralis_* SLIs)          │  allowlist-filter + drop PII labels (I1)
+                                       │  stamp tenant/deployment/region (C4)
+                                       ▼
+                         auth-proxy :8443  (mTLS termination; X-Scope-OrgID
+                         ◀── mTLS ───────   injected from the verified client-cert
+                          (acme client cert) SAN — never from a header, I4)
+                                       ▼
+                                     Mimir  (multi-tenant store)
+                                       ▼
+                                   Grafana  (Fleet + Per-Customer views, fleet-sli rules)
+
+  fyralis-agent  ── outbound heartbeat (I2) ─▶  Console  (fleet health, derived on read)
+   (verifies signed license + config before apply, I6)
+
+  cp-self-obs-exporter ─ probes every CP service ─▶ cp-prometheus (independent watchdog, NFR-10)
+```
+
+> The `demo-dataplane` is a **stub** so the bring-up is testable without the real
+> Fyralis stack. In **production** the installer (`installer/`) stands up the real
+> data plane in the customer VPC and the boundary collector scrapes the **real**
+> targets. See `demo-dataplane/README.md`.
 
 Python tooling (CA, signing, agent, console, metering) runs in a virtualenv:
 

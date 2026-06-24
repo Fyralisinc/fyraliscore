@@ -9,6 +9,14 @@
 **/*-key.pem
 **/certs/private/
 
+# --- generated trust roots / runtime onboarding material (per-deploy) -------
+# trust_root.json is a PUBLIC artifact but it is GENERATED at bootstrap
+# (signing/keygen.py --activate); it is not committed so every clone bootstraps
+# its own. The _runtime/ dir holds the demo tenant's onboarded bundle material
+# (license trio + tenant client cert) that bootstrap.sh mints; never commit it.
+signing/trust_root.json
+_runtime/
+
 # --- python ----------------------------------------------------------------
 __pycache__/
 *.pyc

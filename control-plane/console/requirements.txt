@@ -3,3 +3,6 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pydantic>=2.0
+# control-plane/lib/__init__.py configures structured logging on import, so the
+# console image (which imports lib) needs structlog at runtime.
+structlog>=24.1

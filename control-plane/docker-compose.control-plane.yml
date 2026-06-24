@@ -1,10 +1,12 @@
 # ============================================================================
 # Fyralis BYOC Control Plane — compose skeleton
 # ----------------------------------------------------------------------------
-# One-command bring-up for the VENDOR-owned control plane. Each phase fills in
-# its service section below. Until then this file defines the shared networks
-# and a single no-op `cp-scaffold` marker service so that
-# `docker compose -f docker-compose.control-plane.yml config` parses cleanly.
+# One-command bring-up for the VENDOR-owned control plane. All phases are wired:
+# auth-proxy + boundary collector (P2), Mimir/Loki/Grafana + fleet-SLI (P3),
+# console + agent (P4), release/config-dist/metering/audit/upgrade (P5), and the
+# self-observability watchdog + demo data plane + e2e tests (P6). Bring it up with
+# `./bootstrap.sh` (first run: CA + signing keys + demo-tenant onboard, then up)
+# or `make up`; `docker compose -f docker-compose.control-plane.yml config` parses.
 #
 # Networks (see SPRINT_PLAN.md → Shared Contracts → C5):
 #   cp-net        internal network shared by all control-plane services.
@@ -44,37 +46,65 @@ volumes:
   release-registry-data:
   config-dist-data:
   metering-out:
+  # Phase 6 — control-plane self-observability (WS-SELFOBS / NFR-10): the
+  # dedicated cp-prometheus TSDB persists across restarts.
+  cp-self-obs-data:
 
 services:
-  # --- scaffold marker -------------------------------------------------------
-  # Real services replace/augment this as phases land. Kept so the compose file
-  # is always valid YAML with at least one service. `up` exits immediately.
-  cp-scaffold:
-    image: busybox:1.36
-    command: ["sh", "-c", "echo 'fyralis control-plane scaffold — fill in services per SPRINT_PLAN.md'"]
+  # ==========================================================================
+  # Phase 2 — auth-proxy (mTLS termination + X-Scope-OrgID injection)
+  # ==========================================================================
+  # The LINCHPIN. Terminates mTLS on :8443, VERIFIES the data-plane agent's
+  # client cert against the Fyralis CA chain, extracts tenant_id from the
+  # verified spiffe://fyralis/tenant/<id> URI SAN (C1), checks the
+  # tenant_registry.json revocation list, STRIPS any caller-set X-Scope-OrgID,
+  # INJECTS X-Scope-OrgID:<tenant_id>, and reverse-proxies to Mimir. NEVER
+  # trusts a tenant_id from a request header (I4).
+  #
+  # BUILD CONTEXT is the control-plane ROOT (.) — the image needs the ca/
+  # modules (ca_lib/registry/verify_chain) + the proxy code. Dockerfile is at
+  # auth-proxy/Dockerfile.
+  #
+  # MATERIAL (mounted from the live ca/ + the bootstrap-minted server cert):
+  #   - ca/pki/ca-chain.crt        verifies client certs (bind-mounted live so
+  #                                a revocation takes effect without a rebuild)
+  #   - ca/tenant_registry.json    fingerprint -> tenant + revocation status
+  #   - auth-proxy/tls/server.crt/.key   the proxy's OWN server identity, minted
+  #                                by bootstrap.sh via auth-proxy/gen_server_cert.py
+  auth-proxy:
+    build:
+      context: .
+      dockerfile: auth-proxy/Dockerfile
+    image: fyralis/auth-proxy
+    container_name: cp-auth-proxy
+    environment:
+      AUTH_PROXY_LISTEN_HOST: "0.0.0.0"
+      AUTH_PROXY_LISTEN_PORT: "8443"
+      AUTH_PROXY_CA_CHAIN: /etc/fyralis/ca/ca-chain.crt
+      AUTH_PROXY_TENANT_REGISTRY: /etc/fyralis/ca/tenant_registry.json
+      AUTH_PROXY_TLS_CERT: /etc/fyralis/tls/server.crt
+      AUTH_PROXY_TLS_KEY: /etc/fyralis/tls/server.key
+      AUTH_PROXY_UPSTREAM_URL: "http://mimir:9009"
+    volumes:
+      # Live CA trust material (read-only) — revocations land without a rebuild.
+      - ./ca/pki/ca-chain.crt:/etc/fyralis/ca/ca-chain.crt:ro
+      - ./ca/tenant_registry.json:/etc/fyralis/ca/tenant_registry.json:ro
+      # The proxy's server cert/key, minted by bootstrap.sh (gitignored).
+      - ./auth-proxy/tls:/etc/fyralis/tls:ro
+    ports:
+      # mTLS ingress for agent / boundary-collector dial-home (I2 inbound to CP).
+      - "8443:8443"
     networks:
       - cp-net
-    restart: "no"
-
-  # ==========================================================================
-  # Phase 2 — auth-proxy + boundary + egress
-  # ==========================================================================
-  # auth-proxy:
-  #   build: ./auth-proxy
-  #   # Terminates mTLS, verifies client cert against the Fyralis CA, extracts
-  #   # tenant_id from the spiffe://fyralis/tenant/<id> URI SAN (C1), checks the
-  #   # tenant_registry.json revocation list, injects X-Scope-OrgID, and routes
-  #   # to Mimir/Loki. NEVER trusts a tenant_id from a request header (I4).
-  #   ports:
-  #     - "8443:8443"   # mTLS ingress for agent dial-home
-  #   volumes:
-  #     - ./ca/certs:/etc/fyralis/ca:ro
-  #     - ./ca/tenant_registry.json:/etc/fyralis/tenant_registry.json:ro
-  #   networks:
-  #     - cp-net
-  #   depends_on:
-  #     - mimir
-  #     - loki
+    depends_on:
+      mimir:
+        condition: service_started
+      loki:
+        condition: service_started
+    restart: unless-stopped
+    # The proxy is mTLS-ONLY: a plain healthcheck GET is rejected at the TLS
+    # handshake (there is no unauthenticated /healthz). Liveness is observed by
+    # the cp-self-obs-exporter via a TLS-handshake probe — see self-obs/.
 
   # ==========================================================================
   # Phase 3 — Mimir / Loki / Grafana + fleet-SLI   (WS-MIMIR / WS-LOKI-T2 /
@@ -172,6 +202,21 @@ services:
   # sink, not the redactor. Same injection contract as Mimir (proxy on ingest,
   # operator Grafana on query). Single-binary (-target=all), filesystem storage
   # under /data, compactor-owned retention.
+  #
+  # loki-init: a one-shot that chowns the fresh loki-data volume to uid 10001
+  # BEFORE loki starts. The grafana/loki image runs as 10001 but a newly-created
+  # named volume is root-owned, so loki's first `mkdir /data/rules` fails. This
+  # init (runs as root, restart: no) makes the volume writable; loki depends on
+  # its successful completion.
+  loki-init:
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /data && chown -R 10001:10001 /data"]
+    volumes:
+      - loki-data:/data
+    networks:
+      - cp-net
+    restart: "no"
+
   loki:
     image: grafana/loki:3.4.2
     container_name: cp-loki
@@ -193,6 +238,9 @@ services:
       - cp-net
     # The official image's entrypoint handles uid 10001; keep the volume writable.
     user: "10001:10001"
+    depends_on:
+      loki-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3100/ready || exit 1"]
@@ -242,20 +290,87 @@ services:
       - dataplane-net
 
   # ==========================================================================
-  # Phase 2 (customer-VPC side) — boundary OTel Collector
+  # Phase 2 (customer-VPC side) — demo data plane + boundary OTel Collector
   # ==========================================================================
-  # NOTE: the boundary collector runs INSIDE the customer VPC alongside the data
-  # plane, not in the vendor control plane. It is documented here for the
-  # single-host dev/demo topology only; in production it ships with the agent.
-  # otel-collector:
-  #   image: otel/opentelemetry-collector-contrib:latest
-  #   # Enforces telemetry tiers (C3): T1 metrics only by default; drops logs
-  #   # unless T2; drops traces unless T3. Redacts before any egress (I1).
-  #   command: ["--config=/etc/otelcol/config.yaml"]
-  #   volumes:
-  #     - ./boundary/config.yaml:/etc/otelcol/config.yaml:ro
-  #   networks:
-  #     - dataplane-net
+  # NOTE: in a REAL BYOC deploy these run INSIDE the customer VPC alongside the
+  # data plane, not in the vendor control plane. They are wired here for the
+  # single-host dev/demo topology so the bring-up is end-to-end TESTABLE. In
+  # production the installer (installer/) stands up the real data plane and
+  # points the boundary collector at boundary/otel-collector-config.yaml (real
+  # targets); the two services below are DEMO FIXTURES.
+
+  # --- demo-dataplane: golden-12 SLI metrics stub on :9300 -------------------
+  # A tiny stdlib-only scrape target exposing the golden-12 fyralis_* families
+  # (the exact names the boundary allowlist keeps + fleet-sli rules aggregate)
+  # so the boundary collector has a realistic target WITHOUT the real data plane.
+  # See demo-dataplane/README.md. NOT the real data plane.
+  demo-dataplane:
+    build:
+      context: ./demo-dataplane
+      dockerfile: Dockerfile
+    image: fyralis/demo-dataplane
+    container_name: cp-demo-dataplane
+    environment:
+      DEMO_DP_HOST: "0.0.0.0"
+      DEMO_DP_PORT: "9300"
+      DEMO_DP_TENANT: "${AGENT_TENANT_ID:-acme}"
+      DEMO_DP_DEPLOYMENT: "${AGENT_DEPLOYMENT_ID:-acme-use1-0001}"
+      DEMO_DP_REGION: "${AGENT_REGION:-us-east-1}"
+      DEMO_DP_SCENARIO: "${DEMO_DP_SCENARIO:-healthy}"
+    ports:
+      - "9300:9300"
+    networks:
+      - dataplane-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9300/healthz',timeout=3).status==200 else 1)"
+      interval: 20s
+      timeout: 4s
+      retries: 3
+      start_period: 5s
+
+  # --- boundary OTel Collector: scrape -> redact -> identity-stamp -> mTLS ----
+  # Tier-1 only by default. Scrapes the demo-dataplane stub, applies the I1
+  # allowlist + PII-label drop, stamps tenant/deployment/region (C4), and
+  # remote-writes THROUGH the auth-proxy over mTLS (the proxy injects
+  # X-Scope-OrgID from the verified cert SAN — this collector never sets it).
+  # Uses the DEMO config + the acme tenant client cert that bootstrap.sh mints
+  # into ./_runtime/agent/. In production swap in boundary/otel-collector-config.yaml.
+  boundary-collector:
+    image: otel/opentelemetry-collector-contrib:0.105.0
+    container_name: cp-boundary-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    environment:
+      FYRALIS_TENANT_ID: "${AGENT_TENANT_ID:-acme}"
+      FYRALIS_DEPLOYMENT_ID: "${AGENT_DEPLOYMENT_ID:-acme-use1-0001}"
+      FYRALIS_REGION: "${AGENT_REGION:-us-east-1}"
+      FYRALIS_TELEMETRY_TIER: "${AGENT_TELEMETRY_TIER:-T1}"
+      # Remote-write THROUGH the mTLS proxy (the proxy server cert SAN includes
+      # "auth-proxy"); the collector authenticates with acme's client cert.
+      FYRALIS_AUTH_PROXY_URL: "https://auth-proxy:8443"
+    volumes:
+      - ./demo-dataplane/boundary-collector.demo.yaml:/etc/otelcol/config.yaml:ro
+      # mTLS material minted by bootstrap.sh (gitignored runtime dir):
+      #   _runtime/ca/ca.crt          = ca-chain (verifies the proxy server cert)
+      #   _runtime/agent/client.crt/.key = acme tenant client cert (SAN -> tenant)
+      - ./_runtime/ca:/etc/fyralis/ca:ro
+      - ./_runtime/agent:/etc/fyralis/agent:ro
+    networks:
+      # On the data-plane side to scrape demo-dataplane; on cp-net to reach the
+      # auth-proxy by name for the in-cluster demo. In real BYOC this lives in
+      # the customer VPC and dials the public proxy URL outbound.
+      - dataplane-net
+      - cp-net
+    depends_on:
+      auth-proxy:
+        condition: service_started
+      demo-dataplane:
+        condition: service_started
+    restart: unless-stopped
 
   # ==========================================================================
   # Phase 4 — Deployment surface (console + data-plane agent)
@@ -351,11 +466,13 @@ services:
       AGENT_CONFIG_DIR: "/var/lib/fyralis-agent/applied-config"
     volumes:
       # The signed license bundle (license.json + sidecars), validated locally (I6).
-      # Provide the trio at ./agent/deploy/ on the host (gitignored / per-deploy).
-      - ./agent/deploy/license.json:/run/secrets/license.json:ro
-      - ./agent/deploy/license.json.sig:/run/secrets/license.json.sig:ro
-      - ./agent/deploy/license.json.manifest.json:/run/secrets/license.json.manifest.json:ro
-      # PUBLIC trust root only — the agent verifies, never signs.
+      # bootstrap.sh onboards the demo tenant and copies the bundle's
+      # <tenant>.license.json trio into ./_runtime/agent/ (gitignored / per-deploy).
+      - ./_runtime/agent/license.json:/run/secrets/license.json:ro
+      - ./_runtime/agent/license.json.sig:/run/secrets/license.json.sig:ro
+      - ./_runtime/agent/license.json.manifest.json:/run/secrets/license.json.manifest.json:ro
+      # PUBLIC trust root only — the agent verifies, never signs. Written by
+      # signing/keygen.py --activate during bootstrap.sh.
       - ./signing/trust_root.json:/app/signing/trust_root.json:ro
       # Durable buffer + applied-config survive restarts (I3 / I6).
       - agent-state:/var/lib/fyralis-agent
@@ -400,8 +517,10 @@ services:
       - CP_RELEASE_HOST=0.0.0.0
       - CP_RELEASE_PORT=8090
     command:
+      # Absolute path — the image WORKDIR is /app/release, so a relative
+      # `release/publish.py` would resolve to /app/release/release/publish.py.
       - python
-      - release/publish.py
+      - /app/release/publish.py
       - serve
       - --registry
       - /app/release/_registry
@@ -565,3 +684,83 @@ services:
     networks:
       - cp-net
     restart: "no"
+
+  # ==========================================================================
+  # Phase 6 — control-plane SELF-OBSERVABILITY (WS-SELFOBS / NFR-10)
+  #           "silence != health" — a DEDICATED, INDEPENDENT watchdog stack,
+  #           merged from self-obs/service.compose.yml. Kept separate from the
+  #           central Mimir/fleet path so it survives a full fleet-pipeline
+  #           outage and can tell you THAT pipeline is what is down.
+  # ==========================================================================
+
+  # --- cp-self-obs-exporter: the ACTIVE prober ------------------------------
+  # Probes every CP service's health/readiness on each scrape and exposes
+  # up/latency + the ingest-path-alive synthetic + the silence heartbeat on
+  # :9110/metrics. auth-proxy is mTLS-only so it is probed by a TLS HANDSHAKE
+  # (there is no unauthenticated /healthz). Build context is THIS dir (./self-obs).
+  cp-self-obs-exporter:
+    build:
+      context: ./self-obs
+      dockerfile: Dockerfile
+    image: fyralis/cp-self-obs
+    container_name: cp-self-obs-exporter
+    environment:
+      CP_SELFOBS_LISTEN_HOST: "0.0.0.0"
+      CP_SELFOBS_LISTEN_PORT: "9110"
+      CP_SELFOBS_PROBE_TIMEOUT_S: "5"
+      CP_AUTHPROXY_HOST: "auth-proxy"
+      CP_AUTHPROXY_PORT: "8443"
+      CP_MIMIR_URL: "http://mimir:9009/ready"
+      CP_LOKI_URL: "http://loki:3100/ready"
+      CP_GRAFANA_URL: "http://grafana:3000/api/health"
+      CP_CONSOLE_URL: "http://console:8080/healthz"
+      CP_CONFIGDIST_URL: "http://config-dist:8090/healthz"
+      CP_RELEASE_URL: "http://release-registry:8090/healthz"
+    ports:
+      - "9110:9110"
+    networks:
+      - cp-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9110/metrics',timeout=3).status==200 else 1)"
+      interval: 20s
+      timeout: 4s
+      retries: 3
+      start_period: 10s
+
+  # --- cp-prometheus: the dedicated CP-self watchdog Prometheus --------------
+  # Scrapes the exporter (tight 15s) + mimir/loki/grafana /metrics directly,
+  # loads cp_rules.yml (silence alerts incl. absent() of the heartbeat), and is
+  # provisioned into Grafana as the "CP Self-Obs (Prometheus)" datasource (uid
+  # fyralis-cp-prometheus) backing the cp_self dashboard.
+  cp-prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: cp-prometheus
+    command:
+      - --config.file=/etc/prometheus/cp-prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+      - --web.listen-address=0.0.0.0:9090
+    volumes:
+      - ./self-obs/cp-prometheus.yml:/etc/prometheus/cp-prometheus.yml:ro
+      - ./self-obs/cp_rules.yml:/etc/prometheus/cp_rules.yml:ro
+      - cp-self-obs-data:/prometheus
+    ports:
+      - "9091:9090"
+    networks:
+      - cp-net
+    depends_on:
+      cp-self-obs-exporter:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

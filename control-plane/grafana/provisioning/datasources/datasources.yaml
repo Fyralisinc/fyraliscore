@@ -49,6 +49,8 @@ deleteDatasources:
     orgId: 1
   - name: Loki (fleet)
     orgId: 1
+  - name: CP Self-Obs (Prometheus)
+    orgId: 1
 
 datasources:
   # ========================================================================
@@ -166,3 +168,28 @@ datasources:
       httpHeaderName1: X-Scope-OrgID
     secureJsonData:
       httpHeaderValue1: ${FYRALIS_FLEET_ORG_ID:__fleet__}
+
+  # ========================================================================
+  # CP SELF-OBS PROMETHEUS — control-plane self-observability (WS-SELFOBS)
+  # ------------------------------------------------------------------------
+  # The DEDICATED, INDEPENDENT control-plane watchdog Prometheus (NFR-10,
+  # "silence != health"). This is NOT central Mimir and NOT scoped by
+  # X-Scope-OrgID — it scrapes the cp-self-obs-exporter (which probes every
+  # CP service on each scrape) plus mimir/loki/grafana /metrics directly, and
+  # survives a full fleet-pipeline outage. The cp_self dashboard (uid
+  # fyralis-cp-self-obs) binds to THIS datasource by uid.
+  # ========================================================================
+  - name: CP Self-Obs (Prometheus)
+    uid: fyralis-cp-prometheus
+    type: prometheus
+    access: proxy
+    url: http://cp-prometheus:9090
+    orgId: 1
+    isDefault: false
+    editable: false
+    jsonData:
+      prometheusType: Prometheus
+      prometheusVersion: 2.53.0
+      timeInterval: 15s
+      httpMethod: POST
+      manageAlerts: false

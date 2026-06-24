@@ -37,3 +37,18 @@ providers:
     options:
       path: /var/lib/grafana/dashboards/tenant
       foldersFromFilesStructure: false
+
+  # Control-plane self-observability (WS-SELFOBS / NFR-10). The cp_self
+  # dashboard binds to the "CP Self-Obs (Prometheus)" datasource (uid
+  # fyralis-cp-prometheus) provisioned in datasources.yaml.
+  - name: fyralis-control-plane
+    orgId: 1
+    folder: Control-Plane
+    folderUid: fyralis-control-plane
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards/control-plane
+      foldersFromFilesStructure: false

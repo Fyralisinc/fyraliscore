@@ -31,10 +31,12 @@ RUN pip install --no-cache-dir \
 COPY ca/ /app/ca/
 COPY auth-proxy/ /app/auth-proxy/
 
-# Drop privileges — the proxy never needs root.
-RUN useradd --system --no-create-home --uid 10001 proxy \
-    && chown -R proxy:proxy /app
-USER proxy
+# Drop privileges — the proxy never needs root. (Name is `authproxy`, NOT
+# `proxy`: recent python:3.12-slim base images ship a stock `proxy` system user
+# — uid 13 — so `useradd proxy` collides. uid 10001 is still free in the base.)
+RUN useradd --system --no-create-home --uid 10001 authproxy \
+    && chown -R authproxy:authproxy /app
+USER authproxy
 
 # mTLS listener (matches DEFAULT_LISTEN_PORT).
 EXPOSE 8443

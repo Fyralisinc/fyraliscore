@@ -487,3 +487,65 @@ relevant phase heading. Keep entries terse and dated; newest within a phase goes
   services render and every published host port is UNIQUE (3000/3100/8080/**8090 config-dist**/**8091
   release-registry**/9009). **No new requirements**: every dep used across the five workstreams
   (cryptography/fastapi/uvicorn/httpx/pydantic/requests/pyyaml) was already in `requirements.txt`.
+
+
+## Phase 6 — Integration + one-command bring-up
+
+- 2026-06-24 — **WS-SELFOBS** — Control-plane self-observability (`control-plane/self-obs/`, NFR-10,
+  "silence != health"): an ACTIVE prober (`cp_exporter.py`) that probes every CP service on each scrape
+  (auth-proxy via a TLS HANDSHAKE since it is mTLS-only with no unauthenticated /healthz; mimir/loki via
+  /ready; grafana /api/health; console/config-dist/release via /healthz) and exposes `cp_service_up`,
+  probe latency, last-success timestamps, the ingest-path-alive synthetic, and a scrape heartbeat so the
+  silence itself is alarmable; a DEDICATED, INDEPENDENT `cp-prometheus` (separate from the fleet/Mimir
+  path so it survives a fleet-pipeline outage) loading `cp_rules.yml` (25 rules incl. absent()-based
+  silence alerts); and an 11-panel `cp_self.json` Grafana dashboard. Self-test 16 passed / 1 skipped
+  (promtool absent); rules+config validated out-of-band via the prom/prometheus image (25 rules).
+
+- 2026-06-24 — **WS-SMOKE / tests** — End-to-end SMOKE + pytest integration suite (`control-plane/tests/`)
+  that wires the COMMITTED CP components in-process (no stubs) and asserts the full BYOC path against REAL
+  code: bootstrap a throwaway CA + ed25519 trust root in /tmp; onboard → bundle + registry row + console
+  listing; agent green + heartbeat → console health GREEN; push a metric AS acme through the REAL
+  auth-proxy over a genuine mTLS socket → MockMimir, proxy injects X-Scope-OrgID:acme from the cert SAN;
+  ISOLATION (query as globex → 0 series; a client-set X-Scope-OrgID is overridden, I4); license tamper →
+  agent refuses the privileged pull (I6); config-dist signs → agent verifies-before-apply, rejects a
+  tampered config (I6). `e2e_smoke.py` = 52 passed / 0 failed / 3 docker-only skips; `test_e2e.py` =
+  6 passed / 1 live-docker skip. Mimir is the only no-docker substitution (MockMimir reproduces the
+  X-Scope-OrgID multitenancy contract); `make smoke` runs it with no containers.
+
+- 2026-06-24 — **demo-dataplane** — A tiny stdlib-only golden-12 SLI metrics stub
+  (`control-plane/demo-dataplane/metrics_stub.py`) exposing the `fyralis_*` families on :9300 — the exact
+  names the boundary allowlist keeps and the fleet-sli rules aggregate — so the boundary OTel Collector
+  has a realistic scrape target for the TESTABLE bring-up WITHOUT the real ingestion/reasoning/Postgres
+  data plane. `healthy|degraded` scenarios flip a few SLIs into the yellow/red band to demo the fleet
+  roll-up colour + alerts. Ships `service.compose.yml` + `Dockerfile` (non-root, stdlib healthcheck) +
+  `boundary-collector.demo.yaml` (the same allowlist→redact→identity→mTLS-remote-write shape as the prod
+  boundary config, but scraping ONLY the stub). DEMO FIXTURE ONLY — production points the boundary
+  collector at the real targets (documented in demo-dataplane/README.md). Verified serving /metrics +
+  /healthz.
+
+- 2026-06-24 — **ASSEMBLE / one-command bring-up** — Finalized the master
+  `docker-compose.control-plane.yml`: removed the `cp-scaffold` busybox marker and wired EVERY service
+  onto cp-net + dataplane-net — **auth-proxy** (mTLS termination, build context = CP root so it carries
+  ca/; server cert minted by bootstrap, CA chain + registry bind-mounted live so revocations land without
+  a rebuild; NO healthcheck because mTLS-only liveness is observed by the self-obs prober), **boundary-
+  collector** (otel-contrib 0.105.0, demo config + the acme tenant client cert from `_runtime/`, remote-
+  writes through https://auth-proxy:8443), **demo-dataplane**, **cp-self-obs-exporter** + **cp-prometheus**
+  (the WS-SELFOBS fragment), alongside the already-wired mimir/loki/grafana/console/agent/release/config-
+  dist/metering/audit/upgrade. Fixed the agent license mounts to the bootstrap-staged `_runtime/agent/`
+  trio; added the `cp-self-obs-data` volume; provisioned a Grafana "CP Self-Obs (Prometheus)" datasource
+  (uid `fyralis-cp-prometheus`) + a Control-Plane dashboard provider, dropping a provisioned copy of
+  `cp_self.json` (DS_CP rebound to the uid, __inputs stripped) under grafana/dashboards/control-plane/.
+  16 services, every published host port unique (3000/3100/8080/8090/8091/8443/9009/9091/9110/9300);
+  `docker compose -f docker-compose.control-plane.yml config` → exit 0.
+
+  Added **bootstrap.sh** (idempotent first-run entry: CA → signing keygen --activate → auth-proxy server
+  cert → onboard demo tenant `acme` via the embedded console → stage the bundle's license trio + tenant
+  client cert + CA chain into the gitignored `_runtime/` + write `.env` with the real minted
+  deployment_id → create the external dataplane-net → `docker compose up -d --build` → wait-for-health →
+  print Console/Grafana/CP-Prom URLs; `--no-docker` does CA/keys/onboard + the python e2e smoke).
+  Verified: `./bootstrap.sh --no-docker` from a CLEAN state → CA+keys+onboard+staging all succeed and the
+  smoke passes 52/0/3; a second run is fully idempotent (every step reports "already present"). Added a
+  **Makefile** (up/down/bootstrap/onboard/smoke/logs/clean/config) and rewrote the **README QUICKSTART**
+  to the real one-command flow + a data-flow diagram + where to look. `.gitignore` extended for
+  `signing/trust_root.json` (generated public artifact) + `_runtime/` (per-deploy onboarding material) so
+  no secret or per-deploy state is ever committed. **No new requirements.**

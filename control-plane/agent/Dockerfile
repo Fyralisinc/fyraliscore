@@ -28,7 +28,10 @@ WORKDIR /app
 RUN pip install --no-cache-dir \
         "cryptography>=42.0" \
         "pydantic>=2.0" \
-        "requests>=2.31"
+        "requests>=2.31" \
+        "structlog>=24.1"
+# (control-plane/lib/__init__.py configures structured logging on import, so the
+# agent image — which imports lib — needs structlog at runtime.)
 
 # The agent imports signing/ + lib/ at runtime; copy them plus the agent itself.
 # The trust root (public keys only) is copied so the agent can verify bundles;
