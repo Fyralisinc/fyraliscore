@@ -241,6 +241,12 @@ python audit/cli.py audit list --limit 20
 > tamper-evidence (without it the log still hash-chains but a full rewrite would go
 > undetected). Expiry is wall-clock with no skew grace (fails toward expiring sooner — by
 > design for short-lived, high-stakes access).
+>
+> **MVP caveat — approver identity is NOT yet authenticated.** `approve_grant` records the
+> `approved_by` string as-supplied; it does not verify the approver is the customer principal
+> owning the grant's tenant. The grant is genuinely scoped + time-boxed + audit-logged, but
+> authenticating the approver and binding identity-to-tenant is delegated to the
+> console/auth-proxy and tracked as a next-sprint item (`LIMITATIONS.md` L-11).
 
 ---
 

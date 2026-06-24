@@ -266,7 +266,7 @@ fleet-sli rules can compute one SLI series **per deployment**.
 
 - All CP services share the docker network **`cp-net`**. Some also attach to the
   **`dataplane-net`** (external) network for the single-host demo scrape.
-- The one-command bring-up is `docker-compose.control-plane.yml` (16 services), minted by
+- The one-command bring-up is `docker-compose.control-plane.yml` (17 services), minted by
   `bootstrap.sh`. Published host ports (unique): auth-proxy `8443`, Mimir `9009`, Loki
   `3100`, Grafana `3000`, demo-dataplane `9300`, console `8080`, config-dist `8090`,
   release-registry `8091→8090`, cp-self-obs-exporter `9110`, cp-prometheus `9091→9090`.

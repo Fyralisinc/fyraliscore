@@ -206,9 +206,11 @@ verify the approver is the customer principal owning the tenant in the grant sco
 identity to tenant* is left to the (unauthenticated) API layer, so a vendor operator could
 self-supply `approved_by=customer`. The audit trail records who-claimed-approval, not
 who-actually-approved. `BUILD_LOG.md` and `reference.md` note this; `TEST_GUIDE.md` §B.7 +
-`operations.md` §8 present I5 as customer-enforced — **doc overstatement, fix the docs now.**
-**Fix now (docs):** one sentence in `TEST_GUIDE` B.7 + `operations.md` §8 stating approval
-authentication is NOT yet enforced in the MVP and is delegated to the console/auth-proxy.
+`operations.md` §8 previously presented I5 as customer-enforced — **doc overstatement, now corrected.**
+**Fixed (docs):** `reference.md`, `BUILD_LOG.md`, `TEST_GUIDE.md` §B.7 step 2, and `operations.md`
+§8 now state explicitly that approver identity is NOT authenticated in the MVP and that
+authenticating the approver + binding identity-to-tenant is delegated to the console/auth-proxy
+(this item, L-11). The runtime gap below is still open.
 **Next sprint:** bind approval to an authenticated customer principal scoped to the grant's
 tenant; assert `approved_by != requested_by` at the API boundary, not just in docs.
 
@@ -234,17 +236,21 @@ release/license/config signing is not reachable from the metering/audit blast ra
 document the single-key blast radius in the security model + rotation drill.
 
 ### L-14 (LOW, next-sprint) — TEST_GUIDE doc-accuracy defects
-- **B.7 break-glass walkthrough** hard-codes the literal grant-id `bg-1a2b3c4d5e6f`; real
-  grant ids are `bg-` + random uuid4 hex (`audit/breakglass.py:212`), so copy-paste hits "no such
-  grant". Replace with an obvious placeholder (`bg-XXXXXXXXXXXX`) or capture step-1's printed id
-  into a shell var (as `operations.md` §8 already does). **Fix now (one-line doc edit).**
+- **B.7 break-glass walkthrough** previously hard-coded the literal grant-id `bg-1a2b3c4d5e6f`; real
+  grant ids are `bg-` + random uuid4 hex (`audit/breakglass.py:212`), so copy-paste hit "no such
+  grant". **FIXED:** step 1 now captures the printed id into a `GID` shell var (as `operations.md`
+  §8 does) and step 2 approves `"$GID"`, so the flow is copy-paste runnable. The expected `audit
+  list` output was also corrected — seqs are 0-based and the 4th event is `breakglass.check_denied`
+  (from the over-broad check), not `breakglass.deny` (no `deny` command is run); the tamper demo now
+  shows `CHAIN BROKEN at seq 0` (sed line 1 == seq 0).
 - **Troubleshooting cert-SAN claim** says the proxy server cert SAN is "auth-proxy, not
   localhost" and therefore needs `--resolve auth-proxy:8443:127.0.0.1`. The minted cert SANs are
   `['localhost', 127.0.0.1, 'auth-proxy']` — localhost IS a SAN; the `--resolve` trick is harmless
   but unnecessary and the statement is factually wrong. **Next sprint (doc-only).**
-- **Service inventory** says "all 16 services"; compose defines 17. The B.2 table omits
-  `config-dist` (:8090) and `release-registry` (:8091), and labels `console`/`fyralis-agent` with
-  names that are not their actual compose-generated container names. **Next sprint (doc-only).**
+- **Service inventory** said "all 16 services"; compose defines 17. **FIXED:** the Path-B
+  intro now says "all 17 services". (The B.2 table still omits `config-dist` and
+  `release-registry` rows and uses non-canonical container labels for `console`/`fyralis-agent` —
+  table-row backfill remains **next sprint, doc-only**.)
 
 ---
 

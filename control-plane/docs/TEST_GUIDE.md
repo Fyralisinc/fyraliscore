@@ -9,7 +9,7 @@ shown so you know what PASS looks like. There are two paths:
   auth-proxy mTLS tenant-isolation contract over a genuine mTLS socket) with
   Mimir mocked. This is the authoritative correctness proof and the one to run
   first.
-- **Path B — full live stack (Docker).** Brings up all 16 services, you open the
+- **Path B — full live stack (Docker).** Brings up all 17 services, you open the
   Console + Grafana, watch a real metric flow data-plane → boundary → auth-proxy
   → Mimir, query it tenant-scoped, **prove isolation** against a second tenant,
   then exercise the break-glass + tamper-evident audit chain.
@@ -508,18 +508,25 @@ echo "exit=$?"
 (denied).** Each transition is appended to the hash-chained log.
 
 ```bash
-# 1. an operator REQUESTS a scoped, time-boxed grant (INERT until approved)
-docker compose -f docker-compose.control-plane.yml run --rm audit \
+# 1. an operator REQUESTS a scoped, time-boxed grant (INERT until approved).
+#    Grant ids are bg-<random hex> — capture the printed id into a shell var so the
+#    next step is copy-paste runnable (do NOT hard-code an id; it changes every run).
+GID=$(docker compose -f docker-compose.control-plane.yml run --rm audit \
   --log /data/audit.log.jsonl --store /data/breakglass_grants.json \
-  breakglass request --actor sre@fyralis --scope tenant:acme/logs:read --ttl 900 --reason inc-4127
-# → requested grant bg-1a2b3c4d5e6f for sre@fyralis scope='tenant:acme/logs:read' ttl=900.0s
+  breakglass request --actor sre@fyralis --scope tenant:acme/logs:read --ttl 900 --reason inc-4127 \
+  | grep -oE 'bg-[0-9a-f]+' | head -1)
+echo "grant=$GID"
+# → requested grant bg-XXXXXXXXXXXX for sre@fyralis scope='tenant:acme/logs:read' ttl=900.0s
 # →   -> AWAITING CUSTOMER APPROVAL (inert until approved)
+# → grant=bg-XXXXXXXXXXXX
 
-# 2. the CUSTOMER approves it (starts the 900s time-box) — "customer-granted"
+# 2. the CUSTOMER approves it (starts the 900s time-box) — "customer-granted".
+#    NOTE: the MVP does NOT authenticate the approver — `approved_by` is recorded as-is,
+#    not verified or bound to the tenant; that is a next-sprint item (LIMITATIONS.md L-11).
 docker compose -f docker-compose.control-plane.yml run --rm audit \
   --log /data/audit.log.jsonl --store /data/breakglass_grants.json \
-  breakglass approve --grant-id bg-1a2b3c4d5e6f --approved-by acme-admin@acme.com
-# → approved bg-1a2b3c4d5e6f by acme-admin@acme.com; expires in 900.0s
+  breakglass approve --grant-id "$GID" --approved-by acme-admin@acme.com
+# → approved bg-XXXXXXXXXXXX by acme-admin@acme.com; expires in 900.0s
 
 # 3. access in-scope + in-window is ALLOWED (and the use is audited)
 docker compose -f docker-compose.control-plane.yml run --rm audit \
@@ -541,11 +548,12 @@ docker compose -f docker-compose.control-plane.yml run --rm audit \
 ```bash
 docker compose -f docker-compose.control-plane.yml run --rm audit \
   --log /data/audit.log.jsonl --store /data/breakglass_grants.json audit list --limit 10
-# → [   1] 2026-...Z  sre@fyralis     breakglass.request  -> tenant:acme/logs:read  {...}
-# → [   2] 2026-...Z  acme-admin@...   breakglass.approve  -> ...
-# → [   3] 2026-...Z  sre@fyralis     breakglass.use      -> ...
-# → [   4] 2026-...Z  sre@fyralis     breakglass.deny     -> ...
-#   (each underlying JSONL line carries prev_hash / entry_hash — the chain links)
+# → [   0] 2026-...Z  sre@fyralis          breakglass.request       -> tenant:acme/logs:read    {...}
+# → [   1] 2026-...Z  acme-admin@acme.com  breakglass.approve       -> tenant:acme/logs:read    {...}
+# → [   2] 2026-...Z  sre@fyralis          breakglass.use           -> tenant:acme/logs:read    {...}
+# → [   3] 2026-...Z  sre@fyralis          breakglass.check_denied  -> tenant:bossco/logs:read  {...}
+#   (seqs start at 0; the over-broad check in step (b)4 is audited as breakglass.check_denied —
+#    each underlying JSONL line carries prev_hash / entry_hash, so the chain links)
 
 docker compose -f docker-compose.control-plane.yml run --rm audit \
   --log /data/audit.log.jsonl --store /data/breakglass_grants.json audit verify ; echo "exit=$?"
@@ -563,7 +571,8 @@ docker compose -f docker-compose.control-plane.yml run --rm --entrypoint sh audi
   "sed -i '1s/sre@fyralis/mallory@evil/' /data/audit.log.jsonl"
 docker compose -f docker-compose.control-plane.yml run --rm audit \
   --log /data/audit.log.jsonl --store /data/breakglass_grants.json audit verify ; echo "exit=$?"
-# → CHAIN BROKEN at seq 1: <reason: entry_hash / prev_hash mismatch>   (stderr)
+# → CHAIN BROKEN at seq 0: <reason: entry_hash / prev_hash mismatch>   (stderr)
+#   (sed line 1 is seq 0 — seqs are 0-based)
 # → exit=1
 ```
 

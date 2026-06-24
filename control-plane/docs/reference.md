@@ -602,8 +602,13 @@ python audit/cli.py breakglass check   --actor sre@fyralis --scope tenant:acme/l
 (chain-only mode reports `signature_ok=None`). The checkpoint signs the **current head
 only** — truncation-to-a-prior-signed-head needs an external monotonic witness (a v2 item).
 Single-writer. Wall-clock expiry with no skew grace (fails toward expiring sooner).
-`approve_grant` records but does not authenticate the principal (auth is the
-console/auth-proxy's job).
+**Approver identity is NOT authenticated in the MVP.** `approve_grant` accepts any
+`approved_by` string and does not verify that the approver is the customer principal
+owning the tenant in the grant's scope, so the audit trail records *who-claimed-approval*,
+not *who-actually-approved*. The grant is genuinely scoped + time-boxed + audit-logged, but
+authenticating the approver and **binding approver identity to the grant's tenant** is a
+documented **next-sprint** item (delegated to the console / auth-proxy, which do not yet
+exist for this plane) — see `LIMITATIONS.md` L-11.
 
 ### `upgrade/` — zero-disruption CP upgrade tooling (P5/P6, NFR-6 / FR-A5)
 

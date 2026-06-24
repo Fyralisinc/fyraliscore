@@ -443,8 +443,11 @@ relevant phase heading. Keep entries terse and dated; newest within a phase goes
   sink); whole-file evidence needs the active CP private key mounted read-only (chain-only mode reports
   `signature_ok=None`); the checkpoint signs the current head only (truncation-to-a-prior-signed-head needs
   an external monotonic witness — a v2 item); single-writer; wall-clock expiry with no skew grace (fails
-  toward expiring sooner); `approve_grant` records but does not authenticate the principal (auth is the
-  console/auth-proxy's job). **No new dep** (cryptography/signing already present).
+  toward expiring sooner); **approver identity is NOT authenticated in the MVP** — `approve_grant` accepts
+  any `approved_by` string and does not bind the approver to the grant's tenant, so the trail records
+  who-CLAIMED-approval, not who-actually-approved (the grant is genuinely scoped + time-boxed + audit-logged;
+  authenticating the approver and binding identity-to-tenant is a documented next-sprint item delegated to the
+  console/auth-proxy — see `docs/LIMITATIONS.md` L-11). **No new dep** (cryptography/signing already present).
 
 - 2026-06-24 — **WS-CP-UPGRADE** — Zero-disruption control-plane upgrade tooling (`control-plane/upgrade/`,
   NFR-6). `trust_bundle.py` is the load-bearing CA trust-OVERLAP helper — `add`/`remove`/`list`/`verify`/
