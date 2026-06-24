@@ -66,6 +66,34 @@ class _StubSummarizer:
         return SummaryResult(summary_text=self.summary, model="test-summarizer")
 
 
+class _StructuredSummarizer:
+    """Returns a SummaryResult carrying the structured extraction (Layer 0).
+
+    Mirrors the live/batch lanes after the document-memory change: the parsed
+    DocumentSummarySchema (incl. structured {who?, what, due?} action_items) is
+    retained on the result so the writer can persist
+    content.summarization.structured.
+    """
+
+    def __init__(self, summary: str, structured: dict[str, Any]) -> None:
+        self.summary = summary
+        self.structured = structured
+        self.calls: list[dict[str, Any]] = []
+
+    async def summarize(
+        self,
+        text: str,
+        *,
+        metadata: dict[str, Any],
+    ) -> SummaryResult:
+        self.calls.append({"text": text, "metadata": metadata})
+        return SummaryResult(
+            summary_text=self.summary,
+            model="test-structured",
+            structured=self.structured,
+        )
+
+
 class _FailingSummarizer:
     def __init__(self, message: str = "codex app-server unavailable") -> None:
         self.message = message
@@ -569,3 +597,125 @@ async def test_backfill_batch_lane_submits_polls_and_applies_summary(
     assert metrics["summarization_batch.jobs_submitted"] == 1
     assert metrics["summarization_batch.jobs_polled"] == 1
     assert metrics["summarization_batch.items_completed"] == 1
+
+
+async def test_structured_summary_is_persisted_to_content(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Layer-0 DB persistence: content.summarization.structured lands verbatim.
+
+    The shared apply path (used by both live + batch lanes) must write the
+    retained structured extraction, including the {who?, what, due?} action-item
+    shape, while leaving content_text = the rendered brief unchanged.
+    See docs/plans/document-memory-substrate.md §3.1.
+    """
+    await _ensure_partition(fresh_db)
+    tenant_id = await _seed_tenant(fresh_db)
+    obs_id = uuid4()
+    raw_s3_key = f"dev/google_drive/{tenant_id}/2026-05/ee/{'e' * 40}.json.zst"
+    await _insert_pending_observation(
+        fresh_db,
+        tenant_id=tenant_id,
+        obs_id=obs_id,
+        raw_s3_key=raw_s3_key,
+    )
+
+    s3 = FakeS3Client()
+    s3.store[raw_s3_key] = orjson.dumps(
+        {
+            "record": {
+                "_fyralis_extracted_text": (
+                    "Priya owns the Acme revised SOW. "
+                    "A SOC2 audit slip endangers the renewal."
+                )
+            }
+        }
+    )
+    structured = {
+        "summary": "Acme renewal planning brief.",
+        "key_points": ["Billing revamp discussed"],
+        "decisions": ["Ship billing revamp before the Sept 30 Acme renewal"],
+        "action_items": [
+            {"who": "Priya", "what": "send Acme revised SOW", "due": "2026-06-17"}
+        ],
+        "risks": ["SOC2 audit slip endangers the Acme renewal"],
+    }
+    producer = _FakeProducer()
+    summarizer = _StructuredSummarizer(
+        "Acme renewal planning brief.",
+        structured,
+    )
+    env = SummarizationEnvelope(
+        tenant_id=tenant_id,
+        source="google_drive",
+        observation_id=obs_id,
+        raw_s3_key=raw_s3_key,
+        ingress_kind="live",
+        enqueued_at=_NOW,
+    )
+
+    sw.reset_metrics()
+    status = await sw.summarize_and_update(
+        env=env,
+        pool=fresh_db,
+        summarizer=summarizer,
+        dlq_producer=producer,
+        embedding_producer=producer,
+        s3=s3,
+    )
+
+    assert status == "summarized"
+    row = await _read_observation(fresh_db, tenant_id=tenant_id, obs_id=obs_id)
+    summary = row["content"]["summarization"]
+    assert summary["status"] == "complete"
+    # content_text is still the rendered brief, not the structured payload.
+    assert row["content_text"] == "Acme renewal planning brief."
+    # The structured extraction is persisted verbatim, including the structured
+    # {who?, what, due?} action-item shape.
+    assert summary["structured"] == structured
+    assert summary["structured"]["action_items"][0]["due"] == "2026-06-17"
+    # sibling provenance marker is set.
+    assert row["content"]["summary_provenance"] == "llm_summarizer"
+
+
+async def test_summary_without_structured_omits_structured_key(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Back-compat: a SummaryResult without structured data writes no
+    content.summarization.structured key (writer skips it)."""
+    await _ensure_partition(fresh_db)
+    tenant_id = await _seed_tenant(fresh_db)
+    obs_id = uuid4()
+    raw_s3_key = f"dev/google_drive/{tenant_id}/2026-05/ff/{'f' * 40}.json.zst"
+    await _insert_pending_observation(
+        fresh_db,
+        tenant_id=tenant_id,
+        obs_id=obs_id,
+        raw_s3_key=raw_s3_key,
+        source_text="Some source text about a renewal.",
+    )
+
+    producer = _FakeProducer()
+    summarizer = _StubSummarizer("A plain brief with no structured payload.")
+    env = SummarizationEnvelope(
+        tenant_id=tenant_id,
+        source="google_drive",
+        observation_id=obs_id,
+        raw_s3_key=raw_s3_key,
+        ingress_kind="live",
+        enqueued_at=_NOW,
+    )
+
+    sw.reset_metrics()
+    status = await sw.summarize_and_update(
+        env=env,
+        pool=fresh_db,
+        summarizer=summarizer,
+        dlq_producer=producer,
+        embedding_producer=producer,
+        s3=FakeS3Client(),
+    )
+
+    assert status == "summarized"
+    row = await _read_observation(fresh_db, tenant_id=tenant_id, obs_id=obs_id)
+    assert "structured" not in row["content"]["summarization"]
