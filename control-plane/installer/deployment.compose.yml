@@ -72,7 +72,7 @@ services:
     container_name: ${FYRALIS_DEPLOYMENT_NAME:-fyralis-dp}-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-fyralis}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fyralis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set for the demo data-plane}
       POSTGRES_DB: ${POSTGRES_DB:-company_os}
     volumes:
       - dp-pgdata:/var/lib/postgresql/data
@@ -90,7 +90,7 @@ services:
     image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
     container_name: ${FYRALIS_DEPLOYMENT_NAME:-fyralis-dp}-postgres-exporter
     environment:
-      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-fyralis}:${POSTGRES_PASSWORD:-fyralis}@postgres:5432/${POSTGRES_DB:-company_os}?sslmode=disable"
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-fyralis}:${POSTGRES_PASSWORD:?set for the demo data-plane}@postgres:5432/${POSTGRES_DB:-company_os}?sslmode=disable"
     expose:
       - "9187"
     networks:

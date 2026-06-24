@@ -216,7 +216,7 @@ tenant; assert `approved_by != requested_by` at the API boundary, not just in do
 
 ### L-12 (LOW, next-sprint) — Weak default operator-Grafana credential
 **Where:** `docker-compose.control-plane.yml` sets `GF_SECURITY_ADMIN_PASSWORD` default to
-`fyralis-operator` (admin/admin user). Operator Grafana is the cross-fleet view (sees ALL tenants
+`<see control-plane/.env>` (admin/admin user). Operator Grafana is the cross-fleet view (sees ALL tenants
 via `__fleet__`); a deploy that forgets to override `GF_ADMIN_PASSWORD` ships a guessable admin
 login to the single pane that aggregates every customer's telemetry.
 **Next sprint:** remove the baked-in default and fail bring-up if `GF_ADMIN_PASSWORD` is unset (or

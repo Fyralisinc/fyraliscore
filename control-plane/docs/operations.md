@@ -35,7 +35,7 @@ make smoke                     # the in-process e2e smoke (no docker)
 ```
 
 Surfaces after a successful `up`: Console http://localhost:8080, Grafana
-http://localhost:3000 (`admin`/`fyralis-operator`), CP self-obs Prometheus
+http://localhost:3000 (`admin`/`<see control-plane/.env>`), CP self-obs Prometheus
 http://localhost:9091.
 
 ---

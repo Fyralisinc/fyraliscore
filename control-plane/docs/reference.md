@@ -34,7 +34,7 @@ up -d`, waits for health, prints the URLs. The `Makefile` wraps common ops: `mak
 | Surface | URL | What you see |
 |---------|-----|--------------|
 | Operator Console | http://localhost:8080 | fleet registry + per-deployment health (from heartbeats) |
-| Grafana | http://localhost:3000 | Fleet + Per-Customer dashboards + the Control-Plane self-obs folder. Login `admin` / `fyralis-operator` |
+| Grafana | http://localhost:3000 | Fleet + Per-Customer dashboards + the Control-Plane self-obs folder. Login `admin` / `<see control-plane/.env>` |
 | CP self-obs Prometheus | http://localhost:9091 | the independent "silence != health" watchdog |
 
 ---
@@ -284,7 +284,7 @@ reaches the browser. Health is derived **at query time** from
 Explore use the `(fleet)` datasources. Do **not** switch datasources to `direct`/browser
 access (it would leak the scope header). Fleet view assumes Mimir tenant-federation. Loki
 panels are empty for T1 (metrics-only) tenants. Health thresholds live in the panels (not
-yet recording rules). Default admin creds (`admin`/`fyralis-operator`) are demo-only —
+yet recording rules). Default admin creds (`admin`/`<see control-plane/.env>`) are demo-only —
 set `GF_ADMIN_USER`/`GF_ADMIN_PASSWORD` or wire SSO.
 
 ### `fleet-sli/` — fleet SLI / alert / SLO rules (P3)

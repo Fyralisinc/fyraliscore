@@ -257,7 +257,7 @@ Expected tail once images build and services pass health:
 ║  Fyralis BYOC control plane is UP.                                        ║
 ╠══════════════════════════════════════════════════════════════════════════╣
 ║  Operator Console : http://localhost:8080      (fleet registry + health) ║
-║  Grafana          : http://localhost:3000      ... admin / fyralis-operator
+║  Grafana          : http://localhost:3000      ... admin / <see control-plane/.env>
 ║  CP self-obs Prom : http://localhost:9091      (silence != health)       ║
 ║  Demo tenant      : acme  (golden-12 metrics flowing ...)                ║
 ╚══════════════════════════════════════════════════════════════════════════╝
@@ -331,7 +331,7 @@ Expected (one record, health `green`, tier `T1`):
 
 ### B.4 Open Grafana (http://localhost:3000)
 
-Login: **`admin`** / **`fyralis-operator`** (override with `GF_ADMIN_USER` /
+Login: **`admin`** / **`<see control-plane/.env>`** (override with `GF_ADMIN_USER` /
 `GF_ADMIN_PASSWORD`). Three folders are provisioned:
 
 - **Fyralis Fleet — Overview** (`fyralis-fleet-overview`): cross-fleet rollup —
@@ -670,7 +670,7 @@ make smoke                         # 52 passed / 0 failed / 3 skipped → SMOKE 
 make bootstrap                     # CA + signing + onboard acme + docker up + wait-for-health
 docker compose -f docker-compose.control-plane.yml ps     # services running/healthy
 # Console:  http://localhost:8080      (acme, green, T1)
-# Grafana:  http://localhost:3000      (admin / fyralis-operator)
+# Grafana:  http://localhost:3000      (admin / <see control-plane/.env>)
 # CP-Prom:  http://localhost:9091
 curl -fsS http://localhost:9300/metrics | grep ^fyralis_ | head            # source SLIs
 curl -fsS -H 'X-Scope-OrgID: acme'   'http://localhost:9009/prometheus/api/v1/query?query=fyralis_worker_expected_running' | python -m json.tool   # present

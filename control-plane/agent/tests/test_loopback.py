@@ -156,7 +156,7 @@ def test_console_never_started_does_not_crash(signing_fabric, tmp_path):
 def test_agent_heartbeat_carries_token_and_is_accepted(signing_fabric, tmp_path):
     """The agent presents `Authorization: Bearer <token>` and a console that
     REQUIRES that token accepts the heartbeat (200, record landed)."""
-    token = "secret-console-token-xyz"
+    token = "dummy-not-a-real-token"
     state = _ConsoleState(required_token=token)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(state))
     _host, port = server.server_address
@@ -180,7 +180,7 @@ def test_agent_heartbeat_carries_token_and_is_accepted(signing_fabric, tmp_path)
 def test_agent_without_token_is_rejected_and_buffers(signing_fabric, tmp_path):
     """A console that requires a token rejects an agent that sends NONE (401); the
     agent treats it as undelivered, buffers, and never crashes (I3)."""
-    token = "secret-console-token-xyz"
+    token = "dummy-not-a-real-token"
     state = _ConsoleState(required_token=token)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(state))
     _host, port = server.server_address

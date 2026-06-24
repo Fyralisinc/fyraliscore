@@ -46,7 +46,7 @@ from lib.primitives import to_rfc3339, utcnow  # noqa: E402
 # The write-path bearer token used across these tests (I4). The client fixture
 # builds the app WITH this token and auto-attaches it on writes, so the existing
 # happy-path tests authenticate; dedicated tests below exercise the 401/503 paths.
-TEST_TOKEN = "test-console-ingest-token-abc123"
+TEST_TOKEN = "dummy-test-ingest-token"
 
 
 @pytest.fixture()

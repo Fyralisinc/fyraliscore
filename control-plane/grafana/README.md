@@ -139,7 +139,7 @@ docker compose \
   -f loki/service.compose.yml \
   -f grafana/service.compose.yml \
   up -d grafana
-# open http://localhost:3000  (admin / fyralis-operator — CHANGE in prod)
+# open http://localhost:3000  (admin / <see control-plane/.env> — CHANGE in prod)
 ```
 
 Grafana on boot provisions the 4 datasources + 2 dashboards; default home is the
@@ -178,7 +178,7 @@ Fleet Overview.
   fleet burn-rate alerts are the `fleet-sli/` agent's deliverable (P3). Grafana
   has `manageAlerts: false` on the Mimir datasource so it won't fight Mimir's
   ruler.
-- **Default admin creds are demo-only.** `admin / fyralis-operator` — set
+- **Default admin creds are demo-only.** `admin / <see control-plane/.env>` — set
   `GF_ADMIN_USER` / `GF_ADMIN_PASSWORD` (or wire SSO) before any real deployment.
 - **`depends_on` is start-order only.** Grafana may boot before Mimir/Loki are
   query-ready; datasource health flaps until they are up. Grafana retries, so

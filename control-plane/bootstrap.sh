@@ -144,6 +144,19 @@ CONSOLE_INGEST_TOKEN="$(tr -d '\n' < "$TOKEN_FILE")"
 # ============================================================================ #
 # 4. onboard the demo tenant "acme" -> bundle -> _runtime/                     #
 # ============================================================================ #
+# ---- operator Grafana admin password (no hardcoded default; generated once) -
+GF_PW_FILE="$RUNTIME_DIR/secrets/grafana_admin_password"
+if [[ -s "$GF_PW_FILE" ]]; then
+  ok "grafana admin password already present ($GF_PW_FILE) — reusing"
+else
+  say "generating the operator Grafana admin password (GF_ADMIN_PASSWORD) …"
+  "$PYTHON_BIN" -c "import secrets; print(secrets.token_urlsafe(18))" > "$GF_PW_FILE"
+  chmod 0600 "$GF_PW_FILE" 2>/dev/null || true
+  ok "grafana admin password at $GF_PW_FILE"
+fi
+GF_ADMIN_USER="${GF_ADMIN_USER:-admin}"
+GF_ADMIN_PASSWORD="$(cat "$GF_PW_FILE")"
+
 mkdir -p "$RUNTIME_DIR/agent" "$RUNTIME_DIR/ca"
 ENV_FILE="$HERE/.env"
 
@@ -213,6 +226,9 @@ AGENT_TELEMETRY_TIER=T1
 # Console write token (I4) — the console requires it on register/heartbeat/delete;
 # the agent reads it from the mounted token file (AGENT_CONSOLE_TOKEN_FILE).
 CONSOLE_INGEST_TOKEN=$CONSOLE_INGEST_TOKEN
+# Operator Grafana admin login — generated, never a hardcoded default.
+GF_ADMIN_USER=$GF_ADMIN_USER
+GF_ADMIN_PASSWORD=$GF_ADMIN_PASSWORD
 EOF
   ok "onboarded $TENANT -> $DEPLOYMENT_ID; runtime staged; wrote .env"
 }
@@ -255,6 +271,12 @@ esac
 if [[ -f "$ENV_FILE" ]] && ! grep -q '^CONSOLE_INGEST_TOKEN=' "$ENV_FILE"; then
   printf 'CONSOLE_INGEST_TOKEN=%s\n' "$CONSOLE_INGEST_TOKEN" >> "$ENV_FILE"
   ok "appended CONSOLE_INGEST_TOKEN to existing .env"
+fi
+
+# Ensure GF_ADMIN_PASSWORD is in .env on a consistent-skip run too.
+if [[ -f "$ENV_FILE" ]] && ! grep -q '^GF_ADMIN_PASSWORD=' "$ENV_FILE"; then
+  { echo "GF_ADMIN_USER=$GF_ADMIN_USER"; echo "GF_ADMIN_PASSWORD=$GF_ADMIN_PASSWORD"; } >> "$ENV_FILE"
+  ok "appended GF_ADMIN_PASSWORD to existing .env"
 fi
 
 # ============================================================================ #
@@ -325,7 +347,7 @@ cat <<EOF
 ╠══════════════════════════════════════════════════════════════════════════╣
 ║  Operator Console : http://localhost:8080      (fleet registry + health) ║
 ║  Grafana          : http://localhost:3000      (fleet + per-customer +   ║
-║                       admin / ${GF_ADMIN_USER:-admin} : ${GF_ADMIN_PASSWORD:-fyralis-operator})              ║
+║                       admin / $GF_ADMIN_USER  (password in control-plane/.env)  ║
 ║                       Control-Plane folder -> CP self-obs watchdog       ║
 ║  Internal stores  : cp-net-only (Mimir/Loki/Prometheus have NO host port,║
 ║                       I4) — reach them via Grafana / the auth-proxy.      ║

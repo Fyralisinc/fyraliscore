@@ -107,7 +107,7 @@ Then look here:
 | Surface | URL | What you see |
 |---------|-----|--------------|
 | **Operator Console** | http://localhost:8080 | fleet registry + per-deployment health (derived from heartbeats) |
-| **Grafana** | http://localhost:3000 | **Fleet** + **Per-Customer** dashboards (golden-12 SLIs from the demo tenant), and the **Control-Plane** folder = the self-observability watchdog. Login `admin` / `fyralis-operator` |
+| **Grafana** | http://localhost:3000 | **Fleet** + **Per-Customer** dashboards (golden-12 SLIs from the demo tenant), and the **Control-Plane** folder = the self-observability watchdog. Login `admin` / `<see control-plane/.env>` |
 
 > **Trust boundary (I4).** Only the three operator/tenant entrypoints above
 > publish host ports — `auth-proxy` (:8443 tenant mTLS ingest), `console` (:8080),

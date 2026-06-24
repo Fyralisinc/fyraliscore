@@ -282,7 +282,7 @@ services:
     environment:
       # ---- operator auth (CHANGE in any real deployment) --------------------
       GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-fyralis-operator}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:?set by bootstrap.sh (control-plane/.env)}
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       # ---- fleet/admin org id used by the "(fleet)" datasources -------------
