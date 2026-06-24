@@ -1,0 +1,129 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — Mimir service fragment (WS-MIMIR)
+# ----------------------------------------------------------------------------
+# Standalone compose fragment. The integrate step merges this into the master
+# docker-compose.control-plane.yml. Do NOT edit the master file directly.
+#
+# IMPORTANT for the integrate step — RELATIVE PATHS:
+#   The bind-mount sources below (`./mimir/...`, `./fleet-sli`) are written
+#   relative to the CONTROL-PLANE ROOT (the dir that holds
+#   docker-compose.control-plane.yml), which is where they resolve once merged.
+#   To run this fragment STANDALONE for testing, pin the project dir to the root:
+#     docker compose --project-directory <control-plane-root> \
+#       -f mimir/service.compose.yml up -d
+#
+# Wiring contract (SPRINT_PLAN.md C5):
+#   * service name MUST be `mimir` — the auth-proxy reverse-proxies to
+#     http://mimir:9009 (auth-proxy/config.py DEFAULT_UPSTREAM_URL).
+#   * lives on cp-net; only reachable behind the auth-proxy (which injects
+#     X-Scope-OrgID). multitenancy is ON so even direct cp-net callers must
+#     present a tenant header.
+#   * the ruler loads the fleet-sli recording/alerting rules; see the
+#     mimir-ruler-loader service below and the RULE-PATH note in mimir.yaml.
+#
+# Networks/volumes (cp-net, mimir-data) are declared in the master compose file;
+# the standalone definitions at the bottom let this fragment run on its own.
+# ============================================================================
+
+services:
+  mimir:
+    image: grafana/mimir:2.13.0
+    # Multi-tenant metrics store. multitenancy_enabled=true ⇒ every request needs
+    # X-Scope-OrgID (injected by the auth-proxy from the verified cert SAN). A
+    # request without the header is rejected 401 by Mimir itself.
+    command:
+      - -config.file=/etc/mimir/mimir.yaml
+    volumes:
+      # Main config (multitenancy, all-in-one target, filesystem storage, limits).
+      - ./mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
+      # Per-tenant cardinality budget overrides — hot-reloaded every 15s.
+      - ./mimir/runtime_overrides.yaml:/etc/mimir/runtime_overrides.yaml:ro
+      # Fleet-SLI rules source (read-only). Loaded into the ruler by the loader
+      # service below via the ruler API (the filesystem ruler backend does NOT
+      # auto-discover a directory of multi-group files — rules must be PUSHED
+      # through /prometheus/config/v1/rules; mimirtool does exactly that).
+      - ./fleet-sli:/etc/mimir/fleet-sli:ro
+      # Blocks (tsdb/blocks/compactor), ruler tenant storage, alertmanager.
+      - mimir-data:/data
+    expose:
+      - "9009"   # HTTP API (push + query + ruler) — reached via auth-proxy on cp-net
+    ports:
+      # Operator-local convenience. In production DO NOT publish this — all
+      # access goes through the auth-proxy so X-Scope-OrgID is enforced. Kept
+      # here so single-host operators can curl /ready, /metrics, and (with a
+      # manual X-Scope-OrgID header) the query API during dev.
+      - "9009:9009"
+    networks:
+      - cp-net
+    # NOTE: the grafana/mimir image is DISTROLESS — no shell, wget, curl or nc,
+    # so an in-container `healthcheck.test` cannot run. Readiness is the HTTP
+    # endpoint `GET http://mimir:9009/ready` (200 once all in-process components
+    # are live, with a ~15s post-start grace returning 503). Probe it from
+    # another service (the loader below does), not from inside this container.
+    restart: unless-stopped
+
+  # --- ruler loader: PUSH fleet-sli rules into the __fleet__ tenant ----------
+  # One-shot. Waits for Mimir /ready, then uses mimirtool to load every fleet-sli
+  # rule file (golden-12 recording + alert + SLO burn-rate groups, plus the
+  # WS-MIMIR-CARD cardinality watchdog) into the synthetic `__fleet__` ruler
+  # tenant via the ruler API. mimirtool splits each multi-group YAML file into
+  # per-group POSTs to /prometheus/config/v1/rules/<namespace>/<group>, which is
+  # the canonical way to load rules into Mimir (a raw filesystem copy is NOT).
+  #
+  # RULE-PATH the integrate step must keep available to this loader:
+  #   source mount : ./fleet-sli -> /rules (ro)
+  #   target tenant: __fleet__   (X-Scope-OrgID for the cross-fleet recorded series)
+  #   namespaces   : one per rule file (recording_rules, alert_rules,
+  #                  slo_burnrate_rules, fleet_sli.rules)
+  mimir-ruler-loader:
+    image: grafana/mimirtool:2.13.0
+    entrypoint:
+      - /bin/sh
+      - -c
+      # `$$` => a literal `$` to the shell (compose interpolates single `$`).
+      - |
+        set -e
+        echo "waiting for mimir /ready ..."
+        i=0
+        until wget -q -O- http://mimir:9009/ready 2>/dev/null | grep -qi ready; do
+          i=$$((i+1))
+          if [ "$$i" -gt 60 ]; then echo "mimir not ready after 120s — giving up"; exit 1; fi
+          sleep 2
+        done
+        echo "mimir ready — loading fleet-sli rules into tenant __fleet__"
+        files=""
+        for f in /rules/*.yml /rules/*.yaml; do
+          [ -e "$$f" ] || continue
+          case "$$f" in
+            */service.compose.yml|*/docker-compose*.yml) continue ;;
+          esac
+          files="$$files $$f"
+        done
+        if [ -z "$$files" ]; then
+          echo "WARN: no fleet-sli rule files found under /rules — ruler will have no groups"
+          exit 0
+        fi
+        echo "loading:$$files"
+        mimirtool rules load $$files --address=http://mimir:9009 --id=__fleet__
+        echo "loaded. current groups:"
+        mimirtool rules list --address=http://mimir:9009 --id=__fleet__
+    volumes:
+      - ./fleet-sli:/rules:ro
+    networks:
+      - cp-net
+    depends_on:
+      - mimir
+    restart: "no"
+
+# ---------------------------------------------------------------------------
+# When merged into docker-compose.control-plane.yml these are already defined
+# there (cp-net network, mimir-data volume). The standalone definitions below
+# let `docker compose -f mimir/service.compose.yml` run on its own; on merge,
+# compose unifies same-named networks/volumes so this is harmless.
+# ---------------------------------------------------------------------------
+networks:
+  cp-net:
+    driver: bridge
+
+volumes:
+  mimir-data:

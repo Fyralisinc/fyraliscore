@@ -1,0 +1,225 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — Grafana Mimir (WS-MIMIR)
+# ----------------------------------------------------------------------------
+# The central MULTI-TENANT metrics store. Every request MUST carry an
+# X-Scope-OrgID header that scopes it to a single tenant; that header is
+# injected server-side by the auth-proxy from the verified client-cert SAN
+# (SPRINT_PLAN.md C1/C5). Mimir trusts the header ONLY because it arrives from
+# inside cp-net behind the proxy — it is never accepted from outside (C5).
+#
+# Targeting:
+#   * `target: all`   → monolithic / all-in-one mode. Distributor, ingester,
+#     querier, query-frontend, ruler, compactor and store-gateway all run in a
+#     single process. Ideal for the single-host control-plane dev/demo bring-up.
+#   * Storage is the local FILESYSTEM under /data (blocks + ruler + alertmanager
+#     + compactor). In PRODUCTION this is replaced by object storage (S3/GCS) —
+#     see cardinality.md / README.md caveats.
+#
+# Multi-tenancy:
+#   * multitenancy_enabled / auth_enabled = true → NO anonymous requests. A
+#     request without X-Scope-OrgID is rejected (HTTP 401) by Mimir itself.
+#
+# Cardinality budgets (WS-MIMIR-CARD): global limits live in `limits:` below
+# (the safe DEFAULT applied to every tenant), and PER-TENANT overrides live in
+# runtime_overrides.yaml (hot-reloaded, no restart). See cardinality.md.
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# Multi-tenancy / auth — EVERY request requires X-Scope-OrgID.
+# `multitenancy_enabled: true` is THE key Grafana Mimir reads (it is the renamed
+# successor of the old Cortex/Loki `auth_enabled` flag — Mimir's config struct
+# does NOT accept `auth_enabled` and rejects it at load, so we must not put that
+# alias in the file the binary parses). When this is true, anonymous access is
+# OFF: a request without X-Scope-OrgID is rejected (HTTP 401) by Mimir itself.
+# (The conceptual `auth_enabled == true` is satisfied by this single key.)
+# ---------------------------------------------------------------------------
+multitenancy_enabled: true
+
+# All-in-one process. Distributor + ingester + querier + query-frontend +
+# query-scheduler + ruler + compactor + store-gateway in one binary.
+target: all
+
+# ---------------------------------------------------------------------------
+# Server — HTTP on 9009 (the address the auth-proxy reverse-proxies to:
+# DEFAULT_UPSTREAM_URL=http://mimir:9009), gRPC on 9095 for inter-component.
+# ---------------------------------------------------------------------------
+server:
+  http_listen_port: 9009
+  http_listen_address: 0.0.0.0
+  grpc_listen_port: 9095
+  grpc_listen_address: 0.0.0.0
+  log_level: info
+  # Allow large remote-write batches from the agent/boundary collector.
+  grpc_server_max_recv_msg_size: 104857600   # 100 MiB
+  grpc_server_max_send_msg_size: 104857600   # 100 MiB
+
+# ---------------------------------------------------------------------------
+# Distributor — the REMOTE-WRITE RECEIVE path. Agents/boundary collectors push
+# Prometheus remote-write to POST /api/v1/push through the auth-proxy. The
+# distributor validates samples against per-tenant limits, then hands off to
+# the ingesters. Native OTLP ingest is also available at /otlp/v1/metrics.
+# ---------------------------------------------------------------------------
+distributor:
+  ring:
+    # Single-host: hold the hash ring in memory. (Multi-node prod uses memberlist.)
+    kvstore:
+      store: memberlist
+    instance_addr: 127.0.0.1
+  pool:
+    health_check_ingesters: true
+
+# ---------------------------------------------------------------------------
+# Ingester — holds recent series in memory, flushes TSDB blocks to /data/tsdb.
+# Replication factor 1 for single-host all-in-one (no HA pairing locally).
+# ---------------------------------------------------------------------------
+ingester:
+  ring:
+    kvstore:
+      store: memberlist
+    replication_factor: 1
+    instance_addr: 127.0.0.1
+    # Single instance: don't wait for a quorum that will never exist.
+    num_tokens: 512
+
+# memberlist gossip — single member is fine for all-in-one; binds locally.
+memberlist:
+  join_members: []
+  bind_addr:
+    - 0.0.0.0
+  bind_port: 7946
+
+# ---------------------------------------------------------------------------
+# Blocks storage — LOCAL FILESYSTEM under /data/tsdb (ingester WAL/head) and
+# /data/blocks (long-term blocks). PROD: swap `backend: filesystem` for s3/gcs.
+# ---------------------------------------------------------------------------
+blocks_storage:
+  backend: filesystem
+  filesystem:
+    dir: /data/blocks
+  tsdb:
+    dir: /data/tsdb
+  bucket_store:
+    sync_dir: /data/tsdb-sync
+
+# Store-gateway — serves historical blocks from the bucket (filesystem here).
+store_gateway:
+  sharding_ring:
+    kvstore:
+      store: memberlist
+    replication_factor: 1
+    instance_addr: 127.0.0.1
+
+# Compactor — compacts + deduplicates blocks. Local working dir under /data.
+compactor:
+  data_dir: /data/compactor
+  sharding_ring:
+    kvstore:
+      store: memberlist
+    instance_addr: 127.0.0.1
+
+# ---------------------------------------------------------------------------
+# Ruler — evaluates the fleet-SLI recording + alerting rules. Rule GROUPS are
+# stored per-tenant in `ruler_storage` (filesystem under /data/ruler here) but
+# are LOADED through the ruler API, not by dropping files on disk: Mimir's
+# filesystem ruler backend stores each group as its own object and does NOT
+# auto-discover a directory of multi-group YAML files. The fleet-sli rules are
+# therefore PUSHED in by `mimirtool rules load` (see the mimir-ruler-loader
+# service in service.compose.yml).
+#
+#   RULER RULE-PATH (for the integrate step):
+#     fleet-sli source : ./fleet-sli  (read-only; the rule files)
+#     loaded via       : mimirtool rules load -> /prometheus/config/v1/rules
+#     ruler tenant     : __fleet__  (X-Scope-OrgID for the recorded fleet:* series)
+#     on-disk storage  : ruler_storage.filesystem.dir = /data/ruler (per-group objects)
+#     rule_path        : /data/ruler-tmp (the ruler's scratch dir for mapped rules)
+#
+# The fleet-sli rules are FLEET-WIDE SLIs. They are evaluated under the synthetic
+# ruler tenant `__fleet__` (Mimir evaluates ruler groups per tenant). Operator
+# dashboards query the resulting `fleet:*` recorded series with the header
+# X-Scope-OrgID: __fleet__.
+# ---------------------------------------------------------------------------
+ruler:
+  rule_path: /data/ruler-tmp
+  ring:
+    kvstore:
+      store: memberlist
+    instance_addr: 127.0.0.1
+  # No Alertmanager wired for local dev; alerts evaluate and expose ALERTS{}
+  # series queryable through the proxy. Point this at an AM in prod.
+  alertmanager_url: ""
+  enable_api: true
+
+ruler_storage:
+  backend: filesystem
+  filesystem:
+    dir: /data/ruler
+
+# Local Alertmanager storage (kept on filesystem; not started as a separate
+# target locally but the storage path is valid so config parses cleanly).
+alertmanager_storage:
+  backend: filesystem
+  filesystem:
+    dir: /data/alertmanager
+
+# ---------------------------------------------------------------------------
+# LIMITS — per-tenant cardinality BUDGETS (WS-MIMIR-CARD).
+# These are the GLOBAL DEFAULTS applied to EVERY tenant. A tenant that needs a
+# bigger (or smaller) budget gets a PER-TENANT override in runtime_overrides.yaml
+# which is hot-reloaded — these defaults stay as the floor everyone starts from.
+#
+# Budget knobs (the three the contract calls out, plus guardrails):
+#   * max_global_series_per_user  — hard cap on ACTIVE series per tenant across
+#                                    the whole cluster. THE cardinality budget.
+#   * ingestion_rate / _burst     — samples/sec a tenant may push (backpressure
+#                                    via 429 when exceeded — see cardinality.md).
+#   * max_label_names_per_series  — caps labels/series → bounds per-series fan-out.
+# Defaults below are sane for a mid-size Fyralis data plane (~29 scrape targets,
+# postgres-exporter, golden-12 SLIs). Tune per tenant tier in runtime overrides.
+# ---------------------------------------------------------------------------
+limits:
+  # --- THE cardinality budget: active series per tenant, cluster-wide --------
+  max_global_series_per_user: 150000
+  # Per-metric active-series cap (one runaway metric can't eat the whole budget).
+  max_global_series_per_metric: 20000
+
+  # --- ingestion rate (samples/sec) — backpressure when a tenant overshoots ---
+  ingestion_rate: 25000            # sustained samples/sec per tenant
+  ingestion_burst_size: 50000      # burst allowance (token bucket)
+
+  # --- per-series label fan-out guards --------------------------------------
+  max_label_names_per_series: 30   # labels per series → bounds cardinality blowups
+  max_label_name_length: 1024
+  max_label_value_length: 2048
+  max_metadata_length: 1024
+
+  # --- exemplars / metadata limits ------------------------------------------
+  max_global_exemplars_per_user: 0          # exemplars off by default (T1 = metrics only)
+  max_global_metadata_per_user: 8000
+  max_global_metadata_per_metric: 10
+
+  # --- query-side guardrails (a tenant can't DOS the shared querier) --------
+  max_fetched_series_per_query: 100000
+  max_fetched_chunk_bytes_per_query: 0      # 0 = unlimited bytes (series cap above governs)
+  max_query_lookback: 0s                    # 0 = no lookback limit (blocks retention governs)
+  max_total_query_length: 0s
+  max_query_parallelism: 14
+
+  # --- retention ------------------------------------------------------------
+  compactor_blocks_retention_period: 90d    # how long blocks are kept per tenant
+
+# ---------------------------------------------------------------------------
+# runtime_config — loads the PER-TENANT cardinality budget overrides. This is
+# how Mimir hot-reloads runtime_overrides.yaml: every `period` it re-reads the
+# file and applies any `overrides > <tenant_id>` blocks over the `limits`
+# defaults above — NO restart, no data loss. (In Mimir the per-tenant override
+# file is wired through `runtime_config`, not via `limits.*` keys.)
+# ---------------------------------------------------------------------------
+runtime_config:
+  file: /etc/mimir/runtime_overrides.yaml
+  period: 15s
+
+# ---------------------------------------------------------------------------
+# usage_stats — keep anonymous usage reporting OFF (I1: no PII/egress surprises).
+# ---------------------------------------------------------------------------
+usage_stats:
+  enabled: false
