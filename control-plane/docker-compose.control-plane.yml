@@ -36,6 +36,14 @@ volumes:
   # console/data) and the data-plane agent's durable heartbeat buffer (I3).
   console-data:
   agent-state:
+  # Phase 5 — operate-the-fleet persistence.
+  #   release-registry-data: published signed release bundles + index.json (WS-RELEASE)
+  #   config-dist-data:      per-deployment signed config store + signing home (WS-CONFIG)
+  #   metering-out:          signed Tier-1 usage rollups + billing exports (WS-METER)
+  #   (audit-data is declared above and reused by WS-AUDIT for the hash-chained log.)
+  release-registry-data:
+  config-dist-data:
+  metering-out:
 
 services:
   # --- scaffold marker -------------------------------------------------------
@@ -363,6 +371,197 @@ services:
     # via its HEARTBEATS, which is the intended health signal (C4).
 
   # ==========================================================================
-  # Phase 5 — release / config-dist / metering / audit (filled in later)
+  # Phase 5 — Operate the fleet (release / config-dist / metering / audit /
+  #           upgrade — merged from each dir's service.compose.yml fragment)
   # ==========================================================================
-  # (services added per SPRINT_PLAN.md → P5)
+  # All Phase-5 images build from the control-plane ROOT context (.) with a
+  # per-dir dockerfile, exactly like console/fyralis-agent, so each image can
+  # COPY in signing/ (sign_bundle/verify_bundle/signing_lib) + lib/. The agent
+  # reaches config-dist / release-registry BY SERVICE NAME on cp-net
+  # (config-dist:8090, release-registry:8090); the host-port publish is local-
+  # dev convenience only. Because two services listen on container port 8090,
+  # config-dist keeps host 8090 and release-registry is host-mapped to 8091
+  # (container stays 8090 — the in-cluster contract is unchanged).
+
+  # --- release-registry: serves signed release bundles by version (WS-RELEASE) -
+  # FastAPI/uvicorn over the on-disk ReleaseRegistry (publish.py serve). Serves
+  # bundles in the exact layout the agent's config_pull/verify_bundle consumes:
+  #   GET /releases/<version>/<tarball>[.sig|.manifest.json]
+  #   GET /releases/latest   GET /index.json   GET /healthz
+  # Re-verifies the ed25519 signature before publish/serve (I6). build_release.py
+  # and rollout.py are operator/CD CLIs (run on demand), not declared here.
+  release-registry:
+    build:
+      context: .
+      dockerfile: release/Dockerfile
+    image: fyralis/release-registry
+    environment:
+      - CP_RELEASE_REGISTRY=/app/release/_registry
+      - CP_RELEASE_HOST=0.0.0.0
+      - CP_RELEASE_PORT=8090
+    command:
+      - python
+      - release/publish.py
+      - serve
+      - --registry
+      - /app/release/_registry
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8090"
+    volumes:
+      - release-registry-data:/app/release/_registry
+    ports:
+      # Host-published on 8091 to avoid colliding with config-dist's 8090; the
+      # container still listens on 8090, so on cp-net it is release-registry:8090.
+      - "8091:8090"
+    networks:
+      - cp-net
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/healthz',timeout=3).status==200 else 1)"
+      interval: 15s
+      timeout: 4s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # --- config-dist: signed per-deployment config distribution (WS-CONFIG) ------
+  # FastAPI/uvicorn over the per-deployment, versioned, ed25519-SIGNED ConfigStore
+  # (flags + telemetry_tier (C3) + token-rotation schedule (FR-D4)). Implements the
+  # exact agent-pull contract (agent/config_pull.py): GET /config/{deployment_id}
+  # [.sig|.manifest.json] + GET /trust_root.json. A tier change / flag flip is a
+  # NEW signed version (no redeploy); the agent verifies-before-apply (I6). Signs
+  # with its own active key under the persisted signing home (mount a shared CP
+  # keystore + set CONFIG_DIST_SIGNING_HOME/KEY_ID to chain to one trust root).
+  config-dist:
+    build:
+      context: .
+      dockerfile: config-dist/Dockerfile
+    image: fyralis/config-dist
+    environment:
+      CONFIG_DIST_PORT: "8090"
+      CONFIG_DIST_STORE_ROOT: /data/store
+      CONFIG_DIST_SIGNING_HOME: /data/signing-home
+      CONFIG_DIST_KEY_ID: cp-config-dist
+    volumes:
+      - config-dist-data:/data
+    command:
+      - python
+      - -m
+      - uvicorn
+      - config_service:app
+      - --app-dir
+      - /app/config-dist
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8090"
+    ports:
+      # Local/dev inspection only; in production the agent reaches this ONLY
+      # through the auth-proxy on cp-net (mTLS-terminated, tenant-scoped).
+      - "8090:8090"
+    networks:
+      - cp-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/healthz').status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # --- metering: signed Tier-1 usage rollup BATCH job (WS-METER, FR-F2/F3) -----
+  # Reads AGGREGATE Tier-1 counters out of central Mimir one tenant at a time via
+  # X-Scope-OrgID (C5) — obs-per-source, think_runs, think cost_usd, ingestion
+  # volume — computes a per-tenant usage rollup over a billing period and SIGNS it
+  # (ed25519) so usage is tamper-evident (FR-F2). export.py emits signed rollups
+  # for billing. One-shot CONTROL-PLANE job (wrap with a scheduler for monthly
+  # close); NEVER dials a data plane (I2) — it only reads Mimir on cp-net. The
+  # default command runs the OFFLINE self-test so `up` proves the image is wired;
+  # override `command` to bill for real (see metering/README.md).
+  metering:
+    build:
+      context: .
+      dockerfile: metering/Dockerfile
+    image: fyralis/metering
+    environment:
+      # Point at the auth-proxy to have the proxy inject X-Scope-OrgID from the
+      # cert SAN instead of the job setting it itself (defence in depth).
+      MIMIR_URL: "http://mimir:9009"
+    volumes:
+      # Private signing key + trust root, read-only (image carries no secret).
+      - ./signing/keys:/app/signing/keys:ro
+      - ./signing/trust_root.json:/app/signing/trust_root.json:ro
+      # Where signed rollups + billing exports land (persisted for billing).
+      - metering-out:/app/metering/out
+    networks:
+      - cp-net
+    command: ["python", "/app/metering/selftest.py"]
+    restart: "no"
+
+  # --- audit: append-only hash-chained audit log + break-glass (WS-AUDIT, I5) --
+  # On-demand CLI image (NOT a daemon) — run via `docker compose run --rm audit
+  # <args>`. Provides the append-only, hash-chained audit log (FR-G) + the
+  # customer-granted, scoped, time-boxed break-glass workflow (I5). Each append
+  # re-signs an ed25519 chain-head checkpoint (whole-file tamper-evidence on top of
+  # the hash chain). The log + grant store persist on the audit-data volume so the
+  # chain survives restarts. Default command verifies the chain.
+  audit:
+    build:
+      context: .
+      dockerfile: audit/Dockerfile
+    image: fyralis/audit
+    environment:
+      AUDIT_LOG: /data/audit.log.jsonl
+      AUDIT_STORE: /data/breakglass_grants.json
+    volumes:
+      - audit-data:/data
+      # Private signing key + trust root, read-only so the image carries no secret.
+      - ./signing/keys:/app/signing/keys:ro
+      - ./signing/trust_root.json:/app/signing/trust_root.json:ro
+    command: ["--log", "/data/audit.log.jsonl", "--store", "/data/breakglass_grants.json", "audit", "verify"]
+    networks:
+      - cp-net
+    restart: "no"
+
+  # --- cp-upgrade-tools: on-demand CP-upgrade operator container (WS-CP-UPGRADE) -
+  # NOT an always-on service. Carries the trust-overlap helper + rolling-upgrade /
+  # trust-overlap scripts + a python with cryptography so an operator can run the
+  # FR-A5 CA-rotation dance and the NFR-6 rolling restart from inside cp-net.
+  # Publishes NO ports and runs NO daemon (restart: "no"; I2 intact). Run via
+  # `docker compose run --rm cp-upgrade-tools <cmd>` (see upgrade/UPGRADE_RUNBOOK.md).
+  cp-upgrade-tools:
+    image: python:3.12-slim
+    working_dir: /app
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        pip install --quiet --no-cache-dir cryptography pyyaml >/dev/null 2>&1 || \
+          pip install --quiet cryptography pyyaml
+        exec "$@"
+      - sh
+    command:
+      - python
+      - upgrade/trust_bundle.py
+      - list
+      - ca/pki/ca-chain.crt
+    volumes:
+      # Mount the whole control-plane tree read-write so the operator can edit the
+      # trust bundle in place (ca/pki is gitignored; this is the live bundle).
+      - .:/app
+      # OPTIONAL: to let this container ALSO drive `docker compose` for the rolling
+      # restart, uncomment the docker socket mount. Off by default (privileged).
+      # - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - cp-net
+    restart: "no"

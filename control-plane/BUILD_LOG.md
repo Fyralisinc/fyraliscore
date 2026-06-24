@@ -337,3 +337,153 @@ relevant phase heading. Keep entries terse and dated; newest within a phase goes
   config` exit 0; a yaml.safe_load assertion pass over the rendered config (console on cp-net publishing
   8080 with console-data; fyralis-agent with ZERO ports on cp-net+dataplane-net with agent-state;
   console-data + agent-state in the top-level volumes; dataplane-net still external).
+
+## Phase 5 — Operate the fleet
+
+- 2026-06-24 — **WS-RELEASE** — Signed release bundles + canary→fleet rollout (`control-plane/release/`,
+  FR-D / I6). `build_release.py` packages a source tree into a DETERMINISTIC versioned tarball
+  (`fyralis-release-<v>.tar.gz` — sorted entries, pinned mtime/uid, stable sha256), emits a CD
+  `*.release.json` manifest, and SIGNS the tarball (detached `.sig` + C2 manifest, `artifact=release`),
+  EXCLUDING `*.private.pem`/keys/`*.pyc` so a release never ships a key (`build`/`verify` subcommands).
+  `publish.py` is the on-disk release registry (`<registry>/<version>/` + `index.json` with a `latest`
+  pointer) that RE-VERIFIES before publish (refuses unsigned/tampered/non-release/silent-overwrite) and a
+  FastAPI server (`serve`, 8090) exposing bundles in EXACTLY the layout the agent's
+  config_pull/verify_bundle consumes (`/releases/<v>/<tarball>[.sig|.manifest.json]`, `/releases/latest`,
+  `/index.json`, `/healthz`, path-traversal-blocked). `rollout.py` is the canary→fleet CONTROLLER: reads
+  the fleet from the console (`GET /api/v1/deployments`, health derived on read), deterministically
+  selects a CANARY subset (lowest deployment_id first, always leaves a gating remainder), promotes the
+  canary, WATCHES its health rollup, HALTS on any non-green drift / window expiry and ROLLS the canary
+  back, and promotes the FLEET only after a clean watch (`promote`/`status`/`rollback`; transport- and
+  promoter-injected so the decision logic is testable). `signing_ctx.py` is a thin REUSE wrapper over the
+  committed `control-plane/signing` (signing_lib + verify_bundle) with a configurable trust-root so the
+  builder/registry/self-test can sign against the production CP key OR a hermetic ephemeral store WITHOUT
+  writing into the committed `signing/` tree (never re-implements ed25519). Verified: `selftest.py`
+  **20/20 GREEN** driving the REAL siblings (real ed25519, real console via TestClient): deterministic
+  build+sign → verify_bundle ACCEPTS, `*.private.pem` excluded; tamper / foreign trust root → REJECT;
+  verify-before-publish; HEALTHY canary → FLEET PROMOTED; UNHEALTHY canary → HALT-ON-DRIFT, fleet NOT
+  promoted + canary rolled back; an agent pulling the trio over the HTTP server VERIFIES (ACCEPT). Caveats:
+  the production CP signing key is empty until `signing/keygen.py --activate`; promotion delivers a VERSION
+  + moves `latest` (the per-deployment signed-config delivery is config-dist's job via the injected
+  Promoter seam — signing is never bypassed); heartbeat-freshness alone won't catch a release that stays
+  green but misbehaves under real traffic (pair with SLI burn). **No new dep** (cryptography/fastapi/
+  uvicorn/httpx already present).
+
+- 2026-06-24 — **WS-CONFIG** — Signed config distribution (`control-plane/config-dist/`, FastAPI/uvicorn on
+  8090, cp-net; FR-C3/C4/D4). `store.py` `ConfigStore` is per-deployment, versioned, ed25519-SIGNED config
+  persistence: publishing a tier change / flag flip / rotation-schedule edit APPENDS a new immutable signed
+  version and advances HEAD (no redeploy) — on-disk `deployments/<id>/HEAD + v<N>/config.json{,.sig,
+  .manifest.json}`; the signed body wraps flags + telemetry_tier (C3) + token_rotation (FR-D4) with
+  identity+version+created. All signing/verifying is delegated to the committed `control-plane/signing`
+  (sign_bundle/verify_bundle), write-disjoint via a `SigningHome` that retargets the CLIs' KEYS_DIR/
+  TRUST_ROOT at a config-dist-owned home (identical crypto, storage moved out of `signing/`). `config_service.py`
+  (`config_service:app`) implements the EXACT agent-pull contract (`agent/config_pull.py`): `GET
+  /config/{deployment_id}[.sig|.manifest.json]` + pinned `/config/{id}/v{n}` + `GET /trust_root.json`, plus
+  the operator surface (`POST/GET /api/v1/config/{id}`, `/versions`, `/deployments`, `/healthz`); publishes
+  serialized per-process so the version counter can't race. `publish_config.py` CLI sets a config → new
+  signed version (`--flag`/`--tier`/`--rotation`/`--config-file`), self-verifying (I6) before reporting
+  success. Verified: `selftest.py` **15/15 GREEN** via TestClient — publish → v1 (T1); GET the trio + VERIFY
+  via `verify_bundle.verify_file` → VALID `artifact='config'`; tamper config bytes / signature → FAILS
+  (I6); a tier change T1→T2 → NEW v2 verifies, HEAD serves v2, v1 still immutably served; additionally drove
+  the REAL committed `agent/config_pull.ConfigPuller` over the served trio (good applied, tampered rejected).
+  Caveats: service-local trust root by default (mints its own key into a config-dist signing home — the
+  agent must pin `GET /trust_root.json`; mount a shared CP keystore + set CONFIG_DIST_SIGNING_HOME/KEY_ID to
+  chain to one trust root); no authn at the service (tenant isolation + operator auth are the auth-proxy's
+  job — do not expose 8090 publicly); single-writer (publishes serialized via a Lock; run one writer);
+  token_rotation is a SCHEDULE distributed to the agent, not the rotation itself. **No new dep** (fastapi/
+  uvicorn/cryptography/pydantic already present).
+
+- 2026-06-24 — **WS-METER** — Signed Tier-1 usage metering/billing rollup (`control-plane/metering/`,
+  FR-F2/F3). `mimir_client.py` is a per-tenant Mimir query client (httpx) that sets X-Scope-OrgID per call
+  (C5), runs `increase(<counter>[<period>])` instant queries against `/prometheus/api/v1/query`, and parses
+  the Prometheus vector — transport-only with an injectable httpx transport (the self-test feeds a
+  MockTransport so the REAL request-build + parse path runs against a canned Mimir), fail-loud on HTTP/
+  protocol errors (a metering job must not silently bill zero on a 500). `rollup.py` computes the per-tenant
+  rollup from the three Tier-1 counters harvested from `fleet-sli/recording_rules.yml`
+  (`writer_full_mode_writes_total{source}`, `think_runs_total`, `think_cost_recent_usd_total`): period
+  delta via `increase()` at period end, missing series → 0 (valid zero bill), negative-extrapolation
+  clamped; emits `{tenant_id, period, metrics{obs_per_source, ingestion_volume, think_runs, think_cost_usd},
+  totals, schema_version, …}` and SIGNS it by REUSING `control-plane/signing` (artifact=config so the
+  canonical sorted-keys JSON is the signed quantity), so any later edit to a usage number breaks
+  verification (FR-F2); `verify_rollup()` delegates to `verify_bundle.verify_file` (I6). `export.py` emits
+  signed rollups for billing in JSON (round-trips exactly, per-row signature receipt) and CSV (per source +
+  a `__TOTAL__` row); `collect_signed_rollups` verifies every bundle first and REFUSES (fail-closed) any
+  whose signature doesn't validate. Verified: `selftest.py` **17/17 GREEN** against a mock Mimir
+  (httpx.MockTransport) + REAL ed25519 (throwaway trust root): per-source obs (github=1234/slack=88/
+  jira=42), ingestion_volume=1364, think_runs=57, cost_usd=3.141592; every query sends X-Scope-OrgID==acme;
+  SIGN → verify VALID; tamper cost / obs → INVALID; JSON round-trips; CSV per-source + TOTAL with receipt;
+  zero-activity tenant → all-zeros without error; export REFUSES a tampered bundle; unknown-key rollup
+  fails verify. Caveats: I1 — reads ONLY aggregate counters (no payloads/PII); the job sets X-Scope-OrgID
+  itself (trusted CP-internal reader; point MIMIR_URL at the auth-proxy for defence-in-depth); period math
+  under-counts a data-plane gap and a never-reporting deployment yields a valid all-zero bill (cross-check
+  the C4 heartbeat to distinguish 'no usage' from 'no telemetry'); think_cost_usd is the data plane's
+  self-reported spend (reconcile against the provider bill if the contract requires); JSON floats — apply
+  cents-precise rounding downstream. **No new dep** (httpx/cryptography already present).
+
+- 2026-06-24 — **WS-AUDIT** — Append-only hash-chained audit log + break-glass (`control-plane/audit/`,
+  FR-G / I5). `audit_log.py` `AuditLog` over an append-only JSONL file: every entry carries
+  `seq/ts/actor/action/target/metadata/prev_hash/entry_hash` where `entry_hash = sha256(canonical_json
+  (body))` and `prev_hash` links to the previous entry (genesis prev = `GENESIS`); `append()` only ever
+  O_APPEND-writes one fsync'd line (never truncates/rewrites); `verify_chain()` walks the chain and detects
+  both a tampered past entry (recomputed hash mismatch) and a broken link, returning `bad_seq`. A SECOND
+  tamper layer reuses `control-plane/signing` — each append re-signs a detached ed25519 checkpoint over the
+  chain-head hash (`<log>.checkpoint.json`), so even a whole-file rewrite (all hashes recomputed) is caught
+  because the attacker can't re-sign the new head; canonical_json/sha256/rfc3339 all come from `signing_lib`
+  so byte representations match the rest of the CP. `breakglass.py` is a state machine over the log
+  implementing all four I5 clauses: `request_grant` (INERT) → `approve_grant` (the distinct customer step
+  that starts the time-box, `expires_at = approval + ttl`) → `check_access` (honors ONLY approved +
+  unexpired + in-scope grants, exact + opt-in `tenant:x/*` wildcard) + deny/revoke/sweep; every transition
+  (request/approve/deny/USE/expire/revoke/denied-check) is appended to the chain, expiry lazy + idempotent.
+  `cli.py` exposes `audit append|verify|list` + `breakglass request|approve|deny|revoke|check|sweep|list`,
+  auto-loading the active signing key (chain-only if absent). Verified: `selftest.py` **23/23 GREEN** (mints
+  a REAL throwaway ed25519 key): append 4 → verify OK + signed checkpoint valid; flip a past field → DETECTS
+  + pinpoints bad_seq=1, whole-file rewrite re-links the chain but FAILS the signed checkpoint; customer-
+  approve a 1s grant → ALLOWED in window, DENIED after expiry + wrong-scope DENIED; each transition audited
+  (expiry exactly once), chain still valid; CLI end-to-end with correct exit codes. Caveats: tamper-EVIDENT
+  not tamper-PROOF (detection via hash chain + signed checkpoint; for prevention ship to a WORM/remote
+  sink); whole-file evidence needs the active CP private key mounted read-only (chain-only mode reports
+  `signature_ok=None`); the checkpoint signs the current head only (truncation-to-a-prior-signed-head needs
+  an external monotonic witness — a v2 item); single-writer; wall-clock expiry with no skew grace (fails
+  toward expiring sooner); `approve_grant` records but does not authenticate the principal (auth is the
+  console/auth-proxy's job). **No new dep** (cryptography/signing already present).
+
+- 2026-06-24 — **WS-CP-UPGRADE** — Zero-disruption control-plane upgrade tooling (`control-plane/upgrade/`,
+  NFR-6). `trust_bundle.py` is the load-bearing CA trust-OVERLAP helper — `add`/`remove`/`list`/`verify`/
+  `sign` a CA trust bundle (the proxy's `ca/pki/ca-chain.crt`): `add` appends a new CA's intermediate+root
+  so the auth-proxy trusts {old,new} simultaneously during cutover (idempotent by SHA-256 fp, atomic write
+  + timestamped `.bak`); `remove` drops a retired CA and REFUSES to empty the bundle; `verify --leaf` proves
+  a leaf chains using the SAME committed `ca/verify_chain.py` the proxy uses; `--sign`/`--require-signature`
+  reuse `control-plane/signing` (ed25519, C2/I6) so the bundle is itself signed/verified before load.
+  `rolling_upgrade.sh` does a real health-gated, one-at-a-time rolling restart of the STATELESS CP services
+  (`docker compose up -d --no-deps <svc>` with pre-gate → recreate → post-gate poll → auto-rollback +
+  stop-on-failure; DRY_RUN/NO_PULL/NO_ROLLBACK; gracefully skips not-yet-wired services; REFUSES stateful
+  mimir/loki/grafana with exit 2 → the blue-green procedure). `trust_overlap.sh` wraps the add-before-rotate
+  / remove-after-rotate dance, reloading JUST the auth-proxy at the right moment. `UPGRADE_RUNBOOK.md`
+  documents the full procedure (stateless rolling; stateful Mimir/Loki blue-green on SHARED OBJECT STORAGE
+  with the remote-write cut-over ordering that never drops a sample; trust-overlap; the I3 buffering safety
+  net; rollback + I1–I6 mapping). Verified: `selftest.py` **31 passed, 0 failed** — two real CAs (old-only
+  rejects new leaf / overlap trusts BOTH / idempotent add / post-retire rejects old / refuse-empty / sign+
+  verify+tamper-fails) via the committed `ca/verify_chain.py`; runbook + trust_overlap.md coverage; scripts
+  pass `bash -n`; `service.compose.yml` is valid YAML and `docker compose config` parses the overlay;
+  `rolling_upgrade.sh` DRY_RUN against the master compose rolls `console`, skips not-yet-wired `auth-proxy`,
+  rejects `mimir` exit 2. Wired into the master compose as the on-demand `cp-upgrade-tools` container
+  (`python:3.12-slim` + cryptography/pyyaml, NO ports, `restart: no`, `.:/app` RW so the operator edits the
+  trust bundle in place; run via `docker compose run --rm cp-upgrade-tools …`). Caveats: shellcheck absent
+  (fell back to `bash -n`); a live roll needs the full stack up; auth-proxy/config-dist not yet in the
+  master compose are gracefully skipped, mimir/loki correctly rejected as stateful; `--sign` needs the CP
+  keyring; blue-green assumes shared object storage in prod (dev local volumes → use the rolling stateful
+  variant). **No new dep** (cryptography/pyyaml already present).
+
+- 2026-06-24 — **INTEGRATE** — Wired the four Phase-5 always-/on-demand services + the upgrade tool into
+  `docker-compose.control-plane.yml` (replacing the commented Phase-5 stub), all on cp-net with
+  build.context = control-plane ROOT (`.`) + per-dir dockerfile so each image copies `signing/`+`lib/`:
+  `release-registry` (publish.py serve, container 8090) HOST-mapped to **8091** to avoid colliding with
+  `config-dist` (uvicorn config_service:app, host 8090) — both keep container 8090 so the agent reaches
+  them by service name (config-dist:8090 / release-registry:8090) on cp-net unchanged; `metering` (one-shot
+  signed-rollup batch job, default command runs the offline self-test, `restart: no`, signing keys mounted
+  read-only, `metering-out` volume); `audit` (on-demand CLI image, `restart: no`, `audit-data` volume +
+  read-only signing keys); `cp-upgrade-tools` (on-demand operator container, no ports). Added the
+  `release-registry-data` / `config-dist-data` / `metering-out` named volumes (audit reuses the existing
+  `audit-data`). Verified: `docker compose -f docker-compose.control-plane.yml config` exit 0; all five new
+  services render and every published host port is UNIQUE (3000/3100/8080/**8090 config-dist**/**8091
+  release-registry**/9009). **No new requirements**: every dep used across the five workstreams
+  (cryptography/fastapi/uvicorn/httpx/pydantic/requests/pyyaml) was already in `requirements.txt`.
