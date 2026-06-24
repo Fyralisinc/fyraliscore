@@ -1,0 +1,338 @@
+# =============================================================================
+# fleet-sli / alert_rules.yml — WS-FLEETSLI
+# -----------------------------------------------------------------------------
+# The data plane's 13 deployment alerts, PORTED TO FLEET SCOPE. They load into
+# the Mimir RULER under the synthetic tenant `__fleet__` and evaluate CENTRALLY
+# over EVERY tenant's remote-written metrics (see README.md). Because every base
+# series carries tenant_id / deployment_id / region (stamped by the boundary
+# OTel Collector), each alert FIRES PER DEPLOYMENT and CARRIES those identity
+# labels — so a single page names the exact tenant + deployment that is sick.
+#
+# The 13 ported alerts (one-to-one with docs/plans/byoc-control-plane.md §10):
+#    1. FleetHeartbeatStale        — worker heartbeat age > 120s (hung loop)
+#    2. FleetScrapeDown            — a fyralis worker scrape target is down
+#    3. FleetDLQDepthHigh          — unresolved DLQ depth over cap
+#    4. FleetConsumerLagHigh       — kafka consumer-group lag over cap
+#    5. FleetSignatureFailure      — webhook signature-verification failures
+#    6. FleetEmbedFailureRatioHigh — embedding failure ratio > 5%
+#    7. FleetThinkBackpressure     — think queue pending > 500
+#    8. FleetDBPoolSaturated       — db pool saturation > 0.9
+#    9. FleetLLMSpendBurn          — llm spend > $5/hr
+#   10. FleetDeadLetterRows        — reasoning/post-commit poison backlog
+#   11. FleetSchemaVersionDrift    — deployment behind the fleet schema version (G1)
+#   12. FleetOAuthRefreshFailure   — source-token refresh failing (G2)
+#   13. FleetWorkerMissing         — an expected worker class not running (G5)
+#
+# Every alert sets:
+#   labels.severity   = page | ticket    (page → §B6 routing; ticket → digest)
+#   labels.scope      = fleet             (distinguishes from any DP-local alert)
+#   annotations carry tenant_id/deployment_id/region via templated {{ $labels.* }}.
+#
+# Most expressions consume the fyralis:* recording rules in recording_rules.yml
+# (noted per-alert under DEPENDS). Where a rule is referenced it MUST be loaded
+# in the same ruler tenant; alert_rules.yml and recording_rules.yml are mounted
+# together (README §How-to-run).
+# =============================================================================
+
+groups:
+
+  # ---------------------------------------------------------------------------
+  # 1 — Heartbeat stale  (golden SLI #1; a worker loop is wedged, not dead)
+  #     DEPENDS: fyralis:worker_heartbeat_age_max_seconds
+  # ---------------------------------------------------------------------------
+  - name: fleet_alerts_liveness
+    rules:
+      - alert: FleetHeartbeatStale
+        expr: fyralis:worker_heartbeat_age_max_seconds > 120
+        for: 1m
+        labels:
+          severity: page
+          scope: fleet
+          sli: worker_liveness
+        annotations:
+          summary: "Worker heartbeat stale on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}
+            region={{ $labels.region }}: worst worker heartbeat age is
+            {{ $value | humanizeDuration }} (>120s) — a worker loop is wedged.
+
+      # 2 — Scrape down  (golden SLI #1; target unreachable / process dead)
+      #     DEPENDS: fyralis:worker_down_count
+      - alert: FleetScrapeDown
+        expr: fyralis:worker_down_count > 0
+        for: 1m
+        labels:
+          severity: page
+          scope: fleet
+          sli: worker_liveness
+        annotations:
+          summary: "{{ $value }} fyralis worker target(s) down on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            {{ $value }} fyralis worker scrape target(s) are down (up==0).
+
+      # 13 — Worker missing  (G5: expected worker class not running, e.g.
+      #      anomaly_processor / deadline_resolver coded-but-not-in-compose)
+      #      DEPENDS: fyralis:worker_missing_count
+      - alert: FleetWorkerMissing
+        expr: fyralis:worker_missing_count > 0
+        for: 5m
+        labels:
+          severity: ticket
+          scope: fleet
+          sli: worker_liveness
+          gap: G5
+        annotations:
+          summary: "{{ $value }} expected worker class(es) missing on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            {{ $value }} expected worker class(es) are not running — T2/T3 reasoning
+            (anomaly/deadline) may be silently disabled.
+
+  # ---------------------------------------------------------------------------
+  # 3 — DLQ depth high  +  10 — dead-letter rows
+  # ---------------------------------------------------------------------------
+  - name: fleet_alerts_dlq
+    rules:
+      # 3 — unresolved DLQ depth over cap (>25 ticket, >100 page)
+      #     DEPENDS: fyralis:dlq_unresolved
+      - alert: FleetDLQDepthHigh
+        expr: fyralis:dlq_unresolved > 25
+        for: 5m
+        labels:
+          severity: ticket
+          scope: fleet
+          sli: dlq
+        annotations:
+          summary: "DLQ backlog {{ $value }} on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            unresolved DLQ depth is {{ $value }} (>25) — ingestion failures piling up.
+
+      - alert: FleetDLQDepthCritical
+        expr: fyralis:dlq_unresolved > 100
+        for: 2m
+        labels:
+          severity: page
+          scope: fleet
+          sli: dlq
+        annotations:
+          summary: "DLQ backlog CRITICAL {{ $value }} on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            unresolved DLQ depth is {{ $value }} (>100).
+
+      # 10 — dead-letter (poison) rows backlog in reasoning / post-commit
+      #      DEPENDS: fyralis:dead_letter_rows_total
+      - alert: FleetDeadLetterRows
+        expr: fyralis:dead_letter_rows_total > 0
+        for: 10m
+        labels:
+          severity: ticket
+          scope: fleet
+          sli: dlq
+        annotations:
+          summary: "{{ $value }} dead-letter row(s) on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            {{ $value }} dead-letter (poison) row(s) accumulated across tables.
+
+      # (silent-loss invariant) shadow-drop on the backfill path MUST be zero.
+      # DEPENDS: fyralis:shadow_drop_rate:5m
+      - alert: FleetShadowDrop
+        expr: fyralis:shadow_drop_rate:5m > 0
+        for: 0m
+        labels:
+          severity: page
+          scope: fleet
+          sli: dlq
+        annotations:
+          summary: "SILENT DATA LOSS: shadow-drop on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            writer shadow-drop rate is {{ $value }}/s on the backfill path —
+            the silent-data-loss invariant is violated.
+
+  # ---------------------------------------------------------------------------
+  # 4 — Consumer lag high
+  # ---------------------------------------------------------------------------
+  - name: fleet_alerts_kafka
+    rules:
+      # DEPENDS: fyralis:kafka_worst_group_lag
+      - alert: FleetConsumerLagHigh
+        expr: fyralis:kafka_worst_group_lag > 1000
+        for: 5m
+        labels:
+          severity: ticket
+          scope: fleet
+          sli: kafka
+        annotations:
+          summary: "Kafka lag {{ $value }} on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            worst consumer-group lag is {{ $value }} messages (>1000) — a consumer
+            is wedged or under-provisioned.
+
+      - alert: FleetConsumerLagCritical
+        expr: fyralis:kafka_worst_group_lag > 50000
+        for: 2m
+        labels:
+          severity: page
+          scope: fleet
+          sli: kafka
+        annotations:
+          summary: "Kafka lag CRITICAL {{ $value }} on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            worst consumer-group lag is {{ $value }} (>50000).
+
+  # ---------------------------------------------------------------------------
+  # 5 — Signature (webhook verification) failure
+  # ---------------------------------------------------------------------------
+  - name: fleet_alerts_ingress
+    rules:
+      # DEPENDS: fyralis:webhook_failure_rate:5m
+      - alert: FleetSignatureFailure
+        expr: fyralis:webhook_failure_rate:5m > 1
+        for: 5m
+        labels:
+          severity: ticket
+          scope: fleet
+          sli: ingress
+        annotations:
+          summary: "Webhook signature failures {{ $value | printf \"%.2f\" }}/s on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            webhook signature-verification failures at {{ $value | printf "%.2f" }}/s
+            (>1/s) — bad secret, rotation miss, or spoof attempt.
+
+      # 12 — OAuth source-token refresh failing  (G2)
+      #      DEPENDS: fyralis:oauth_refresh_failure_rate:15m
+      - alert: FleetOAuthRefreshFailure
+        expr: fyralis:oauth_refresh_failure_rate:15m > 0
+        for: 15m
+        labels:
+          severity: ticket
+          scope: fleet
+          sli: auth
+          gap: G2
+        annotations:
+          summary: "OAuth refresh failing for source {{ $labels.source }} on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            source={{ $labels.source }} OAuth token refresh is failing
+            ({{ $value | printf "%.3f" }}/s) — that source will silently stop ingesting.
+
+  # ---------------------------------------------------------------------------
+  # 6 — Embed failure ratio high
+  # ---------------------------------------------------------------------------
+  - name: fleet_alerts_embedding
+    rules:
+      # DEPENDS: fyralis:embed_failure_ratio:10m
+      - alert: FleetEmbedFailureRatioHigh
+        expr: fyralis:embed_failure_ratio:10m > 0.05
+        for: 10m
+        labels:
+          severity: ticket
+          scope: fleet
+          sli: embedding
+        annotations:
+          summary: "Embedding failure ratio {{ $value | humanizePercentage }} on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            embedding failure ratio is {{ $value | humanizePercentage }} (>5%) —
+            embeddings stalling (provider down or dim-mismatch).
+
+  # ---------------------------------------------------------------------------
+  # 7 — Think backpressure
+  # ---------------------------------------------------------------------------
+  - name: fleet_alerts_think
+    rules:
+      # DEPENDS: fyralis:think_queue_pending
+      - alert: FleetThinkBackpressure
+        expr: fyralis:think_queue_pending > 500
+        for: 10m
+        labels:
+          severity: ticket
+          scope: fleet
+          sli: think
+        annotations:
+          summary: "Think backlog {{ $value }} on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            think queue pending is {{ $value }} (>500) — reasoning is backpressured.
+
+  # ---------------------------------------------------------------------------
+  # 8 — DB pool saturated
+  # ---------------------------------------------------------------------------
+  - name: fleet_alerts_db
+    rules:
+      # DEPENDS: fyralis:db_pool_saturation_max
+      - alert: FleetDBPoolSaturated
+        expr: fyralis:db_pool_saturation_max > 0.9
+        for: 5m
+        labels:
+          severity: ticket
+          scope: fleet
+          sli: db
+        annotations:
+          summary: "DB pool {{ $value | humanizePercentage }} saturated on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            DB pool saturation is {{ $value | humanizePercentage }} (>90%) —
+            fetchers will start blocking on pool acquisition.
+
+      # 11 — Schema version drift  (G1): a deployment is BELOW the highest schema
+      #      version seen across the fleet → it missed / failed a migration.
+      #      DEPENDS: fyralis:schema_version + fleet:schema_version_max
+      - alert: FleetSchemaVersionDrift
+        expr: |
+          (fyralis:schema_version < on() group_left() fleet:schema_version_max)
+        for: 30m
+        labels:
+          severity: ticket
+          scope: fleet
+          sli: db
+          gap: G1
+        annotations:
+          summary: "Schema drift on {{ $labels.deployment_id }} (v{{ $value }} < fleet max)"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            applied schema version is {{ $value }} but the fleet maximum is higher —
+            this deployment is behind on migrations (missed or failed migration).
+
+  # ---------------------------------------------------------------------------
+  # 9 — LLM spend burn  (+ breaker open)
+  # ---------------------------------------------------------------------------
+  - name: fleet_alerts_llm
+    rules:
+      # DEPENDS: fyralis:llm_spend_usd_per_hour
+      - alert: FleetLLMSpendBurn
+        expr: fyralis:llm_spend_usd_per_hour > 5
+        for: 15m
+        labels:
+          severity: ticket
+          scope: fleet
+          sli: llm
+        annotations:
+          summary: "LLM spend ${{ $value | printf \"%.2f\" }}/hr on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            rolling LLM spend is ${{ $value | printf "%.2f" }}/hr (>$5/hr) — cost blowout.
+
+      # (G3) LLM circuit-breaker OPEN: a provider is down → all think runs fast-fail.
+      # DEPENDS: fyralis:llm_breaker_open
+      - alert: FleetLLMBreakerOpen
+        expr: fyralis:llm_breaker_open > 0
+        for: 2m
+        labels:
+          severity: page
+          scope: fleet
+          sli: llm
+          gap: G3
+        annotations:
+          summary: "LLM breaker OPEN on {{ $labels.deployment_id }}"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            an LLM provider circuit-breaker is OPEN — all reasoning runs fast-fail
+            until it recovers.
