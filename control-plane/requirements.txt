@@ -13,6 +13,9 @@ uvicorn[standard]>=0.29
 httpx>=0.27
 # auth-proxy: sans-IO HTTP/1.1 state machine for the mTLS-terminating reverse proxy
 h11>=0.14
+# WS-AGENT (data-plane agent): the single OUTBOUND https client for heartbeats +
+# signed-bundle fetch. The agent imports it lazily and opens no listener (I2).
+requests>=2.31
 
 # --- observability / telemetry --------------------------------------------
 prometheus-client>=0.20

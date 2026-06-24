@@ -32,6 +32,10 @@ volumes:
   grafana-data:
   ca-data:
   audit-data:
+  # Phase 4 — fleet console registry persistence (best-effort JSON under
+  # console/data) and the data-plane agent's durable heartbeat buffer (I3).
+  console-data:
+  agent-state:
 
 services:
   # --- scaffold marker -------------------------------------------------------
@@ -246,18 +250,117 @@ services:
   #     - dataplane-net
 
   # ==========================================================================
-  # Phase 4 — console (operator UI/API over the fleet registry)
+  # Phase 4 — Deployment surface (console + data-plane agent)
+  #           (WS-CONSOLE / WS-AGENT — merged from each dir's service.compose.yml.
+  #            WS-ONBOARD / WS-LICENSE / WS-INSTALLER are on-demand operator/one-
+  #            shot tools, not always-on services; run their fragments directly,
+  #            e.g. `docker compose -f onboarding/service.compose.yml run --rm ...`.)
   # ==========================================================================
-  # console:
-  #   build: ./console
-  #   # Operator surface over the fleet registry (C4 deployment records):
-  #   # list deployments, health, license expiry, telemetry tier, revoke certs.
-  #   environment:
-  #     - FLEET_REGISTRY_URL=http://fleet:8000
-  #   ports:
-  #     - "8080:8080"
-  #   networks:
-  #     - cp-net
+
+  # --- console: operator UI/API over the fleet registry (WS-CONSOLE) ---------
+  # FastAPI/uvicorn over the C4 DeploymentRecord registry. Serves the P4 CONSOLE
+  # REST contract (POST /api/v1/register, POST /api/v1/heartbeat, GET
+  # /api/v1/deployments[/{id}], GET / rollup) on 8080 on cp-net. Health is
+  # DERIVED ON READ from heartbeat freshness (NFR-5: stale >90s -> yellow,
+  # missing >300s -> red) — the wire `health` is never trusted.
+  #
+  # BUILD CONTEXT is the control-plane ROOT (.), NOT ./console — the image needs
+  # control-plane/lib (the shared C4 record + derive_health). Dockerfile is at
+  # console/Dockerfile. (Same pattern as the auth-proxy/agent images.)
+  console:
+    build:
+      context: .
+      dockerfile: console/Dockerfile
+    environment:
+      - CP_CONSOLE_HOST=0.0.0.0
+      - CP_CONSOLE_PORT=8080
+      # JSON-file persistence of the fleet registry on the mounted volume so a
+      # console restart does not lose the fleet.
+      - CP_CONSOLE_DATA_DIR=/app/console/data
+      # Heartbeat-age health thresholds (NFR-5 defaults; override to tune).
+      - CP_HEARTBEAT_YELLOW_AFTER_S=90
+      - CP_HEARTBEAT_RED_AFTER_S=300
+    volumes:
+      # Durable fleet registry (best-effort JSON persistence under console/data).
+      - console-data:/app/console/data
+    ports:
+      # Operator-facing console UI/API. Reachable on cp-net as http://console:8080;
+      # published to the host for the operator.
+      - "8080:8080"
+    networks:
+      - cp-net
+    healthcheck:
+      # python:3.12-slim has no curl; use the stdlib to probe liveness.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).status==200 else 1)"
+      interval: 15s
+      timeout: 4s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # --- fyralis-agent: data-plane heartbeat agent (WS-AGENT) ------------------
+  # Runs IN THE CUSTOMER VPC (data plane). Every AGENT_INTERVAL_S it collects a
+  # C4 DeploymentRecord (version/region/tier/license-expiry + health derived from
+  # a local /healthz SLI probe) and POSTs it to the console's /api/v1/heartbeat
+  # over an OUTBOUND https call. Console unreachable -> BUFFERS to a durable local
+  # queue and retries with backoff (I3 — never crashes, never blocks local ops).
+  # Pulls + VERIFIES signed config bundles before applying (I6); refuses
+  # privileged actions when its local signed license is missing/expired/tampered.
+  #
+  # I2 — OUTBOUND ONLY: there is NO `ports:` / EXPOSE here, by design. The agent
+  # opens no listening socket; nothing reaches in to it. For the single-host
+  # in-cluster demo it attaches to cp-net (to reach the console by name) AND
+  # dataplane-net (to probe the local data plane). In a REAL BYOC deploy this runs
+  # in the customer VPC and AGENT_CONSOLE_URL is the public vendor-console TLS URL.
+  #
+  # BUILD CONTEXT is the control-plane ROOT (.) so the image includes signing/
+  # (verify_bundle/signing_lib) + lib/ (DeploymentRecord). Dockerfile at
+  # agent/Dockerfile.
+  fyralis-agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    image: fyralis/agent
+    # OUTBOUND-ONLY: no ports published, no listener (I2).
+    environment:
+      AGENT_CONSOLE_URL: "${AGENT_CONSOLE_URL:-http://console:8080}"
+      AGENT_TENANT_ID: "${AGENT_TENANT_ID:-acme}"
+      AGENT_DEPLOYMENT_ID: "${AGENT_DEPLOYMENT_ID:-acme-use1-0001}"
+      AGENT_REGION: "${AGENT_REGION:-us-east-1}"
+      AGENT_TELEMETRY_TIER: "${AGENT_TELEMETRY_TIER:-T1}"
+      AGENT_INTERVAL_S: "${AGENT_INTERVAL_S:-30}"
+      # Local data-plane health endpoint the agent probes for its SLI-derived health.
+      AGENT_HEALTHZ_URL: "${AGENT_HEALTHZ_URL:-http://127.0.0.1:8088/healthz}"
+      # Paths inside the container (see mounts below).
+      AGENT_VERSION_FILE: "/app/agent/VERSION"
+      AGENT_LICENSE_PATH: "/run/secrets/license.json"
+      AGENT_TRUST_ROOT: "/app/signing/trust_root.json"
+      AGENT_BUFFER_PATH: "/var/lib/fyralis-agent/buffer.jsonl"
+      AGENT_CONFIG_DIR: "/var/lib/fyralis-agent/applied-config"
+    volumes:
+      # The signed license bundle (license.json + sidecars), validated locally (I6).
+      # Provide the trio at ./agent/deploy/ on the host (gitignored / per-deploy).
+      - ./agent/deploy/license.json:/run/secrets/license.json:ro
+      - ./agent/deploy/license.json.sig:/run/secrets/license.json.sig:ro
+      - ./agent/deploy/license.json.manifest.json:/run/secrets/license.json.manifest.json:ro
+      # PUBLIC trust root only — the agent verifies, never signs.
+      - ./signing/trust_root.json:/app/signing/trust_root.json:ro
+      # Durable buffer + applied-config survive restarts (I3 / I6).
+      - agent-state:/var/lib/fyralis-agent
+    depends_on:
+      - console
+    networks:
+      # cp-net so it can reach the console by name for the in-cluster demo;
+      # dataplane-net so it can probe the local data plane.
+      - cp-net
+      - dataplane-net
+    restart: unless-stopped
+    # NOTE: no healthcheck that opens a port. The control plane observes the agent
+    # via its HEARTBEATS, which is the intended health signal (C4).
 
   # ==========================================================================
   # Phase 5 — release / config-dist / metering / audit (filled in later)

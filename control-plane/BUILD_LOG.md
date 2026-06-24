@@ -191,3 +191,149 @@ relevant phase heading. Keep entries terse and dated; newest within a phase goes
   + the ruler loader present; a yaml.safe_load assertion pass over the rendered config (mimir/loki on
   cp-net with config+data mounts, grafana on cp-net+dataplane-net depends_on mimir+loki, ruler-loader
   depends_on mimir mounting fleet-sli→/rules, all named volumes + networks declared).
+
+## Phase 4 — Deployment surface (agent/console/onboarding/licensing/installer)
+
+- 2026-06-24 — **WS-AGENT** — Outbound-only data-plane agent (`control-plane/agent/`, runs in the
+  customer VPC; I2/I3/I6). `agent.py` daemon loop: every `AGENT_INTERVAL_S` it collect()s a C4
+  `DeploymentRecord` (version from `VERSION`, region/tier/tenant/deployment from config, license_expiry
+  from the VERIFIED license, health derived from heartbeat freshness folded with a local /healthz SLI
+  probe + license expiry) and POSTs it to `<console>/api/v1/heartbeat` over an OUTBOUND https call.
+  `deliver()` flushes any backlog oldest-first then sends live; on an unreachable console it parks the
+  record in a durable bounded JSONL `buffer.py` (I3) and retries with capped exponential backoff;
+  `run_forever()` is SIGINT/SIGTERM-aware with a try/except backstop so no tick crashes the daemon.
+  `config_pull.py` GETs a signed config bundle and runs `signing/verify_bundle.verify_file`
+  (ed25519 + key-id policy + sha256) BEFORE atomic apply (I6) — tampered/unknown-key/wrong-kind →
+  REJECTED, old config untouched. `license_check.py` verifies the local signed license (sig + kind ==
+  `license` + issued_at ≤ now < expires_at), `is_licensed()` re-evaluated every call; the agent refuses
+  privileged actions when unlicensed but still heartbeats so the console shows a red, unlicensed
+  deployment. `config.py` deliberately has NO listen host/port (I2); no server framework is imported
+  anywhere and `requests` is imported lazily. Reuses the committed `lib` (DeploymentRecord/tiers) +
+  `signing` via a sys.path `_bootstrap`. Verified: `pytest -q` 37 passed (license verify/expiry/tamper/
+  unknown-key, config verify-before-apply, buffer durability/ordering/bounding, agent tick/SLI-yellow/
+  expired-red/buffer+flush+backoff/license-gated-pull, a REAL loopback HTTPServer round-trip with
+  kill+recover, and the I2 no-listener guard 3 ways — socket.listen trap + /proc/net/tcp LISTEN diff +
+  source forbidden-primitive scan); `selftest.py` 11/11, exit 0. Caveats: license/config ISSUANCE is
+  upstream (signing + WS-LICENSE) — the agent only CONSUMES signed bundles and ships only the PUBLIC
+  trust root; POST /api/v1/register is NOT driven by the loop (deployment_id/tenant_id are pre-provisioned
+  by onboarding/installer); health folds ONE local SLI today (the probe is injectable); buffer cap drops
+  OLDEST past `AGENT_BUFFER_MAX_RECORDS` (default 10k). **No new dep beyond `requests`** (added at
+  integrate).
+
+- 2026-06-24 — **WS-CONSOLE** — Fleet console/registry (`control-plane/console/`, FastAPI/uvicorn on
+  8080, cp-net). Implements the P4 CONSOLE REST contract exactly over the committed `lib` C4
+  `DeploymentRecord` + `derive_health` (no record redefinition): `POST /api/v1/register {tenant_id?,
+  region, plan}` mints `<tenant>-<region>-<rand>` + a tenant_id when absent and stamps an initial green
+  heartbeat; `POST /api/v1/heartbeat {DeploymentRecord}` upserts by deployment_id + recomputes health
+  (malformed/extra-field/bad-tier/non-object bodies → 422, never 500); `GET /api/v1/deployments`
+  (worst-health-first, health derived ON READ) + `GET /api/v1/deployments/{id}` (404 if unknown);
+  `GET /` a self-contained HTML fleet rollup (color health badges, last-heartbeat age, license expiry
+  with EXPIRED/soon flags, green/yellow/red/total counts); `GET /healthz`. `store.py` is an in-memory
+  registry with atomic JSON-file persistence under `console/data/` (`CP_CONSOLE_DATA_DIR`, temp+os.replace,
+  corrupt/missing → empty, RLock). Health is ALWAYS re-derived on read (NFR-5: stale >90s → yellow,
+  missing >300s → red, expired-license → red, SLI burn → green→yellow, future heartbeat clamped to age 0)
+  — the wire `health` is never trusted. Verified: `pytest` 15 passed (register/upsert/404/malformed/
+  health-derivation fresh→green/stale→yellow/missing→red/expired→red/HTML-rollup/persistence round-trip);
+  spec self-test via TestClient + a REAL uvicorn boot on 8080 (exact C4 wire shape, RFC-3339 Z timestamps);
+  `docker compose config` validates; OpenAPI exposes exactly the 5 contract routes + /healthz. **Bug
+  found+fixed:** a bad telemetry_tier raised a typed `TierError` from lib's validator (not wrapped into a
+  pydantic ValidationError in this pydantic version) → would have 500'd; the heartbeat handler now catches
+  any record-construction error and returns 422 (+2 regression tests). Caveats: no auth on the console API
+  (sits behind the CP perimeter on cp-net; do not publish :8080 to an untrusted network); `plan` is a
+  register hint, not a C4 field (the signed license is authoritative, corrected by the agent's first
+  heartbeat); persistence is best-effort single-node JSON (swap for a shared DB past MVP). Deps already
+  present (fastapi/uvicorn/pydantic).
+
+- 2026-06-24 — **WS-ONBOARD** — Atomic per-tenant onboarding (`control-plane/onboarding/`, FR-E).
+  `onboard.py` CLI runs a 6-step transaction, each registering an undo on a LIFO `RollbackLedger`:
+  (1) REGISTER via console `POST /api/v1/register` (or `--local-ids` / `--embedded-console`); (2) ISSUE
+  CERT via `ca/issue_cert` — per-tenant mTLS cert with SAN `spiffe://fyralis/tenant/<tenant>` + the active
+  row written to `ca/tenant_registry.json` (that row IS the auth-proxy binding); (3) MINT+SIGN LICENSE —
+  delegates to `control-plane/licensing.issue_license` when importable, else a self-contained ed25519
+  signer via `control-plane/signing`, producing `{tenant_id,deployment_id,plan,issued_at,expires_at,
+  features[]}` + detached `.sig` + `.manifest.json` (verify-before-use, I6); (4) ASSEMBLE BUNDLE —
+  `bundles/<deployment_id>/` with cert/ (crt+key+chain), the signed license, a signed agent-config.json
+  pointing the outbound-only agent (I2) at the console, the PUBLIC `trust_root.json`, and `BUNDLE.json`;
+  (5) SEED HEARTBEAT so it appears in the console now; (6) CONFIRM listed. On ANY failure the ledger
+  unwinds newest-first (revoke+delete the registry row, rmtree the partial bundle, best-effort console
+  remove) — no half-onboarded state. `offboard.py` revokes every active cert for the tenant (proxy 403s
+  it) + optional `--purge-registry`/`--purge-bundle`. Reuses committed `ca`/`signing`/`lib` — does not
+  redefine DeploymentRecord/signing/CA; the license is wire-compatible with sibling `licensing`. Verified:
+  `selftest.py` 31/31 across 5 scenarios against a throwaway CA/signing/registry in tmp (committed
+  ca/tenant_registry.json verified still `{}`): happy path (valid SAN==acme cert + sig-verifying unexpired
+  license + signed outbound config + shipped public trust root + exactly one ACTIVE acme row keyed by the
+  fingerprint + console-listed); rollback on a late and an early forced failure (no orphan bundle/row);
+  rollback on a genuine signing-material-absent failure; offboard (cert revoked, deregistered, bundle
+  purged); both license paths (delegation + fallback) verify; `docker compose config` exit 0. **Operator
+  CLI / one-shot — NOT wired as an always-on service** (its `service.compose.yml` is `ops`-profile-gated;
+  run via `docker compose run --rm onboarding ...`). Caveats: the P4 console contract has no DELETE verb
+  so against a REAL console rollback can't delete a seeded deployment (left to age to red; embedded/fake
+  console supports removal so self-test rollback is exact); needs the signing PRIVATE key to mint;
+  assembled bundles carry a tenant private key (git-ignored, deliver over a secure channel).
+
+- 2026-06-24 — **WS-LICENSE** — Signed expiring licenses + a fail-closed validator
+  (`control-plane/licensing/`), built entirely on the committed `signing` ed25519 lib (no crypto
+  re-implemented). `license_model.py`: the LICENSE JSON contract `{tenant_id, deployment_id, plan,
+  issued_at, expires_at, features[], license_id, version}`; `License.mint()` supports a duration or an
+  explicit `expires_at`; canonical compact-JSON bytes match `signing_lib` so what we hash is what we sign.
+  `issue_license.py` (CLI + lib) builds + signs the doc as a `license` artifact via `signing/sign_bundle`,
+  producing the C2 detached trio (license.json + .sig + .manifest.json); exits non-zero if no signing
+  key/trust root (never emits an unsigned license). `validator.py` `validate()` is FAIL-CLOSED with four
+  gates ALL required for ALLOW: (1) SIGNATURE via `signing/verify_bundle` (verify-before-use I6 — denies
+  tampered/unknown-key/retired-key/wrong-artifact), (2) EXPIRY now<expires_at + not-yet-valid guard,
+  (3) IDENTITY tenant_id+deployment_id match this deployment (lateral-reuse guard), (4) REVOCATION not on
+  the deny list; stable deny codes; corrupt revocation list fails closed (does not silently un-revoke).
+  `validate_for_deployment(record)` binds identity from a C4 record so the identity gate is never skipped.
+  `revoke.py` is the revocation list (FR-F — revoke a still-signed/unexpired license) with add/remove/
+  check/list CLIs over `revocations.json` (`REVOCATIONS_PATH` override). Verified: `selftest.py` 11/11
+  ALL GREEN against an isolated throwaway trust root (issue→ALLOW all 4 gates; tamper→deny_bad_signature;
+  expired→deny_expired; revoke→deny_revoked; wrong-tenant/wrong-deployment/unknown-key→DENY;
+  validate_for_deployment(matching)→ALLOW); end-to-end issue→validate→revoke via CLI; the optional FastAPI
+  service via TestClient. **Optional HTTP service — `ops`-style fragment, NOT wired into the master
+  compose** (the agent validates LOCALLY and never calls it). **Bug found+fixed:** `revoke.py` bound
+  `path=DEFAULT_REVOCATIONS_PATH` as a default arg (frozen at import) so a monkeypatched path was ignored
+  on writes while honored on reads → refactored to resolve the path at call time; reset `revocations.json`
+  to a clean empty seed. Caveats: revocation is pull-based (propagation = the agent's list-refresh cadence,
+  by design — agent is outbound-only/offline-capable); no trust root exists in the repo yet (issuance needs
+  `signing/keygen.py --activate` first).
+
+- 2026-06-24 — **WS-INSTALLER** — Single-tenant provisioning bundle/overlay
+  (`control-plane/installer/`, customer-VPC tool — NOT a vendor CP service). `deployment.compose.yml` is a
+  per-tenant overlay (project `fyralis-dp-<slug>`) bringing up three layers on a shared `dp-net`: a MINIMAL
+  runnable subset of the repo-root data plane (postgres+exporter, redis+exporter, kafka+exporter), the
+  boundary OTel Collector mounting the committed `otel-collector-config.yaml` + the bundle's mTLS material
+  into the EXACT paths the config expects, and the `control-plane/agent` on the mounted control-plane tree
+  with a persistent agent-buffer volume (I3) and NO inbound ports (I2) — all tenant-specifics `${...}`-
+  parameterized from the bundle. `bundle_lib.py` is the agent-bundle contract + fail-closed
+  `validate_bundle()`: required files, manifest keys, telemetry_tier enum, C1 cert-SAN round-trip (via
+  committed `ca/ca_lib`), trust-root parse, and I6 signature verification of license.json+config.json (via
+  committed `signing/verify_bundle`) + expiry + tenant-binding. `install.sh "[--dry-run] [--no-register]
+  [--no-up] <bundle-dir>"` validates → renders `.deployment.env` → best-effort `POST /api/v1/register`
+  (degrades on outage, I3) → `docker compose up -d`; `uninstall.sh` tears down by project.
+  `make_sample_bundle.py` mints a REAL self-contained sample bundle (ephemeral CA + leaf cert with spiffe
+  SAN + ephemeral keyring + real signed license+config) for a hermetic self-test. Verified: `selftest.py`
+  42 passed, 0 failed (overlay declares boundary+agent+6 data-plane services + cert/key/ca mounts + agent
+  buffer + ZERO inbound ports + dp-net; sample bundle validates with C1 SAN round-trip + I6 sig verify
+  actually executing; `install.sh --dry-run` exits 0 RESULT: VALID launching nothing; negatives rejected
+  fail-closed — expired license, tampered config, wrong-tenant cert; a REAL `docker compose config` parses
+  with cert mounts resolving; `bash -n` clean on both scripts). **Contributes NO long-running service to the
+  master compose** (its `service.compose.yml` is just a `tools`-profile-gated `installer-selftest` marker).
+  Caveats: MINIMAL data-plane subset (the boundary config also targets the worker fleet which this subset
+  does not run → those targets surface as up==0, the intended G5 coded-but-not-running signal — run the
+  root `docker-compose.yml` on dp-net for the full fleet); production path is Helm/Terraform (same bundle
+  contract); the sample bundle uses an EPHEMERAL CA/key (production bundles are minted by onboarding with
+  the real fleet CA + signing key).
+
+- 2026-06-24 — **integrate** — Merged the **WS-CONSOLE** + **WS-AGENT** `service.compose.yml` fragments
+  into `docker-compose.control-plane.yml` (replacing the commented Phase-4 `console:` stub): `console` on
+  cp-net (8080, `console-data` volume, stdlib /healthz healthcheck, build.context = control-plane ROOT so
+  the image copies `lib/`) and `fyralis-agent` on cp-net+dataplane-net with NO `ports:`/EXPOSE (I2), the
+  durable `agent-state` buffer volume (I3), `depends_on: [console]`, and build.context = control-plane ROOT
+  so the image includes `signing/`+`lib/`. Added the `console-data` + `agent-state` named volumes to the
+  top-level `volumes:` block. WS-ONBOARD / WS-LICENSE / WS-INSTALLER are on-demand operator/one-shot tools
+  (profile-gated fragments), intentionally NOT wired as always-on services — run their fragments directly.
+  **New dep: `requests`** (the WS-AGENT outbound https client) added to `requirements.txt`; console + the
+  agent's crypto/pydantic were already present. Verified: `docker compose -f docker-compose.control-plane.yml
+  config` exit 0; a yaml.safe_load assertion pass over the rendered config (console on cp-net publishing
+  8080 with console-data; fyralis-agent with ZERO ports on cp-net+dataplane-net with agent-state;
+  console-data + agent-state in the top-level volumes; dataplane-net still external).
