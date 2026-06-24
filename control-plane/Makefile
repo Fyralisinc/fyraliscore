@@ -25,7 +25,7 @@ TENANT ?= acme
 REGION ?= us-east-1
 PLAN   ?= standard
 
-.PHONY: bootstrap up down onboard smoke logs clean config help
+.PHONY: bootstrap up down onboard reconcile smoke logs clean config help
 
 help:
 	@sed -n '3,13p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
@@ -48,6 +48,12 @@ down:
 ## onboard a tenant: make onboard TENANT=globex REGION=eu-west
 onboard:
 	$(PYTHON) onboarding/onboard.py --tenant $(TENANT) --region $(REGION) --plan $(PLAN) --embedded-console
+
+## inspect whether the demo tenant is onboarded CONSISTENTLY across all durable
+## artifacts (registry active row + bundle + staged _runtime + .env). Prints
+## consistent | absent | partial. `make reconcile PURGE=1` sweeps a PARTIAL state.
+reconcile:
+	$(PYTHON) onboarding/reconcile.py --tenant $(TENANT) $(if $(PURGE),--purge,)
 
 ## end-to-end smoke (no docker required; mocks Mimir, runs the real CP code paths)
 smoke:

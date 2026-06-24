@@ -147,10 +147,10 @@ CONSOLE_INGEST_TOKEN="$(tr -d '\n' < "$TOKEN_FILE")"
 mkdir -p "$RUNTIME_DIR/agent" "$RUNTIME_DIR/ca"
 ENV_FILE="$HERE/.env"
 
-# Is the demo tenant already onboarded? (a license already staged in _runtime)
-if [[ -f "$RUNTIME_DIR/agent/license.json" && -f "$RUNTIME_DIR/agent/client.crt" && -f "$ENV_FILE" ]]; then
-  ok "demo tenant '$TENANT' already onboarded — runtime material staged in _runtime/"
-else
+# do_onboard: run the atomic onboard, stage the runtime material the compose
+# mounts, and (re)write .env. Used for both a fresh onboard and a redo after a
+# PARTIAL state was swept. Idempotent at the file level (all cp -f / overwrite).
+do_onboard() {
   say "onboarding demo tenant '$TENANT' (region=$REGION plan=$PLAN, embedded console) …"
   # onboard.py prints step logs AND the --json result to stdout, so extract the
   # trailing balanced JSON object (raw_decode from the last top-level '{').
@@ -215,10 +215,43 @@ AGENT_TELEMETRY_TIER=T1
 CONSOLE_INGEST_TOKEN=$CONSOLE_INGEST_TOKEN
 EOF
   ok "onboarded $TENANT -> $DEPLOYMENT_ID; runtime staged; wrote .env"
-fi
+}
+
+# --- idempotency + consistency guard (LIMITATIONS L-3) ----------------------
+# The old guard only checked _runtime/agent/license.json + client.crt + .env and
+# skipped onboarding when they existed — IGNORING the tracked, persistent
+# ca/tenant_registry.json the auth-proxy bind-mounts. A reset registry (git
+# stash/checkout/pull, interrupted clean) with surviving _runtime/ printed
+# "already onboarded" and exited 0, then the stack came up with an empty registry
+# and the proxy 403'd every push (zero series, silently).
+#
+# Now we ask the reconciler to inspect ALL durable artifact groups TOGETHER
+# (registry active row + bundle + staged runtime + .env), and converge:
+#   consistent -> everything agrees as one unit; skip onboarding (true idempotency)
+#   absent     -> clean slate; onboard fresh
+#   partial    -> some fragment missing/mismatched/duplicated; sweep every
+#                 fragment (offboard) then re-onboard so a 2nd run CONVERGES.
+RECON_ACTION="$("$PYTHON_BIN" onboarding/reconcile.py --tenant "$TENANT" --print-action)"
+case "$RECON_ACTION" in
+  consistent)
+    ok "demo tenant '$TENANT' already onboarded CONSISTENTLY (registry + bundle + runtime + .env all agree) — skipping"
+    ;;
+  absent)
+    do_onboard
+    ;;
+  partial)
+    warn "demo tenant '$TENANT' is in a PARTIAL/inconsistent state — reconciling (offboard fragments + re-onboard) …"
+    "$PYTHON_BIN" onboarding/reconcile.py --tenant "$TENANT" --purge
+    do_onboard
+    ;;
+  *)
+    echo "reconcile returned an unexpected action: '$RECON_ACTION'" >&2
+    exit 1
+    ;;
+esac
 
 # Ensure CONSOLE_INGEST_TOKEN is in .env even when the tenant was already
-# onboarded on a prior run (the .env block above only runs in the else branch).
+# onboarded consistently on a prior run (do_onboard only runs on absent/partial).
 if [[ -f "$ENV_FILE" ]] && ! grep -q '^CONSOLE_INGEST_TOKEN=' "$ENV_FILE"; then
   printf 'CONSOLE_INGEST_TOKEN=%s\n' "$CONSOLE_INGEST_TOKEN" >> "$ENV_FILE"
   ok "appended CONSOLE_INGEST_TOKEN to existing .env"

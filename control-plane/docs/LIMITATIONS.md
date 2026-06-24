@@ -26,10 +26,12 @@ break-glass mechanics are well-built. The golden-12 SLIs are all implemented; ag
 outbound-only (I2 proven 3 ways); no secrets are committed (keys / trust-root / `_runtime/`
 are gitignored + bootstrap-minted). `make smoke` is 52/0/3 and reproducible.
 
-**Fix before CTO handoff (`partial`, HIGH).** Two network-exposure / unauth-plane gaps and one
-bring-up consistency trap, all in §1. None is a wire-level isolation breach today (the metrics
-isolation plane I4 verified clean), but the *shipped one-command compose* publishes
-trust-bypassing ports to the host and the heartbeat/registry plane is unauthenticated.
+**Fix before CTO handoff (`partial`, HIGH).** Two network-exposure / unauth-plane gaps in §1
+(L-1, L-2). None is a wire-level isolation breach today (the metrics isolation plane I4 verified
+clean), but the *shipped one-command compose* publishes trust-bypassing ports to the host and the
+heartbeat/registry plane is unauthenticated. The third HIGH (L-3, the bring-up consistency trap)
+is now **closed** — `bootstrap.sh` reconciles the persistent registry + bundle + runtime + `.env`
+as one unit so a re-run always converges to a single consistent onboarded tenant.
 
 **Intentionally next-sprint (`next-sprint`).** Live cloud / AWS deploy, formal SOC-2 audit,
 P2 PrivateLink / air-gap / multi-cloud, RLS (only if the CP itself goes multi-tenant in one DB),
@@ -75,9 +77,9 @@ caveat); document that the console must never bind to an untrusted interface.
 the cert SAN (reject a record whose body `tenant_id` != cert tenant), or require a signed
 heartbeat / per-deployment bearer token, or front the console with operator SSO.
 
-### L-3 (HIGH, partial) — Bootstrap idempotency ignores the persistent tenant registry → silent 403-everything (Path-B bring-up)
-**Where:** `bootstrap.sh` onboard idempotency guard (≈ line 129) keys off `_runtime/` material
-(`license.json` + `client.crt` + `.env`) and never re-checks the **tracked** persistent file
+### L-3 (HIGH, done) — Bootstrap idempotency ignores the persistent tenant registry → silent 403-everything (Path-B bring-up)
+**Where:** `bootstrap.sh` onboard idempotency guard previously keyed off `_runtime/` material
+(`license.json` + `client.crt` + `.env`) and never re-checked the **tracked** persistent file
 `ca/tenant_registry.json` that the auth-proxy bind-mounts read-only.
 **Issue:** Reproduced live: `./bootstrap.sh --no-docker` printed "demo tenant acme already
 onboarded" and exited 0 while `ca/tenant_registry.json` was `{}`. Because the registry is a
@@ -85,11 +87,23 @@ tracked file committed as `{}`, any `git stash` / `git checkout -- .` / `git pul
 `make clean` that resets it while `_runtime/` survives leaves the tree inconsistent. The stack
 then comes up with an empty registry: the boundary cert resolves to "unknown", the proxy
 fail-closes to **403 on every push**, and the entire metric-flow + isolation demo silently
-produces zero series. The guide's troubleshooting blames file permissions, not the missing row.
-**Fix now (cheap, high-impact):** extend the guard to also assert the demo tenant's cert
-fingerprint has an ACTIVE row in `ca/tenant_registry.json`; if `_runtime/` exists but the row is
-missing, re-onboard (or fail loud). Add a troubleshooting row: "403 on every push AND registry is
-`{}` → stale `_runtime` vs empty registry; run `make clean && make bootstrap`."
+produces zero series.
+**FIXED.** The onboard step now drives a reconciler (`onboarding/reconcile.py`, `make reconcile`)
+that inspects all four durable artifact groups **together** — the ACTIVE row(s) in
+`ca/tenant_registry.json`, the on-disk bundle (`onboarding/bundles/<id>/`), the staged `_runtime/`
+material, and the `.env` deployment binding — and converges:
+* **consistent** (one active row whose fingerprint == one complete bundle, runtime + `.env` agree)
+  → skip onboarding (true idempotency);
+* **absent** → onboard fresh;
+* **partial** (any fragment missing / mismatched / **duplicated**, incl. the `{}`-registry trap and
+  orphan/duplicate bundles) → cleanly offboard *every* fragment (revoke + delete the registry
+  row(s), rmtree the bundle dir(s), clear the staged `_runtime`, drop the stale
+  `AGENT_DEPLOYMENT_ID`) then re-onboard, so a second `make bootstrap` always converges to exactly
+  one consistent onboarded tenant.
+`--no-docker` mode is preserved. Covered by `tests/test_bootstrap_idempotency.py` (runs the real
+`bootstrap.sh --no-docker` twice in a /tmp copy + simulates registry-reset / runtime-wiped /
+duplicate-bundle partial states and asserts convergence to exactly one active row + one bundle +
+one staged runtime + one `.env` binding).
 
 ---
 
@@ -263,7 +277,7 @@ These were **deliberately deferred** in the BYOC MVP plan; they are not defects 
 |---|---|---|---|
 | L-1 | Compose publishes trust-bypassing ports to host (C5/I4) | high | partial — **fix now** |
 | L-2 | Console registry/heartbeat API unauthenticated (FR-H/C4/I4) | high | partial — **fix now** |
-| L-3 | Bootstrap idempotency ignores persistent registry → 403-all | high | partial — **fix now** |
+| L-3 | Bootstrap idempotency ignores persistent registry → 403-all | high | **done** (reconciler + tests) |
 | L-4 | Manifest not covered by signature → version downgrade (C2/I6) | medium | next-sprint |
 | L-5 | T1 label redaction denylist vs documented allowlist (I1) | medium | partial |
 | L-6 | `__fleet__` tenant-federation not enabled → fleet SLIs empty | medium | next-sprint |
@@ -278,6 +292,9 @@ These were **deliberately deferred** in the BYOC MVP plan; they are not defects 
 | §4 | Cloud deploy / SOC-2 / P2 / RLS / object-storage / KMS … | n/a | next-sprint by design |
 
 **Handoff verdict.** No CRITICAL open at the wire level in the demo (metrics-plane isolation I4
-verified clean). The three HIGH items (L-1, L-2, L-3) are the gates for a CTO handoff: two are
-"do-not-publish-to-host" one-line compose changes that match the team's own caveats, and one is a
-cheap bootstrap-guard fix. Everything else is medium/low hardening or deliberately next-sprint.
+verified clean). Two HIGH items remain as gates for a CTO handoff (L-1, L-2) — both
+"do-not-publish-to-host" one-line compose changes that match the team's own caveats. The third
+HIGH (L-3, the bootstrap idempotency / registry-consistency trap) is **fixed**: `bootstrap.sh`
+now reconciles the registry + bundle + runtime + `.env` together (`onboarding/reconcile.py`,
+`make reconcile`) and is covered by `tests/test_bootstrap_idempotency.py`. Everything else is
+medium/low hardening or deliberately next-sprint.
