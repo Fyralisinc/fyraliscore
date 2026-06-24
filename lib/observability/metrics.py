@@ -386,6 +386,131 @@ WRITER_SHADOW_DROP = counter(
 )
 
 
+# ---------------------------------------------------------------------
+# LLM circuit-breaker + provider-error metrics (BYOC §12 G3).
+#
+# The per-provider LLM circuit breaker (services/reasoning/think/
+# circuit_breaker.py) guards every LLM PROVIDER call (lib/llm/provider.py
+# routes _raw_call through get_breaker(provider).call(fn)). When a provider
+# has an outage the breaker trips OPEN and EVERY Think run fast-fails — but
+# that state, and the provider error classes that drove it, were log-only.
+# These fleet-canonical singletons surface both: a per-provider state gauge
+# and per-provider error-class counters. Bounded cardinality: `provider` is
+# the closed LLM-provider set (codex/anthropic/openai/deepseek); `state` is
+# the closed CircuitState enum; `error_class` is the closed LLMErrorClass
+# enum (rate_limit/timeout/permanent/transient/parse_error/content_violation).
+LLM_CIRCUIT_BREAKER_STATE = gauge(
+    "fyralis_llm_circuit_breaker_state",
+    "LLM provider circuit-breaker state, one series per (provider, state): the "
+    "active state reads 1, the other two read 0. state=open means the provider "
+    "is being fast-failed and ALL Think runs for it are short-circuiting.",
+    ("provider", "state"),
+)
+LLM_PROVIDER_ERRORS = counter(
+    "fyralis_llm_provider_errors_total",
+    "LLM provider call errors classified by `error_class` (rate_limit|timeout|"
+    "permanent|transient|parse_error|content_violation), by provider. Separates "
+    "a quota/auth/outage (rate_limit/permanent) from a recoverable blip so the "
+    "fleet can distinguish 'fix billing' from 'wait it out'.",
+    ("provider", "error_class"),
+)
+
+
+# ---------------------------------------------------------------------
+# Expected-vs-running worker set (BYOC §12 G5).
+#
+# A deployment can look healthy (every scraped target up) while a whole
+# reasoning worker class never runs — the design flags anomaly_processor /
+# deadline_resolver as coded but absent from compose, so T2/T3 reasoning
+# silently never fires. These two gauges export the AUTHORITATIVE expected
+# worker set FROM CODE (not just from the prometheus scrape list, which can
+# itself omit a class) so the control plane can diff expected-vs-`up` and
+# directly see coded-but-undeployed classes. Rendered by a collector below
+# from EXPECTED_WORKER_CLASSES. Bounded cardinality: `worker_class` is the
+# fixed code-defined set.
+WORKER_EXPECTED = gauge(
+    "fyralis_worker_expected",
+    "1 for every worker class this build EXPECTS to be running (authoritative "
+    "expected set, encoded in code). The fleet diffs this against up{job=~"
+    "'fyralis-.*'} to detect a missing worker class.",
+    ("worker_class",),
+)
+WORKER_COMPOSE_PRESENT = gauge(
+    "fyralis_worker_compose_present",
+    "1 if an expected worker class is wired into the deployment's process set, "
+    "0 if it is coded-but-NOT-deployed (e.g. anomaly_processor / deadline_"
+    "resolver absent from compose). A 0 here means reasoning that depends on "
+    "that class silently never fires even though every running worker is healthy.",
+    ("worker_class",),
+)
+
+
+# ---------------------------------------------------------------------
+# OAuth source-token health metrics (BYOC §12 G2).
+#
+# The most common "a source silently stops ingesting" failure is an OAuth
+# access/refresh token that expired or whose refresh exchange failed — and
+# until now that was invisible to the fleet (the refresh path only logged).
+# These fleet-canonical singletons live on the default registry so every
+# worker that runs an OAuth refresh (the oauth poll sweep + the reactive 401
+# re-mint inside services/ingest/integrations/oauth_refresh.py) exposes
+# per-provider token health to the control plane. Bounded cardinality:
+# `provider` is the closed refresh-capable source set (quickbooks/ramp/
+# gusto/carta), never a tenant/install id (those aggregate in Postgres).
+OAUTH_REFRESH_FAILURES = counter(
+    "fyralis_oauth_refresh_failures_total",
+    "OAuth source-token refresh/re-mint exchanges that FAILED, by provider and "
+    "reason (transport|http_4xx|http_5xx|invalid_response|bad_request_config). "
+    "A sustained rate means a source has silently stopped (or is about to stop) "
+    "ingesting because its access token can no longer be renewed.",
+    ("provider", "reason"),
+)
+OAUTH_TOKEN_EXPIRES_IN_SECONDS = gauge(
+    "fyralis_oauth_token_expires_in_seconds",
+    "Seconds until the most-recently-observed OAuth access token for `provider` "
+    "expires (negative once expired). Set on every refresh evaluation + every "
+    "successful re-mint; the fleet alerts when this drops below the refresh skew "
+    "(token-expiry-soon) — the leading indicator of an imminent source outage.",
+    ("provider",),
+)
+
+
+# BYOC §12 G5: the authoritative expected reasoning-worker set, encoded in
+# code. Each entry maps a worker class to whether it is wired into the
+# deployment's process set (compose / run scripts). The two coded-but-NOT-
+# deployed classes carry `False` so a clean-looking deployment still exports
+# fyralis_worker_compose_present{worker_class="anomaly_processor"} 0 — the
+# direct, scrapeable form of "T2/T3 reasoning silently never fires". Update
+# the flag to True here in lockstep when a class is added to compose; the
+# code stays the source of truth the control plane diffs against.
+EXPECTED_WORKER_CLASSES: dict[str, bool] = {
+    "think_worker": True,
+    "post_commit_worker": True,
+    # Coded under services/workers/{anomaly_processor,deadline_resolver}/
+    # worker.py but absent from docker-compose.yml + scripts/ — the G5 gap.
+    "anomaly_processor": False,
+    "deadline_resolver": False,
+}
+
+
+def publish_expected_worker_set() -> None:
+    """Set the encoded expected-worker gauges from EXPECTED_WORKER_CLASSES.
+
+    Idempotent. Called once at import so the values are present on the very
+    first /metrics scrape; the set is static (no runtime state) so no
+    collector/sampler is needed to keep it fresh. Exported so a test that
+    calls reset_default_for_tests() can re-assert it.
+    """
+    for worker_class, in_compose in EXPECTED_WORKER_CLASSES.items():
+        WORKER_EXPECTED.set(1.0, worker_class=worker_class)
+        WORKER_COMPOSE_PRESENT.set(
+            1.0 if in_compose else 0.0, worker_class=worker_class,
+        )
+
+
+publish_expected_worker_set()
+
+
 # Process start marker for *_uptime gauges rendered by collectors.
 PROCESS_STARTED_AT = time.time()
 
@@ -408,4 +533,12 @@ __all__ = [
     "SCHEMA_LAST_FAILED",
     "KAFKA_PRODUCER_SHUTDOWN_UNDELIVERED",
     "WRITER_SHADOW_DROP",
+    "OAUTH_REFRESH_FAILURES",
+    "OAUTH_TOKEN_EXPIRES_IN_SECONDS",
+    "LLM_CIRCUIT_BREAKER_STATE",
+    "LLM_PROVIDER_ERRORS",
+    "WORKER_EXPECTED",
+    "WORKER_COMPOSE_PRESENT",
+    "EXPECTED_WORKER_CLASSES",
+    "publish_expected_worker_set",
 ]
