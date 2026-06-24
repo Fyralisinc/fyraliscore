@@ -689,6 +689,20 @@ Granularity:
 - Do not insert recap Models for selected context. Merge one-workstream facts;
   split genuinely distinct claims.
 
+Document structured summaries:
+- When <retrieved_context> has a <document_structured_summary> block, a large
+  document was distilled to decisions/commitments/risks. Mint Models from it:
+  one situation anchor (claim_role="situation", abstraction_level="composite",
+  confidence<=0.7), each decision -> recommendation/fact, each risk ->
+  claim_role="concern" with polarity="negative", each commitment/action_item
+  with a due date -> kind="prediction" with claim_role="prediction", evaluate_at
+  set to the due date, AND a {"kind":"prediction_deadline","evaluate_at":"<due
+  ISO-8601>","check":"..."} falsifier plus a resolution criterion.
+- born_from_event_id = the triggering observation_id on every document Model.
+  Scope only from the block's resolved_scope_entities / resolved_scope_actors;
+  never invent UUIDs and never put unresolved owner names in scope_actors. Dedupe
+  against retrieved Models in this context (reconcile, don't duplicate).
+
 Return only well-formed JSON, no prose outside the JSON object.
 """
 
