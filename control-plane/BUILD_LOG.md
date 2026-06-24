@@ -549,3 +549,53 @@ relevant phase heading. Keep entries terse and dated; newest within a phase goes
   to the real one-command flow + a data-flow diagram + where to look. `.gitignore` extended for
   `signing/trust_root.json` (generated public artifact) + `_runtime/` (per-deploy onboarding material) so
   no secret or per-deploy state is ever committed. **No new requirements.**
+
+## Phase 7 — Docs + review; SPRINT COMPLETE
+
+- 2026-06-24 — **DOCS** — Authored the four operator/handoff docs under `control-plane/docs/`
+  grounded entirely in the committed tree: `architecture.md` (the trust model + data-flow +
+  invariants I1–I6 mapped to where each lives), `reference.md` (per-component config / ports /
+  contracts / caveats), `operations.md` (the 10 lifecycle runbooks — onboard/offboard, tier
+  change, release+canary, config push, metering export, break-glass, zero-disruption upgrade,
+  self-obs), and `TEST_GUIDE.md` (the CTO-as-operator walkthrough from the committed tree:
+  `make smoke` 52/0/3, the auth-proxy/audit(23/23)/metering/licensing/config-dist/self-obs/
+  onboarding selftests, `test_e2e.py` 6/1-skip, and the live `docker compose` bring-up path).
+
+- 2026-06-24 — **REVIEW** — Three independent CTO-handoff review lenses run against the
+  committed tree: **security-e2e** (verdict: concerns — the crypto trust core is genuinely
+  strong + fail-closed, but the shipped one-command compose publishes Mimir/Loki/worker-metrics/
+  console to the host, bypassing the C5/I4 `X-Scope-OrgID`-trust-behind-the-proxy premise; the
+  console registry write API is unauthenticated), **completeness-vs-design** (verdict: concerns —
+  every P1–P6 workstream is real wired code, the security crux is faithful, but the C4 heartbeat
+  plane is unauthenticated and `FleetSLOLivenessDeploymentSilent`'s `up==0` cannot fire on total
+  silence), and **operability** (verdict: concerns — the TEST_GUIDE is mostly truthful-and-runnable
+  and `make smoke` matched the documented 52/0/3, but `bootstrap.sh`'s idempotency guard ignores
+  the persistent `ca/tenant_registry.json` → a reproducible silent-403 trap, plus the I5
+  customer-approve guarantee is oversold in the docs). **Net: no CRITICAL open at the wire level
+  in the demo (metrics-plane isolation I4 verified clean); three HIGH items gate the handoff** —
+  (L-1) compose host-port publish, (L-2) unauthenticated console registry/heartbeat plane, and
+  (L-3) the bootstrap registry-consistency trap — two of which are one-line "do-not-publish-to-host"
+  compose changes matching the team's own caveats and one a cheap bootstrap-guard fix.
+
+- 2026-06-24 — **LIMITATIONS** — Consolidated EVERY known caveat (the per-phase build-log notes,
+  the component README caveats, and all three review findings) into the single triaged
+  `control-plane/docs/LIMITATIONS.md` — each item tagged status (`done`/`partial`/`next-sprint`)
+  + severity, with §1 the three HIGH fix-before-handoff items, §2/§3 the medium/low next-sprint
+  hardening, and §4 the explicitly-intentional out-of-scope set (live cloud/AWS deploy, formal
+  SOC-2 audit, P2 PrivateLink/air-gap/multi-cloud, RLS-if-CP-goes-single-DB-multi-tenant,
+  operator-Grafana authn, object-storage for Mimir/Loki, KMS/HSM signing). §5 is the at-a-glance
+  triage table + handoff verdict.
+
+- 2026-06-24 — **SPRINT COMPLETE** — Phase rollup: P1 trust roots (CA + ed25519 signing + shared
+  lib) → P2 linchpin (mTLS auth-proxy I4 + SSRF fix + boundary OTel T1 redaction I1) → P3 central
+  stores + fleet SLIs (multi-tenant Mimir/Loki, operator Grafana, golden-12 + 17 alerts + 4 SLO
+  burn-rate rules) → P4 deployment surface (outbound-only agent I2/I3/I6, console registry, atomic
+  onboarding FR-E, signed expiring licenses, installer overlay) → P5 operate-the-fleet (signed
+  releases + canary, signed config distribution, signed metering rollup, hash-chained audit +
+  break-glass I5, zero-disruption upgrade NFR-6) → P6 integration (self-obs NFR-10, e2e smoke
+  52/0/3, demo data-plane, one-command `bootstrap.sh` + Makefile) → P7 docs + review +
+  LIMITATIONS. All six invariants I1–I6 implemented + the security crux (cert→tenant→`X-Scope-OrgID`
+  fail-closed isolation) adversarially verified. Commits `9216d0e … 8875dbd` on
+  `feat/byoc-control-plane-mvp`; docs + LIMITATIONS + this entry land as the final two commits.
+  Handoff state: ship-ready for an internal/CTO demo once the three HIGH §1 items are closed (all
+  network-exposure / bootstrap-consistency, none a wire-level breach in the demo).
