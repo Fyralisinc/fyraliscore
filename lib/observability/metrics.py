@@ -335,6 +335,57 @@ def reset_default_for_tests() -> None:
     _DEFAULT.reset_for_tests()
 
 
+# ---------------------------------------------------------------------
+# Schema-version ledger metrics (BYOC §12 G1).
+#
+# Singletons defined on the default registry so the migration runner can
+# import-and-set them at the site where it applies migrations, and every
+# worker that serves /metrics (each renders render_default()) exposes the
+# deployment's schema state to the fleet control plane. Cross-deployment,
+# no tenant labels — same cardinality rules as the rest of this module.
+# ---------------------------------------------------------------------
+SCHEMA_VERSION = gauge(
+    "fyralis_schema_version",
+    "Highest applied db/migrations numeric prefix (monotonic schema version). "
+    "0 if the ledger is empty / unreadable.",
+)
+SCHEMA_APPLIED_TOTAL = gauge(
+    "fyralis_schema_applied_count",
+    "Number of rows in the schema_migrations ledger (migrations applied).",
+)
+SCHEMA_LAST_FAILED = gauge(
+    "fyralis_schema_last_failed_migration",
+    "1 while the most recent migration apply attempt FAILED (per `filename` "
+    "label); cleared to 0 once that file applies cleanly. A sustained 1 means "
+    "the deployment is wedged on a broken/pending migration.",
+    ("filename",),
+)
+
+
+# ---------------------------------------------------------------------
+# Data-loss counters (BYOC §12 G6).
+#
+# Promote the two silent-data-loss LOG lines — producer flush-undelivered on
+# shutdown and the observation_writer shadow-drop — to real counters so the
+# fleet control plane can alert on data loss instead of grepping logs. Defined
+# here (not at each call site) per the BYOC instrumentation track so the
+# control-plane SLI build has one canonical name to scrape. Incremented at the
+# exact sites: kafka/producer.py:stop() and writers/observation_writer.py.
+# ---------------------------------------------------------------------
+KAFKA_PRODUCER_SHUTDOWN_UNDELIVERED = counter(
+    "fyralis_kafka_producer_shutdown_undelivered_total",
+    "Messages still undelivered when the idempotent producer was stopped "
+    "(flush timed out on shutdown) — silent loss on restart. Sum across stops.",
+)
+WRITER_SHADOW_DROP = counter(
+    "fyralis_writer_shadow_drop_total",
+    "Envelopes that reached the writer shadow path and were DROPPED (no row, "
+    "no DLQ, offset committed). ingress_kind=backfill is an INVARIANT VIOLATION "
+    "(silent data loss); live is by-design (inline path persists it).",
+    ("ingress_kind",),
+)
+
+
 # Process start marker for *_uptime gauges rendered by collectors.
 PROCESS_STARTED_AT = time.time()
 
@@ -352,4 +403,9 @@ __all__ = [
     "render_default",
     "reset_default_for_tests",
     "PROCESS_STARTED_AT",
+    "SCHEMA_VERSION",
+    "SCHEMA_APPLIED_TOTAL",
+    "SCHEMA_LAST_FAILED",
+    "KAFKA_PRODUCER_SHUTDOWN_UNDELIVERED",
+    "WRITER_SHADOW_DROP",
 ]
