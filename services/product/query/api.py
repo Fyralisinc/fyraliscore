@@ -32,9 +32,8 @@ Behavioral notes:
     store. If CONTRACTS ever forbids this we drop the extension
     (logged separately).
 
-Tenant resolution is stubbed — single-tenant dogfood. Header
-`x-tenant-id` can override for test harnesses. Real auth lands with
-Agent-GRT's WS auth pass.
+Tenant resolution accepts development harness defaults outside production. In
+production, requests must carry the gateway-authenticated actor context.
 """
 from __future__ import annotations
 
@@ -43,10 +42,10 @@ from datetime import datetime
 from typing import Any, Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from pydantic import BaseModel, Field
 
-from lib.shared.errors import ValidationError
+from lib.shared.errors import DependencyUnavailableError, ValidationError
 
 from .core import (
     AnswerQueryRequest,
@@ -165,6 +164,21 @@ def _default_verbs() -> list[VerbModel]:
     ]
 
 
+def _dependency_unavailable_detail(
+    exc: DependencyUnavailableError,
+) -> dict[str, Any]:
+    return {
+        "error": exc.code,
+        "dependency": exc.context.get("dependency"),
+        "operation": exc.context.get("operation"),
+    }
+
+
+def _request_is_production(request: Request) -> bool:
+    settings = getattr(request.app.state, "gateway_settings", None)
+    return bool(getattr(settings, "is_production", False))
+
+
 # ---------------------------------------------------------------------
 # Dependency wiring
 # ---------------------------------------------------------------------
@@ -209,8 +223,16 @@ def build_router(
     store = turn_store or _TurnStore()
 
     def tenant_dep(
+        request: Request,
         x_tenant_id: Optional[str] = Header(default=None),
     ) -> UUID:
+        auth = getattr(request.state, "auth", None)
+        if auth is not None:
+            if x_tenant_id and x_tenant_id != str(auth.tenant_id):
+                raise HTTPException(status_code=403, detail="tenant_mismatch")
+            return auth.tenant_id
+        if _request_is_production(request):
+            raise HTTPException(status_code=401, detail="unauthorized")
         if x_tenant_id:
             try:
                 return UUID(x_tenant_id)
@@ -278,6 +300,15 @@ def build_router(
             resp = await handler.answer_query(req)
         except ValidationError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
+        except DependencyUnavailableError as e:
+            log.warning(
+                "ask_dependency_unavailable",
+                extra={"error_detail": e.to_dict()},
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=_dependency_unavailable_detail(e),
+            ) from e
         except Exception as e:  # noqa: BLE001
             log.exception("ask_handler_failed")
             raise HTTPException(status_code=500, detail="internal_error") from e
@@ -323,6 +354,15 @@ def build_router(
                 resp = await handler.answer_query(req)
             except ValidationError as e:
                 raise HTTPException(status_code=400, detail=str(e)) from e
+            except DependencyUnavailableError as e:
+                log.warning(
+                    "followup_dependency_unavailable",
+                    extra={"error_detail": e.to_dict()},
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=_dependency_unavailable_detail(e),
+                ) from e
             except Exception as e:  # noqa: BLE001
                 log.exception("followup_handler_failed")
                 raise HTTPException(status_code=500, detail="internal_error") from e

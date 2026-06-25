@@ -201,6 +201,11 @@ class QueryHandler:
         )
         self._embedder = embedder
 
+    async def aclose(self) -> None:
+        close_rendering = getattr(self._rendering, "aclose", None)
+        if close_rendering is not None:
+            await close_rendering()
+
     # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------

@@ -27,6 +27,11 @@ class AskAuth:
     viewer_id: UUID
 
 
+def _request_is_production(request: Request) -> bool:
+    settings = getattr(request.app.state, "gateway_settings", None)
+    return bool(getattr(settings, "is_production", False))
+
+
 def build_router(
     orchestrator: AskOrchestrator,
     *,
@@ -43,6 +48,8 @@ def build_router(
         auth = getattr(request.state, "auth", None)
         if auth is not None:
             return AskAuth(tenant_id=auth.tenant_id, viewer_id=auth.actor_id)
+        if _request_is_production(request):
+            raise HTTPException(status_code=401, detail="unauthorized")
         if default_tenant_id is not None and default_viewer_id is not None:
             return AskAuth(tenant_id=default_tenant_id, viewer_id=default_viewer_id)
         if x_tenant_id and x_actor_id:

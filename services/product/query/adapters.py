@@ -33,9 +33,25 @@ from decimal import Decimal
 from typing import Any, Optional, Protocol
 from uuid import UUID
 
+import httpx
+
+from lib.shared.circuit_breaker import AsyncCircuitBreaker, CircuitOpenError
+from lib.shared.errors import DependencyUnavailableError
 from lib.shared.env import is_prod
+from lib.shared.http_retry import (
+    HttpRetryConfig,
+    SleepFn,
+    is_retryable_httpx_error,
+    sleep_before_retry,
+)
 
 log = logging.getLogger(__name__)
+
+
+def _record_rendering_breaker_exception(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return is_retryable_httpx_error(exc)
+    return True
 
 
 # ---------------------------------------------------------------------
@@ -140,15 +156,68 @@ class HttpRenderingAdapter:
         base_url: str,
         timeout_s: float = 60.0,
         auth_token: Optional[str] = None,
+        client: httpx.AsyncClient | None = None,
+        retry_config: HttpRetryConfig | None = None,
+        breaker: AsyncCircuitBreaker | None = None,
+        sleep: SleepFn = asyncio.sleep,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_s
         self._auth = auth_token
+        self._client = client
+        self._owned_client: httpx.AsyncClient | None = None
+        self._retry_config = retry_config or HttpRetryConfig()
+        self._breaker = breaker or AsyncCircuitBreaker(
+            name="query_rendering",
+            record_exception=_record_rendering_breaker_exception,
+        )
+        self._sleep = sleep
+
+    def _client_for_request(self) -> httpx.AsyncClient:
+        if self._client is not None:
+            return self._client
+        if self._owned_client is None:
+            self._owned_client = httpx.AsyncClient(timeout=self._timeout)
+        return self._owned_client
+
+    async def aclose(self) -> None:
+        if self._owned_client is not None:
+            await self._owned_client.aclose()
+            self._owned_client = None
+
+    def _unavailable_error(
+        self,
+        *,
+        url: str,
+        exc: BaseException,
+        attempts: int | None = None,
+        circuit_open: bool = False,
+    ) -> DependencyUnavailableError:
+        status_code = (
+            exc.response.status_code if isinstance(exc, httpx.HTTPStatusError)
+            else None
+        )
+        context: dict[str, Any] = {
+            "attempts": attempts
+            if attempts is not None
+            else self._retry_config.max_attempts,
+            "status_code": status_code,
+            "url": url,
+            "cause_type": type(exc).__name__,
+        }
+        if circuit_open:
+            context["circuit_open"] = True
+            if isinstance(exc, CircuitOpenError):
+                context["breaker"] = exc.context.get("breaker")
+        return DependencyUnavailableError(
+            "rendering",
+            "conversation-turn",
+            **context,
+        )
 
     async def render_conversation_turn(
         self, req: RenderRequest
     ) -> RenderResponse:
-        import httpx  # local import
         from datetime import datetime, timezone
 
         headers = {"content-type": "application/json"}
@@ -186,10 +255,22 @@ class HttpRenderingAdapter:
             "conversation_history": rnd_history,
         }
         url = f"{self._base_url}/rendering/conversation-turn"
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            r = await client.post(url, json=payload, headers=headers)
-            r.raise_for_status()
-            body = r.json()
+        try:
+            body = await self._breaker.call(
+                lambda: self._post_json_with_retries(
+                    self._client_for_request(),
+                    url=url,
+                    payload=payload,
+                    headers=headers,
+                )
+            )
+        except CircuitOpenError as exc:
+            raise self._unavailable_error(
+                url=url,
+                exc=exc,
+                attempts=0,
+                circuit_open=True,
+            ) from exc
         return RenderResponse(
             response_html=str(body.get("response_html", "")),
             rendering_model_used=str(
@@ -197,6 +278,34 @@ class HttpRenderingAdapter:
             ),
             cost_usd=Decimal(str(body.get("cost_usd") or "0")),
         )
+
+    async def _post_json_with_retries(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        url: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        last_error: BaseException | None = None
+        for attempt_index in range(self._retry_config.max_attempts):
+            try:
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                return response.json()
+            except Exception as exc:
+                if not is_retryable_httpx_error(exc):
+                    raise
+                last_error = exc
+                if attempt_index >= self._retry_config.max_attempts - 1:
+                    break
+                await sleep_before_retry(
+                    attempt_index=attempt_index,
+                    config=self._retry_config,
+                    sleep=self._sleep,
+                )
+        assert last_error is not None
+        raise self._unavailable_error(url=url, exc=last_error) from last_error
 
 
 def build_rendering_adapter() -> RenderingAdapter:

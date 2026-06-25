@@ -13,6 +13,7 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelRow, ObservationRow
+from services.platform.access_control.audit import record_override_if_needed
 from services.platform.access_control.checks import can_read
 from services.domain.models.repo import _SELECT_COLS_SQL as _MODEL_SELECT_COLS_SQL
 from services.domain.models.repo import _hydrate_row as _hydrate_model_row
@@ -458,6 +459,14 @@ async def _filter_models(
             conn=conn,
             tenant_id=tenant_id,
         )
+        await record_override_if_needed(
+            decision,
+            actor_id=viewer_id,
+            entity_type="model",
+            entity_id=model.id,
+            conn=conn,
+            tenant_id=tenant_id,
+        )
         if decision.allowed:
             visible.append(model)
     return visible
@@ -482,6 +491,14 @@ async def _filter_observations(
                 "entities_mentioned": obs.entities_mentioned,
                 "source_actor_ref": obs.source_actor_ref,
             },
+            conn=conn,
+            tenant_id=tenant_id,
+        )
+        await record_override_if_needed(
+            decision,
+            actor_id=viewer_id,
+            entity_type="observation",
+            entity_id=obs.id,
             conn=conn,
             tenant_id=tenant_id,
         )
