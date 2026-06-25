@@ -66,7 +66,7 @@ def _auth(request: Request):
 def _pool(request: Request) -> asyncpg.Pool:
     deps = getattr(request.app.state, "deps", None)
     if deps is None or getattr(deps, "pool", None) is None:
-        raise HTTPException(status_code=503, detail="pool_unavailable")
+        raise HTTPException(status_code=503, detail="service_unavailable")
     return deps.pool
 
 

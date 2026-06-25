@@ -14,6 +14,26 @@ from typing import Iterable, Sequence
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PRODUCT_ROOT = REPO_ROOT / "services" / "product"
 ERROR_CODE_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*$")
+IMPLEMENTATION_DETAIL_TERMS = (
+    "asyncpg",
+    "bypassrls",
+    "column",
+    "database",
+    "db_",
+    "gateway deps",
+    "gateway_deps",
+    "migration",
+    "pool",
+    "postgres",
+    "provider_installations",
+    "rls",
+    "sql",
+    "stack",
+    "superuser",
+    "table",
+    "tenant_flags",
+    "traceback",
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +76,9 @@ def validate_product_error_contract(paths: Iterable[Path]) -> list[Violation]:
 
 
 def _validate_http_detail(path: Path, node: ast.AST) -> list[Violation]:
+    implementation_detail = _implementation_detail_violation(path, node)
+    if implementation_detail is not None:
+        return [implementation_detail]
     if _is_bounded_error_code(node):
         return []
     if isinstance(node, ast.Dict):
@@ -95,6 +118,10 @@ def _validate_json_response_content(path: Path, node: ast.AST) -> list[Violation
         key_value = key.value if isinstance(key, ast.Constant) else None
         if key_value not in {"error", "detail"}:
             continue
+        implementation_detail = _implementation_detail_violation(path, value)
+        if implementation_detail is not None:
+            violations.append(implementation_detail)
+            continue
         if _is_bounded_error_code(value):
             continue
         if _contains_raw_text_boundary(value):
@@ -114,6 +141,20 @@ def _validate_json_response_content(path: Path, node: ast.AST) -> list[Violation
                 )
             )
     return violations
+
+
+def _implementation_detail_violation(
+    path: Path,
+    node: ast.AST,
+) -> Violation | None:
+    for literal in _iter_string_literals(node):
+        if _contains_implementation_detail(literal.value):
+            return Violation(
+                path,
+                literal.lineno,
+                "response content must not expose implementation details",
+            )
+    return None
 
 
 def _contains_raw_text_boundary(node: ast.AST) -> bool:
@@ -146,6 +187,19 @@ def _is_invalid_field_code(node: ast.AST) -> bool:
     ):
         return False
     return isinstance(value.value, ast.Name) and value.value.id == "field"
+
+
+def _iter_string_literals(node: ast.AST) -> Iterable[ast.Constant]:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Constant) and isinstance(child.value, str):
+            yield child
+
+
+def _contains_implementation_detail(value: str) -> bool:
+    normalized = value.strip().lower()
+    if not normalized:
+        return False
+    return any(term in normalized for term in IMPLEMENTATION_DETAIL_TERMS)
 
 
 def _json_response_content(node: ast.Call) -> ast.AST | None:

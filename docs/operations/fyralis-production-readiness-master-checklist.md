@@ -1210,8 +1210,9 @@ Current state:
   signal-strip metrics, so UI and API clients can distinguish incomplete
   business telemetry from healthy zero values.
 - Product-facing route errors are now protected by
-  `scripts/check_product_error_contract.py`, which blocks raw exception text
-  and free-form implementation details at HTTP/JSON response boundaries.
+  `scripts/check_product_error_contract.py`, which blocks raw exception text,
+  infrastructure-flavored implementation details, and free-form implementation
+  details at HTTP/JSON response boundaries.
 - Gateway HTTP response boundaries are now protected by
   `scripts/check_gateway_error_contract.py`, which blocks raw exception text in
   `JSONResponse` bodies and `HTTPException(detail=...)`. Readiness probes,
@@ -1239,7 +1240,7 @@ Must solve:
   source fixtures.
 - [x] Add latency targets and error budgets per workflow.
 - [ ] Make degraded states explicit in UI/API responses.
-- [ ] Ensure user-facing copy does not expose implementation details.
+- [x] Ensure user-facing copy does not expose implementation details.
 - [x] Add audit trails for user actions that mutate or accept autonomous output.
 
 Acceptance evidence:

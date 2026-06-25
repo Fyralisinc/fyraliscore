@@ -385,7 +385,7 @@ def _pool(request: Request):
     deps = getattr(request.app.state, "deps", None)
     if deps is None or getattr(deps, "pool", None) is None:
         raise HTTPException(
-            status_code=500, detail="gateway_deps_not_initialised",
+            status_code=503, detail="service_unavailable",
         )
     return deps.pool
 
