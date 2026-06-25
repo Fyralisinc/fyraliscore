@@ -101,6 +101,42 @@ deployment-local readiness contract: the backup engine can be RDS snapshots,
 Cloud SQL backups, Velero, native object-store replication, or customer-owned
 automation, but the application must expose one bounded status shape.
 
+## Automated Backup Runner
+
+Use `scripts/run_backup_job.py` as the provider-neutral automation wrapper for
+scheduled production backups. The runner executes one configured command,
+discards command output, records only bounded metadata, and can write the
+result into `backup_recovery_status`.
+
+Postgres example:
+
+```bash
+python scripts/run_backup_job.py \
+  --component postgres \
+  --details-json '{"provider":"pgbackrest","job":"daily-base"}' \
+  --record-status \
+  -- pgbackrest --stanza=fyralis backup --type=full
+```
+
+Object-store example:
+
+```bash
+python scripts/run_backup_job.py \
+  --component object_store \
+  --details-json '{"provider":"aws-s3","job":"raw-tier-backup-sync"}' \
+  --record-status \
+  -- aws s3 sync "s3://$S3_RAW_BUCKET" "s3://$S3_RAW_BACKUP_BUCKET" \
+       --source-region "$S3_REGION_NAME" \
+       --only-show-errors
+```
+
+The command passed after `--` is intentionally not recorded. `details-json`
+must remain a small non-secret object and is rejected when it includes keys or
+values that look like credentials, object keys, payload samples, tenant IDs, or
+customer identifiers. Run the wrapper from cron, systemd timers, Kubernetes
+CronJobs, or customer cloud schedulers; alert on non-zero exit status and on
+the `backup_recovery_health_status` metrics emitted by housekeeper.
+
 Record status from a backup job:
 
 ```bash

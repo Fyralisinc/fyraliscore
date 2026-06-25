@@ -661,6 +661,11 @@ Current state:
   `scripts/record_backup_recovery_status.py`; the default-enabled housekeeper
   `backup_recovery_metrics` job exports freshness, attempt, age, and
   `fresh|stale|missing|failed` gauges with bounded labels.
+- `scripts/run_backup_job.py` provides the scheduled backup automation wrapper
+  for Postgres and object-store backup commands. It discards command output,
+  records only bounded metadata, rejects details that look like secrets,
+  payload/object keys, tenant IDs, or customer identifiers, and can write the
+  result into `backup_recovery_status`.
 - Architecture ratchets now scan production deploy/rollback automation and fail
   if workflows or release helpers add data-destructive rollback commands such as
   `docker compose down -v`, `docker compose down --volumes`,
@@ -668,14 +673,14 @@ Current state:
 - Full retention policy, partitioning, backup automation, and restore rehearsal
   are tracked in
   [data-retention-backup-recovery.md](data-retention-backup-recovery.md);
-  backup automation and restore rehearsal remain open.
+  restore rehearsal remains open.
 
 Must solve:
 
 - [x] Define retention policy for observations, raw payloads, blobs/chunks,
   debug artifacts, audit events, telemetry, source install audit, and logs.
 - [ ] Partition high-volume append-only tables by time where needed.
-- [ ] Implement automated backup for Postgres and object storage.
+- [x] Implement automated backup for Postgres and object storage.
 - [ ] Test point-in-time restore.
 - [ ] Test object-store restore or replication recovery.
 - [x] Document restore order: database, object raw tier, broker offsets/state,
@@ -688,6 +693,9 @@ Acceptance evidence:
 - Restore rehearsal succeeds in staging.
 - Backup freshness alert exists and is backed by
   `backup_recovery_health_status`.
+- `scripts/run_backup_job.py` is covered by unit tests proving successful and
+  failed backup commands produce bounded status metadata without command output
+  and reject sensitive detail fields/values.
 - Retention jobs are observable and have dry-run mode.
 
 ## 3. Runtime Reliability
