@@ -1,5 +1,5 @@
-"""Alpen e2e ingestion driver — drive Fyralis's REAL source clients/fetchers/
-handlers against the external saas-api-mocks ("spammer") Alpen Labs company,
+"""Sandbox e2e ingestion driver — drive Fyralis's REAL source clients/fetchers/
+handlers against the external saas-api-mocks ("spammer") sandbox company,
 writing observations into an isolated DB. Ingestion-only (no Kafka, no LLM).
 
 Pattern (mirrors services/ingest/synthetic/validation_runs/preflight.py): for
@@ -8,8 +8,8 @@ monkeypatch the fetcher's `_open_<src>_client` to return it, enumerate shards
 from the live mock, paginate every page, run the REAL handler, and write the
 draft via core.ingest_from_draft.
 
-Run:  DATABASE_URL=postgresql://company_os:company_os@localhost:5432/company_os_alpen \
-      .venv/bin/python scripts/alpen_ingest.py mercury [github ...]
+Run:  DATABASE_URL=postgresql://company_os:company_os@localhost:5432/company_os_sandbox \
+      .venv/bin/python scripts/sandbox_ingest.py mercury [github ...]
 """
 from __future__ import annotations
 
@@ -31,10 +31,10 @@ from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
 
 # The tenant the spammer prepared (./dev.sh status -> fyralis_tenant_id).
 TENANT = UUID(os.environ.get(
-    "ALPEN_TENANT_ID",
+    "SANDBOX_TENANT_ID",
     "90864cdd-731b-44b3-96c5-78f0004af3e2",
 ))
-HOST = os.environ.get("ALPEN_MOCK_HOST", "http://localhost")
+HOST = os.environ.get("SANDBOX_MOCK_HOST", "http://localhost")
 
 # saas-api-mocks per-provider ports (dev.sh cmd_serve).
 PORTS = {
@@ -104,7 +104,7 @@ async def ingest_mercury(pool) -> int:
     client = MercuryClient(
         base_url=mbase,
         api_base_url=mbase,
-        api_token="alpen-mercury-token",  # any-token mock
+        api_token="sandbox-mercury-token",  # any-token mock
     )
     fet._open_mercury_client = lambda _install: _return(client)
 
@@ -138,11 +138,11 @@ async def ingest_ashby(pool) -> int:
 
     mbase = rebased("ashby", "ashby_api")          # mock host:port + prod /ashby path
 
-    # ORG_ID the mock seeds for the Alpen run (spammers/ashby/seed.py ORG_ID).
+    # ORG_ID the mock seeds for the Sandbox run (spammers/ashby/seed.py ORG_ID).
     # It is the external_id namespace (`ashby:{org}:{kind}:{id}`) the handler
     # builds; it MUST be non-empty or _write_records skips every record, and it
-    # MUST be "alpenlabs" to match ground-truth external_ids.
-    org_id = "alpenlabs"
+    # MUST be "sandbox" to match ground-truth external_ids.
+    org_id = "sandbox"
 
     # Any non-empty Basic username authenticates; "spam-ashby" mirrors the
     # production spammer preset. api_base_url points the client at the mock.
@@ -279,7 +279,7 @@ async def ingest_brex(pool) -> int:
     # /v2/... routes at root (matching the live probe). The constructor uses
     # (api_base_url or base_url), so passing both = bbase mirrors Mercury.
     bbase = rebased("brex", "brex_api")
-    client = BrexClient(base_url=bbase, api_base_url=bbase, api_token="bxt_alpen-brex-token")
+    client = BrexClient(base_url=bbase, api_base_url=bbase, api_token="bxt_sandbox-brex-token")
 
     # Monkeypatch the fetcher's opener seam -> our pre-built mock-pointed client.
     fet._open_brex_client = lambda _install: _return(client)
@@ -446,7 +446,7 @@ async def ingest_carta(pool) -> int:
     discover = CartaClient(
         base_url=cbase,
         api_base_url=cbase,
-        access_token="alpen-carta-token",
+        access_token="sandbox-carta-token",
     )
     issuer_ids: list[str] = []
     page_token = None
@@ -472,7 +472,7 @@ async def ingest_carta(pool) -> int:
             base_url=cbase,
             api_base_url=cbase,
             issuer_id=issuer_id,
-            access_token="alpen-carta-token",
+            access_token="sandbox-carta-token",
         )
         fet._open_carta_client = lambda _install, _c=client: _return(_c)
 
@@ -514,7 +514,7 @@ async def ingest_deel(pool) -> int:
     client = DeelClient(
         base_url=dbase,
         api_base_url=dbase,
-        api_token="alpen-deel-token",
+        api_token="sandbox-deel-token",
     )
 
     # Monkeypatch the fetcher's client opener -> always hand back the mock client.
@@ -720,7 +720,7 @@ async def ingest_drive(pool) -> int:
         async def mint(self, *, user_email, scopes, now=None):  # noqa: ANN001
             assertion = _jwt.encode(
                 {
-                    "iss": "alpen-sa@fyralis-mock.iam.gserviceaccount.com",
+                    "iss": "sandbox-sa@fyralis-mock.iam.gserviceaccount.com",
                     "sub": user_email,
                     "scope": " ".join(scopes),
                     "aud": self._url,
@@ -763,7 +763,7 @@ async def ingest_drive(pool) -> int:
 
     # Shared Drives via the Drive client's drives.list (useDomainAdminAccess).
     # The shared-drive owner_email is the admin we impersonate to read it.
-    admin_email = "drive-admin@alpenlabs.io"
+    admin_email = "drive-admin@sandbox.example"
     try:
         body = await client.list_shared_drives(user_email=admin_email)
         for d in body.get("drives") or []:
@@ -779,7 +779,7 @@ async def ingest_drive(pool) -> int:
 
     # My Drives (one shard per user) — discovered from the mock_orgs seed, since
     # the mock matches a user's My Drive by owner_email == token subject. None
-    # are seeded for Alpen today, but enumerate defensively so the adapter is
+    # are seeded for Sandbox today, but enumerate defensively so the adapter is
     # corpus-agnostic.
     try:
         import asyncpg
@@ -842,14 +842,14 @@ async def ingest_figma(pool) -> int:
     fbase = rebased("figma", "figma_api")
 
     # The seeded single-tenant team. Discoverable via GET /_health on the mock, but
-    # the Alpen run seeds a fixed TEAM_ID; the client + every external_id namespaces
+    # the Sandbox run seeds a fixed TEAM_ID; the client + every external_id namespaces
     # on it (figma:{team_id}:event:...). Auth is any-non-empty-token (X-Figma-Token).
     team_id = "1357924680135792468"
 
     client = FigmaClient(
         base_url=fbase,
         api_base_url=fbase,
-        api_token="alpen-figma-token",
+        api_token="sandbox-figma-token",
         team_id=team_id,
     )
     # Monkeypatch the fetcher's opener so fetch_page_figma uses our mock-pointed client.
@@ -905,7 +905,7 @@ async def ingest_fireflies(pool) -> int:
     client = FirefliesClient(
         base_url=fbase,
         api_base_url=fbase,
-        api_token="alpen-fireflies-token",   # mock accepts any non-empty Bearer
+        api_token="sandbox-fireflies-token",   # mock accepts any non-empty Bearer
     )
     fet._open_fireflies_client = lambda _install: _return(client)
 
@@ -961,7 +961,7 @@ async def ingest_github(pool) -> int:
     MOCK_ORGS_DSN = "postgresql://company_os:company_os@localhost:5432/mock_orgs"
 
     # ONBOARDING (1): resolve the seeded GitHub App (private key + numeric
-    # app_id) and its installation ids for the Alpen tenant from mock_orgs.
+    # app_id) and its installation ids for the Sandbox tenant from mock_orgs.
     org_conn = await asyncpg.connect(MOCK_ORGS_DSN)
     try:
         app = await org_conn.fetchrow(
@@ -976,7 +976,7 @@ async def ingest_github(pool) -> int:
         )
         if app is None:
             raise RuntimeError(
-                "github: no app_github.apps row for the Alpen tenant in mock_orgs"
+                "github: no app_github.apps row for the Sandbox tenant in mock_orgs"
             )
         inst_rows = await org_conn.fetch(
             """
@@ -1119,9 +1119,9 @@ async def ingest_gmail(pool) -> int:
         encryption_algorithm=serialization.NoEncryption(),
     ).decode("ascii")
     sa_key = ServiceAccountKey(
-        client_email="alpen-ingest@mock.iam.gserviceaccount.com",
+        client_email="sandbox-ingest@mock.iam.gserviceaccount.com",
         private_key_pem=_pem,
-        private_key_id="alpen-mock-kid",
+        private_key_id="sandbox-mock-kid",
         token_uri=f"{base('gmail')}/token",  # mock /token (any-assertion DWD)
     )
 
@@ -1194,7 +1194,7 @@ async def ingest_grafana(pool) -> int:
     from services.ingest.ingestion.fetchers import grafana as fet
     from services.ingest.integrations.grafana.client import GrafanaClient
 
-    # Alpen annotations span 2024-2026; the fetcher's default 90-day backfill
+    # Sandbox annotations span 2024-2026; the fetcher's default 90-day backfill
     # window would clip history to ~100 of 797. Widen it (mirrors Mercury's floor).
     os.environ["GRAFANA_BACKFILL_WINDOW_DAYS"] = "3650"
 
@@ -1205,7 +1205,7 @@ async def ingest_grafana(pool) -> int:
     client = GrafanaClient(
         base_url=gbase,
         api_base_url=gbase,
-        api_token="glsa_alpen-grafana-token",  # any-token mock
+        api_token="glsa_sandbox-grafana-token",  # any-token mock
     )
     fet._open_grafana_client = lambda _install: _return(client)
 
@@ -1219,13 +1219,13 @@ async def ingest_grafana(pool) -> int:
     # localhost — the fetcher's _instance_of(install) derives the host that becomes
     # the record's _fyralis_instance, which the handler folds into the external_id
     # namespace (grafana:{instance}:annotation:{id}:{time}). Ground truth was seeded
-    # with INSTANCE_HOST="alpenlabs.grafana.net" (seed.py BASE_URL), so we must match
+    # with INSTANCE_HOST="sandbox.grafana.example" (seed.py BASE_URL), so we must match
     # it for dedup/identity to line up. The client already points at the mock via
     # api_base_url=gbase, so base_url here only feeds the external_id namespace.
     install = {
         "id": uuid4(),
         "tenant_id": TENANT,
-        "base_url": "https://alpenlabs.grafana.net",
+        "base_url": "https://sandbox.grafana.example",
     }
 
     # Full backfill: no warm-start cursor -> the fetcher walks the window
@@ -1274,7 +1274,7 @@ async def ingest_gusto(pool) -> int:
     except Exception:  # noqa: BLE001
         company_uuid = None
     if not company_uuid:
-        # spammers/gusto/seed.py COMPANY_UUID (seed-stable Alpen Labs company).
+        # spammers/gusto/seed.py COMPANY_UUID (seed-stable sandbox company).
         company_uuid = "a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
     company_uuid = str(company_uuid)
     print(f"  gusto: company_uuid={company_uuid}, entities={list(DEFAULT_ENTITIES)}")
@@ -1285,7 +1285,7 @@ async def ingest_gusto(pool) -> int:
         base_url=gbase,
         api_base_url=gbase,
         company_uuid=company_uuid,
-        access_token="alpen-gusto-token",  # any-token mock
+        access_token="sandbox-gusto-token",  # any-token mock
     )
     # Monkeypatch the fetcher opener -> (client, close). _return yields the same
     # (client, _noop) tuple shape _open_gusto_client returns in production.
@@ -1331,9 +1331,9 @@ async def ingest_hibob(pool) -> int:
     client = HibobClient(
         base_url=hbase,
         api_base_url=hbase,
-        company_id="alpen-hibob",            # only used to stamp _fyralis_company_id
-        service_user_id="alpenlabs-svc-ingest",
-        token="alpen-hibob-token",
+        company_id="sandbox-hibob",            # only used to stamp _fyralis_company_id
+        service_user_id="sandbox-svc-ingest",
+        token="sandbox-hibob-token",
     )
 
     # Monkeypatch the fetcher's client opener (returns (client, close) coroutine).
@@ -1352,8 +1352,8 @@ async def ingest_hibob(pool) -> int:
     install = {
         "id": uuid4(),
         "tenant_id": TENANT,
-        "company_id": "alpen-hibob",
-        "service_user_id": "alpenlabs-svc-ingest",
+        "company_id": "sandbox-hibob",
+        "service_user_id": "sandbox-svc-ingest",
         "base_url": hbase,
     }
 
@@ -1362,7 +1362,7 @@ async def ingest_hibob(pool) -> int:
         shard = {
             "shard_kind": fet.SHARD_KIND_ENTITY,
             "entity_type": entity_type,
-            "company_id": "alpen-hibob",
+            "company_id": "sandbox-hibob",
             "installation_id": str(install["id"]),
             "updated_cursor": None,
         }
@@ -1462,7 +1462,7 @@ async def ingest_jira(pool) -> int:
 
 
 async def ingest_linkedin(pool) -> int:
-    """Backfill LinkedIn (Community Management) for the Alpen run via the mock.
+    """Backfill LinkedIn (Community Management) for the Sandbox run via the mock.
 
     Onboarding: LinkedIn is a single-organization (Carta firm_id-equivalent)
     source — the mock seeds exactly ONE org per run and gates every /rest finder
@@ -1543,7 +1543,7 @@ async def ingest_miro(pool) -> int:
     client = MiroClient(
         base_url=mbase,
         api_base_url=mbase,
-        api_token="alpen-miro-token",  # any-token mock
+        api_token="sandbox-miro-token",  # any-token mock
     )
     fet._open_miro_client = lambda _install: _return(client)
 
@@ -1741,7 +1741,7 @@ async def ingest_quickbooks(pool) -> int:
         base_url=qb_base,
         api_base_url=qb_base,          # spammer override wins over base_url
         realm_id=realm_id,
-        access_token="alpen-quickbooks-token",  # any-token mock
+        access_token="sandbox-quickbooks-token",  # any-token mock
         http_client=httpx.AsyncClient(timeout=30),
     )
     # Monkeypatch the fetcher's opener (must return a coroutine -> (client, close)).
@@ -1779,7 +1779,7 @@ async def ingest_ramp(pool) -> int:
     rbase = rebased("ramp", "ramp_api")  # -> http://localhost:7018/developer/v1
 
     # business_id is only the external_id namespace (not auth). Prefer the live
-    # seeded org row; fall back to the seed-stable Alpen constant.
+    # seeded org row; fall back to the seed-stable Sandbox constant.
     business_id = "11111111-2222-4333-8444-555566667777"
     try:
         import asyncpg
@@ -2041,7 +2041,7 @@ async def ingest_slack(pool) -> int:
     # ONBOARDING (real-token): the SlackClient bot token is lazily resolved from
     # the secret store, which we don't have in the driver. Pull the REAL seeded
     # xoxb token (+ team_id) straight from the mock_orgs DB and preset it so the
-    # client never touches pool/secret_store. One workspace per run (Alpen Labs).
+    # client never touches pool/secret_store. One workspace per run (Sandbox Company).
     conn = await asyncpg.connect(
         "postgresql://company_os:company_os@localhost:5432/mock_orgs"
     )

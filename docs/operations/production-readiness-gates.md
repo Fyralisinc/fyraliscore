@@ -31,7 +31,7 @@ environment are present:
 
 | Gate | Production question |
 | --- | --- |
-| Production env contract | Does `.env.production.example` still expose the fail-closed production settings operators must fill before deploy? |
+| Production env contract | Does `.env.production.example` still expose the fail-closed production settings operators must fill before deploy, reject known weak defaults such as the local Grafana password, and keep raw app/provider secret placeholders blank? |
 | Feedback-loop gap harness | Do archival cleanup, evidence attachment, no-op proof, graph context use, and question-policy learning still work? |
 | 50-batch storyline report | Did the last 50-batch run meet product, calibration, and queue-drain thresholds? |
 | Schema drift | Does the live migrated database match the schema lock expectations? |
@@ -60,7 +60,10 @@ These are beta thresholds. Tighten them after a week of dogfood telemetry.
 
 ## Migration Rehearsal
 
-Before a release, rehearse migrations against a staging clone:
+Before a release, rehearse migrations against a staging clone. Follow the full
+[migration release runbook](migration-release-runbook.md) for expand/contract,
+destructive migration approval, backup evidence, and rollback versus
+forward-fix decisions.
 
 1. Restore the latest production-like snapshot into the staging clone.
 2. Apply `db/migrations/*.sql` exactly as the release process will apply them.

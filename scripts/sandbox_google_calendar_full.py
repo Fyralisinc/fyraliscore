@@ -209,7 +209,7 @@ async def run(args) -> int:
                 tenant_slug="full-gcal",
                 source="google_calendar",
                 fixture_params={
-                    "calendars": ["alice@acme.com", "bob@acme.com"],
+                    "calendars": ["alice@acme.example", "bob@acme.example"],
                     "events_per_calendar": 3,
                 },
                 expected_observation_count=6,

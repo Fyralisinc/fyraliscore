@@ -1,4 +1,4 @@
-"""Run the Think model layer on a sample of Alpen observations via the
+"""Run the Think model layer on a sample of Sandbox observations via the
 PRODUCTION Think drain (batched, codex), then emit a Company-Intelligence-style
 model-layer scorecard.
 
@@ -8,8 +8,8 @@ Reuses the real probe machinery:
 and measures the resulting model layer directly (models, edges, review debt,
 think-run cost/latency, and the core scorecard ratios).
 
-Run:  DATABASE_URL=postgresql://rachinkalakheti@localhost:5432/company_os_alpen \
-      .venv/bin/python scripts/alpen_think_eval.py [N_observations]
+Run:  DATABASE_URL=postgresql://company_os:company_os@localhost:5432/company_os_sandbox \
+      .venv/bin/python scripts/sandbox_think_eval.py [N_observations]
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from tests.real_llm.infrastructure.durability_flow import run_think_until_drain
 from scripts.run_1000_signal_model_layer_probe import enqueue_t1_for_observations
 
 TENANT = UUID(os.environ.get(
-    "ALPEN_TENANT_ID",
+    "SANDBOX_TENANT_ID",
     "90864cdd-731b-44b3-96c5-78f0004af3e2",
 ))
 
@@ -74,7 +74,7 @@ async def _report(conn, tenant, *, signals, enqueued, elapsed):
 
     runs = cost["think_runs"] or 0
     print("\n" + "=" * 62)
-    print("  ALPEN MODEL-LAYER SCORECARD (Think e2e, codex)")
+    print("  SANDBOX MODEL-LAYER SCORECARD (Think e2e, codex)")
     print("=" * 62)
     print(f"  signals (observations)   : {signals}")
     print(f"  T1 triggers enqueued     : {enqueued}")
@@ -116,7 +116,7 @@ async def main():
     _db._pool = pool  # Think sub-components call get_pool()
     provider = build_provider()
     print(f"provider: {type(provider).__name__} model={provider.config.model}")
-    run_id = "alpen-think-eval"
+    run_id = "sandbox-think-eval"
 
     async with pool.acquire() as conn:
         if n is None:
