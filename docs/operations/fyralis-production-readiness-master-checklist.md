@@ -1360,6 +1360,12 @@ Current state:
 - Source page fetches use the Redis-backed fetch rate limiter in production,
   and source clients have bounded 429/`Retry-After` retry budgets documented in
   `.env.production.example`.
+- Launch-size beta and GA synthetic load profiles now live in
+  `services.platform.performance.load_profiles`, with
+  `scripts/plan_production_load_profile.py` rendering JSON plans or M-Load
+  environment variables. The existing synthetic webhook sender now accepts
+  provider weights so load plans can deliberately represent noisy-source
+  shapes.
 
 Must solve:
 
@@ -1372,7 +1378,7 @@ Must solve:
   - Think triggers/day,
   - object/blob size,
   - Ask requests/day.
-- [ ] Build synthetic datasets and load generators that match target sizes.
+- [x] Build synthetic datasets and load generators that match target sizes.
 - [ ] Run load/soak tests for gateway, ingestion, Think, post-commit, source
   onboarding, and product reads.
 - [ ] Verify noisy-source isolation.

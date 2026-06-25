@@ -73,6 +73,32 @@ Synthetic datasets must include:
 - stale credentials and revoked-provider cases
 - mixed product reads while ingestion and Think are active
 
+## Executable Load Profiles
+
+The machine-readable launch profiles live in
+`services.platform.performance.load_profiles` and can be rendered with:
+
+```bash
+uv run python scripts/plan_production_load_profile.py beta
+uv run python scripts/plan_production_load_profile.py ga --scale 0.01 --duration-s 300
+```
+
+To produce the environment variables for the staging M-Load sender:
+
+```bash
+uv run python scripts/plan_production_load_profile.py beta --format env
+```
+
+The generated plan includes:
+
+- synthetic dataset counts for users, source installs, observations, active
+  models, relationship edges, blob ingest, and product actions
+- average and peak rates for ingestion, Think, Ask, Today, and recommendation
+  actions
+- M-Load settings for `services.ingest.synthetic.cutover_load`, including
+  `CUTOVER_DRYRUN_PROVIDER_WEIGHTS` so noisy webhook sources can be weighted
+  deliberately
+
 ## Load Test Acceptance
 
 A load or soak report is valid only if it records:

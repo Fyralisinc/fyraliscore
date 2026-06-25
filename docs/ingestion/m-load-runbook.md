@@ -35,6 +35,13 @@ Optional knobs:
 CUTOVER_DRYRUN_QPS=100
 CUTOVER_DRYRUN_DURATION_S=3600
 CUTOVER_DRYRUN_TENANTS=500
+CUTOVER_DRYRUN_PROVIDER_WEIGHTS=slack=0.75,github=0.25
+```
+
+To derive these values from the beta or GA production load profile, run:
+
+```bash
+uv run python scripts/plan_production_load_profile.py beta --format env
 ```
 
 For an emergency smoke after rollback, keep duration explicit in the release

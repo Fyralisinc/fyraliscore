@@ -19,6 +19,8 @@ from services.ingest.synthetic.cutover_load import (
     _build_tenant_pool,
     _github_payload,
     _github_sign,
+    _parse_provider_weights,
+    _pick_provider,
     _slack_payload,
     _slack_sign,
     _zipf_pick,
@@ -48,6 +50,37 @@ def test_zipf_picks_skew_toward_top():
     # Top-20 tenants should get ~80% of traffic.
     top_20 = sum(counts.get(t, 0) for t in pool[:20])
     assert top_20 > 6500, f"top-20 share too low: {top_20}/10000"
+
+
+def test_provider_weights_are_parsed_in_provider_order():
+    weights = _parse_provider_weights(
+        "github=0.25,slack=0.75",
+        providers=("slack", "github"),
+    )
+
+    assert weights == (0.75, 0.25)
+
+
+def test_provider_weights_require_all_configured_providers():
+    with pytest.raises(ValueError, match="missing provider"):
+        _parse_provider_weights("slack=1.0", providers=("slack", "github"))
+
+
+def test_provider_weighted_picker_can_force_noisy_source():
+    import random
+
+    config = LoadConfig(
+        target_url="http://fake",
+        slack_signing_secret="s",
+        github_webhook_secret="g",
+        qps=1,
+        duration_s=1,
+        tenant_count=1,
+        provider_weights=(1.0, 0.0),
+    )
+    rng = random.Random(0)
+
+    assert {_pick_provider(config, rng) for _ in range(100)} == {"slack"}
 
 
 def test_slack_signature_matches_canonical():
