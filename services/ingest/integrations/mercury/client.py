@@ -28,6 +28,7 @@ import httpx
 import structlog
 
 from lib.shared.errors import MercuryApiError
+from services.ingest.integrations.secret_cache import SecretValueCache
 
 
 log = structlog.get_logger("integrations.mercury.client")
@@ -74,7 +75,7 @@ class MercuryClient:
         self._secret_ref = secret_ref
         # Preset token (spammer mode presets a recognized token); otherwise
         # resolved lazily from the secret store on first request.
-        self._api_token: str | None = api_token
+        self._api_token_cache = SecretValueCache(preset=api_token)
         self._token_lock = asyncio.Lock()
         # In production the base is the canonical Mercury API host; a
         # spammer/test override (api_base_url) wins so backfill points at the mock.
@@ -94,28 +95,17 @@ class MercuryClient:
             self._http = None
 
     async def _token(self) -> str:
-        if self._api_token is not None:
-            return self._api_token
-        async with self._token_lock:
-            if self._api_token is not None:
-                return self._api_token
-            if (
-                self._secret_store is None
-                or self._secret_ref is None
-                or self._tenant_id is None
-            ):
-                raise MercuryApiError(
-                    "mercury client has no api token and cannot resolve one "
-                    "(missing secret_store / secret_ref / tenant_id)",
-                    code="mercury_api_unauthorized",
-                )
-            raw = await self._secret_store.get(
-                self._secret_ref, tenant_id=self._tenant_id,
+        return await self._api_token_cache.resolve(
+            lock=self._token_lock,
+            secret_store=self._secret_store,
+            secret_ref=self._secret_ref,
+            tenant_id=self._tenant_id,
+            missing_error=lambda: MercuryApiError(
+                "mercury client has no api token and cannot resolve one "
+                "(missing secret_store / secret_ref / tenant_id)",
+                code="mercury_api_unauthorized",
             )
-            self._api_token = (
-                raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            )
-            return self._api_token
+        )
 
     async def _auth_header(self) -> str:
         token = await self._token()

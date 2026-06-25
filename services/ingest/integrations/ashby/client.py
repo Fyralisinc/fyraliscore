@@ -36,6 +36,7 @@ import httpx
 import structlog
 
 from lib.shared.errors import AshbyApiError
+from services.ingest.integrations.secret_cache import SecretValueCache
 
 
 log = structlog.get_logger("integrations.ashby.client")
@@ -91,7 +92,7 @@ class AshbyClient:
         self._org_id = org_id
         # Preset key (spammer mode presets a recognized key); otherwise resolved
         # lazily from the secret store on first request.
-        self._api_key: str | None = api_key
+        self._api_key_cache = SecretValueCache(preset=api_key)
         self._token_lock = asyncio.Lock()
         # In production the base is the canonical Ashby host; a spammer/test
         # override (api_base_url) wins so backfill points at the mock.
@@ -111,28 +112,17 @@ class AshbyClient:
             self._http = None
 
     async def _key(self) -> str:
-        if self._api_key is not None:
-            return self._api_key
-        async with self._token_lock:
-            if self._api_key is not None:
-                return self._api_key
-            if (
-                self._secret_store is None
-                or self._secret_ref is None
-                or self._tenant_id is None
-            ):
-                raise AshbyApiError(
-                    "ashby client has no api key and cannot resolve one "
-                    "(missing secret_store / secret_ref / tenant_id)",
-                    code="ashby_api_unauthorized",
-                )
-            raw = await self._secret_store.get(
-                self._secret_ref, tenant_id=self._tenant_id,
+        return await self._api_key_cache.resolve(
+            lock=self._token_lock,
+            secret_store=self._secret_store,
+            secret_ref=self._secret_ref,
+            tenant_id=self._tenant_id,
+            missing_error=lambda: AshbyApiError(
+                "ashby client has no api key and cannot resolve one "
+                "(missing secret_store / secret_ref / tenant_id)",
+                code="ashby_api_unauthorized",
             )
-            self._api_key = (
-                raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            )
-            return self._api_key
+        )
 
     async def _auth_header(self) -> str:
         return _basic_auth_value(await self._key())

@@ -25,6 +25,7 @@ import httpx
 import structlog
 
 from lib.shared.errors import DeelApiError
+from services.ingest.integrations.secret_cache import SecretValueCache
 
 
 log = structlog.get_logger("integrations.deel.client")
@@ -73,7 +74,7 @@ class DeelClient:
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
-        self._api_token: str | None = api_token
+        self._api_token_cache = SecretValueCache(preset=api_token)
         self._token_lock = asyncio.Lock()
         self._api_base_url = _normalise_base_url(api_base_url or base_url)
         self._api_version = (
@@ -96,28 +97,17 @@ class DeelClient:
             self._http = None
 
     async def _token(self) -> str:
-        if self._api_token is not None:
-            return self._api_token
-        async with self._token_lock:
-            if self._api_token is not None:
-                return self._api_token
-            if (
-                self._secret_store is None
-                or self._secret_ref is None
-                or self._tenant_id is None
-            ):
-                raise DeelApiError(
-                    "deel client has no api token and cannot resolve one "
-                    "(missing secret_store / secret_ref / tenant_id)",
-                    code="deel_api_unauthorized",
-                )
-            raw = await self._secret_store.get(
-                self._secret_ref, tenant_id=self._tenant_id,
+        return await self._api_token_cache.resolve(
+            lock=self._token_lock,
+            secret_store=self._secret_store,
+            secret_ref=self._secret_ref,
+            tenant_id=self._tenant_id,
+            missing_error=lambda: DeelApiError(
+                "deel client has no api token and cannot resolve one "
+                "(missing secret_store / secret_ref / tenant_id)",
+                code="deel_api_unauthorized",
             )
-            self._api_token = (
-                raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            )
-            return self._api_token
+        )
 
     async def _request(
         self,
