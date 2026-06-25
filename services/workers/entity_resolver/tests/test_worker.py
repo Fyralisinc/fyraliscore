@@ -131,6 +131,17 @@ async def _fetch_obs_entities(
     return list(val)
 
 
+async def _fetch_obs_content(pool: asyncpg.Pool, obs_id: UUID) -> dict:
+    async with pool.acquire() as conn:
+        val = await conn.fetchval(
+            "SELECT content FROM observations WHERE id = $1",
+            obs_id,
+        )
+    if isinstance(val, str):
+        return json.loads(val)
+    return dict(val or {})
+
+
 async def _count_review_rows(
     pool: asyncpg.Pool, tenant_id: UUID
 ) -> int:
@@ -245,6 +256,8 @@ async def test_top_level_unresolved_phrases_from_ingestion_are_processed(
     assert decisions == [("NBI", "resolved")]
     ref = await EntityAliasRepo(resolver_db).fast_path_resolve("NBI", tenant_id)
     assert ref == {"type": "customer", "id": "customer-nimbus"}
+    content = await _fetch_obs_content(resolver_db, obs_id)
+    assert "_unresolved_phrases" not in content
 
 
 async def test_duplicate_top_level_and_metadata_phrases_are_deduped(
@@ -454,6 +467,8 @@ async def test_llm_timeout_is_requeued(
     decisions = await worker.process_observation(obs_id, tenant_id)
     assert decisions == [("a", "rate_limited")]  # requeue semantics
     assert worker.requeue_delay_s(obs_id) > 0
+    content = await _fetch_obs_content(resolver_db, obs_id)
+    assert content["metadata"]["_unresolved_phrases"] == ["a"]
 
 
 async def test_llm_rate_limit_is_requeued(
@@ -560,9 +575,36 @@ async def test_process_pending_finds_top_level_unresolved_phrases(
         alias_repo=EntityAliasRepo(resolver_db),
     )
 
-    processed = await worker.process_pending(limit=1)
+    processed = await worker.process_pending(limit=1, tenant_id=tenant_id)
 
     assert processed == 1
+    assert len(provider.calls) == 1
+
+
+async def test_process_pending_does_not_repeat_terminal_phrases(
+    resolver_db: asyncpg.Pool, tenant_id: UUID
+):
+    await _seed_observation(
+        resolver_db,
+        tenant_id,
+        content_text="NBI renewal is blocked on audit export proof",
+        unresolved_phrases=["NBI"],
+        unresolved_location="top_level",
+    )
+    provider = ScriptedProvider([
+        _resolution_json(type="customer", id="customer-nimbus", confidence=0.94)
+    ])
+    worker = EntityResolverWorker(
+        pool=resolver_db,
+        llm=provider,
+        alias_repo=EntityAliasRepo(resolver_db),
+    )
+
+    first = await worker.process_pending(limit=1, tenant_id=tenant_id)
+    second = await worker.process_pending(limit=1, tenant_id=tenant_id)
+
+    assert first == 1
+    assert second == 0
     assert len(provider.calls) == 1
 
 

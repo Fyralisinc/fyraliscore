@@ -172,11 +172,18 @@ def _load_config(log) -> tuple[_LauncherConfig | None, int | None]:
 
 
 async def _create_pool(dsn: str) -> asyncpg.Pool:
+    from lib.shared.db import asyncpg_pool_runtime_kwargs
+
+    runtime_kwargs = asyncpg_pool_runtime_kwargs(
+        dsn=dsn,
+        process_env_var="SOURCE_GATEWAY_POSTGRES_PGBOUNCER_COMPATIBLE",
+    )
     return await asyncpg.create_pool(
         dsn=dsn,
         min_size=2,
         max_size=4,
         init=_register_codecs,
+        **runtime_kwargs,
     )
 
 

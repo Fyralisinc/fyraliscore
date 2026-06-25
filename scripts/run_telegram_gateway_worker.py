@@ -58,6 +58,11 @@ async def _main() -> int:
     from redis.asyncio import Redis as AsyncRedis
 
     from lib.embeddings.ollama import OllamaClient
+    from lib.shared.db import (
+        asyncpg_pool_runtime_kwargs,
+        configure_connection_timeouts,
+        positive_int_env,
+    )
     from lib.shared.secrets import build_secret_store
     from services.domain.actors.repo import ActorRepo
     from services.domain.entity_aliases.repo import EntityAliasRepo
@@ -71,13 +76,25 @@ async def _main() -> int:
         build_dialog_index,
     )
 
-    pool = await asyncpg.create_pool(dsn=dsn, min_size=2, max_size=4)
+    pool_max = positive_int_env("SOURCE_GATEWAY_POSTGRES_POOL_SIZE", default=4)
+    runtime_kwargs = asyncpg_pool_runtime_kwargs(
+        dsn=dsn,
+        process_env_var="SOURCE_GATEWAY_POSTGRES_PGBOUNCER_COMPATIBLE",
+    )
+    pool = await asyncpg.create_pool(
+        dsn=dsn,
+        min_size=2,
+        max_size=pool_max,
+        init=configure_connection_timeouts,
+        **runtime_kwargs,
+    )
     register_pool("telegram_gateway_worker", pool)
     redis: AsyncRedis | None = None
     stop_event = asyncio.Event()
     install_signal_handlers(stop_event)
     health_shutdown = start_worker_health("telegram_gateway_worker", stop_event)
     refresh_task: asyncio.Task | None = None
+    lock = None
     worker: TelegramGatewayWorker | None = None
     kafka_producer = None
     s3_raw_client = None
@@ -177,10 +194,14 @@ async def _main() -> int:
             log.error("telegram_gateway_lease_held_elsewhere", key=_LEASE_KEY)
             return 3  # transient — orchestrator restarts to stand by
 
+        lease_lost = False
+
         async def _refresh_loop() -> None:
+            nonlocal lease_lost
             while not stop_event.is_set():
                 await asyncio.sleep(10)
                 if not await lock.refresh():
+                    lease_lost = True
                     log.warning("telegram_gateway_lease_lost")
                     stop_event.set()
                     return
@@ -197,16 +218,30 @@ async def _main() -> int:
         )
         log.info("telegram_gateway_starting", tenant_id=str(tenant_id))
         run_task = asyncio.create_task(worker.run_forever())
+        stop_task = asyncio.create_task(stop_event.wait())
         done, _ = await asyncio.wait(
-            {run_task, asyncio.create_task(stop_event.wait())},
+            {run_task, stop_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
-        if run_task in done:
-            run_task.result()  # surface any exception
-        return 0
+        try:
+            if run_task in done:
+                run_task.result()  # surface any exception
+                return 0
+            return 3 if lease_lost else 0
+        finally:
+            stop_task.cancel()
     finally:
         if refresh_task is not None:
             refresh_task.cancel()
+            try:
+                await refresh_task
+            except asyncio.CancelledError:
+                pass
+        if lock is not None:
+            try:
+                await lock.release()
+            except Exception:  # noqa: BLE001
+                pass
         if worker is not None:
             await worker.aclose()
         if kafka_producer is not None:

@@ -41,6 +41,7 @@ import asyncio
 import contextlib
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID
@@ -100,6 +101,10 @@ class EntityResolution(BaseModel):
 # =====================================================================
 
 ResolverDecision = Literal["resolved", "review", "dropped", "rate_limited"]
+DecisionHook = Callable[
+    [UUID, UUID, list[tuple[str, ResolverDecision]]],
+    None,
+]
 
 
 @dataclass
@@ -231,6 +236,16 @@ class EntityResolverWorker:
                 )
                 decision = "dropped"
             results.append((phrase, decision))
+        terminal_phrases = [
+            phrase for phrase, decision in results if decision != "rate_limited"
+        ]
+        if terminal_phrases:
+            await self._remove_unresolved_phrases(
+                observation_id=observation_id,
+                tenant_id=tenant_id,
+                phrases=terminal_phrases,
+                conn=conn,
+            )
         return results
 
     # -----------------------------------------------------------------
@@ -606,6 +621,59 @@ class EntityResolverWorker:
             return []
         return _extract_unresolved_phrases(content)
 
+    async def _remove_unresolved_phrases(
+        self,
+        *,
+        observation_id: UUID,
+        tenant_id: UUID,
+        phrases: list[str],
+        conn: asyncpg.Connection | None,
+    ) -> None:
+        """Remove terminally handled phrases from resolver metadata.
+
+        Rate-limited phrases are intentionally left in place by the caller so
+        a later poll can retry them. Resolved/reviewed/dropped phrases have
+        durable side effects elsewhere, so keeping them here would make the
+        poller repeatedly spend LLM calls on completed work.
+        """
+        phrase_set = {phrase.strip() for phrase in phrases if phrase.strip()}
+        if not phrase_set:
+            return
+        row = await self._fetchrow(
+            conn,
+            """
+            SELECT content FROM observations
+            WHERE id = $1 AND tenant_id = $2
+            """,
+            observation_id,
+            tenant_id,
+        )
+        if row is None:
+            return
+        content = row["content"]
+        if isinstance(content, (bytes, bytearray)):
+            content = content.decode()
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except json.JSONDecodeError:
+                return
+        if not isinstance(content, dict):
+            return
+        if not _drop_unresolved_phrases(content, phrase_set):
+            return
+        await self._execute(
+            conn,
+            """
+            UPDATE observations
+            SET content = $3::jsonb
+            WHERE id = $1 AND tenant_id = $2
+            """,
+            observation_id,
+            tenant_id,
+            json.dumps(content),
+        )
+
     async def _append_entities_mentioned(
         self,
         *,
@@ -806,6 +874,8 @@ class EntityResolverWorker:
         *,
         limit: int = 50,
         since_ms: int | None = None,
+        tenant_id: UUID | None = None,
+        on_decisions: DecisionHook | None = None,
     ) -> int:
         """Scan the `limit` most recent observations that still have
         unresolved phrases and process each one. Returns count of
@@ -813,7 +883,8 @@ class EntityResolverWorker:
 
         `since_ms` is an optional epoch-ms watermark; when None, scan
         everything with non-empty `_unresolved_phrases` regardless of
-        age.
+        age. `tenant_id` is optional and exists for bounded operator
+        replays/tests; production leaves it unset.
 
         Uses a single connection so the `_append_entities_mentioned`
         update and the new state_change insert share a transaction.
@@ -855,17 +926,58 @@ class EntityResolverWorker:
                         ELSE 0
                     END
                 ) > 0
+                  AND (
+                    $2::bigint IS NULL
+                    OR EXTRACT(EPOCH FROM o.occurred_at) * 1000 >= $2::bigint
+                  )
+                  AND ($3::uuid IS NULL OR o.tenant_id = $3::uuid)
                 ORDER BY o.occurred_at DESC
                 LIMIT $1
                 """,
                 limit,
+                since_ms,
+                tenant_id,
             )
             for r in rows:
-                await self.process_observation(
+                decisions = await self.process_observation(
                     r["id"], r["tenant_id"], conn=conn
                 )
+                if on_decisions is not None:
+                    on_decisions(r["id"], r["tenant_id"], decisions)
                 processed += 1
         return processed
+
+
+def _drop_unresolved_phrases(
+    content: dict[str, Any],
+    terminal_phrases: set[str],
+) -> bool:
+    changed = False
+
+    def drop_from(container: dict[str, Any]) -> None:
+        nonlocal changed
+        raw = container.get("_unresolved_phrases")
+        if not isinstance(raw, list):
+            return
+        kept = [
+            phrase
+            for phrase in raw
+            if not isinstance(phrase, str) or phrase.strip() not in terminal_phrases
+        ]
+        if len(kept) == len(raw):
+            return
+        changed = True
+        if kept:
+            container["_unresolved_phrases"] = kept
+        else:
+            container.pop("_unresolved_phrases", None)
+
+    drop_from(content)
+    for metadata_key in ("metadata", "_metadata"):
+        metadata = content.get(metadata_key)
+        if isinstance(metadata, dict):
+            drop_from(metadata)
+    return changed
 
 
 def _extract_unresolved_phrases(content: dict[str, Any]) -> list[str]:
@@ -897,6 +1009,7 @@ __all__ = [
     "EntityResolverWorker",
     "LLMRateLimitError",
     "LLMTimeoutError",
+    "DecisionHook",
     "ResolverDecision",
     "ResolverLLMBudget",
 ]

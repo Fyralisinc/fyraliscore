@@ -1,13 +1,14 @@
 """Tests for the MaintenanceScheduler — Wave 4-D.
 
-Covers test-list items #18 (advisory lock prevents two instances from
-running a job concurrently), #21 (scheduler cancels pending jobs on
+Covers test-list items #18 (row lease prevents two instances from running a job
+concurrently), #21 (scheduler cancels pending jobs on
 shutdown), #22 (property: random sequences of maintenance → invariants
 hold).
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import timedelta
 from uuid import uuid4
 
@@ -16,8 +17,9 @@ import pytest
 
 from services.workers.maintenance.scheduler import (
     JobDescriptor,
+    LeaseLostError,
     MaintenanceScheduler,
-    advisory_lock_key,
+    job_lease_name,
 )
 
 
@@ -25,16 +27,16 @@ pytestmark = pytest.mark.integration
 
 
 # ---------------------------------------------------------------------
-# advisory_lock_key is deterministic + positive
+# job_lease_name is deterministic and namespaced
 # ---------------------------------------------------------------------
 
 
-def test_advisory_lock_key_deterministic_positive() -> None:
-    k = advisory_lock_key("daily")
-    k2 = advisory_lock_key("daily")
+def test_job_lease_name_deterministic_namespaced() -> None:
+    k = job_lease_name("daily")
+    k2 = job_lease_name("daily")
     assert k == k2
-    assert 0 < k <= 0x7FFFFFFF
-    assert advisory_lock_key("weekly") != k
+    assert k == "maintenance:daily"
+    assert job_lease_name("weekly") != k
 
 
 # ---------------------------------------------------------------------
@@ -43,11 +45,11 @@ def test_advisory_lock_key_deterministic_positive() -> None:
 
 
 @pytest.mark.asyncio
-async def test_advisory_lock_prevents_concurrent_run(
+async def test_row_lease_prevents_concurrent_run(
     m_pool: asyncpg.Pool,
 ) -> None:
     """Two parallel ``run_job_now`` invocations serialise on the
-    advisory lock. We prove it by having the job sleep 300ms and
+    row lease. We prove it by having the job sleep 300ms and
     checking the total wall time > 500ms for two serial runs.
     """
     started_at: list[float] = []
@@ -85,6 +87,59 @@ async def test_advisory_lock_prevents_concurrent_run(
     assert len(started_at) == 2
     # Second run starts only after first releases; so 2 × 0.3s ≈ 0.6s.
     assert elapsed > 0.5
+
+
+@pytest.mark.asyncio
+async def test_row_lease_loss_cancels_running_job(
+    m_pool: asyncpg.Pool,
+) -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release_never = asyncio.Event()
+    name = f"loss-{uuid4().hex[:8]}"
+
+    async def blocking_job(_pool: asyncpg.Pool) -> None:
+        started.set()
+        try:
+            await release_never.wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    scheduler = MaintenanceScheduler(
+        pool=m_pool,
+        descriptors=[
+            JobDescriptor(
+                name=name,
+                fn=blocking_job,
+                interval=timedelta(seconds=60),
+                lock_timeout_seconds=0.5,
+                lease_ttl_seconds=30.0,
+                lease_refresh_seconds=0.1,
+            )
+        ],
+    )
+    run_task = asyncio.create_task(scheduler.run_job_now(name))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await m_pool.execute(
+            """
+            UPDATE scheduler_leases
+               SET holder_id = 'stolen-by-test',
+                   expires_at = now() + interval '30 seconds'
+             WHERE lease_name = $1
+            """,
+            job_lease_name(name),
+        )
+        with pytest.raises(LeaseLostError):
+            await asyncio.wait_for(run_task, timeout=5.0)
+        assert cancelled.is_set()
+    finally:
+        release_never.set()
+        if not run_task.done():
+            run_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await run_task
 
 
 # ---------------------------------------------------------------------

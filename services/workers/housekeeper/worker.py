@@ -29,6 +29,7 @@ from services.workers.maintenance.scheduler import (
 from services.workers.maintenance.weekly import (
     relationship_maintenance_per_tenant,
 )
+from services.workers.housekeeper.retention import run_think_run_artifact_retention
 
 
 _log = structlog.get_logger(__name__)
@@ -84,10 +85,35 @@ async def _archive_decayed(pool: asyncpg.Pool) -> int:
         return await archive_decayed_job(conn=conn)
 
 
+async def _access_matview_refresh(pool: asyncpg.Pool) -> Any:
+    from services.workers.maintenance.daily import access_matview_refresh
+
+    async with pool.acquire() as conn:
+        return await access_matview_refresh(conn=conn)
+
+
 async def _relationship_maintenance(pool: asyncpg.Pool) -> Any:
     async with pool.acquire() as conn:
         async with conn.transaction():
             return await relationship_maintenance_per_tenant(conn=conn)
+
+
+async def _think_run_artifact_retention(pool: asyncpg.Pool) -> Any:
+    return await run_think_run_artifact_retention(pool)
+
+
+async def _backup_recovery_metrics(pool: asyncpg.Pool) -> Any:
+    from services.platform.backup_recovery import refresh_backup_recovery_metrics
+
+    async with pool.acquire() as conn:
+        return await refresh_backup_recovery_metrics(conn)
+
+
+async def _db_activity_metrics(pool: asyncpg.Pool) -> Any:
+    from lib.observability.db_activity import refresh_db_activity_metrics
+
+    async with pool.acquire() as conn:
+        return await refresh_db_activity_metrics(conn)
 
 
 async def _calibration_updater(pool: asyncpg.Pool) -> Any:
@@ -182,12 +208,48 @@ def build_housekeeper_descriptors(
             initial_delay=_env_seconds("HOUSEKEEPER_ARCHIVE_DECAYED_INITIAL_DELAY_S", 30),
         ),
         _descriptor(
+            "access_matview_refresh",
+            _access_matview_refresh,
+            _env_seconds("HOUSEKEEPER_ACCESS_MATVIEW_REFRESH_INTERVAL_S", 86400),
+            initial_delay=_env_seconds(
+                "HOUSEKEEPER_ACCESS_MATVIEW_REFRESH_INITIAL_DELAY_S",
+                45,
+            ),
+        ),
+        _descriptor(
             "relationship_maintenance",
             _relationship_maintenance,
             _env_seconds("HOUSEKEEPER_RELATIONSHIP_MAINTENANCE_INTERVAL_S", 604800),
             initial_delay=_env_seconds(
                 "HOUSEKEEPER_RELATIONSHIP_MAINTENANCE_INITIAL_DELAY_S",
                 60,
+            ),
+        ),
+        _descriptor(
+            "think_run_artifact_retention",
+            _think_run_artifact_retention,
+            _env_seconds("HOUSEKEEPER_THINK_ARTIFACT_RETENTION_INTERVAL_S", 86400),
+            initial_delay=_env_seconds(
+                "HOUSEKEEPER_THINK_ARTIFACT_RETENTION_INITIAL_DELAY_S",
+                180,
+            ),
+        ),
+        _descriptor(
+            "backup_recovery_metrics",
+            _backup_recovery_metrics,
+            _env_seconds("HOUSEKEEPER_BACKUP_RECOVERY_METRICS_INTERVAL_S", 300),
+            initial_delay=_env_seconds(
+                "HOUSEKEEPER_BACKUP_RECOVERY_METRICS_INITIAL_DELAY_S",
+                20,
+            ),
+        ),
+        _descriptor(
+            "db_activity_metrics",
+            _db_activity_metrics,
+            _env_seconds("HOUSEKEEPER_DB_ACTIVITY_METRICS_INTERVAL_S", 60),
+            initial_delay=_env_seconds(
+                "HOUSEKEEPER_DB_ACTIVITY_METRICS_INITIAL_DELAY_S",
+                10,
             ),
         ),
         _descriptor(
