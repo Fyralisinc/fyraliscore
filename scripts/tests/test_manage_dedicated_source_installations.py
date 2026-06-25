@@ -88,18 +88,27 @@ async def _insert_installation(
         "id",
         "tenant_id",
         spec.scope_column,
-        "base_url",
-        "secret_ref",
-        "refresh_secret_ref",
     ]
     values: list[object] = [
         install_id,
         tenant,
         scope_id,
-        "https://api.example.test",
-        access_ref,
-        refresh_ref,
     ]
+    if spec.scope_column != "base_url":
+        columns.append("base_url")
+        values.append("https://api.example.test")
+    if source == "jira":
+        columns.append("account_email")
+        values.append("operator@example.test")
+    if source == "hibob":
+        columns.append("service_user_id")
+        values.append("service-user")
+    if "secret_ref" in spec.ref_columns:
+        columns.append("secret_ref")
+        values.append(access_ref)
+    if "refresh_secret_ref" in spec.ref_columns:
+        columns.append("refresh_secret_ref")
+        values.append(refresh_ref)
     if "webhook_secret_ref" in spec.ref_columns:
         columns.append("webhook_secret_ref")
         values.append(webhook_ref)
@@ -112,16 +121,17 @@ async def _insert_installation(
         """,
         *values,
     )
-    await conn.execute(
-        f"""
-        INSERT INTO {spec.entity_table} (
-            id, tenant_id, {spec.entity_install_column}, entity_type, state
-        ) VALUES ($1, $2, $3, 'test_entity', 'active')
-        """,
-        uuid7(),
-        tenant,
-        install_id,
-    )
+    if spec.entity_table is not None and spec.entity_install_column is not None:
+        await conn.execute(
+            f"""
+            INSERT INTO {spec.entity_table} (
+                id, tenant_id, {spec.entity_install_column}, entity_type, state
+            ) VALUES ($1, $2, $3, 'test_entity', 'active')
+            """,
+            uuid7(),
+            tenant,
+            install_id,
+        )
     if webhook_ref:
         await conn.execute(
             """
@@ -475,6 +485,112 @@ async def test_dedicated_uninstall_disables_rows_deletes_refs_and_audits_safely(
         assert "gusto-access-token" not in combined
         assert "gusto-refresh-token" not in combined
         assert "gusto-webhook-secret" not in combined
+
+
+@pytest.mark.asyncio
+async def test_dedicated_api_key_source_rotates_and_uninstalls_without_refresh(
+    fresh_db: asyncpg.Pool,
+    tenant,
+    tenant_cleanup,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with fresh_db.acquire() as conn:
+        operator_actor = await insert_actor(conn, tenant, "Source operator")
+        await _grant_operator_role(conn, tenant=tenant, actor_id=operator_actor)
+        secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
+        inserted = await _insert_installation(
+            conn,
+            tenant=tenant,
+            source="ashby",
+            scope_id="ashby-org-123",
+            secret_store=secret_store,
+            include_webhook=True,
+        )
+        monkeypatch.setenv("ROTATED_ASHBY_KEY", "new-ashby-api-key")
+
+        status_result = await run_command(
+            _parse(
+                [
+                    "status",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    "ashby",
+                    "--scope-id",
+                    "ashby-org-123",
+                ]
+            ),
+            conn=conn,
+        )
+        assert status_result["installations"][0]["entity_count"] == 1
+        assert status_result["installations"][0]["has_secret_ref"] is True
+        assert "has_refresh_secret_ref" not in status_result["installations"][0]
+
+        rotate_result = await run_command(
+            _parse(
+                [
+                    "rotate-secret",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    "ashby",
+                    "--scope-id",
+                    "ashby-org-123",
+                    "--secret-field",
+                    "access",
+                    "--new-secret-env",
+                    "ROTATED_ASHBY_KEY",
+                    "--reason",
+                    "customer api key rotation",
+                ]
+            ),
+            conn=conn,
+            secret_store=secret_store,
+        )
+        assert rotate_result["installation"]["rotated_secret_field"] == "access"
+        assert (
+            await secret_store.get(str(inserted["access_ref"]), tenant_id=tenant)
+        ).decode() == "new-ashby-api-key"
+
+        uninstall_result = await run_command(
+            _parse(
+                [
+                    "uninstall",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    "ashby",
+                    "--scope-id",
+                    "ashby-org-123",
+                    "--reason",
+                    "customer requested uninstall",
+                ]
+            ),
+            conn=conn,
+            secret_store=secret_store,
+        )
+        assert uninstall_result["installation"]["enabled"] is False
+        assert uninstall_result["installation"]["refs_seen"] == 2
+        assert uninstall_result["installation"]["refs_deleted"] == 2
+        assert uninstall_result["installation"]["has_secret_ref"] is False
+        assert uninstall_result["installation"]["has_webhook_secret_ref"] is False
+        provider_row = await conn.fetchrow(
+            """
+            SELECT enabled, secret_ref
+            FROM provider_installations
+            WHERE tenant_id = $1 AND provider = 'ashby'
+            """,
+            tenant,
+        )
+        assert provider_row["enabled"] is False
+        assert provider_row["secret_ref"] is None
+        assert "new-ashby-api-key" not in json.dumps(uninstall_result, sort_keys=True)
 
 
 def test_dedicated_rotate_webhook_rejects_poll_only_source() -> None:

@@ -43,8 +43,10 @@ class SourceSpec:
     table: str
     scope_column: str
     ref_columns: tuple[str, ...]
-    entity_table: str
-    entity_install_column: str
+    entity_table: str | None
+    entity_install_column: str | None
+    webhook_installation_id_column: str | None = None
+    webhook_installation_id_transform: str | None = None
 
 
 SPECS: dict[str, SourceSpec] = {
@@ -55,6 +57,7 @@ SPECS: dict[str, SourceSpec] = {
         ref_columns=("secret_ref", "refresh_secret_ref", "webhook_secret_ref"),
         entity_table="quickbooks_entities",
         entity_install_column="quickbooks_installation_id",
+        webhook_installation_id_column="realm_id",
     ),
     "gusto": SourceSpec(
         source="gusto",
@@ -63,6 +66,7 @@ SPECS: dict[str, SourceSpec] = {
         ref_columns=("secret_ref", "refresh_secret_ref", "webhook_secret_ref"),
         entity_table="gusto_entities",
         entity_install_column="gusto_installation_id",
+        webhook_installation_id_column="company_uuid",
     ),
     "ramp": SourceSpec(
         source="ramp",
@@ -71,6 +75,7 @@ SPECS: dict[str, SourceSpec] = {
         ref_columns=("secret_ref", "refresh_secret_ref", "webhook_secret_ref"),
         entity_table="ramp_entities",
         entity_install_column="ramp_installation_id",
+        webhook_installation_id_column="business_id",
     ),
     "carta": SourceSpec(
         source="carta",
@@ -87,6 +92,98 @@ SPECS: dict[str, SourceSpec] = {
         ref_columns=("secret_ref", "refresh_secret_ref"),
         entity_table="linkedin_entities",
         entity_install_column="linkedin_installation_id",
+    ),
+    "jira": SourceSpec(
+        source="jira",
+        table="jira_installations",
+        scope_column="base_url",
+        ref_columns=("secret_ref", "webhook_secret_ref"),
+        entity_table="jira_projects",
+        entity_install_column="jira_installation_id",
+        webhook_installation_id_column="base_url",
+        webhook_installation_id_transform="host",
+    ),
+    "mercury": SourceSpec(
+        source="mercury",
+        table="mercury_installations",
+        scope_column="organization_id",
+        ref_columns=("secret_ref", "webhook_secret_ref"),
+        entity_table="mercury_accounts",
+        entity_install_column="mercury_installation_id",
+        webhook_installation_id_column="organization_id",
+    ),
+    "brex": SourceSpec(
+        source="brex",
+        table="brex_installations",
+        scope_column="organization_id",
+        ref_columns=("secret_ref", "webhook_secret_ref"),
+        entity_table="brex_accounts",
+        entity_install_column="brex_installation_id",
+        webhook_installation_id_column="organization_id",
+    ),
+    "deel": SourceSpec(
+        source="deel",
+        table="deel_installations",
+        scope_column="organization_id",
+        ref_columns=("secret_ref", "webhook_secret_ref"),
+        entity_table="deel_contracts",
+        entity_install_column="deel_installation_id",
+        webhook_installation_id_column="organization_id",
+    ),
+    "fireflies": SourceSpec(
+        source="fireflies",
+        table="fireflies_installations",
+        scope_column="workspace_id",
+        ref_columns=("secret_ref", "webhook_secret_ref"),
+        entity_table=None,
+        entity_install_column=None,
+        webhook_installation_id_column="workspace_id",
+    ),
+    "miro": SourceSpec(
+        source="miro",
+        table="miro_installations",
+        scope_column="org_id",
+        ref_columns=("secret_ref", "webhook_secret_ref"),
+        entity_table="miro_boards",
+        entity_install_column="miro_installation_id",
+        webhook_installation_id_column="org_id",
+    ),
+    "grafana": SourceSpec(
+        source="grafana",
+        table="grafana_installations",
+        scope_column="base_url",
+        ref_columns=("secret_ref", "webhook_secret_ref"),
+        entity_table=None,
+        entity_install_column=None,
+        webhook_installation_id_column="base_url",
+        webhook_installation_id_transform="host",
+    ),
+    "figma": SourceSpec(
+        source="figma",
+        table="figma_installations",
+        scope_column="team_id",
+        ref_columns=("secret_ref", "webhook_secret_ref"),
+        entity_table="figma_files",
+        entity_install_column="figma_installation_id",
+        webhook_installation_id_column="team_id",
+    ),
+    "hibob": SourceSpec(
+        source="hibob",
+        table="hibob_installations",
+        scope_column="company_id",
+        ref_columns=("secret_ref", "webhook_secret_ref"),
+        entity_table="hibob_entities",
+        entity_install_column="hibob_installation_id",
+        webhook_installation_id_column="company_id",
+    ),
+    "ashby": SourceSpec(
+        source="ashby",
+        table="ashby_installations",
+        scope_column="org_id",
+        ref_columns=("secret_ref", "webhook_secret_ref"),
+        entity_table="ashby_entities",
+        entity_install_column="ashby_installation_id",
+        webhook_installation_id_column="org_id",
     ),
 }
 
@@ -240,7 +337,7 @@ async def run_command(
                         "source": spec.source,
                         "scope_column": spec.scope_column,
                         "scope_id_hash": (
-                            _hash_scope(args.scope_id) if args.scope_id else None
+                            _hash_scope_value(args.scope_id)
                         ),
                         "installation_row_id": args.installation_row_id,
                         "result_count": len(rows),
@@ -267,7 +364,7 @@ async def run_command(
                     conn,
                     tenant_id=tenant_id,
                     spec=spec,
-                    scope_id=row[spec.scope_column],
+                    installation_id=_provider_installation_id(row, spec),
                     enabled=not disable,
                 )
                 await _record_operator_action(
@@ -280,7 +377,7 @@ async def run_command(
                     metadata={
                         "source": spec.source,
                         "scope_column": spec.scope_column,
-                        "scope_id_hash": _hash_scope(row[spec.scope_column]),
+                        "scope_id_hash": _hash_scope_value(row[spec.scope_column]),
                         "reason": args.reason,
                         "enabled_before": row["disabled_before"] is None,
                         "enabled_after": row["disabled_at"] is None,
@@ -328,7 +425,7 @@ async def run_command(
                     metadata={
                         "source": spec.source,
                         "scope_column": spec.scope_column,
-                        "scope_id_hash": _hash_scope(row[spec.scope_column]),
+                        "scope_id_hash": _hash_scope_value(row[spec.scope_column]),
                         "reason": args.reason,
                         "secret_field": args.secret_field,
                         "secret_source": secret_source,
@@ -399,7 +496,7 @@ async def run_command(
                     conn,
                     tenant_id=tenant_id,
                     spec=spec,
-                    scope_id=row[spec.scope_column],
+                    installation_id=_provider_installation_id(row, spec),
                     clear_secret_ref="webhook_secret_ref" in deleted_columns,
                 )
                 await _record_operator_action(
@@ -412,7 +509,7 @@ async def run_command(
                     metadata={
                         "source": spec.source,
                         "scope_column": spec.scope_column,
-                        "scope_id_hash": _hash_scope(row[spec.scope_column]),
+                        "scope_id_hash": _hash_scope_value(row[spec.scope_column]),
                         "reason": args.reason,
                         "enabled_before": row["disabled_at"] is None,
                         "enabled_after": False,
@@ -434,7 +531,7 @@ async def run_command(
                     status="ok" if not delete_errors else "error",
                     context={
                         "scope_column": spec.scope_column,
-                        "scope_id_hash": _hash_scope(row[spec.scope_column]),
+                        "scope_id_hash": _hash_scope_value(row[spec.scope_column]),
                         "refs_seen": len(refs),
                         "refs_deleted": len(deleted_columns),
                         **(
@@ -498,19 +595,14 @@ async def _select_installations(
 ) -> list[asyncpg.Record]:
     values: list[Any] = [tenant_id]
     clauses = _selector_clause(args=args, spec=spec, values=values)
+    entity_count_sql = _entity_count_sql(spec)
     rows = await conn.fetch(
         f"""
         SELECT i.id, i.tenant_id, i.{spec.scope_column}, i.base_url,
                i.created_at, i.disabled_at,
                {', '.join(f'i.{column}' for column in spec.ref_columns)},
-               COALESCE(entity_counts.entity_count, 0)::int AS entity_count
+               {entity_count_sql} AS entity_count
           FROM {spec.table} i
-          LEFT JOIN LATERAL (
-              SELECT count(*) AS entity_count
-                FROM {spec.entity_table} e
-               WHERE e.tenant_id = i.tenant_id
-                 AND e.{spec.entity_install_column} = i.id
-          ) entity_counts ON TRUE
          WHERE {' AND '.join(f"i.{clause}" for clause in clauses)}
          ORDER BY i.created_at DESC, i.{spec.scope_column}
          {'FOR UPDATE OF i' if for_update else ''}
@@ -556,6 +648,7 @@ async def _set_disabled_at(
     values: list[Any] = [tenant_id]
     clauses = _selector_clause(args=args, spec=spec, values=values)
     disabled_expression = "now()" if disabled else "NULL"
+    entity_count_sql = _entity_count_subquery_sql(spec)
     row = await conn.fetchrow(
         f"""
         WITH selected AS (
@@ -572,12 +665,7 @@ async def _set_disabled_at(
                   i.created_at, i.disabled_at,
                   {', '.join(f'i.{column}' for column in spec.ref_columns)},
                   selected.disabled_before,
-                  (
-                      SELECT count(*)::int
-                        FROM {spec.entity_table} e
-                       WHERE e.tenant_id = i.tenant_id
-                         AND e.{spec.entity_install_column} = i.id
-                  ) AS entity_count
+                  {entity_count_sql} AS entity_count
         """,
         *values,
     )
@@ -601,6 +689,7 @@ async def _uninstall_installation(
             )
     assignments = ["disabled_at = now()"]
     assignments.extend(f"{column} = NULL" for column in clear_columns)
+    entity_count_sql = _entity_count_subquery_sql(spec)
     row = await conn.fetchrow(
         f"""
         UPDATE {spec.table} i
@@ -610,12 +699,7 @@ async def _uninstall_installation(
         RETURNING i.id, i.tenant_id, i.{spec.scope_column}, i.base_url,
                   i.created_at, i.disabled_at,
                   {', '.join(f'i.{column}' for column in spec.ref_columns)},
-                  (
-                      SELECT count(*)::int
-                        FROM {spec.entity_table} e
-                       WHERE e.tenant_id = i.tenant_id
-                         AND e.{spec.entity_install_column} = i.id
-                  ) AS entity_count
+                  {entity_count_sql} AS entity_count
         """,
         tenant_id,
         row_id,
@@ -630,10 +714,10 @@ async def _set_provider_installation_enabled(
     *,
     tenant_id: UUID,
     spec: SourceSpec,
-    scope_id: str,
+    installation_id: str | None,
     enabled: bool,
 ) -> bool:
-    if "webhook_secret_ref" not in spec.ref_columns:
+    if "webhook_secret_ref" not in spec.ref_columns or not installation_id:
         return False
     status = await conn.execute(
         """
@@ -646,7 +730,7 @@ async def _set_provider_installation_enabled(
         enabled,
         tenant_id,
         spec.source,
-        scope_id,
+        installation_id,
     )
     return _rows_changed(status) > 0
 
@@ -656,10 +740,10 @@ async def _uninstall_provider_installation(
     *,
     tenant_id: UUID,
     spec: SourceSpec,
-    scope_id: str,
+    installation_id: str | None,
     clear_secret_ref: bool,
 ) -> bool:
-    if "webhook_secret_ref" not in spec.ref_columns:
+    if "webhook_secret_ref" not in spec.ref_columns or not installation_id:
         return False
     secret_assignment = "secret_ref = NULL," if clear_secret_ref else ""
     status = await conn.execute(
@@ -674,9 +758,46 @@ async def _uninstall_provider_installation(
         """,
         tenant_id,
         spec.source,
-        scope_id,
+        installation_id,
     )
     return _rows_changed(status) > 0
+
+
+def _entity_count_sql(spec: SourceSpec) -> str:
+    if spec.entity_table is None or spec.entity_install_column is None:
+        return "0::int"
+    return (
+        "(SELECT count(*)::int "
+        f"FROM {spec.entity_table} e "
+        "WHERE e.tenant_id = i.tenant_id "
+        f"AND e.{spec.entity_install_column} = i.id)"
+    )
+
+
+def _entity_count_subquery_sql(spec: SourceSpec) -> str:
+    return _entity_count_sql(spec)
+
+
+def _provider_installation_id(row: asyncpg.Record, spec: SourceSpec) -> str | None:
+    column = spec.webhook_installation_id_column
+    if column is None:
+        return None
+    raw = row[column]
+    if raw is None:
+        return None
+    value = str(raw)
+    if spec.webhook_installation_id_transform == "host":
+        return _host_from_url(value)
+    return value
+
+
+def _host_from_url(value: str) -> str:
+    return (
+        value.replace("https://", "")
+        .replace("http://", "")
+        .rstrip("/")
+        .split("/")[0]
+    )
 
 
 def _rows_changed(status: str) -> int:
@@ -774,8 +895,13 @@ async def _record_installation_audit(
     )
 
 
-def _hash_scope(scope_id: str) -> str:
-    return hashlib.sha256(scope_id.encode("utf-8")).hexdigest()[:16]
+def _hash_scope_value(scope_id: Any) -> str | None:
+    if scope_id is None:
+        return None
+    value = str(scope_id)
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
 def _jsonable_installation(row: asyncpg.Record, spec: SourceSpec) -> dict[str, Any]:

@@ -860,13 +860,16 @@ Current state:
 
 - Generic `provider_installations` lifecycle operations are covered by
   `scripts/manage_source_installations.py`.
-- Dedicated OAuth/admin-paste install tables for QuickBooks, Gusto, Ramp,
-  Carta, and LinkedIn are now covered by
+- Dedicated OAuth/admin-paste/API-key install tables for QuickBooks, Gusto,
+  Ramp, Carta, LinkedIn, Jira, Mercury, Brex, Deel, Fireflies, Miro, Grafana,
+  Figma, HiBob, and Ashby are now covered by
   `scripts/manage_dedicated_source_installations.py` for status, pause, resume,
   credential rotation, and uninstall. The tool binds `app.current_tenant`,
   writes bounded operator audit rows, zeroizes access/refresh/webhook secret
   refs on uninstall, and disables matching webhook resolver rows for
   webhook-capable sources.
+- AWS's composite account/region install selector and Telegram/Signal live vs
+  backfill session refs remain as dedicated follow-up lifecycle slices.
 
 Must solve:
 
@@ -879,13 +882,16 @@ Must solve:
   display.
 - [x] Dedicated finance/people OAuth source tables have operator lifecycle and
   credential-zeroization coverage.
+- [x] Dedicated single-scope API-key source tables have operator lifecycle and
+  credential-zeroization coverage.
 - [x] Source onboarding progress events are emitted once per state transition.
 - [ ] Uninstall stops watches/subscriptions, disables install rows, and removes
   or disables secrets. Generic `provider_installations` uninstall now disables
   rows and removes the generic `secret_ref`; dedicated QuickBooks, Gusto, Ramp,
-  Carta, and LinkedIn uninstall now disables source install rows and clears
+  Carta, LinkedIn, Jira, Mercury, Brex, Deel, Fireflies, Miro, Grafana, Figma,
+  HiBob, and Ashby uninstall now disables source install rows and clears
   per-install secret refs. External provider webhook deregistration/watch
-  teardown and remaining dedicated source families remain open.
+  teardown plus AWS and Telegram/Signal lifecycle remain open.
 - [x] Customer/admin UI or CLI exposes install health and last successful sync.
 
 Acceptance evidence:
@@ -1216,8 +1222,9 @@ Current state:
   material only through env/file/stdin, preserves the stable `secret_ref`,
   rotates encrypted secret material in place, returns sanitized output, and
   writes a bounded `source_installation.secret.rotate` audit row.
-- Dedicated source lifecycle operations for QuickBooks, Gusto, Ramp, Carta, and
-  LinkedIn are handled by `scripts/manage_dedicated_source_installations.py`.
+- Dedicated source lifecycle operations for QuickBooks, Gusto, Ramp, Carta,
+  LinkedIn, Jira, Mercury, Brex, Deel, Fireflies, Miro, Grafana, Figma, HiBob,
+  and Ashby are handled by `scripts/manage_dedicated_source_installations.py`.
   The CLI binds the tenant before touching strict-RLS source tables, can pause
   and resume matching webhook resolver rows, rotates access/refresh/webhook refs
   by stable ref, and uninstalls by disabling the source row, clearing deleted
