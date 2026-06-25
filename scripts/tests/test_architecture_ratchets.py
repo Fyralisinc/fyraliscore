@@ -12,6 +12,7 @@ from scripts.check_architecture_ratchets import (
     find_network_call_in_transaction_violations,
     find_new_permissive_rls_policy_violations,
     find_plaintext_secret_column_migration_violations,
+    find_product_default_tenant_without_production_guard_violations,
     find_raw_secret_ref_argument_violations,
     find_rollback_data_deletion_violations,
     find_raw_model_reeval_insert_violations,
@@ -683,6 +684,59 @@ export function openStream() {
     )
 
     violations = find_browser_token_storage_violations(repo_root=tmp_path)
+
+    assert violations == []
+
+
+def test_product_default_tenant_check_flags_unguarded_fallback(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "services" / "product" / "example"
+    source.mkdir(parents=True)
+    (source / "api.py").write_text(
+        """
+def build_router(default_tenant_id=None):
+    def auth_dep():
+        if default_tenant_id is not None:
+            return default_tenant_id
+        raise PermissionError
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_product_default_tenant_without_production_guard_violations(
+        repo_root=tmp_path
+    )
+
+    assert len(violations) == 1
+    assert violations[0].check == "product-default-tenant-production-guard"
+    assert violations[0].path == Path("services/product/example/api.py")
+
+
+def test_product_default_tenant_check_allows_production_guard(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "services" / "product" / "example"
+    source.mkdir(parents=True)
+    (source / "api.py").write_text(
+        """
+def _request_is_production(request):
+    return request.app.state.gateway_settings.is_production
+
+def build_router(default_tenant_id=None):
+    def auth_dep(request):
+        if _request_is_production(request):
+            raise PermissionError
+        if default_tenant_id is not None:
+            return default_tenant_id
+        raise PermissionError
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_product_default_tenant_without_production_guard_violations(
+        repo_root=tmp_path
+    )
 
     assert violations == []
 

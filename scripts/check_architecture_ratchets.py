@@ -261,6 +261,10 @@ CLIENT_TOKEN_STORAGE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         "browser WebSocket/API auth must not put tokens in query strings",
     ),
 )
+PRODUCT_DEFAULT_TENANT_FALLBACK_RE = re.compile(
+    r"(?:\breturn\s+default_tenant_id\b|\btenant_id\s*=\s*default_tenant_id\b)",
+    re.IGNORECASE,
+)
 
 RAW_THINK_TRIGGER_INSERT_ALLOWED_FILES = {
     Path("services/domain/triggers.py"),
@@ -688,6 +692,43 @@ def find_browser_token_storage_violations(
                         )
                     )
                     break
+    return violations
+
+
+def find_product_default_tenant_without_production_guard_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    roots: Sequence[str] = ("services/product",),
+) -> list[Violation]:
+    """Return product routes that expose dogfood default tenants in production.
+
+    Backend-owned product/browser routes may keep ``default_tenant_id`` for
+    tests and local dogfood, but any file that falls back to it must also have
+    an explicit production-mode check so miswired production mounts fail closed.
+    """
+
+    violations: list[Violation] = []
+    for rel in _iter_python_files(repo_root=repo_root, roots=roots):
+        if _is_test_path(rel):
+            continue
+        text = (repo_root / rel).read_text(encoding="utf-8", errors="ignore")
+        match = PRODUCT_DEFAULT_TENANT_FALLBACK_RE.search(text)
+        if match is None:
+            continue
+        if "_request_is_production" in text or "is_production" in text:
+            continue
+        line_number = text[: match.start()].count("\n") + 1
+        violations.append(
+            Violation(
+                check="product-default-tenant-production-guard",
+                path=rel,
+                line_number=line_number,
+                message=(
+                    "product routes that fall back to default_tenant_id must "
+                    "explicitly reject that fallback in production"
+                ),
+            )
+        )
     return violations
 
 
@@ -1218,6 +1259,11 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     )
     violations.extend(find_forbidden_metric_label_violations(repo_root=repo_root))
     violations.extend(find_browser_token_storage_violations(repo_root=repo_root))
+    violations.extend(
+        find_product_default_tenant_without_production_guard_violations(
+            repo_root=repo_root
+        )
+    )
     violations.extend(find_import_linter_allowlist_violations(repo_root=repo_root))
     violations.extend(find_rollback_data_deletion_violations(repo_root=repo_root))
     return violations

@@ -255,7 +255,9 @@ Current state:
   `/view/ceo/home` and `/view/ceo/stream` also accept normal gateway
   actor-session bearer tokens. `/view/ceo/home` now rejects default-tenant
   fallback on missing or invalid auth when mounted in production, even if the
-  router is accidentally constructed with a dogfood default tenant.
+  router is accidentally constructed with a dogfood default tenant. The
+  architecture ratchet now fails product route code that adds a
+  `default_tenant_id` fallback without an explicit production guard.
 - `services.platform.access_control.audit.record_override_if_needed` centralizes
   override audit writes, and the architecture ratchet now fails production code
   that calls `can_read`/`can_read_by_id` without an override-audit path.
