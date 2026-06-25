@@ -26,6 +26,7 @@ from fastapi import APIRouter, HTTPException, Request, status as httpstatus
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import ValidationError
+from services.product.error_contract import product_data_plane_unavailable
 from services.product.forecasts import accuracy as accuracy_mod
 from services.product.forecasts import page as page_mod
 from services.product.forecasts import repo as repo_mod
@@ -384,9 +385,7 @@ def _record_product_workflow_event(
 def _pool(request: Request):
     deps = getattr(request.app.state, "deps", None)
     if deps is None or getattr(deps, "pool", None) is None:
-        raise HTTPException(
-            status_code=503, detail="service_unavailable",
-        )
+        raise product_data_plane_unavailable()
     return deps.pool
 
 

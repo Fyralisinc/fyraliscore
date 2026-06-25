@@ -34,6 +34,10 @@ IMPLEMENTATION_DETAIL_TERMS = (
     "tenant_flags",
     "traceback",
 )
+ALLOWED_STRUCTURED_DETAIL_HELPERS = {
+    "dependency_unavailable_detail",
+    "degraded_error_detail",
+}
 
 
 @dataclass(frozen=True)
@@ -90,6 +94,8 @@ def _validate_http_detail(path: Path, node: ast.AST) -> list[Violation]:
                     "structured HTTPException detail contains raw exception text",
                 )
             ]
+        return []
+    if _is_allowed_structured_detail_helper(node):
         return []
     if _contains_raw_text_boundary(node):
         return [
@@ -187,6 +193,13 @@ def _is_invalid_field_code(node: ast.AST) -> bool:
     ):
         return False
     return isinstance(value.value, ast.Name) and value.value.id == "field"
+
+
+def _is_allowed_structured_detail_helper(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _call_name(node.func) in ALLOWED_STRUCTURED_DETAIL_HELPERS
+    )
 
 
 def _iter_string_literals(node: ast.AST) -> Iterable[ast.Constant]:

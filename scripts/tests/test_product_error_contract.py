@@ -96,6 +96,43 @@ def route(exc, field):
     assert violations == []
 
 
+def test_allows_shared_degraded_detail_helper(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        """
+from fastapi import HTTPException
+from services.product.error_contract import dependency_unavailable_detail
+
+def route(exc):
+    raise HTTPException(status_code=503, detail=dependency_unavailable_detail(exc))
+""",
+    )
+
+    violations = validate_product_error_contract([path])
+
+    assert violations == []
+
+
+def test_rejects_arbitrary_detail_helper_call(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        """
+from fastapi import HTTPException
+
+def unsafe_detail(exc):
+    return {"error": str(exc)}
+
+def route(exc):
+    raise HTTPException(status_code=503, detail=unsafe_detail(exc))
+""",
+    )
+
+    violations = validate_product_error_contract([path])
+
+    assert len(violations) == 1
+    assert "bounded error code or structured object" in violations[0].message
+
+
 def test_rejects_raw_json_response_error(tmp_path: Path) -> None:
     path = _write(
         tmp_path,

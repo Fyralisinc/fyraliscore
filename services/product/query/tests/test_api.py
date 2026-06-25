@@ -120,8 +120,10 @@ async def test_ask_maps_rendering_unavailable_to_503(fake_strategies):
     assert r.status_code == 503
     assert r.json()["detail"] == {
         "error": "dependency_unavailable",
+        "degraded": True,
+        "degraded_reasons": ["rendering_unavailable"],
         "dependency": "rendering",
-        "operation": "conversation-turn",
+        "operation": "conversation_turn",
     }
 
 

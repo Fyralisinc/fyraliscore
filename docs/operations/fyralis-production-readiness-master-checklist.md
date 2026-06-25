@@ -1209,6 +1209,9 @@ Current state:
 - Today responses now emit top-level `degraded_reasons` for unavailable
   signal-strip metrics, so UI and API clients can distinguish incomplete
   business telemetry from healthy zero values.
+- Product dependency failures now use structured degraded error details with
+  `degraded=true`, bounded `degraded_reasons`, and sanitized dependency
+  labels for Ask/follow-up rendering and product data-plane availability.
 - Product-facing route errors are now protected by
   `scripts/check_product_error_contract.py`, which blocks raw exception text,
   infrastructure-flavored implementation details, and free-form implementation
@@ -1239,7 +1242,7 @@ Must solve:
 - [ ] Add end-to-end tests for those workflows with real Postgres and realistic
   source fixtures.
 - [x] Add latency targets and error budgets per workflow.
-- [ ] Make degraded states explicit in UI/API responses.
+- [x] Make degraded states explicit in UI/API responses.
 - [x] Ensure user-facing copy does not expose implementation details.
 - [x] Add audit trails for user actions that mutate or accept autonomous output.
 

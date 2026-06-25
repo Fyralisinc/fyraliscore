@@ -34,6 +34,7 @@ from lib.shared.errors import CompanyOSError, ValidationError
 from services.product.decision_deltas import apply as apply_mod
 from services.product.decision_deltas import promote as promote_mod
 from services.product.decision_deltas import repo as dd_repo
+from services.product.error_contract import product_data_plane_unavailable
 from services.platform.access_control.audit import record_override_if_needed
 from services.platform.access_control.checks import (
     AccessDecision,
@@ -89,7 +90,7 @@ def _auth(request: Request) -> AuthContext:
 def _pool(request: Request) -> asyncpg.Pool:
     deps = getattr(request.app.state, "deps", None)
     if deps is None or getattr(deps, "pool", None) is None:
-        raise HTTPException(status_code=503, detail="service_unavailable")
+        raise product_data_plane_unavailable()
     return deps.pool
 
 

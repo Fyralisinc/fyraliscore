@@ -14,6 +14,7 @@ import asyncpg
 from fastapi import APIRouter, HTTPException, Request
 
 from lib.shared.errors import CompanyOSError, ValidationError
+from services.product.error_contract import product_data_plane_unavailable
 from services.product.resolution_threads import evaluator, repo
 from services.platform.access_control.audit import record_override_if_needed
 from services.platform.access_control.checks import (
@@ -66,7 +67,7 @@ def _auth(request: Request):
 def _pool(request: Request) -> asyncpg.Pool:
     deps = getattr(request.app.state, "deps", None)
     if deps is None or getattr(deps, "pool", None) is None:
-        raise HTTPException(status_code=503, detail="service_unavailable")
+        raise product_data_plane_unavailable()
     return deps.pool
 
 

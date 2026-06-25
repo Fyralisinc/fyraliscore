@@ -46,6 +46,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from pydantic import BaseModel, Field
 
 from lib.shared.errors import DependencyUnavailableError, ValidationError
+from services.product.error_contract import dependency_unavailable_detail
 
 from .core import (
     AnswerQueryRequest,
@@ -297,11 +298,7 @@ def build_router(
             )
             raise HTTPException(
                 status_code=503,
-                detail={
-                    "error": e.code,
-                    "dependency": e.context.get("dependency"),
-                    "operation": e.context.get("operation"),
-                },
+                detail=dependency_unavailable_detail(e),
             ) from e
         except Exception as e:  # noqa: BLE001
             log.exception("ask_handler_failed")
@@ -355,11 +352,7 @@ def build_router(
                 )
                 raise HTTPException(
                     status_code=503,
-                    detail={
-                        "error": e.code,
-                        "dependency": e.context.get("dependency"),
-                        "operation": e.context.get("operation"),
-                    },
+                    detail=dependency_unavailable_detail(e),
                 ) from e
             except Exception as e:  # noqa: BLE001
                 log.exception("followup_handler_failed")
