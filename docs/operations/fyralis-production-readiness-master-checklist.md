@@ -334,6 +334,10 @@ Current state:
   `GITHUB_APP_PRIVATE_KEY`, source client secrets, and webhook HMAC secrets to
   stay blank in `.env.production.example`; real values must be injected by the
   runtime secret mechanism or migrated to `secret_ref`.
+- Google Workspace DWD production config now requires the mounted
+  `GMAIL_SERVICE_ACCOUNT_JSON_FILE` path and explicitly forbids inline
+  `GMAIL_SERVICE_ACCOUNT_JSON` private-key material in the production env
+  contract.
 - Architecture ratchets now reject post-`0166` migrations that add new
   plaintext credential-shaped columns such as `access_token`, `app_secret`, or
   `refresh_token`; future migrations must use refs, hashes, ciphertext, or
@@ -826,6 +830,11 @@ Current state:
   refresh-token grants. LinkedIn refresh-on-401 is wired through the fetch
   client, persists returned access/refresh refs, and is pinned by unit and
   provider-contract fixture tests.
+- Gmail, Google Calendar, and Google Drive DWD install routers expose explicit
+  preflight endpoints that impersonate the admin against Directory APIs,
+  enumerate selectable users/groups/org units, and return the exact service
+  account client ID plus OAuth scopes required in Workspace Admin Console when
+  the grant is missing or mis-scoped.
 
 Must solve:
 
@@ -854,7 +863,7 @@ Must solve:
 - [ ] Install flows verify credentials before writing install rows.
 - [ ] Install flows store credentials as secret refs only.
 - [x] OAuth refresh worker covers every OAuth source with refresh tokens.
-- [ ] DWD/service-account sources have explicit admin preflight and scope
+- [x] DWD/service-account sources have explicit admin preflight and scope
   display.
 - [x] Source onboarding progress events are emitted once per state transition.
 - [ ] Uninstall stops watches/subscriptions, disables install rows, and removes
