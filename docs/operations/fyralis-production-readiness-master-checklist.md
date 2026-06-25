@@ -666,6 +666,12 @@ Current state:
   records only bounded metadata, rejects details that look like secrets,
   payload/object keys, tenant IDs, or customer identifiers, and can write the
   result into `backup_recovery_status`.
+- `scripts/run_restore_rehearsal.py` provides the restore-test automation
+  wrapper for Postgres PITR and object-store restore rehearsals. It runs an
+  isolated restore command followed by a verification command and records
+  `restore_test=ok` only when both commands succeed.
+- `scripts/verify_object_restore_manifest.py` verifies restored object samples
+  by size and SHA-256 from a manifest without printing object keys or payloads.
 - Architecture ratchets now scan production deploy/rollback automation and fail
   if workflows or release helpers add data-destructive rollback commands such as
   `docker compose down -v`, `docker compose down --volumes`,
@@ -673,7 +679,8 @@ Current state:
 - Full retention policy, partitioning, backup automation, and restore rehearsal
   are tracked in
   [data-retention-backup-recovery.md](data-retention-backup-recovery.md);
-  restore rehearsal remains open.
+  restore-rehearsal automation exists, but actual staging execution evidence
+  remains open.
 
 Must solve:
 
@@ -696,6 +703,10 @@ Acceptance evidence:
 - `scripts/run_backup_job.py` is covered by unit tests proving successful and
   failed backup commands produce bounded status metadata without command output
   and reject sensitive detail fields/values.
+- `scripts/run_restore_rehearsal.py` and
+  `scripts/verify_object_restore_manifest.py` are covered by unit tests proving
+  restore verification records bounded metadata and object-restore mismatch
+  errors do not leak object locations.
 - Retention jobs are observable and have dry-run mode.
 
 ## 3. Runtime Reliability

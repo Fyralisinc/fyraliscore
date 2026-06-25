@@ -137,6 +137,63 @@ customer identifiers. Run the wrapper from cron, systemd timers, Kubernetes
 CronJobs, or customer cloud schedulers; alert on non-zero exit status and on
 the `backup_recovery_health_status` metrics emitted by housekeeper.
 
+## Restore Rehearsal Runner
+
+Use `scripts/run_restore_rehearsal.py` for point-in-time and object-store
+restore tests. It runs a restore command followed by a verification command,
+discards both commands' output, and records `restore_test=ok` only when both
+commands exit successfully.
+
+Postgres PITR rehearsal example:
+
+```bash
+python scripts/run_restore_rehearsal.py \
+  --component postgres \
+  --details-json '{"provider":"pgbackrest","scope":"pitr-staging-clone"}' \
+  --record-status \
+  --restore-command-json '[
+    "pgbackrest",
+    "--stanza=fyralis",
+    "restore",
+    "--type=time",
+    "--target=2026-06-25 01:30:00+00",
+    "--delta"
+  ]' \
+  --verify-command-json '[
+    "python",
+    "scripts/check_schema_drift.py",
+    "--dsn",
+    "$RESTORED_DATABASE_URL"
+  ]'
+```
+
+Object-store restore rehearsal example:
+
+```bash
+python scripts/run_restore_rehearsal.py \
+  --component object_store \
+  --details-json '{"provider":"aws-s3","scope":"sample-raw-prefix"}' \
+  --record-status \
+  --restore-command-json '[
+    "aws",
+    "s3",
+    "sync",
+    "s3://$S3_RAW_BACKUP_BUCKET/$RESTORE_SAMPLE_PREFIX",
+    "s3://$S3_RAW_RESTORE_TEST_BUCKET/$RESTORE_SAMPLE_PREFIX",
+    "--only-show-errors"
+  ]' \
+  --verify-command-json '[
+    "python",
+    "scripts/verify_object_restore_manifest.py",
+    "--manifest",
+    "/run/fyralis/restore-sample-manifest.json"
+  ]'
+```
+
+The verification command must check integrity from a manifest or schema check,
+not merely command completion. Do not include restored object keys, customer
+names, tenant IDs, payload excerpts, or credentials in `details-json`.
+
 Record status from a backup job:
 
 ```bash
