@@ -14,12 +14,12 @@ client.py's job. The worker only knows about the client interface.
 from __future__ import annotations
 
 import asyncio
-import random
 import signal
 from typing import Any, Awaitable, Callable
 
 import structlog
 
+from lib.shared.backoff import exponential_backoff_seconds
 from services.ingest.integrations.discord.gateway import metrics
 from services.ingest.integrations.discord.gateway.client import (
     DiscordGatewayClient,
@@ -42,9 +42,13 @@ _BACKOFF_JITTER = 0.25  # ±25%
 
 def _next_backoff(attempt: int) -> float:
     """Backoff schedule: 1, 2, 4, 8, 16, 32, 60, 60, … (s), ±25% jitter."""
-    base = min(_BACKOFF_BASE_S * (2 ** attempt), _BACKOFF_CAP_S)
-    jitter = base * _BACKOFF_JITTER * (2 * random.random() - 1)
-    return max(0.5, base + jitter)
+    return exponential_backoff_seconds(
+        attempt + 1,
+        base_seconds=_BACKOFF_BASE_S,
+        cap_seconds=_BACKOFF_CAP_S,
+        jitter_ratio=_BACKOFF_JITTER,
+        minimum_seconds=0.5,
+    )
 
 
 class GatewayWorker:

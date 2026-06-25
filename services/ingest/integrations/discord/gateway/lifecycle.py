@@ -33,12 +33,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 import asyncpg
 
+from lib.shared.backoff import exponential_backoff_seconds
 from services.ingest.integrations.discord.gateway.client import (
     GatewaySessionState,
 )
@@ -102,7 +102,6 @@ async def acquire_lease_with_backoff(
         asyncio.get_event_loop().time()
         + config.lease_acquire_total_timeout_s
     )
-    backoff_s = config.lease_acquire_initial_backoff_s
     attempt = 0
 
     while not stop_event.is_set():
@@ -126,9 +125,13 @@ async def acquire_lease_with_backoff(
             )
             return False
 
-        # ±25% jitter on the backoff.
-        jitter = backoff_s * 0.25 * (2 * random.random() - 1)
-        sleep_s = max(0.1, backoff_s + jitter)
+        sleep_s = exponential_backoff_seconds(
+            attempt + 1,
+            base_seconds=config.lease_acquire_initial_backoff_s,
+            cap_seconds=config.lease_acquire_max_backoff_s,
+            jitter_ratio=0.25,
+            minimum_seconds=0.1,
+        )
         log.info(
             "gateway_lifecycle.lease_busy",
             extra={"attempt": attempt, "sleep_s": sleep_s},
@@ -141,10 +144,6 @@ async def acquire_lease_with_backoff(
             pass
 
         attempt += 1
-        backoff_s = min(
-            config.lease_acquire_max_backoff_s,
-            backoff_s * 2.0,
-        )
 
     return False
 

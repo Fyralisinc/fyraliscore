@@ -44,6 +44,11 @@ from lib.shared.errors import CompanyOSError
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
 
+from services.app.gateway.product_workflow_metrics import (
+    ProductWorkflowEvent,
+    ProductWorkflowOutcome,
+    record_product_workflow_event,
+)
 from services.ingest.integrations.gmail.audit import write_install_audit
 from services.ingest.integrations.gmail.client import (
     DIRECTORY_READ_SCOPES,
@@ -229,6 +234,7 @@ async def connect_finalize(request: Request) -> JSONResponse:
             scope_alias=scope_alias,
         )
     )
+    _record_source_event("source_install_completed", "success")
 
     return JSONResponse(content={
         "ok": True,
@@ -247,6 +253,8 @@ async def gmail_status(request: Request) -> JSONResponse:
     active install."""
     tenant_id = _tenant_from_request(request)
     snapshot = await get_gmail_status(tenant_id=tenant_id)
+    outcome = "success" if snapshot.get("connected") is True else "not_found"
+    _record_source_event("source_status_checked", outcome)
     return JSONResponse(content=snapshot)
 
 
@@ -267,6 +275,7 @@ async def gmail_uninstall(request: Request) -> JSONResponse:
         gmail_installation_id=install_id,
         actor_email=actor_email,
     )
+    _record_source_event("source_uninstalled", "success")
     return JSONResponse(content={
         "ok": True,
         "gmail_installation_id": str(install_id),
@@ -310,6 +319,17 @@ def _require_installation_id(body: dict[str, Any]) -> UUID:
         return UUID(raw_id)
     except (ValueError, AttributeError, TypeError):
         raise HTTPException(status_code=400, detail="gmail_installation_id must be a UUID")
+
+
+def _record_source_event(
+    event: ProductWorkflowEvent,
+    outcome: ProductWorkflowOutcome,
+) -> None:
+    record_product_workflow_event(
+        workflow="source_onboarding",
+        event=event,
+        outcome=outcome,
+    )
 
 
 async def _provision_install(

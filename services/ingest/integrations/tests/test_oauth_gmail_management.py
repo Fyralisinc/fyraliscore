@@ -24,8 +24,35 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from lib.observability import counter, reset_default_for_tests
+from services.app.gateway.product_workflow_metrics import (
+    PRODUCT_WORKFLOW_EVENT_OUTCOMES,
+    PRODUCT_WORKFLOW_EVENTS,
+    PRODUCT_WORKFLOWS,
+)
+
 
 pytestmark = pytest.mark.asyncio
+
+
+def _events():
+    return counter(
+        "product_workflow_events_total",
+        "lookup",
+        ("workflow", "event", "outcome"),
+        allowed_label_values={
+            "workflow": PRODUCT_WORKFLOWS,
+            "event": PRODUCT_WORKFLOW_EVENTS,
+            "outcome": PRODUCT_WORKFLOW_EVENT_OUTCOMES,
+        },
+    )
+
+
+@pytest.fixture(autouse=True)
+def _clean_metrics():
+    reset_default_for_tests()
+    yield
+    reset_default_for_tests()
 
 
 def _make_app(*, with_auth: bool, tenant_id: UUID | None = None) -> FastAPI:
@@ -82,6 +109,40 @@ async def test_status_returns_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     assert r.status_code == 200, r.text
     assert r.json() == {"connected": True, "installation_id": "inst-1", "watches": {"total": 3}}
     assert seen["tenant_id"] == tenant  # tenant came from request.state.auth
+    assert (
+        _events().get(
+            workflow="source_onboarding",
+            event="source_status_checked",
+            outcome="success",
+        )
+        == 1
+    )
+
+
+async def test_status_records_not_found_for_disconnected_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.ingest.integrations.gmail import oauth as gmail_oauth
+
+    async def _fake_status(*, tenant_id):
+        return {"connected": False}
+
+    monkeypatch.setattr(gmail_oauth, "get_gmail_status", _fake_status)
+
+    app = _make_app(with_auth=True, tenant_id=uuid4())
+    async with _client(app) as c:
+        r = await c.get("/integrations/gmail/status")
+
+    assert r.status_code == 200, r.text
+    assert r.json() == {"connected": False}
+    assert (
+        _events().get(
+            workflow="source_onboarding",
+            event="source_status_checked",
+            outcome="not_found",
+        )
+        == 1
+    )
 
 
 # ---------------------------------------------------------------------
@@ -136,6 +197,14 @@ async def test_uninstall_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
         "gmail_installation_id": install_id,
         "actor_email": "ops@acme.com",
     }
+    assert (
+        _events().get(
+            workflow="source_onboarding",
+            event="source_uninstalled",
+            outcome="success",
+        )
+        == 1
+    )
 
 
 # ---------------------------------------------------------------------

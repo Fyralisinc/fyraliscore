@@ -12,6 +12,7 @@ from uuid import uuid4
 import asyncpg
 import pytest
 
+from lib.shared.db import configure_connection_timeouts
 from services.ingest.integrations.discord.gateway.session_state import (
     PersistedGatewaySession,
     STALENESS_THRESHOLD,
@@ -222,6 +223,7 @@ async def test_save_uses_pgbouncer_compatible_pool():
     )
     assert captured_kwargs["min_size"] == 1
     assert captured_kwargs["max_size"] == 5
+    assert captured_kwargs["init"] is configure_connection_timeouts
     # DSN positional.
     assert captured_kwargs["__args"] == ("postgresql://example/db",)
 

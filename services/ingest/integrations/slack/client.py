@@ -53,6 +53,20 @@ class SlackApiError(CompanyOSError):
     `slack_error` (when present), and `attempts`."""
     default_code = "slack_api_error"
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        recoverable: bool | None = None,
+        **context: Any,
+    ) -> None:
+        super().__init__(message, **context)
+        if code is not None:
+            self._code = code
+        if recoverable is not None:
+            self._recoverable = recoverable
+
 
 class SlackClient:
     """Per-installation Slack Web API client.
@@ -189,6 +203,7 @@ class SlackClient:
                         "transport error and wall budget exhausted",
                         endpoint=endpoint,
                         attempts=attempt,
+                        error_type=type(exc).__name__,
                     ) from exc
                 await asyncio.sleep(sleep_s)
                 continue
@@ -202,6 +217,7 @@ class SlackClient:
                 if attempt >= self._max_attempts or retry_after >= remaining:
                     raise SlackApiError(
                         "Slack rate limit (429) exhausted retry budget",
+                        code="slack_api_rate_limited",
                         endpoint=endpoint,
                         retry_after=retry_after,
                         attempts=attempt,
@@ -209,7 +225,26 @@ class SlackClient:
                 await asyncio.sleep(retry_after)
                 continue
 
-            r.raise_for_status()
+            if r.status_code >= 500:
+                raise SlackApiError(
+                    f"Slack returned HTTP {r.status_code}",
+                    endpoint=endpoint,
+                    http_status=r.status_code,
+                    attempts=attempt,
+                )
+            if r.status_code >= 400:
+                code = (
+                    "slack_api_unauthorized"
+                    if r.status_code in (401, 403)
+                    else "slack_api_error"
+                )
+                raise SlackApiError(
+                    f"Slack returned HTTP {r.status_code}",
+                    code=code,
+                    endpoint=endpoint,
+                    http_status=r.status_code,
+                    attempts=attempt,
+                )
             data = r.json()
             if data.get("ok") is True:
                 return data

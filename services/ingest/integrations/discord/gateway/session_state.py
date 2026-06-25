@@ -57,6 +57,7 @@ from uuid import UUID
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
+from lib.shared.db import configure_connection_timeouts
 from lib.shared.ids import uuid7
 
 
@@ -120,6 +121,7 @@ async def make_session_state_pool(
         min_size=1,
         max_size=max_size,
         command_timeout=command_timeout,
+        init=configure_connection_timeouts,
         statement_cache_size=0,  # pgbouncer transaction mode (M1.3 ADR Q1)
     )
 
