@@ -37,6 +37,7 @@ from services.reasoning.relationships import (
     make_situation_candidate,
 )
 from services.reasoning.think.tests.conftest import ScriptedProvider, make_embedding
+from services.reasoning.think.observability import METRICS
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
 
@@ -122,6 +123,54 @@ async def _lock_trigger(pool, trigger_id: UUID, worker_id: str) -> None:
             trigger_id,
             worker_id,
         )
+
+
+async def _seed_think_cost(
+    pool,
+    tenant: UUID,
+    *,
+    llm_calls_count: int = 1,
+    cost_usd: str = "0",
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO think_run_costs (
+                trigger_id, tenant_id, trigger_kind, llm_calls_count,
+                llm_input_tokens_total, llm_output_tokens_total,
+                llm_cost_usd, latency_total_ms, retry_count, outcome,
+                model_name
+            )
+            VALUES ($1, $2, 'T1', $3, $4, $5, $6::numeric, 10, 0, 'success',
+                    'test-model')
+            """,
+            uuid7(),
+            tenant,
+            llm_calls_count,
+            input_tokens,
+            output_tokens,
+            cost_usd,
+        )
+
+
+async def _locked_trigger_row(
+    pool,
+    tenant: UUID,
+    *,
+    worker_id: str,
+) -> tuple[UUID, asyncpg.Record]:
+    obs = await _seed_signal_observation(pool, tenant)
+    trigger_id = await _enqueue_trigger_row(pool, tenant, obs)
+    await _lock_trigger(pool, trigger_id, worker_id)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM think_trigger_queue WHERE id = $1",
+            trigger_id,
+        )
+    assert row is not None
+    return trigger_id, row
 
 
 async def test_worker_config_defaults_are_batch_first(monkeypatch):
@@ -331,6 +380,118 @@ async def test_poll_reclaims_stale_locked_rows(
             trig,
         )
     assert owner == "reclaimer"
+
+
+async def test_startup_recovery_releases_orphaned_locks(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs = await _seed_signal_observation(fresh_db, tenant)
+    own_lock = await _enqueue_trigger_row(fresh_db, tenant, obs)
+    stale_lock = await _enqueue_trigger_row(fresh_db, tenant, obs)
+    active_other_lock = await _enqueue_trigger_row(fresh_db, tenant, obs)
+
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET locked_by = 'restart-worker',
+                locked_at = now()
+            WHERE id = $1
+            """,
+            own_lock,
+        )
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET locked_by = 'dead-worker',
+                locked_at = now() - interval '10 minutes'
+            WHERE id = $1
+            """,
+            stale_lock,
+        )
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET locked_by = 'live-worker',
+                locked_at = now()
+            WHERE id = $1
+            """,
+            active_other_lock,
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            worker_id="restart-worker",
+            trigger_lock_timeout_s=60,
+            tenant_filter=tenant,
+        ),
+    )
+
+    recovered = await worker._recover_orphaned_trigger_locks()
+
+    async with fresh_db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, locked_by
+            FROM think_trigger_queue
+            WHERE id = ANY($1::uuid[])
+            """,
+            [own_lock, stale_lock, active_other_lock],
+        )
+
+    locks = {row["id"]: row["locked_by"] for row in rows}
+    assert recovered == 2
+    assert locks[own_lock] is None
+    assert locks[stale_lock] is None
+    assert locks[active_other_lock] == "live-worker"
+
+
+async def test_trigger_heartbeat_extends_owned_lock(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs = await _seed_signal_observation(fresh_db, tenant)
+    trig = await _enqueue_trigger_row(fresh_db, tenant, obs)
+    async with fresh_db.acquire() as conn:
+        before = await conn.fetchval(
+            """
+            UPDATE think_trigger_queue
+            SET locked_by = 'heartbeat-worker',
+                locked_at = now() - interval '10 minutes'
+            WHERE id = $1
+            RETURNING locked_at
+            """,
+            trig,
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            worker_id="heartbeat-worker",
+            trigger_heartbeat_interval_s=0.01,
+            tenant_filter=tenant,
+        ),
+    )
+    task = asyncio.create_task(worker._heartbeat_trigger(trig))
+    try:
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            async with fresh_db.acquire() as conn:
+                after = await conn.fetchval(
+                    "SELECT locked_at FROM think_trigger_queue WHERE id = $1",
+                    trig,
+                )
+            if after > before:
+                break
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert after > before
 
 
 async def test_poll_does_not_overlease_when_in_flight_is_full(
@@ -1961,12 +2122,26 @@ async def test_per_tenant_concurrency_cap(fresh_db, tenant, tenant_cleanup):
 
 
 async def test_queue_depth_counts_pending_rows(fresh_db, tenant, tenant_cleanup):
+    METRICS.reset()
     obs = await _seed_signal_observation(fresh_db, tenant)
-    for _ in range(5):
+    trigger_ids = [
         await _enqueue_trigger_row(fresh_db, tenant, obs)
+        for _ in range(5)
+    ]
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET locked_by = 'dead-worker',
+                locked_at = now() - interval '10 minutes'
+            WHERE id = $1
+            """,
+            trigger_ids[0],
+        )
     worker = ThinkWorker(fresh_db, config=WorkerConfig(tenant_filter=tenant))
     depth = await worker._queue_depth()
     assert depth >= 5
+    assert METRICS.snapshot()["stale_trigger_locks"] >= 1
 
 
 async def test_backpressure_does_not_prevent_enqueue(
@@ -2058,6 +2233,145 @@ async def test_run_waits_for_in_flight_tasks_on_shutdown(
 
 
 # =====================================================================
+# Budget ceilings (pause, not failure)
+# =====================================================================
+
+
+async def test_process_trigger_defers_when_daily_spend_budget_exhausted(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+    monkeypatch,
+):
+    monkeypatch.setenv("THINK_DAILY_BUDGET_ENFORCEMENT", "1")
+    monkeypatch.setenv("LLM_DAILY_BUDGET_USD_PER_TENANT", "0.01")
+    monkeypatch.delenv("LLM_DAILY_TOKEN_BUDGET_PER_TENANT", raising=False)
+    monkeypatch.delenv("LLM_DAILY_REQUEST_BUDGET_PER_TENANT", raising=False)
+    await _seed_think_cost(fresh_db, tenant, cost_usd="0.02")
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(worker_id="budget-worker", tenant_filter=tenant),
+    )
+    trigger_id, row = await _locked_trigger_row(
+        fresh_db, tenant, worker_id=worker.config.worker_id
+    )
+
+    await worker._process_trigger(row)
+
+    async with fresh_db.acquire() as conn:
+        queued = await conn.fetchrow(
+            """
+            SELECT attempts, completed_at, locked_by, scheduled_for, now() AS db_now
+            FROM think_trigger_queue
+            WHERE id = $1
+            """,
+            trigger_id,
+        )
+        run_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM think_runs WHERE trigger_id = $1",
+            trigger_id,
+        )
+    assert queued["attempts"] == 0
+    assert queued["completed_at"] is None
+    assert queued["locked_by"] is None
+    assert queued["scheduled_for"] > queued["db_now"]
+    assert run_count == 0
+
+
+async def test_process_trigger_defers_when_daily_token_budget_exhausted(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+    monkeypatch,
+):
+    monkeypatch.setenv("THINK_DAILY_BUDGET_ENFORCEMENT", "1")
+    monkeypatch.delenv("LLM_DAILY_BUDGET_USD_PER_TENANT", raising=False)
+    monkeypatch.setenv("LLM_DAILY_TOKEN_BUDGET_PER_TENANT", "100")
+    monkeypatch.delenv("LLM_DAILY_REQUEST_BUDGET_PER_TENANT", raising=False)
+    await _seed_think_cost(
+        fresh_db,
+        tenant,
+        input_tokens=70,
+        output_tokens=30,
+    )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(worker_id="token-budget-worker", tenant_filter=tenant),
+    )
+    trigger_id, row = await _locked_trigger_row(
+        fresh_db, tenant, worker_id=worker.config.worker_id
+    )
+
+    await worker._process_trigger(row)
+
+    async with fresh_db.acquire() as conn:
+        queued = await conn.fetchrow(
+            """
+            SELECT attempts, completed_at, locked_by, scheduled_for, now() AS db_now
+            FROM think_trigger_queue
+            WHERE id = $1
+            """,
+            trigger_id,
+        )
+        run_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM think_runs WHERE trigger_id = $1",
+            trigger_id,
+        )
+    assert queued["attempts"] == 0
+    assert queued["completed_at"] is None
+    assert queued["locked_by"] is None
+    assert queued["scheduled_for"] > queued["db_now"]
+    assert run_count == 0
+
+
+async def test_process_trigger_defers_when_daily_request_budget_exhausted(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+    monkeypatch,
+):
+    monkeypatch.setenv("THINK_DAILY_BUDGET_ENFORCEMENT", "1")
+    monkeypatch.delenv("LLM_DAILY_BUDGET_USD_PER_TENANT", raising=False)
+    monkeypatch.delenv("LLM_DAILY_TOKEN_BUDGET_PER_TENANT", raising=False)
+    monkeypatch.setenv("LLM_DAILY_REQUEST_BUDGET_PER_TENANT", "2")
+    await _seed_think_cost(fresh_db, tenant, llm_calls_count=2)
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            worker_id="request-budget-worker",
+            tenant_filter=tenant,
+        ),
+    )
+    trigger_id, row = await _locked_trigger_row(
+        fresh_db, tenant, worker_id=worker.config.worker_id
+    )
+
+    await worker._process_trigger(row)
+
+    async with fresh_db.acquire() as conn:
+        queued = await conn.fetchrow(
+            """
+            SELECT attempts, completed_at, locked_by, scheduled_for, now() AS db_now
+            FROM think_trigger_queue
+            WHERE id = $1
+            """,
+            trigger_id,
+        )
+        run_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM think_runs WHERE trigger_id = $1",
+            trigger_id,
+        )
+    assert queued["attempts"] == 0
+    assert queued["completed_at"] is None
+    assert queued["locked_by"] is None
+    assert queued["scheduled_for"] > queued["db_now"]
+    assert run_count == 0
+
+
+# =====================================================================
 # Re-enqueue on failure (attempts++)
 # =====================================================================
 
@@ -2121,6 +2435,7 @@ async def test_mark_trigger_failed_eventually_dead_letters(
     tenant,
     tenant_cleanup,
 ):
+    METRICS.reset()
     obs = await _seed_signal_observation(fresh_db, tenant)
     trig = await _enqueue_trigger_row(fresh_db, tenant, obs)
     worker = ThinkWorker(
@@ -2139,6 +2454,10 @@ async def test_mark_trigger_failed_eventually_dead_letters(
     # semantics for trigger queue is "completed_at set + attempts=N").
     assert row["attempts"] == 3
     assert row["completed_at"] is not None
+    assert (
+        METRICS.snapshot()["retry_exhausted_total"]["think_trigger_queue"]
+        == 1
+    )
 
 
 # =====================================================================

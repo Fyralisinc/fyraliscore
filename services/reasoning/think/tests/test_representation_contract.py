@@ -38,7 +38,7 @@ def test_representation_enrichment_binds_repeated_wording_to_context() -> None:
     tenant_id = uuid4()
     actor_id = uuid4()
     obs = _obs(
-        text="Actor A raised PR #123 for ENG-42 in alpenlabs/strata-bridge",
+        text="Actor A raised PR #123 for ENG-42 in examplecorp/strata-bridge",
         actor_id=actor_id,
         content={"thread_id": "slack-thread-1"},
     )
@@ -62,7 +62,7 @@ def test_representation_enrichment_binds_repeated_wording_to_context() -> None:
                         "assertion": "A PR was raised.",
                         "claim_role": "fact",
                     },
-                    "natural": "Actor A raised PR #123 for ENG-42 in alpenlabs/strata-bridge.",
+                    "natural": "Actor A raised PR #123 for ENG-42 in examplecorp/strata-bridge.",
                     "confidence": 0.74,
                     "scope_actors": [actor_id],
                     "scope_entities": [],
@@ -92,7 +92,7 @@ def test_representation_enrichment_binds_repeated_wording_to_context() -> None:
     assert prop["contextual_frame"]["action"] == "raise_pr"
     assert "pr_123" in prop["contextual_frame"]["object_refs"]
     assert "work_item_eng_42" in prop["contextual_frame"]["work_item_refs"]
-    assert "repo_alpenlabs_strata_bridge" in prop["contextual_frame"]["repo_refs"]
+    assert "repo_examplecorp_strata_bridge" in prop["contextual_frame"]["repo_refs"]
     assert "progress_signal" in raw.claim_ops[0].entry["domain_tags"]
 
 

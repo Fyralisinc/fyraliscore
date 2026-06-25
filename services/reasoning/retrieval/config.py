@@ -134,7 +134,7 @@ class RetrievalConfig:
     trigger_observation_cap: int = 30
     historical_observation_cap: int = 4
     # Large event batches need fresh evidence anchors even when existing Models
-    # are available. Alpen showed that model-first suppression can otherwise
+    # are available. Large runs showed that model-first suppression can otherwise
     # give Think a 60-signal batch with zero prompt-facing raw observations.
     t1_event_batch_raw_observation_floor: int = 12
     t1_event_batch_raw_source_floor: int = 4

@@ -205,33 +205,27 @@ async def _prepare_apply_transaction(
     if diff_entities:
         await _acquire_region_lock(conn, diff.tenant_id, diff_entities)
 
-    prior_outcome = await check_already_applied(conn, diff.trigger_ref)
-    if prior_outcome is not None:
+    diff_hash = hash_diff(diff)
+    inserted = await conn.fetchrow(
+        """
+        INSERT INTO applied_triggers
+          (trigger_id, tenant_id, applied_at, diff_hash, trigger_kind, outcome)
+        VALUES ($1, $2, now(), $3, $4, 'pending')
+        ON CONFLICT (trigger_id) DO NOTHING
+        RETURNING outcome
+        """,
+        diff.trigger_ref,
+        diff.tenant_id,
+        diff_hash,
+        trigger_kind,
+    )
+    if inserted is None:
+        prior_outcome = await check_already_applied(conn, diff.trigger_ref)
         raise AlreadyAppliedError(
             "trigger already applied",
             trigger_id=str(diff.trigger_ref),
-            prior_outcome=prior_outcome,
+            prior_outcome=prior_outcome or "unknown",
         )
-
-    diff_hash = hash_diff(diff)
-    try:
-        await conn.execute(
-            """
-            INSERT INTO applied_triggers
-              (trigger_id, tenant_id, applied_at, diff_hash, trigger_kind, outcome)
-            VALUES ($1, $2, now(), $3, $4, 'pending')
-            """,
-            diff.trigger_ref,
-            diff.tenant_id,
-            diff_hash,
-            trigger_kind,
-        )
-    except asyncpg.exceptions.UniqueViolationError as exc:
-        raise AlreadyAppliedError(
-            "trigger already applied (race)",
-            trigger_id=str(diff.trigger_ref),
-            prior_outcome="unknown",
-        ) from exc
     return diff_hash
 
 
@@ -1309,13 +1303,9 @@ async def apply_diff(
         "applied_model_ids": [...], "state_changes_emitted": N,
         "diff_hash": "..." }
 
-    Idempotency: inserts into applied_triggers with outcome='pending'
-    FIRST. Raises AlreadyAppliedError if the trigger_id already has a
-    row — the caller handles that path. The INSERT is also guarded
-    against UniqueViolationError so that a race between the pre-check
-    and the insert (only possible when callers somehow bypass the region
-    lock) still surfaces as AlreadyAppliedError, not as a raw asyncpg
-    error.
+    Idempotency: atomically inserts into applied_triggers with
+    outcome='pending' FIRST. Raises AlreadyAppliedError if the trigger_id
+    already has a row — the caller handles that path.
     """
     diff_hash = await _prepare_apply_transaction(diff, conn, trigger_kind)
 

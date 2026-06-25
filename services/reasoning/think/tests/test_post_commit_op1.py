@@ -30,6 +30,7 @@ from services.reasoning.think.diff_schema import ClaimOp, ValidatedDiff
 from services.reasoning.think.post_commit import (
     BACKOFF_BASE_SECONDS,
     MAX_ATTEMPTS,
+    VIEW_CEO_REFRESH_CHANNEL,
     enqueue_post_commit_actions,
     fetch_pending_actions,
     process_batch,
@@ -125,10 +126,10 @@ def _reset_handlers_each_test():
 
 def test_compute_backoff_exponential():
     assert _compute_backoff(0) == 0
-    assert _compute_backoff(1) == BACKOFF_BASE_SECONDS  # 2s
-    assert _compute_backoff(2) == BACKOFF_BASE_SECONDS * 2  # 4s
-    assert _compute_backoff(3) == BACKOFF_BASE_SECONDS * 4  # 8s
-    assert _compute_backoff(5) == BACKOFF_BASE_SECONDS * 16  # 32s
+    assert _compute_backoff(1) == BACKOFF_BASE_SECONDS
+    assert _compute_backoff(2) == BACKOFF_BASE_SECONDS * 2
+    assert _compute_backoff(3) == BACKOFF_BASE_SECONDS * 4
+    assert _compute_backoff(5) == BACKOFF_BASE_SECONDS * 16
     # Cap at 300s regardless of exponent blowing up.
     assert _compute_backoff(20) == 300
 
@@ -394,6 +395,58 @@ async def test_enqueue_dedup_collapses_duplicates(
     assert total == 4
 
 
+async def test_enqueue_dedup_suppresses_processed_historical_rows(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    """A processed action row still owns its trigger/action idempotency key."""
+    trigger_ref = uuid.uuid4()
+    diff = _make_diff(tenant_id=tenant, trigger_ref=trigger_ref)
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            first = await enqueue_post_commit_actions(
+                trigger=None,
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[
+                    {"kind": "confidence_drop", "region": {}, "significance": 0.5}
+                ],
+            )
+        await conn.execute(
+            """
+            UPDATE pending_post_commit_actions
+            SET processed_at = now()
+            WHERE trigger_id = $1
+            """,
+            trigger_ref,
+        )
+        async with conn.transaction():
+            second = await enqueue_post_commit_actions(
+                trigger=None,
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[
+                    {"kind": "confidence_drop", "region": {}, "significance": 0.5}
+                ],
+            )
+
+    assert len(first) == 4
+    assert len(second) == 0
+
+    async with db_pool.acquire() as conn:
+        total = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM pending_post_commit_actions
+            WHERE trigger_id = $1
+            """,
+            trigger_ref,
+        )
+    assert total == 4
+
+
 async def test_enqueue_rolls_back_with_outer_tx(
     db_pool: asyncpg.Pool,
     tenant,
@@ -480,6 +533,210 @@ async def test_worker_processes_pending_rows(
     assert pending == 0
 
 
+async def test_default_broadcast_realtime_notifies_ceo_refresh(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    trigger_ref = uuid.uuid4()
+    diff = _make_diff(
+        tenant_id=tenant,
+        trigger_ref=trigger_ref,
+        with_predictions=False,
+        with_entities=False,
+    )
+    received: asyncio.Queue[str] = asyncio.Queue()
+
+    def _listener(
+        connection: asyncpg.Connection,
+        pid: int,
+        channel: str,
+        payload: str,
+    ) -> None:
+        del connection, pid, channel
+        received.put_nowait(payload)
+
+    async with db_pool.acquire() as listen_conn:
+        await listen_conn.add_listener(VIEW_CEO_REFRESH_CHANNEL, _listener)
+        try:
+            async with db_pool.acquire() as conn:
+                async with conn.transaction():
+                    await enqueue_post_commit_actions(
+                        trigger=None,
+                        validated_diff=diff,
+                        conn=conn,
+                        anomalies=[],
+                    )
+
+            stats = await process_batch(db_pool, limit=10, tenant_id=tenant)
+            assert stats.processed == 1
+
+            raw = await asyncio.wait_for(received.get(), timeout=5.0)
+        finally:
+            await listen_conn.remove_listener(VIEW_CEO_REFRESH_CHANNEL, _listener)
+
+    payload = json.loads(raw)
+    assert payload["tenant_id"] == str(tenant)
+    assert payload["trigger_id"] == str(trigger_ref)
+    assert payload["reason"] == "substrate_changed"
+
+
+async def test_default_schedule_predictions_notifies_ceo_refresh(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    trigger_ref = uuid.uuid4()
+    received: asyncio.Queue[str] = asyncio.Queue()
+
+    def _listener(
+        connection: asyncpg.Connection,
+        pid: int,
+        channel: str,
+        payload: str,
+    ) -> None:
+        del connection, pid, channel
+        received.put_nowait(payload)
+
+    async with db_pool.acquire() as listen_conn:
+        await listen_conn.add_listener(VIEW_CEO_REFRESH_CHANNEL, _listener)
+        try:
+            async with db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO pending_post_commit_actions (
+                      tenant_id, trigger_id, action_kind, action_payload
+                    )
+                    VALUES ($1, $2, 'schedule_predictions', $3::jsonb)
+                    """,
+                    tenant,
+                    trigger_ref,
+                    json.dumps(
+                        {
+                            "predictions": [
+                                {
+                                    "evaluate_at": datetime.now(
+                                        timezone.utc
+                                    ).isoformat(),
+                                }
+                            ]
+                        }
+                    ),
+                )
+
+            stats = await process_batch(db_pool, limit=10, tenant_id=tenant)
+            assert stats.processed == 1
+
+            raw = await asyncio.wait_for(received.get(), timeout=5.0)
+        finally:
+            await listen_conn.remove_listener(VIEW_CEO_REFRESH_CHANNEL, _listener)
+
+    payload = json.loads(raw)
+    assert payload["tenant_id"] == str(tenant)
+    assert payload["trigger_id"] == str(trigger_ref)
+    assert payload["reason"] == "prediction_scheduled"
+
+
+async def test_schedule_predictions_missing_evaluate_at_retries(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    trigger_ref = uuid.uuid4()
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO pending_post_commit_actions (
+              tenant_id, trigger_id, action_kind, action_payload
+            )
+            VALUES ($1, $2, 'schedule_predictions', $3::jsonb)
+            """,
+            tenant,
+            trigger_ref,
+            json.dumps({"predictions": [{"entry": {"claim_role": "prediction"}}]}),
+        )
+
+    stats = await process_batch(db_pool, limit=10, tenant_id=tenant)
+
+    assert stats.processed == 0
+    assert stats.failed == 1
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT attempts, processed_at, last_error
+            FROM pending_post_commit_actions
+            WHERE trigger_id = $1
+            """,
+            trigger_ref,
+        )
+    assert row["attempts"] == 1
+    assert row["processed_at"] is None
+    assert "missing evaluate_at" in (row["last_error"] or "")
+
+
+async def test_concurrent_workers_process_each_action_once(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    """Two post-commit replicas must split the queue without duplicate
+    dispatch. The row-level guarantee is `FOR UPDATE SKIP LOCKED`; the
+    barrier keeps both handlers inside their batch transaction long enough
+    to exercise the lock handoff instead of accidentally serializing.
+    """
+    trigger_refs = [uuid.uuid4(), uuid.uuid4()]
+    started = 0
+    release = asyncio.Event()
+    dispatched: list[UUID] = []
+    dispatch_lock = asyncio.Lock()
+
+    async def _blocking_handler(payload, tid, trid):
+        nonlocal started
+        async with dispatch_lock:
+            started += 1
+            if started == 2:
+                release.set()
+        await release.wait()
+        dispatched.append(trid)
+
+    register_handler("broadcast_realtime", _blocking_handler)
+
+    async with db_pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO pending_post_commit_actions (
+              tenant_id, trigger_id, action_kind, action_payload
+            )
+            VALUES ($1, $2, 'broadcast_realtime', '{}'::jsonb)
+            """,
+            [(tenant, trigger_ref) for trigger_ref in trigger_refs],
+        )
+
+    stats_a, stats_b = await asyncio.wait_for(
+        asyncio.gather(
+            process_batch(db_pool, limit=1, tenant_id=tenant),
+            process_batch(db_pool, limit=1, tenant_id=tenant),
+        ),
+        timeout=5.0,
+    )
+
+    assert stats_a.processed + stats_b.processed == 2
+    assert stats_a.failed == stats_b.failed == 0
+    assert sorted(dispatched) == sorted(trigger_refs)
+    assert len(dispatched) == len(set(dispatched))
+
+    async with db_pool.acquire() as conn:
+        processed_count = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM pending_post_commit_actions
+            WHERE tenant_id = $1 AND processed_at IS NOT NULL
+            """,
+            tenant,
+        )
+    assert processed_count == 2
+
+
 async def test_worker_retries_on_handler_failure(
     db_pool: asyncpg.Pool,
     tenant,
@@ -531,7 +788,7 @@ async def test_worker_retries_on_handler_failure(
     assert row["processed_at"] is None
     assert row["dead_lettered_at"] is None
     assert "boom" in (row["last_error"] or "")
-    # Scheduled_at should be in the future (+2s backoff).
+    # scheduled_at should be in the future using the shared queue backoff.
     now = await _db_now(db_pool)
     assert row["scheduled_at"] > now
 

@@ -218,10 +218,122 @@ async def test_think_runs_rolls_back_on_transaction_rollback(
     assert row is None
 
 
+async def test_debug_capture_is_disabled_in_production_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FYRALIS_ENV", "prod")
+    monkeypatch.delenv("COMPANY_OS_ENV", raising=False)
+    monkeypatch.delenv("DEBUG_ARTIFACT_CAPTURE", raising=False)
+
+    assert debug_capture._enabled() is False
+
+
+async def test_debug_capture_refuses_production_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FYRALIS_ENV", "prod")
+    monkeypatch.delenv("COMPANY_OS_ENV", raising=False)
+    monkeypatch.setenv("DEBUG_ARTIFACT_CAPTURE", "1")
+
+    assert debug_capture._enabled() is False
+
+
+async def test_debug_capture_defaults_on_outside_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FYRALIS_ENV", "test")
+    monkeypatch.delenv("COMPANY_OS_ENV", raising=False)
+    monkeypatch.delenv("DEBUG_ARTIFACT_CAPTURE", raising=False)
+
+    assert debug_capture._enabled() is True
+
+
+async def test_debug_capture_does_not_write_artifacts_in_production(
+    fresh_db, tenant, tenant_cleanup, monkeypatch,
+):
+    monkeypatch.setenv("FYRALIS_ENV", "prod")
+    monkeypatch.delenv("COMPANY_OS_ENV", raising=False)
+    monkeypatch.setenv("DEBUG_ARTIFACT_CAPTURE", "1")
+    run_id = uuid7()
+
+    async with fresh_db.acquire() as conn:
+        async with conn.transaction():
+            await debug_capture.capture(
+                conn,
+                run_id=run_id,
+                tenant_id=tenant,
+                stage="prompt",
+                payload={"prompt": "customer-sensitive prompt"},
+            )
+        row = await conn.fetchrow(
+            """
+            SELECT 1 FROM think_run_artifacts
+            WHERE run_id = $1 AND tenant_id = $2
+            """,
+            run_id,
+            tenant,
+        )
+
+    assert row is None
+
+
+async def test_debug_capture_defers_transactional_artifacts_until_flush(
+    fresh_db, tenant, tenant_cleanup, monkeypatch,
+):
+    monkeypatch.setenv("FYRALIS_ENV", "test")
+    monkeypatch.delenv("COMPANY_OS_ENV", raising=False)
+    monkeypatch.setenv("DEBUG_ARTIFACT_CAPTURE", "1")
+    run_id = uuid7()
+
+    with debug_capture.defer_transactional_captures() as scope:
+        async with fresh_db.acquire() as conn:
+            async with conn.transaction():
+                await debug_capture.capture(
+                    conn,
+                    run_id=run_id,
+                    tenant_id=tenant,
+                    stage="response",
+                    payload={"raw_diff": {"claim_ops": []}},
+                )
+                row_during_tx = await conn.fetchrow(
+                    """
+                    SELECT 1 FROM think_run_artifacts
+                    WHERE run_id = $1 AND tenant_id = $2
+                    """,
+                    run_id,
+                    tenant,
+                )
+
+    assert row_during_tx is None
+    assert len(scope.artifacts) == 1
+
+    await debug_capture.flush_captures(fresh_db, scope.artifacts)
+
+    async with fresh_db.acquire() as conn:
+        row_after_flush = await conn.fetchrow(
+            """
+            SELECT stage, payload FROM think_run_artifacts
+            WHERE run_id = $1 AND tenant_id = $2
+            """,
+            run_id,
+            tenant,
+        )
+
+    assert row_after_flush is not None
+    assert row_after_flush["stage"] == "response"
+    payload = row_after_flush["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    assert payload["raw_diff"]["claim_ops"] == []
+
+
 async def test_debug_capture_insert_error_does_not_poison_transaction(
     fresh_db, tenant, tenant_cleanup, monkeypatch,
 ):
     """Best-effort artifact capture must not abort the Think tx."""
+    monkeypatch.setenv("FYRALIS_ENV", "test")
+    monkeypatch.delenv("COMPANY_OS_ENV", raising=False)
+    monkeypatch.setenv("DEBUG_ARTIFACT_CAPTURE", "1")
     record = ThinkRunRecord(
         id=uuid7(),
         tenant_id=tenant,
@@ -377,6 +489,8 @@ async def test_metrics_inc_and_snapshot_roundtrip():
     m.observe_cascade_depth("T1", 5)
     m.observe_region_lock_wait(25.0)
     m.set_queue_depth("tenant_a", 10)
+    m.set_stale_trigger_locks(3)
+    m.inc_retry_exhausted("think_trigger_queue")
 
     snap = m.snapshot()
     assert snap["runs_total"]["T1"] == 2
@@ -387,17 +501,23 @@ async def test_metrics_inc_and_snapshot_roundtrip():
     assert snap["cascade_depth_reached"]["T1"] == [5]
     assert snap["region_lock_waits_ms"] == [25.0]
     assert snap["queue_depth"]["tenant_a"] == 10
+    assert snap["stale_trigger_locks"] == 3
+    assert snap["retry_exhausted_total"]["think_trigger_queue"] == 1
 
 
 async def test_metrics_reset_clears_state():
     m = Metrics()
     m.inc_run("T1")
     m.observe_latency("T1", 100.0)
+    m.set_stale_trigger_locks(2)
+    m.inc_retry_exhausted("think_trigger_queue")
     m.reset()
     snap = m.snapshot()
     assert snap["runs_total"] == {}
     assert snap["runs_failed"] == {}
     assert snap["run_latency_ms"] == {}
+    assert snap["stale_trigger_locks"] == 0
+    assert snap["retry_exhausted_total"] == {}
 
 
 async def test_emit_helper_does_not_raise():

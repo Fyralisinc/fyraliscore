@@ -1,6 +1,6 @@
 """Representation enrichment for Think diffs.
 
-This module turns the Alpen lessons into deterministic substrate behavior:
+This module turns large-run lessons into deterministic substrate behavior:
 repeated wording is bound to context before it can be compressed, every new
 model carries coverage metadata, and repetitive source streams can still
 produce compact source/pattern memory instead of becoming silent no-ops.

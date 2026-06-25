@@ -52,6 +52,18 @@ def test_set_queue_depth_renders_aggregate_gauge():
     assert "# TYPE think_queue_depth gauge" in text
 
 
+def test_queue_health_metrics_render_without_tenant_labels():
+    METRICS.set_stale_trigger_locks(2)
+    METRICS.inc_retry_exhausted("think_trigger_queue")
+    text = render_prometheus_text()
+    assert "think_trigger_stale_locks 2" in text
+    assert (
+        'think_queue_retry_exhausted_total{queue="think_trigger_queue"} 1'
+        in text
+    )
+    assert "tenant" not in text
+
+
 def test_observe_latency_renders_p95_line():
     # 100ms samples → 0.1s p95 (nearest-rank over the rolling window).
     for _ in range(10):

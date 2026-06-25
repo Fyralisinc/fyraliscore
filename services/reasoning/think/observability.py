@@ -60,6 +60,8 @@ class Metrics:
     run_latency_ms: dict[str, list[float]] = field(default_factory=dict)
     ops_by_kind: dict[str, int] = field(default_factory=dict)
     queue_depth: dict[str, int] = field(default_factory=dict)   # per tenant
+    stale_trigger_locks: int = 0
+    retry_exhausted_total: dict[str, int] = field(default_factory=dict)
     cascade_depth_reached: dict[str, list[int]] = field(default_factory=dict)
     region_lock_waits_ms: list[float] = field(default_factory=list)
     # OP-4: dropped-op counters keyed by (reason, op_type).
@@ -116,6 +118,14 @@ class Metrics:
 
     def set_queue_depth(self, tenant_id: UUID | str, depth: int) -> None:
         self.queue_depth[str(tenant_id)] = depth
+
+    def set_stale_trigger_locks(self, count: int) -> None:
+        self.stale_trigger_locks = max(0, int(count))
+
+    def inc_retry_exhausted(self, queue: str, n: int = 1) -> None:
+        self.retry_exhausted_total[queue] = (
+            self.retry_exhausted_total.get(queue, 0) + n
+        )
 
     def inc_reconcile_decision(self, decision: str, n: int = 1) -> None:
         """`think.reconcile.decisions_total{decision}` counter.
@@ -199,6 +209,8 @@ class Metrics:
             },
             "ops_by_kind": dict(self.ops_by_kind),
             "queue_depth": dict(self.queue_depth),
+            "stale_trigger_locks": self.stale_trigger_locks,
+            "retry_exhausted_total": dict(self.retry_exhausted_total),
             "cascade_depth_reached": {
                 k: list(v) for k, v in self.cascade_depth_reached.items()
             },
@@ -225,6 +237,8 @@ class Metrics:
         self.run_latency_ms.clear()
         self.ops_by_kind.clear()
         self.queue_depth.clear()
+        self.stale_trigger_locks = 0
+        self.retry_exhausted_total.clear()
         self.cascade_depth_reached.clear()
         self.region_lock_waits_ms.clear()
         self.validation_dropped_ops.clear()
@@ -330,6 +344,18 @@ def render_prometheus_text() -> str:
         _family(lines, "think_queue_tracked_tenants", "gauge",
                 "Distinct tenants with a recorded queue-depth sample.", (),
                 [((), float(len(tracked)))])
+    _family(
+        lines, "think_trigger_stale_locks", "gauge",
+        "Incomplete think_trigger_queue rows with expired or missing lock heartbeat.",
+        (),
+        [((), float(m.stale_trigger_locks))],
+    )
+    _family(
+        lines, "think_queue_retry_exhausted_total", "counter",
+        "Queue rows that exhausted retries and entered terminal dead-letter semantics.",
+        ("queue",),
+        [((queue,), float(v)) for queue, v in m.retry_exhausted_total.items()],
+    )
 
     _family(
         lines, "think_cascade_depth_p95", "gauge",
