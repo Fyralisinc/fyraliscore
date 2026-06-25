@@ -45,6 +45,8 @@ class SourceSpec:
     ref_columns: tuple[str, ...]
     entity_table: str | None
     entity_install_column: str | None
+    base_url_column: str | None = "base_url"
+    extra_output_columns: tuple[str, ...] = ()
     webhook_installation_id_column: str | None = None
     webhook_installation_id_transform: str | None = None
 
@@ -185,12 +187,47 @@ SPECS: dict[str, SourceSpec] = {
         entity_install_column="ashby_installation_id",
         webhook_installation_id_column="org_id",
     ),
+    "aws": SourceSpec(
+        source="aws",
+        table="aws_installations",
+        scope_column="account_id",
+        ref_columns=("secret_ref",),
+        entity_table=None,
+        entity_install_column=None,
+        base_url_column=None,
+        extra_output_columns=("region", "credential_kind"),
+    ),
+    "telegram": SourceSpec(
+        source="telegram",
+        table="telegram_installations",
+        scope_column="account_label",
+        ref_columns=(
+            "api_hash_secret_ref",
+            "session_secret_ref",
+            "backfill_session_secret_ref",
+        ),
+        entity_table="telegram_dialogs",
+        entity_install_column="telegram_installation_id",
+        base_url_column=None,
+    ),
+    "signal": SourceSpec(
+        source="signal",
+        table="signal_installations",
+        scope_column="account_label",
+        ref_columns=("session_secret_ref", "backfill_session_secret_ref"),
+        entity_table="signal_threads",
+        entity_install_column="signal_installation_id",
+        base_url_column=None,
+    ),
 }
 
 SECRET_FIELD_TO_COLUMN = {
     "access": "secret_ref",
     "refresh": "refresh_secret_ref",
     "webhook": "webhook_secret_ref",
+    "api-hash": "api_hash_secret_ref",
+    "session": "session_secret_ref",
+    "backfill-session": "backfill_session_secret_ref",
 }
 
 
@@ -271,7 +308,14 @@ def _add_selector_args(parser: argparse.ArgumentParser, *, required: bool) -> No
     selector.add_argument("--installation-row-id", help="Dedicated install row UUID.")
     selector.add_argument(
         "--scope-id",
-        help="Source-native scope id, for example realm_id or organization_urn.",
+        help=(
+            "Source-native scope id, for example realm_id, organization_urn, "
+            "or AWS account_id."
+        ),
+    )
+    parser.add_argument(
+        "--region",
+        help="AWS region. Valid only with --source aws.",
     )
 
 
@@ -582,6 +626,11 @@ def _selector_clause(
     if args.scope_id:
         values.append(args.scope_id)
         clauses.append(f"{spec.scope_column} = ${len(values)}")
+    if getattr(args, "region", None):
+        if spec.source != "aws":
+            raise DedicatedSourceInstallationCliError("--region is only valid for aws")
+        values.append(args.region)
+        clauses.append(f"region = ${len(values)}")
     return clauses
 
 
@@ -596,11 +645,15 @@ async def _select_installations(
     values: list[Any] = [tenant_id]
     clauses = _selector_clause(args=args, spec=spec, values=values)
     entity_count_sql = _entity_count_sql(spec)
+    base_url_sql = _base_url_sql(spec)
+    extra_columns_sql = _extra_columns_sql(spec)
     rows = await conn.fetch(
         f"""
-        SELECT i.id, i.tenant_id, i.{spec.scope_column}, i.base_url,
+        SELECT i.id, i.tenant_id, i.{spec.scope_column},
+               {base_url_sql} AS base_url,
                i.created_at, i.disabled_at,
                {', '.join(f'i.{column}' for column in spec.ref_columns)},
+               {extra_columns_sql}
                {entity_count_sql} AS entity_count
           FROM {spec.table} i
          WHERE {' AND '.join(f"i.{clause}" for clause in clauses)}
@@ -649,6 +702,8 @@ async def _set_disabled_at(
     clauses = _selector_clause(args=args, spec=spec, values=values)
     disabled_expression = "now()" if disabled else "NULL"
     entity_count_sql = _entity_count_subquery_sql(spec)
+    base_url_sql = _base_url_sql(spec)
+    extra_columns_sql = _extra_columns_sql(spec)
     row = await conn.fetchrow(
         f"""
         WITH selected AS (
@@ -661,9 +716,11 @@ async def _set_disabled_at(
            SET disabled_at = {disabled_expression}
           FROM selected
          WHERE i.id = selected.id
-        RETURNING i.id, i.tenant_id, i.{spec.scope_column}, i.base_url,
+        RETURNING i.id, i.tenant_id, i.{spec.scope_column},
+                  {base_url_sql} AS base_url,
                   i.created_at, i.disabled_at,
                   {', '.join(f'i.{column}' for column in spec.ref_columns)},
+                  {extra_columns_sql}
                   selected.disabled_before,
                   {entity_count_sql} AS entity_count
         """,
@@ -690,15 +747,19 @@ async def _uninstall_installation(
     assignments = ["disabled_at = now()"]
     assignments.extend(f"{column} = NULL" for column in clear_columns)
     entity_count_sql = _entity_count_subquery_sql(spec)
+    base_url_sql = _base_url_sql(spec)
+    extra_columns_sql = _extra_columns_sql(spec)
     row = await conn.fetchrow(
         f"""
         UPDATE {spec.table} i
            SET {', '.join(assignments)}
          WHERE i.tenant_id = $1
            AND i.id = $2
-        RETURNING i.id, i.tenant_id, i.{spec.scope_column}, i.base_url,
+        RETURNING i.id, i.tenant_id, i.{spec.scope_column},
+                  {base_url_sql} AS base_url,
                   i.created_at, i.disabled_at,
                   {', '.join(f'i.{column}' for column in spec.ref_columns)},
+                  {extra_columns_sql}
                   {entity_count_sql} AS entity_count
         """,
         tenant_id,
@@ -776,6 +837,18 @@ def _entity_count_sql(spec: SourceSpec) -> str:
 
 def _entity_count_subquery_sql(spec: SourceSpec) -> str:
     return _entity_count_sql(spec)
+
+
+def _base_url_sql(spec: SourceSpec) -> str:
+    if spec.base_url_column is None:
+        return "NULL::text"
+    return f"i.{spec.base_url_column}"
+
+
+def _extra_columns_sql(spec: SourceSpec) -> str:
+    if not spec.extra_output_columns:
+        return ""
+    return "".join(f"i.{column},\n               " for column in spec.extra_output_columns)
 
 
 def _provider_installation_id(row: asyncpg.Record, spec: SourceSpec) -> str | None:
@@ -919,6 +992,8 @@ def _jsonable_installation(row: asyncpg.Record, spec: SourceSpec) -> dict[str, A
         "enabled": row["disabled_at"] is None,
         "entity_count": int(row["entity_count"]),
     }
+    for column in spec.extra_output_columns:
+        out[column] = row[column]
     if "disabled_before" in set(row.keys()):
         out["enabled_before"] = row["disabled_before"] is None
     for column in spec.ref_columns:

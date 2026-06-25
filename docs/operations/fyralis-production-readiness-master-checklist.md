@@ -862,14 +862,13 @@ Current state:
   `scripts/manage_source_installations.py`.
 - Dedicated OAuth/admin-paste/API-key install tables for QuickBooks, Gusto,
   Ramp, Carta, LinkedIn, Jira, Mercury, Brex, Deel, Fireflies, Miro, Grafana,
-  Figma, HiBob, and Ashby are now covered by
+  Figma, HiBob, Ashby, AWS, Telegram, and Signal are now covered by
   `scripts/manage_dedicated_source_installations.py` for status, pause, resume,
   credential rotation, and uninstall. The tool binds `app.current_tenant`,
   writes bounded operator audit rows, zeroizes access/refresh/webhook secret
-  refs on uninstall, and disables matching webhook resolver rows for
-  webhook-capable sources.
-- AWS's composite account/region install selector and Telegram/Signal live vs
-  backfill session refs remain as dedicated follow-up lifecycle slices.
+  refs and live/backfill session refs on uninstall, handles AWS account/region
+  selectors, and disables matching webhook resolver rows for webhook-capable
+  sources.
 
 Must solve:
 
@@ -884,14 +883,16 @@ Must solve:
   credential-zeroization coverage.
 - [x] Dedicated single-scope API-key source tables have operator lifecycle and
   credential-zeroization coverage.
+- [x] Dedicated AWS and Telegram/Signal session source tables have operator
+  lifecycle and credential-zeroization coverage.
 - [x] Source onboarding progress events are emitted once per state transition.
 - [ ] Uninstall stops watches/subscriptions, disables install rows, and removes
   or disables secrets. Generic `provider_installations` uninstall now disables
   rows and removes the generic `secret_ref`; dedicated QuickBooks, Gusto, Ramp,
   Carta, LinkedIn, Jira, Mercury, Brex, Deel, Fireflies, Miro, Grafana, Figma,
-  HiBob, and Ashby uninstall now disables source install rows and clears
-  per-install secret refs. External provider webhook deregistration/watch
-  teardown plus AWS and Telegram/Signal lifecycle remain open.
+  HiBob, Ashby, AWS, Telegram, and Signal uninstall now disables source install
+  rows and clears per-install secret refs. External provider webhook
+  deregistration/watch teardown remains open.
 - [x] Customer/admin UI or CLI exposes install health and last successful sync.
 
 Acceptance evidence:
@@ -1224,12 +1225,14 @@ Current state:
   writes a bounded `source_installation.secret.rotate` audit row.
 - Dedicated source lifecycle operations for QuickBooks, Gusto, Ramp, Carta,
   LinkedIn, Jira, Mercury, Brex, Deel, Fireflies, Miro, Grafana, Figma, HiBob,
-  and Ashby are handled by `scripts/manage_dedicated_source_installations.py`.
+  Ashby, AWS, Telegram, and Signal are handled by
+  `scripts/manage_dedicated_source_installations.py`.
   The CLI binds the tenant before touching strict-RLS source tables, can pause
   and resume matching webhook resolver rows, rotates access/refresh/webhook refs
-  by stable ref, and uninstalls by disabling the source row, clearing deleted
-  refs, writing `operator_action_log` plus `installation_audit_log`, and keeping
-  raw secret values and source scope IDs out of audit metadata.
+  and live/backfill session refs by stable ref, handles AWS account/region
+  selectors, and uninstalls by disabling the source row, clearing deleted refs,
+  writing `operator_action_log` plus `installation_audit_log`, and keeping raw
+  secret values and source scope IDs out of audit metadata.
 - Queue-depth inspection has `scripts/inspect_queue_depth.py`; it returns
   bounded tenant-scoped counts for Think, model re-eval, post-commit,
   ingestion failures, and source onboarding queues, and writes a

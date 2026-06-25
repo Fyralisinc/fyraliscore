@@ -57,32 +57,29 @@ async def _insert_installation(
     scope_id: str,
     secret_store: FernetSecretStore,
     include_webhook: bool = False,
+    region: str = "us-east-1",
 ) -> dict[str, str | UUID | None]:
     spec = SPECS[source]
     install_id = uuid7()
-    access_ref = await secret_store.put(
-        f"{source}-access-token",
-        label=f"{source}_access:{scope_id}",
-        tenant_id=tenant,
-    )
-    refresh_ref = (
-        await secret_store.put(
-            f"{source}-refresh-token",
-            label=f"{source}_refresh:{scope_id}",
+    refs: dict[str, str | None] = {}
+    ref_labels = {
+        "secret_ref": "access-token",
+        "refresh_secret_ref": "refresh-token",
+        "webhook_secret_ref": "webhook-secret",
+        "api_hash_secret_ref": "api-hash",
+        "session_secret_ref": "session",
+        "backfill_session_secret_ref": "backfill-session",
+    }
+    for column in spec.ref_columns:
+        if column == "webhook_secret_ref" and not include_webhook:
+            refs[column] = None
+            continue
+        suffix = ref_labels[column]
+        refs[column] = await secret_store.put(
+            f"{source}-{suffix}",
+            label=f"{source}_{suffix}:{scope_id}",
             tenant_id=tenant,
         )
-        if "refresh_secret_ref" in spec.ref_columns
-        else None
-    )
-    webhook_ref = (
-        await secret_store.put(
-            f"{source}-webhook-secret",
-            label=f"{source}_webhook:{scope_id}",
-            tenant_id=tenant,
-        )
-        if include_webhook and "webhook_secret_ref" in spec.ref_columns
-        else None
-    )
 
     columns = [
         "id",
@@ -95,23 +92,26 @@ async def _insert_installation(
         scope_id,
     ]
     if spec.scope_column != "base_url":
-        columns.append("base_url")
-        values.append("https://api.example.test")
+        if spec.base_url_column is not None:
+            columns.append(spec.base_url_column)
+            values.append("https://api.example.test")
     if source == "jira":
         columns.append("account_email")
         values.append("operator@example.test")
     if source == "hibob":
         columns.append("service_user_id")
         values.append("service-user")
-    if "secret_ref" in spec.ref_columns:
-        columns.append("secret_ref")
-        values.append(access_ref)
-    if "refresh_secret_ref" in spec.ref_columns:
-        columns.append("refresh_secret_ref")
-        values.append(refresh_ref)
-    if "webhook_secret_ref" in spec.ref_columns:
-        columns.append("webhook_secret_ref")
-        values.append(webhook_ref)
+    if source == "aws":
+        columns.extend(["region", "credential_kind"])
+        values.extend([region, "assume_role"])
+    if source == "telegram":
+        columns.extend(["api_id"])
+        values.extend(["12345"])
+    for column in spec.ref_columns:
+        if refs[column] is None and column == "webhook_secret_ref":
+            continue
+        columns.append(column)
+        values.append(refs[column])
 
     placeholders = ", ".join(f"${idx}" for idx in range(1, len(values) + 1))
     await conn.execute(
@@ -121,18 +121,49 @@ async def _insert_installation(
         """,
         *values,
     )
-    if spec.entity_table is not None and spec.entity_install_column is not None:
+    entity_key_columns = {
+        "quickbooks": ("entity_type", "'test_entity'"),
+        "gusto": ("entity_type", "'test_entity'"),
+        "ramp": ("entity_type", "'test_entity'"),
+        "carta": ("entity_type", "'test_entity'"),
+        "linkedin": ("entity_type", "'test_entity'"),
+        "ashby": ("entity_type", "'test_entity'"),
+        "hibob": ("entity_type", "'test_entity'"),
+        "jira": ("project_key", "'TEST'"),
+        "mercury": ("account_id", "'account-1'"),
+        "brex": ("account_id", "'account-1'"),
+        "deel": ("contract_id", "'contract-1'"),
+        "miro": ("board_id", "'board-1'"),
+        "figma": ("file_key", "'file-1'"),
+        "telegram": ("dialog_id, dialog_kind", "1001, 'chat'"),
+        "signal": ("thread_id, thread_kind", "1001, 'group'"),
+    }
+    if (
+        spec.entity_table is not None
+        and spec.entity_install_column is not None
+        and source in entity_key_columns
+    ):
+        key_columns, key_values = entity_key_columns[source]
         await conn.execute(
             f"""
             INSERT INTO {spec.entity_table} (
-                id, tenant_id, {spec.entity_install_column}, entity_type, state
-            ) VALUES ($1, $2, $3, 'test_entity', 'active')
+                id, tenant_id, {spec.entity_install_column}, {key_columns}, state
+            ) VALUES ($1, $2, $3, {key_values}, 'active')
             """,
             uuid7(),
             tenant,
             install_id,
         )
+    webhook_ref = refs.get("webhook_secret_ref")
     if webhook_ref:
+        provider_installation_id = scope_id
+        if spec.webhook_installation_id_transform == "host":
+            provider_installation_id = (
+                scope_id.replace("https://", "")
+                .replace("http://", "")
+                .rstrip("/")
+                .split("/")[0]
+            )
         await conn.execute(
             """
             INSERT INTO provider_installations
@@ -142,15 +173,18 @@ async def _insert_installation(
             uuid7(),
             tenant,
             source,
-            scope_id,
+            provider_installation_id,
             webhook_ref,
         )
 
     return {
         "id": install_id,
-        "access_ref": access_ref,
-        "refresh_ref": refresh_ref,
+        "access_ref": refs.get("secret_ref"),
+        "refresh_ref": refs.get("refresh_secret_ref"),
         "webhook_ref": webhook_ref,
+        "api_hash_ref": refs.get("api_hash_secret_ref"),
+        "session_ref": refs.get("session_secret_ref"),
+        "backfill_session_ref": refs.get("backfill_session_secret_ref"),
     }
 
 
@@ -591,6 +625,192 @@ async def test_dedicated_api_key_source_rotates_and_uninstalls_without_refresh(
         assert provider_row["enabled"] is False
         assert provider_row["secret_ref"] is None
         assert "new-ashby-api-key" not in json.dumps(uninstall_result, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_dedicated_aws_uses_account_and_region_selector(
+    fresh_db: asyncpg.Pool,
+    tenant,
+    tenant_cleanup,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with fresh_db.acquire() as conn:
+        operator_actor = await insert_actor(conn, tenant, "Source operator")
+        await _grant_operator_role(conn, tenant=tenant, actor_id=operator_actor)
+        secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
+        inserted = await _insert_installation(
+            conn,
+            tenant=tenant,
+            source="aws",
+            scope_id="111122223333",
+            region="us-west-2",
+            secret_store=secret_store,
+        )
+        monkeypatch.setenv("ROTATED_AWS_ROLE", "arn:aws:iam::111122223333:role/Fyralis")
+
+        status_result = await run_command(
+            _parse(
+                [
+                    "status",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    "aws",
+                    "--scope-id",
+                    "111122223333",
+                    "--region",
+                    "us-west-2",
+                ]
+            ),
+            conn=conn,
+        )
+        assert status_result["installations"][0]["region"] == "us-west-2"
+        assert status_result["installations"][0]["credential_kind"] == "assume_role"
+        assert status_result["installations"][0]["base_url"] is None
+
+        rotate_result = await run_command(
+            _parse(
+                [
+                    "rotate-secret",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    "aws",
+                    "--scope-id",
+                    "111122223333",
+                    "--region",
+                    "us-west-2",
+                    "--secret-field",
+                    "access",
+                    "--new-secret-env",
+                    "ROTATED_AWS_ROLE",
+                    "--reason",
+                    "customer role rotation",
+                ]
+            ),
+            conn=conn,
+            secret_store=secret_store,
+        )
+        assert rotate_result["installation"]["rotated_secret_field"] == "access"
+        assert (
+            await secret_store.get(str(inserted["access_ref"]), tenant_id=tenant)
+        ).decode() == "arn:aws:iam::111122223333:role/Fyralis"
+
+        uninstall_result = await run_command(
+            _parse(
+                [
+                    "uninstall",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    "aws",
+                    "--scope-id",
+                    "111122223333",
+                    "--region",
+                    "us-west-2",
+                    "--reason",
+                    "customer requested uninstall",
+                ]
+            ),
+            conn=conn,
+            secret_store=secret_store,
+        )
+        assert uninstall_result["installation"]["enabled"] is False
+        assert uninstall_result["installation"]["refs_seen"] == 1
+        assert uninstall_result["installation"]["refs_deleted"] == 1
+        assert uninstall_result["installation"]["has_secret_ref"] is False
+        assert uninstall_result["installation"]["region"] == "us-west-2"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "scope_id", "expected_refs"),
+    [
+        ("telegram", "@fyralis-ops", 3),
+        ("signal", "+15551234567", 2),
+    ],
+)
+async def test_dedicated_session_sources_rotate_and_uninstall_session_refs(
+    fresh_db: asyncpg.Pool,
+    tenant,
+    tenant_cleanup,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    scope_id: str,
+    expected_refs: int,
+) -> None:
+    async with fresh_db.acquire() as conn:
+        operator_actor = await insert_actor(conn, tenant, "Source operator")
+        await _grant_operator_role(conn, tenant=tenant, actor_id=operator_actor)
+        secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
+        inserted = await _insert_installation(
+            conn,
+            tenant=tenant,
+            source=source,
+            scope_id=scope_id,
+            secret_store=secret_store,
+        )
+        monkeypatch.setenv("ROTATED_SESSION", f"{source}-new-session")
+
+        rotate_result = await run_command(
+            _parse(
+                [
+                    "rotate-secret",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    source,
+                    "--scope-id",
+                    scope_id,
+                    "--secret-field",
+                    "session",
+                    "--new-secret-env",
+                    "ROTATED_SESSION",
+                    "--reason",
+                    "linked-device session rotation",
+                ]
+            ),
+            conn=conn,
+            secret_store=secret_store,
+        )
+        assert rotate_result["installation"]["rotated_secret_field"] == "session"
+        assert rotate_result["installation"]["base_url"] is None
+        assert (
+            await secret_store.get(str(inserted["session_ref"]), tenant_id=tenant)
+        ).decode() == f"{source}-new-session"
+
+        uninstall_result = await run_command(
+            _parse(
+                [
+                    "uninstall",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    source,
+                    "--scope-id",
+                    scope_id,
+                    "--reason",
+                    "customer requested uninstall",
+                ]
+            ),
+            conn=conn,
+            secret_store=secret_store,
+        )
+        assert uninstall_result["installation"]["enabled"] is False
+        assert uninstall_result["installation"]["refs_seen"] == expected_refs
+        assert uninstall_result["installation"]["refs_deleted"] == expected_refs
+        assert uninstall_result["installation"]["has_session_secret_ref"] is False
+        assert uninstall_result["installation"]["has_backfill_session_secret_ref"] is False
 
 
 def test_dedicated_rotate_webhook_rejects_poll_only_source() -> None:
