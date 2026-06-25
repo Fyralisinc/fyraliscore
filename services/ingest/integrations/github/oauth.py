@@ -8,9 +8,10 @@ Flow (see contracts/http-integrations-github.md):
 
     GET /integrations/github/callback  (public; state-token authed)
         → verify HMAC + atomic nonce consume (provider='github')
-        → UPSERT provider_installations (cross-tenant collision guard)
+        → reject cross-tenant collisions using the existing installation row
         → mint installation access token (via GithubClient)
-        → GET /installation/repositories → write selected_repositories
+        → GET /installation/repositories to prove the grant is usable
+        → UPSERT provider_installations (cross-tenant collision guard)
         → INSERT installation_audit_log
         → 302 to /integrations/github/installed?installation=<short-hash>
 
@@ -183,8 +184,95 @@ async def callback_handler(request: Request) -> Any:
 
     short_hash = _short_installation_hash(installation_id)
 
-    # Step 2: UPSERT provider_installations + emit onboarding_triggers
-    # atomically (A20). Cross-tenant collision rolls back both inserts.
+    # Step 2: fail cross-tenant collisions before making outbound probes. The
+    # transaction still keeps the authoritative guard below for race safety.
+    existing_row = await pool.fetchrow(
+        """
+        SELECT id, tenant_id
+          FROM provider_installations
+         WHERE provider = 'github'
+           AND installation_id = $1
+        """,
+        installation_id,
+    )
+    if existing_row is not None and existing_row["tenant_id"] != tenant_id:
+        metrics.record_install_callback("installation_collision")
+        await _audit(
+            pool=pool,
+            tenant_id=tenant_id,
+            installation_row_id=None,
+            action="rejected_collision",
+            status="rejected_collision",
+            context={
+                "installation_id_hash": short_hash,
+                "setup_action": setup_action,
+            },
+        )
+        log.info(
+            "github_callback_installation_collision",
+            tenant_id=str(tenant_id),
+            installation_id_hash=short_hash,
+        )
+        return _redirect_install_error("installation_collision")
+
+    # Step 3: prove the installation grant is usable before committing any
+    # fresh install row or onboarding trigger. This keeps bad credentials from
+    # leaving durable source state behind.
+    client = getattr(request.app.state, "github_client", None)
+    if client is None:
+        await _audit(
+            pool=pool,
+            tenant_id=tenant_id,
+            installation_row_id=None,
+            action="install",
+            status="error",
+            context={
+                "failure_code": "github_client_unavailable",
+                "installation_id_hash": short_hash,
+            },
+        )
+        metrics.record_install_callback("github_client_unavailable")
+        return _redirect_install_error("github_client_unavailable")
+
+    if existing_row is not None:
+        await client.register_installation_context(
+            installation_id,
+            tenant_id=tenant_id,
+            installation_row_id=existing_row["id"],
+        )
+
+    try:
+        selected_repositories = await client.list_installation_repositories(
+            installation_id,
+        )
+    except (GithubApiError, GithubOAuthError) as exc:
+        error_code = getattr(exc, "code", "github_api_error")
+        await _audit(
+            pool=pool,
+            tenant_id=tenant_id,
+            installation_row_id=(
+                existing_row["id"] if existing_row is not None else None
+            ),
+            action="install",
+            status="error",
+            context={
+                "failure_code": "github_credential_validation_failed",
+                "installation_id_hash": short_hash,
+                "github_error_code": error_code,
+            },
+        )
+        log.warning(
+            "github_callback_credential_validation_failed",
+            tenant_id=str(tenant_id),
+            installation_id_hash=short_hash,
+            error_code=error_code,
+        )
+        metrics.record_install_callback("github_credential_validation_failed")
+        return _redirect_install_error("github_credential_validation_failed")
+
+    # Step 4: UPSERT provider_installations + emit onboarding_triggers
+    # atomically (A20). Cross-tenant collision rolls back both inserts if a
+    # concurrent callback won the row between the read above and this write.
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
@@ -220,70 +308,33 @@ async def callback_handler(request: Request) -> Any:
         )
         return _redirect_install_error("installation_collision")
 
-    # Step 3: register the installation context on the outbound client
+    # Step 5: register the installation context on the outbound client
     # so the chokepoint can find the row + tenant if a 401/404 fires
-    # mid-callback.
-    client = getattr(request.app.state, "github_client", None)
-    if client is not None:
-        await client.register_installation_context(
-            installation_id,
-            tenant_id=tenant_id,
-            installation_row_id=installation_row_id,
-        )
+    # after install.
+    await client.register_installation_context(
+        installation_id,
+        tenant_id=tenant_id,
+        installation_row_id=installation_row_id,
+    )
 
-    # Step 4: seed selected_repositories via `GET /installation/repositories`.
-    # Failure is non-fatal (FR-022 / R9) — row stays with
-    # selected_repositories=NULL and an audit row notes the unknown flag.
-    selected_repositories: list[str] | None = None
-    selected_repositories_unknown = False
-    if client is not None:
-        try:
-            selected_repositories = await client.list_installation_repositories(
-                installation_id,
-            )
-            # selected_repositories=None means "all-repositories" mode
-            # per R10. We persist None as NULL in the DB column.
-        except (GithubApiError, GithubOAuthError) as exc:
-            selected_repositories_unknown = True
-            log.warning(
-                "github_callback_repos_fetch_failed",
-                tenant_id=str(tenant_id),
-                installation_row_id=str(installation_row_id),
-                installation_id_hash=short_hash,
-                error_code=getattr(exc, "code", None),
-            )
+    # Step 6: persist selected_repositories. selected_repositories=None means
+    # "all-repositories" mode per R10, persisted as NULL.
+    serialized = (
+        json.dumps(selected_repositories)
+        if selected_repositories is not None
+        else None
+    )
+    await pool.execute(
+        """
+        UPDATE provider_installations
+           SET selected_repositories = $2::jsonb
+         WHERE id = $1
+        """,
+        installation_row_id,
+        serialized,
+    )
 
-    # Step 5: persist selected_repositories.
-    if not selected_repositories_unknown:
-        serialized = (
-            json.dumps(selected_repositories)
-            if selected_repositories is not None
-            else None
-        )
-        await pool.execute(
-            """
-            UPDATE provider_installations
-               SET selected_repositories = $2::jsonb
-             WHERE id = $1
-            """,
-            installation_row_id,
-            serialized,
-        )
-
-    # Step 6: write install / reinstall / update audit row.
-    if selected_repositories_unknown:
-        await _audit(
-            pool=pool,
-            tenant_id=tenant_id,
-            installation_row_id=installation_row_id,
-            action="repository_fetch_failed",
-            status="error",
-            context={
-                "installation_id_hash": short_hash,
-                "selected_repositories_unknown": True,
-            },
-        )
-
+    # Step 7: write install / reinstall / update audit row.
     action_label = _install_action_label(
         setup_action=setup_action,
         was_inserted=was_inserted,
@@ -303,7 +354,7 @@ async def callback_handler(request: Request) -> Any:
                 else None
             ),
             "all_repositories_mode": (
-                selected_repositories is None and not selected_repositories_unknown
+                selected_repositories is None
             ),
         },
     )

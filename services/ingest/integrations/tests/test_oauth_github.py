@@ -39,6 +39,7 @@ def app_state_factory(fresh_db, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setenv("GITHUB_APP_SLUG", "fyralis-test")
     monkeypatch.setenv("GITHUB_APP_ID", "999999")
+    monkeypatch.delenv("GITHUB_APP_PRIVATE_KEY_PATH", raising=False)
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     pem = key.private_bytes(
@@ -58,7 +59,10 @@ def app_state_factory(fresh_db, monkeypatch: pytest.MonkeyPatch):
     def _make_app(tenant_id: UUID) -> FastAPI:
         app = FastAPI()
         app.state.pool = fresh_db
-        app.state.github_client = GithubClient(pool=fresh_db)
+        app.state.github_client = GithubClient(
+            pool=fresh_db,
+            api_base_url="https://api.github.com",
+        )
         # Stub the auth shim that the install handler reads.
         @app.middleware("http")
         async def _inject_auth(request, call_next):
@@ -258,6 +262,96 @@ async def test_missing_installation_id(app_state_factory, fresh_db) -> None:
     ]
 
 
+async def test_callback_token_mint_failure_writes_no_install_state(
+    app_state_factory,
+    fresh_db,
+    mocked_github_api,
+) -> None:
+    """A rejected GitHub App installation token proves the install is unusable.
+
+    The callback must fail before creating provider_installations or
+    onboarding_triggers rows.
+    """
+    mocked_github_api.post("/app/installations/12345678/access_tokens").mock(
+        return_value=httpx.Response(
+            404,
+            json={
+                "message": "Not Found",
+                "documentation_url": (
+                    "https://docs.github.com/rest/apps/installations"
+                ),
+            },
+        )
+    )
+    tenant_id = await _seed_tenant(fresh_db)
+    app = app_state_factory(tenant_id)
+
+    async with _client(app) as c:
+        resp1 = await c.get("/integrations/github/install")
+        state = _state_from_location(resp1.headers["Location"])
+        resp2 = await c.get(
+            f"/integrations/github/callback"
+            f"?installation_id=12345678&setup_action=install&state={state}",
+        )
+
+    assert resp2.status_code == 302
+    assert (
+        "install-error?reason=github_credential_validation_failed"
+        in resp2.headers["Location"]
+    )
+    await _assert_no_github_install_state(fresh_db, tenant_id)
+    audit = await fresh_db.fetchrow(
+        """
+        SELECT status, context
+          FROM installation_audit_log
+         WHERE tenant_id = $1
+           AND provider = 'github'
+         ORDER BY created_at DESC
+         LIMIT 1
+        """,
+        tenant_id,
+    )
+    assert audit is not None
+    assert audit["status"] == "error"
+    context = (
+        audit["context"]
+        if isinstance(audit["context"], dict)
+        else json.loads(audit["context"])
+    )
+    assert context["failure_code"] == "github_credential_validation_failed"
+
+
+async def test_callback_repository_probe_failure_writes_no_install_state(
+    app_state_factory,
+    fresh_db,
+    mocked_github_api,
+) -> None:
+    """Repository access is the callback's credential/permission probe."""
+    mocked_github_api.get(url__regex=r"/installation/repositories(\?.*)?").mock(
+        return_value=httpx.Response(
+            401,
+            json={"message": "Bad credentials"},
+        )
+    )
+    tenant_id = await _seed_tenant(fresh_db)
+    app = app_state_factory(tenant_id)
+
+    async with _client(app) as c:
+        resp1 = await c.get("/integrations/github/install")
+        state = _state_from_location(resp1.headers["Location"])
+        resp2 = await c.get(
+            f"/integrations/github/callback"
+            f"?installation_id=12345678&setup_action=install&state={state}",
+        )
+
+    assert resp2.status_code == 302
+    assert (
+        "install-error?reason=github_credential_validation_failed"
+        in resp2.headers["Location"]
+    )
+    await _assert_no_github_install_state(fresh_db, tenant_id)
+
+
 async def test_cross_tenant_collision(
     app_state_factory, fresh_db, mocked_github_api,
 ) -> None:
@@ -320,3 +414,27 @@ def _state_from_location(location: str) -> str:
     parsed = urlparse(location)
     qs = parse_qs(parsed.query)
     return qs["state"][0]
+
+
+async def _assert_no_github_install_state(
+    db_pool,
+    tenant_id: UUID,
+) -> None:
+    assert await db_pool.fetchval(
+        """
+        SELECT count(*)
+          FROM provider_installations
+         WHERE tenant_id = $1
+           AND provider = 'github'
+        """,
+        tenant_id,
+    ) == 0
+    assert await db_pool.fetchval(
+        """
+        SELECT count(*)
+          FROM onboarding_triggers
+         WHERE tenant_id = $1
+           AND source = 'github'
+        """,
+        tenant_id,
+    ) == 0

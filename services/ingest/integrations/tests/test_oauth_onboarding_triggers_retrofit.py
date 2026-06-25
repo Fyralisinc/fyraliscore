@@ -163,6 +163,7 @@ def _github_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setenv("GITHUB_APP_SLUG", "fyralis-x1-test")
     monkeypatch.setenv("GITHUB_APP_ID", "999999")
+    monkeypatch.delenv("GITHUB_APP_PRIVATE_KEY_PATH", raising=False)
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     pem = key.private_bytes(
         encoding=serialization.Encoding.PEM,
@@ -200,7 +201,10 @@ def _make_github_app(pool: asyncpg.Pool, tenant_id: UUID) -> FastAPI:
 
     app = FastAPI()
     app.state.pool = pool
-    app.state.github_client = GithubClient(pool=pool)
+    app.state.github_client = GithubClient(
+        pool=pool,
+        api_base_url="https://api.github.com",
+    )
 
     @app.middleware("http")
     async def _inject_auth(request, call_next):

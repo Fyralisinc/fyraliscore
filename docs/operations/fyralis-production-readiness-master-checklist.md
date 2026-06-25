@@ -918,12 +918,17 @@ Current state:
   before opening the tenant transaction; missing or revoked DWD grants return
   the same remediation payload as preflight and leave no Gmail installation or
   onboarding trigger rows behind.
+- Generic OAuth install callbacks now have credential-probe write-order
+  coverage: Slack and Discord bad OAuth responses write no install rows,
+  GitHub proves the installation token and repository grant before committing
+  `provider_installations` or onboarding triggers, and Notion token-exchange
+  failures leave no install rows, onboarding triggers, or encrypted secrets.
 
 Must solve:
 
 - [x] Every production source has a production install, status, pause, resume,
   uninstall, and credential rotation path.
-- [ ] Install flows verify credentials before writing install rows.
+- [x] Install flows verify credentials before writing install rows.
 - [x] Install flows store credentials as secret refs only.
 - [x] OAuth refresh worker covers every OAuth source with refresh tokens.
 - [x] DWD/service-account sources have explicit admin preflight and scope

@@ -203,3 +203,80 @@ async def test_callback_state_invalid(fresh_db: asyncpg.Pool) -> None:
         )
     assert r.status_code == 302
     assert "reason=state_invalid" in r.headers["location"]
+
+
+async def test_callback_oauth_error_writes_no_install_state(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant = await _seed_tenant(fresh_db)
+    secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
+    state = await _issue_state(tenant, fresh_db)
+    app = _make_app(fresh_db, secret_store=secret_store)
+    transport = httpx.ASGITransport(app=app)
+
+    with respx.mock(assert_all_called=False, base_url="https://api.notion.com") as r:
+        r.post("/v1/oauth/token").respond(
+            400,
+            json={"error": "invalid_grant"},
+        )
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            response = await c.get(
+                "/integrations/notion/callback",
+                params={"code": "bad-code", "state": state},
+                follow_redirects=False,
+            )
+
+    assert response.status_code == 302
+    assert "reason=notion_oauth_error" in response.headers["location"]
+    await _assert_no_notion_install_state(fresh_db, tenant)
+    audit = await fresh_db.fetchrow(
+        """
+        SELECT status, context
+          FROM installation_audit_log
+         WHERE tenant_id = $1
+           AND provider = 'notion'
+         ORDER BY created_at DESC
+         LIMIT 1
+        """,
+        tenant,
+    )
+    assert audit is not None
+    assert audit["status"] == "error"
+    context = (
+        audit["context"]
+        if isinstance(audit["context"], dict)
+        else audit["context"]
+    )
+    assert "notion_oauth_error" in str(context)
+
+
+async def _assert_no_notion_install_state(
+    pool: asyncpg.Pool,
+    tenant: UUID,
+) -> None:
+    assert await pool.fetchval(
+        """
+        SELECT count(*)
+          FROM provider_installations
+         WHERE tenant_id = $1
+           AND provider = 'notion'
+        """,
+        tenant,
+    ) == 0
+    assert await pool.fetchval(
+        """
+        SELECT count(*)
+          FROM encrypted_secrets
+         WHERE tenant_id = $1
+        """,
+        tenant,
+    ) == 0
+    assert await pool.fetchval(
+        """
+        SELECT count(*)
+          FROM onboarding_triggers
+         WHERE tenant_id = $1
+           AND source = 'notion'
+        """,
+        tenant,
+    ) == 0
