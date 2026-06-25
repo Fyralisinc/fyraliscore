@@ -29,8 +29,24 @@ import asyncpg
 
 import structlog
 
+from services.platform.access_control.checks import EntityKind, can_read_by_id
+from services.platform.access_control.audit import record_override_if_needed
+
 
 log = structlog.get_logger("history.summary")
+
+
+_ENTITY_ACCESS_KIND: dict[str, EntityKind] = {
+    "commitment": "commitment",
+    "goal": "goal",
+    "decision": "decision",
+    "resource": "resource",
+    "customer": "resource",
+    "observation": "observation",
+    "model": "model",
+    "prediction": "model",
+    "pattern": "model",
+}
 
 
 # ---------------------------------------------------------------------
@@ -224,6 +240,7 @@ async def _safe_fetchrow(
 async def build_summary(
     *,
     tenant_id: UUID,
+    actor_id: UUID | None = None,
     range_days: int = 30,
     conn: asyncpg.Connection,
     now: datetime | None = None,
@@ -240,6 +257,17 @@ async def build_summary(
     cur_start = now - timedelta(days=range_days)
     prev_end = cur_start
     prev_start = cur_start - timedelta(days=range_days)
+    if actor_id is not None:
+        return await _build_scoped_summary(
+            tenant_id=tenant_id,
+            actor_id=actor_id,
+            range_days=range_days,
+            conn=conn,
+            cur_start=cur_start,
+            cur_end=cur_end,
+            prev_start=prev_start,
+            prev_end=prev_end,
+        )
 
     # events
     events_cur = int(
@@ -371,6 +399,385 @@ async def build_summary(
         ),
         "range_days": range_days,
     }
+
+
+async def _build_scoped_summary(
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+    range_days: int,
+    conn: asyncpg.Connection,
+    cur_start: datetime,
+    cur_end: datetime,
+    prev_start: datetime,
+    prev_end: datetime,
+) -> dict[str, Any]:
+    events_cur = await _visible_observation_count(
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+        start=cur_start,
+        end=cur_end,
+    )
+    events_prev = await _visible_observation_count(
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+        start=prev_start,
+        end=prev_end,
+    )
+    events_delta = _pct_change(events_cur, events_prev)
+
+    mu_cur = await _visible_model_update_count(
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+        start=cur_start,
+        end=cur_end,
+    )
+    mu_prev = await _visible_model_update_count(
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+        start=prev_start,
+        end=prev_end,
+    )
+    mu_delta = _pct_change(mu_cur, mu_prev)
+
+    actions_cur = await _visible_action_count(
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+        start=cur_start,
+        end=cur_end,
+    )
+    actions_prev = await _visible_action_count(
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+        start=prev_start,
+        end=prev_end,
+    )
+    actions_delta = _pct_change(actions_cur, actions_prev)
+
+    contestations_total = await _visible_model_count(
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+        where_sql="""
+          contested_count > 0
+          AND (
+            last_confirmed_at IS NULL
+            OR last_confirmed_at < $2
+          )
+          AND created_at < $3
+        """,
+        args=(cur_start, cur_end),
+    )
+    contestations_unresolved = await _visible_model_count(
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+        where_sql="""
+          status = 'active'
+          AND contested_count > confirmed_count
+        """,
+        args=(),
+    )
+
+    prediction_rows = await _visible_prediction_rows(
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+        start=cur_start,
+        end=cur_end,
+        timestamp_column="created_at",
+    )
+    predictions_made_val = len(prediction_rows)
+    resolved = sum(1 for row in prediction_rows if row["resolved_at"] is not None)
+    active = predictions_made_val - resolved
+    predictions_made_split = f"{resolved} resolved \u00b7 {active} active"
+
+    current_resolved = await _visible_prediction_rows(
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+        start=cur_start,
+        end=cur_end,
+        timestamp_column="resolved_at",
+    )
+    prior_resolved = await _visible_prediction_rows(
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+        start=prev_start,
+        end=prev_end,
+        timestamp_column="resolved_at",
+    )
+    predictions_accuracy_value = 0.0
+    predictions_accuracy_delta_pp = 0.0
+    predictions_accuracy_label = "no resolved predictions"
+    if current_resolved:
+        predictions_accuracy_value = (
+            sum(1 for row in current_resolved if row["resolution_outcome"])
+            / len(current_resolved)
+        )
+        if prior_resolved:
+            prior_accuracy = (
+                sum(1 for row in prior_resolved if row["resolution_outcome"])
+                / len(prior_resolved)
+            )
+            predictions_accuracy_delta_pp = (
+                predictions_accuracy_value - prior_accuracy
+            )
+        sign = "+" if predictions_accuracy_delta_pp >= 0 else ""
+        pp_int = int(round(predictions_accuracy_delta_pp * 100))
+        predictions_accuracy_label = f"{sign}{pp_int}pp last {range_days} days"
+
+    return {
+        "events": _counter(
+            events_cur,
+            events_delta,
+            f"{_fmt_pct(events_delta)} vs prev period",
+        ),
+        "model_updates": _counter(mu_cur, mu_delta, _fmt_pct(mu_delta)),
+        "predictions_made": _counter_split(
+            predictions_made_val,
+            predictions_made_split,
+        ),
+        "predictions_accuracy": _counter_pp(
+            predictions_accuracy_value,
+            predictions_accuracy_delta_pp,
+            predictions_accuracy_label,
+        ),
+        "actions_taken": _counter(
+            actions_cur,
+            actions_delta,
+            _fmt_pct(actions_delta),
+        ),
+        "contestations": _counter_split(
+            contestations_total,
+            f"{contestations_unresolved} unresolved",
+        ),
+        "range_days": range_days,
+    }
+
+
+async def _visible_observation_count(
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+    conn: asyncpg.Connection,
+    start: datetime,
+    end: datetime,
+) -> int:
+    rows = await conn.fetch(
+        """
+        SELECT id FROM observations
+        WHERE tenant_id = $1 AND occurred_at >= $2 AND occurred_at < $3
+        """,
+        tenant_id,
+        start,
+        end,
+    )
+    visible = 0
+    for row in rows:
+        if await _can_read_entity(
+            tenant_id=tenant_id,
+            actor_id=actor_id,
+            kind="observation",
+            entity_id=row["id"],
+            conn=conn,
+        ):
+            visible += 1
+    return visible
+
+
+async def _visible_action_count(
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+    conn: asyncpg.Connection,
+    start: datetime,
+    end: datetime,
+) -> int:
+    rows = await conn.fetch(
+        """
+        SELECT content FROM observations
+        WHERE tenant_id = $1
+          AND kind = 'state_change'
+          AND occurred_at >= $2 AND occurred_at < $3
+        """,
+        tenant_id,
+        start,
+        end,
+    )
+    visible = 0
+    for row in rows:
+        content = row["content"]
+        if isinstance(content, str):
+            import json
+            try:
+                content = json.loads(content)
+            except json.JSONDecodeError:
+                continue
+        if not isinstance(content, dict):
+            continue
+        kind = content.get("entity_kind")
+        raw_id = content.get("entity_id")
+        if not kind or raw_id is None:
+            continue
+        try:
+            entity_id = UUID(str(raw_id))
+        except (ValueError, TypeError):
+            continue
+        if await _can_read_entity(
+            tenant_id=tenant_id,
+            actor_id=actor_id,
+            kind=str(kind),
+            entity_id=entity_id,
+            conn=conn,
+        ):
+            visible += 1
+    return visible
+
+
+async def _visible_model_update_count(
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+    conn: asyncpg.Connection,
+    start: datetime,
+    end: datetime,
+) -> int:
+    rows = await conn.fetch(
+        """
+        SELECT DISTINCT id FROM (
+          SELECT id FROM models
+          WHERE tenant_id = $1 AND created_at >= $2 AND created_at < $3
+          UNION
+          SELECT id FROM models
+          WHERE tenant_id = $1 AND archived_at IS NOT NULL
+            AND archived_at >= $2 AND archived_at < $3
+        ) AS s
+        """,
+        tenant_id,
+        start,
+        end,
+    )
+    return await _visible_model_rows_count(
+        rows,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+    )
+
+
+async def _visible_model_count(
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+    conn: asyncpg.Connection,
+    where_sql: str,
+    args: tuple[Any, ...],
+) -> int:
+    query = f"""
+        SELECT id FROM models
+        WHERE tenant_id = $1
+          AND {where_sql}
+    """
+    rows = await conn.fetch(query, tenant_id, *args)
+    return await _visible_model_rows_count(
+        rows,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+    )
+
+
+async def _visible_prediction_rows(
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+    conn: asyncpg.Connection,
+    start: datetime,
+    end: datetime,
+    timestamp_column: str,
+) -> list[asyncpg.Record]:
+    rows = await conn.fetch(
+        f"""
+        SELECT id, resolved_at, resolution_outcome
+        FROM models
+        WHERE tenant_id = $1
+          AND proposition_kind = 'prediction'
+          AND {timestamp_column} IS NOT NULL
+          AND {timestamp_column} >= $2
+          AND {timestamp_column} < $3
+        """,
+        tenant_id,
+        start,
+        end,
+    )
+    visible: list[asyncpg.Record] = []
+    for row in rows:
+        if await _can_read_entity(
+            tenant_id=tenant_id,
+            actor_id=actor_id,
+            kind="model",
+            entity_id=row["id"],
+            conn=conn,
+        ):
+            visible.append(row)
+    return visible
+
+
+async def _visible_model_rows_count(
+    rows: list[asyncpg.Record],
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+    conn: asyncpg.Connection,
+) -> int:
+    count = 0
+    for row in rows:
+        if await _can_read_entity(
+            tenant_id=tenant_id,
+            actor_id=actor_id,
+            kind="model",
+            entity_id=row["id"],
+            conn=conn,
+        ):
+            count += 1
+    return count
+
+
+async def _can_read_entity(
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+    kind: str,
+    entity_id: UUID,
+    conn: asyncpg.Connection,
+) -> bool:
+    access_kind = _ENTITY_ACCESS_KIND.get(kind)
+    if access_kind is None:
+        return False
+    decision = await can_read_by_id(
+        actor_id,
+        access_kind,
+        entity_id,
+        conn=conn,
+        tenant_id=tenant_id,
+    )
+    await record_override_if_needed(
+        decision,
+        actor_id=actor_id,
+        entity_type=access_kind,
+        entity_id=entity_id,
+        conn=conn,
+        tenant_id=tenant_id,
+    )
+    return decision.allowed
 
 
 __all__ = ["build_summary"]

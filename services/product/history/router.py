@@ -87,6 +87,7 @@ async def get_history(request: Request) -> JSONResponse:
     async with deps.pool.acquire() as conn:
         payload = await build_history(
             tenant_id=auth.tenant_id,
+            actor_id=auth.actor_id,
             period=period,
             conn=conn,
             types=types_list,
@@ -115,6 +116,7 @@ async def get_summary(request: Request) -> JSONResponse:
         async with conn.transaction():
             payload = await build_summary(
                 tenant_id=auth.tenant_id,
+                actor_id=auth.actor_id,
                 range_days=range_days,
                 conn=conn,
             )

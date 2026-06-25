@@ -26,6 +26,9 @@ from uuid import UUID
 
 import asyncpg
 
+from services.platform.access_control.checks import EntityKind, can_read_by_id
+from services.platform.access_control.audit import record_override_if_needed
+
 
 # ---------------------------------------------------------------------
 # Period handling
@@ -37,6 +40,19 @@ _PERIOD_DAYS = {
     "30d": 30,
     "90d": 90,
     "365d": 365,
+}
+
+
+_ENTITY_ACCESS_KIND: dict[str, EntityKind] = {
+    "commitment": "commitment",
+    "goal": "goal",
+    "decision": "decision",
+    "resource": "resource",
+    "customer": "resource",
+    "observation": "observation",
+    "model": "model",
+    "prediction": "model",
+    "pattern": "model",
 }
 
 
@@ -100,6 +116,59 @@ def _cutoff_for(period: str, now: datetime) -> datetime | None:
     if days is None:
         return None
     return now - timedelta(days=days)
+
+
+async def _can_read_history_entity(
+    *,
+    actor_id: UUID | None,
+    tenant_id: UUID,
+    kind: str,
+    entity_id: UUID,
+    conn: asyncpg.Connection,
+) -> bool:
+    if actor_id is None:
+        return True
+    access_kind = _ENTITY_ACCESS_KIND.get(kind)
+    if access_kind is None:
+        return False
+    decision = await can_read_by_id(
+        actor_id,
+        access_kind,
+        entity_id,
+        conn=conn,
+        tenant_id=tenant_id,
+    )
+    await record_override_if_needed(
+        decision,
+        actor_id=actor_id,
+        entity_type=access_kind,
+        entity_id=entity_id,
+        conn=conn,
+        tenant_id=tenant_id,
+    )
+    return decision.allowed
+
+
+async def _filter_visible_models(
+    rows: list[asyncpg.Record],
+    *,
+    actor_id: UUID | None,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+) -> list[asyncpg.Record]:
+    if actor_id is None:
+        return rows
+    visible: list[asyncpg.Record] = []
+    for row in rows:
+        if await _can_read_history_entity(
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            kind="model",
+            entity_id=row["id"],
+            conn=conn,
+        ):
+            visible.append(row)
+    return visible
 
 
 # ---------------------------------------------------------------------
@@ -208,6 +277,7 @@ LIMIT 500
 async def _fetch_state_change_events(
     *,
     tenant_id: UUID,
+    actor_id: UUID | None = None,
     cutoff: datetime | None,
     conn: asyncpg.Connection,
 ) -> list[dict[str, Any]]:
@@ -239,6 +309,14 @@ async def _fetch_state_change_events(
         try:
             entity_id = UUID(str(entity_id_raw))
         except (ValueError, TypeError):
+            continue
+        if not await _can_read_history_entity(
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            kind=str(entity_kind),
+            entity_id=entity_id,
+            conn=conn,
+        ):
             continue
 
         new_state: str | None = None
@@ -681,10 +759,17 @@ ORDER BY bucket
 async def _build_calibration(
     *,
     tenant_id: UUID,
+    actor_id: UUID | None = None,
     cutoff: datetime | None,
     conn: asyncpg.Connection,
 ) -> dict[str, Any]:
     rows = await conn.fetch(_CALIBRATION_SQL, tenant_id, cutoff)
+    rows = await _filter_visible_models(
+        list(rows),
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        conn=conn,
+    )
     by_domain: dict[str, list[bool]] = {}
     for r in rows:
         prop = r["proposition"]
@@ -729,7 +814,9 @@ async def _build_calibration(
     }
 
     # Trend: split last 120 days at the midpoint and compare hit-rates.
-    trend_rows = await conn.fetch(_CALIBRATION_TREND_SQL, tenant_id)
+    trend_rows = []
+    if actor_id is None:
+        trend_rows = await conn.fetch(_CALIBRATION_TREND_SQL, tenant_id)
     if len(trend_rows) >= 4:
         mid = len(trend_rows) // 2
         first_half = trend_rows[:mid]
@@ -852,6 +939,7 @@ def _arcs_statement(arcs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def build_history(
     *,
     tenant_id: UUID,
+    actor_id: UUID | None = None,
     period: str = "90d",
     conn: asyncpg.Connection,
     types: list[str] | None = None,
@@ -889,10 +977,19 @@ async def build_history(
             type_filter = None
 
     state_change_events = await _fetch_state_change_events(
-        tenant_id=tenant_id, cutoff=cutoff, conn=conn,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        cutoff=cutoff,
+        conn=conn,
     )
 
     model_event_rows = await conn.fetch(_MODEL_EVENTS_SQL, tenant_id, cutoff)
+    model_event_rows = await _filter_visible_models(
+        list(model_event_rows),
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        conn=conn,
+    )
     model_events = _model_event_records(model_event_rows)
 
     # Combine + sort newest first.
@@ -918,13 +1015,28 @@ async def build_history(
                 continue
 
     prediction_rows = await conn.fetch(_PREDICTIONS_SQL, tenant_id, cutoff)
+    prediction_rows = await _filter_visible_models(
+        list(prediction_rows),
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        conn=conn,
+    )
     predictions = _build_predictions(prediction_rows)
 
     arc_rows = await conn.fetch(_ARCS_SQL, tenant_id)
+    arc_rows = await _filter_visible_models(
+        list(arc_rows),
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        conn=conn,
+    )
     arcs = _build_arcs(arc_rows, obs_id_to_event_id=obs_id_to_event_id)
 
     calibration = await _build_calibration(
-        tenant_id=tenant_id, cutoff=cutoff, conn=conn,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        cutoff=cutoff,
+        conn=conn,
     )
 
     correct = sum(1 for p in predictions if p["status"] == "correct")
