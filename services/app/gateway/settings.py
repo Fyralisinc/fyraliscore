@@ -5,6 +5,9 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from lib.shared.errors import SecretStoreError
+from lib.shared.secrets import load_app_secret_text_from_env
+
 
 def _env_bool(
     env: Mapping[str, str],
@@ -167,7 +170,14 @@ def _auth_bootstrap_secret(
     *,
     production: bool,
 ) -> str | None:
-    value = (source.get("AUTH_BOOTSTRAP_SECRET") or "").strip()
+    try:
+        value = load_app_secret_text_from_env(
+            "AUTH_BOOTSTRAP_SECRET",
+            env=source,
+            production=production,
+        ).strip()
+    except SecretStoreError as exc:
+        raise ValueError(str(exc)) from exc
     if not value:
         if production:
             raise ValueError("AUTH_BOOTSTRAP_SECRET must be set in production")

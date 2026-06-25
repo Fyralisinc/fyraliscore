@@ -57,6 +57,7 @@ import structlog
 from pydantic import BaseModel, ValidationError as PydanticValidationError
 
 from lib.shared.errors import CompanyOSError
+from lib.shared.secrets import load_app_secret_text_from_env
 
 _log = structlog.get_logger(__name__)
 
@@ -722,23 +723,23 @@ class LLMConfig:
             )
         if provider == "deepseek":
             api_key = (
-                os.environ.get("DEEPSEEK_API_KEY", "")
-                or os.environ.get("LLM_API_KEY", "")
+                load_app_secret_text_from_env("DEEPSEEK_API_KEY")
+                or load_app_secret_text_from_env("LLM_API_KEY")
             )
         elif provider == "anthropic":
             api_key = (
-                os.environ.get("ANTHROPIC_API_KEY", "")
-                or os.environ.get("LLM_API_KEY", "")
+                load_app_secret_text_from_env("ANTHROPIC_API_KEY")
+                or load_app_secret_text_from_env("LLM_API_KEY")
             )
         elif provider == "openai":
             api_key = (
-                os.environ.get("OPENAI_API_KEY", "")
-                or os.environ.get("LLM_API_KEY", "")
+                load_app_secret_text_from_env("OPENAI_API_KEY")
+                or load_app_secret_text_from_env("LLM_API_KEY")
             )
         elif provider == "codex":
             api_key = _codex_api_key_from_env()
         else:
-            api_key = os.environ.get("LLM_API_KEY", "")
+            api_key = load_app_secret_text_from_env("LLM_API_KEY")
         model = _model_from_env(provider)
         if provider == "deepseek" and not os.environ.get("LLM_MODEL"):
             # Compatibility-only path. Fyralis production uses Codex, but old
@@ -859,7 +860,7 @@ def _codex_api_key_from_env() -> str:
     an access token mounted by secret management.
     """
     for name in ("CODEX_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY"):
-        value = os.environ.get(name)
+        value = load_app_secret_text_from_env(name)
         if value:
             return value
     auth = _read_codex_auth_file()
@@ -879,7 +880,7 @@ def _codex_account_id_from_env() -> str | None:
     if value:
         return value
     if any(
-        os.environ.get(name)
+        os.environ.get(name) or os.environ.get(f"{name}_SECRET_REF")
         for name in ("CODEX_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY")
     ):
         return None
@@ -903,7 +904,7 @@ def _codex_transport() -> str:
             transport=transport,
         )
     if any(
-        os.environ.get(name)
+        os.environ.get(name) or os.environ.get(f"{name}_SECRET_REF")
         for name in ("CODEX_API_KEY", "OPENAI_API_KEY", "LLM_API_KEY")
     ):
         return "responses"

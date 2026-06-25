@@ -13,7 +13,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Mapping
 
 from lib.shared.errors import SecretStoreError
@@ -27,6 +27,7 @@ SECRET_PROVIDER_REGION_ENV = "SECRET_PROVIDER_REGION"
 SECRET_PROVIDER_ENDPOINT_ENV = "SECRET_PROVIDER_ENDPOINT"
 SECRET_PROVIDER_TIMEOUT_SECONDS_ENV = "SECRET_PROVIDER_TIMEOUT_SECONDS"
 VAULT_TOKEN_ENV = "VAULT_TOKEN"
+APP_SECRET_REF_SUFFIX = "_SECRET_REF"
 
 SUPPORTED_SECRET_STORE_BACKENDS = frozenset({"fernet"})
 SUPPORTED_MASTER_KEK_PROVIDERS = frozenset(
@@ -141,6 +142,100 @@ def load_master_kek_from_config(
     )
 
 
+def load_secret_bytes_from_config(
+    secret_ref: str,
+    config: SecretProviderConfig | None = None,
+) -> bytes:
+    """Load arbitrary app secret material from the managed secret provider.
+
+    The provider selection intentionally reuses ``MASTER_KEK_PROVIDER`` and the
+    provider connection settings. ``secret_ref`` supplies the per-secret path or
+    identifier, letting production deployments move app-level values like
+    ``AUTH_BOOTSTRAP_SECRET`` and provider client secrets out of plaintext env.
+    """
+
+    ref = secret_ref.strip()
+    if not ref:
+        raise SecretStoreError(
+            "managed app secret reference must not be empty",
+            reason="missing_app_secret_ref",
+        )
+    cfg = SecretProviderConfig.from_env() if config is None else config.validate()
+    if cfg.master_kek_provider == "env":
+        raise SecretStoreError(
+            (
+                "managed app secret refs require MASTER_KEK_PROVIDER to be "
+                "aws-secrets-manager, gcp-secret-manager, or hashicorp-vault"
+            ),
+            reason="unsupported_app_secret_provider",
+        )
+    scoped = replace(cfg, master_kek_secret_ref=ref)
+    if scoped.master_kek_provider == "aws-secrets-manager":
+        return _load_from_aws_secrets_manager(scoped)
+    if scoped.master_kek_provider == "gcp-secret-manager":
+        return _load_from_gcp_secret_manager(scoped)
+    if scoped.master_kek_provider == "hashicorp-vault":
+        return _load_from_hashicorp_vault(scoped)
+    raise SecretStoreError(
+        f"unsupported MASTER_KEK_PROVIDER {scoped.master_kek_provider!r}",
+        reason="unsupported_app_secret_provider",
+    )
+
+
+def load_secret_text_from_config(
+    secret_ref: str,
+    config: SecretProviderConfig | None = None,
+    *,
+    encoding: str = "utf-8",
+) -> str:
+    """Load arbitrary app secret material as text."""
+
+    return load_secret_bytes_from_config(secret_ref, config).decode(encoding)
+
+
+def load_app_secret_text_from_env(
+    name: str,
+    *,
+    env: Mapping[str, str] | None = None,
+    config: SecretProviderConfig | None = None,
+    production: bool | None = None,
+    allow_plaintext_in_production: bool = False,
+    encoding: str = "utf-8",
+) -> str:
+    """Resolve an app secret using ``<NAME>_SECRET_REF`` before ``<NAME>``.
+
+    Development and test environments may continue to use direct env values for
+    speed. In production, direct plaintext values are rejected by default so a
+    checked-in template with blank raw values and populated refs is enough to
+    prove the runtime is not depending on plaintext app secrets.
+    """
+
+    source = os.environ if env is None else env
+    ref_key = f"{name}{APP_SECRET_REF_SUFFIX}"
+    secret_ref = (source.get(ref_key) or "").strip()
+    if secret_ref:
+        provider_config = (
+            SecretProviderConfig.from_env(source) if config is None else config
+        )
+        return load_secret_text_from_config(
+            secret_ref,
+            provider_config,
+            encoding=encoding,
+        )
+
+    value = source.get(name, "")
+    effective_production = is_prod() if production is None else production
+    if value and effective_production and not allow_plaintext_in_production:
+        raise SecretStoreError(
+            (
+                f"{name} must not be supplied as plaintext env in production; "
+                f"set {ref_key} to a managed secret reference instead"
+            ),
+            reason="plaintext_app_secret_forbidden_in_production",
+        )
+    return value
+
+
 def _load_from_aws_secrets_manager(config: SecretProviderConfig) -> bytes:
     try:
         import boto3  # type: ignore[import-not-found]
@@ -244,5 +339,9 @@ __all__ = [
     "SUPPORTED_SECRET_STORE_BACKENDS",
     "SecretProviderConfig",
     "VAULT_TOKEN_ENV",
+    "APP_SECRET_REF_SUFFIX",
+    "load_app_secret_text_from_env",
     "load_master_kek_from_config",
+    "load_secret_bytes_from_config",
+    "load_secret_text_from_config",
 ]

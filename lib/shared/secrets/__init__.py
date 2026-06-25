@@ -27,6 +27,7 @@ from cryptography.fernet import Fernet
 from lib.shared.errors import SecretNotFoundError, SecretStoreError
 from lib.shared.secrets.provider_contract import (
     SecretProviderConfig,
+    load_app_secret_text_from_env,
     load_master_kek_from_config,
 )
 from lib.shared.secrets.store import FernetSecretStore
@@ -139,6 +140,7 @@ __all__ = [
     "FernetSecretStore",
     "SecretProviderConfig",
     "build_secret_store",
+    "load_app_secret_text_from_env",
     "SecretStoreError",
     "SecretNotFoundError",
 ]

@@ -45,6 +45,7 @@ import httpx
 
 from lib.embeddings.base import EmbedderDimensionMismatch, EmbedderError
 from lib.shared.circuit_breaker import AsyncCircuitBreaker, CircuitOpenError
+from lib.shared.secrets import load_app_secret_text_from_env
 
 
 DEFAULT_OPENAI_MODEL = "text-embedding-3-small"
@@ -91,7 +92,7 @@ class OpenAIEmbedderConfig:
 
     @classmethod
     def from_env(cls) -> "OpenAIEmbedderConfig":
-        api_key = os.environ.get("OPENAI_API_KEY")
+        api_key = load_app_secret_text_from_env("OPENAI_API_KEY")
         if not api_key:
             raise OpenAIEmbedderError(
                 "OPENAI_API_KEY is unset; cannot configure OpenAIEmbedder",

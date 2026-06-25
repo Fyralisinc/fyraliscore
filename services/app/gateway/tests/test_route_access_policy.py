@@ -22,22 +22,20 @@ _PROD_BOOTSTRAP_SECRET = "prod-bootstrap-secret-32chars-minimum"
 
 
 def _production_settings() -> GatewaySettings:
-    return GatewaySettings.from_env(
-        {
-            "FYRALIS_ENV": "production",
-            "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-            "DEBUG_ENDPOINTS_ENABLED": "0",
-            "FINANCE_PANEL_ENABLED": "false",
-            "SLACK_DM_PANEL_ENABLED": "false",
-            "SPEC_DEMO_ROUTES_ENABLED": "0",
-            "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
-            "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
-            "GATEWAY_MOUNT_SIM": "0",
-            "GATEWAY_REQUIRE_REALTIME": "0",
-            "GATEWAY_REQUIRE_GITHUB_INTEGRATION": "0",
-            "GATEWAY_REQUIRE_INGESTION_DATA_PLANE": "1",
-            "GATEWAY_START_GRT_SCHEDULER": "1",
-        }
+    return GatewaySettings(
+        environment="production",
+        auth_bootstrap_secret=_PROD_BOOTSTRAP_SECRET,
+        debug_endpoints_enabled=False,
+        finance_panel_enabled=False,
+        slack_dm_panel_enabled=False,
+        spec_demo_routes_enabled=False,
+        websocket_query_token_auth_enabled=False,
+        view_ceo_static_tokens_enabled=False,
+        mount_sim=False,
+        require_realtime=False,
+        require_github_integration=False,
+        require_ingestion_data_plane=True,
+        start_grt_scheduler=True,
     )
 
 

@@ -50,7 +50,10 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from lib.embeddings.ollama import OllamaClient  # noqa: E402
-from lib.shared.secrets import build_secret_store  # noqa: E402
+from lib.shared.secrets import (  # noqa: E402
+    build_secret_store,
+    load_app_secret_text_from_env,
+)
 from services.domain.actors.repo import ActorRepo  # noqa: E402
 from services.domain.entity_aliases.repo import EntityAliasRepo  # noqa: E402
 from services.app.gateway.db_bootstrap import _register_codecs  # noqa: E402
@@ -150,9 +153,19 @@ class _ResumeRuntime:
 def _load_config(log) -> tuple[_LauncherConfig | None, int | None]:
     try:
         dsn = os.environ["DATABASE_URL"]
-        bot_token = os.environ["DISCORD_BOT_TOKEN"]
+        bot_token = load_app_secret_text_from_env("DISCORD_BOT_TOKEN")
     except KeyError as exc:
         log.error("discord_gateway_missing_env", var=str(exc))
+        return None, 2
+    except Exception as exc:  # noqa: BLE001
+        log.error(
+            "discord_gateway_secret_resolution_failed",
+            var="DISCORD_BOT_TOKEN",
+            error_type=type(exc).__name__,
+        )
+        return None, 2
+    if not bot_token:
+        log.error("discord_gateway_missing_env", var="DISCORD_BOT_TOKEN")
         return None, 2
 
     redis_url = os.environ.get("REDIS_URL")
@@ -465,7 +478,9 @@ async def _main() -> int:
         )
 
         worker = GatewayWorker(
-            bot_token_provider=lambda: os.environ.get("DISCORD_BOT_TOKEN", ""),
+            bot_token_provider=lambda: load_app_secret_text_from_env(
+                "DISCORD_BOT_TOKEN",
+            ),
             deps=deps,
             initial_state=resume.initial_state,
             on_dispatched=resume.on_dispatched,

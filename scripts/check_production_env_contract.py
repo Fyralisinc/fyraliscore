@@ -34,6 +34,7 @@ REQUIRED_KEYS = frozenset(
         "QUERY_CACHE_BACKEND",
         "LLM_PROVIDER",
         "LLM_STRICT_CONFIG",
+        "CODEX_API_KEY_SECRET_REF",
         "CODEX_API_KEY",
         "CODEX_TRANSPORT",
         "CODEX_MODEL",
@@ -45,7 +46,9 @@ REQUIRED_KEYS = frozenset(
         "MASTER_KEK_SECRET_REF",
         "SECRET_PROVIDER_REGION",
         "SECRET_PROVIDER_TIMEOUT_SECONDS",
+        "OAUTH_STATE_HMAC_KEY_SECRET_REF",
         "OAUTH_STATE_HMAC_KEY",
+        "AUTH_BOOTSTRAP_SECRET_SECRET_REF",
         "AUTH_BOOTSTRAP_SECRET",
         "DEBUG_ENDPOINTS_ENABLED",
         "FINANCE_PANEL_ENABLED",
@@ -68,17 +71,24 @@ REQUIRED_KEYS = frozenset(
         "EMBEDDER_BACKEND",
         "GITHUB_APP_ID",
         "GITHUB_APP_SLUG",
+        "GITHUB_APP_PRIVATE_KEY_SECRET_REF",
         "GITHUB_APP_PRIVATE_KEY",
+        "WEBHOOK_SECRET_GITHUB_SECRET_REF",
         "WEBHOOK_SECRET_GITHUB",
         "SLACK_CLIENT_ID",
+        "SLACK_CLIENT_SECRET_SECRET_REF",
         "SLACK_CLIENT_SECRET",
         "SLACK_REDIRECT_URI",
+        "SLACK_SIGNING_SECRET_SECRET_REF",
         "SLACK_SIGNING_SECRET",
+        "DISCORD_BOT_TOKEN_SECRET_REF",
         "DISCORD_BOT_TOKEN",
         "DISCORD_APPLICATION_ID",
         "DISCORD_CLIENT_ID",
+        "DISCORD_CLIENT_SECRET_SECRET_REF",
         "DISCORD_CLIENT_SECRET",
         "DISCORD_REDIRECT_URI",
+        "WEBHOOK_SECRET_DISCORD_SECRET_REF",
         "WEBHOOK_SECRET_DISCORD",
         "PYTHONHASHSEED",
         "GMAIL_SERVICE_ACCOUNT_JSON_FILE",
@@ -165,6 +175,20 @@ REQUIRED_BLANK_SECRET_PLACEHOLDER_KEYS = frozenset(
         "SLACK_SIGNING_SECRET",
         "WEBHOOK_SECRET_DISCORD",
         "WEBHOOK_SECRET_GITHUB",
+    }
+)
+REQUIRED_NONEMPTY_SECRET_REF_KEYS = frozenset(
+    {
+        "AUTH_BOOTSTRAP_SECRET_SECRET_REF",
+        "CODEX_API_KEY_SECRET_REF",
+        "DISCORD_BOT_TOKEN_SECRET_REF",
+        "DISCORD_CLIENT_SECRET_SECRET_REF",
+        "GITHUB_APP_PRIVATE_KEY_SECRET_REF",
+        "OAUTH_STATE_HMAC_KEY_SECRET_REF",
+        "SLACK_CLIENT_SECRET_SECRET_REF",
+        "SLACK_SIGNING_SECRET_SECRET_REF",
+        "WEBHOOK_SECRET_DISCORD_SECRET_REF",
+        "WEBHOOK_SECRET_GITHUB_SECRET_REF",
     }
 )
 FORBIDDEN_KEYS = frozenset(
@@ -370,6 +394,24 @@ def check_env_contract(path: Path = DEFAULT_ENV_TEMPLATE) -> list[EnvContractVio
                         "must stay blank in the checked-in production "
                         "template; inject the real secret through the runtime "
                         "secret mechanism"
+                    ),
+                )
+            )
+
+    for key in sorted(REQUIRED_NONEMPTY_SECRET_REF_KEYS):
+        secret_ref_entry = values_by_key.get(key)
+        if secret_ref_entry is None:
+            continue
+        if not secret_ref_entry.value:
+            violations.append(
+                EnvContractViolation(
+                    path=path,
+                    key=key,
+                    line_number=secret_ref_entry.line_number,
+                    message=(
+                        "must point at a managed secret reference in the "
+                        "checked-in production template; keep the raw "
+                        "companion secret key blank"
                     ),
                 )
             )

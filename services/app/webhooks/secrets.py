@@ -57,6 +57,7 @@ from typing import Any, Sequence
 from uuid import UUID
 
 from lib.shared.errors import SecretNotFoundError, SecretStoreError
+from lib.shared.secrets import load_app_secret_text_from_env
 from services.app.webhooks.verifier import Secret
 
 
@@ -280,8 +281,8 @@ def _load_github_app_secrets() -> list[Secret]:
       - WEBHOOK_SECRET_GITHUB_PREV  — previous secret during rotation
                                       (optional)
     """
-    current = os.environ.get("WEBHOOK_SECRET_GITHUB", "").strip()
-    previous = os.environ.get("WEBHOOK_SECRET_GITHUB_PREV", "").strip()
+    current = load_app_secret_text_from_env("WEBHOOK_SECRET_GITHUB").strip()
+    previous = load_app_secret_text_from_env("WEBHOOK_SECRET_GITHUB_PREV").strip()
     out: list[Secret] = []
     if current:
         out.append(
@@ -322,9 +323,11 @@ def _load_notion_app_secrets() -> list[Secret]:
     The token is delivered once by Notion's verification POST (logged by
     services/ingest/integrations/notion/webhook.py for the operator to copy here).
     """
-    current = os.environ.get("NOTION_WEBHOOK_VERIFICATION_TOKEN", "").strip()
-    previous = os.environ.get(
-        "NOTION_WEBHOOK_VERIFICATION_TOKEN_PREV", "",
+    current = load_app_secret_text_from_env(
+        "NOTION_WEBHOOK_VERIFICATION_TOKEN",
+    ).strip()
+    previous = load_app_secret_text_from_env(
+        "NOTION_WEBHOOK_VERIFICATION_TOKEN_PREV",
     ).strip()
     out: list[Secret] = []
     if current:

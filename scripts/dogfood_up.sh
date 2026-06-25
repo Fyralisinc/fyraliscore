@@ -29,26 +29,26 @@ set +a
 
 case "${LLM_PROVIDER:-deepseek}" in
   deepseek)
-    [ -n "${DEEPSEEK_API_KEY:-${LLM_API_KEY:-}}" ] \
-      || { echo "ERROR: DEEPSEEK_API_KEY or LLM_API_KEY not set"; exit 1; }
+    [ -n "${DEEPSEEK_API_KEY:-${DEEPSEEK_API_KEY_SECRET_REF:-${LLM_API_KEY:-${LLM_API_KEY_SECRET_REF:-}}}}" ] \
+      || { echo "ERROR: DEEPSEEK_API_KEY(_SECRET_REF) or LLM_API_KEY(_SECRET_REF) not set"; exit 1; }
     ;;
   openai)
-    [ -n "${OPENAI_API_KEY:-${LLM_API_KEY:-}}" ] \
-      || { echo "ERROR: OPENAI_API_KEY or LLM_API_KEY not set"; exit 1; }
+    [ -n "${OPENAI_API_KEY:-${OPENAI_API_KEY_SECRET_REF:-${LLM_API_KEY:-${LLM_API_KEY_SECRET_REF:-}}}}" ] \
+      || { echo "ERROR: OPENAI_API_KEY(_SECRET_REF) or LLM_API_KEY(_SECRET_REF) not set"; exit 1; }
     ;;
   anthropic)
-    [ -n "${ANTHROPIC_API_KEY:-${LLM_API_KEY:-}}" ] \
-      || { echo "ERROR: ANTHROPIC_API_KEY or LLM_API_KEY not set"; exit 1; }
+    [ -n "${ANTHROPIC_API_KEY:-${ANTHROPIC_API_KEY_SECRET_REF:-${LLM_API_KEY:-${LLM_API_KEY_SECRET_REF:-}}}}" ] \
+      || { echo "ERROR: ANTHROPIC_API_KEY(_SECRET_REF) or LLM_API_KEY(_SECRET_REF) not set"; exit 1; }
     ;;
   codex)
     CODEX_AUTH_PATH="${CODEX_AUTH_FILE:-${CODEX_HOME:-$HOME/.codex}/auth.json}"
     if [ "${CODEX_TRANSPORT:-auto}" = "responses" ]; then
-      [ -n "${CODEX_API_KEY:-${OPENAI_API_KEY:-${LLM_API_KEY:-}}}" ] \
-        || { echo "ERROR: Codex Responses auth missing; set CODEX_API_KEY/OPENAI_API_KEY/LLM_API_KEY"; exit 1; }
+      [ -n "${CODEX_API_KEY:-${CODEX_API_KEY_SECRET_REF:-${OPENAI_API_KEY:-${OPENAI_API_KEY_SECRET_REF:-${LLM_API_KEY:-${LLM_API_KEY_SECRET_REF:-}}}}}}" ] \
+        || { echo "ERROR: Codex Responses auth missing; set CODEX_API_KEY/OPENAI_API_KEY/LLM_API_KEY or *_SECRET_REF"; exit 1; }
     else
-      [ -n "${CODEX_API_KEY:-${OPENAI_API_KEY:-${LLM_API_KEY:-}}}" ] \
+      [ -n "${CODEX_API_KEY:-${CODEX_API_KEY_SECRET_REF:-${OPENAI_API_KEY:-${OPENAI_API_KEY_SECRET_REF:-${LLM_API_KEY:-${LLM_API_KEY_SECRET_REF:-}}}}}}" ] \
         || [ -f "$CODEX_AUTH_PATH" ] \
-        || { echo "ERROR: Codex auth missing; set CODEX_API_KEY/OPENAI_API_KEY/LLM_API_KEY or run codex login"; exit 1; }
+        || { echo "ERROR: Codex auth missing; set CODEX_API_KEY/OPENAI_API_KEY/LLM_API_KEY or *_SECRET_REF, or run codex login"; exit 1; }
     fi
     ;;
   *)

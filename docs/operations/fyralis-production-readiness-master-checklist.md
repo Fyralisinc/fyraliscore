@@ -404,7 +404,17 @@ Current state:
   generic and dedicated `rotate-secret` operator tests, OAuth refresh rotation
   tests, and webhook verifier rotation-overlap tests for DB-backed and
   provider-specific secrets.
-- Many production template keys are still env-shaped.
+- App-level production secrets now follow the same managed-provider reference
+  pattern as the secret-store KEK: `CODEX_API_KEY`,
+  `AUTH_BOOTSTRAP_SECRET`, `OAUTH_STATE_HMAC_KEY`,
+  `GITHUB_APP_PRIVATE_KEY`, GitHub/Notion app webhook secrets,
+  Slack/Discord OAuth client secrets, Slack signing secret, and the Discord
+  bot/public-key material all resolve `<NAME>_SECRET_REF` before the raw
+  `<NAME>` value. The checked-in production template keeps the raw companion
+  keys blank and requires the managed refs to be non-empty.
+- `scripts/start.sh` and `scripts/dogfood_up.sh` now accept LLM/Codex
+  `*_SECRET_REF` keys in their auth preflight checks, so a provider-backed
+  deployment is not blocked by shell-level raw-key checks.
 - Webhook env fallback is disabled in production by contract.
 
 Must solve:
@@ -412,7 +422,7 @@ Must solve:
 - [x] Define the production secret provider contract:
   `SecretStore` interface, cloud/Vault backend, and Fernet compatibility
   backend.
-- [ ] Remove production dependence on plaintext app secrets in `.env` wherever
+- [x] Remove production dependence on plaintext app secrets in `.env` wherever
   a managed secret provider is available.
 - [x] Load `MASTER_KEK` or equivalent wrapping key from KMS/Vault, not from a
   static file or committed env template.
@@ -427,11 +437,17 @@ Must solve:
 
 Acceptance evidence:
 
-- No real production credential is required directly in process env except
-  provider references and non-secret configuration.
+- No real Fyralis application credential is required directly in process env
+  except provider references and non-secret configuration; production raw
+  app-secret values fail closed through `load_app_secret_text_from_env`.
 - Secret rotation test passes for at least one OAuth source and one HMAC
   webhook source.
 - Uninstall path deletes or disables all related secret refs.
+- `scripts/check_production_env_contract.py` requires non-empty managed refs
+  for production app secrets and blank raw placeholders in
+  `.env.production.example`; `lib/shared/secrets/tests/test_provider_contract.py`
+  proves refs win over raw values and plaintext app secrets are rejected in
+  production.
 
 ### 1.4 Log, Error, And Telemetry Privacy
 

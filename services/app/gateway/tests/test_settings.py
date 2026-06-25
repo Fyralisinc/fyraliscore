@@ -4,17 +4,39 @@ import pytest
 import httpx
 from fastapi import FastAPI
 
+import lib.shared.secrets.provider_contract as provider_contract
 from services.app.gateway.core_router import build_core_router
 from services.app.gateway.settings import GatewaySettings
 
 
 _PROD_BOOTSTRAP_SECRET = "prod-bootstrap-secret-32chars-minimum"
+_PROD_BOOTSTRAP_SECRET_REF = "prod/fyralis/auth-bootstrap-secret"
+_SHORT_BOOTSTRAP_SECRET_REF = "prod/fyralis/auth-bootstrap-secret-short"
+
+
+@pytest.fixture(autouse=True)
+def _stub_managed_auth_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_aws_loader(config) -> bytes:
+        if config.master_kek_secret_ref == _SHORT_BOOTSTRAP_SECRET_REF:
+            return b"secret"
+        if config.master_kek_secret_ref == _PROD_BOOTSTRAP_SECRET_REF:
+            return _PROD_BOOTSTRAP_SECRET.encode("utf-8")
+        return b"managed-secret-value"
+
+    monkeypatch.setattr(
+        provider_contract,
+        "_load_from_aws_secrets_manager",
+        _fake_aws_loader,
+    )
 
 
 def _prod_env(**overrides: str) -> dict[str, str]:
     values = {
         "FYRALIS_ENV": "production",
-        "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
+        "SECRET_STORE_BACKEND": "fernet",
+        "MASTER_KEK_PROVIDER": "aws-secrets-manager",
+        "MASTER_KEK_SECRET_REF": "prod/fyralis/master-kek",
+        "AUTH_BOOTSTRAP_SECRET_SECRET_REF": _PROD_BOOTSTRAP_SECRET_REF,
         "DEBUG_ENDPOINTS_ENABLED": "0",
         "FINANCE_PANEL_ENABLED": "false",
         "SLACK_DM_PANEL_ENABLED": "false",
@@ -125,7 +147,10 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": "secret",
+                "SECRET_STORE_BACKEND": "fernet",
+                "MASTER_KEK_PROVIDER": "aws-secrets-manager",
+                "MASTER_KEK_SECRET_REF": "prod/fyralis/master-kek",
+                "AUTH_BOOTSTRAP_SECRET_SECRET_REF": _SHORT_BOOTSTRAP_SECRET_REF,
             }
         )
 

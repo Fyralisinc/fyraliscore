@@ -7,6 +7,7 @@ from scripts.check_production_env_contract import (
     REQUIRED_ALLOWED_VALUES,
     REQUIRED_BLANK_SECRET_PLACEHOLDER_KEYS,
     FORBIDDEN_EXACT_VALUES,
+    REQUIRED_NONEMPTY_SECRET_REF_KEYS,
     REQUIRED_POSITIVE_INTEGER_KEYS,
     REQUIRED_EXACT_VALUES,
     REQUIRED_KEYS,
@@ -23,6 +24,8 @@ def _write_template(path: Path, *, overrides: dict[str, str] | None = None) -> N
             default = "1000"
         elif key in REQUIRED_POSITIVE_NUMBER_KEYS:
             default = "30"
+        elif key in REQUIRED_NONEMPTY_SECRET_REF_KEYS:
+            default = f"prod/fyralis/{key.lower()}"
         else:
             default = "placeholder"
         if key == "SECRET_STORE_BACKEND":
@@ -136,6 +139,19 @@ def test_env_contract_reports_nonempty_raw_secret_placeholder(
     assert len(violations) == 1
     assert violations[0].key == "SLACK_CLIENT_SECRET"
     assert "must stay blank" in violations[0].message
+
+
+def test_env_contract_reports_empty_managed_secret_ref(
+    tmp_path: Path,
+) -> None:
+    template = tmp_path / ".env.production.example"
+    _write_template(template, overrides={"SLACK_CLIENT_SECRET_SECRET_REF": ""})
+
+    violations = check_env_contract(template)
+
+    assert len(violations) == 1
+    assert violations[0].key == "SLACK_CLIENT_SECRET_SECRET_REF"
+    assert "managed secret reference" in violations[0].message
 
 
 def test_env_contract_reports_invalid_pgbouncer_flag(tmp_path: Path) -> None:

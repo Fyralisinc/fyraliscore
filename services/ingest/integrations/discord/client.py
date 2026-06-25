@@ -24,7 +24,6 @@ emits the raw `guild_id`. Operators correlate via `tenant_id` and
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from typing import Any
 from uuid import UUID
@@ -34,6 +33,7 @@ import httpx
 import structlog
 
 from lib.shared.errors import DiscordApiError
+from lib.shared.secrets import load_app_secret_text_from_env
 from services.ingest.integrations.discord.uninstall import _disable_and_zeroize_discord
 
 
@@ -97,7 +97,7 @@ class DiscordClient:
         """
         if self._bot_token_override is not None:
             return self._bot_token_override
-        token = os.environ.get("DISCORD_BOT_TOKEN", "")
+        token = load_app_secret_text_from_env("DISCORD_BOT_TOKEN")
         if not token:
             raise DiscordApiError(
                 "DISCORD_BOT_TOKEN env var not configured",

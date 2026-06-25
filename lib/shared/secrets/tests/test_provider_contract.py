@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from cryptography.fernet import Fernet
 
+import lib.shared.secrets.provider_contract as provider_contract
 from lib.shared.errors import SecretStoreError
 from lib.shared.secrets import (
     FernetSecretStore,
@@ -11,7 +12,9 @@ from lib.shared.secrets import (
 )
 from lib.shared.secrets.provider_contract import (
     _extract_vault_secret_value,
+    load_app_secret_text_from_env,
     load_master_kek_from_config,
+    load_secret_bytes_from_config,
 )
 
 
@@ -84,6 +87,81 @@ def test_load_master_kek_from_env_provider(
     monkeypatch.setenv("MASTER_KEK", key)
 
     assert load_master_kek_from_config(SecretProviderConfig()) == key.encode("ascii")
+
+
+def test_load_secret_bytes_uses_requested_app_secret_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, str | None] = {}
+
+    def _fake_aws_loader(config: SecretProviderConfig) -> bytes:
+        observed["ref"] = config.master_kek_secret_ref
+        return b"managed-secret"
+
+    monkeypatch.setattr(
+        provider_contract,
+        "_load_from_aws_secrets_manager",
+        _fake_aws_loader,
+    )
+
+    value = load_secret_bytes_from_config(
+        "prod/fyralis/slack-client-secret",
+        SecretProviderConfig(
+            master_kek_provider="aws-secrets-manager",
+            master_kek_secret_ref="prod/fyralis/master-kek",
+        ),
+    )
+
+    assert value == b"managed-secret"
+    assert observed["ref"] == "prod/fyralis/slack-client-secret"
+
+
+def test_app_secret_ref_wins_over_plaintext_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_aws_loader(config: SecretProviderConfig) -> bytes:
+        assert config.master_kek_secret_ref == "prod/fyralis/slack-client-secret"
+        return b"managed-client-secret"
+
+    monkeypatch.setattr(
+        provider_contract,
+        "_load_from_aws_secrets_manager",
+        _fake_aws_loader,
+    )
+
+    value = load_app_secret_text_from_env(
+        "SLACK_CLIENT_SECRET",
+        env={
+            "SECRET_STORE_BACKEND": "fernet",
+            "MASTER_KEK_PROVIDER": "aws-secrets-manager",
+            "MASTER_KEK_SECRET_REF": "prod/fyralis/master-kek",
+            "SLACK_CLIENT_SECRET": "plaintext-should-not-win",
+            "SLACK_CLIENT_SECRET_SECRET_REF": "prod/fyralis/slack-client-secret",
+        },
+        production=True,
+    )
+
+    assert value == "managed-client-secret"
+
+
+def test_app_secret_plaintext_rejected_in_production() -> None:
+    with pytest.raises(SecretStoreError, match="SLACK_CLIENT_SECRET"):
+        load_app_secret_text_from_env(
+            "SLACK_CLIENT_SECRET",
+            env={"SLACK_CLIENT_SECRET": "raw-secret"},
+            production=True,
+        )
+
+
+def test_app_secret_plaintext_allowed_outside_production() -> None:
+    assert (
+        load_app_secret_text_from_env(
+            "SLACK_CLIENT_SECRET",
+            env={"SLACK_CLIENT_SECRET": "local-secret"},
+            production=False,
+        )
+        == "local-secret"
+    )
 
 
 def test_build_secret_store_uses_provider_contract(
