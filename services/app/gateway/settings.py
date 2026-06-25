@@ -112,6 +112,44 @@ def _env_cookie_name(
     return value
 
 
+_MIN_BOOTSTRAP_SECRET_LENGTH = 32
+_UNSAFE_BOOTSTRAP_SECRET_VALUES = frozenset(
+    {
+        "secret",
+        "password",
+        "changeme",
+        "change-me",
+        "change_me",
+        "dev-secret",
+        "test-secret",
+        "bootstrap-secret",
+    }
+)
+
+
+def _auth_bootstrap_secret(
+    source: Mapping[str, str],
+    *,
+    production: bool,
+) -> str | None:
+    value = (source.get("AUTH_BOOTSTRAP_SECRET") or "").strip()
+    if not value:
+        if production:
+            raise ValueError("AUTH_BOOTSTRAP_SECRET must be set in production")
+        return None
+    if production:
+        if len(value) < _MIN_BOOTSTRAP_SECRET_LENGTH:
+            raise ValueError(
+                "AUTH_BOOTSTRAP_SECRET must be at least "
+                f"{_MIN_BOOTSTRAP_SECRET_LENGTH} characters in production",
+            )
+        if value.lower() in _UNSAFE_BOOTSTRAP_SECRET_VALUES:
+            raise ValueError(
+                "AUTH_BOOTSTRAP_SECRET must not use a known unsafe placeholder",
+            )
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class GatewaySettings:
     """Settings used by the gateway app factory and lifespan startup."""
@@ -159,9 +197,10 @@ class GatewaySettings:
         source = env if env is not None else os.environ
         environment = _env_name(source)
         production = _is_production(environment)
-        auth_bootstrap_secret = source.get("AUTH_BOOTSTRAP_SECRET") or None
-        if production and not auth_bootstrap_secret:
-            raise ValueError("AUTH_BOOTSTRAP_SECRET must be set in production")
+        auth_bootstrap_secret = _auth_bootstrap_secret(
+            source,
+            production=production,
+        )
         default_tenant_id = source.get("DEFAULT_TENANT_ID") or None
         company_os_tenant_id = source.get("COMPANY_OS_TENANT_ID") or None
         if production and (default_tenant_id or company_os_tenant_id):

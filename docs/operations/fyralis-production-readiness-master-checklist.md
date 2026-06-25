@@ -1011,6 +1011,10 @@ Current state:
   `request.state.auth` has been populated by gateway actor-session auth.
   `DEFAULT_ACTOR_ID`, `DEFAULT_TENANT_ID`, and `COMPANY_OS_TENANT_ID` are all
   forbidden by production runtime settings and the env-template contract.
+- Production gateway settings now reject missing, short, or known-placeholder
+  `AUTH_BOOTSTRAP_SECRET` values; the route-inventory audit and production env
+  template use/document a 32-character minimum so `/auth/session` cannot be
+  bootstrapped with a trivial shared secret.
 - The outbound source endpoint resolver now rejects `SYNTHETIC_SOURCE_API_BASE`
   in production, so worker/client code cannot silently redirect production
   source API calls to the fixture-backed spammer. Shared production detection

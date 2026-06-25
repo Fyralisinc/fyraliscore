@@ -18,11 +18,14 @@ from services.app.gateway.route_mounts import mount_gateway_routes
 from services.app.gateway.settings import GatewaySettings
 
 
+_PROD_BOOTSTRAP_SECRET = "prod-bootstrap-secret-32chars-minimum"
+
+
 def _production_settings() -> GatewaySettings:
     return GatewaySettings.from_env(
         {
             "FYRALIS_ENV": "production",
-            "AUTH_BOOTSTRAP_SECRET": "secret",
+            "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
             "DEBUG_ENDPOINTS_ENABLED": "0",
             "FINANCE_PANEL_ENABLED": "false",
             "SLACK_DM_PANEL_ENABLED": "false",

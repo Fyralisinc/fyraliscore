@@ -8,6 +8,9 @@ from services.app.gateway.core_router import build_core_router
 from services.app.gateway.settings import GatewaySettings
 
 
+_PROD_BOOTSTRAP_SECRET = "prod-bootstrap-secret-32chars-minimum"
+
+
 def test_gateway_sensitive_panels_default_disabled() -> None:
     settings = GatewaySettings.from_env({})
     assert settings.debug_endpoints_enabled is False
@@ -51,7 +54,7 @@ def test_gateway_debug_endpoints_require_explicit_opt_in() -> None:
 def test_gateway_production_rejects_default_tenant_fallbacks() -> None:
     base = {
         "FYRALIS_ENV": "production",
-        "AUTH_BOOTSTRAP_SECRET": "secret",
+        "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
         "DEBUG_ENDPOINTS_ENABLED": "0",
         "FINANCE_PANEL_ENABLED": "false",
         "SLACK_DM_PANEL_ENABLED": "false",
@@ -84,11 +87,19 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
     with pytest.raises(ValueError, match="AUTH_BOOTSTRAP_SECRET"):
         GatewaySettings.from_env({"FYRALIS_ENV": "production"})
 
-    with pytest.raises(ValueError, match="FINANCE_PANEL_ENABLED=false"):
+    with pytest.raises(ValueError, match="AUTH_BOOTSTRAP_SECRET.*32"):
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
                 "AUTH_BOOTSTRAP_SECRET": "secret",
+            }
+        )
+
+    with pytest.raises(ValueError, match="FINANCE_PANEL_ENABLED=false"):
+        GatewaySettings.from_env(
+            {
+                "FYRALIS_ENV": "production",
+                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
                 "DEBUG_ENDPOINTS_ENABLED": "0",
             }
         )
@@ -97,7 +108,7 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": "secret",
+                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
                 "DEBUG_ENDPOINTS_ENABLED": "0",
                 "FINANCE_PANEL_ENABLED": "false",
                 "SLACK_DM_PANEL_ENABLED": "true",
@@ -112,7 +123,7 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": "secret",
+                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
                 "FINANCE_PANEL_ENABLED": "false",
                 "SLACK_DM_PANEL_ENABLED": "false",
                 "SPEC_DEMO_ROUTES_ENABLED": "0",
@@ -126,7 +137,7 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": "secret",
+                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
                 "DEBUG_ENDPOINTS_ENABLED": "1",
                 "FINANCE_PANEL_ENABLED": "false",
                 "SLACK_DM_PANEL_ENABLED": "false",
@@ -141,7 +152,7 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": "secret",
+                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
                 "DEBUG_ENDPOINTS_ENABLED": "0",
                 "FINANCE_PANEL_ENABLED": "false",
                 "SLACK_DM_PANEL_ENABLED": "false",
@@ -156,7 +167,7 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": "secret",
+                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
                 "DEBUG_ENDPOINTS_ENABLED": "0",
                 "FINANCE_PANEL_ENABLED": "false",
                 "SLACK_DM_PANEL_ENABLED": "false",
@@ -171,7 +182,7 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": "secret",
+                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
                 "DEBUG_ENDPOINTS_ENABLED": "0",
                 "FINANCE_PANEL_ENABLED": "false",
                 "SLACK_DM_PANEL_ENABLED": "false",
@@ -186,7 +197,7 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": "secret",
+                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
                 "DEBUG_ENDPOINTS_ENABLED": "0",
                 "FINANCE_PANEL_ENABLED": "false",
                 "SLACK_DM_PANEL_ENABLED": "false",
@@ -204,7 +215,7 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": "secret",
+                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
                 "DEBUG_ENDPOINTS_ENABLED": "0",
                 "FINANCE_PANEL_ENABLED": "false",
                 "SLACK_DM_PANEL_ENABLED": "false",
@@ -218,7 +229,7 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": "secret",
+                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
                 "DEBUG_ENDPOINTS_ENABLED": "0",
                 "FINANCE_PANEL_ENABLED": "false",
                 "SLACK_DM_PANEL_ENABLED": "false",
@@ -232,7 +243,7 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": "secret",
+                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
                 "DEBUG_ENDPOINTS_ENABLED": "0",
                 "FINANCE_PANEL_ENABLED": "false",
                 "SLACK_DM_PANEL_ENABLED": "false",
@@ -247,7 +258,7 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": "secret",
+                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
                 "DEBUG_ENDPOINTS_ENABLED": "0",
                 "FINANCE_PANEL_ENABLED": "false",
                 "SLACK_DM_PANEL_ENABLED": "false",
@@ -260,7 +271,7 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
     settings = GatewaySettings.from_env(
         {
             "FYRALIS_ENV": "production",
-            "AUTH_BOOTSTRAP_SECRET": "secret",
+            "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
             "DEBUG_ENDPOINTS_ENABLED": "0",
             "FINANCE_PANEL_ENABLED": "false",
             "SLACK_DM_PANEL_ENABLED": "false",
@@ -270,7 +281,7 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
             "GATEWAY_MOUNT_SIM": "0",
         }
     )
-    assert settings.auth_bootstrap_secret == "secret"
+    assert settings.auth_bootstrap_secret == _PROD_BOOTSTRAP_SECRET
     assert settings.debug_endpoints_enabled is False
     assert settings.finance_panel_enabled is False
     assert settings.slack_dm_panel_enabled is False

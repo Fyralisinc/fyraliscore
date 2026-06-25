@@ -28,7 +28,7 @@ def _production_settings() -> GatewaySettings:
     return GatewaySettings.from_env(
         {
             "FYRALIS_ENV": "production",
-            "AUTH_BOOTSTRAP_SECRET": "secret",
+            "AUTH_BOOTSTRAP_SECRET": "prod-bootstrap-secret-32chars-minimum",
             "DEBUG_ENDPOINTS_ENABLED": "0",
             "FINANCE_PANEL_ENABLED": "false",
             "SLACK_DM_PANEL_ENABLED": "false",
