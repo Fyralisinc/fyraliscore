@@ -253,7 +253,9 @@ Current state:
   production settings and the env contract require
   `VIEW_CEO_STATIC_TOKENS_ENABLED=0` and reject `VIEW_CEO_STATIC_TOKENS`.
   `/view/ceo/home` and `/view/ceo/stream` also accept normal gateway
-  actor-session bearer tokens.
+  actor-session bearer tokens. `/view/ceo/home` now rejects default-tenant
+  fallback on missing or invalid auth when mounted in production, even if the
+  router is accidentally constructed with a dogfood default tenant.
 - `services.platform.access_control.audit.record_override_if_needed` centralizes
   override audit writes, and the architecture ratchet now fails production code
   that calls `can_read`/`can_read_by_id` without an override-audit path.

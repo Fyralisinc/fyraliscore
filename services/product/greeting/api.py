@@ -27,6 +27,11 @@ from services.product.greeting.viewer_state_repo import ViewerStateRepo
 log = logging.getLogger(__name__)
 
 
+def _request_is_production(request: Request) -> bool:
+    settings = getattr(request.app.state, "gateway_settings", None)
+    return bool(getattr(settings, "is_production", False))
+
+
 def build_ceo_api_router(
     *,
     cache: ViewCeoCacheRepo,
@@ -60,6 +65,11 @@ def build_ceo_api_router(
         """
         token = _extract_token(request)
         if not token:
+            if _request_is_production(request):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail={"error": "missing_token"},
+                )
             if default_tenant_id is not None:
                 return default_tenant_id, "default"
             raise HTTPException(
@@ -79,6 +89,11 @@ def build_ceo_api_router(
             except Exception:
                 pass
         if tenant_id is None:
+            if _request_is_production(request):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail={"error": "invalid_token"},
+                )
             if default_tenant_id is not None:
                 return default_tenant_id, "default"
             raise HTTPException(

@@ -278,6 +278,38 @@ async def test_home_endpoint_accepts_gateway_actor_session_cookie(greeting_db):
     assert resp.json()["viewer_state"]["previous_last_seen_at"] is None
 
 
+async def test_home_endpoint_rejects_default_tenant_fallback_in_production():
+    app = FastAPI()
+    app.state.gateway_settings = SimpleNamespace(
+        is_production=True,
+        websocket_query_token_auth_enabled=False,
+        websocket_session_cookie_name="fyralis_session",
+    )
+    stream_mgr = ViewCeoStreamManager(token_map=StaticTenantTokenMap(tokens={}))
+    app.include_router(
+        build_ceo_api_router(
+            cache=object(),
+            scheduler=object(),
+            stream_manager=stream_mgr,
+            viewer_state_repo=object(),
+            default_tenant_id=TENANT_A,
+        )
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        missing = await client.get("/view/ceo/home")
+        invalid = await client.get(
+            "/view/ceo/home",
+            headers={"Authorization": "Bearer invalid-static-token"},
+        )
+
+    assert missing.status_code == 401
+    assert missing.json() == {"detail": {"error": "missing_token"}}
+    assert invalid.status_code == 401
+    assert invalid.json() == {"detail": {"error": "invalid_token"}}
+
+
 async def test_home_endpoint_rejects_query_token_when_disabled(greeting_db):
     app, _sched, _stream = _build_app(greeting_db)
     app.state.gateway_settings = GatewaySettings(
