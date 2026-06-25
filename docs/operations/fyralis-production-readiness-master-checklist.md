@@ -274,6 +274,11 @@ Current state:
   object, or substrate-candidate evidence `can_read_by_id` decisions.
   Unanchored clarification rows fail closed except for audited admin/leadership
   override reads.
+- Legacy substrate list endpoints now filter every returned row through
+  actor-scoped `can_read` and record admin/leadership/first-person override
+  reads. The production route-access audit fails if mounted `substrate` routes
+  stop requiring gateway bearer auth, or if `substrate_router.py` drops
+  row-level access checks or override-audit writes.
 
 Must solve:
 
@@ -283,7 +288,7 @@ Must solve:
   simulation, and synthetic injection from production by default.
 - [x] Replace env-name-only debug gating with explicit
   `DEBUG_ENDPOINTS_ENABLED=0` fail-closed behavior.
-- [ ] Apply access-control checks to all remaining routes that read substrate
+- [x] Apply access-control checks to all remaining routes that read substrate
   entities: any remaining untargeted artifact/feed surfaces that need explicit
   row-level scope metadata.
 - [x] Ensure realtime/WebSocket delivery applies the same `can_read` contract as

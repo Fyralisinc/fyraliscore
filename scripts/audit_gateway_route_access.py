@@ -101,6 +101,7 @@ def _check(
     *,
     debug_endpoints_enabled: bool,
     production: bool = False,
+    repo_root: Path = REPO_ROOT,
 ) -> list[str]:
     errors: list[str] = []
     if not debug_endpoints_enabled:
@@ -141,16 +142,26 @@ def _check(
                     errors.append(
                         f"production route must not mount {prefix} surface: {path}"
                     )
+            tags = {str(tag) for tag in cast(list[object], row["tags"])}
+            if "substrate" in tags and (
+                access != RouteAccess.BEARER.value
+                or row["gateway_bearer_required"] is not True
+            ):
+                errors.append(
+                    "substrate routes must remain gateway bearer-authenticated "
+                    f"before row-level access checks; found {path} as {access}"
+                )
     if production:
-        errors.extend(_check_production_source_invariants())
+        errors.extend(_check_production_source_invariants(repo_root=repo_root))
+        errors.extend(_check_substrate_access_invariants(repo_root=repo_root))
     return errors
 
 
-def _check_production_source_invariants() -> list[str]:
+def _check_production_source_invariants(*, repo_root: Path = REPO_ROOT) -> list[str]:
     errors: list[str] = []
-    gateway_dir = REPO_ROOT / "services/app/gateway"
+    gateway_dir = repo_root / "services/app/gateway"
     for path in gateway_dir.rglob("*.py"):
-        rel = path.relative_to(REPO_ROOT)
+        rel = path.relative_to(repo_root)
         rel_text = rel.as_posix()
         if "/tests/" in rel_text:
             continue
@@ -161,6 +172,31 @@ def _check_production_source_invariants() -> list[str]:
             "/v1/spec/" in text or "/v1/spec" in text
         ):
             errors.append(f"spec seed route appears outside spec_routes.py: {rel}")
+    return errors
+
+
+def _check_substrate_access_invariants(*, repo_root: Path = REPO_ROOT) -> list[str]:
+    """Keep legacy substrate list endpoints behind row-level access checks."""
+
+    path = repo_root / "services/app/gateway/substrate_router.py"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ["substrate route access invariant could not read substrate_router.py"]
+
+    required_snippets = {
+        "await can_read(": "substrate rows must be filtered through can_read",
+        "await _record_override_if_needed(": (
+            "substrate override reads must be recorded through the local helper"
+        ),
+        "await record_override(": (
+            "substrate override helper must write access_override_log records"
+        ),
+    }
+    errors: list[str] = []
+    for snippet, message in required_snippets.items():
+        if snippet not in text:
+            errors.append(message)
     return errors
 
 

@@ -67,6 +67,11 @@ jobs:
       - name: Check required merge checks policy
         run: python scripts/check_github_required_checks.py
 
+      # Verifies the production-mounted gateway route inventory remains behind
+      # the expected auth boundary and substrate routes keep row-level access.
+      - name: Check production route access
+        run: python scripts/audit_gateway_route_access.py --production --check > /tmp/gateway-route-access.md
+
       # Ensures every bounded product workflow has explicit p95/p99 query
       # budgets plus hot-path/index-review evidence before soak testing.
       - name: Check product query performance budgets
