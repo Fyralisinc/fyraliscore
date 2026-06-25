@@ -246,6 +246,24 @@ async def list_clarification_requests(
     return [_hydrate(row) for row in rows]
 
 
+async def get_clarification_request(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    request_id: UUID,
+) -> ClarificationRequest | None:
+    row = await conn.fetchrow(
+        """
+        SELECT *
+        FROM clarification_requests
+        WHERE id = $1 AND tenant_id = $2
+        """,
+        request_id,
+        tenant_id,
+    )
+    return _hydrate(row) if row is not None else None
+
+
 async def answer_clarification_request(
     conn: asyncpg.Connection,
     *,
@@ -340,6 +358,7 @@ __all__ = [
     "ClarificationRequest",
     "answer_clarification_request",
     "dismiss_clarification_request",
+    "get_clarification_request",
     "list_clarification_requests",
     "open_clarification_request",
 ]
