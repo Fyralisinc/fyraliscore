@@ -84,7 +84,7 @@ Every checklist item is done only when:
 - [ ] Data retention, backup/restore, disaster recovery, and audit retention
   policies are documented and tested.
 - [ ] Per-source and per-tenant scaling limits are known from load tests.
-- [ ] Cost and rate-limit budgets are enforced, not merely observed.
+- [x] Cost and rate-limit budgets are enforced, not merely observed.
 - [ ] Admin/operator surfaces exist for all routine actions.
 - [x] Security scans, dependency updates, and release signing are part of the
   standard release process.
