@@ -38,6 +38,7 @@ CONSOLE_URL="${CONSOLE_URL:-http://localhost:8080}"
 PROJECT_NET="${PROJECT_NET:-fyralis-control-plane_cp-net}"
 DATAPLANE_NET="${DATAPLANE_NET:-dataplane-net}"
 COLLECTOR_IMAGE="otel/opentelemetry-collector-contrib:0.105.0"
+AGENT_IMAGE="${AGENT_IMAGE:-fyralis/agent}"   # built by the CP compose (console heartbeat agent)
 
 PYTHON_BIN="${PYTHON:-}"
 if [[ -z "$PYTHON_BIN" ]]; then
@@ -107,6 +108,38 @@ docker run -d --name "cp-boundary-$TENANT" --restart unless-stopped \
 # scrape the shared demo-dataplane stub (on dataplane-net) AND reach the proxy (on cp-net)
 docker network connect "$DATAPLANE_NET" "cp-boundary-$TENANT"
 ok "cp-boundary-$TENANT up — pushing golden-12 under org '$TENANT' via mTLS proxy"
+
+# --- 5. start the tenant's AGENT (console heartbeat + config pull) -----------
+# The boundary collector feeds Grafana (metrics). The agent is what makes the
+# deployment go GREEN in the operator CONSOLE: it heartbeats the C4 deployment
+# record to console:8080 every interval (console health is derived from
+# heartbeat freshness — no agent => the row ages to RED). Outbound-only (I2).
+say "starting agent cp-agent-$TENANT (console heartbeats) …"
+docker rm -f "cp-agent-$TENANT" >/dev/null 2>&1 || true
+docker run -d --name "cp-agent-$TENANT" --restart unless-stopped \
+  --network "$PROJECT_NET" \
+  -e AGENT_TENANT_ID="$TENANT" \
+  -e AGENT_DEPLOYMENT_ID="$DEPLOYMENT_ID" \
+  -e AGENT_REGION="$REGION" \
+  -e AGENT_TELEMETRY_TIER=T1 \
+  -e AGENT_CONSOLE_URL="http://console:8080" \
+  -e AGENT_CONSOLE_TOKEN_FILE=/run/secrets/console_ingest_token \
+  -e AGENT_LICENSE_PATH=/run/secrets/license.json \
+  -e AGENT_TRUST_ROOT=/app/signing/trust_root.json \
+  -e AGENT_VERSION_FILE=/app/agent/VERSION \
+  -e AGENT_CONFIG_DIR=/var/lib/fyralis-agent/applied-config \
+  -e AGENT_BUFFER_PATH=/var/lib/fyralis-agent/buffer.jsonl \
+  -e AGENT_HEALTHZ_URL=http://127.0.0.1:8088/healthz \
+  -e AGENT_INTERVAL_S=30 \
+  -v "$HERE/signing/trust_root.json:/app/signing/trust_root.json:ro" \
+  -v "cp-agent-state-$TENANT:/var/lib/fyralis-agent" \
+  -v "$RT/license.json:/run/secrets/license.json:ro" \
+  -v "$RT/license.json.sig:/run/secrets/license.json.sig:ro" \
+  -v "$RT/license.json.manifest.json:/run/secrets/license.json.manifest.json:ro" \
+  -v "$HERE/_runtime/secrets/console_ingest_token:/run/secrets/console_ingest_token:ro" \
+  "$AGENT_IMAGE" python agent.py >/dev/null
+ok "cp-agent-$TENANT up — heartbeating the console every 30s (-> green when fresh)"
 echo
-ok "DONE. '$TENANT' should have series in Mimir within ~30s. Verify isolation with:"
-echo "  docker exec cp-grafana sh -c \"wget -qO- --header='X-Scope-OrgID: $TENANT' 'http://mimir:9009/prometheus/api/v1/query?query=count(up)'\""
+ok "DONE. '$TENANT' should have series in Mimir + go GREEN in the console within ~30s."
+echo "  metrics:  docker exec cp-grafana sh -c \"wget -qO- --header='X-Scope-OrgID: $TENANT' 'http://mimir:9009/prometheus/api/v1/query?query=count(up)'\""
+echo "  console:  curl -fsS http://localhost:8080/api/v1/deployments | python3 -m json.tool"
