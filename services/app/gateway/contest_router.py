@@ -4,11 +4,16 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
 from lib.shared.errors import CompanyOSError, ValidationError
 from services.app.gateway.auth import AuthContext
+from services.platform.access_control.audit import (
+    record_override_if_needed as record_access_override_if_needed,
+)
+from services.platform.access_control.checks import AccessDecision, can_read_by_id
 
 
 def build_contest_router() -> APIRouter:
@@ -70,6 +75,29 @@ def build_contest_router() -> APIRouter:
         )
         try:
             async with deps.pool.acquire() as conn:
+                decision = await can_read_by_id(
+                    auth.actor_id,
+                    "model",
+                    target_model,
+                    conn=conn,
+                    tenant_id=auth.tenant_id,
+                )
+                await _record_override_if_needed(
+                    decision,
+                    conn=conn,
+                    auth=auth,
+                    entity_id=target_model,
+                )
+                if not decision.allowed:
+                    status_code = (
+                        404
+                        if decision.reason == "entity_not_found"
+                        else 403
+                    )
+                    return JSONResponse(
+                        {"error": "access_denied", "reason": decision.reason},
+                        status_code=status_code,
+                    )
                 async with conn.transaction():
                     result = await contest_model(conn, inp)
         except NoStandingError as e:
@@ -111,6 +139,23 @@ def _deps(request: Request) -> Any:
     if deps is None:
         raise RuntimeError("Gateway deps not initialised (call lifespan startup)")
     return deps
+
+
+async def _record_override_if_needed(
+    decision: AccessDecision,
+    *,
+    conn: asyncpg.Connection,
+    auth: AuthContext,
+    entity_id: UUID,
+) -> None:
+    await record_access_override_if_needed(
+        decision,
+        actor_id=auth.actor_id,
+        entity_type="model",
+        entity_id=entity_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
 
 
 def _unauth(reason: str) -> JSONResponse:
