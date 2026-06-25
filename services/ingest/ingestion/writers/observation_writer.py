@@ -88,6 +88,8 @@ from typing import Any
 import asyncpg
 from aiokafka import AIOKafkaConsumer
 
+from lib.shared.backoff import exponential_backoff_seconds
+from lib.shared.db import configure_connection_timeouts
 from lib.shared.errors import ValidationError
 from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
@@ -483,6 +485,7 @@ async def make_writer_pool(
         min_size=2,
         max_size=max_size,
         command_timeout=command_timeout,
+        init=configure_connection_timeouts,
         statement_cache_size=0,  # pgbouncer transaction mode (M1.3 ADR Q1)
     )
 
@@ -1139,9 +1142,10 @@ async def _handle_message_with_retry(
                         await _clear_durable_poison_attempts(config, msg)
                         return  # caller commits → partition advances
                 raise
-            backoff = min(
-                _TRANSIENT_BACKOFF_MAX_S,
-                _TRANSIENT_BACKOFF_BASE_S * (2 ** (attempt - 1)),
+            backoff = exponential_backoff_seconds(
+                attempt,
+                base_seconds=_TRANSIENT_BACKOFF_BASE_S,
+                cap_seconds=_TRANSIENT_BACKOFF_MAX_S,
             )
             log.warning(
                 "writer.transient_error_retry",

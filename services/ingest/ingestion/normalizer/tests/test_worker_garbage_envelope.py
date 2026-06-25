@@ -166,6 +166,10 @@ async def test_garbage_envelope_does_not_stall_consumer(monkeypatch):
         # (d) The VALID envelope — payload referenced in S3.
         s3 = _InMemoryS3()
         good_tenant = uuid4()
+        good_ingested_at = dt.datetime.now(tz=dt.timezone.utc).replace(
+            microsecond=0
+        )
+        good_month = good_ingested_at.strftime("%Y-%m")
         good_payload = {
             "event": {
                 "type": "message",
@@ -178,14 +182,17 @@ async def test_garbage_envelope_does_not_stall_consumer(monkeypatch):
         }
         good_body = orjson.dumps(good_payload)
         good_hash = "d" * 40
-        good_key = f"dev/slack/{good_tenant}/2026-05/{good_hash[:2]}/{good_hash}.json"
+        good_key = (
+            f"dev/slack/{good_tenant}/{good_month}/"
+            f"{good_hash[:2]}/{good_hash}.json"
+        )
         s3.put(good_key, good_body)
         good_env = RawEnvelope(
             source="slack",
             tenant_id=good_tenant,
             raw_s3_key=good_key,
             content_hash=good_hash,
-            ingested_at=dt.datetime(2026, 5, 17, 12, 0, 0, tzinfo=dt.timezone.utc),
+            ingested_at=good_ingested_at,
             ingress_kind="webhook",
         )
         raw_producer.produce(

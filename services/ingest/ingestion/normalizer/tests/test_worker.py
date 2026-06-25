@@ -21,7 +21,7 @@ from services.ingest.ingestion.normalizer.models import NormalizedEnvelope
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
 
 
-_NOW = dt.datetime(2026, 5, 17, 12, 0, 0, tzinfo=dt.timezone.utc)
+_NOW = dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0)
 
 
 def _slack_payload(channel: str = "C01ALICE", text: str = "hi") -> dict:
@@ -93,6 +93,7 @@ def _s3_stub():
         return storage[key]
 
     stub.get = AsyncMock(side_effect=_get)
+    stub.get_verified = None
     stub._storage = storage
     return stub
 
@@ -134,6 +135,25 @@ async def test_normalize_slack_webhook_produces_normalized_envelope(
     assert norm.trust_tier == "attested_agent"
     assert norm.ingress_metadata == {"delivery_id": "deliv-1"}
     assert norm.idem_hints == {"hint": "x"}
+
+
+async def test_normalize_uses_verified_raw_get_when_available(
+    _producer_stub, _s3_stub,
+):
+    tenant = uuid4()
+    raw_body, envelope_bytes, s3_key = _envelope_for(
+        _slack_payload(text="verified read"),
+        tenant=tenant,
+    )
+    _s3_stub.get_verified = AsyncMock(return_value=raw_body)
+
+    produced = await worker_module._normalize_one(
+        envelope_bytes, _s3_stub, _producer_stub,
+    )
+
+    assert produced is True
+    _s3_stub.get_verified.assert_awaited_once_with(s3_key, "a" * 40)
+    _s3_stub.get.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------

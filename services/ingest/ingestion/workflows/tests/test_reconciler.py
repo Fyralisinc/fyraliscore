@@ -28,7 +28,13 @@ import asyncpg
 import orjson
 import pytest
 
+from lib.observability import counter, reset_default_for_tests
 from lib.shared.ids import uuid7
+from services.app.gateway.product_workflow_metrics import (
+    PRODUCT_WORKFLOW_EVENT_OUTCOMES,
+    PRODUCT_WORKFLOW_EVENTS,
+    PRODUCT_WORKFLOWS,
+)
 from services.ingest.ingestion.planners import Shard
 from services.ingest.ingestion.reconcilers import (
     RECONCILER_DISPATCH,
@@ -52,6 +58,26 @@ from services.ingest.ingestion.workflows.signals import emit_signal
 
 
 pytestmark = [pytest.mark.timeout(60)]
+
+
+def _product_workflow_events():
+    return counter(
+        "product_workflow_events_total",
+        "lookup",
+        ("workflow", "event", "outcome"),
+        allowed_label_values={
+            "workflow": PRODUCT_WORKFLOWS,
+            "event": PRODUCT_WORKFLOW_EVENTS,
+            "outcome": PRODUCT_WORKFLOW_EVENT_OUTCOMES,
+        },
+    )
+
+
+@pytest.fixture(autouse=True)
+def _clean_product_metrics():
+    reset_default_for_tests()
+    yield
+    reset_default_for_tests()
 
 
 # =====================================================================
@@ -530,6 +556,14 @@ async def test_reconciler_handles_unexpected_dispatch_exception(
         else dict(data_raw)
     )
     assert "RuntimeError" in data.get("failure_reason", "")
+    assert (
+        _product_workflow_events().get(
+            workflow="source_onboarding",
+            event="source_onboarding_failed",
+            outcome="error",
+        )
+        == 1
+    )
 
 
 # =====================================================================
@@ -742,6 +776,14 @@ async def test_reconciler_emits_source_complete_progress_event(
     assert ev.source == "slack"
     assert ev.coverage_confidence == "exact"
     assert ev.gaps_resolved == 0
+    assert (
+        _product_workflow_events().get(
+            workflow="source_onboarding",
+            event="source_onboarding_completed",
+            outcome="success",
+        )
+        == 1
+    )
 
 
 async def test_reconciler_idempotent_replay_does_not_re_emit_complete(
@@ -777,4 +819,12 @@ async def test_reconciler_idempotent_replay_does_not_re_emit_complete(
     assert complete_count == 1, (
         f"source.onboarding.complete fired {complete_count} times; the "
         f"reconciled_at guard must keep it to exactly one."
+    )
+    assert (
+        _product_workflow_events().get(
+            workflow="source_onboarding",
+            event="source_onboarding_completed",
+            outcome="success",
+        )
+        == 1
     )

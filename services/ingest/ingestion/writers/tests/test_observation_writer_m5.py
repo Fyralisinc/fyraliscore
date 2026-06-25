@@ -33,6 +33,7 @@ import orjson
 import pytest
 
 from lib.embeddings.ollama import EMBEDDING_DIM
+from lib.shared.db import configure_connection_timeouts
 from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.ingest.ingestion.core import ingest as inline_ingest
@@ -611,6 +612,7 @@ async def test_writer_pool_uses_pgbouncer_compatible_config(
     )
     assert "min_size" in captured["kwargs"]
     assert "max_size" in captured["kwargs"]
+    assert captured["kwargs"]["init"] is configure_connection_timeouts
 
 
 # =====================================================================

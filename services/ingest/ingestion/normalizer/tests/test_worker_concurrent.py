@@ -65,14 +65,15 @@ class _TrackingS3:
 def _envelope_msg(tenant_id: UUID, s3: _TrackingS3, i: int) -> MagicMock:
     body = orjson.dumps(_good_payload())
     h = f"{i:040x}"  # 40-hex content hash (lowercase) — passes invariants
-    key = f"dev/slack/{tenant_id}/2026-05/{h[:2]}/{h}.json"
+    ingested_at = dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0)
+    key = f"dev/slack/{tenant_id}/{ingested_at:%Y-%m}/{h[:2]}/{h}.json"
     s3.put(key, body)
     env = RawEnvelope(
         source="slack",
         tenant_id=tenant_id,
         raw_s3_key=key,
         content_hash=h,
-        ingested_at=dt.datetime(2026, 5, 17, 12, 0, 0, tzinfo=dt.timezone.utc),
+        ingested_at=ingested_at,
         ingress_kind="webhook",
     )
     m = MagicMock()

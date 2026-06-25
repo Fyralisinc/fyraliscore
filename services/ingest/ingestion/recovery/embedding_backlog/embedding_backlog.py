@@ -54,6 +54,7 @@ from redis.asyncio import Redis as AsyncRedis
 
 from lib.embeddings.base import Embedder, EmbedderError
 from lib.embeddings.factory import make_embedder
+from lib.shared.db import configure_connection_timeouts
 from services.ingest.ingestion.observability import (
     Heartbeat,
     run_heartbeat_ticker,
@@ -494,6 +495,7 @@ def main() -> None:
             min_size=1,
             max_size=5,
             command_timeout=30.0,
+            init=configure_connection_timeouts,
             statement_cache_size=0,  # pgbouncer transaction mode
         )
         redis = AsyncRedis.from_url(

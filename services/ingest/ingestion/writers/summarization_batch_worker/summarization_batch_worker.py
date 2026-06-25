@@ -12,6 +12,7 @@ from uuid import UUID
 
 import asyncpg
 
+from lib.shared.db import configure_connection_timeouts
 from services.ingest.ingestion.dlq.publish import publish_dlq
 from services.ingest.ingestion.embedding.publish import publish_embedding_request
 from services.ingest.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
@@ -586,6 +587,7 @@ def main() -> None:
             min_size=1,
             max_size=config.postgres_pool_size,
             command_timeout=30.0,
+            init=configure_connection_timeouts,
             statement_cache_size=0,
         )
         try:

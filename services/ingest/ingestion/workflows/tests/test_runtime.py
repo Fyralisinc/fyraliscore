@@ -24,6 +24,7 @@ from typing import Any
 import asyncpg
 import pytest
 
+from lib.shared.db import configure_connection_timeouts
 from services.ingest.ingestion.workflows.runtime import (
     LongRunningService,
     make_workflow_pool,
@@ -163,3 +164,4 @@ async def test_make_workflow_pool_uses_pgbouncer_compatible_config(
     )
     assert "min_size" in captured["kwargs"]
     assert "max_size" in captured["kwargs"]
+    assert captured["kwargs"]["init"] is configure_connection_timeouts

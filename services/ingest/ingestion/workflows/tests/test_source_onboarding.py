@@ -39,7 +39,13 @@ import asyncpg
 import orjson
 import pytest
 
+from lib.observability import counter, reset_default_for_tests
 from lib.shared.ids import uuid7
+from services.app.gateway.product_workflow_metrics import (
+    PRODUCT_WORKFLOW_EVENT_OUTCOMES,
+    PRODUCT_WORKFLOW_EVENTS,
+    PRODUCT_WORKFLOWS,
+)
 from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
 from services.ingest.ingestion.workflows.signals import emit_signal
 from services.ingest.ingestion.workflows.source_onboarding import (
@@ -62,6 +68,26 @@ from services.ingest.ingestion.workflows.source_onboarding import (
 
 
 pytestmark = [pytest.mark.timeout(60)]
+
+
+def _product_workflow_events():
+    return counter(
+        "product_workflow_events_total",
+        "lookup",
+        ("workflow", "event", "outcome"),
+        allowed_label_values={
+            "workflow": PRODUCT_WORKFLOWS,
+            "event": PRODUCT_WORKFLOW_EVENTS,
+            "outcome": PRODUCT_WORKFLOW_EVENT_OUTCOMES,
+        },
+    )
+
+
+@pytest.fixture(autouse=True)
+def _clean_product_metrics():
+    reset_default_for_tests()
+    yield
+    reset_default_for_tests()
 
 
 # =====================================================================
@@ -499,6 +525,14 @@ async def test_source_onboarding_handles_not_implemented_planner(
         else dict(data_raw)
     )
     assert "M6.5" in data.get("failure_reason", "")
+    assert (
+        _product_workflow_events().get(
+            workflow="source_onboarding",
+            event="source_onboarding_failed",
+            outcome="error",
+        )
+        == 1
+    )
 
     # (c) NO shards created — the stub raised before any insert.
     n_shards = int(await fresh_db.fetchval(
@@ -937,3 +971,11 @@ async def test_source_onboarding_emits_source_started_progress_event(
     assert ev.tenant_id == tid
     assert ev.source == "slack"
     assert ev.planned_shard_count == 3
+    assert (
+        _product_workflow_events().get(
+            workflow="source_onboarding",
+            event="source_onboarding_started",
+            outcome="success",
+        )
+        == 1
+    )
