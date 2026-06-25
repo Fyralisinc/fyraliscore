@@ -434,9 +434,8 @@ class Dispatcher:
             if matched is None:
                 continue
             # Wave 5-A access control filter — drop events the subscriber
-            # cannot read. Best-effort: if the check fails, we fall back
-            # to Wave 4-D's tenant-only isolation (already enforced via
-            # SubscriptionFilter.matches).
+            # cannot read. Same contract as HTTP: unknown or unhydratable
+            # entities fail closed.
             if not await self._can_deliver(state.sub, frame):
                 self.stats.setdefault("access_drops", 0)
                 self.stats["access_drops"] += 1
@@ -470,41 +469,17 @@ class Dispatcher:
           - kind='state_change' (fallthrough) → observation.
 
         We read the underlying row via can_read_by_id so we get the
-        most current ownership / scope data. Errors default to deny
-        (safer than a stream leak).
+        most current ownership / scope data. Missing/unknown rows and
+        checker errors default to deny (safer than a stream leak).
         """
         from services.platform.access_control.checks import can_read_by_id  # lazy
 
-        content = frame.payload.get("content", {}) or {}
-        entity_kind: str | None = None
-        entity_id: UUID | None = None
-        if frame.kind == "observation":
-            entity_kind = "observation"
-            entity_id = frame.id
-        elif frame.kind == "act_change":
-            ek = str(content.get("entity_kind") or "").lower()
-            if ek in ("commitment", "goal", "decision"):
-                entity_kind = ek
-                raw = content.get("entity_id")
-                try:
-                    entity_id = UUID(str(raw)) if raw else None
-                except (ValueError, TypeError):
-                    entity_id = None
-        elif frame.kind == "resource_change":
-            entity_kind = "resource"
-            raw = content.get("entity_id")
-            try:
-                entity_id = UUID(str(raw)) if raw else None
-            except (ValueError, TypeError):
-                entity_id = None
-        else:
-            # state_change fallthrough: treat as observation.
-            entity_kind = "observation"
-            entity_id = frame.id
+        entity = _frame_access_entity(frame)
+        if entity is None:
+            return False
+        entity_kind, entity_id = entity
         if entity_kind is None or entity_id is None:
-            # Can't determine — fall back to Wave 4-D default (tenant
-            # isolation already enforced by SubscriptionFilter.matches).
-            return True
+            return False
         try:
             async with self._pool.acquire() as conn:
                 decision = await can_read_by_id(
@@ -514,17 +489,19 @@ class Dispatcher:
                     conn=conn,
                     tenant_id=sub.tenant_id,
                 )
-                # Backward compat: when the underlying entity isn't
-                # loaded (e.g. Wave 4-D tests inserted an Observation
-                # that references a goal id with no goal row), fall
-                # back to Wave 4-D tenant-only isolation. Real access
-                # denials (scope violation, role missing, etc.) still
-                # drop the frame.
-                if (
-                    not decision.allowed
-                    and decision.reason == "entity_not_found"
-                ):
-                    return True
+                if decision.override_applied:
+                    from services.platform.access_control.audit import (
+                        record_override_if_needed,
+                    )
+
+                    await record_override_if_needed(
+                        decision,
+                        actor_id=sub.actor_id,
+                        entity_type=entity_kind,
+                        entity_id=entity_id,
+                        conn=conn,
+                        tenant_id=sub.tenant_id,
+                    )
                 return decision.allowed
         except Exception as e:
             log.warning(
@@ -759,6 +736,10 @@ class Dispatcher:
             )
             if matched is None:
                 continue
+            if not await self._can_deliver(sub, frame):
+                self.stats.setdefault("access_drops", 0)
+                self.stats["access_drops"] += 1
+                continue
             outbound = EventFrame(
                 kind=frame.kind,
                 id=frame.id,
@@ -827,6 +808,31 @@ def _map_event_kind(obs_kind: str, content: dict[str, Any]) -> str:
             return "resource_change"
         return "state_change"
     return "observation"
+
+
+def _frame_access_entity(frame: EventFrame) -> tuple[str, UUID] | None:
+    content = frame.payload.get("content", {}) or {}
+    if not isinstance(content, dict):
+        content = {}
+    if frame.kind == "observation":
+        return ("observation", frame.id)
+    if frame.kind == "act_change":
+        entity_kind = str(content.get("entity_kind") or "").lower()
+        if entity_kind not in ("commitment", "goal", "decision"):
+            return None
+        entity_id = _coerce_uuid(content.get("entity_id"))
+        return (entity_kind, entity_id) if entity_id is not None else None
+    if frame.kind == "resource_change":
+        entity_id = _coerce_uuid(content.get("entity_id"))
+        return ("resource", entity_id) if entity_id is not None else None
+    return ("observation", frame.id)
+
+
+def _coerce_uuid(value: Any) -> UUID | None:
+    try:
+        return UUID(str(value)) if value else None
+    except (TypeError, ValueError):
+        return None
 
 
 __all__ = [

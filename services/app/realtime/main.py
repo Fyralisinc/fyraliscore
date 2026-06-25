@@ -7,11 +7,12 @@ Exposes:
   * `configure_realtime(app, pool)` — convenience to wire the dispatcher
     into any FastAPI app at startup/shutdown.
 
-The WS handshake performs Bearer-token auth against `actor_sessions`
+The WS handshake performs actor-session auth against `actor_sessions`
 using `services.app.gateway.auth.validate_token`. Tokens can be passed via
 `Authorization: Bearer <tok>` header (Starlette WebSockets support
-custom headers) OR via a `?token=<tok>` query param (for browser clients
-that can't set headers on `new WebSocket()`).
+custom headers) or via the configured HttpOnly browser session cookie. A
+`?token=<tok>` query param remains available only when explicitly enabled for
+development/dogfood clients.
 
 On handshake failure: WS close code 1008 (policy violation) with a JSON
 reason frame just before close.
@@ -102,12 +103,14 @@ async def ws_stream(ws: WebSocket) -> None:
     # common pattern.
     await ws.accept()
 
-    # --- Auth: Bearer header OR ?token=... query param -------------
+    # --- Auth: Bearer header, browser cookie, then dev-only ?token fallback.
     token: str | None = None
     auth_hdr = ws.headers.get("authorization") or ws.headers.get("Authorization")
     if auth_hdr and auth_hdr.startswith("Bearer "):
-        token = auth_hdr[len("Bearer "):].strip()
+        token = auth_hdr[len("Bearer ") :].strip()
     if not token:
+        token = _session_cookie_token(ws)
+    if not token and _query_token_auth_enabled(ws):
         token = ws.query_params.get("token")
     if not token:
         await _close_with(ws, CLOSE_POLICY_VIOLATION, "missing_token")
@@ -205,6 +208,11 @@ async def _reader_loop(
             )
         elif action == "replay":
             since = parsed.get("since_sequence_num")
+            if since is None:
+                await _safe_send(
+                    ws, {"kind": "error", "message": "bad_since_sequence_num"}
+                )
+                continue
             try:
                 since_i = int(since)
             except (TypeError, ValueError):
@@ -262,6 +270,21 @@ def _send_json_for(ws: WebSocket) -> Callable[[dict[str, Any]], Awaitable[None]]
         await ws.send_text(json.dumps(obj, default=str))
 
     return _send
+
+
+def _query_token_auth_enabled(ws: WebSocket) -> bool:
+    settings = getattr(ws.app.state, "gateway_settings", None)
+    return bool(getattr(settings, "websocket_query_token_auth_enabled", False))
+
+
+def _session_cookie_token(ws: WebSocket) -> str | None:
+    settings = getattr(ws.app.state, "gateway_settings", None)
+    cookie_name = str(
+        getattr(settings, "websocket_session_cookie_name", "fyralis_session")
+        or "fyralis_session"
+    )
+    token = ws.cookies.get(cookie_name)
+    return token.strip() if isinstance(token, str) and token.strip() else None
 
 
 async def _safe_send(ws: WebSocket, payload: dict[str, Any]) -> None:

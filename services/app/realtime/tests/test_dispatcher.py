@@ -23,6 +23,7 @@ from services.app.realtime.dispatcher import (
     Dispatcher,
     EventFrame,
 )
+from services.platform.access_control.roles import grant_role
 
 
 pytestmark = pytest.mark.integration
@@ -58,15 +59,16 @@ async def _insert_observation(
         f"""
         INSERT INTO observations (
             id, tenant_id, occurred_at, kind, source_channel,
-            content, content_text, trust_tier
+            actor_id, content, content_text, trust_tier
         )
         VALUES ($1, $2, {occurred_at_sql}, $3, $4,
-                $5::jsonb, 'x', 'authoritative')
+                $5, $6::jsonb, 'x', 'authoritative')
         """,
         obs_id,
         tenant_id,
         kind,
         source_channel,
+        actor_id,
         json.dumps(content),
     )
     # Emit NOTIFY on the same connection for deterministic dispatch.
@@ -83,6 +85,50 @@ async def _insert_observation(
         ),
     )
     return obs_id
+
+
+async def _insert_actor(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    display_name: str = "Realtime actor",
+) -> UUID:
+    actor_id = uuid7()
+    await conn.execute(
+        """
+        INSERT INTO actors (id, tenant_id, type, display_name, status)
+        VALUES ($1, $2, 'human_internal', $3, 'active')
+        """,
+        actor_id,
+        tenant_id,
+        display_name,
+    )
+    return actor_id
+
+
+async def _insert_goal(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+) -> UUID:
+    event_id = await _insert_observation(
+        conn,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+    )
+    goal_id = uuid7()
+    await conn.execute(
+        """
+        INSERT INTO goals (
+            id, tenant_id, title, state, created_by_event_id
+        ) VALUES ($1, $2, 'Realtime goal', 'active', $3)
+        """,
+        goal_id,
+        tenant_id,
+        event_id,
+    )
+    return goal_id
 
 
 async def _drain_one(state, timeout: float = 2.0):
@@ -112,7 +158,19 @@ async def test_goal_state_change_dispatched_to_subscribed_client(
     disp = Dispatcher(realtime_pool)
     await disp.start()
     try:
-        goal_id = uuid7()
+        async with realtime_pool.acquire() as c:
+            goal_id = await _insert_goal(
+                c, tenant_id=tenant_id, actor_id=seeded_actor,
+            )
+            await grant_role(
+                seeded_actor,
+                "goal",
+                goal_id,
+                "viewer",
+                seeded_actor,
+                conn=c,
+                tenant_id=tenant_id,
+            )
         state = disp.register_client(
             tenant_id=tenant_id,
             actor_id=seeded_actor,
@@ -124,6 +182,7 @@ async def test_goal_state_change_dispatched_to_subscribed_client(
                 tenant_id=tenant_id,
                 entity_kind="goal",
                 entity_id=goal_id,
+                actor_id=seeded_actor,
             )
         frame = await _drain_one(state, timeout=5.0)
         assert isinstance(frame, EventFrame)
@@ -184,10 +243,130 @@ async def test_client_without_matching_scope_gets_nothing(
                 tenant_id=tenant_id,
                 entity_kind="goal",
                 entity_id=goal_b,
+                actor_id=seeded_actor,
             )
         # Wait a moment — nothing should arrive for goal_b.
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(state.queue.get(), timeout=0.6)
+    finally:
+        await disp.stop()
+
+
+@pytest.mark.asyncio
+async def test_matching_missing_entity_fails_closed(
+    realtime_pool: asyncpg.Pool, tenant_id, seeded_actor
+) -> None:
+    disp = Dispatcher(realtime_pool)
+    await disp.start()
+    try:
+        missing_goal = uuid7()
+        state = disp.register_client(
+            tenant_id=tenant_id,
+            actor_id=seeded_actor,
+            initial_topics={f"goal:{missing_goal}"},
+        )
+        async with realtime_pool.acquire() as c:
+            await _insert_observation(
+                c,
+                tenant_id=tenant_id,
+                entity_kind="goal",
+                entity_id=missing_goal,
+                actor_id=seeded_actor,
+            )
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(state.queue.get(), timeout=0.6)
+        assert await _wait_for(
+            lambda: disp.stats.get("access_drops", 0) >= 1
+        )
+    finally:
+        await disp.stop()
+
+
+@pytest.mark.asyncio
+async def test_tenant_topic_hidden_observation_is_dropped(
+    realtime_pool: asyncpg.Pool, tenant_id, seeded_actor
+) -> None:
+    disp = Dispatcher(realtime_pool)
+    await disp.start()
+    try:
+        state = disp.register_client(
+            tenant_id=tenant_id,
+            actor_id=seeded_actor,
+            initial_topics={f"tenant:{tenant_id}"},
+        )
+        async with realtime_pool.acquire() as c:
+            hidden_actor = await _insert_actor(
+                c, tenant_id=tenant_id, display_name="Hidden"
+            )
+            await _insert_observation(
+                c,
+                tenant_id=tenant_id,
+                actor_id=hidden_actor,
+                kind="signal",
+                source_channel="private:test",
+            )
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(state.queue.get(), timeout=0.6)
+        assert await _wait_for(
+            lambda: disp.stats.get("access_drops", 0) >= 1
+        )
+    finally:
+        await disp.stop()
+
+
+@pytest.mark.asyncio
+async def test_realtime_admin_override_delivery_is_audited(
+    realtime_pool: asyncpg.Pool, tenant_id, seeded_actor
+) -> None:
+    disp = Dispatcher(realtime_pool)
+    await disp.start()
+    try:
+        state = disp.register_client(
+            tenant_id=tenant_id,
+            actor_id=seeded_actor,
+            initial_topics={f"tenant:{tenant_id}"},
+        )
+        async with realtime_pool.acquire() as c:
+            hidden_actor = await _insert_actor(
+                c, tenant_id=tenant_id, display_name="Hidden"
+            )
+            await grant_role(
+                seeded_actor,
+                "tenant",
+                None,
+                "admin",
+                seeded_actor,
+                conn=c,
+                tenant_id=tenant_id,
+            )
+            hidden_observation = await _insert_observation(
+                c,
+                tenant_id=tenant_id,
+                actor_id=hidden_actor,
+                kind="signal",
+                source_channel="private:test",
+            )
+        frame = await _drain_one(state, timeout=5.0)
+        assert isinstance(frame, EventFrame)
+        assert frame.id == hidden_observation
+        row = await realtime_pool.fetchrow(
+            """
+            SELECT override_kind, reason
+            FROM access_override_log
+            WHERE tenant_id = $1
+              AND actor_id = $2
+              AND entity_type = 'observation'
+              AND entity_id = $3
+            ORDER BY occurred_at DESC
+            LIMIT 1
+            """,
+            tenant_id,
+            seeded_actor,
+            hidden_observation,
+        )
+        assert row is not None
+        assert row["override_kind"] == "admin"
+        assert row["reason"] == "admin_override"
     finally:
         await disp.stop()
 
@@ -276,7 +455,19 @@ async def test_replay_since_sequence_num_ordered(
     disp = Dispatcher(realtime_pool)
     await disp.start()
     try:
-        goal_id = uuid7()
+        async with realtime_pool.acquire() as c:
+            goal_id = await _insert_goal(
+                c, tenant_id=tenant_id, actor_id=seeded_actor,
+            )
+            await grant_role(
+                seeded_actor,
+                "goal",
+                goal_id,
+                "viewer",
+                seeded_actor,
+                conn=c,
+                tenant_id=tenant_id,
+            )
         # Insert 5 observations BEFORE the client connects.
         ids = []
         async with realtime_pool.acquire() as c:
@@ -287,6 +478,7 @@ async def test_replay_since_sequence_num_ordered(
                         tenant_id=tenant_id,
                         entity_kind="goal",
                         entity_id=goal_id,
+                        actor_id=seeded_actor,
                     )
                 )
         # Client subscribes.
@@ -349,7 +541,9 @@ async def test_many_concurrent_clients_all_receive_event(
             for _ in range(50)
         ]
         async with realtime_pool.acquire() as c:
-            await _insert_observation(c, tenant_id=tenant_id)
+            await _insert_observation(
+                c, tenant_id=tenant_id, actor_id=seeded_actor,
+            )
         # All 50 clients should receive one frame.
         received = 0
         for s in states:
@@ -391,7 +585,9 @@ async def test_tenant_isolation(
         )
         # Event in tenant A only.
         async with realtime_pool.acquire() as c:
-            await _insert_observation(c, tenant_id=tenant_id)
+            await _insert_observation(
+                c, tenant_id=tenant_id, actor_id=seeded_actor,
+            )
         await _drain_one(sa, timeout=5.0)
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(sb.queue.get(), timeout=0.6)
@@ -420,7 +616,9 @@ async def test_malformed_notify_payload_is_safe(
         async with realtime_pool.acquire() as c:
             await c.execute("SELECT pg_notify('observations_new', 'not-json')")
             # Valid event after — confirm dispatcher still live.
-            await _insert_observation(c, tenant_id=tenant_id)
+            await _insert_observation(
+                c, tenant_id=tenant_id, actor_id=seeded_actor,
+            )
         await _drain_one(state, timeout=5.0)
     finally:
         await disp.stop()
