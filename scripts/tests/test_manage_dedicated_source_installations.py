@@ -1018,6 +1018,9 @@ def test_google_workspace_sources_have_no_secret_ref_lifecycle_specs() -> None:
         assert spec.ref_columns == ()
         assert spec.entity_table == entity_table
         assert spec.base_url_column is None
+        assert spec.native_google_watch_table is (
+            source in {"google_calendar", "google_drive"}
+        )
 
 
 def test_installation_projection_supports_sources_without_ref_columns() -> None:
@@ -1030,3 +1033,99 @@ def test_installation_projection_supports_sources_without_ref_columns() -> None:
     assert "NULL::text AS base_url" in projection
     assert "secret_ref" not in projection
     assert ",\n               ,\n" not in projection
+
+
+@pytest.mark.asyncio
+async def test_google_calendar_uninstall_clears_native_watch_state(
+    fresh_db: asyncpg.Pool,
+    tenant,
+    tenant_cleanup,
+) -> None:
+    async with fresh_db.acquire() as conn:
+        operator_actor = await insert_actor(conn, tenant, "Calendar operator")
+        await _grant_operator_role(conn, tenant=tenant, actor_id=operator_actor)
+        secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
+        installation_id = uuid7()
+        calendar_id = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO google_calendar_installations (
+                id, tenant_id, workspace_domain, service_account_email, scope,
+                inclusion_spec, resolved_calendar_count, resolved_at
+            ) VALUES (
+                $1, $2, 'acme.test', 'svc@acme.test',
+                'calendar.readonly', '{}'::jsonb, 1, now()
+            )
+            """,
+            installation_id,
+            tenant,
+        )
+        await conn.execute(
+            """
+            INSERT INTO google_calendar_calendars (
+                id, tenant_id, google_calendar_installation_id, calendar_id,
+                owner_email, sync_token, state, watch_channel_id,
+                watch_resource_id, watch_token, watch_expiration, watch_state
+            ) VALUES (
+                $1, $2, $3, 'primary', 'alice@acme.test', 'sync-1',
+                'active', 'chan-1', 'resource-1', 'watch-token-1',
+                now() + interval '1 day', 'active'
+            )
+            """,
+            calendar_id,
+            tenant,
+            installation_id,
+        )
+
+        result = await run_command(
+            _parse(
+                [
+                    "uninstall",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    "google_calendar",
+                    "--installation-row-id",
+                    str(installation_id),
+                    "--reason",
+                    "customer requested uninstall",
+                ]
+            ),
+            conn=conn,
+            secret_store=secret_store,
+        )
+
+        assert result["installation"]["enabled"] is False
+        assert result["installation"]["refs_seen"] == 0
+        assert result["installation"]["refs_deleted"] == 0
+        assert result["installation"]["native_google_watch_rows_cleared"] == 1
+        watch_row = await conn.fetchrow(
+            """
+            SELECT watch_state, watch_channel_id, watch_resource_id,
+                   watch_token, watch_expiration
+              FROM google_calendar_calendars
+             WHERE id = $1
+            """,
+            calendar_id,
+        )
+        assert watch_row["watch_state"] == "inactive"
+        assert watch_row["watch_channel_id"] is None
+        assert watch_row["watch_resource_id"] is None
+        assert watch_row["watch_token"] is None
+        assert watch_row["watch_expiration"] is None
+
+        action = await conn.fetchrow(
+            """
+            SELECT metadata
+              FROM operator_action_log
+             WHERE tenant_id = $1
+               AND action = 'source_installation.uninstall'
+               AND resource_type = 'google_calendar_installations'
+             ORDER BY occurred_at DESC
+             LIMIT 1
+            """,
+            tenant,
+        )
+        assert _metadata(action)["native_google_watch_rows_cleared"] == 1

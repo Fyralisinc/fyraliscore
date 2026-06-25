@@ -51,6 +51,7 @@ class SourceSpec:
     webhook_installation_id_transform: str | None = None
     enabled_column: str | None = None
     updated_at_column: str | None = None
+    native_google_watch_table: bool = False
 
 
 SPECS: dict[str, SourceSpec] = {
@@ -71,6 +72,7 @@ SPECS: dict[str, SourceSpec] = {
         entity_table="google_calendar_calendars",
         entity_install_column="google_calendar_installation_id",
         base_url_column=None,
+        native_google_watch_table=True,
     ),
     "google_drive": SourceSpec(
         source="google_drive",
@@ -80,6 +82,7 @@ SPECS: dict[str, SourceSpec] = {
         entity_table="google_drive_targets",
         entity_install_column="google_drive_installation_id",
         base_url_column=None,
+        native_google_watch_table=True,
     ),
     "whatsapp": SourceSpec(
         source="whatsapp",
@@ -586,6 +589,12 @@ async def run_command(
                     installation_id=_provider_installation_id(row, spec),
                     clear_secret_ref="webhook_secret_ref" in deleted_columns,
                 )
+                native_watch_rows_cleared = await _clear_native_google_watch_state(
+                    conn,
+                    tenant_id=tenant_id,
+                    spec=spec,
+                    installation_row_id=row["id"],
+                )
                 await _record_operator_action(
                     conn,
                     tenant_id=tenant_id,
@@ -608,6 +617,9 @@ async def run_command(
                             "webhook_secret_ref" in spec.ref_columns
                         ),
                         "webhook_provider_row_updated": webhook_row_updated,
+                        "native_google_watch_rows_cleared": (
+                            native_watch_rows_cleared
+                        ),
                         "data_deletion_required_separately": True,
                     },
                 )
@@ -636,6 +648,9 @@ async def run_command(
                     "webhook_secret_ref" in spec.ref_columns
                 )
                 installation["webhook_provider_row_updated"] = webhook_row_updated
+                installation["native_google_watch_rows_cleared"] = (
+                    native_watch_rows_cleared
+                )
                 return {
                     "ok": True,
                     "action": "uninstall",
@@ -856,6 +871,43 @@ async def _uninstall_provider_installation(
         installation_id,
     )
     return _rows_changed(status) > 0
+
+
+async def _clear_native_google_watch_state(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    spec: SourceSpec,
+    installation_row_id: UUID,
+) -> int:
+    if (
+        not spec.native_google_watch_table
+        or spec.entity_table is None
+        or spec.entity_install_column is None
+    ):
+        return 0
+    status = await conn.execute(
+        f"""
+        UPDATE {spec.entity_table}
+           SET watch_state = 'inactive',
+               watch_channel_id = NULL,
+               watch_resource_id = NULL,
+               watch_token = NULL,
+               watch_expiration = NULL
+         WHERE tenant_id = $1
+           AND {spec.entity_install_column} = $2
+           AND (
+                watch_state <> 'inactive'
+                OR watch_channel_id IS NOT NULL
+                OR watch_resource_id IS NOT NULL
+                OR watch_token IS NOT NULL
+                OR watch_expiration IS NOT NULL
+           )
+        """,
+        tenant_id,
+        installation_row_id,
+    )
+    return _rows_changed(status)
 
 
 def _entity_count_sql(spec: SourceSpec) -> str:
