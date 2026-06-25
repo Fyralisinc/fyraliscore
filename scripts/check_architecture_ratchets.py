@@ -87,6 +87,16 @@ SECRET_COLUMN_ALLOWED_SUFFIXES = (
     "_status",
     "_type",
 )
+SECRET_REF_KEYWORD_NAME_RE = re.compile(
+    r"(?:^secret_ref$|_secret_ref$|_token_ref$|_session_ref$|_public_key_ref$)",
+    re.IGNORECASE,
+)
+SECRET_REF_UNSAFE_VALUE_NAME_RE = re.compile(
+    r"(?:secret|token|api_key|api_hash|client_secret|signing_secret|session|"
+    r"public_key)",
+    re.IGNORECASE,
+)
+SECRET_REF_SAFE_VALUE_SUFFIXES = ("_ref", "_refs")
 DESTRUCTIVE_MIGRATION_MARKER = "destructive-migration-approved:"
 DESTRUCTIVE_MIGRATION_REQUIRED_MARKER_FIELDS = ("backup=", "rollback=", "owner=")
 DESTRUCTIVE_MIGRATION_ALLOWED_FILES = {
@@ -852,6 +862,71 @@ def find_plaintext_secret_column_migration_violations(
     return violations
 
 
+def _is_secret_ref_keyword(name: str | None) -> bool:
+    return bool(name and SECRET_REF_KEYWORD_NAME_RE.search(name))
+
+
+def _unsafe_secret_ref_value_name(node: ast.AST) -> str | None:
+    name = _full_name(node)
+    if name is None:
+        return None
+    leaf = name.rsplit(".", 1)[-1]
+    normalized = leaf.lower()
+    if normalized.endswith(SECRET_REF_SAFE_VALUE_SUFFIXES):
+        return None
+    if SECRET_REF_UNSAFE_VALUE_NAME_RE.search(normalized):
+        return leaf
+    return None
+
+
+def find_raw_secret_ref_argument_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    roots: Sequence[str] = ("services/ingest/integrations",),
+) -> list[Violation]:
+    """Return install code that passes raw credentials into ``*_ref`` kwargs."""
+
+    violations: list[Violation] = []
+    for rel in _iter_python_files(repo_root=repo_root, roots=roots):
+        if _is_test_path(rel):
+            continue
+        text = (repo_root / rel).read_text(encoding="utf-8", errors="ignore")
+        try:
+            tree = ast.parse(text, filename=str(rel))
+        except SyntaxError as exc:
+            violations.append(
+                Violation(
+                    check="raw-secret-ref-argument",
+                    path=rel,
+                    line_number=exc.lineno or 1,
+                    message=f"could not parse Python file: {exc.msg}",
+                )
+            )
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if not _is_secret_ref_keyword(keyword.arg):
+                    continue
+                unsafe_name = _unsafe_secret_ref_value_name(keyword.value)
+                if unsafe_name is None:
+                    continue
+                violations.append(
+                    Violation(
+                        check="raw-secret-ref-argument",
+                        path=rel,
+                        line_number=getattr(keyword.value, "lineno", node.lineno),
+                        message=(
+                            f"{keyword.arg} must receive an opaque secret ref, "
+                            f"not raw credential variable {unsafe_name!r}; store "
+                            "the credential first and pass the returned *_ref"
+                        ),
+                    )
+                )
+    return violations
+
+
 def find_raw_think_trigger_insert_violations(
     *,
     repo_root: Path = REPO_ROOT,
@@ -1004,6 +1079,7 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     violations.extend(
         find_plaintext_secret_column_migration_violations(repo_root=repo_root)
     )
+    violations.extend(find_raw_secret_ref_argument_violations(repo_root=repo_root))
     violations.extend(find_raw_think_trigger_insert_violations(repo_root=repo_root))
     violations.extend(find_raw_model_reeval_insert_violations(repo_root=repo_root))
     violations.extend(

@@ -12,6 +12,7 @@ from scripts.check_architecture_ratchets import (
     find_network_call_in_transaction_violations,
     find_new_permissive_rls_policy_violations,
     find_plaintext_secret_column_migration_violations,
+    find_raw_secret_ref_argument_violations,
     find_raw_model_reeval_insert_violations,
     find_raw_pending_post_commit_action_insert_violations,
     find_raw_think_trigger_insert_violations,
@@ -275,6 +276,58 @@ ALTER TABLE provider_installations ADD COLUMN refresh_token_ref TEXT;
     violations = find_plaintext_secret_column_migration_violations(
         repo_root=tmp_path,
     )
+
+    assert violations == []
+
+
+def test_raw_secret_ref_argument_check_flags_raw_credentials(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "services" / "ingest" / "integrations" / "bad"
+    source.mkdir(parents=True)
+    (source / "oauth.py").write_text(
+        """
+async def finalize(api_token, webhook_secret):
+    await finalize_install(
+        pool,
+        tenant_id=tenant_id,
+        secret_ref=api_token,
+        webhook_secret_ref=webhook_secret,
+    )
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_raw_secret_ref_argument_violations(repo_root=tmp_path)
+
+    assert len(violations) == 2
+    assert {v.check for v in violations} == {"raw-secret-ref-argument"}
+    assert {v.line_number for v in violations} == {5, 6}
+
+
+def test_raw_secret_ref_argument_check_allows_ref_values(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "services" / "ingest" / "integrations" / "safe"
+    source.mkdir(parents=True)
+    (source / "oauth.py").write_text(
+        """
+async def finalize(store, api_token, webhook_secret):
+    secret_ref = await store.put(api_token, label="api", tenant_id=tenant_id)
+    webhook_secret_ref = await store.put(
+        webhook_secret, label="webhook", tenant_id=tenant_id
+    )
+    await finalize_install(
+        pool,
+        tenant_id=tenant_id,
+        secret_ref=secret_ref,
+        webhook_secret_ref=webhook_secret_ref,
+    )
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_raw_secret_ref_argument_violations(repo_root=tmp_path)
 
     assert violations == []
 

@@ -869,13 +869,17 @@ Current state:
   refs and live/backfill session refs on uninstall, handles AWS account/region
   selectors, and disables matching webhook resolver rows for webhook-capable
   sources.
+- Architecture ratchets now block new plaintext credential columns in
+  migrations and block production integration code from passing raw
+  credential-looking variables into `secret_ref`/`*_secret_ref` install
+  parameters.
 
 Must solve:
 
 - [ ] Every production source has a production install, status, pause, resume,
   uninstall, and credential rotation path.
 - [ ] Install flows verify credentials before writing install rows.
-- [ ] Install flows store credentials as secret refs only.
+- [x] Install flows store credentials as secret refs only.
 - [x] OAuth refresh worker covers every OAuth source with refresh tokens.
 - [x] DWD/service-account sources have explicit admin preflight and scope
   display.
