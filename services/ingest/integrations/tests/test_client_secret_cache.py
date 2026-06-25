@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import json
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from services.ingest.integrations.brex.client import BrexClient
@@ -318,6 +321,51 @@ async def test_oauth_access_token_clients_reload_secret_ref_when_cache_ttl_is_ze
 
     assert (first, second) == ("first-token", "second-token")
     assert store.calls == [(secret_ref, tenant_id), (secret_ref, tenant_id)]
+
+
+async def test_ramp_client_reloads_client_credentials_ref_when_cache_ttl_is_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(SECRET_CACHE_TTL_ENV, "0")
+    monkeypatch.delenv("RAMP_CLIENT_ID", raising=False)
+    monkeypatch.delenv("RAMP_CLIENT_SECRET", raising=False)
+    store = _Store(json.dumps({
+        "client_id": "first-client",
+        "client_secret": "first-secret",
+    }))
+    tenant_id = uuid4()
+    authorizations: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        authorizations.append(request.headers["Authorization"])
+        return httpx.Response(200, json={"access_token": "minted-token"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_handler)) as http:
+        client = RampClient(
+            base_url="https://api.ramp.com/developer/v1",
+            secret_store=store,
+            tenant_id=tenant_id,
+            refresh_secret_ref="ramp-cc-ref",
+            http_client=http,
+        )
+        await client.mint_token()
+        store.value = json.dumps({
+            "client_id": "second-client",
+            "client_secret": "second-secret",
+        })
+        await client.mint_token()
+
+    expected = [
+        "Basic "
+        + base64.b64encode(b"first-client:first-secret").decode("ascii"),
+        "Basic "
+        + base64.b64encode(b"second-client:second-secret").decode("ascii"),
+    ]
+    assert authorizations == expected
+    assert store.calls == [
+        ("ramp-cc-ref", tenant_id),
+        ("ramp-cc-ref", tenant_id),
+    ]
 
 
 async def test_telegram_session_resolvers_reload_secret_refs_when_cache_ttl_is_zero(

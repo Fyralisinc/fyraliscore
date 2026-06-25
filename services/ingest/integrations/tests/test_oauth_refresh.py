@@ -6,6 +6,7 @@ behavior the contract layer can't express.
 from __future__ import annotations
 
 import base64
+import json
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -139,6 +140,41 @@ async def test_carta_remints_via_client_credentials_from_install(monkeypatch):
     sql, args = pool.executed[0]
     assert "UPDATE carta_installations" in sql
     assert args[1] == "carta-cc-ref"  # refresh_secret_ref preserved
+
+
+async def test_ramp_remints_via_client_credentials_from_install(monkeypatch):
+    monkeypatch.delenv("RAMP_CLIENT_ID", raising=False)
+    monkeypatch.delenv("RAMP_CLIENT_SECRET", raising=False)
+    store = FakeStore({
+        "ramp-cc-ref": json.dumps({
+            "client_id": "ramp-install-cid",
+            "client_secret": "ramp-install-secret",
+        }),
+    })
+    pool = FakePool()
+    captured: dict = {}
+    body = {"access_token": "ramp-new-access", "expires_in": 3600}
+
+    async with _http(body, captured=captured) as http:
+        refreshed = await refresh_and_persist(
+            provider="ramp", pool=pool, secret_store=store, http=http,
+            tenant_id=TENANT, install_row_id=INSTALL,
+            refresh_secret_ref="ramp-cc-ref", now=NOW,
+        )
+
+    assert captured["form"]["grant_type"] == "client_credentials"
+    assert captured["form"]["scope"]
+    assert "refresh_token" not in captured["form"]
+    expected_basic = base64.b64encode(
+        b"ramp-install-cid:ramp-install-secret"
+    ).decode("ascii")
+    assert captured["headers"]["authorization"] == f"Basic {expected_basic}"
+    assert "client_secret" not in captured["form"]
+    assert refreshed.access_token == "ramp-new-access"
+    assert refreshed.refresh_token is None
+    sql, args = pool.executed[0]
+    assert "UPDATE ramp_installations" in sql
+    assert args[1] == "ramp-cc-ref"
 
 
 async def test_refresh_and_persist_linkedin_body_auth_and_updates_row(monkeypatch):

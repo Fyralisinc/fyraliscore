@@ -6,6 +6,7 @@ install state or encrypted secret is written.
 """
 from __future__ import annotations
 
+import json
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -325,6 +326,63 @@ async def test_ramp_finalize_bad_credentials_writes_nothing(
     assert "bad-ramp-access-token" not in response.text
     assert "bad-ramp-webhook-token" not in response.text
     await _assert_no_durable_state(fresh_db, tenant, "ramp_installations", "ramp")
+
+
+async def test_ramp_finalize_stores_client_credentials_ref(
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.ingest.integrations.ramp import oauth as ramp_oauth
+
+    class _SuccessfulRampClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def mint_token(self):
+            return {"access_token": "fresh-ramp-access", "expires_in": 3600}
+
+        async def business(self):
+            return {"id": "ramp-business-1", "business_name_legal": "Ramp Test"}
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(ramp_oauth, "RampClient", _SuccessfulRampClient)
+    tenant = await _seed_tenant(fresh_db)
+    app, store = _make_app(fresh_db, tenant, ramp_oauth.router)
+
+    payload = {
+        "client_id": "ramp-client-id",
+        "client_secret": "ramp-client-secret",
+        "webhook_verifier_token": "ramp-webhook-secret",
+    }
+    response = await _post_json(app, "/integrations/ramp/connect/finalize", payload)
+
+    assert response.status_code == 200
+    row = await fresh_db.fetchrow(
+        """
+        SELECT business_id, secret_ref, refresh_secret_ref, webhook_secret_ref
+          FROM ramp_installations
+         WHERE tenant_id = $1
+        """,
+        tenant,
+    )
+    assert row is not None
+    assert row["business_id"] == "ramp-business-1"
+    assert row["secret_ref"] and row["secret_ref"] != "fresh-ramp-access"
+    assert row["refresh_secret_ref"]
+    assert row["webhook_secret_ref"]
+
+    access_token = await store.get(row["secret_ref"], tenant_id=tenant)
+    credential_payload = await store.get(row["refresh_secret_ref"], tenant_id=tenant)
+    webhook_secret = await store.get(row["webhook_secret_ref"], tenant_id=tenant)
+
+    assert access_token.decode("utf-8") == "fresh-ramp-access"
+    assert json.loads(credential_payload.decode("utf-8")) == {
+        "client_id": "ramp-client-id",
+        "client_secret": "ramp-client-secret",
+    }
+    assert webhook_secret.decode("utf-8") == "ramp-webhook-secret"
 
 
 async def test_miro_finalize_bad_credentials_writes_nothing(

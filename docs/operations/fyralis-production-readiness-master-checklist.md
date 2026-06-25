@@ -371,9 +371,11 @@ Current state:
   hash refs with caching disabled. The Discord Gateway worker now accepts a
   bot-token provider and the production launcher passes an env-reading
   provider, so reconnect/IDENTIFY attempts pick up `DISCORD_BOT_TOKEN`
-  rotation without process restart. Ramp client-credential material still needs
-  managed-provider resolution or explicit short-lived onboarding-only rationale
-  before the "every source-specific client" item can close.
+  rotation without process restart. Ramp client-credentials re-mint material
+  can now live under `refresh_secret_ref` as an encrypted
+  `client_id`/`client_secret` payload; both the shared refresh core and direct
+  client mint path prefer that managed secret-ref material and retain env creds
+  only as a compatibility fallback.
 - Many production template keys are still env-shaped.
 - Webhook env fallback is disabled in production by contract.
 
@@ -390,7 +392,7 @@ Must solve:
   rotation flow.
 - [ ] Ensure all provider tokens are stored as opaque `secret_ref` values.
 - [ ] Add secret zeroization/uninstall tests for each integration.
-- [ ] Confirm every source-specific client resolves secrets at call time or via
+- [x] Confirm every source-specific client resolves secrets at call time or via
   short-lived in-memory cache with TTL.
 - [x] Add a secret-leak test that scans captured logs and HTTP responses for
   known fake tokens.

@@ -16,10 +16,10 @@ install is scoped to the company ``business_id`` (discovered via the
   loads the signing secret via the existing machinery.
 
 The access token is stored in encrypted_secrets; the install row carries
-`secret_ref` (access token) + `token_expires_at`. `refresh_secret_ref` is kept
-for column parity but stays NULL for Ramp: client_credentials issues NO refresh
-token — expiry is handled by RE-MINTING with the app-level env credentials
-(see oauth_refresh.py).
+`secret_ref` (access token) + `token_expires_at`. `refresh_secret_ref` stores
+encrypted client-credentials re-mint material when the install was finalized
+with a Ramp client_id/client_secret pair. Client-credentials issues NO OAuth
+refresh token; expiry is handled by re-minting.
 """
 from __future__ import annotations
 
