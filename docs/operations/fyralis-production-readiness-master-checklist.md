@@ -820,6 +820,12 @@ Current state:
 - Kafka-first ingestion and per-source topic isolation are documented and mostly
   implemented.
 - Circuit breaker trips tenant back to inline path on sustained lag.
+- The shared OAuth refresh core now covers every dedicated source table that
+  stores OAuth refresh-token material: QuickBooks, Gusto, and LinkedIn. Ramp and
+  Carta are explicitly modeled as client-credentials re-mint flows rather than
+  refresh-token grants. LinkedIn refresh-on-401 is wired through the fetch
+  client, persists returned access/refresh refs, and is pinned by unit and
+  provider-contract fixture tests.
 
 Must solve:
 
@@ -847,7 +853,7 @@ Must solve:
   uninstall, and credential rotation path.
 - [ ] Install flows verify credentials before writing install rows.
 - [ ] Install flows store credentials as secret refs only.
-- [ ] OAuth refresh worker covers every OAuth source with refresh tokens.
+- [x] OAuth refresh worker covers every OAuth source with refresh tokens.
 - [ ] DWD/service-account sources have explicit admin preflight and scope
   display.
 - [x] Source onboarding progress events are emitted once per state transition.
