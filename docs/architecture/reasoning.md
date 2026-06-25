@@ -15,7 +15,12 @@ latent topology field.
 
 ### The `think()` pipeline
 
-`think/reason.py::think` → `_run_once` runs as **one DB transaction**:
+`think/reason.py::think` uses two execution shapes. Inferential triggers run
+with retrieval/planning and LLM reasoning outside an explicit DB transaction,
+then open a short mutation transaction for validation/apply/cascade. The
+authoritative deterministic paths keep the legacy single wide transaction
+because some handlers perform side-effectful reasoning without any LLM/network
+call.
 
 1. Load any pending [relationship candidate](../glossary.md) for the trigger.
 2. **Retrieve** via `platform.execution.inquiry.retrieve_for_execution(mode="deep")`
@@ -23,14 +28,15 @@ latent topology field.
 3. Optional second-pass expansion (`retrieval/second_pass.py`).
 4. Build a `ReasoningFrame` and detect ephemeral `dynamics` signals (a detected
    state-jump enqueues a deferred `T3:missing_transition`).
-5. Compute the touched region (`think/region_locks.py`), insert a `think_runs`
-   row, and acquire an advisory **region lock**.
-6. Assemble a bounded prompt context (`retrieval/assembler.py`).
-7. **Reason:** authoritative triggers take the no-LLM `think/deterministic.py`
+5. Assemble a bounded prompt context (`retrieval/assembler.py`).
+6. **Reason:** authoritative triggers take the no-LLM `think/deterministic.py`
    path; inferential triggers call `think/llm_reason.py` →
    `lib.llm.provider.structured(schema=RawDiff|RawDiffClaimsOnly)`.
-8. Deterministic safety-net injectors add create-commitment/block/decision/
+7. Deterministic safety-net injectors add create-commitment/block/decision/
    prediction ops when the LLM under-emits.
+8. Enter the mutation transaction, compute the touched region
+   (`think/region_locks.py`), insert a `think_runs` row, and acquire an
+   advisory **region lock**.
 9. **Validate** (`think/validator.py`); a strict region check can raise
    `OutOfRegionError`, which re-runs retrieval with the missing entities allowed.
 10. **Apply** (`think/applier.py`) claim/edge/act/resource ops — idempotent via the

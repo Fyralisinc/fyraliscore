@@ -61,6 +61,7 @@ always a real regression — see `pyproject.toml` and `CONTRIBUTING.md`):
 | [Workers — background jobs](workers.md) | The polling/scheduled worker packages and which are actually deployed. |
 | [Shared libraries (`lib`)](lib.md) | DB helpers, the structured-output LLM provider, embeddings, shared utilities. |
 | [Runtime & data plane](data-plane.md) | The processes, containers, and data stores (Postgres, Kafka, S3, Redis, Ollama). |
+| [BYOC production blueprint](byoc-production-blueprint.md) | Enterprise-readiness and customer-cloud deployment plan for the split Control Plane / Data Plane model. |
 | [Interfaces & Extensions](interfaces.md) | How interfaces (finance, CEO view) attach today, the `github_intel` extraction case study, and the proposed unified, externally-extensible extension layer. |
 
 ## Diagram conventions

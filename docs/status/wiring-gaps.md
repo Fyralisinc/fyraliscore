@@ -15,23 +15,25 @@ registries, compose `command:`, env dispatch) before landing here.
 
 ## Background workers (`services/workers/*`)
 
-The dominant cluster. Only `topology_sweeper` has a launcher; these have none
-(no compose service, no `scripts/run_*`). See [Workers](../architecture/workers.md)
-and the [feature table](feature-status.md).
+The dominant cluster. The highest-impact packages now have production launchers
+or run through `housekeeper_worker`; the remaining entries here are kept as the
+launch-scope ledger for jobs that are still dogfood-only, flag-gated, or
+partially documented. See [Workers](../architecture/workers.md) and the
+[feature table](feature-status.md).
 
 | File(s) | What it is | Why not in flow |
 |---------|------------|-----------------|
-| `anomaly_processor/{__init__,worker,detectors,significance,debounce,memory_fabric}.py` | Wave-4-B: 6 anomaly detectors → significance → debounce → `T3` enqueue + `signal_memory_fabric` writes | No launcher/compose; `AnomalyProcessor` constructed only in tests. The post-commit handoff that would feed it is a no-op. |
-| `entity_resolver/{__init__,worker,context}.py` | Deferred LLM resolution of `_unresolved_phrases` → aliases + `T1` re-enqueue | No launcher/compose; `process_observation` invoked only in tests. |
-| `deadline_resolver/{__init__,worker}.py` | Wave-4-A: poll overdue prediction Models → `T2 prediction_overdue` | No launcher/compose; reached only by tests/synthesis-harness. (`evaluators.py` is test-only.) |
-| `edge_drift/{__init__,worker}.py` | Samples `model_edges` vs. legacy array cols → drift metrics | No launcher/compose; only tests call `run_once`. The parity guard for the dual-write migration never runs. |
-| `maintenance/{__init__,daily,weekly,monthly,scheduler}.py` | Wave-4-D: daily decay/archival/cleanup, weekly relationship-maint + calibration + partition-extend, monthly vacuum | `MaintenanceScheduler` never instantiated outside tests → the whole upkeep subsystem is dormant. |
+| `anomaly_processor/{__init__,worker,detectors,significance,debounce,memory_fabric}.py` | Wave-4-B: 6 anomaly detectors → significance → debounce → `T3` enqueue + `signal_memory_fabric` writes | ✅ Production-wired (2026-06-24): `anomaly_processor_worker` now has a script launcher, compose service, healthcheck, Prometheus target, and runtime manifest entry. |
+| `entity_resolver/{__init__,worker,context}.py` | Deferred LLM resolution of `_unresolved_phrases` → aliases + `T1` re-enqueue | ✅ Production-wired (2026-06-24): `entity_resolver_worker` now has a script launcher, compose service, healthcheck, Prometheus target, runtime manifest entry, LLM budget config, and terminal phrase cleanup. |
+| `deadline_resolver/{__init__,worker}.py` | Wave-4-A: poll overdue prediction Models → `T2 prediction_overdue` | ✅ Production-wired through `housekeeper_worker`; `DeadlineResolver.run_once()` runs on `HOUSEKEEPER_DEADLINE_RESOLVER_INTERVAL_S`. (`evaluators.py` remains test-only.) |
+| `edge_drift/{__init__,worker}.py` | Samples `model_edges` vs. legacy array cols → drift metrics | ✅ Production-wired through `housekeeper_worker` on `HOUSEKEEPER_EDGE_DRIFT_INTERVAL_S`; the parity guard is no longer test-only. |
+| `maintenance/{__init__,daily,weekly,monthly,scheduler}.py` | Wave-4-D: daily decay/archival/cleanup, weekly relationship-maint + calibration + partition-extend, monthly vacuum | ✅ Production-wired through `housekeeper_worker` for default lifecycle jobs. Expensive/monthly jobs remain intentionally flag-gated. |
 
 ## Domain substrate
 
 | File | What it is | Why not in flow |
 |------|------------|-----------------|
-| `services/domain/models/decay.py` | `hourly_decay` + `archive_decayed` activation/decay UPDATEs | Imported solely by `maintenance/daily.py`, which has no launcher → Models never decay/auto-archive in prod. |
+| `services/domain/models/decay.py` | `hourly_decay` + `archive_decayed` activation/decay UPDATEs | ✅ Production-wired through `housekeeper_worker` via the default maintenance scheduler. |
 
 ## Platform (access control + execution)
 
@@ -40,7 +42,7 @@ See [Platform](../architecture/platform.md).
 | File | What it is | Why not in flow |
 |------|------------|-----------------|
 | `access_control/middleware.py` | `@requires_access` route decorator (wraps `can_read_by_id` + audit) | Applied on **zero** routes; not even re-exported from the package `__init__`. The gateway does manual inline `can_read_by_id` instead. |
-| `access_control/materialized.py` | `actor_visible_*` matview refresh + dirty-queue + point-checks | Sole refresh caller is the undeployed `maintenance/daily.py`; `is_*_visible_to` helpers have zero callers (`checks.py` reads the matviews via raw SQL). |
+| `access_control/materialized.py` | `actor_visible_*` matview refresh + dirty-queue + point-checks | Refresh is now scheduled by the production `housekeeper_worker` via `access_matview_refresh`; `is_*_visible_to` helper adoption remains optional because `checks.py` reads the matviews directly. |
 | `access_control/audit.py` | `record_override` → `access_override_log` writer | Only caller is the never-applied `middleware.py`; the live `can_read` paths (dispatcher, assembler, dashboard) don't call it. |
 | `execution/routing.py` | `decide_route` gate + `record_routing_decision` shadow persistence | No non-test caller; ingestion never builds a `SignalEnvelope.from_observation`. Env flags exist only in `.env.example`. Not even shadow-wired. |
 
@@ -78,14 +80,15 @@ modules remain in this table. `query/prefetch.py` is a dormant helper tracked in
 
 ## Migrations for undeployed features
 
-These create tables whose only reader/writer is an undeployed worker (see above),
-so they're **runtime-orphans** on this branch. See [Legacy & test-only](dead-legacy.md).
+These create tables whose reader/writer used to be undeployed. Rows marked
+production-wired are no longer runtime-orphans; unresolved rows remain tracked
+here until a launch or removal decision lands. See [Legacy & test-only](dead-legacy.md).
 
 | Migration | Table(s) | Why orphaned |
 |-----------|----------|--------------|
-| `0005_entity_review_queue.sql` | `entity_review_queue` | Only writer is the not-wired `entity_resolver` worker. |
-| `0009_signal_memory_fabric.sql` | `signal_memory_fabric` | Only owners are the not-wired `anomaly_processor` + `maintenance`. |
-| `0013_orphan_log.sql` | `orphan_log` | Only writer is the not-wired `maintenance/daily.py`. |
+| `0005_entity_review_queue.sql` | `entity_review_queue` | Owned by the production-wired `entity_resolver_worker`; medium-confidence rows also open clarification requests for human review. |
+| `0009_signal_memory_fabric.sql` | `signal_memory_fabric` | Owned by the production-wired `anomaly_processor_worker`; maintenance cleanup policy remains a future lifecycle item. |
+| `0013_orphan_log.sql` | `orphan_log` | Written by maintenance daily cleanup through `housekeeper_worker`; retention/reporting ownership still needs a runbook. |
 
 > **TODO(human):** For each cluster, decide *wire it up* (add launcher/route/flag)
 > vs. *leave staged* vs. *remove*. The worker fabric is one decision (deploy the

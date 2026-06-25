@@ -46,14 +46,14 @@
   - [Entity alias — fast-path text→entity](#entity-alias--fast-path-textentity)
   - [Substrate relationships](#substrate-relationships)
 - [Reasoning Layer — The Think Pipeline](#reasoning-layer--the-think-pipeline)
-  - [The `think()` pipeline](#the-think-pipeline-one-db-transaction)
+  - [The `think()` pipeline](#the-think-pipeline-split-inferential-transaction)
   - [The worker](#the-worker)
   - [Trigger taxonomy](#trigger-taxonomy)
   - [Retrieval pathways + inquiry](#retrieval-pathways--inquiry)
   - [Diff structure & reconciliation](#diff-structure--reconciliation)
   - [Topology, relationships, judgment](#topology-relationships-judgment)
   - [Contestability & calibration](#contestability--calibration)
-  - [One Think transaction](#one-think-transaction-flow)
+  - [Think transaction boundary](#think-transaction-boundary-flow)
 - [Product Layer — CEO Surfaces](#product-layer--ceo-surfaces)
   - [Surfaces](#surfaces)
   - [Greeting scheduler — the CEO-view pre-compute](#greeting-scheduler--the-ceo-view-pre-compute)
@@ -574,18 +574,23 @@ All of Models/Acts/Resources call `emit_state_change` to thread their writes int
 
 The reasoning layer is the cognitive runtime. It drains trigger queues, retrieves context, reasons (deterministically or via an LLM), validates and applies a structured `Diff` to the Models substrate under region locks, then cascades, enqueues durable post-commit work, and proposes latent relationship candidates. Source: `services/reasoning/` (packages `think`, `retrieval`, `topology`, `relationships`, `judgment`, `dynamics`, `contestability`, `calibration`), plus the adaptive inquiry engine at `services/platform/execution/inquiry.py`.
 
-### The `think()` pipeline (one DB transaction)
+### The `think()` pipeline (split inferential transaction)
 
-`services/reasoning/think/reason.py::think` → `_run_once` runs as **one transaction**:
+`services/reasoning/think/reason.py::think` uses a split transaction boundary for
+inferential triggers: retrieval/planning and the LLM call run outside an explicit
+DB transaction, then validation/apply/cascade run inside a short mutation
+transaction. Authoritative deterministic triggers keep the legacy wide
+transaction because they do not call an LLM and some handlers intentionally
+perform side-effectful reasoning.
 
 1. Load any pending relationship candidate for the trigger.
 2. **Retrieve context** via `platform.execution.inquiry.retrieve_for_execution(mode="deep")` (the active engine; legacy resolver is `retrieval/primary.py`).
 3. Optional second-pass expansion (`retrieval/second_pass.py`).
 4. Build a `ReasoningFrame` (`think/reasoning_frame.py`); detect ephemeral `dynamics` signals — a detected state-jump enqueues a deferred `T3:missing_transition`.
-5. Compute the touched region (`think/region_locks.py`), insert a `think_runs` row, acquire an advisory **region lock**.
-6. Assemble a bounded prompt context (`retrieval/assembler.py`).
-7. **Reason:** authoritative triggers take the no-LLM `think/deterministic.py` path; inferential triggers call `think/llm_reason.py` → `lib.llm.provider.structured(schema=RawDiff | RawDiffClaimsOnly)`.
-8. Deterministic safety-net injectors add create-commitment/block/decision/prediction ops when the LLM under-emits.
+5. Assemble a bounded prompt context (`retrieval/assembler.py`).
+6. **Reason:** authoritative triggers take the no-LLM `think/deterministic.py` path; inferential triggers call `think/llm_reason.py` → `lib.llm.provider.structured(schema=RawDiff | RawDiffClaimsOnly)`.
+7. Deterministic safety-net injectors add create-commitment/block/decision/prediction ops when the LLM under-emits.
+8. Enter the mutation transaction, compute the touched region (`think/region_locks.py`), insert a `think_runs` row, acquire an advisory **region lock**.
 9. **Validate** the diff (`think/validator.py`); a strict region check can raise `OutOfRegionError`, which re-runs retrieval allowing the missing entities.
 10. **Reconcile** claim inserts (`think/reconciler.py`) then **apply** claim/edge/act/resource ops (`think/applier.py`) — idempotent via the `applied_triggers` ledger.
 11. Adjudicate the loaded relationship candidate against the applied diff.
@@ -655,7 +660,7 @@ Per-kind rules (`_KIND_RULES`) tighten thresholds for heavily-paraphrasing kinds
 - **Calibration** (`calibration/hit_rate.py`): conservative per-claim-class 30-day hit rate. Returns `None` below `MIN_SAMPLES_FOR_CALIBRATION = 5` resolved samples — honest absence over fabrication.
 - **Dynamics** (`dynamics/`): emits ephemeral signals only (state-jump detection feeding `T3:missing_transition`); no new truth table.
 
-### One Think transaction (flow)
+### Think transaction boundary (flow)
 
 ```mermaid
 sequenceDiagram
@@ -672,10 +677,10 @@ sequenceDiagram
 
     W->>Q: SKIP LOCKED poll (+ promote reeval → T4)
     W->>TH: trigger row (per-tenant semaphore)
-    TH->>INQ: retrieve context (pathways A/B/C/D/G)
+    TH->>INQ: retrieve context outside mutation tx
     TH->>TH: ReasoningFrame + dynamics (→ T3 missing_transition)
-    TH->>TH: region lock + think_runs row
-    TH->>RZ: authoritative → deterministic / inferential → LLM (RawDiff)
+    TH->>RZ: inferential → LLM outside mutation tx
+    TH->>TH: mutation tx: region lock + think_runs row
     RZ-->>V: Diff (claim/edge/act/resource ops)
     V->>RC: validated ops (region check)
     RC->>AP: dedup claims (auto_merge / human_review / no_match)

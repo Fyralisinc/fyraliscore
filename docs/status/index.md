@@ -47,13 +47,13 @@ in *enforcement/observability seams* that were built ahead of being hooked up.
 
 ## Top themes
 
-1. **The Wave-4 background worker fabric is built but undeployed.** Of 8
-   `services/workers/*` packages, **only `topology_sweeper` has a launcher**. The
-   rest — `anomaly_processor`, `entity_resolver`, `deadline_resolver`, `edge_drift`,
-   `precipitation`, `calibration_updater`, `maintenance` — have no compose service
-   or `scripts/run_*`. This cascades into many dormant features (decay/archival,
-   `T3` anomalies, `T2` deadline resolution, deferred entity resolution, calibration
-   refresh, precipitation inputs) and orphaned tables. See
+1. **The Wave-4 background worker fabric is partially production-wired, with
+   remaining launch-scope decisions.** `housekeeper_worker` now runs default
+   lifecycle jobs, deadline resolution, calibration, edge drift, and access
+   materialized-view refresh; `anomaly_processor_worker` and
+   `entity_resolver_worker` are first-class production processes with health and
+   metrics. Expensive/non-selected jobs such as precipitation still need an
+   explicit launch decision and disablement/runbook treatment. See
    [Wiring gaps](wiring-gaps.md) and [Workers](../architecture/workers.md).
 2. **Access-control enforcement is mostly dormant.** The `@requires_access`
    decorator is applied on **zero** routes (the gateway does one inline
@@ -65,10 +65,13 @@ in *enforcement/observability seams* that were built ahead of being hooked up.
    `record_routing_decision` exist and are tested, but ingestion never constructs a
    `SignalEnvelope` from an observation, so **no `signal_routing_decisions` rows are
    ever written** — not even in shadow mode.
-4. **Post-commit side-effects are no-ops.** The durable `pending_post_commit_actions`
-   queue is enqueued and drained by the deployed `post_commit_worker`, but all four
-   dispatchers (anomaly publish, prediction scheduling, realtime broadcast, metric
-   invalidation) are `_default_*` no-op loggers ("left for a later integration PR").
+4. **Post-commit side-effects are now production-wired for launch surfaces.**
+   The durable `pending_post_commit_actions` queue is enqueued and drained by
+   the deployed `post_commit_worker`. Realtime broadcast, metric invalidation,
+   anomaly-published, and prediction-scheduled actions emit transactional
+   `view_ceo_refresh` NOTIFYs for the CEO-view scheduler, and prediction
+   scheduling validates `evaluate_at`. The anomaly processor itself now runs as
+   `anomaly_processor_worker`.
 5. **The Kafka full-pipeline is now the default; inline ingest is the fallback.**
    _(Updated 2026-06-02 — see [ADR-0001](../adr/0001-kafka-first-ingestion-default.md).)_
    `observation_writer` persists from the normalized lane for every tenant without
@@ -79,11 +82,12 @@ in *enforcement/observability seams* that were built ahead of being hooked up.
    and made source-aware: it measures every `ingestion.raw.<source>` lane and trips
    a tenant on its worst lane. See
    [Cutover circuit breaker](../architecture/ingest.md#cutover-circuit-breaker).
-6. **Several "v2/spec" surfaces are fixture- or compat-backed.** `spec_routes.py`
-   serves in-code seed payloads (not substrate); Query/Ask now fails closed in
-   production unless `QUERY_RENDERING_BASE_URL` and `QUERY_CACHE_BACKEND=pg` are
-   wired, while dev/test still use deterministic fallbacks; the CEO Map reads
-   compat-only topology tables.
+6. **Several product surfaces still need degradation hardening.** `spec_routes.py`
+   still serves in-code seed payloads for dev/e2e, but it is isolated behind
+   `SPEC_DEMO_ROUTES_ENABLED=0` in production and guarded by route ratchets.
+   Query/Ask now fails closed in production unless `QUERY_RENDERING_BASE_URL`
+   and `QUERY_CACHE_BACKEND=pg` are wired, while dev/test still use deterministic
+   fallbacks; the CEO Map reads compat-only topology tables.
 7. **`code_intel` / `github_intel` extracted.** The GitHub/code intelligence layer was
    **extracted to a separate repo (`Fyralisinc/github-intel`)** and is no longer part of
    core; it returns as the first external interface (see ADR-0004).

@@ -29,7 +29,7 @@ tests):
 | 2.2 `check_already_applied` + early idempotency skip | `THINK_EARLY_IDEMPOTENCY_SKIP` (off) | ✅ shipped |
 | 2.5 fast planning for chosen classes | `THINK_FAST_PLAN_TRIGGER_KINDS` (empty) | ✅ shipped + tests |
 | 3.1a provider/model footgun warnings + init log | `LLM_STRICT_CONFIG` (off→warn) | ✅ shipped |
-| 3.1b per-tenant daily spend ceiling | `THINK_DAILY_BUDGET_ENFORCEMENT` (off) | ✅ shipped |
+| 3.1b per-tenant daily spend/token/request ceilings | `THINK_DAILY_BUDGET_ENFORCEMENT` (off) | ✅ shipped |
 | 2.4 live model escalation | `THINK_ESCALATION_MODEL` (unset) | ✅ shipped + tests |
 | 2.2 step 3 diff-reuse on tx retry | `THINK_REUSE_DIFF_ON_TX_RETRY` (off) | ✅ shipped + tests |
 | 3.2 cascade-depth threading (T2/T3/T4) + tighter bound | `THINK_MAX_INFERENTIAL_LINEAGE_DEPTH` (unset) | ✅ shipped + tests |
@@ -142,7 +142,7 @@ Order honors interaction rules: **C7** (dead-letter fix before any batching) →
 | 3 · 1.3 | Env char budgets (`PromptConfig.from_env`) + new caps | config (defaults = current) | low |
 | 5 · 2.4 | Validation-retry feedback-append + escalation | `THINK_VALIDATION_MAX_ATTEMPTS`=1 | moderate |
 | 6 · 2.2 | Extract `check_already_applied` + response-cache key fix | `THINK_RESPONSE_CACHE` (off) | low/high |
-| 7 · 3.1 | Provider/model hardening + init log; per-tenant daily budget | `THINK_DAILY_BUDGET_ENFORCEMENT` (off) | low/mod |
+| 7 · 3.1 | Provider/model hardening + init log; per-tenant daily budget ceilings | `THINK_DAILY_BUDGET_ENFORCEMENT` (off) | low/mod |
 | 7 · 3.2 | Thread `cascade_depth` through T2/T3/T4 | `THINK_MAX_INFERENTIAL_LINEAGE_DEPTH` | moderate |
 | 7 · 2.5 | Reduce planning rounds for low-value T1 classes | `THINK_PLANNING_ROUNDS_*` | moderate |
 
