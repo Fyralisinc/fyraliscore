@@ -49,6 +49,8 @@ class SourceSpec:
     extra_output_columns: tuple[str, ...] = ()
     webhook_installation_id_column: str | None = None
     webhook_installation_id_transform: str | None = None
+    enabled_column: str | None = None
+    updated_at_column: str | None = None
 
 
 SPECS: dict[str, SourceSpec] = {
@@ -78,6 +80,17 @@ SPECS: dict[str, SourceSpec] = {
         entity_table="google_drive_targets",
         entity_install_column="google_drive_installation_id",
         base_url_column=None,
+    ),
+    "whatsapp": SourceSpec(
+        source="whatsapp",
+        table="whatsapp_installations",
+        scope_column="phone_number_id",
+        ref_columns=("app_secret_ref", "verify_token_ref", "access_token_ref"),
+        entity_table=None,
+        entity_install_column=None,
+        base_url_column=None,
+        enabled_column="enabled",
+        updated_at_column="updated_at",
     ),
     "quickbooks": SourceSpec(
         source="quickbooks",
@@ -255,6 +268,9 @@ SECRET_FIELD_TO_COLUMN = {
     "api-hash": "api_hash_secret_ref",
     "session": "session_secret_ref",
     "backfill-session": "backfill_session_secret_ref",
+    "app-secret": "app_secret_ref",
+    "verify-token": "verify_token_ref",
+    "access-token": "access_token_ref",
 }
 
 
@@ -724,7 +740,7 @@ async def _set_disabled_at(
 ) -> asyncpg.Record:
     values: list[Any] = [tenant_id]
     clauses = _selector_clause(args=args, spec=spec, values=values)
-    disabled_expression = "now()" if disabled else "NULL"
+    state_assignment = _state_assignment_sql(spec, disabled=disabled)
     entity_count_sql = _entity_count_subquery_sql(spec)
     projection_sql = _installation_projection_sql(
         spec,
@@ -734,13 +750,13 @@ async def _set_disabled_at(
     row = await conn.fetchrow(
         f"""
         WITH selected AS (
-          SELECT id, disabled_at AS disabled_before
+          SELECT id, {_disabled_before_sql(spec)}
             FROM {spec.table}
            WHERE {' AND '.join(clauses)}
            FOR UPDATE
         )
         UPDATE {spec.table} i
-           SET disabled_at = {disabled_expression}
+           SET {state_assignment}
           FROM selected
          WHERE i.id = selected.id
         RETURNING {projection_sql}
@@ -765,7 +781,7 @@ async def _uninstall_installation(
             raise DedicatedSourceInstallationCliError(
                 f"cannot clear unknown ref column {column!r}"
             )
-    assignments = ["disabled_at = now()"]
+    assignments = [_state_assignment_sql(spec, disabled=True)]
     assignments.extend(f"{column} = NULL" for column in clear_columns)
     entity_count_sql = _entity_count_subquery_sql(spec)
     projection_sql = _installation_projection_sql(
@@ -869,7 +885,7 @@ def _installation_projection_sql(
         f"i.{spec.scope_column}",
         f"{_base_url_sql(spec)} AS base_url",
         "i.created_at",
-        "i.disabled_at",
+        f"{_disabled_state_sql(spec)} AS disabled_at",
     ]
     fields.extend(f"i.{column}" for column in spec.ref_columns)
     fields.extend(f"i.{column}" for column in spec.extra_output_columns)
@@ -882,6 +898,30 @@ def _base_url_sql(spec: SourceSpec) -> str:
     if spec.base_url_column is None:
         return "NULL::text"
     return f"i.{spec.base_url_column}"
+
+
+def _disabled_state_sql(spec: SourceSpec) -> str:
+    if spec.enabled_column is None:
+        return "i.disabled_at"
+    timestamp = f"i.{spec.updated_at_column}" if spec.updated_at_column else "i.created_at"
+    return f"CASE WHEN i.{spec.enabled_column} THEN NULL ELSE {timestamp} END"
+
+
+def _disabled_before_sql(spec: SourceSpec) -> str:
+    if spec.enabled_column is None:
+        return "disabled_at AS disabled_before"
+    timestamp = spec.updated_at_column or "created_at"
+    return f"CASE WHEN {spec.enabled_column} THEN NULL ELSE {timestamp} END AS disabled_before"
+
+
+def _state_assignment_sql(spec: SourceSpec, *, disabled: bool) -> str:
+    if spec.enabled_column is None:
+        return "disabled_at = now()" if disabled else "disabled_at = NULL"
+    enabled_value = "FALSE" if disabled else "TRUE"
+    assignments = [f"{spec.enabled_column} = {enabled_value}"]
+    if spec.updated_at_column:
+        assignments.append(f"{spec.updated_at_column} = now()")
+    return ", ".join(assignments)
 
 
 def _provider_installation_id(row: asyncpg.Record, spec: SourceSpec) -> str | None:

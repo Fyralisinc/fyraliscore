@@ -142,7 +142,10 @@ rotation where the table owns secret refs, and uninstall. Google Workspace DWD
 sources (`gmail`, `google_calendar`, and `google_drive`) use this dedicated
 path too; their install rows do not carry per-install secret refs, so uninstall
 disables the row and related shards without requiring secret-store deletion for
-the install row itself.
+the install row itself. WhatsApp also uses this dedicated path; it maps the
+`enabled` install flag into the same operator status/pause/resume/uninstall
+contract and rotates its `app_secret_ref`, `verify_token_ref`, and
+`access_token_ref` fields.
 
 Pause requirements:
 

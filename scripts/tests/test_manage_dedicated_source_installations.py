@@ -70,6 +70,9 @@ async def _insert_installation(
         "api_hash_secret_ref": "api-hash",
         "session_secret_ref": "session",
         "backfill_session_secret_ref": "backfill-session",
+        "app_secret_ref": "app-secret",
+        "verify_token_ref": "verify-token",
+        "access_token_ref": "access-token",
     }
     for column in spec.ref_columns:
         if column == "webhook_secret_ref" and not include_webhook:
@@ -186,6 +189,9 @@ async def _insert_installation(
         "api_hash_ref": refs.get("api_hash_secret_ref"),
         "session_ref": refs.get("session_secret_ref"),
         "backfill_session_ref": refs.get("backfill_session_secret_ref"),
+        "app_secret_ref": refs.get("app_secret_ref"),
+        "verify_token_ref": refs.get("verify_token_ref"),
+        "access_token_ref": refs.get("access_token_ref"),
     }
 
 
@@ -812,6 +818,159 @@ async def test_dedicated_session_sources_rotate_and_uninstall_session_refs(
         assert uninstall_result["installation"]["refs_deleted"] == expected_refs
         assert uninstall_result["installation"]["has_session_secret_ref"] is False
         assert uninstall_result["installation"]["has_backfill_session_secret_ref"] is False
+
+
+@pytest.mark.asyncio
+async def test_dedicated_whatsapp_enabled_table_lifecycle(
+    fresh_db: asyncpg.Pool,
+    tenant,
+    tenant_cleanup,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with fresh_db.acquire() as conn:
+        operator_actor = await insert_actor(conn, tenant, "Source operator")
+        await _grant_operator_role(conn, tenant=tenant, actor_id=operator_actor)
+        secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
+        inserted = await _insert_installation(
+            conn,
+            tenant=tenant,
+            source="whatsapp",
+            scope_id="15551234567",
+            secret_store=secret_store,
+        )
+        monkeypatch.setenv("ROTATED_WHATSAPP_APP_SECRET", "new-whatsapp-app-secret")
+
+        status_result = await run_command(
+            _parse(
+                [
+                    "status",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    "whatsapp",
+                    "--scope-id",
+                    "15551234567",
+                ]
+            ),
+            conn=conn,
+        )
+        assert status_result["installations"][0]["enabled"] is True
+        assert status_result["installations"][0]["has_app_secret_ref"] is True
+        assert status_result["installations"][0]["has_verify_token_ref"] is True
+        assert status_result["installations"][0]["has_access_token_ref"] is True
+
+        pause_result = await run_command(
+            _parse(
+                [
+                    "pause",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    "whatsapp",
+                    "--scope-id",
+                    "15551234567",
+                    "--reason",
+                    "customer pause",
+                ]
+            ),
+            conn=conn,
+        )
+        assert pause_result["installation"]["enabled"] is False
+        assert pause_result["installation"]["enabled_before"] is True
+        assert await conn.fetchval(
+            "SELECT enabled FROM whatsapp_installations WHERE id = $1",
+            inserted["id"],
+        ) is False
+
+        resume_result = await run_command(
+            _parse(
+                [
+                    "resume",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    "whatsapp",
+                    "--scope-id",
+                    "15551234567",
+                    "--reason",
+                    "customer resume",
+                ]
+            ),
+            conn=conn,
+        )
+        assert resume_result["installation"]["enabled"] is True
+
+        rotate_result = await run_command(
+            _parse(
+                [
+                    "rotate-secret",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    "whatsapp",
+                    "--scope-id",
+                    "15551234567",
+                    "--secret-field",
+                    "app-secret",
+                    "--new-secret-env",
+                    "ROTATED_WHATSAPP_APP_SECRET",
+                    "--reason",
+                    "customer app secret rotation",
+                ]
+            ),
+            conn=conn,
+            secret_store=secret_store,
+        )
+        assert rotate_result["installation"]["rotated_secret_field"] == "app-secret"
+        assert (
+            await secret_store.get(str(inserted["app_secret_ref"]), tenant_id=tenant)
+        ).decode() == "new-whatsapp-app-secret"
+
+        uninstall_result = await run_command(
+            _parse(
+                [
+                    "uninstall",
+                    "--tenant",
+                    str(tenant),
+                    "--operator-actor",
+                    str(operator_actor),
+                    "--source",
+                    "whatsapp",
+                    "--scope-id",
+                    "15551234567",
+                    "--reason",
+                    "customer requested uninstall",
+                ]
+            ),
+            conn=conn,
+            secret_store=secret_store,
+        )
+        assert uninstall_result["installation"]["enabled"] is False
+        assert uninstall_result["installation"]["refs_seen"] == 3
+        assert uninstall_result["installation"]["refs_deleted"] == 3
+        assert uninstall_result["installation"]["has_app_secret_ref"] is False
+        assert uninstall_result["installation"]["has_verify_token_ref"] is False
+        assert uninstall_result["installation"]["has_access_token_ref"] is False
+        row = await conn.fetchrow(
+            """
+            SELECT enabled, app_secret_ref, verify_token_ref, access_token_ref
+            FROM whatsapp_installations
+            WHERE id = $1
+            """,
+            inserted["id"],
+        )
+        assert row["enabled"] is False
+        assert row["app_secret_ref"] is None
+        assert row["verify_token_ref"] is None
+        assert row["access_token_ref"] is None
 
 
 def test_dedicated_rotate_webhook_rejects_poll_only_source() -> None:

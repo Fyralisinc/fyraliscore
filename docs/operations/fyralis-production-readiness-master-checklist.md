@@ -893,14 +893,15 @@ Current state:
 - Dedicated OAuth/admin-paste/API-key/DWD install tables for Gmail, Google
   Calendar, Google Drive, QuickBooks, Gusto, Ramp, Carta, LinkedIn, Jira,
   Mercury, Brex, Deel, Fireflies, Miro, Grafana, Figma, HiBob, Ashby, AWS,
-  Telegram, and Signal are now covered by
+  Telegram, Signal, and WhatsApp are now covered by
   `scripts/manage_dedicated_source_installations.py` for status, pause, resume,
   credential rotation where the source owns per-install secret refs, and
   uninstall. The tool binds `app.current_tenant`, writes bounded operator audit
   rows, zeroizes access/refresh/webhook secret refs and live/backfill session
   refs on uninstall, handles AWS account/region selectors, handles no-secret
-  Google Workspace DWD install rows, and disables matching webhook resolver rows
-  for webhook-capable sources.
+  Google Workspace DWD install rows, maps WhatsApp's `enabled` flag into the
+  same lifecycle contract, and disables matching webhook resolver rows for
+  webhook-capable sources.
 - Architecture ratchets now block new plaintext credential columns in
   migrations and block production integration code from passing raw
   credential-looking variables into `secret_ref`/`*_secret_ref` install
@@ -917,7 +918,7 @@ Current state:
 
 Must solve:
 
-- [ ] Every production source has a production install, status, pause, resume,
+- [x] Every production source has a production install, status, pause, resume,
   uninstall, and credential rotation path.
 - [ ] Install flows verify credentials before writing install rows.
 - [x] Install flows store credentials as secret refs only.
