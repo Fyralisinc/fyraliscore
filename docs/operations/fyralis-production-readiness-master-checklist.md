@@ -350,6 +350,11 @@ Current state:
   operator-grade WhatsApp uninstall path that disables the installation, deletes
   secret refs, clears legacy plaintext, and writes a sanitized
   `installation_audit_log` row.
+- `services.ingest.integrations.secret_cache.SecretValueCache` now provides a
+  shared short-lived secret-ref cache (`SOURCE_CLIENT_SECRET_CACHE_TTL_SECONDS`,
+  default 300s; `0` disables caching). Brex and Jira clients use it so
+  secret-store token rotation is picked up without process restart while
+  preset test/spammer tokens remain fixed.
 - Many production template keys are still env-shaped.
 - Webhook env fallback is disabled in production by contract.
 
