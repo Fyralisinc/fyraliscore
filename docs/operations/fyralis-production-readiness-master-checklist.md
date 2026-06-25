@@ -393,6 +393,10 @@ Current state:
   webhook verification rejects legacy plaintext-column fallback. The
   `scripts/migrate_whatsapp_secret_refs.py` path remains the migration bridge
   for pre-ref rows before production cutover.
+- Secret zeroization coverage now includes generic `provider_installations`,
+  dedicated OAuth/API-key/session/WhatsApp source families, and a parametrized
+  uninstall SQL ratchet that proves every secret-bearing dedicated source spec
+  clears all configured ref columns.
 - Many production template keys are still env-shaped.
 - Webhook env fallback is disabled in production by contract.
 
@@ -408,7 +412,7 @@ Must solve:
 - [ ] Rotate all source credentials and webhook secrets through a tested
   rotation flow.
 - [x] Ensure all provider tokens are stored as opaque `secret_ref` values.
-- [ ] Add secret zeroization/uninstall tests for each integration.
+- [x] Add secret zeroization/uninstall tests for each integration.
 - [x] Confirm every source-specific client resolves secrets at call time or via
   short-lived in-memory cache with TTL.
 - [x] Add a secret-leak test that scans captured logs and HTTP responses for

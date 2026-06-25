@@ -14,6 +14,7 @@ from scripts.manage_dedicated_source_installations import (
     SPECS,
     DedicatedSourceInstallationCliError,
     _installation_projection_sql,
+    _uninstall_installation,
     build_parser,
     run_command,
 )
@@ -1033,6 +1034,55 @@ def test_installation_projection_supports_sources_without_ref_columns() -> None:
     assert "NULL::text AS base_url" in projection
     assert "secret_ref" not in projection
     assert ",\n               ,\n" not in projection
+
+
+class _CaptureFetchrowConnection:
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+        self.args: list[tuple[object, ...]] = []
+
+    async def fetchrow(self, query: str, *args: object) -> dict[str, object]:
+        self.queries.append(query)
+        self.args.append(args)
+        return {"id": args[1]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source",
+    sorted(source for source, spec in SPECS.items() if spec.ref_columns),
+)
+async def test_uninstall_sql_clears_every_secret_ref_column(source: str) -> None:
+    spec = SPECS[source]
+    conn = _CaptureFetchrowConnection()
+    tenant_id = uuid7()
+    row_id = uuid7()
+
+    await _uninstall_installation(
+        conn,  # type: ignore[arg-type]
+        tenant_id=tenant_id,
+        spec=spec,
+        row_id=row_id,
+        clear_columns=spec.ref_columns,
+    )
+
+    query = conn.queries[-1]
+    assert f"UPDATE {spec.table} i" in query
+    for column in spec.ref_columns:
+        assert f"{column} = NULL" in query
+    assert conn.args[-1] == (tenant_id, row_id)
+
+
+@pytest.mark.asyncio
+async def test_uninstall_sql_rejects_unknown_secret_ref_column() -> None:
+    with pytest.raises(DedicatedSourceInstallationCliError):
+        await _uninstall_installation(
+            _CaptureFetchrowConnection(),  # type: ignore[arg-type]
+            tenant_id=uuid7(),
+            spec=SPECS["ashby"],
+            row_id=uuid7(),
+            clear_columns=("refresh_secret_ref",),
+        )
 
 
 @pytest.mark.asyncio
