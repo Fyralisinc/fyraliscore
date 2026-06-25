@@ -1121,6 +1121,12 @@ Current state:
 - Product-facing route errors are now protected by
   `scripts/check_product_error_contract.py`, which blocks raw exception text
   and free-form implementation details at HTTP/JSON response boundaries.
+- Gateway HTTP response boundaries are now protected by
+  `scripts/check_gateway_error_contract.py`, which blocks raw exception text in
+  `JSONResponse` bodies and `HTTPException(detail=...)`. Readiness probes,
+  extension read APIs, dashboard customer detail, and clarification validation
+  now return bounded error codes instead of driver, validation, or exception
+  strings.
 
 Must solve:
 

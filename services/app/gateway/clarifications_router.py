@@ -127,9 +127,9 @@ async def list_clarifications_endpoint(
                 status=status_filter,
                 limit=bounded_limit,
             )
-        except ValidationError as exc:
+        except ValidationError:
             return JSONResponse(
-                {"error": "invalid_status", "detail": str(exc)},
+                {"error": "invalid_status"},
                 status_code=400,
             )
         visible_rows = []
@@ -199,9 +199,9 @@ async def answer_clarification_endpoint(
                         row=row,
                         metadata=_clarification_answer_metadata(row, body.answer),
                     )
-        except ValidationError as exc:
+        except ValidationError:
             return JSONResponse(
-                {"error": "invalid_answer", "detail": str(exc)},
+                {"error": "invalid_answer"},
                 status_code=400,
             )
     if row is None:

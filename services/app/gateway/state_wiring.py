@@ -303,7 +303,7 @@ async def probe_integration_runtime_state(
             return IntegrationRuntimeProbeResult(
                 component=component,
                 ok=False,
-                detail=str(exc),
+                detail="probe_failed",
                 error_type=type(exc).__name__,
             )
         return IntegrationRuntimeProbeResult(component=component, ok=True)

@@ -324,7 +324,7 @@ async def _readiness_payload(request: Request) -> tuple[dict[str, Any], int]:
                 "db",
                 "failed",
                 required=True,
-                detail=str(exc),
+                detail="db_probe_failed",
                 error_type=type(exc).__name__,
             )
 

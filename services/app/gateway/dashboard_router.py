@@ -99,8 +99,8 @@ def build_dashboard_router() -> APIRouter:
                     window_days=int(window_days),
                     conn=conn,
                 )
-            except ValueError as e:
-                return JSONResponse({"error": str(e)}, status_code=404)
+            except ValueError:
+                return JSONResponse({"error": "not_found"}, status_code=404)
             result = await _filter_customer_detail(result, conn=conn, auth=auth)
         return json.loads(result.model_dump_json())
 

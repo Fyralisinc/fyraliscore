@@ -87,6 +87,11 @@ jobs:
       - name: Check product error contract
         run: python scripts/check_product_error_contract.py
 
+      # Blocks gateway HTTP routes from returning raw exception text at
+      # JSONResponse/HTTPException response boundaries.
+      - name: Check gateway error contract
+        run: python scripts/check_gateway_error_contract.py
+
       # Keeps `.env.production.example` aligned with fail-closed production
       # settings so deploy operators see required keys before runtime startup.
       - name: Check production env contract
