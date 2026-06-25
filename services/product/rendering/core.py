@@ -16,9 +16,12 @@ inject a ScriptedProvider; real runs pass a DeepSeekProvider pinned to
 """
 from __future__ import annotations
 
+import html
 import json
+import re
 import time
 from decimal import Decimal
+from html.parser import HTMLParser
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
@@ -142,6 +145,7 @@ class RenderingService:
             kind="greeting",
             rule_context=RuleContext(kind="greeting"),
         )
+        body = sanitize_html_fragment(body)
         cost = self._record_cost(
             tenant_id=request.tenant_id,
             render_kind="greeting",
@@ -204,6 +208,7 @@ class RenderingService:
         # regardless of LLM compliance.
         if render_kind == "card_decision":
             body = _ensure_decision_wrappers(body, request.card_focus or {})
+        body = sanitize_html_fragment(body)
         cost = self._record_cost(
             tenant_id=request.tenant_id,
             render_kind=render_kind,
@@ -306,6 +311,7 @@ class RenderingService:
         # Wrap deterministically at the service boundary if the model
         # didn't already include one.
         body = _ensure_turn_body_wrapper(body)
+        body = sanitize_html_fragment(body)
         cost = self._record_cost(
             tenant_id=request.tenant_id,
             render_kind="conversation_turn",
@@ -385,8 +391,12 @@ class RenderingService:
             body_html = str(item.get("body_html", "")).strip()
             if label and body_html:
                 evidence.append(
-                    RenderedEvidenceEntry(label=label, body_html=body_html)
+                    RenderedEvidenceEntry(
+                        label=label,
+                        body_html=sanitize_html_fragment(body_html),
+                    )
                 )
+        reasoning_html = sanitize_html_fragment(reasoning_html)
 
         # Structural guarantees: at least one `.cite` span across the
         # evidence list. If the model omitted it, retry once with a
@@ -407,7 +417,9 @@ class RenderingService:
                 )
             reparsed = _parse_reasoning_payload(raw_third)
             if reparsed is not None:
-                reasoning_html = str(reparsed.get("reasoning_html", reasoning_html)).strip()
+                reasoning_html = sanitize_html_fragment(
+                    str(reparsed.get("reasoning_html", reasoning_html)).strip()
+                )
                 new_evs: list[RenderedEvidenceEntry] = []
                 for item in reparsed.get("evidence", []) or []:
                     if not isinstance(item, dict):
@@ -416,7 +428,10 @@ class RenderingService:
                     bhtml = str(item.get("body_html", "")).strip()
                     if lbl and bhtml:
                         new_evs.append(
-                            RenderedEvidenceEntry(label=lbl, body_html=bhtml)
+                            RenderedEvidenceEntry(
+                                label=lbl,
+                                body_html=sanitize_html_fragment(bhtml),
+                            )
                         )
                 if new_evs:
                     evidence = new_evs
@@ -442,7 +457,7 @@ class RenderingService:
                 if reparsed is not None:
                     new_reasoning = str(reparsed.get("reasoning_html", "")).strip()
                     if new_reasoning:
-                        reasoning_html = new_reasoning
+                        reasoning_html = sanitize_html_fragment(new_reasoning)
                     new_evs: list[RenderedEvidenceEntry] = []
                     for item in reparsed.get("evidence", []) or []:
                         if not isinstance(item, dict):
@@ -451,7 +466,10 @@ class RenderingService:
                         bhtml = str(item.get("body_html", "")).strip()
                         if lbl and bhtml:
                             new_evs.append(
-                                RenderedEvidenceEntry(label=lbl, body_html=bhtml)
+                                RenderedEvidenceEntry(
+                                    label=lbl,
+                                    body_html=sanitize_html_fragment(bhtml),
+                                )
                             )
                     if new_evs:
                         evidence = new_evs
@@ -717,6 +735,149 @@ class RenderingService:
 # ---------------------------------------------------------------------
 
 
+_ALLOWED_HTML_TAGS = frozenset({
+    "b",
+    "br",
+    "div",
+    "em",
+    "i",
+    "li",
+    "ol",
+    "p",
+    "small",
+    "span",
+    "strong",
+    "ul",
+})
+_VOID_HTML_TAGS = frozenset({"br"})
+_SUPPRESSED_HTML_CONTENT_TAGS = frozenset({
+    "applet",
+    "base",
+    "embed",
+    "frame",
+    "iframe",
+    "link",
+    "math",
+    "meta",
+    "noscript",
+    "object",
+    "script",
+    "style",
+    "svg",
+    "template",
+})
+_CLASS_TOKEN_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+_MAX_CLASS_TOKENS = 12
+
+
+def sanitize_html_fragment(fragment: str | None) -> str:
+    """Sanitize LLM-produced UI HTML before returning it to callers.
+
+    The rendering prompts intentionally allow a tiny HTML subset for
+    typography and structural hooks. Everything outside that subset is
+    removed or escaped at the service boundary so model output cannot
+    introduce scripts, event handlers, inline styles, URLs, or comments.
+    """
+    if not fragment:
+        return ""
+    parser = _HTMLFragmentSanitizer()
+    parser.feed(str(fragment))
+    parser.close()
+    return parser.cleaned
+
+
+class _HTMLFragmentSanitizer(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._open_tags: list[str] = []
+        self._suppressed_tags: list[str] = []
+
+    @property
+    def cleaned(self) -> str:
+        if self._open_tags:
+            for tag in reversed(self._open_tags):
+                self._parts.append(f"</{tag}>")
+            self._open_tags.clear()
+        return "".join(self._parts).strip()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized = tag.lower()
+        if self._is_suppressed(normalized):
+            return
+        if normalized not in _ALLOWED_HTML_TAGS:
+            return
+
+        rendered_attrs = self._render_attrs(attrs)
+        self._parts.append(f"<{normalized}{rendered_attrs}>")
+        if normalized not in _VOID_HTML_TAGS:
+            self._open_tags.append(normalized)
+
+    def handle_startendtag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        normalized = tag.lower()
+        if self._is_suppressed(normalized):
+            return
+        if normalized not in _ALLOWED_HTML_TAGS:
+            return
+        rendered_attrs = self._render_attrs(attrs)
+        if normalized in _VOID_HTML_TAGS:
+            self._parts.append(f"<{normalized}{rendered_attrs}>")
+        else:
+            self._parts.append(f"<{normalized}{rendered_attrs}></{normalized}>")
+
+    def handle_endtag(self, tag: str) -> None:
+        normalized = tag.lower()
+        if self._suppressed_tags:
+            if normalized == self._suppressed_tags[-1]:
+                self._suppressed_tags.pop()
+            return
+        if normalized not in _ALLOWED_HTML_TAGS or normalized in _VOID_HTML_TAGS:
+            return
+        if self._open_tags and self._open_tags[-1] == normalized:
+            self._parts.append(f"</{normalized}>")
+            self._open_tags.pop()
+
+    def handle_data(self, data: str) -> None:
+        if self._suppressed_tags:
+            return
+        self._parts.append(html.escape(data, quote=False))
+
+    def handle_comment(self, data: str) -> None:
+        return
+
+    def handle_decl(self, decl: str) -> None:
+        return
+
+    def handle_pi(self, data: str) -> None:
+        return
+
+    def _is_suppressed(self, tag: str) -> bool:
+        if self._suppressed_tags:
+            if tag in _SUPPRESSED_HTML_CONTENT_TAGS:
+                self._suppressed_tags.append(tag)
+            return True
+        if tag in _SUPPRESSED_HTML_CONTENT_TAGS:
+            self._suppressed_tags.append(tag)
+            return True
+        return False
+
+    def _render_attrs(self, attrs: list[tuple[str, str | None]]) -> str:
+        for name, value in attrs:
+            if name.lower() != "class" or not value:
+                continue
+            tokens = [
+                token
+                for token in re.split(r"\s+", value.strip())[:_MAX_CLASS_TOKENS]
+                if _CLASS_TOKEN_RE.fullmatch(token)
+            ]
+            if tokens:
+                class_value = html.escape(" ".join(tokens), quote=True)
+                return f' class="{class_value}"'
+        return ""
+
+
 def _aggregate(agg: LLMUsageAggregator, *, model_name: str) -> LLMUsage:
     """Reduce an aggregator into a single LLMUsage carrying totals."""
     return LLMUsage(
@@ -959,4 +1120,5 @@ def _ensure_decision_wrappers(body: str, card_focus: dict) -> str:
 __all__ = [
     "RenderingError",
     "RenderingService",
+    "sanitize_html_fragment",
 ]

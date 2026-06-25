@@ -357,9 +357,69 @@ async def seed_commitment_for_target(
     return cid
 
 
+async def seed_resource_for_target(
+    pool: asyncpg.Pool,
+    *,
+    tenant: UUID,
+    kind: str = "financial",
+    identity: str = "Restricted ARR snapshot",
+    metadata: dict[str, Any] | None = None,
+) -> UUID:
+    rid = uuid7()
+    await _ensure_tenant(pool, tenant)
+    await pool.execute(
+        """
+        INSERT INTO resources (
+            id, tenant_id, kind, identity, description,
+            current_value, valuation_confidence, utilization_state,
+            controllability, temporal_character, metadata
+        ) VALUES (
+            $1, $2, $3, $4, NULL,
+            '{}'::jsonb, 1.0, 'available',
+            'owned', 'permanent', $5::jsonb
+        )
+        """,
+        rid,
+        tenant,
+        kind,
+        identity,
+        json.dumps(metadata or {}),
+    )
+    return rid
+
+
+async def grant_actor_role(
+    pool: asyncpg.Pool,
+    *,
+    tenant: UUID,
+    actor_id: UUID,
+    entity_type: str,
+    entity_id: UUID | None,
+    role: str,
+    granted_by: UUID | None = None,
+) -> None:
+    await pool.execute(
+        """
+        INSERT INTO actor_roles (
+            tenant_id, actor_id, entity_type, entity_id, role,
+            granted_by, granted_at, revoked_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, now(), NULL)
+        ON CONFLICT ON CONSTRAINT actor_roles_dedup DO NOTHING
+        """,
+        tenant,
+        actor_id,
+        entity_type,
+        entity_id,
+        role,
+        granted_by or actor_id,
+    )
+
+
 __all__ = [
+    "grant_actor_role",
     "seed_decision_delta",
     "seed_observation_minimal",
     "seed_recommendation_for_promotion",
     "seed_commitment_for_target",
+    "seed_resource_for_target",
 ]

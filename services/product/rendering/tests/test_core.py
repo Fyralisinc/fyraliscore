@@ -27,6 +27,7 @@ from services.product.rendering.core import (
     RenderingService,
     _parse_label_array,
     _unwrap_json_wrapped_html,
+    sanitize_html_fragment,
 )
 from services.product.rendering.tests.fixtures import (
     TENANT_ID,
@@ -103,6 +104,20 @@ GRID_CLEAN_JSON = (
 
 def _now():
     return datetime(2026, 4, 21, 6, 42, tzinfo=timezone.utc)
+
+
+def test_sanitize_html_fragment_keeps_render_hooks_and_removes_unsafe_markup():
+    raw = (
+        '<div class="t-body safe_2" onclick="steal()">A & B '
+        '<span class="cite" style="color:red" data-x="1">Alice</span>'
+        '<script>alert(1)</script><!-- hidden -->'
+        '<a href="javascript:alert(1)">link</a></div>'
+    )
+    out = sanitize_html_fragment(raw)
+    assert out == (
+        '<div class="t-body safe_2">A &amp; B '
+        '<span class="cite">Alice</span>link</div>'
+    )
 
 
 # =====================================================================
@@ -388,6 +403,36 @@ async def test_conversation_turn_wraps_t_body_when_model_omits_it():
     # The wrapper should be the outermost element.
     assert resp.response_html.strip().startswith('<div class="t-body">')
     assert resp.response_html.strip().endswith('</div>')
+
+
+@pytest.mark.asyncio
+async def test_conversation_turn_sanitizes_unsafe_html_at_boundary():
+    unsafe = (
+        '<div class="t-body" onclick="steal()">'
+        'Model <span class="t-id" style="color:red">m-2841</span> fired. '
+        '<img src=x onerror="alert(1)">'
+        '<span class="cite" data-raw="1">Alice — Sat 22:41</span>'
+        '<script>alert(2)</script>'
+        '</div>'
+    )
+    provider = ScriptedProvider([unsafe])
+    svc = RenderingService(provider=provider)
+    req = RenderConversationTurnRequest(
+        tenant_id=TENANT_ID, timestamp=_now(),
+        query="Show me why Acme became unsafe.",
+        retrieval_context={"models": [{"id": "m-2841"}]},
+        substrate_state=acme_tuesday_snapshot(),
+    )
+    resp = await svc.render_conversation_turn(req)
+    assert '<div class="t-body">' in resp.response_html
+    assert '<span class="t-id">m-2841</span>' in resp.response_html
+    assert '<span class="cite">Alice — Sat 22:41</span>' in resp.response_html
+    assert "onclick" not in resp.response_html
+    assert "style=" not in resp.response_html
+    assert "data-raw" not in resp.response_html
+    assert "<img" not in resp.response_html
+    assert "<script" not in resp.response_html
+    assert "alert(" not in resp.response_html
 
 
 @pytest.mark.asyncio

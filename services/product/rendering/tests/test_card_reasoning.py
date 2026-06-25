@@ -183,6 +183,44 @@ async def test_render_card_reasoning_happy_path():
 
 
 @pytest.mark.asyncio
+async def test_render_card_reasoning_sanitizes_reasoning_and_evidence_html():
+    payload = {
+        "reasoning_html": (
+            'Model <b onclick="steal()">m-2841</b> moved because '
+            '<span class="serif" style="color:red">Acme is at risk</span>. '
+            '<span class="n" data-raw="1">$487K</span> is exposed.'
+            '<script>alert(1)</script>'
+        ),
+        "evidence": [
+            {
+                "label": "Alice — Sat 22:41",
+                "body_html": (
+                    'Alice re-estimated c-203 '
+                    '<span class="cite" onclick="steal()">Alice — Sat 22:41</span>.'
+                    '<iframe src="https://example.invalid">blocked</iframe>'
+                ),
+            },
+        ],
+    }
+    provider = ScriptedProvider([json.dumps(payload)])
+    svc = RenderingService(provider=provider)
+    resp = await svc.render_card_reasoning(_request())
+
+    assert '<b>m-2841</b>' in resp.reasoning_html
+    assert '<span class="serif">Acme is at risk</span>' in resp.reasoning_html
+    assert '<span class="n">$487K</span>' in resp.reasoning_html
+    assert '<span class="cite">Alice — Sat 22:41</span>' in resp.evidence[0].body_html
+    combined = resp.reasoning_html + resp.evidence[0].body_html
+    assert "onclick" not in combined
+    assert "style=" not in combined
+    assert "data-raw" not in combined
+    assert "<script" not in combined
+    assert "<iframe" not in combined
+    assert "alert(" not in combined
+    assert "blocked" not in combined
+
+
+@pytest.mark.asyncio
 async def test_render_card_reasoning_cite_missing_triggers_retry():
     """A first output missing `.cite` should trigger exactly one retry
     with the cite-correction prompt, and the follow-up output lands."""
