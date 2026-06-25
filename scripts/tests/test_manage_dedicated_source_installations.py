@@ -828,6 +828,7 @@ async def test_dedicated_whatsapp_enabled_table_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async with fresh_db.acquire() as conn:
+        phone_number_id = f"1555{tenant.hex[:10]}"
         operator_actor = await insert_actor(conn, tenant, "Source operator")
         await _grant_operator_role(conn, tenant=tenant, actor_id=operator_actor)
         secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
@@ -835,7 +836,7 @@ async def test_dedicated_whatsapp_enabled_table_lifecycle(
             conn,
             tenant=tenant,
             source="whatsapp",
-            scope_id="15551234567",
+            scope_id=phone_number_id,
             secret_store=secret_store,
         )
         monkeypatch.setenv("ROTATED_WHATSAPP_APP_SECRET", "new-whatsapp-app-secret")
@@ -851,7 +852,7 @@ async def test_dedicated_whatsapp_enabled_table_lifecycle(
                     "--source",
                     "whatsapp",
                     "--scope-id",
-                    "15551234567",
+                    phone_number_id,
                 ]
             ),
             conn=conn,
@@ -872,7 +873,7 @@ async def test_dedicated_whatsapp_enabled_table_lifecycle(
                     "--source",
                     "whatsapp",
                     "--scope-id",
-                    "15551234567",
+                    phone_number_id,
                     "--reason",
                     "customer pause",
                 ]
@@ -897,7 +898,7 @@ async def test_dedicated_whatsapp_enabled_table_lifecycle(
                     "--source",
                     "whatsapp",
                     "--scope-id",
-                    "15551234567",
+                    phone_number_id,
                     "--reason",
                     "customer resume",
                 ]
@@ -917,7 +918,7 @@ async def test_dedicated_whatsapp_enabled_table_lifecycle(
                     "--source",
                     "whatsapp",
                     "--scope-id",
-                    "15551234567",
+                    phone_number_id,
                     "--secret-field",
                     "app-secret",
                     "--new-secret-env",
@@ -945,7 +946,7 @@ async def test_dedicated_whatsapp_enabled_table_lifecycle(
                     "--source",
                     "whatsapp",
                     "--scope-id",
-                    "15551234567",
+                    phone_number_id,
                     "--reason",
                     "customer requested uninstall",
                 ]

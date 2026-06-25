@@ -890,6 +890,9 @@ Current state:
 
 - Generic `provider_installations` lifecycle operations are covered by
   `scripts/manage_source_installations.py`.
+- `scripts/check_source_lifecycle_contract.py` now derives the canonical source
+  list from `INGESTION_SOURCES` and fails CI if any source lacks generic or
+  dedicated status, pause, resume, uninstall, and rotation coverage.
 - Dedicated OAuth/admin-paste/API-key/DWD install tables for Gmail, Google
   Calendar, Google Drive, QuickBooks, Gusto, Ramp, Carta, LinkedIn, Jira,
   Mercury, Brex, Deel, Fireflies, Miro, Grafana, Figma, HiBob, Ashby, AWS,
