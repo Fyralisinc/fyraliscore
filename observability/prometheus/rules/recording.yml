@@ -31,6 +31,40 @@ groups:
         expr: >
           sum by (route) (rate(http_requests_total{status=~"5.."}[5m]))
 
+      # Product workflow aggregate request rate over 5m. This intentionally
+      # excludes webhooks, debug, internal, health, and ingestion routes.
+      - record: fyralis:product_workflow_request_rate:5m
+        expr: >
+          sum(rate(product_workflow_requests_total[5m]))
+
+      # Product workflow 5xx ratio over 5m. Budget target: <=1% 5xx.
+      - record: fyralis:product_workflow_error_ratio:5m
+        expr: >
+          sum(rate(product_workflow_requests_total{status_class="5xx"}[5m]))
+          /
+          clamp_min(
+            sum(rate(product_workflow_requests_total[5m])),
+            1e-9
+          )
+
+      # Product workflow p95 latency over 5m. Budget target: <=2s p95.
+      - record: fyralis:product_workflow_latency_p95_seconds:5m
+        expr: >
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(product_workflow_request_duration_seconds_bucket[5m])
+            )
+          )
+
+      # Short-window product SLO burn inputs. These are first-pass launch
+      # targets and are explicitly tuned after staging soak.
+      - record: fyralis:product_workflow_error_budget_burn:5m
+        expr: fyralis:product_workflow_error_ratio:5m / 0.01
+
+      - record: fyralis:product_workflow_latency_budget_burn:5m
+        expr: fyralis:product_workflow_latency_p95_seconds:5m / 2
+
       # Webhook verification failure rate by provider over 5m.
       - record: fyralis:webhook_failure_rate:5m
         expr: >

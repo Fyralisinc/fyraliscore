@@ -1,0 +1,282 @@
+{
+  "uid": "fyralis-product-workflow-health",
+  "title": "Fyralis · Product Workflow Health",
+  "tags": ["fyralis", "product"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "editable": false,
+  "templating": {
+    "list": [
+      {
+        "name": "product_route_re",
+        "type": "constant",
+        "hide": 2,
+        "query": "^(/v1/(today|ask|recommendations|forecasts|decision_deltas|history|resolution_threads|model|cards|artifacts)(/.*)?|/today(/.*)?|/view/ceo/(home|ask|force-refresh)|/map(/.*)?|/model(/.*)?|/dashboard(/.*)?|/contest(/.*)?|/clarifications(/.*)?|/integrations(/.*)?|/finance(/.*)?|/rendering(/.*)?|/slack(/.*)?|/(observations|models|commitments|goals|decisions|resources))$"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Product Request Rate",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fyralis:product_workflow_request_rate:5m",
+          "legendFormat": "requests"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "reqps"},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Product 5xx Ratio",
+      "gridPos": {"h": 6, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fyralis:product_workflow_error_ratio:5m",
+          "legendFormat": "5xx ratio"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 0.01},
+              {"color": "red", "value": 0.05}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Product P95 Latency",
+      "gridPos": {"h": 6, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fyralis:product_workflow_latency_p95_seconds:5m",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 2},
+              {"color": "red", "value": 2.5}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "SLO Burn",
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fyralis:product_workflow_error_budget_burn:5m",
+          "legendFormat": "error burn"
+        },
+        {
+          "refId": "B",
+          "expr": "fyralis:product_workflow_latency_budget_burn:5m",
+          "legendFormat": "latency burn"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 5}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "SLO Burn Inputs",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "fyralis:product_workflow_error_budget_burn:5m",
+          "legendFormat": "error budget burn"
+        },
+        {
+          "refId": "B",
+          "expr": "fyralis:product_workflow_latency_budget_burn:5m",
+          "legendFormat": "latency budget burn"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {"thresholdsStyle": {"mode": "line"}},
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 1},
+              {"color": "red", "value": 5}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Product Traffic by Status",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (workflow, status_class) (rate(product_workflow_requests_total[5m]))",
+          "legendFormat": "{{workflow}} {{status_class}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "reqps"},
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Product 5xx by Route",
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (route) (rate(http_requests_total{route=~\"$product_route_re\",status=~\"5..\"}[5m]))",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "reqps"},
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}
+      }
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Product Route P95 Latency",
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (route, le) (rate(http_request_duration_seconds_bucket{route=~\"$product_route_re\"}[5m])))",
+          "legendFormat": "{{route}}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 2},
+              {"color": "red", "value": 2.5}
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {"id": "byName", "options": "Value"},
+            "properties": [
+              {"id": "custom.cellOptions", "value": {"type": "color-background"}}
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{"displayName": "Value", "desc": true}]
+      }
+    }
+  ]
+}

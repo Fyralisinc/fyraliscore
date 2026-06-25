@@ -1,4 +1,4 @@
-# Dashboard provider — loads the six JSON dashboards from the repo into
+# Dashboard provider — loads the JSON dashboards from the repo into
 # the "Fyralis" folder. Dashboards are code; UI edits are disabled so the
 # repo stays the source of truth.
 apiVersion: 1
