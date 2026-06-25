@@ -112,6 +112,9 @@ Current state:
 - Architecture ratchets now block any post-`0164` migration from adding a new
   unbound-tenant RLS bypass (`current_tenant IS NULL` / `NULLIF(... ) IS NULL`)
   while legacy policy cleanup proceeds deliberately.
+- `scripts/check_cross_tenant_boundary_tests.py` is now a CI architecture gate
+  that requires explicit cross-tenant boundary tests to remain present across
+  database/RLS, gateway HTTP, repositories, workers, and realtime delivery.
 - Reasoning substrate extraction no longer hardcodes a customer internal-domain
   list or customer-name suppression rule. Internal email domains are supplied
   through `FYRALIS_INTERNAL_EMAIL_DOMAINS` or explicit test/caller input, and a
@@ -126,7 +129,7 @@ Must solve:
   has `BYPASSRLS`.
 - [x] Add a startup check that verifies strict RLS policy shape on all
   tenant-scoped tables.
-- [ ] Add an automated test suite that tries cross-tenant reads/writes through
+- [x] Add an automated test suite that tries cross-tenant reads/writes through
   gateway, workers, repositories, and realtime paths.
 - [ ] Make resolver/setup paths that genuinely require cross-tenant lookup use a
   separate audited service role or explicit safe registry table, not the main

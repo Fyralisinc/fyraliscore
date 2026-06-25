@@ -82,6 +82,11 @@ jobs:
       - name: Check concurrency controls
         run: python scripts/check_concurrency_controls.py
 
+      # Ensures explicit cross-tenant boundary tests stay present across DB,
+      # gateway, repository, worker, and realtime layers.
+      - name: Check cross-tenant boundary tests
+        run: python scripts/check_cross_tenant_boundary_tests.py
+
       # Ensures every canonical ingestion source has a status/pause/resume/
       # uninstall/rotation operator path through generic or dedicated tooling.
       - name: Check source lifecycle contract
