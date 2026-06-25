@@ -15,6 +15,7 @@ from __future__ import annotations
 from scripts.provision_kafka_topics import (
     CONTROL_PLANE_TOPICS,
     INGESTION_TOPICS,
+    validate_topic_descriptions,
 )
 from services.ingest.ingestion.kafka import topics
 
@@ -45,3 +46,63 @@ def test_count_is_stages_times_sources_plus_control() -> None:
         + len(CONTROL_PLANE_TOPICS)
     )
     assert len(INGESTION_TOPICS) == expected
+
+
+def _description(name: str, partitions: int) -> dict:
+    return {
+        "topic": name,
+        "error_code": 0,
+        "partitions": [{"partition": idx} for idx in range(partitions)],
+    }
+
+
+def test_topic_verification_accepts_expected_partition_count() -> None:
+    expected = ("ingestion.raw.slack", "ingestion.tenant_traffic_signal")
+    descriptions = [_description(topic, 12) for topic in expected]
+
+    assert validate_topic_descriptions(
+        descriptions,
+        expected_topics=expected,
+        expected_partitions=12,
+    ) == []
+
+
+def test_topic_verification_rejects_missing_topic() -> None:
+    issues = validate_topic_descriptions(
+        [_description("ingestion.raw.slack", 12)],
+        expected_topics=("ingestion.raw.slack", "ingestion.tenant_traffic_signal"),
+        expected_partitions=12,
+    )
+
+    assert issues == ["ingestion.tenant_traffic_signal: missing after provisioning"]
+
+
+def test_topic_verification_rejects_partition_drift() -> None:
+    issues = validate_topic_descriptions(
+        [
+            _description("ingestion.raw.slack", 12),
+            _description("ingestion.tenant_traffic_signal", 8),
+        ],
+        expected_topics=("ingestion.raw.slack", "ingestion.tenant_traffic_signal"),
+        expected_partitions=12,
+    )
+
+    assert issues == [
+        "ingestion.tenant_traffic_signal: has 8 partitions; expected 12"
+    ]
+
+
+def test_topic_verification_surfaces_broker_topic_errors() -> None:
+    issues = validate_topic_descriptions(
+        [
+            {
+                "topic": "ingestion.raw.slack",
+                "error_code": 3,
+                "partitions": [{"partition": 0}],
+            }
+        ],
+        expected_topics=("ingestion.raw.slack",),
+        expected_partitions=1,
+    )
+
+    assert issues == ["ingestion.raw.slack: broker returned topic error 3"]

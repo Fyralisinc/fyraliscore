@@ -101,6 +101,12 @@ async def tenant_cleanup(fresh_db: asyncpg.Pool, tenant: uuid.UUID):
             "model_reeval_queue",
             "models",
             "observations",
+            "access_override_log",
+            "operator_action_log",
+            "actor_roles",
+            "provider_installations",
+            "encrypted_secrets",
+            "tenant_flags",
             "actors",
         ):
             try:
