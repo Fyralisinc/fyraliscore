@@ -60,7 +60,7 @@ Every checklist item is done only when:
 - [x] Durable queues have idempotent application, leases, heartbeat, orphan
   recovery, and dead-letter visibility.
 - [x] Production startup fails closed for unsafe env/config combinations.
-- [ ] The product has a rollback path that does not delete or corrupt customer
+- [x] The product has a rollback path that does not delete or corrupt customer
   data.
 
 ### P1 Gate - Production Launch Quality
