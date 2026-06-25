@@ -1118,6 +1118,9 @@ Current state:
   reader fallback is used or no accessible tenant state exists. The bounded
   API error contract returns stable codes for invalid queries and missing Ask
   sessions instead of raw exception text.
+- Today responses now emit top-level `degraded_reasons` for unavailable
+  signal-strip metrics, so UI and API clients can distinguish incomplete
+  business telemetry from healthy zero values.
 - Product-facing route errors are now protected by
   `scripts/check_product_error_contract.py`, which blocks raw exception text
   and free-form implementation details at HTTP/JSON response boundaries.

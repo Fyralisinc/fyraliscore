@@ -163,11 +163,19 @@ async def test_today_returns_full_payload_for_actor_with_no_recommendations(
     # All required top-level keys present
     for key in (
         "brand", "page", "signal_strip", "vitals", "nav",
-        "cards", "ask_suggestions",
+        "cards", "degraded_reasons", "ask_suggestions",
     ):
         assert key in body
     # Signal strip always returns four metrics
     assert len(body["signal_strip"]) == 4
+    unavailable_signal_ids = {
+        item["id"] for item in body["signal_strip"] if item.get("unavailable")
+    }
+    expected_reasons = {
+        f"signal_{metric_id}_unavailable"
+        for metric_id in unavailable_signal_ids
+    }
+    assert expected_reasons.issubset(set(body["degraded_reasons"]))
     # Empty state surfaces when no cards
     assert body.get("empty_state") is not None
     # Page header tone is quiet/clear when nothing pressing
@@ -379,9 +387,11 @@ async def test_today_financial_metrics_require_resource_access(
     )
 
     assert resp.status_code == 200
-    arr = next(item for item in resp.json()["signal_strip"] if item["id"] == "arr")
+    body = resp.json()
+    arr = next(item for item in body["signal_strip"] if item["id"] == "arr")
     assert arr["unavailable"] is True
     assert arr["value"] == "—"
+    assert "signal_arr_unavailable" in body["degraded_reasons"]
 
 
 @pytest.mark.asyncio

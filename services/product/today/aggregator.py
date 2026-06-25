@@ -113,6 +113,7 @@ class TodayPayload:
     vitals: list[dict[str, Any]]
     nav: list[dict[str, Any]]
     cards: list[dict[str, Any]]
+    degraded_reasons: list[str] = field(default_factory=list)
     cleared_today: int = 0
     just_updated: dict[str, Any] | None = None
     routed_coda: dict[str, Any] | None = None
@@ -131,6 +132,7 @@ class TodayPayload:
             "vitals": self.vitals,
             "nav": self.nav,
             "cards": self.cards,
+            "degraded_reasons": self.degraded_reasons,
             "cleared_today": self.cleared_today,
             "ask_suggestions": self.ask_suggestions,
         }
@@ -149,6 +151,34 @@ class TodayPayload:
         if self.recent_signals is not None:
             out["recent_signals"] = self.recent_signals
         return out
+
+
+_SIGNAL_DEGRADED_REASON_BY_ID: dict[str, str] = {
+    "arr": "signal_arr_unavailable",
+    "runway": "signal_runway_unavailable",
+    "commitments": "signal_commitments_unavailable",
+    "calibration": "signal_calibration_unavailable",
+}
+
+
+def _today_degraded_reasons(
+    signal_strip: list[dict[str, Any]],
+) -> list[str]:
+    reasons: set[str] = set()
+    for item in signal_strip:
+        if not item.get("unavailable"):
+            continue
+        metric_id = str(item.get("id") or "").strip().lower()
+        if not metric_id:
+            continue
+        reason = _SIGNAL_DEGRADED_REASON_BY_ID.get(metric_id)
+        if reason is None:
+            safe_metric_id = re.sub(r"[^a-z0-9_]+", "_", metric_id).strip("_")
+            if not safe_metric_id:
+                continue
+            reason = f"signal_{safe_metric_id}_unavailable"
+        reasons.add(reason)
+    return sorted(reasons)
 
 
 # ---------------------------------------------------------------------
@@ -1894,6 +1924,7 @@ async def build_today(
         vitals=vitals,
         nav=nav,
         cards=cards,
+        degraded_reasons=_today_degraded_reasons(signal_strip),
         cleared_today=cleared_today,
         ask_suggestions=[
             "What are you least sure about?",
