@@ -28,6 +28,12 @@ def _github_on(workflow: dict) -> dict:
     return workflow.get("on") or workflow.get(True)
 
 
+def _deploy_release_script() -> str:
+    return (ROOT / "scripts" / "deploy_compose_release.sh").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_ci_signs_and_verifies_sbom_artifacts() -> None:
     workflow = _load_workflow(".github/workflows/ci.yml")
     job = workflow["jobs"]["security-supply-chain"]
@@ -77,10 +83,13 @@ def test_deploy_verifies_signed_artifacts_before_ssh() -> None:
 
     deploy_run = _step_run(deploy, "Deploy via SSH")
     assert 'PREV_SHA="$(git rev-parse HEAD)"' in deploy_run
-    assert "Gateway failed health after deploy; rolling back" in deploy_run
-    assert "scripts/check_product_slo_gate.py" in deploy_run
-    assert "Product SLO gate failed after deploy; rolling back" in deploy_run
-    assert 'git reset --hard "${PREV_SHA}"' in deploy_run
+    assert 'bash scripts/deploy_compose_release.sh --previous-sha "${PREV_SHA}"' in deploy_run
+
+    deploy_script = _deploy_release_script()
+    assert "Gateway failed health after final compose reconciliation" in deploy_script
+    assert "scripts/check_product_slo_gate.py" in deploy_script
+    assert "Product SLO gate failed after deploy" in deploy_script
+    assert 'git reset --hard "${PREVIOUS_SHA}"' in deploy_script
 
 
 def test_staging_deploy_verifies_signed_main_artifacts_before_ssh() -> None:
@@ -106,10 +115,13 @@ def test_staging_deploy_verifies_signed_main_artifacts_before_ssh() -> None:
     deploy_run = _step_run(deploy, "Deploy via SSH")
     assert "git fetch origin main" in deploy_run
     assert 'PREV_SHA="$(git rev-parse HEAD)"' in deploy_run
-    assert "Gateway failed health after staging deploy; rolling back" in deploy_run
-    assert "scripts/check_product_slo_gate.py" in deploy_run
-    assert "Product SLO gate failed after staging deploy; rolling back" in deploy_run
-    assert 'git reset --hard "${PREV_SHA}"' in deploy_run
+    assert 'bash scripts/deploy_compose_release.sh --previous-sha "${PREV_SHA}"' in deploy_run
+
+    deploy_script = _deploy_release_script()
+    assert "Gateway canary failed" in deploy_script
+    assert "failed health during rollout" in deploy_script
+    assert "Product SLO gate failed after deploy" in deploy_script
+    assert 'git reset --hard "${PREVIOUS_SHA}"' in deploy_script
 
 
 def test_production_promotion_requires_approved_successful_staging_sha() -> None:

@@ -69,7 +69,7 @@ Every checklist item is done only when:
   product decision.
 - [ ] Access control is applied consistently to product routes and realtime
   delivery.
-- [ ] CI blocks merges on tests, architecture ratchets, env contracts, schema
+- [x] CI blocks merges on tests, architecture ratchets, env contracts, schema
   drift checks, and privacy probes.
 - [ ] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
@@ -86,7 +86,7 @@ Every checklist item is done only when:
 - [ ] Per-source and per-tenant scaling limits are known from load tests.
 - [ ] Cost and rate-limit budgets are enforced, not merely observed.
 - [ ] Admin/operator surfaces exist for all routine actions.
-- [ ] Security scans, dependency updates, and release signing are part of the
+- [x] Security scans, dependency updates, and release signing are part of the
   standard release process.
 
 ## 1. Security, Privacy, And Tenancy
@@ -1477,6 +1477,9 @@ Current state:
   bundles. The production deploy workflow downloads the signed SBOM artifact
   set from the triggering/requested CI run and verifies signatures plus
   checksums before the SSH deploy step.
+- Dependabot now opens weekly update PRs for Python dependencies, GitHub
+  Actions, and Docker base images; `scripts/tests/test_dependency_update_automation.py`
+  keeps the release dependency-update automation present.
 - A dedicated staging deploy workflow now triggers from successful CI on
   `main` or a manual `ci_run_id`, verifies the signed SBOM/checksum artifact
   set with the `main` Sigstore identity, and then deploys to the GitHub
