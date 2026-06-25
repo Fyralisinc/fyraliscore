@@ -57,7 +57,7 @@ Every checklist item is done only when:
   bearer-authenticated internal paths.
 - [x] LLM, embedding, source API, HTTP rendering, and object-storage calls are
   not made inside database transactions.
-- [ ] Durable queues have idempotent application, leases, heartbeat, orphan
+- [x] Durable queues have idempotent application, leases, heartbeat, orphan
   recovery, and dead-letter visibility.
 - [x] Production startup fails closed for unsafe env/config combinations.
 - [ ] The product has a rollback path that does not delete or corrupt customer
