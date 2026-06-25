@@ -26,6 +26,78 @@ from uuid import UUID
 import asyncpg
 
 from services.product.recommendations.repo import RecommendationView, list_for_actor
+from services.platform.access_control.audit import OverrideKind, record_override
+from services.platform.access_control.checks import (
+    AccessDecision,
+    EntityKind,
+    can_read_by_id,
+)
+
+
+_TARGET_ACCESS_KIND: dict[str, EntityKind] = {
+    "commitment": "commitment",
+    "goal": "goal",
+    "decision": "decision",
+    "resource": "resource",
+}
+
+
+async def _can_read_today_entity(
+    *,
+    actor_id: UUID,
+    kind: EntityKind,
+    entity_id: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+) -> bool:
+    decision = await can_read_by_id(
+        actor_id,
+        kind,
+        entity_id,
+        conn=conn,
+        tenant_id=tenant_id,
+    )
+    await _record_override_if_needed(
+        decision,
+        actor_id=actor_id,
+        entity_type=kind,
+        entity_id=entity_id,
+        tenant_id=tenant_id,
+        conn=conn,
+    )
+    return decision.allowed
+
+
+async def _record_override_if_needed(
+    decision: AccessDecision,
+    *,
+    actor_id: UUID,
+    entity_type: str,
+    entity_id: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+) -> None:
+    if not decision.override_applied:
+        return
+    await record_override(
+        actor_id,
+        entity_type,
+        entity_id,
+        _override_kind(decision.reason),
+        conn=conn,
+        tenant_id=tenant_id,
+        reason=decision.reason,
+    )
+
+
+def _override_kind(reason: str) -> OverrideKind:
+    if reason == "admin_override":
+        return "admin"
+    if reason == "leadership_override":
+        return "leadership"
+    if reason == "model_self_scope":
+        return "first_person"
+    return "system"
 
 
 # ---------------------------------------------------------------------
@@ -369,13 +441,25 @@ LIMIT 5
 
 
 async def _fetch_evidence(
-    *, ids: list[UUID], tenant_id: UUID, conn: asyncpg.Connection,
+    *,
+    ids: list[UUID],
+    tenant_id: UUID,
+    actor_id: UUID,
+    conn: asyncpg.Connection,
 ) -> list[dict[str, str]]:
     if not ids:
         return []
     rows = await conn.fetch(_EVIDENCE_SQL, ids, tenant_id)
     out: list[dict[str, str]] = []
     for r in rows:
+        if not await _can_read_today_entity(
+            actor_id=actor_id,
+            kind="observation",
+            entity_id=r["id"],
+            tenant_id=tenant_id,
+            conn=conn,
+        ):
+            continue
         occurred = r["occurred_at"]
         date_part = occurred.strftime("%b %-d").lower() if occurred else ""
         kind_part = (r["source_channel"] or r["kind"] or "signal")[:14].lower()
@@ -436,7 +520,11 @@ _SECTION_ORDER: list[tuple[str, str]] = [
 
 
 async def _fetch_supporting_models(
-    *, ids: list[UUID], tenant_id: UUID, conn: asyncpg.Connection,
+    *,
+    ids: list[UUID],
+    tenant_id: UUID,
+    actor_id: UUID,
+    conn: asyncpg.Connection,
 ) -> dict[str, list[dict[str, Any]]]:
     """Fetch the named supporting Models for a recommendation, grouped
     by proposition_kind so the reasoning chain can render them in the
@@ -446,6 +534,14 @@ async def _fetch_supporting_models(
     rows = await conn.fetch(_SUPPORTING_MODELS_SQL, ids, tenant_id)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
+        if not await _can_read_today_entity(
+            actor_id=actor_id,
+            kind="model",
+            entity_id=r["id"],
+            tenant_id=tenant_id,
+            conn=conn,
+        ):
+            continue
         grouped.setdefault(r["proposition_kind"] or "unknown", []).append(
             {
                 "model_id": str(r["id"]),
@@ -847,10 +943,16 @@ async def _build_card(
     severity = _derive_severity(view)
     category = _derive_category(view, severity)
     evidence = await _fetch_evidence(
-        ids=view.supporting_event_ids[:5], tenant_id=tenant_id, conn=conn,
+        ids=view.supporting_event_ids[:5],
+        tenant_id=tenant_id,
+        actor_id=target_actor_id,
+        conn=conn,
     )
     supporting_models = await _fetch_supporting_models(
-        ids=view.supporting_model_ids[:12], tenant_id=tenant_id, conn=conn,
+        ids=view.supporting_model_ids[:12],
+        tenant_id=tenant_id,
+        actor_id=target_actor_id,
+        conn=conn,
     )
     headline_html = _render_headline(view)
     supporting_html = _render_supporting(view)
@@ -1336,23 +1438,35 @@ async def _calibration_metric(
 async def _financial_resource_metric(
     *,
     tenant_id: UUID,
+    actor_id: UUID,
     conn: asyncpg.Connection,
     label: str,
     identity_match: str,
 ) -> dict[str, Any] | None:
-    row = await conn.fetchrow(
+    rows = await conn.fetch(
         """
-        SELECT current_value, last_updated_at
+        SELECT id, current_value, last_updated_at
         FROM resources
         WHERE tenant_id = $1
           AND kind = 'financial'
           AND identity ILIKE $2
           AND archived_at IS NULL
         ORDER BY last_updated_at DESC
-        LIMIT 1
+        LIMIT 20
         """,
         tenant_id, f"%{identity_match}%",
     )
+    row = None
+    for candidate in rows:
+        if await _can_read_today_entity(
+            actor_id=actor_id,
+            kind="resource",
+            entity_id=candidate["id"],
+            tenant_id=tenant_id,
+            conn=conn,
+        ):
+            row = candidate
+            break
     if row is None:
         return None
     cv = row["current_value"] or {}
@@ -1383,7 +1497,11 @@ async def _build_signal_strip(
 ) -> list[dict[str, Any]]:
     arr = (
         await _financial_resource_metric(
-            tenant_id=tenant_id, conn=conn, label="ARR", identity_match="ARR",
+            tenant_id=tenant_id,
+            actor_id=target_actor,
+            conn=conn,
+            label="ARR",
+            identity_match="ARR",
         )
         or {
             "id": "arr", "label": "ARR", "value": "—",
@@ -1393,7 +1511,11 @@ async def _build_signal_strip(
     )
     runway = (
         await _financial_resource_metric(
-            tenant_id=tenant_id, conn=conn, label="Runway", identity_match="runway",
+            tenant_id=tenant_id,
+            actor_id=target_actor,
+            conn=conn,
+            label="Runway",
+            identity_match="runway",
         )
         or {
             "id": "runway", "label": "Runway", "value": "—",
@@ -1604,6 +1726,39 @@ def _build_nav(
 # ---------------------------------------------------------------------
 
 
+async def _filter_visible_recommendations(
+    recommendations: list[RecommendationView],
+    *,
+    actor_id: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+) -> list[RecommendationView]:
+    visible: list[RecommendationView] = []
+    for view in recommendations:
+        if not await _can_read_today_entity(
+            actor_id=actor_id,
+            kind="model",
+            entity_id=view.id,
+            tenant_id=tenant_id,
+            conn=conn,
+        ):
+            continue
+        if view.target_entity is not None:
+            access_kind = _TARGET_ACCESS_KIND.get(view.target_entity.type)
+            if access_kind is None:
+                continue
+            if not await _can_read_today_entity(
+                actor_id=actor_id,
+                kind=access_kind,
+                entity_id=view.target_entity.id,
+                tenant_id=tenant_id,
+                conn=conn,
+            ):
+                continue
+        visible.append(view)
+    return visible
+
+
 async def build_today(
     *,
     tenant_id: UUID,
@@ -1623,6 +1778,12 @@ async def build_today(
         tenant_id=tenant_id,
         target_actor_id=actor_id,
         limit=limit,
+        conn=conn,
+    )
+    recommendations = await _filter_visible_recommendations(
+        recommendations,
+        actor_id=actor_id,
+        tenant_id=tenant_id,
         conn=conn,
     )
 
@@ -1688,7 +1849,7 @@ async def build_today(
     # system ignored them — Think DID emit a state Model, the user
     # just had no UI feedback that anything happened.
     just_updated = await _build_just_updated(
-        tenant_id=tenant_id, conn=conn, now=now,
+        tenant_id=tenant_id, actor_id=actor_id, conn=conn, now=now,
     )
 
     # Calibration alert per spec §10.7 — show if mean calibration < 0.6.
@@ -1711,7 +1872,7 @@ async def build_today(
     map_data = None
 
     recent_signals = await _build_recent_signals(
-        tenant_id=tenant_id, conn=conn, now=now,
+        tenant_id=tenant_id, actor_id=actor_id, conn=conn, now=now,
     )
 
     viewer_state = {
@@ -1761,11 +1922,13 @@ async def build_today(
 
 
 _SIGNAL_LIMIT = 8
+_SIGNAL_SCAN_LIMIT = 40
 
 
 async def _build_recent_signals(
     *,
     tenant_id: UUID,
+    actor_id: UUID,
     conn: asyncpg.Connection,
     now: datetime,
 ) -> dict[str, Any] | None:
@@ -1784,15 +1947,19 @@ async def _build_recent_signals(
         ORDER BY ingested_at DESC
         LIMIT $2
         """,
-        tenant_id, _SIGNAL_LIMIT,
-    )
-    total = await conn.fetchval(
-        "SELECT count(*) FROM observations WHERE tenant_id = $1",
-        tenant_id,
-    ) or 0
+        tenant_id, _SIGNAL_SCAN_LIMIT,
+    ) or []
 
     signals: list[dict[str, Any]] = []
     for r in rows:
+        if not await _can_read_today_entity(
+            actor_id=actor_id,
+            kind="observation",
+            entity_id=r["id"],
+            tenant_id=tenant_id,
+            conn=conn,
+        ):
+            continue
         kind = (r["kind"] or "").lower()
         channel = (r["source_channel"] or "").lower()
         content = (r["content_text"] or "").strip()
@@ -1810,12 +1977,14 @@ async def _build_recent_signals(
             "context": _signal_context(kind, channel),
             "age_label": _relative_age(now, r["ingested_at"]),
         })
+        if len(signals) >= _SIGNAL_LIMIT:
+            break
 
     if not signals:
         return None
     return {
         "signals": signals,
-        "total": int(total),
+        "total": len(signals),
     }
 
 
@@ -1870,14 +2039,18 @@ FROM models
 WHERE tenant_id = $1
   AND status = 'active'
   AND created_at >= $2
-  AND proposition_kind <> 'recommendation'
+  AND claim_role <> 'recommendation'
 ORDER BY created_at DESC
-LIMIT 5
+LIMIT 25
 """
 
 
 async def _build_just_updated(
-    *, tenant_id: UUID, conn: asyncpg.Connection, now: datetime,
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+    conn: asyncpg.Connection,
+    now: datetime,
 ) -> dict[str, Any] | None:
     """Surface a short banner describing what Think just learned. We
     show non-recommendation Models created in the last 10 minutes, since
@@ -1889,7 +2062,15 @@ async def _build_just_updated(
     if not rows:
         return None
     items = []
-    for r in rows[:3]:
+    for r in rows:
+        if not await _can_read_today_entity(
+            actor_id=actor_id,
+            kind="model",
+            entity_id=r["id"],
+            tenant_id=tenant_id,
+            conn=conn,
+        ):
+            continue
         natural = (r["natural"] or "").strip()
         if not natural:
             continue
@@ -1899,6 +2080,8 @@ async def _build_just_updated(
             f" <span class=\"reasoning-conf\">"
             f"({int(round(float(r['confidence'] or 0.0) * 100))}%)</span>"
         )
+        if len(items) >= 3:
+            break
     if not items:
         return None
     body = "<br/>".join(items)

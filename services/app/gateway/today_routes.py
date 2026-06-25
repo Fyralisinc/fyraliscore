@@ -58,9 +58,14 @@ import asyncpg
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from services.app.gateway.auth import AuthContext
 from services.product.decision_deltas import apply as apply_mod
 from services.product.decision_deltas import repo as dd_repo
 from services.product.resolution_threads import repo as resolution_repo
+from services.platform.access_control.audit import (
+    record_override_if_needed as record_access_override_if_needed,
+)
+from services.platform.access_control.checks import AccessDecision, can_read_by_id
 
 
 # =====================================================================
@@ -117,6 +122,15 @@ _KIND_TO_CATEGORY: dict[str, str] = {
     "risk":       "risks_constraints",
     "resource":   "systems_capacity",
     "actor":      "people_teams",
+}
+
+_TARGET_ACCESS_KIND: dict[str, str] = {
+    "customer": "resource",
+    "resource": "resource",
+    "commitment": "commitment",
+    "goal": "goal",
+    "decision": "decision",
+    "model": "model",
 }
 
 _CATEGORY_LABELS: dict[str, str] = {
@@ -997,8 +1011,9 @@ async def _last_review_at(
             FROM topology_events
             WHERE tenant_id = $1
               AND payload ->> 'event_kind' = 'decision_delta_accepted'
+              AND payload ->> 'accepted_by' = $2
             """,
-            tenant_id,
+            tenant_id, str(actor_id),
         )
     if row and row["last_at"]:
         return _as_aware(row["last_at"])
@@ -1008,45 +1023,45 @@ async def _last_review_at(
 async def _summary_counts(
     *,
     pool: asyncpg.Pool,
-    tenant_id: UUID,
+    auth: AuthContext,
     since: datetime,
     now: datetime,
 ) -> dict[str, Any]:
-    """Compute the summary strip + handled-without-you metrics in a
-    single read pass. Sparse-tolerant — every count clamps to >= 0."""
+    """Compute the summary strip from actor-visible deltas only."""
     async with pool.acquire() as conn:
-        # Observations ingested since last review (signals processed).
-        signals_processed = await conn.fetchval(
-            """
-            SELECT count(*) FROM observations
-            WHERE tenant_id = $1 AND ingested_at >= $2
-            """,
-            tenant_id, since,
-        ) or 0
-
-        # Topology events since last review (model updates).
-        model_updates = await conn.fetchval(
-            """
-            SELECT count(*) FROM topology_events
-            WHERE tenant_id = $1 AND occurred_at >= $2
-            """,
-            tenant_id, since,
-        ) or 0
-
-        # Delta counts by status. ANY()'d so we pull one row per status.
         delta_rows = await conn.fetch(
             """
-            SELECT status, label, impact
+            SELECT id, status, label, impact, target_node_kind,
+                   target_node_id, updated_at
             FROM decision_deltas
             WHERE tenant_id = $1
             """,
-            tenant_id,
+            auth.tenant_id,
         )
+        visible_rows = []
+        for row in delta_rows:
+            if await _can_read_delta_target_parts(
+                conn,
+                auth,
+                target_kind=row["target_node_kind"],
+                target_id=row["target_node_id"],
+            ):
+                visible_rows.append(row)
+        visible_ids = [row["id"] for row in visible_rows]
+        signals_processed = 0
+        if visible_ids:
+            signals_processed = await conn.fetchval(
+                """
+                SELECT count(*) FROM decision_delta_evidence
+                WHERE delta_id = ANY($1::uuid[])
+                """,
+                visible_ids,
+            ) or 0
 
     # Bucket deltas into spec-status buckets.
     buckets: dict[str, int] = defaultdict(int)
     exposure_total = 0.0
-    for r in delta_rows:
+    for r in visible_rows:
         imp = _maybe_json(r["impact"])
         s = _synth_status(
             db_status=r["status"], label=r["label"], impact=imp,
@@ -1066,6 +1081,10 @@ async def _summary_counts(
     # Approximate as processed minus the count of new judgment items
     # since last review (we don't track per-signal escalation links yet).
     signals_absorbed = max(0, int(signals_processed) - int(need_judgment))
+    model_updates = sum(
+        1 for row in visible_rows
+        if row["updated_at"] is not None and _as_aware(row["updated_at"]) >= since
+    )
 
     return {
         "summary": {
@@ -1173,6 +1192,124 @@ def _not_found() -> JSONResponse:
     return JSONResponse(
         {"error": "not_found"},
         status_code=status.HTTP_404_NOT_FOUND,
+    )
+
+
+async def _delta_access_denial(
+    conn: asyncpg.Connection,
+    auth: AuthContext,
+    view: dd_repo.DecisionDeltaView,
+) -> JSONResponse | None:
+    decision = await _delta_target_decision(conn, auth, view)
+    if decision is None:
+        return None
+    status_code = 404 if decision.reason == "entity_not_found" else 403
+    return JSONResponse(
+        {"error": "access_denied", "reason": decision.reason},
+        status_code=status_code,
+    )
+
+
+async def _filter_visible_deltas(
+    conn: asyncpg.Connection,
+    auth: AuthContext,
+    views: list[dd_repo.DecisionDeltaView],
+) -> list[dd_repo.DecisionDeltaView]:
+    visible: list[dd_repo.DecisionDeltaView] = []
+    for view in views:
+        if await _can_read_delta_target(conn, auth, view):
+            visible.append(view)
+    return visible
+
+
+async def _can_read_delta_target(
+    conn: asyncpg.Connection,
+    auth: AuthContext,
+    view: dd_repo.DecisionDeltaView,
+) -> bool:
+    return await _can_read_delta_target_parts(
+        conn,
+        auth,
+        target_kind=view.target_node_kind,
+        target_id=view.target_node_id,
+    )
+
+
+async def _can_read_delta_target_parts(
+    conn: asyncpg.Connection,
+    auth: AuthContext,
+    *,
+    target_kind: str | None,
+    target_id: UUID | None,
+) -> bool:
+    if target_kind is None and target_id is None:
+        return True
+    if target_kind is None or target_id is None:
+        return False
+    access_kind = _TARGET_ACCESS_KIND.get(str(target_kind))
+    if access_kind is None:
+        return False
+    decision = await can_read_by_id(
+        auth.actor_id,
+        access_kind,  # type: ignore[arg-type]
+        target_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
+    await _record_override_if_needed(
+        decision,
+        conn=conn,
+        auth=auth,
+        entity_type=access_kind,
+        entity_id=target_id,
+    )
+    return decision.allowed
+
+
+async def _delta_target_decision(
+    conn: asyncpg.Connection,
+    auth: AuthContext,
+    view: dd_repo.DecisionDeltaView,
+) -> AccessDecision | None:
+    if view.target_node_kind is None and view.target_node_id is None:
+        return None
+    if view.target_node_kind is None or view.target_node_id is None:
+        return AccessDecision(False, "delta_target_incomplete")
+    access_kind = _TARGET_ACCESS_KIND.get(str(view.target_node_kind))
+    if access_kind is None:
+        return AccessDecision(False, "delta_target_kind_unsupported")
+    decision = await can_read_by_id(
+        auth.actor_id,
+        access_kind,  # type: ignore[arg-type]
+        view.target_node_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
+    await _record_override_if_needed(
+        decision,
+        conn=conn,
+        auth=auth,
+        entity_type=access_kind,
+        entity_id=view.target_node_id,
+    )
+    return None if decision.allowed else decision
+
+
+async def _record_override_if_needed(
+    decision: AccessDecision,
+    *,
+    conn: asyncpg.Connection,
+    auth: AuthContext,
+    entity_type: str,
+    entity_id: UUID,
+) -> None:
+    await record_access_override_if_needed(
+        decision,
+        actor_id=auth.actor_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
     )
 
 
@@ -1314,6 +1451,7 @@ async def get_today(request: Request) -> JSONResponse:
         # Load evidence per delta (the list endpoint doesn't ship
         # it). Bulk-load with a single query.
         all_views = views_proposed + views_delegated + views_contested
+        all_views = await _filter_visible_deltas(conn, auth, all_views)
         if all_views:
             ev_rows = await conn.fetch(
                 """
@@ -1388,7 +1526,7 @@ async def get_today(request: Request) -> JSONResponse:
 
     counts = await _summary_counts(
         pool=pool,
-        tenant_id=auth.tenant_id,
+        auth=auth,
         since=since,
         now=now,
     )
@@ -1425,6 +1563,10 @@ async def get_delta(delta_id: str, request: Request) -> JSONResponse:
         view = await dd_repo.get_delta(
             conn, tenant_id=auth.tenant_id, delta_id=did,
         )
+        if view is not None:
+            denial = await _delta_access_denial(conn, auth, view)
+            if denial is not None:
+                return denial
         thread = await resolution_repo.get_thread_by_source_delta(
             conn,
             tenant_id=auth.tenant_id,
@@ -1458,6 +1600,10 @@ async def get_delta_evidence(
         view = await dd_repo.get_delta(
             conn, tenant_id=auth.tenant_id, delta_id=did,
         )
+        if view is not None:
+            denial = await _delta_access_denial(conn, auth, view)
+            if denial is not None:
+                return denial
     if view is None:
         return _not_found()
     return JSONResponse({
@@ -1484,6 +1630,20 @@ async def apply_delta(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                view_for_access = await dd_repo.get_delta(
+                    conn,
+                    tenant_id=auth.tenant_id,
+                    delta_id=did,
+                )
+                if view_for_access is None:
+                    return _not_found()
+                denial = await _delta_access_denial(
+                    conn,
+                    auth,
+                    view_for_access,
+                )
+                if denial is not None:
+                    return denial
                 view, triggered = await apply_mod.apply_acceptance(
                     conn=conn,
                     tenant_id=auth.tenant_id,
@@ -1509,7 +1669,7 @@ async def apply_delta(
     # Pick next delta from the page list (excluding the one we just
     # accepted) to streamline the focused-review flow.
     next_id = await _next_delta_id(
-        pool=pool, tenant_id=auth.tenant_id, exclude=did,
+        pool=pool, auth=auth, exclude=did,
     )
     ledger_event_id = triggered.get("target_event_id")
     return JSONResponse({
@@ -1560,6 +1720,20 @@ async def delegate_delta(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                view_for_access = await dd_repo.get_delta(
+                    conn,
+                    tenant_id=auth.tenant_id,
+                    delta_id=did,
+                )
+                if view_for_access is None:
+                    return _not_found()
+                denial = await _delta_access_denial(
+                    conn,
+                    auth,
+                    view_for_access,
+                )
+                if denial is not None:
+                    return denial
                 await dd_repo.update_status(
                     conn,
                     tenant_id=auth.tenant_id,
@@ -1632,6 +1806,20 @@ async def correct_delta(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                view_for_access = await dd_repo.get_delta(
+                    conn,
+                    tenant_id=auth.tenant_id,
+                    delta_id=did,
+                )
+                if view_for_access is None:
+                    return _not_found()
+                denial = await _delta_access_denial(
+                    conn,
+                    auth,
+                    view_for_access,
+                )
+                if denial is not None:
+                    return denial
                 # Promote contested-from-any-eligible-state in one
                 # repo call. The repo enforces transition legality.
                 await dd_repo.update_status(
@@ -1711,22 +1899,19 @@ def _coerce_uuids(data: Any) -> Any:
 async def _next_delta_id(
     *,
     pool: asyncpg.Pool,
-    tenant_id: UUID,
+    auth: AuthContext,
     exclude: UUID,
 ) -> str | None:
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT id FROM decision_deltas
-            WHERE tenant_id = $1
-              AND status = 'proposed'
-              AND id <> $2
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            tenant_id, exclude,
+        views = await dd_repo.list_deltas(
+            conn,
+            tenant_id=auth.tenant_id,
+            status="proposed",
+            limit=25,
         )
-    return str(row["id"]) if row else None
+        views = [view for view in views if view.id != exclude]
+        visible = await _filter_visible_deltas(conn, auth, views)
+    return str(visible[0].id) if visible else None
 
 
 __all__ = ["register_today_routes"]
