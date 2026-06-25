@@ -53,13 +53,13 @@ Every checklist item is done only when:
 - [ ] No raw secrets, bearer tokens, webhook signatures, prompts, source
   payloads, or customer text can leave through logs, metrics, errors, or debug
   artifacts.
-- [ ] Webhook and source ingress paths verify signatures/OIDC or are explicitly
+- [x] Webhook and source ingress paths verify signatures/OIDC or are explicitly
   bearer-authenticated internal paths.
 - [ ] LLM, embedding, source API, HTTP rendering, and object-storage calls are
   not made inside database transactions.
 - [ ] Durable queues have idempotent application, leases, heartbeat, orphan
   recovery, and dead-letter visibility.
-- [ ] Production startup fails closed for unsafe env/config combinations.
+- [x] Production startup fails closed for unsafe env/config combinations.
 - [ ] The product has a rollback path that does not delete or corrupt customer
   data.
 
@@ -75,9 +75,9 @@ Every checklist item is done only when:
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and
   rollback rehearsal.
-- [ ] Product surfaces have no fixture-backed or demo-only data paths in
+- [x] Product surfaces have no fixture-backed or demo-only data paths in
   production mode.
-- [ ] User-facing errors are safe, actionable, and do not expose internals.
+- [x] User-facing errors are safe, actionable, and do not expose internals.
 
 ### P2 Gate - GA Maturity
 
