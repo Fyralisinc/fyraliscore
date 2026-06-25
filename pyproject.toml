@@ -76,6 +76,7 @@ dev = [
                                 # PCA was the wrong abstraction — see CODEBASE-ARCHITECTURE.md §13.13)
     "pyyaml>=6.0",              # real-LLM scenario YAML loader
     "fakeredis[lua]>=2.20",     # M1.3: in-process Redis with Lua EVALSHA support
+    "mypy>=1.11,<1.12",         # targeted backend type-contract gate in CI
     "moto[s3,server]>=5.0",     # M1.4: in-process S3 mock for raw_tier tests.
                                 # M6.7 (A27.6): the [server] extra (pulls flask)
                                 # runs a real moto S3 HTTP endpoint for the
