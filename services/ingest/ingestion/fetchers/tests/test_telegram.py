@@ -22,6 +22,7 @@ from services.ingest.ingestion.kafka.topics import INGESTION_SOURCES
 from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
 from services.ingest.ingestion.planners import PLANNER_DISPATCH
 from services.ingest.ingestion.reconcilers import RECONCILER_DISPATCH
+from services.ingest.ingestion.reconcilers.telegram import reconcile_telegram
 from services.ingest.synthetic.fixtures import make_telegram
 from services.ingest.synthetic.fault_profiles import FaultProfile
 from services.ingest.synthetic.mock_clients import MockTelegramClient
@@ -95,8 +96,9 @@ async def test_onboarding_and_reconciler_cover_telegram():
     )
 
     assert "telegram_installations" in _LOAD_ACTIVE_SOURCES_SQL
+    assert RECONCILER_DISPATCH["telegram"] is reconcile_telegram
     rec_src = inspect.getsource(_rec)
-    assert "telegram_reconciler_mod.set_pool_provider" in rec_src
+    assert "register_pool_provider(pool)" in rec_src
 
 
 async def test_backward_paging_full_sweep(monkeypatch):

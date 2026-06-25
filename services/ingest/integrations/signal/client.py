@@ -50,6 +50,7 @@ from uuid import UUID
 import structlog
 
 from lib.shared.errors import SignalApiError
+from services.ingest.integrations.secret_cache import SecretValueCache
 
 
 log = structlog.get_logger("integrations.signal.client")
@@ -119,15 +120,31 @@ class SignalClient:
         self._account_label = account_label
         self._session_secret_ref = session_secret_ref
         # Preset session (spammer/test); else resolved from secrets.
-        self._session: str | None = session
+        self._session_cache = SecretValueCache(preset=session)
+        self._secret_lock = asyncio.Lock()
         self._client: Any | None = None
         self._connect_lock = asyncio.Lock()
 
-    async def _resolve_secret(self, ref: str | None) -> str | None:
+    async def _resolve_secret(
+        self, ref: str | None, cache: SecretValueCache,
+    ) -> str | None:
         if ref is None or self._secret_store is None or self._tenant_id is None:
             return None
-        raw = await self._secret_store.get(ref, tenant_id=self._tenant_id)
-        return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        return await cache.resolve(
+            lock=self._secret_lock,
+            secret_store=self._secret_store,
+            secret_ref=ref,
+            tenant_id=self._tenant_id,
+            missing_error=lambda: SignalApiError(
+                "signal client missing linked-device session",
+                code="signal_api_unauthorized",
+            ),
+        )
+
+    async def _resolve_session(self) -> str | None:
+        return await self._resolve_secret(
+            self._session_secret_ref, self._session_cache,
+        )
 
     async def _connect(self) -> Any:
         if self._client is not None:
@@ -135,9 +152,7 @@ class SignalClient:
         async with self._connect_lock:
             if self._client is not None:
                 return self._client
-            session = self._session or await self._resolve_secret(
-                self._session_secret_ref,
-            )
+            session = await self._resolve_session()
             if not session:
                 raise SignalApiError(
                     "signal client missing linked-device session",

@@ -365,10 +365,13 @@ Current state:
   encrypted-secret row for their label; regression tests prove bot and user
   token rotation is picked up when caching is disabled. Discord's app-level bot
   token is no longer retained on the client and is resolved from env on each
-  bot-authenticated request. Telegram/Signal connection sessions, the Discord
-  gateway token wrapper, and Ramp client-credential material still need the same
-  treatment or explicit rotation rationale before the "every source-specific
-  client" item can close.
+  bot-authenticated request. Telegram and Signal now resolve connection-session
+  secrets through the same TTL cache before opening their transport sessions;
+  regression tests prove newly opened clients can pick up rotated session/API
+  hash refs with caching disabled. The Discord Gateway token wrapper and Ramp
+  client-credential material still need managed-provider resolution or explicit
+  restart/rotation rationale before the "every source-specific client" item can
+  close.
 - Many production template keys are still env-shaped.
 - Webhook env fallback is disabled in production by contract.
 

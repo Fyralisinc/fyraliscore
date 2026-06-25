@@ -24,6 +24,8 @@ from services.ingest.integrations.secret_cache import (
     SECRET_CACHE_TTL_ENV,
     SecretValueCache,
 )
+from services.ingest.integrations.signal.client import SignalClient
+from services.ingest.integrations.telegram.client import TelegramClient
 
 
 pytestmark = pytest.mark.asyncio
@@ -37,6 +39,16 @@ class _Store:
     async def get(self, ref: str, *, tenant_id):
         self.calls.append((ref, tenant_id))
         return self.value.encode("utf-8")
+
+
+class _MappingStore:
+    def __init__(self, values: dict[str, str]) -> None:
+        self.values = values
+        self.calls: list[tuple[str, object]] = []
+
+    async def get(self, ref: str, *, tenant_id):
+        self.calls.append((ref, tenant_id))
+        return self.values[ref].encode("utf-8")
 
 
 async def test_secret_value_cache_reloads_after_ttl() -> None:
@@ -306,6 +318,60 @@ async def test_oauth_access_token_clients_reload_secret_ref_when_cache_ttl_is_ze
 
     assert (first, second) == ("first-token", "second-token")
     assert store.calls == [(secret_ref, tenant_id), (secret_ref, tenant_id)]
+
+
+async def test_telegram_session_resolvers_reload_secret_refs_when_cache_ttl_is_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(SECRET_CACHE_TTL_ENV, "0")
+    tenant_id = uuid4()
+    store = _MappingStore({
+        "session-ref": "session-one",
+        "api-hash-ref": "api-hash-one",
+    })
+    client = TelegramClient(
+        secret_store=store,
+        tenant_id=tenant_id,
+        api_id="12345",
+        session_secret_ref="session-ref",
+        api_hash_secret_ref="api-hash-ref",
+    )
+
+    first_session = await client._resolve_session()
+    first_api_hash = await client._resolve_api_hash()
+    store.values["session-ref"] = "session-two"
+    store.values["api-hash-ref"] = "api-hash-two"
+    second_session = await client._resolve_session()
+    second_api_hash = await client._resolve_api_hash()
+
+    assert (first_session, second_session) == ("session-one", "session-two")
+    assert (first_api_hash, second_api_hash) == ("api-hash-one", "api-hash-two")
+    assert store.calls == [
+        ("session-ref", tenant_id),
+        ("api-hash-ref", tenant_id),
+        ("session-ref", tenant_id),
+        ("api-hash-ref", tenant_id),
+    ]
+
+
+async def test_signal_session_resolver_reloads_secret_ref_when_cache_ttl_is_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(SECRET_CACHE_TTL_ENV, "0")
+    tenant_id = uuid4()
+    store = _MappingStore({"session-ref": "signal-session-one"})
+    client = SignalClient(
+        secret_store=store,
+        tenant_id=tenant_id,
+        session_secret_ref="session-ref",
+    )
+
+    first = await client._resolve_session()
+    store.values["session-ref"] = "signal-session-two"
+    second = await client._resolve_session()
+
+    assert (first, second) == ("signal-session-one", "signal-session-two")
+    assert store.calls == [("session-ref", tenant_id), ("session-ref", tenant_id)]
 
 
 class _AsyncLock:
