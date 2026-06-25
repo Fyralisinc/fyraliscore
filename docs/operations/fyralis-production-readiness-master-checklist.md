@@ -223,6 +223,10 @@ Current state:
   `fyraliscore-demo` overlay/customer UI deployment.
 - Production settings and the env contract now require `GATEWAY_MOUNT_SIM=0`;
   `GATEWAY_MOUNT_SIM=1` fails gateway startup in production.
+- Dev/operator panels that historically accepted `DEFAULT_TENANT_ID` or
+  `COMPANY_OS_TENANT_ID` fallback (`/debug`, `/finance`, `/slack`) now ignore
+  those env defaults when mounted with production gateway settings; production
+  requests must carry an explicit authenticated tenant context/header.
 - Gateway production detection now honors the canonical runtime labels
   `FYRALIS_ENV`, `COMPANY_OS_ENV`, `APP_ENV`, and `ENVIRONMENT`; any one set to
   `prod`/`production` enables production startup guards, closing the

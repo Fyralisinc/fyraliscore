@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 from services.app.gateway.finance_router import build_finance_router
 
 
-def _client() -> TestClient:
+def _client(*, production: bool = False) -> TestClient:
     app = FastAPI()
+    if production:
+        app.state.gateway_settings = SimpleNamespace(is_production=True)
     app.include_router(build_finance_router())
     return TestClient(app)
 
@@ -32,6 +36,15 @@ def test_missing_tenant_is_rejected_before_gateway_deps(monkeypatch) -> None:
     monkeypatch.delenv("COMPANY_OS_TENANT_ID", raising=False)
 
     response = _client().post("/finance/mercury/install")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "tenant_id missing"
+
+
+def test_default_tenant_env_is_ignored_in_production(monkeypatch) -> None:
+    monkeypatch.setenv("DEFAULT_TENANT_ID", "00000000-0000-0000-0000-000000000001")
+
+    response = _client(production=True).post("/finance/mercury/install")
 
     assert response.status_code == 400
     assert response.json()["detail"] == "tenant_id missing"

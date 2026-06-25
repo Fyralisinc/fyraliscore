@@ -77,6 +77,11 @@ _DEEL_BASE = "https://api.letsdeel.com"
 # Helpers (mirror debug_router)
 # ---------------------------------------------------------------------
 
+def _request_is_production(req: Request) -> bool:
+    settings = getattr(req.app.state, "gateway_settings", None)
+    return bool(getattr(settings, "is_production", False))
+
+
 def _resolve_tenant(req: Request) -> UUID:
     hdr = req.headers.get("X-Tenant-Id")
     if hdr:
@@ -84,7 +89,11 @@ def _resolve_tenant(req: Request) -> UUID:
             return UUID(hdr)
         except Exception:  # noqa: BLE001
             raise HTTPException(status_code=400, detail="invalid X-Tenant-Id")
-    env_tid = os.environ.get("DEFAULT_TENANT_ID") or os.environ.get("COMPANY_OS_TENANT_ID")
+    if _request_is_production(req):
+        raise HTTPException(status_code=400, detail="tenant_id missing")
+    env_tid = os.environ.get("DEFAULT_TENANT_ID") or os.environ.get(
+        "COMPANY_OS_TENANT_ID"
+    )
     if env_tid:
         try:
             return UUID(env_tid)
