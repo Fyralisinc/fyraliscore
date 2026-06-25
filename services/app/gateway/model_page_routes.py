@@ -33,7 +33,16 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from services.app.gateway.auth import AuthContext
+from services.platform.access_control.audit import (
+    record_override_if_needed as record_access_override_if_needed,
+)
+from services.platform.access_control.checks import (
+    AccessDecision,
+    can_read,
+    can_read_by_id,
+)
 from services.product.model_trace.repo import (
+    TraceStep,
     trace_back,
     trace_forward,
 )
@@ -342,7 +351,9 @@ def register_model_page_routes(app: FastAPI) -> None:
         deps = _deps(request)
         mode = _parse_mode(request.query_params.get("mode"))
         payload = await _build_overview(
-            pool=deps.pool, tenant_id=auth.tenant_id, mode=mode,
+            pool=deps.pool,
+            auth=auth,
+            mode=mode,
         )
         return JSONResponse(payload)
 
@@ -359,7 +370,7 @@ def register_model_page_routes(app: FastAPI) -> None:
         mode = _parse_mode(request.query_params.get("mode"))
         payload = await _build_category_focus(
             pool=deps.pool,
-            tenant_id=auth.tenant_id,
+            auth=auth,
             category_id=category_id,
             mode=mode,
         )
@@ -381,7 +392,7 @@ def register_model_page_routes(app: FastAPI) -> None:
         deps = _deps(request)
         payload = await _build_relationship_focus(
             pool=deps.pool,
-            tenant_id=auth.tenant_id,
+            auth=auth,
             src=src,
             verb=verb,
             tgt=tgt,
@@ -401,7 +412,9 @@ def register_model_page_routes(app: FastAPI) -> None:
             return _bad_request("invalid_item_id")
         deps = _deps(request)
         payload = await _build_item_detail(
-            pool=deps.pool, tenant_id=auth.tenant_id, item_id=iid,
+            pool=deps.pool,
+            auth=auth,
+            item_id=iid,
         )
         if payload is None:
             return JSONResponse({"error": "not_found"}, status_code=404)
@@ -429,11 +442,13 @@ def register_model_page_routes(app: FastAPI) -> None:
         deps = _deps(request)
         payload = await _build_item_trace(
             pool=deps.pool,
-            tenant_id=auth.tenant_id,
+            auth=auth,
             item_id=iid,
             direction=direction,
             depth=depth,
         )
+        if payload is None:
+            return JSONResponse({"error": "not_found"}, status_code=404)
         return JSONResponse(payload)
 
 
@@ -448,39 +463,55 @@ def _parse_mode(raw: str | None) -> str:
     return "impact"
 
 
-async def _fetch_models(pool, tenant_id: UUID) -> list[dict[str, Any]]:
+async def _fetch_models(pool, auth: AuthContext) -> list[dict[str, Any]]:
     """Fetch active models with band classification. We re-run the
     substrate's band classifier in Python here because we only need a
     coarse mapping and don't want to re-fit UMAP / topology data.
     """
-    rows = await pool.fetch(
-        """
-        SELECT m.id, m."natural" AS natural, m.proposition_kind,
-               m.proposition, m.confidence, m.activation, m.status,
-               m.contested_count, m.confirmed_count, m.created_at,
-               m.last_confirmed_at
-        FROM models m
-        WHERE m.tenant_id = $1
-          AND m.status = 'active'
-        ORDER BY m.activation * m.confidence DESC, m.created_at DESC
-        """,
-        tenant_id,
-    )
     out: list[dict[str, Any]] = []
-    for r in rows:
-        rec = dict(r)
-        # Substrate band: re-derive from proposition_kind + natural so
-        # we don't need to import the map_routes private fn.
-        rec["band"] = _band_from_kind(
-            kind=rec["proposition_kind"] or "",
-            natural=rec["natural"] or "",
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT m.id, m.tenant_id, m."natural" AS natural, m.proposition_kind,
+                   m.proposition, m.confidence, m.activation, m.status,
+                   m.contested_count, m.confirmed_count, m.created_at,
+                   m.last_confirmed_at, m.visible_to_subjects,
+                   m.scope_actors, m.scope_entities
+            FROM models m
+            WHERE m.tenant_id = $1
+              AND m.status = 'active'
+            ORDER BY m.activation * m.confidence DESC, m.created_at DESC
+            """,
+            auth.tenant_id,
         )
-        rec["category"] = _classify_category(
-            band=rec["band"],
-            natural=rec["natural"] or "",
-            proposition_kind=rec["proposition_kind"] or "",
-        )
-        out.append(rec)
+        for r in rows:
+            rec = dict(r)
+            decision = await can_read(
+                auth.actor_id,
+                _model_entity(rec, auth.tenant_id),
+                conn=conn,
+                tenant_id=auth.tenant_id,
+            )
+            if not decision.allowed:
+                continue
+            await _record_model_override_if_needed(
+                decision,
+                conn=conn,
+                auth=auth,
+                model_id=rec["id"],
+            )
+            # Substrate band: re-derive from proposition_kind + natural so
+            # we don't need to import the map_routes private fn.
+            rec["band"] = _band_from_kind(
+                kind=rec["proposition_kind"] or "",
+                natural=rec["natural"] or "",
+            )
+            rec["category"] = _classify_category(
+                band=rec["band"],
+                natural=rec["natural"] or "",
+                proposition_kind=rec["proposition_kind"] or "",
+            )
+            out.append(rec)
     return out
 
 
@@ -895,9 +926,9 @@ def _humanize_role(role: str) -> str:
 
 
 async def _build_overview(
-    *, pool, tenant_id: UUID, mode: str
+    *, pool, auth: AuthContext, mode: str
 ) -> dict[str, Any]:
-    models = await _fetch_models(pool, tenant_id)
+    models = await _fetch_models(pool, auth)
     by_cat: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in models:
         by_cat[r["category"]].append(r)
@@ -910,7 +941,7 @@ async def _build_overview(
 
     # Relationship bundles — aggregate edges by (src_cat, verb, tgt_cat).
     model_ids = [r["id"] for r in models]
-    edges = await _fetch_edges(pool, tenant_id, model_ids)
+    edges = await _fetch_edges(pool, auth.tenant_id, model_ids)
     cat_by_id = {r["id"]: r["category"] for r in models}
     bundles_raw: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for e in edges:
@@ -1018,9 +1049,9 @@ def _strength_for(count: int) -> str:
 
 
 async def _build_category_focus(
-    *, pool, tenant_id: UUID, category_id: str, mode: str,
+    *, pool, auth: AuthContext, category_id: str, mode: str,
 ) -> dict[str, Any]:
-    models = await _fetch_models(pool, tenant_id)
+    models = await _fetch_models(pool, auth)
     by_cat: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in models:
         by_cat[r["category"]].append(r)
@@ -1031,7 +1062,7 @@ async def _build_category_focus(
     # Related categories: any other category that shares at least one
     # edge with this one. Computed below in the bundles loop.
     model_ids = [r["id"] for r in models]
-    edges = await _fetch_edges(pool, tenant_id, model_ids)
+    edges = await _fetch_edges(pool, auth.tenant_id, model_ids)
     cat_by_id = {r["id"]: r["category"] for r in models}
 
     related_set: set[str] = set()
@@ -1122,13 +1153,13 @@ def _build_category_card(cid: str, items: list[dict[str, Any]]) -> dict[str, Any
 
 
 async def _build_relationship_focus(
-    *, pool, tenant_id: UUID, src: str, verb: str, tgt: str,
+    *, pool, auth: AuthContext, src: str, verb: str, tgt: str,
 ) -> dict[str, Any]:
-    models = await _fetch_models(pool, tenant_id)
+    models = await _fetch_models(pool, auth)
     by_id = {r["id"]: r for r in models}
     cat_by_id = {r["id"]: r["category"] for r in models}
     model_ids = [r["id"] for r in models]
-    edges = await _fetch_edges(pool, tenant_id, model_ids)
+    edges = await _fetch_edges(pool, auth.tenant_id, model_ids)
 
     instances: list[dict[str, Any]] = []
     for e in edges:
@@ -1188,7 +1219,7 @@ async def _build_relationship_focus(
 
 
 async def _build_item_detail(
-    *, pool, tenant_id: UUID, item_id: UUID,
+    *, pool, auth: AuthContext, item_id: UUID,
 ) -> dict[str, Any] | None:
     """Item detail with Node-neighborhood-shaped neighbors.
 
@@ -1203,20 +1234,37 @@ async def _build_item_detail(
     Node Zoom canvas isn't a lonely card. Synthesized instances are
     flagged so the renderer can style them as soft connections.
     """
-    row = await pool.fetchrow(
-        """
-        SELECT m.id, m."natural" AS natural, m.proposition_kind,
-               m.proposition, m.confidence, m.activation, m.status,
-               m.contested_count, m.confirmed_count, m.created_at,
-               m.last_confirmed_at
-        FROM models m
-        WHERE m.id = $1 AND m.tenant_id = $2
-        """,
-        item_id, tenant_id,
-    )
-    if row is None:
-        return None
-    rec = dict(row)
+    tenant_id = auth.tenant_id
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT m.id, m.tenant_id, m."natural" AS natural, m.proposition_kind,
+                   m.proposition, m.confidence, m.activation, m.status,
+                   m.contested_count, m.confirmed_count, m.created_at,
+                   m.last_confirmed_at, m.visible_to_subjects,
+                   m.scope_actors, m.scope_entities
+            FROM models m
+            WHERE m.id = $1 AND m.tenant_id = $2
+            """,
+            item_id, tenant_id,
+        )
+        if row is None:
+            return None
+        rec = dict(row)
+        decision = await can_read(
+            auth.actor_id,
+            _model_entity(rec, tenant_id),
+            conn=conn,
+            tenant_id=tenant_id,
+        )
+        if not decision.allowed:
+            return None
+        await _record_model_override_if_needed(
+            decision,
+            conn=conn,
+            auth=auth,
+            model_id=item_id,
+        )
     rec["band"] = _band_from_kind(
         kind=rec["proposition_kind"] or "",
         natural=rec["natural"] or "",
@@ -1227,6 +1275,8 @@ async def _build_item_detail(
         proposition_kind=rec["proposition_kind"] or "",
     )
     self_summary = _item_summary(rec)
+    visible_models = await _fetch_models(pool, auth)
+    visible_by_id = {r["id"]: r for r in visible_models}
 
     # Pull direct neighbors via model_edges JOIN models so we get
     # category classification on the other side too.
@@ -1267,35 +1317,13 @@ async def _build_item_detail(
         tenant_id, item_id,
     )
 
-    def _other_summary(r: dict[str, Any]) -> dict[str, Any]:
-        other = dict(r)
-        other["band"] = _band_from_kind(
-            kind=other.get("other_kind") or "",
-            natural=other.get("other_natural") or "",
-        )
-        other["category"] = _classify_category(
-            band=other["band"],
-            natural=other.get("other_natural") or "",
-            proposition_kind=other.get("other_kind") or "",
-        )
-        return {
-            "id": str(other["other_id"]),
-            "categoryId": other["category"],
-            "assertion": other.get("other_natural") or "",
-            "shortLabel": _short_label(other.get("other_natural") or "", 56),
-            "status": _item_status({
-                "confidence": other.get("other_confidence"),
-                "activation": other.get("other_activation"),
-                "contested_count": other.get("other_contested"),
-                "confirmed_count": other.get("other_confirmed"),
-            }),
-            "confidence": float(other.get("other_confidence") or 0.0),
-        }
-
     outgoing: list[dict[str, Any]] = []
     incoming: list[dict[str, Any]] = []
     for er in edge_rows_out:
-        other = _other_summary(dict(er))
+        other_rec = visible_by_id.get(er["other_id"])
+        if other_rec is None:
+            continue
+        other = _item_summary(other_rec)
         verb = _verb_for(self_summary["categoryId"], er["edge_kind"])
         outgoing.append({
             "id": f"{self_summary['id']}__{other['id']}__{verb}",
@@ -1305,7 +1333,10 @@ async def _build_item_detail(
             "explanation": f"{self_summary['shortLabel']} {verb} {other['shortLabel']}.",
         })
     for er in edge_rows_in:
-        other = _other_summary(dict(er))
+        other_rec = visible_by_id.get(er["other_id"])
+        if other_rec is None:
+            continue
+        other = _item_summary(other_rec)
         verb = _verb_for(other["categoryId"], er["edge_kind"])
         incoming.append({
             "id": f"{other['id']}__{self_summary['id']}__{verb}",
@@ -1322,7 +1353,7 @@ async def _build_item_detail(
     if len(outgoing) + len(incoming) < 4:
         synth_outgoing, synth_incoming = await _synth_neighbors(
             pool=pool,
-            tenant_id=tenant_id,
+            auth=auth,
             self_summary=self_summary,
             exclude_ids={item_id},
             want=4 - len(outgoing) - len(incoming),
@@ -1403,7 +1434,7 @@ def _count_neighbors(
 
 async def _synth_neighbors(
     *,
-    pool, tenant_id: UUID,
+    pool, auth: AuthContext,
     self_summary: dict[str, Any],
     exclude_ids: set[UUID],
     want: int,
@@ -1440,38 +1471,18 @@ async def _synth_neighbors(
     if not pairs:
         return [], []
 
-    other_cats = sorted({p[3] == "out" and p[2] or p[0] for p in pairs})
-    # Pull top candidates from each related category — most-active
-    # first. We use the same band/category classifier so the routing
-    # is consistent with the rest of the API.
-    rows = await pool.fetch(
-        """
-        SELECT m.id, m."natural" AS natural, m.proposition_kind,
-               m.proposition, m.confidence, m.activation, m.status,
-               m.contested_count, m.confirmed_count, m.created_at,
-               m.last_confirmed_at
-        FROM models m
-        WHERE m.tenant_id = $1
-          AND m.status = 'active'
-        ORDER BY m.activation * m.confidence DESC, m.created_at DESC
-        LIMIT 200
-        """,
-        tenant_id,
-    )
+    other_cats = sorted({
+        tgt if direction == "out" else src
+        for src, _verb, tgt, direction in pairs
+    })
+    # Pull top candidates from each related category through the shared
+    # access filter so synthesized edges cannot reintroduce hidden rows.
+    rows = await _fetch_models(pool, auth)
     by_cat: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for r in rows:
         rec = dict(r)
         if rec["id"] in exclude_ids:
             continue
-        rec["band"] = _band_from_kind(
-            kind=rec["proposition_kind"] or "",
-            natural=rec["natural"] or "",
-        )
-        rec["category"] = _classify_category(
-            band=rec["band"],
-            natural=rec["natural"] or "",
-            proposition_kind=rec["proposition_kind"] or "",
-        )
         if rec["category"] in other_cats:
             by_cat[rec["category"]].append(rec)
 
@@ -1518,15 +1529,32 @@ async def _synth_neighbors(
 
 
 async def _build_item_trace(
-    *, pool, tenant_id: UUID, item_id: UUID,
+    *, pool, auth: AuthContext, item_id: UUID,
     direction: str, depth: int,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Wrap services.product.model_trace into the v2 trace response shape."""
+    tenant_id = auth.tenant_id
     async with pool.acquire() as conn:
+        decision = await can_read_by_id(
+            auth.actor_id,
+            "model",
+            item_id,
+            conn=conn,
+            tenant_id=tenant_id,
+        )
+        if not decision.allowed:
+            return None
+        await _record_model_override_if_needed(
+            decision,
+            conn=conn,
+            auth=auth,
+            model_id=item_id,
+        )
         if direction == "cause":
             chain = await trace_back(conn, tenant_id, item_id, depth)
         else:
             chain = await trace_forward(conn, tenant_id, item_id, depth)
+        chain = await _filter_visible_trace_steps(conn, auth, chain)
 
     if not chain:
         return {
@@ -1565,6 +1593,60 @@ async def _build_item_trace(
 # =====================================================================
 # Helpers
 # =====================================================================
+
+
+def _model_entity(row: dict[str, Any], tenant_id: UUID) -> dict[str, Any]:
+    return {
+        "kind": "model",
+        "id": row["id"],
+        "tenant_id": row.get("tenant_id") or tenant_id,
+        "visible_to_subjects": row.get("visible_to_subjects"),
+        "scope_actors": row.get("scope_actors") or [],
+        "scope_entities": row.get("scope_entities") or [],
+    }
+
+
+async def _filter_visible_trace_steps(
+    conn: Any,
+    auth: AuthContext,
+    steps: list[TraceStep],
+) -> list[TraceStep]:
+    visible: list[TraceStep] = []
+    for step in steps:
+        decision = await can_read_by_id(
+            auth.actor_id,
+            "model",
+            step.id,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+        if not decision.allowed:
+            continue
+        await _record_model_override_if_needed(
+            decision,
+            conn=conn,
+            auth=auth,
+            model_id=step.id,
+        )
+        visible.append(step)
+    return visible
+
+
+async def _record_model_override_if_needed(
+    decision: AccessDecision,
+    *,
+    conn: Any,
+    auth: AuthContext,
+    model_id: UUID,
+) -> None:
+    await record_access_override_if_needed(
+        decision,
+        actor_id=auth.actor_id,
+        entity_type="model",
+        entity_id=model_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
 
 
 def _deps(request: Request):

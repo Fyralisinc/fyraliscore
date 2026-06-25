@@ -25,7 +25,15 @@ from uuid import UUID
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 
+from services.platform.access_control.audit import (
+    record_override_if_needed as record_access_override_if_needed,
+)
+from services.platform.access_control.checks import (
+    AccessDecision,
+    can_read_by_id,
+)
 from services.product.model_trace.repo import (
+    TraceStep,
     depends_on,
     supports,
     trace_back,
@@ -113,10 +121,14 @@ async def get_trace(node_id: str, request: Request) -> JSONResponse:
 
     deps = _deps(request)
     async with deps.pool.acquire() as conn:
+        access = await _check_model_access(conn, auth, nid)
+        if access is not None:
+            return access
         if direction == "back":
             chain = await trace_back(conn, auth.tenant_id, nid, max_depth)
         else:
             chain = await trace_forward(conn, auth.tenant_id, nid, max_depth)
+        chain = await _filter_visible_steps(conn, auth, chain)
     return JSONResponse(
         {
             "node_id": str(nid),
@@ -139,7 +151,11 @@ async def get_supports(node_id: str, request: Request) -> JSONResponse:
 
     deps = _deps(request)
     async with deps.pool.acquire() as conn:
+        access = await _check_model_access(conn, auth, nid)
+        if access is not None:
+            return access
         items = await supports(conn, auth.tenant_id, nid)
+        items = await _filter_visible_steps(conn, auth, items)
     return JSONResponse(
         {
             "node_id": str(nid),
@@ -160,13 +176,87 @@ async def get_depends_on(node_id: str, request: Request) -> JSONResponse:
 
     deps = _deps(request)
     async with deps.pool.acquire() as conn:
+        access = await _check_model_access(conn, auth, nid)
+        if access is not None:
+            return access
         items = await depends_on(conn, auth.tenant_id, nid)
+        items = await _filter_visible_steps(conn, auth, items)
     return JSONResponse(
         {
             "node_id": str(nid),
             "items": [step.to_dict() for step in items],
         },
         status_code=200,
+    )
+
+
+async def _check_model_access(
+    conn: Any,
+    auth: Any,
+    model_id: UUID,
+) -> JSONResponse | None:
+    decision = await can_read_by_id(
+        auth.actor_id,
+        "model",
+        model_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
+    if decision.allowed:
+        await _record_override_if_needed(
+            decision,
+            conn=conn,
+            auth=auth,
+            model_id=model_id,
+        )
+        return None
+    status_code = 404 if decision.reason == "entity_not_found" else 403
+    return JSONResponse(
+        {"error": "access_denied", "reason": decision.reason},
+        status_code=status_code,
+    )
+
+
+async def _filter_visible_steps(
+    conn: Any,
+    auth: Any,
+    steps: list[TraceStep],
+) -> list[TraceStep]:
+    visible: list[TraceStep] = []
+    for step in steps:
+        decision = await can_read_by_id(
+            auth.actor_id,
+            "model",
+            step.id,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+        if not decision.allowed:
+            continue
+        await _record_override_if_needed(
+            decision,
+            conn=conn,
+            auth=auth,
+            model_id=step.id,
+        )
+        visible.append(step)
+    return visible
+
+
+async def _record_override_if_needed(
+    decision: AccessDecision,
+    *,
+    conn: Any,
+    auth: Any,
+    model_id: UUID,
+) -> None:
+    await record_access_override_if_needed(
+        decision,
+        actor_id=auth.actor_id,
+        entity_type="model",
+        entity_id=model_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
     )
 
 
