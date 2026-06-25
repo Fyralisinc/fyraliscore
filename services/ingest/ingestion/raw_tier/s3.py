@@ -25,8 +25,10 @@ scope for M1).
 from __future__ import annotations
 
 import hashlib
+import os
 from datetime import date
 from typing import TYPE_CHECKING, Any, get_args
+from urllib.parse import urlencode
 from uuid import UUID
 
 from services.ingest.ingestion.raw_tier.envelope import SourceLiteral
@@ -43,6 +45,12 @@ if TYPE_CHECKING:
 # the fetch loop as a transient S3 write failure, so the shard parked and
 # re-fetched forever and the tenant never completed onboarding).
 _VALID_SOURCES: frozenset[str] = frozenset(get_args(SourceLiteral))
+_RAW_DATA_CLASS = "raw-ingestion"
+_DEFAULT_RAW_RETENTION_DAYS = 30
+
+
+class RawTierIntegrityError(ValueError):
+    """Raised when an S3 raw object does not match its envelope content hash."""
 
 
 def compute_content_hash(body: bytes) -> str:
@@ -56,6 +64,40 @@ def compute_content_hash(body: bytes) -> str:
             f"compute_content_hash expects bytes, got {type(body).__name__}"
         )
     return hashlib.blake2b(bytes(body), digest_size=20).hexdigest()
+
+
+def raw_retention_days() -> int:
+    raw = os.environ.get("S3_RAW_RETENTION_DAYS", str(_DEFAULT_RAW_RETENTION_DAYS))
+    try:
+        days = int(raw)
+    except ValueError as exc:
+        raise ValueError("S3_RAW_RETENTION_DAYS must be an integer") from exc
+    if days <= 0:
+        raise ValueError("S3_RAW_RETENTION_DAYS must be positive")
+    return days
+
+
+def raw_object_metadata(
+    *,
+    content_hash: str,
+    retention_days: int | None = None,
+) -> dict[str, str]:
+    days = retention_days if retention_days is not None else raw_retention_days()
+    return {
+        "fyralis-content-hash": content_hash,
+        "fyralis-data-class": _RAW_DATA_CLASS,
+        "fyralis-retention-days": str(days),
+    }
+
+
+def raw_object_tagging(*, retention_days: int | None = None) -> str:
+    days = retention_days if retention_days is not None else raw_retention_days()
+    return urlencode(
+        {
+            "fyralis-data-class": _RAW_DATA_CLASS,
+            "fyralis-retention-days": str(days),
+        }
+    )
 
 
 def build_raw_s3_key(
@@ -164,6 +206,9 @@ class S3Client:
                 Key=key,
                 Body=body,
                 IfNoneMatch="*",
+                ContentType="application/octet-stream",
+                Metadata=raw_object_metadata(content_hash=compute_content_hash(body)),
+                Tagging=raw_object_tagging(),
             )
         except ClientError as e:
             # 412 PreconditionFailed → key already exists → idempotent
@@ -189,5 +234,24 @@ class S3Client:
                 if hasattr(maybe_coro, "__await__"):
                     await maybe_coro
 
+    async def get_verified(self, key: str, expected_content_hash: str) -> bytes:
+        """Fetch a raw object and verify it against the envelope hash."""
+        body = await self.get(key)
+        actual = compute_content_hash(body)
+        if actual != expected_content_hash:
+            raise RawTierIntegrityError(
+                f"raw object hash mismatch for {key}: "
+                f"expected {expected_content_hash}, got {actual}"
+            )
+        return body
 
-__all__ = ["S3Client", "build_raw_s3_key", "compute_content_hash"]
+
+__all__ = [
+    "RawTierIntegrityError",
+    "S3Client",
+    "build_raw_s3_key",
+    "compute_content_hash",
+    "raw_object_metadata",
+    "raw_object_tagging",
+    "raw_retention_days",
+]

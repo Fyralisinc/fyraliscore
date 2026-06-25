@@ -80,9 +80,9 @@ from services.domain.observations.repo import ObservationRepository
 _TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9\-]{1,}")
 
 
-def _dedup_lock_key(source_channel: str, external_id: str) -> int:
+def _dedup_lock_key(tenant_id: UUID, source_channel: str, external_id: str) -> int:
     digest = hashlib.sha256(
-        f"{source_channel}\0{external_id}".encode("utf-8")
+        f"{tenant_id}\0{source_channel}\0{external_id}".encode("utf-8")
     ).digest()
     return int.from_bytes(digest[:8], "big") & 0x7FFFFFFFFFFFFFFF
 
@@ -531,20 +531,23 @@ def _build_observation_create(
 
 async def _lock_and_find_existing_observation(
     conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
     draft: ObservationDraft,
 ) -> asyncpg.Record | None:
     if draft.external_id is None:
         return None
     await conn.execute(
         "SELECT pg_advisory_xact_lock($1)",
-        _dedup_lock_key(draft.source_channel, draft.external_id),
+        _dedup_lock_key(tenant_id, draft.source_channel, draft.external_id),
     )
     return await conn.fetchrow(
         """
         SELECT id FROM observations
-        WHERE source_channel = $1 AND external_id = $2
+        WHERE tenant_id = $1 AND source_channel = $2 AND external_id = $3
         LIMIT 1
         """,
+        tenant_id,
         draft.source_channel,
         draft.external_id,
     )
@@ -593,7 +596,11 @@ async def _insert_observation_and_maybe_enqueue_trigger(
     with notify_scope() as scope:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                existing = await _lock_and_find_existing_observation(conn, draft)
+                existing = await _lock_and_find_existing_observation(
+                    conn,
+                    tenant_id=tenant_id,
+                    draft=draft,
+                )
                 if existing is not None:
                     deduped_row = await repo.insert(obs_create, conn=conn)
                     return IngestResult(

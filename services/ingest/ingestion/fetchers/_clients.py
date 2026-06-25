@@ -27,12 +27,18 @@ across shards.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from typing import Any, Awaitable, Callable
 
 import asyncpg
 import httpx
+
+from lib.shared.circuit_breaker import AsyncCircuitBreaker
+from lib.shared.errors import CompanyOSError
+from lib.shared.http_retry import is_retryable_httpx_error
 
 
 _POOL: asyncpg.Pool | None = None
@@ -45,6 +51,80 @@ _HTTP_LOCK = asyncio.Lock()
 # re-mint). See build_github_client.
 _GITHUB_CLIENTS: dict[str, Any] = {}
 _GITHUB_CLIENTS_LOCK = asyncio.Lock()
+_SOURCE_API_BREAKERS: dict[str, AsyncCircuitBreaker] = {}
+_SOURCE_API_BREAKERS_LOCK = asyncio.Lock()
+
+
+def _record_source_api_breaker_exception(exc: BaseException) -> bool:
+    if isinstance(exc, CompanyOSError):
+        return exc.recoverable
+    if isinstance(exc, httpx.HTTPStatusError):
+        return is_retryable_httpx_error(exc)
+    return isinstance(exc, httpx.TransportError)
+
+
+async def _source_api_breaker(source: str) -> AsyncCircuitBreaker:
+    breaker = _SOURCE_API_BREAKERS.get(source)
+    if breaker is not None:
+        return breaker
+    async with _SOURCE_API_BREAKERS_LOCK:
+        breaker = _SOURCE_API_BREAKERS.get(source)
+        if breaker is None:
+            breaker = AsyncCircuitBreaker(
+                name=f"source_api_{source}",
+                record_exception=_record_source_api_breaker_exception,
+            )
+            _SOURCE_API_BREAKERS[source] = breaker
+        return breaker
+
+
+class SourceApiCircuitBreakerProxy:
+    """Wrap public async source-client methods with a per-source breaker."""
+
+    def __init__(
+        self,
+        *,
+        source: str,
+        client: Any,
+        breaker: AsyncCircuitBreaker,
+    ) -> None:
+        object.__setattr__(self, "_source", source)
+        object.__setattr__(self, "_client", client)
+        object.__setattr__(self, "_breaker", breaker)
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._client, name)
+        if (
+            name.startswith("_")
+            or name in {"aclose", "close"}
+            or not inspect.iscoroutinefunction(attr)
+        ):
+            return attr
+
+        @wraps(attr)
+        async def _wrapped(*args: Any, **kwargs: Any) -> Any:
+            return await self._breaker.call(lambda: attr(*args, **kwargs))
+
+        return _wrapped
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in {"_source", "_client", "_breaker"}:
+            object.__setattr__(self, name, value)
+            return
+        setattr(self._client, name, value)
+
+
+async def _wrap_source_client(
+    source: str,
+    client: Any,
+    *,
+    breaker: AsyncCircuitBreaker | None = None,
+) -> SourceApiCircuitBreakerProxy:
+    return SourceApiCircuitBreakerProxy(
+        source=source,
+        client=client,
+        breaker=breaker or await _source_api_breaker(source),
+    )
 
 
 def _spammer_mode() -> bool:
@@ -131,7 +211,7 @@ async def _new_github_client(inst: str, *, pool: asyncpg.Pool | None) -> Any:
             token=f"spam-gh::{inst}",
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
-    return client
+    return await _wrap_source_client("github", client)
 
 
 async def build_github_client(
@@ -186,7 +266,7 @@ async def build_slack_client(
     )
     if spammer:
         client._bot_token = f"spam-slack::{team_id}"
-    return client
+    return await _wrap_source_client("slack", client)
 
 
 async def build_slack_user_client(
@@ -226,7 +306,7 @@ async def build_slack_user_client(
     )
     if spammer:
         client._user_token = f"spam-slack-user::{team_id}::{user_id}"
-    return client
+    return await _wrap_source_client("slack", client)
 
 
 async def build_discord_client(
@@ -246,7 +326,7 @@ async def build_discord_client(
     )
     if spammer:
         client._bot_token = f"spam-bot::{guild_id}"
-    return client
+    return await _wrap_source_client("discord", client)
 
 
 async def build_notion_client(
@@ -272,7 +352,7 @@ async def build_notion_client(
         http_client=await _get_http(),
         api_base_url=(endpoint("notion_api") if not spammer else None),
     )
-    return client
+    return await _wrap_source_client("notion", client)
 
 
 async def build_jira_client(
@@ -303,7 +383,7 @@ async def build_jira_client(
         # the per-install base_url (api_base_url=None → base_url is used).
         api_base_url=(endpoint("jira_api") if spammer else None),
     )
-    return client
+    return await _wrap_source_client("jira", client)
 
 
 async def build_mercury_client(
@@ -331,7 +411,7 @@ async def build_mercury_client(
         # canonical Mercury API host (api_base_url=None → base_url is used).
         api_base_url=(endpoint("mercury_api") if spammer else None),
     )
-    return client
+    return await _wrap_source_client("mercury", client)
 
 
 async def build_grafana_client(
@@ -360,7 +440,7 @@ async def build_grafana_client(
         # per-install base_url (api_base_url=None → base_url is used).
         api_base_url=(endpoint("grafana_api") if spammer else None),
     )
-    return client
+    return await _wrap_source_client("grafana", client)
 
 
 async def build_quickbooks_client(
@@ -395,7 +475,7 @@ async def build_quickbooks_client(
             install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
         ),
     )
-    return client
+    return await _wrap_source_client("quickbooks", client)
 
 
 async def build_telegram_client(
@@ -427,7 +507,7 @@ async def build_telegram_client(
         session_secret_ref=(backfill_ref or live_ref),
         session=("spam-telegram" if spammer else None),
     )
-    return client
+    return await _wrap_source_client("telegram", client)
 
 
 async def build_brex_client(
@@ -455,7 +535,7 @@ async def build_brex_client(
         # canonical Brex API host (api_base_url=None → base_url is used).
         api_base_url=(endpoint("brex_api") if spammer else None),
     )
-    return client
+    return await _wrap_source_client("brex", client)
 
 
 async def build_ramp_client(
@@ -491,7 +571,7 @@ async def build_ramp_client(
             install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
         ),
     )
-    return client
+    return await _wrap_source_client("ramp", client)
 
 
 async def build_gusto_client(
@@ -526,7 +606,7 @@ async def build_gusto_client(
             install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
         ),
     )
-    return client
+    return await _wrap_source_client("gusto", client)
 
 
 async def build_deel_client(
@@ -554,7 +634,7 @@ async def build_deel_client(
         # canonical Deel API host (api_base_url=None → base_url is used).
         api_base_url=(endpoint("deel_api") if spammer else None),
     )
-    return client
+    return await _wrap_source_client("deel", client)
 
 
 async def build_fireflies_client(
@@ -581,7 +661,7 @@ async def build_fireflies_client(
         http_client=await _get_http(),
         api_base_url=(endpoint("fireflies_api") if spammer else None),
     )
-    return client
+    return await _wrap_source_client("fireflies", client)
 
 
 async def build_miro_client(
@@ -607,7 +687,7 @@ async def build_miro_client(
         http_client=await _get_http(),
         api_base_url=(endpoint("miro_api") if spammer else None),
     )
-    return client
+    return await _wrap_source_client("miro", client)
 
 
 async def build_figma_client(
@@ -635,7 +715,7 @@ async def build_figma_client(
         api_base_url=(endpoint("figma_api") if spammer else None),
         team_id=team_id,
     )
-    return client
+    return await _wrap_source_client("figma", client)
 
 
 async def build_carta_client(
@@ -670,7 +750,7 @@ async def build_carta_client(
             install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
         ),
     )
-    return client
+    return await _wrap_source_client("carta", client)
 
 
 async def build_signal_client(
@@ -705,7 +785,7 @@ async def build_signal_client(
         session_secret_ref=(backfill_ref or live_ref),
         session=("spam-signal" if spammer else None),
     )
-    return client
+    return await _wrap_source_client("signal", client)
 
 
 async def build_aws_client(
@@ -731,7 +811,7 @@ async def build_aws_client(
         ),
         secret_ref=install["secret_ref"] if "secret_ref" in install else None,
     )
-    return client
+    return await _wrap_source_client("aws", client)
 
 
 async def build_hibob_client(
@@ -767,7 +847,7 @@ async def build_hibob_client(
         http_client=await _get_http(),
         api_base_url=(endpoint("hibob_api") if spammer else None),
     )
-    return client
+    return await _wrap_source_client("hibob", client)
 
 
 async def build_ashby_client(
@@ -797,7 +877,7 @@ async def build_ashby_client(
         http_client=await _get_http(),
         api_base_url=(endpoint("ashby_api") if spammer else None),
     )
-    return client
+    return await _wrap_source_client("ashby", client)
 
 
 async def build_linkedin_client(
@@ -830,7 +910,7 @@ async def build_linkedin_client(
         http_client=await _get_http(),
         api_base_url=(endpoint("linkedin_api") if spammer else None),
     )
-    return client
+    return await _wrap_source_client("linkedin", client)
 
 
 # ---------------------------------------------------------------------

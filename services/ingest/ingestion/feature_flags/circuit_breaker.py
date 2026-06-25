@@ -101,6 +101,7 @@ from uuid import UUID
 
 import asyncpg
 
+from lib.shared.db import configure_connection_timeouts
 from services.ingest.ingestion.feature_flags.client import (
     KAFKA_PATH_ENABLED,
     TenantFlags,
@@ -268,6 +269,7 @@ async def make_breaker_pool(
         min_size=1,
         max_size=max_size,
         command_timeout=command_timeout,
+        init=configure_connection_timeouts,
         statement_cache_size=0,  # pgbouncer transaction mode (M1.3 ADR Q1)
     )
 
