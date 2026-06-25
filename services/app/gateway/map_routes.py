@@ -35,6 +35,14 @@ from services.app.gateway.map_router import (
     TopologyEventEntry,
     TopologyEventsResponse,
 )
+from services.platform.access_control.audit import (
+    record_override_if_needed as record_access_override_if_needed,
+)
+from services.platform.access_control.checks import (
+    AccessDecision,
+    can_read,
+)
+from services.platform.access_control.roles import has_role
 from services.reasoning.topology.umap_projector import UMAPProjector
 
 
@@ -112,7 +120,7 @@ def register_map_routes(app: FastAPI) -> None:
 
         snapshot = await _build_snapshot(
             pool=deps.pool,
-            tenant_id=auth.tenant_id,
+            auth=auth,
             neighborhood_id=neighborhood_id,
             edge_kinds=edge_kinds,
             include_archived=include_archived,
@@ -141,30 +149,56 @@ def register_map_routes(app: FastAPI) -> None:
             return _bad_request("invalid_limit")
         limit = max(1, min(limit, 200))
 
+        visible_model_ids = await _fetch_visible_model_ids(deps.pool, auth)
+        if not visible_model_ids:
+            resp = TopologyEventsResponse(
+                events=[],
+                server_now=datetime.now(timezone.utc),
+            )
+            return JSONResponse(_pydantic_dump(resp))
+
         rows = await deps.pool.fetch(
             """
             SELECT te.id, te.kind, te.occurred_at, te.neighborhood_id,
                    te.named_signature, te.magnitude, te.payload,
-                   mn.named_signature AS neighborhood_named_signature
+                   te.member_model_ids,
+                   mn.named_signature AS neighborhood_named_signature,
+                   mn.member_model_ids AS neighborhood_member_model_ids
             FROM topology_events te
             LEFT JOIN model_neighborhoods mn
               ON mn.id = te.neighborhood_id
             WHERE te.tenant_id = $1
               AND te.occurred_at >= $2
+              AND (
+                te.member_model_ids && $3::uuid[]
+                OR mn.member_model_ids && $3::uuid[]
+              )
             ORDER BY te.occurred_at DESC
-            LIMIT $3
+            LIMIT $4
             """,
             auth.tenant_id,
             since,
+            visible_model_ids,
             limit,
         )
+        visible_id_set = set(visible_model_ids)
         events: list[TopologyEventEntry] = []
         for r in rows:
+            event_member_ids = set(r["member_model_ids"] or [])
+            nbh_member_ids = set(r["neighborhood_member_model_ids"] or [])
+            payload_members = event_member_ids or nbh_member_ids
             named_signature = (
                 r["named_signature"]
-                or r["neighborhood_named_signature"]
+                if _all_visible(event_member_ids, visible_id_set)
+                else None
+            ) or (
+                r["neighborhood_named_signature"]
+                if _all_visible(nbh_member_ids, visible_id_set)
+                else None
             )
             payload = _coerce_jsonb(r["payload"]) or {}
+            if not _all_visible(payload_members, visible_id_set):
+                payload = {}
             events.append(
                 TopologyEventEntry(
                     id=r["id"],
@@ -201,7 +235,7 @@ def register_map_routes(app: FastAPI) -> None:
         except (ValueError, TypeError):
             return _bad_request("invalid_model_id")
         story = await _build_model_story(
-            pool=deps.pool, tenant_id=auth.tenant_id, model_id=mid,
+            pool=deps.pool, auth=auth, model_id=mid,
         )
         if story is None:
             return JSONResponse({"error": "not_found"}, status_code=404)
@@ -215,8 +249,18 @@ def register_map_routes(app: FastAPI) -> None:
         from services.app.gateway.deps import get_gateway_deps
 
         deps = get_gateway_deps(request)
+        async with deps.pool.acquire() as conn:
+            if not await _can_refresh_projection(auth, conn=conn):
+                return JSONResponse(
+                    {
+                        "error": "forbidden",
+                        "reason": "projection_refresh_requires_admin_or_leadership",
+                    },
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
         projector = UMAPProjector(deps.pool)
         cache = await projector.refresh(auth.tenant_id)
+        visible_model_ids = await _fetch_visible_model_ids(deps.pool, auth)
         # `cache["fitted_at"]` is an ISO string; coerce to datetime
         # for the Pydantic model.
         fitted_at_raw = cache.get("fitted_at")
@@ -226,7 +270,7 @@ def register_map_routes(app: FastAPI) -> None:
             fitted_at = fitted_at_raw or datetime.now(timezone.utc)
         resp = RefreshProjectionResponse(
             fitted_at=fitted_at,
-            model_count=int(cache.get("model_count") or 0),
+            model_count=len(visible_model_ids),
             trustworthiness=float(cache.get("trustworthiness") or 0.0),
             n_neighbors=int(cache.get("n_neighbors") or 15),
             min_dist=float(cache.get("min_dist") or 0.15),
@@ -265,14 +309,14 @@ async def _read_projection_context(
 async def _fetch_snapshot_models(
     *,
     pool,
-    tenant_id: UUID,
+    auth: AuthContext,
     neighborhood_id: UUID | None,
     include_archived: bool,
     since: datetime | None,
 ) -> dict[UUID, dict[str, Any]]:
     status_filter = "" if include_archived else " AND m.status = 'active'"
     since_filter = ""
-    args: list[Any] = [tenant_id]
+    args: list[Any] = [auth.tenant_id]
     if since is not None:
         args.append(since)
         since_filter = f" AND m.created_at >= ${len(args)}"
@@ -296,6 +340,9 @@ async def _fetch_snapshot_models(
           m.confirmed_count,
           m.last_confirmed_at,
           m.created_at,
+          m.visible_to_subjects,
+          m.scope_actors,
+          m.scope_entities,
           mnm.neighborhood_id AS neighborhood_id
         FROM models m
         LEFT JOIN model_neighborhood_membership mnm
@@ -308,7 +355,26 @@ async def _fetch_snapshot_models(
         """,
         *args,
     )
-    return {row["id"]: dict(row) for row in rows}
+    out: dict[UUID, dict[str, Any]] = {}
+    async with pool.acquire() as conn:
+        for row in rows:
+            rec = dict(row)
+            decision = await can_read(
+                auth.actor_id,
+                _model_entity(rec, auth.tenant_id),
+                conn=conn,
+                tenant_id=auth.tenant_id,
+            )
+            if not decision.allowed:
+                continue
+            await _record_model_override_if_needed(
+                decision,
+                conn=conn,
+                auth=auth,
+                model_id=rec["id"],
+            )
+            out[rec["id"]] = rec
+    return out
 
 
 async def _fetch_snapshot_edges(
@@ -530,7 +596,10 @@ async def _build_snapshot_neighborhoods(
     neighborhood_id: UUID | None,
     projection: dict[str, tuple[float, float]],
     now: datetime,
+    visible_model_ids: set[UUID],
 ) -> list[MapNeighborhood]:
+    if not visible_model_ids:
+        return []
     args: list[Any] = [tenant_id]
     nbh_extra = ""
     if neighborhood_id is not None:
@@ -547,6 +616,12 @@ async def _build_snapshot_neighborhoods(
         """,
         *args,
     )
+    visible_neighborhood_ids: set[UUID] = set()
+    for row in nbh_rows:
+        member_ids = set(row["member_model_ids"] or [])
+        if member_ids & visible_model_ids:
+            visible_neighborhood_ids.add(row["id"])
+
     event_count_rows = await pool.fetch(
         """
         SELECT neighborhood_id, COUNT(*) AS n
@@ -554,17 +629,26 @@ async def _build_snapshot_neighborhoods(
         WHERE tenant_id = $1
           AND occurred_at >= $2
           AND neighborhood_id IS NOT NULL
+          AND (
+            member_model_ids && $3::uuid[]
+            OR neighborhood_id = ANY($4::uuid[])
+          )
         GROUP BY neighborhood_id
         """,
         tenant_id,
         now - timedelta(days=7),
+        list(visible_model_ids),
+        list(visible_neighborhood_ids),
     )
     event_count = {
         row["neighborhood_id"]: int(row["n"]) for row in event_count_rows
     }
     neighborhoods: list[MapNeighborhood] = []
     for row in nbh_rows:
-        member_ids = row["member_model_ids"] or []
+        raw_member_ids = set(row["member_model_ids"] or [])
+        member_ids = raw_member_ids & visible_model_ids
+        if not member_ids:
+            continue
         coords = [
             coord
             for member_id in member_ids
@@ -573,7 +657,11 @@ async def _build_snapshot_neighborhoods(
         neighborhoods.append(
             MapNeighborhood(
                 id=row["id"],
-                named_signature=row["named_signature"],
+                named_signature=(
+                    row["named_signature"]
+                    if _all_visible(raw_member_ids, visible_model_ids)
+                    else None
+                ),
                 member_count=len(member_ids),
                 density=float(row["density"]) if row["density"] is not None else None,
                 status=row["status"],
@@ -594,7 +682,7 @@ async def _build_snapshot_neighborhoods(
 async def _build_snapshot(
     *,
     pool,
-    tenant_id: UUID,
+    auth: AuthContext,
     neighborhood_id: UUID | None,
     edge_kinds: tuple[str, ...],
     include_archived: bool,
@@ -603,16 +691,18 @@ async def _build_snapshot(
     now: datetime,
     lens: str | None = None,
 ) -> MapSnapshotResponse:
+    tenant_id = auth.tenant_id
     projection, projection_fitted_at, projection_trustworthiness = (
         await _read_projection_context(pool, tenant_id)
     )
     model_by_id = await _fetch_snapshot_models(
         pool=pool,
-        tenant_id=tenant_id,
+        auth=auth,
         neighborhood_id=neighborhood_id,
         include_archived=include_archived,
         since=since,
     )
+    visible_model_ids = set(model_by_id.keys())
     edge_rows = await _fetch_snapshot_edges(
         pool=pool,
         tenant_id=tenant_id,
@@ -638,6 +728,7 @@ async def _build_snapshot(
         neighborhood_id=neighborhood_id,
         projection=projection,
         now=now,
+        visible_model_ids=visible_model_ids,
     )
     change_summary = await _build_change_summary(
         pool=pool,
@@ -645,6 +736,7 @@ async def _build_snapshot(
         since=summary_since,
         now=now,
         neighborhoods=neighborhoods,
+        visible_model_ids=visible_model_ids,
     )
 
     return MapSnapshotResponse(
@@ -652,11 +744,32 @@ async def _build_snapshot(
         edges=edges,
         neighborhoods=neighborhoods,
         change_summary=change_summary,
+        degraded_reasons=_snapshot_degraded_reasons(
+            visible_model_count=len(visible_model_ids),
+            projection_fitted_at=projection_fitted_at,
+            neighborhoods=neighborhoods,
+        ),
         projection_fitted_at=projection_fitted_at,
         projection_trustworthiness=projection_trustworthiness,
         server_now=now,
         band_totals=band_totals,
     )
+
+
+def _snapshot_degraded_reasons(
+    *,
+    visible_model_count: int,
+    projection_fitted_at: datetime | None,
+    neighborhoods: list[MapNeighborhood],
+) -> list[str]:
+    reasons: list[str] = []
+    if visible_model_count == 0:
+        return ["no_visible_models"]
+    if projection_fitted_at is None:
+        reasons.append("projection_warming")
+    if not neighborhoods:
+        reasons.append("topology_warming")
+    return reasons
 
 
 async def _build_change_summary(
@@ -666,49 +779,71 @@ async def _build_change_summary(
     since: datetime,
     now: datetime,
     neighborhoods: list[MapNeighborhood],
+    visible_model_ids: set[UUID],
 ) -> MapSnapshotChangeSummary:
+    visible_ids = list(visible_model_ids)
     # Aggregate counts in parallel-ish batched queries.
-    new_models = await pool.fetchval(
-        """
-        SELECT COUNT(*) FROM models
-        WHERE tenant_id = $1 AND created_at >= $2
-        """,
-        tenant_id, since,
-    )
-    archived_models = await pool.fetchval(
-        """
-        SELECT COUNT(*) FROM models
-        WHERE tenant_id = $1
-          AND status != 'active'
-          AND archived_at IS NOT NULL
-          AND archived_at >= $2
-        """,
-        tenant_id, since,
-    )
-    new_edges = await pool.fetchval(
-        """
-        SELECT COUNT(*) FROM model_edges
-        WHERE tenant_id = $1 AND created_at >= $2
-        """,
-        tenant_id, since,
-    )
-    phase_events = await pool.fetchval(
-        """
-        SELECT COUNT(*) FROM topology_events
-        WHERE tenant_id = $1 AND occurred_at >= $2
-        """,
-        tenant_id, since,
-    )
-    contested_models = await pool.fetchval(
-        """
-        SELECT COUNT(*) FROM models
-        WHERE tenant_id = $1
-          AND status = 'active'
-          AND contested_count > confirmed_count
-          AND contested_count > 0
-        """,
-        tenant_id,
-    )
+    if visible_ids:
+        new_models = await pool.fetchval(
+            """
+            SELECT COUNT(*) FROM models
+            WHERE tenant_id = $1
+              AND id = ANY($3::uuid[])
+              AND created_at >= $2
+            """,
+            tenant_id, since, visible_ids,
+        )
+        archived_models = await pool.fetchval(
+            """
+            SELECT COUNT(*) FROM models
+            WHERE tenant_id = $1
+              AND id = ANY($3::uuid[])
+              AND status != 'active'
+              AND archived_at IS NOT NULL
+              AND archived_at >= $2
+            """,
+            tenant_id, since, visible_ids,
+        )
+        new_edges = await pool.fetchval(
+            """
+            SELECT COUNT(*) FROM model_edges
+            WHERE tenant_id = $1
+              AND created_at >= $2
+              AND source_model_id = ANY($3::uuid[])
+              AND target_model_id = ANY($3::uuid[])
+            """,
+            tenant_id, since, visible_ids,
+        )
+        visible_neighborhood_ids = [n.id for n in neighborhoods]
+        phase_events = await pool.fetchval(
+            """
+            SELECT COUNT(*) FROM topology_events
+            WHERE tenant_id = $1
+              AND occurred_at >= $2
+              AND (
+                member_model_ids && $3::uuid[]
+                OR neighborhood_id = ANY($4::uuid[])
+              )
+            """,
+            tenant_id, since, visible_ids, visible_neighborhood_ids,
+        )
+        contested_models = await pool.fetchval(
+            """
+            SELECT COUNT(*) FROM models
+            WHERE tenant_id = $1
+              AND id = ANY($2::uuid[])
+              AND status = 'active'
+              AND contested_count > confirmed_count
+              AND contested_count > 0
+            """,
+            tenant_id, visible_ids,
+        )
+    else:
+        new_models = 0
+        archived_models = 0
+        new_edges = 0
+        phase_events = 0
+        contested_models = 0
     new_models = int(new_models or 0)
     archived_models = int(archived_models or 0)
     new_edges = int(new_edges or 0)
@@ -734,7 +869,7 @@ async def _build_change_summary(
         phase_events=phase_events,
         since=since,
         now=now,
-        last_change_at=await _last_change_at(pool, tenant_id),
+        last_change_at=await _last_change_at(pool, tenant_id, visible_model_ids),
     )
 
     return MapSnapshotChangeSummary(
@@ -749,28 +884,50 @@ async def _build_change_summary(
     )
 
 
-async def _last_change_at(pool, tenant_id: UUID) -> datetime | None:
+async def _last_change_at(
+    pool,
+    tenant_id: UUID,
+    visible_model_ids: set[UUID],
+) -> datetime | None:
     """Most recent of: model created, model archived, edge created,
     topology event. Returns None when the tenant has no activity."""
+    if not visible_model_ids:
+        return None
+    visible_ids = list(visible_model_ids)
     candidates: list[datetime] = []
     rows = [
         await pool.fetchval(
-            "SELECT MAX(created_at) FROM models WHERE tenant_id = $1",
-            tenant_id,
+            """
+            SELECT MAX(created_at) FROM models
+            WHERE tenant_id = $1 AND id = ANY($2::uuid[])
+            """,
+            tenant_id, visible_ids,
         ),
         await pool.fetchval(
-            "SELECT MAX(archived_at) FROM models "
-            "WHERE tenant_id = $1 AND archived_at IS NOT NULL",
-            tenant_id,
+            """
+            SELECT MAX(archived_at) FROM models
+            WHERE tenant_id = $1
+              AND id = ANY($2::uuid[])
+              AND archived_at IS NOT NULL
+            """,
+            tenant_id, visible_ids,
         ),
         await pool.fetchval(
-            "SELECT MAX(created_at) FROM model_edges WHERE tenant_id = $1",
-            tenant_id,
+            """
+            SELECT MAX(created_at) FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = ANY($2::uuid[])
+              AND target_model_id = ANY($2::uuid[])
+            """,
+            tenant_id, visible_ids,
         ),
         await pool.fetchval(
-            "SELECT MAX(occurred_at) FROM topology_events "
-            "WHERE tenant_id = $1",
-            tenant_id,
+            """
+            SELECT MAX(occurred_at) FROM topology_events
+            WHERE tenant_id = $1
+              AND member_model_ids && $2::uuid[]
+            """,
+            tenant_id, visible_ids,
         ),
     ]
     for r in rows:
@@ -834,39 +991,60 @@ def _human_window(since: datetime, now: datetime) -> str:
 async def _build_model_story(
     *,
     pool,
-    tenant_id: UUID,
+    auth: AuthContext,
     model_id: UUID,
 ) -> ModelStoryResponse | None:
-    row = await pool.fetchrow(
-        """
-        SELECT
-          m.id,
-          m.proposition_kind,
-          m."natural" AS natural,
-          m.confidence,
-          m.confidence_at_assertion,
-          m.activation,
-          m.status,
-          m.archive_reason,
-          m.created_at AS asserted_at,
-          m.last_confirmed_at,
-          m.contested_count,
-          m.confirmed_count,
-          m.signal_readings,
-          m.falsifier,
-          mnm.neighborhood_id AS neighborhood_id,
-          mn.named_signature AS neighborhood_signature
-        FROM models m
-        LEFT JOIN model_neighborhood_membership mnm
-          ON mnm.model_id = m.id AND mnm.tenant_id = m.tenant_id
-        LEFT JOIN model_neighborhoods mn
-          ON mn.id = mnm.neighborhood_id
-        WHERE m.id = $1 AND m.tenant_id = $2
-        """,
-        model_id, tenant_id,
-    )
-    if row is None:
-        return None
+    tenant_id = auth.tenant_id
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+              m.id,
+              m.tenant_id,
+              m.proposition_kind,
+              m."natural" AS natural,
+              m.confidence,
+              m.confidence_at_assertion,
+              m.activation,
+              m.status,
+              m.archive_reason,
+              m.created_at AS asserted_at,
+              m.last_confirmed_at,
+              m.contested_count,
+              m.confirmed_count,
+              m.signal_readings,
+              m.falsifier,
+              m.visible_to_subjects,
+              m.scope_actors,
+              m.scope_entities,
+              mnm.neighborhood_id AS neighborhood_id,
+              mn.named_signature AS neighborhood_signature,
+              mn.member_model_ids AS neighborhood_member_model_ids
+            FROM models m
+            LEFT JOIN model_neighborhood_membership mnm
+              ON mnm.model_id = m.id AND mnm.tenant_id = m.tenant_id
+            LEFT JOIN model_neighborhoods mn
+              ON mn.id = mnm.neighborhood_id
+            WHERE m.id = $1 AND m.tenant_id = $2
+            """,
+            model_id, tenant_id,
+        )
+        if row is None:
+            return None
+        decision = await can_read(
+            auth.actor_id,
+            _model_entity(dict(row), tenant_id),
+            conn=conn,
+            tenant_id=tenant_id,
+        )
+        if not decision.allowed:
+            return None
+        await _record_model_override_if_needed(
+            decision,
+            conn=conn,
+            auth=auth,
+            model_id=model_id,
+        )
 
     # Falsifier — last checked is best-effort: use the most recent
     # signal reading's `at` if present, else None.
@@ -876,14 +1054,19 @@ async def _build_model_story(
     falsifier_last_checked = _signal_max_at(signal_readings)
 
     # All edges touching this model — split by direction + kind.
-    edge_rows = await pool.fetch(
+    edge_rows_raw = await pool.fetch(
         """
         SELECT e.source_model_id, e.target_model_id, e.edge_kind,
                e.weight,
                m_other.id AS other_id,
+               m_other.tenant_id AS other_tenant_id,
                m_other."natural" AS other_natural,
+               m_other.visible_to_subjects AS other_visible_to_subjects,
+               m_other.scope_actors AS other_scope_actors,
+               m_other.scope_entities AS other_scope_entities,
                mnm_other.neighborhood_id AS other_neighborhood_id,
-               mn_other.named_signature AS other_neighborhood_signature
+               mn_other.named_signature AS other_neighborhood_signature,
+               mn_other.member_model_ids AS other_neighborhood_member_model_ids
         FROM model_edges e
         JOIN models m_other
           ON m_other.id = (
@@ -901,6 +1084,33 @@ async def _build_model_story(
         """,
         model_id, tenant_id,
     )
+    edge_rows: list[Any] = []
+    visible_neighbor_ids: set[UUID] = set()
+    async with pool.acquire() as conn:
+        for er in edge_rows_raw:
+            other = {
+                "id": er["other_id"],
+                "tenant_id": er["other_tenant_id"],
+                "visible_to_subjects": er["other_visible_to_subjects"],
+                "scope_actors": er["other_scope_actors"],
+                "scope_entities": er["other_scope_entities"],
+            }
+            decision = await can_read(
+                auth.actor_id,
+                _model_entity(other, tenant_id),
+                conn=conn,
+                tenant_id=tenant_id,
+            )
+            if not decision.allowed:
+                continue
+            await _record_model_override_if_needed(
+                decision,
+                conn=conn,
+                auth=auth,
+                model_id=er["other_id"],
+            )
+            edge_rows.append(er)
+            visible_neighbor_ids.add(er["other_id"])
 
     supporting: list[StoryEdgeRef] = []
     contributing_to: list[StoryEdgeRef] = []
@@ -912,10 +1122,16 @@ async def _build_model_story(
         is_outbound = er["source_model_id"] == model_id
         if is_outbound:
             affects_count += 1
+        other_members = set(er["other_neighborhood_member_model_ids"] or [])
+        visible_context_ids = visible_neighbor_ids | {model_id}
         ref = StoryEdgeRef(
             neighbor_id=er["other_id"],
             neighbor_natural=_truncate(er["other_natural"] or "", 80),
-            neighbor_neighborhood_signature=er["other_neighborhood_signature"],
+            neighbor_neighborhood_signature=(
+                er["other_neighborhood_signature"]
+                if _all_visible(other_members, visible_context_ids)
+                else None
+            ),
             edge_kind=er["edge_kind"],
             edge_weight=(
                 float(er["weight"]) if er["weight"] is not None else None
@@ -939,7 +1155,7 @@ async def _build_model_story(
         tenant_id=tenant_id,
         model_id=model_id,
         signal_readings=signal_readings,
-        edge_rows=edge_rows,
+        visible_neighbor_ids=visible_neighbor_ids,
     )
 
     health = _classify_health(
@@ -975,7 +1191,14 @@ async def _build_model_story(
         falsifier_last_checked_at=falsifier_last_checked,
         affects_count=affects_count,
         neighborhood_id=row["neighborhood_id"],
-        neighborhood_signature=row["neighborhood_signature"],
+        neighborhood_signature=(
+            row["neighborhood_signature"]
+            if _all_visible(
+                set(row["neighborhood_member_model_ids"] or []),
+                visible_neighbor_ids | {model_id},
+            )
+            else None
+        ),
         recent_activity=activity,
     )
 
@@ -986,7 +1209,7 @@ async def _build_recent_activity(
     tenant_id: UUID,
     model_id: UUID,
     signal_readings: list[Any],
-    edge_rows: list[Any],
+    visible_neighbor_ids: set[UUID],
 ) -> list[StoryActivityEntry]:
     """Synthesise a unified activity log: status notes + most recent
     5 signal readings + edges (with their created_at). Render the most
@@ -1050,22 +1273,33 @@ async def _build_recent_activity(
                 )
             )
 
-    # 3) Edges (when added).
-    # edge_rows came from the same query as the story payload — no
-    # `created_at`; we re-fetch the minimal info here so the activity
-    # log can show edge additions chronologically.
-    edge_create_rows = await pool.fetch(
-        """
-        SELECT edge_kind, source_model_id, target_model_id, created_at
-        FROM model_edges
-        WHERE tenant_id = $1
-          AND status = 'active'
-          AND (source_model_id = $2 OR target_model_id = $2)
-        ORDER BY created_at DESC
-        LIMIT 12
-        """,
-        tenant_id, model_id,
-    )
+    # 3) Edges (when added). Restrict to neighbors already proven
+    # visible to avoid leaking hidden model ids through activity rows.
+    edge_create_rows: list[Any] = []
+    if visible_neighbor_ids:
+        edge_create_rows = list(
+            await pool.fetch(
+                """
+                SELECT edge_kind, source_model_id, target_model_id, created_at
+                FROM model_edges
+                WHERE tenant_id = $1
+                  AND status = 'active'
+                  AND (
+                    (
+                      source_model_id = $2
+                      AND target_model_id = ANY($3::uuid[])
+                    )
+                    OR (
+                      target_model_id = $2
+                      AND source_model_id = ANY($3::uuid[])
+                    )
+                  )
+                ORDER BY created_at DESC
+                LIMIT 12
+                """,
+                tenant_id, model_id, list(visible_neighbor_ids),
+            )
+        )
     for er in edge_create_rows:
         is_outbound = er["source_model_id"] == model_id
         direction = "→" if is_outbound else "←"
@@ -1354,6 +1588,86 @@ def _coerce_jsonb(v: Any) -> Any:
         except (TypeError, ValueError):
             return v
     return v
+
+
+async def _fetch_visible_model_ids(pool, auth: AuthContext) -> list[UUID]:
+    rows = await pool.fetch(
+        """
+        SELECT id, tenant_id, visible_to_subjects, scope_actors, scope_entities
+        FROM models
+        WHERE tenant_id = $1
+        """,
+        auth.tenant_id,
+    )
+    visible: list[UUID] = []
+    async with pool.acquire() as conn:
+        for row in rows:
+            rec = dict(row)
+            decision = await can_read(
+                auth.actor_id,
+                _model_entity(rec, auth.tenant_id),
+                conn=conn,
+                tenant_id=auth.tenant_id,
+            )
+            if not decision.allowed:
+                continue
+            await _record_model_override_if_needed(
+                decision,
+                conn=conn,
+                auth=auth,
+                model_id=rec["id"],
+            )
+            visible.append(rec["id"])
+    return visible
+
+
+def _model_entity(row: dict[str, Any], tenant_id: UUID) -> dict[str, Any]:
+    return {
+        "kind": "model",
+        "id": row["id"],
+        "tenant_id": row.get("tenant_id") or tenant_id,
+        "visible_to_subjects": row.get("visible_to_subjects"),
+        "scope_actors": row.get("scope_actors") or [],
+        "scope_entities": row.get("scope_entities") or [],
+    }
+
+
+async def _record_model_override_if_needed(
+    decision: AccessDecision,
+    *,
+    conn: Any,
+    auth: AuthContext,
+    model_id: UUID,
+) -> None:
+    await record_access_override_if_needed(
+        decision,
+        actor_id=auth.actor_id,
+        entity_type="model",
+        entity_id=model_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
+
+
+async def _can_refresh_projection(auth: AuthContext, *, conn: Any) -> bool:
+    return bool(
+        await has_role(
+            auth.actor_id,
+            "admin",
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+        or await has_role(
+            auth.actor_id,
+            "leadership",
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+    )
+
+
+def _all_visible(member_ids: set[UUID], visible_model_ids: set[UUID]) -> bool:
+    return not member_ids or member_ids <= visible_model_ids
 
 
 def _auth_or_none(request: Request) -> AuthContext | None:
