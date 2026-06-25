@@ -114,3 +114,13 @@ def test_production_code_does_not_reference_legacy_customer_tokens() -> None:
     assert not violations, "Production code contains legacy customer tokens:\n" + "\n".join(
         violations[:50]
     )
+
+
+def test_integration_bootstrap_does_not_print_bearer_tokens() -> None:
+    text = (REPO_ROOT / "scripts/bootstrap_integration_test.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "create_session" not in text
+    assert "Bearer    :" not in text
+    assert "session bearer" not in text.lower()
