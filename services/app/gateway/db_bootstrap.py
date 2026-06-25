@@ -29,6 +29,11 @@ import os
 import asyncpg
 
 from lib.shared import db as _db_module
+from lib.shared.db import (
+    asyncpg_pool_runtime_kwargs,
+    configure_connection_timeouts,
+    positive_int_env,
+)
 
 
 async def _register_codecs(conn: asyncpg.Connection) -> None:
@@ -38,6 +43,7 @@ async def _register_codecs(conn: asyncpg.Connection) -> None:
     replaces in place. Callers that own their own connection (tests
     using the per-test-transaction pattern) should invoke this manually.
     """
+    await configure_connection_timeouts(conn)
     await conn.set_type_codec(
         "jsonb",
         encoder=lambda v: json.dumps(v) if not isinstance(v, str) else v,
@@ -76,8 +82,9 @@ async def create_gateway_pool(
     dsn: str | None = None,
     *,
     min_size: int = 1,
-    max_size: int = 10,
+    max_size: int | None = None,
     command_timeout: float = 30.0,
+    pgbouncer_compatible: bool | None = None,
 ) -> asyncpg.Pool:
     """Create an asyncpg pool with JSONB codec installed on every acquire.
 
@@ -90,12 +97,28 @@ async def create_gateway_pool(
         raise RuntimeError(
             "DATABASE_URL not set — cannot create gateway pool",
         )
+    resolved_max_size = max_size
+    if resolved_max_size is None:
+        resolved_max_size = positive_int_env(
+            "GATEWAY_POSTGRES_POOL_SIZE",
+            default=10,
+        )
+    if resolved_max_size < min_size:
+        raise ValueError(
+            "GATEWAY_POSTGRES_POOL_SIZE/max_size must be >= min_size"
+        )
+    runtime_kwargs = asyncpg_pool_runtime_kwargs(
+        dsn=dsn,
+        pgbouncer_compatible=pgbouncer_compatible,
+        process_env_var="GATEWAY_POSTGRES_PGBOUNCER_COMPATIBLE",
+    )
     pool = await asyncpg.create_pool(
         dsn,
         min_size=min_size,
-        max_size=max_size,
+        max_size=resolved_max_size,
         command_timeout=command_timeout,
         init=_register_codecs,
+        **runtime_kwargs,
     )
     _db_module._pool = pool
     # Scrape-time db_pool_* gauges (gateway /metrics → DBPoolSaturated alert).

@@ -15,6 +15,7 @@ import asyncpg
 from fastapi import FastAPI
 
 from lib.embeddings.ollama import OllamaClient, OllamaConfig
+from lib.shared.db import assert_pool_database_startup_safety
 from services.app.gateway.ceo_view_wiring import configure_ceo_view
 from services.app.gateway.core_router import (
     IngestSizeError,
@@ -25,6 +26,7 @@ from services.app.gateway.db_bootstrap import (
     create_gateway_pool,
 )
 from services.app.gateway.deps import GatewayDeps, attach_gateway_deps
+from services.app.gateway.error_handlers import install_safe_error_handlers
 from services.app.gateway.extensions import run_extension_startup_hooks
 from services.app.gateway.logging_config import configure_structlog, get_logger
 from services.app.gateway.middleware import (
@@ -182,6 +184,20 @@ async def _stop_ceo_view_for_lifespan(app_: FastAPI, ceo_view: object) -> None:
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
+    query_handler = (
+        ceo_view.get("qry_handler") if isinstance(ceo_view, dict) else None
+    )
+    if query_handler is not None:
+        close_query_handler = getattr(query_handler, "aclose", None)
+        if close_query_handler is not None:
+            try:
+                await close_query_handler()
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "lifespan_query_handler_close_failed",
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
     if getattr(app_.state, "ceo_view", None) is ceo_view:
         app_.state.ceo_view = None
 
@@ -299,6 +315,25 @@ async def _start_gateway_deps(
                 required=True,
                 detail="injected",
             )
+        if settings.is_production:
+            try:
+                await _await_startup(
+                    "db_startup_guard",
+                    assert_pool_database_startup_safety(runtime_pool),
+                    timeout_s=settings.db_startup_timeout_s,
+                )
+            except Exception as exc:  # noqa: BLE001
+                startup_status.failed_component(
+                    "db_startup_guard",
+                    required=True,
+                    exc=exc,
+                )
+                raise
+            startup_status.ok(
+                "db_startup_guard",
+                required=True,
+                detail="strict_role_and_rls",
+            )
         try:
             completed_deps = _complete_gateway_deps(
                 pool=runtime_pool,
@@ -396,7 +431,11 @@ async def _start_extension_startup_hooks(
     try:
         await _await_startup(
             "extension_startup_hooks",
-            run_extension_startup_hooks(app_, pool),
+            run_extension_startup_hooks(
+                app_,
+                pool,
+                production=settings.is_production,
+            ),
             timeout_s=settings.db_startup_timeout_s,
         )
         startup_status.ok("extensions", required=False)
@@ -877,6 +916,7 @@ def build_app(
     app.add_middleware(BearerAuthMiddleware)
     app.add_middleware(RequestContextMiddleware)
 
+    install_safe_error_handlers(app)
     app.add_exception_handler(IngestSizeError, ingest_size_error_handler)
     mount_gateway_routes(app, settings=settings)
     return app

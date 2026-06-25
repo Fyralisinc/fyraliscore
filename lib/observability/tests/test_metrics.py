@@ -69,13 +69,91 @@ class TestCounter:
 
     def test_label_value_escaping(self) -> None:
         c = Counter("obs_t_escape_total", "Help.", ("l",))
-        c.inc(l='a"b\\c\nd')
+        c.inc(l='a"b\\c')
         text = "\n".join(c.render())
-        # backslash -> \\, quote -> \", newline -> \n (literal two chars)
-        assert 'obs_t_escape_total{l="a\\"b\\\\c\\nd"} 1' in text
-        # the raw newline must not survive into the exposition line
+        # backslash -> \\, quote -> \"
+        assert 'obs_t_escape_total{l="a\\"b\\\\c"} 1' in text
         for line in c.render():
             assert "\n" not in line
+
+    @pytest.mark.parametrize(
+        "label_name",
+        [
+            "tenant_id",
+            "actor_id",
+            "installation_id",
+            "query",
+            "object_key",
+            "payload",
+            "prompt",
+            "source_channel",
+        ],
+    )
+    def test_forbidden_label_names_raise(self, label_name: str) -> None:
+        with pytest.raises(ValueError, match="forbidden"):
+            Counter("obs_t_forbidden_total", "Help.", (label_name,))
+
+    @pytest.mark.parametrize(
+        "label_value",
+        [
+            "4c669853-a589-48ba-b80e-7ad60eb05f5b",
+            "alice@example.com",
+            "https://example.com/raw",
+            "/v1/models/4c669853-a589-48ba-b80e-7ad60eb05f5b",
+            "Bearer sk-test",
+            "line\nbreak",
+        ],
+    )
+    def test_unsafe_label_values_raise(self, label_value: str) -> None:
+        c = Counter("obs_t_unsafe_label_total", "Help.", ("route",))
+        with pytest.raises(ValueError):
+            c.inc(route=label_value)
+
+    def test_allowed_label_values_reject_free_form_values(self) -> None:
+        c = Counter(
+            "obs_t_allowlisted_total",
+            "Help.",
+            ("component", "outcome"),
+            allowed_label_values={
+                "component": ("gateway", "normalizer"),
+                "outcome": ("success", "failure"),
+            },
+        )
+
+        c.inc(component="gateway", outcome="success")
+        assert c.get(component="gateway", outcome="success") == 1
+        with pytest.raises(ValueError, match="allowlist"):
+            c.inc(component="gateway", outcome="raw-customer-channel")
+
+    def test_allowlist_contract_is_part_of_reregistration_identity(self) -> None:
+        reg = Registry()
+        reg.counter(
+            "obs_t_contract_total",
+            "Help.",
+            ("outcome",),
+            allowed_label_values={"outcome": ("ok", "error")},
+        )
+        with pytest.raises(ValueError, match="allowlist"):
+            reg.counter(
+                "obs_t_contract_total",
+                "Help.",
+                ("outcome",),
+                allowed_label_values={"outcome": ("ok", "error", "skipped")},
+            )
+
+    def test_allowlist_rejects_unknown_label_declaration(self) -> None:
+        with pytest.raises(ValueError, match="unknown metric label"):
+            Counter(
+                "obs_t_bad_allowlist_total",
+                "Help.",
+                ("outcome",),
+                allowed_label_values={"missing": ("ok",)},
+            )
+
+    @pytest.mark.parametrize("label_name", ["channel", "channel_name", "source_channel"])
+    def test_channel_label_names_are_forbidden(self, label_name: str) -> None:
+        with pytest.raises(ValueError, match="forbidden"):
+            Counter("obs_t_channel_forbidden_total", "Help.", (label_name,))
 
 
 # ---------------------------------------------------------------------------

@@ -64,6 +64,21 @@ def _required_disabled_in_production(
     return False
 
 
+def _demo_routes_enabled(
+    env: Mapping[str, str],
+    name: str,
+    *,
+    production: bool,
+) -> bool:
+    if production:
+        return _required_disabled_in_production(
+            env,
+            name,
+            production=production,
+        )
+    return _env_bool(env, name, default=True)
+
+
 def _env_float(
     env: Mapping[str, str],
     name: str,
@@ -82,6 +97,21 @@ def _env_float(
     return value
 
 
+def _env_cookie_name(
+    env: Mapping[str, str],
+    name: str,
+    *,
+    default: str,
+) -> str:
+    raw = env.get(name)
+    value = default if raw is None or raw == "" else raw.strip()
+    if not value:
+        raise ValueError(f"{name} must not be empty")
+    if any(char in value for char in " \t\r\n;=,"):
+        raise ValueError(f"{name} must be a valid cookie name")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class GatewaySettings:
     """Settings used by the gateway app factory and lifespan startup."""
@@ -96,8 +126,13 @@ class GatewaySettings:
     require_ingestion_data_plane: bool = False
     start_grt_scheduler: bool = True
     mount_sim: bool | None = None
+    debug_endpoints_enabled: bool = False
     finance_panel_enabled: bool = False
     slack_dm_panel_enabled: bool = False
+    spec_demo_routes_enabled: bool = True
+    websocket_query_token_auth_enabled: bool = False
+    websocket_session_cookie_name: str = "fyralis_session"
+    view_ceo_static_tokens_enabled: bool = True
     default_tenant_id: str | None = None
     view_ceo_token: str = "ceo-dogfood-token"
     view_ceo_display_name: str = "Rachin"
@@ -111,6 +146,10 @@ class GatewaySettings:
     realtime_startup_timeout_s: float = 10.0
     ceo_view_startup_timeout_s: float = 30.0
     ingestion_data_plane_startup_timeout_s: float = 30.0
+
+    @property
+    def is_production(self) -> bool:
+        return _is_production(self.environment)
 
     @classmethod
     def from_env(
@@ -129,6 +168,16 @@ class GatewaySettings:
             raise ValueError(
                 "DEFAULT_TENANT_ID and COMPANY_OS_TENANT_ID must be unset "
                 "in production",
+            )
+        if production and source.get("DEFAULT_ACTOR_ID"):
+            raise ValueError(
+                "DEFAULT_ACTOR_ID must be unset in production; actor identity "
+                "must come from gateway auth",
+            )
+        if production and source.get("VIEW_CEO_STATIC_TOKENS"):
+            raise ValueError(
+                "VIEW_CEO_STATIC_TOKENS must be unset in production; use "
+                "gateway actor sessions or customer IdP-backed auth instead",
             )
         return cls(
             log_level=source.get("LOG_LEVEL", "INFO"),
@@ -160,7 +209,11 @@ class GatewaySettings:
                 "GATEWAY_START_GRT_SCHEDULER",
                 default=True,
             ),
-            mount_sim=_env_optional_bool(source, "GATEWAY_MOUNT_SIM"),
+            debug_endpoints_enabled=_required_disabled_in_production(
+                source,
+                "DEBUG_ENDPOINTS_ENABLED",
+                production=production,
+            ),
             finance_panel_enabled=_required_disabled_in_production(
                 source,
                 "FINANCE_PANEL_ENABLED",
@@ -170,6 +223,43 @@ class GatewaySettings:
                 source,
                 "SLACK_DM_PANEL_ENABLED",
                 production=production,
+            ),
+            spec_demo_routes_enabled=_demo_routes_enabled(
+                source,
+                "SPEC_DEMO_ROUTES_ENABLED",
+                production=production,
+            ),
+            websocket_query_token_auth_enabled=(
+                _required_disabled_in_production(
+                    source,
+                    "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED",
+                    production=production,
+                )
+                if production
+                else _env_bool(
+                    source,
+                    "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED",
+                    default=False,
+                )
+            ),
+            websocket_session_cookie_name=_env_cookie_name(
+                source,
+                "WEBSOCKET_SESSION_COOKIE_NAME",
+                default="fyralis_session",
+            ),
+            view_ceo_static_tokens_enabled=_demo_routes_enabled(
+                source,
+                "VIEW_CEO_STATIC_TOKENS_ENABLED",
+                production=production,
+            ),
+            mount_sim=(
+                _required_disabled_in_production(
+                    source,
+                    "GATEWAY_MOUNT_SIM",
+                    production=production,
+                )
+                if production
+                else _env_optional_bool(source, "GATEWAY_MOUNT_SIM")
             ),
             default_tenant_id=default_tenant_id,
             view_ceo_token=source.get("VIEW_CEO_TOKEN") or "ceo-dogfood-token",

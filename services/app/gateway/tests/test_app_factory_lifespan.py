@@ -98,7 +98,13 @@ def _patch_lightweight_startup(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any
         "closed_github_clients": [],
     }
 
-    async def run_extension_startup_hooks(app: Any, pool: Any) -> None:
+    async def run_extension_startup_hooks(
+        app: Any,
+        pool: Any,
+        *,
+        production: bool = False,
+    ) -> None:
+        del production
         return None
 
     def wire_integration_runtime_state(app: Any, pool: Any) -> Any:
@@ -487,6 +493,32 @@ def test_integration_runtime_rejects_pool_alias_drift() -> None:
         wire_integration_runtime_state(app, FakePool())  # type: ignore[arg-type]
 
     assert exc_info.value.component == "integration_state.pool"
+
+
+def test_integration_runtime_safety_runs_for_existing_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.app.gateway.state_wiring import (
+        IntegrationRuntimeState,
+        IntegrationRuntimeWiringError,
+        wire_integration_runtime_state,
+    )
+
+    pool = FakePool()
+    app = FastAPI()
+    app.state.integration_runtime = IntegrationRuntimeState(
+        pool=pool,  # type: ignore[arg-type]
+        secret_store=object(),
+        tenant_resolver=object(),
+        tenant_flags=object(),
+    )
+    monkeypatch.setenv("FYRALIS_ENV", "prod")
+    monkeypatch.setenv("WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW", "1")
+
+    with pytest.raises(IntegrationRuntimeWiringError) as exc_info:
+        wire_integration_runtime_state(app, pool)  # type: ignore[arg-type]
+
+    assert exc_info.value.component == "integration_state.safety"
 
 
 @pytest.mark.asyncio

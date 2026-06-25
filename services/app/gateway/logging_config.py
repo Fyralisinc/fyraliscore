@@ -15,7 +15,7 @@ import sys
 
 import structlog
 
-from lib.shared.http_headers import redact_header_values
+from lib.shared.http_headers import redact_log_values
 
 
 def configure_structlog(level: str = "INFO") -> None:
@@ -31,7 +31,7 @@ def configure_structlog(level: str = "INFO") -> None:
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
-            redact_header_values,
+            redact_log_values,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.StackInfoRenderer(),
