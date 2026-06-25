@@ -33,6 +33,18 @@ def build_router(
             raise HTTPException(status_code=401, detail="unauthorized")
         return auth
 
+    async def _require_card_access(auth, card_id: UUID) -> None:
+        decision = await repo.card_access_decision(
+            tenant_id=auth.tenant_id,
+            actor_id=auth.actor_id,
+            card_id=card_id,
+        )
+        if decision.allowed:
+            return
+        if decision.reason == "entity_not_found":
+            raise HTTPException(status_code=404, detail="card_not_found")
+        raise HTTPException(status_code=403, detail="card_out_of_scope")
+
     @router.get("/v1/cards/{card_id}/conversation")
     async def get_conversation(card_id: str, request: Request):
         auth = _auth(request)
@@ -40,6 +52,7 @@ def build_router(
             cid = UUID(card_id)
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="invalid_card_id")
+        await _require_card_access(auth, cid)
         conv = await repo.fetch(
             tenant_id=auth.tenant_id, actor_id=auth.actor_id, card_id=cid,
         )
@@ -55,6 +68,7 @@ def build_router(
             cid = UUID(card_id)
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="invalid_card_id")
+        await _require_card_access(auth, cid)
         try:
             body = await request.json()
         except Exception:
@@ -77,6 +91,8 @@ def build_router(
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="card_out_of_scope")
         except Exception:  # noqa: BLE001
             log.exception("probe_failed")
             raise HTTPException(status_code=500, detail="internal_error")
@@ -89,6 +105,7 @@ def build_router(
             cid = UUID(card_id)
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="invalid_card_id")
+        await _require_card_access(auth, cid)
         ok = await repo.clear(
             tenant_id=auth.tenant_id, actor_id=auth.actor_id, card_id=cid,
         )

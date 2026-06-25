@@ -15,6 +15,8 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
+from services.platform.access_control.checks import AccessDecision, can_read_by_id
+from services.platform.access_control.audit import record_override_if_needed
 
 
 @dataclass
@@ -108,6 +110,34 @@ class ConversationRepo:
 
     def __init__(self, pool: asyncpg.Pool):
         self._pool = pool
+
+    async def card_access_decision(
+        self, *, tenant_id: UUID, actor_id: UUID, card_id: UUID,
+    ) -> AccessDecision:
+        """Return the actor's read decision for the recommendation card.
+
+        Card conversations are keyed by recommendation model id. The
+        conversation row is actor-scoped, but the card id still needs the same
+        model visibility check as the recommendation/model surfaces before we
+        create, read, or clear exchanges.
+        """
+        async with self._pool.acquire() as conn:
+            decision = await can_read_by_id(
+                actor_id,
+                "model",
+                card_id,
+                conn=conn,
+                tenant_id=tenant_id,
+            )
+            await record_override_if_needed(
+                decision,
+                actor_id=actor_id,
+                entity_type="model",
+                entity_id=card_id,
+                conn=conn,
+                tenant_id=tenant_id,
+            )
+            return decision
 
     async def get_or_create(
         self, *, tenant_id: UUID, actor_id: UUID, card_id: UUID,

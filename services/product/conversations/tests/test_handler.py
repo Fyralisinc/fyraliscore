@@ -17,6 +17,7 @@ from services.product.conversations.repo import (
     CardExchange,
     ConversationArchivedError,
 )
+from services.platform.access_control.checks import AccessDecision
 
 
 class _FakeRepo:
@@ -27,6 +28,9 @@ class _FakeRepo:
     def __init__(self):
         self._convs: dict[tuple[UUID, UUID, UUID], CardConversation] = {}
         self._exchanges: dict[UUID, list[CardExchange]] = {}
+
+    async def card_access_decision(self, *, tenant_id, actor_id, card_id):
+        return AccessDecision(True, "test_visible_card")
 
     async def get_or_create(self, *, tenant_id, actor_id, card_id):
         key = (tenant_id, actor_id, card_id)
