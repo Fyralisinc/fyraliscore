@@ -77,7 +77,6 @@ class DiscordClient:
         self._tenant_resolver = tenant_resolver
         self._max_attempts = max_attempts
         self._wall_budget_s = wall_budget_s
-        self._bot_token: str | None = None
         self._owns_client = http_client is None
         self._client: httpx.AsyncClient | None = http_client
 
@@ -94,8 +93,6 @@ class DiscordClient:
         Raises `DiscordApiError(code='discord_secret_unavailable')`
         if the env var is unset or empty.
         """
-        if self._bot_token is not None:
-            return self._bot_token
         token = os.environ.get("DISCORD_BOT_TOKEN", "")
         if not token:
             raise DiscordApiError(
@@ -103,8 +100,7 @@ class DiscordClient:
                 code="discord_secret_unavailable",
                 context={"tenant_id": str(self._tenant_id)},
             )
-        self._bot_token = token
-        return self._bot_token
+        return token
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._client is None:

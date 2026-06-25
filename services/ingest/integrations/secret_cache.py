@@ -24,7 +24,9 @@ def secret_cache_ttl_seconds(env: dict[str, str] | None = None) -> float:
 
 
 def coerce_secret_text(raw: Any) -> str:
-    return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw).decode("utf-8")
+    return str(raw)
 
 
 class SecretValueCache:

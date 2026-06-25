@@ -361,9 +361,14 @@ Current state:
   `secret_ref` material for each call. QuickBooks reactive refresh coverage
   also runs with caching disabled, proving a newly refreshed token is used on
   the immediate retry instead of falling back to the stale access-token ref.
-  Slack/Discord bot-token clients and Telegram/Signal session clients still
-  need the same treatment or explicit rotation rationale before the "every
-  source-specific client" item can close.
+- Slack bot/user tokens now use the same TTL cache after resolving the latest
+  encrypted-secret row for their label; regression tests prove bot and user
+  token rotation is picked up when caching is disabled. Discord's app-level bot
+  token is no longer retained on the client and is resolved from env on each
+  bot-authenticated request. Telegram/Signal connection sessions, the Discord
+  gateway token wrapper, and Ramp client-credential material still need the same
+  treatment or explicit rotation rationale before the "every source-specific
+  client" item can close.
 - Many production template keys are still env-shaped.
 - Webhook env fallback is disabled in production by contract.
 

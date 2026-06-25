@@ -93,6 +93,7 @@ async def test_401_disables_installation_and_zeroes_token(
             pool=fresh_db, secret_store=secret_store,
             tenant_id=_tenant, installation_row_id=install_id,
             guild_id=_GUILD_ID,
+            base_url="https://discord.com/api/v10",
         )
         with pytest.raises(DiscordApiError) as exc_info:
             await client.get_guild_member(_USER_ID)
@@ -147,11 +148,13 @@ async def test_concurrent_401s_are_idempotent(
             pool=fresh_db, secret_store=secret_store,
             tenant_id=_tenant, installation_row_id=install_id,
             guild_id=_GUILD_ID,
+            base_url="https://discord.com/api/v10",
         )
         c2 = DiscordClient(
             pool=fresh_db, secret_store=secret_store,
             tenant_id=_tenant, installation_row_id=install_id,
             guild_id=_GUILD_ID,
+            base_url="https://discord.com/api/v10",
         )
 
         async def fire(client, fn):
@@ -208,6 +211,7 @@ async def test_403_code_50001_triggers_chokepoint(
             pool=fresh_db, secret_store=secret_store,
             tenant_id=_tenant, installation_row_id=install_id,
             guild_id=_GUILD_ID,
+            base_url="https://discord.com/api/v10",
         )
         with pytest.raises(DiscordApiError) as exc_info:
             await client.get_guild_member(_USER_ID)
