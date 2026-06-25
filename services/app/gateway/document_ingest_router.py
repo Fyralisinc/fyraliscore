@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse
 from pypdf import PdfReader
 
 from services.app.gateway.deps import get_gateway_deps
+from services.app.gateway.html_responses import trusted_static_html_response
 from services.ingest.ingestion.shadow_write import (
     CUTOVER_FLUSH_TIMEOUT_SEC,
     shadow_write_raw,
@@ -38,7 +39,7 @@ _UPLOAD_PAGE = """
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Document Ingest</title>
-  <style>
+  <style nonce="__CSP_NONCE__">
     :root {
       color-scheme: light;
       --bg: #f6f7f8;
@@ -269,7 +270,7 @@ _UPLOAD_PAGE = """
       </div>
     </section>
   </main>
-  <script>
+  <script nonce="__CSP_NONCE__">
     const defaultTenantId = __DEFAULT_TENANT_ID__;
     const dropzone = document.getElementById("dropzone");
     const fileInput = document.getElementById("file");
@@ -416,7 +417,7 @@ def build_document_ingest_router() -> APIRouter:
         page = _UPLOAD_PAGE.replace(
             "__DEFAULT_TENANT_ID__", json.dumps(str(_default_tenant_id()))
         )
-        return HTMLResponse(page)
+        return trusted_static_html_response(page)
 
     @router.post("/upload")
     async def upload_document(

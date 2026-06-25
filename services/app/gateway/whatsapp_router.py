@@ -24,6 +24,7 @@ WHATSAPP_ALLOW_UNSIGNED=1 to bypass verification for local debugging only.
 from __future__ import annotations
 
 import json
+import hmac
 import os
 from typing import Any
 from uuid import UUID
@@ -32,8 +33,12 @@ import structlog
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
+from lib.shared.env import is_prod
 from lib.shared.errors import CompanyOSError, ValidationError
+from lib.shared.errors import SecretNotFoundError, SecretStoreError
+from lib.shared.secrets import build_secret_store
 from services.app.gateway.deps import get_gateway_deps
+from services.app.gateway.html_responses import trusted_static_html_response
 from services.ingest.ingestion.core import ingest
 from services.ingest.ingestion.kafka.flush_batcher import coalesced_flush
 from services.ingest.ingestion.shadow_write import (
@@ -58,6 +63,114 @@ def _deps_or_503(request: Request) -> Any:
         return None
 
 
+class _WhatsAppSecretResolutionError(RuntimeError):
+    def __init__(self, *, label: str, original: BaseException) -> None:
+        super().__init__(f"{label} could not be resolved")
+        self.label = label
+        self.original = original
+
+
+def _secret_store_for_request(request: Request, pool: Any) -> Any:
+    state = request.app.state
+    runtime = getattr(state, "integration_runtime", None)
+    store = getattr(runtime, "secret_store", None) if runtime is not None else None
+    if store is None:
+        store = getattr(state, "secret_store", None)
+    if store is None:
+        store = build_secret_store(pool)
+        state.secret_store = store
+    return store
+
+
+def _dev_env_secret(name: str) -> str | None:
+    if is_prod():
+        return None
+    return os.environ.get(name)
+
+
+def _unsigned_webhooks_allowed() -> bool:
+    return (not is_prod()) and os.environ.get("WHATSAPP_ALLOW_UNSIGNED") == "1"
+
+
+def _decode_secret_bytes(value: bytes, *, label: str) -> str:
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _WhatsAppSecretResolutionError(label=label, original=exc) from exc
+
+
+async def _resolve_install_secret(
+    secret_store: Any,
+    install: dict[str, Any],
+    *,
+    ref_field: str,
+    legacy_field: str,
+    label: str,
+) -> str | None:
+    ref = install.get(ref_field)
+    if ref:
+        try:
+            raw = await secret_store.get(str(ref), tenant_id=install["tenant_id"])
+        except (SecretNotFoundError, SecretStoreError, ValueError) as exc:
+            raise _WhatsAppSecretResolutionError(label=label, original=exc) from exc
+        return _decode_secret_bytes(raw, label=label)
+    legacy_value = install.get(legacy_field)
+    return str(legacy_value) if legacy_value else None
+
+
+async def _verify_token_matches_installation(
+    pool: Any,
+    secret_store: Any,
+    presented_token: str,
+) -> bool:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, tenant_id, verify_token, verify_token_ref
+              FROM whatsapp_installations
+             WHERE enabled = true
+            """
+        )
+    for row in rows:
+        install = dict(row)
+        try:
+            token = await _resolve_install_secret(
+                secret_store,
+                install,
+                ref_field="verify_token_ref",
+                legacy_field="verify_token",
+                label="verify_token",
+            )
+        except _WhatsAppSecretResolutionError as exc:
+            log.warning(
+                "whatsapp.verify_token_ref_unresolvable",
+                installation_id=str(install.get("id")),
+                error_type=type(exc.original).__name__,
+            )
+            continue
+        if token is not None and hmac.compare_digest(token, presented_token):
+            return True
+    return False
+
+
+async def _store_optional_secret(
+    secret_store: Any,
+    *,
+    tenant_id: UUID,
+    phone_number_id: str,
+    body: dict[str, Any],
+    key: str,
+) -> str | None:
+    value = body.get(key)
+    if value is None or value == "":
+        return None
+    return await secret_store.put(
+        str(value),
+        label=f"whatsapp_{key}:{phone_number_id}",
+        tenant_id=tenant_id,
+    )
+
+
 def _first_phone_number_id(payload: dict[str, Any]) -> str | None:
     for entry in payload.get("entry") or []:
         if not isinstance(entry, dict):
@@ -73,13 +186,15 @@ def _first_phone_number_id(payload: dict[str, Any]) -> str | None:
 
 
 async def _lookup_installation(pool: Any, phone_number_id: str) -> dict[str, Any] | None:
-    """Resolve a phone_number_id → installation row. No tenant context needed:
-    whatsapp_installations has no RLS (it IS the routing table)."""
+    """Resolve a phone_number_id -> installation row before tenant context exists."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             SELECT id, tenant_id, phone_number_id, waba_id, display_phone_number,
-                   app_secret, verify_token, enabled
+                   app_secret, app_secret_ref,
+                   verify_token, verify_token_ref,
+                   access_token_ref,
+                   enabled
               FROM whatsapp_installations
              WHERE phone_number_id = $1
             """,
@@ -207,7 +322,7 @@ _VIEWER_PAGE = """
 <!doctype html><html lang="en"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>WhatsApp Live Ingestion</title>
-<style>
+<style nonce="__CSP_NONCE__">
   body{margin:0;font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;background:#0b141a;color:#e9edef}
   main{max-width:900px;margin:0 auto;padding:22px 16px}
   h1{font-size:20px;margin:0 0 4px}.sub{color:#8696a0;font-size:13px;margin-bottom:16px}
@@ -228,7 +343,7 @@ _VIEWER_PAGE = """
   <div class="sub">Observations land here in real time as messages arrive. <span class="live"><span class="dot"></span>polling</span></div>
   <div class="row"><input id="tenant" placeholder="tenant_id (uuid)"/></div>
   <ul id="feed"><li class="empty">Waiting for messages…</li></ul>
-</main><script>
+</main><script nonce="__CSP_NONCE__">
   const feed=document.getElementById("feed"),tenant=document.getElementById("tenant");
   tenant.value=new URLSearchParams(location.search).get("tenant_id")||"";
   function esc(s){const d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;}
@@ -255,7 +370,7 @@ _VIEWER_PAGE = """
 # --------------------------------------------------------------------------- #
 #  router                                                                      #
 # --------------------------------------------------------------------------- #
-def build_whatsapp_router() -> APIRouter:
+def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter:
     router = APIRouter(tags=["whatsapp"])
 
     # ---- Meta subscribe handshake (GET) ---------------------------------- #
@@ -266,19 +381,35 @@ def build_whatsapp_router() -> APIRouter:
         hub_verify_token: str | None = Query(None, alias="hub.verify_token"),
         hub_challenge: str | None = Query(None, alias="hub.challenge"),
     ) -> Any:
-        env_token = os.environ.get("WHATSAPP_VERIFY_TOKEN")
+        env_token = _dev_env_secret("WHATSAPP_VERIFY_TOKEN")
         ok = bool(hub_mode == "subscribe" and hub_verify_token)
-        matched = ok and env_token is not None and hub_verify_token == env_token
-        # Fall back to matching any installation's verify_token when no env token.
+        matched = bool(
+            ok
+            and env_token is not None
+            and hub_verify_token is not None
+            and hmac.compare_digest(hub_verify_token, env_token)
+        )
+        # Fall back to matching any installation's verify_token/secret ref.
         if ok and not matched:
             deps = _deps_or_503(request)
             if deps is not None and deps.pool is not None:
-                async with deps.pool.acquire() as conn:
-                    row = await conn.fetchrow(
-                        "SELECT 1 FROM whatsapp_installations WHERE verify_token = $1 LIMIT 1",
+                try:
+                    secret_store = _secret_store_for_request(request, deps.pool)
+                    matched = await _verify_token_matches_installation(
+                        deps.pool,
+                        secret_store,
                         hub_verify_token,
                     )
-                matched = row is not None
+                except SecretStoreError as exc:
+                    log.error(
+                        "whatsapp.secret_store_unavailable",
+                        path="verify",
+                        error_type=type(exc).__name__,
+                    )
+                    return PlainTextResponse(
+                        "secret store unavailable",
+                        status_code=503,
+                    )
         if matched and hub_challenge is not None:
             log.info("whatsapp.webhook_verified")
             return PlainTextResponse(hub_challenge, status_code=200)
@@ -313,9 +444,29 @@ def build_whatsapp_router() -> APIRouter:
                 status_code=200,
             )
 
-        app_secret = install.get("app_secret") or os.environ.get("WHATSAPP_APP_SECRET")
-        allow_unsigned = os.environ.get("WHATSAPP_ALLOW_UNSIGNED") == "1"
+        allow_unsigned = _unsigned_webhooks_allowed()
         if not allow_unsigned:
+            try:
+                secret_store = _secret_store_for_request(request, deps.pool)
+                app_secret = await _resolve_install_secret(
+                    secret_store,
+                    install,
+                    ref_field="app_secret_ref",
+                    legacy_field="app_secret",
+                    label="app_secret",
+                )
+            except (SecretStoreError, _WhatsAppSecretResolutionError) as exc:
+                original = getattr(exc, "original", exc)
+                log.error(
+                    "whatsapp.app_secret_unavailable",
+                    phone_number_id=phone_number_id,
+                    error_type=type(original).__name__,
+                )
+                return JSONResponse(
+                    {"status": "app_secret_unavailable"},
+                    status_code=503,
+                )
+            app_secret = app_secret or _dev_env_secret("WHATSAPP_APP_SECRET")
             if not app_secret:
                 log.error("whatsapp.no_app_secret", phone_number_id=phone_number_id)
                 return JSONResponse({"status": "no_app_secret_configured"}, status_code=503)
@@ -339,7 +490,13 @@ def build_whatsapp_router() -> APIRouter:
             for msg in value.get("messages") or []:
                 if isinstance(msg, dict):
                     n_messages += 1
-                    items.append({"message": msg, "metadata": metadata, "contacts": contacts})
+                    items.append(
+                        {
+                            "message": msg,
+                            "metadata": metadata,
+                            "contacts": contacts,
+                        }
+                    )
             for st in value.get("statuses") or []:
                 if isinstance(st, dict):
                     n_statuses += 1
@@ -350,7 +507,12 @@ def build_whatsapp_router() -> APIRouter:
         # a Kafka failure silently falls back to inline so Meta still gets a 2xx.
         kafka_producer, s3_client, tenant_flags = _dataplane_runtime(request)
         use_kafka = False
-        if items and kafka_producer is not None and s3_client is not None and tenant_flags is not None:
+        if (
+            items
+            and kafka_producer is not None
+            and s3_client is not None
+            and tenant_flags is not None
+        ):
             try:
                 use_kafka = await tenant_flags.kafka_path_enabled(tenant_id)
             except Exception:  # noqa: BLE001
@@ -407,6 +569,9 @@ def build_whatsapp_router() -> APIRouter:
             status_code=200,
         )
 
+    if not debug_endpoints_enabled:
+        return router
+
     # ---- dev: register an installation (creds) --------------------------- #
     @router.post("/debug/whatsapp/register")
     async def register_installation(request: Request) -> JSONResponse:
@@ -432,31 +597,92 @@ def build_whatsapp_router() -> APIRouter:
             return JSONResponse({"status": "missing_phone_number_id"}, status_code=400)
 
         await _ensure_tenant(deps.pool, tenant_id)
+        try:
+            secret_store = _secret_store_for_request(request, deps.pool)
+            app_secret_ref = await _store_optional_secret(
+                secret_store,
+                tenant_id=tenant_id,
+                phone_number_id=phone_number_id,
+                body=body,
+                key="app_secret",
+            )
+            verify_token_ref = await _store_optional_secret(
+                secret_store,
+                tenant_id=tenant_id,
+                phone_number_id=phone_number_id,
+                body=body,
+                key="verify_token",
+            )
+            access_token_ref = await _store_optional_secret(
+                secret_store,
+                tenant_id=tenant_id,
+                phone_number_id=phone_number_id,
+                body=body,
+                key="access_token",
+            )
+        except (SecretStoreError, ValueError) as exc:
+            log.error(
+                "whatsapp.secret_store_write_failed",
+                phone_number_id=phone_number_id,
+                error_type=type(exc).__name__,
+            )
+            return JSONResponse({"status": "secret_store_unavailable"}, status_code=503)
         async with deps.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO whatsapp_installations
                     (tenant_id, phone_number_id, waba_id, display_phone_number,
+                     app_secret_ref, verify_token_ref, access_token_ref,
                      app_secret, verify_token, access_token, enabled, updated_at)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,true, now())
+                VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,NULL,NULL,true, now())
                 ON CONFLICT (phone_number_id) DO UPDATE SET
                     tenant_id            = EXCLUDED.tenant_id,
-                    waba_id              = COALESCE(EXCLUDED.waba_id, whatsapp_installations.waba_id),
-                    display_phone_number = COALESCE(EXCLUDED.display_phone_number, whatsapp_installations.display_phone_number),
-                    app_secret           = COALESCE(EXCLUDED.app_secret, whatsapp_installations.app_secret),
-                    verify_token         = COALESCE(EXCLUDED.verify_token, whatsapp_installations.verify_token),
-                    access_token         = COALESCE(EXCLUDED.access_token, whatsapp_installations.access_token),
+                    waba_id              = COALESCE(
+                                             EXCLUDED.waba_id,
+                                             whatsapp_installations.waba_id
+                                           ),
+                    display_phone_number = COALESCE(
+                                             EXCLUDED.display_phone_number,
+                                             whatsapp_installations.display_phone_number
+                                           ),
+                    app_secret_ref       = COALESCE(
+                                             EXCLUDED.app_secret_ref,
+                                             whatsapp_installations.app_secret_ref
+                                           ),
+                    verify_token_ref     = COALESCE(
+                                             EXCLUDED.verify_token_ref,
+                                             whatsapp_installations.verify_token_ref
+                                           ),
+                    access_token_ref     = COALESCE(
+                                             EXCLUDED.access_token_ref,
+                                             whatsapp_installations.access_token_ref
+                                           ),
+                    app_secret           = CASE
+                                             WHEN EXCLUDED.app_secret_ref IS NOT NULL THEN NULL
+                                             ELSE whatsapp_installations.app_secret
+                                           END,
+                    verify_token         = CASE
+                                             WHEN EXCLUDED.verify_token_ref IS NOT NULL THEN NULL
+                                             ELSE whatsapp_installations.verify_token
+                                           END,
+                    access_token         = CASE
+                                             WHEN EXCLUDED.access_token_ref IS NOT NULL THEN NULL
+                                             ELSE whatsapp_installations.access_token
+                                           END,
                     enabled              = true,
                     updated_at           = now()
-                RETURNING id, tenant_id, phone_number_id, waba_id, display_phone_number, enabled
+                RETURNING id, tenant_id, phone_number_id, waba_id, display_phone_number, enabled,
+                          (app_secret_ref IS NOT NULL) AS has_app_secret_ref,
+                          (verify_token_ref IS NOT NULL) AS has_verify_token_ref,
+                          (access_token_ref IS NOT NULL) AS has_access_token_ref
                 """,
                 tenant_id,
                 phone_number_id,
                 body.get("waba_id"),
                 body.get("display_phone_number"),
-                body.get("app_secret"),
-                body.get("verify_token"),
-                body.get("access_token"),
+                app_secret_ref,
+                verify_token_ref,
+                access_token_ref,
             )
         out = dict(row)
         out["id"] = str(out["id"])
@@ -467,7 +693,7 @@ def build_whatsapp_router() -> APIRouter:
     # ---- dev: live viewer ------------------------------------------------- #
     @router.get("/debug/whatsapp", include_in_schema=False)
     async def viewer() -> HTMLResponse:
-        return HTMLResponse(_VIEWER_PAGE)
+        return trusted_static_html_response(_VIEWER_PAGE)
 
     @router.get("/debug/whatsapp/recent")
     async def recent(

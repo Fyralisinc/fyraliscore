@@ -141,6 +141,20 @@ def build_core_router() -> APIRouter:
                 {"error": "actor_id and tenant_id required as UUID"},
                 status_code=400,
             )
+        tenant_header = request.headers.get("X-Tenant-Id")
+        if tenant_header:
+            try:
+                header_tenant_id = UUID(tenant_header)
+            except ValueError:
+                return JSONResponse(
+                    {"error": "invalid_tenant_header"},
+                    status_code=400,
+                )
+            if header_tenant_id != tenant_id:
+                return JSONResponse(
+                    {"error": "tenant_id_mismatch"},
+                    status_code=400,
+                )
         ttl_s = body.get("ttl_seconds") or 24 * 3600
         try:
             ttl_s = int(ttl_s)

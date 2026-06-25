@@ -49,3 +49,8 @@ def test_metrics_endpoint_ok_when_no_failures(client) -> None:
     assert resp.status_code == 200
     # Family header is advertised even with zero samples.
     assert "# TYPE webhook_verification_failures_total counter" in resp.text
+
+
+def test_debug_routes_are_not_mounted_by_default(client) -> None:
+    assert client.get("/debug/whatsapp").status_code == 404
+    assert client.get("/debug/document-ingest/status").status_code == 404

@@ -14,7 +14,15 @@ from lib.shared.ids import uuid7
 from services.app.gateway.auth import AuthContext, validate_token
 from services.app.gateway.deps import get_gateway_deps
 from services.app.gateway.logging_config import get_logger
+from services.app.gateway.product_workflow_metrics import (
+    record_product_workflow_request,
+)
 from services.app.gateway.rate_limit import RateTier
+from services.app.gateway.route_access import (
+    GATEWAY_BEARER_BYPASS_PATHS,
+    GATEWAY_BEARER_BYPASS_PREFIXES,
+    gateway_auth_bypassed,
+)
 
 
 log = get_logger("gateway")
@@ -22,64 +30,16 @@ log = get_logger("gateway")
 
 # Paths that do not require authentication (e.g. health checks, the
 # session-minting endpoint itself uses a separate actor lookup).
-_PUBLIC_PATHS = frozenset({
-    "/healthz",
-    "/readyz",
-    # Prometheus scrape path for the webhook verification/resolver
-    # counters (FR-011). Scrapers carry no Bearer token, and the data is
-    # bounded-enum counters with no tenant/installation labels (FR-015).
-    "/metrics",
-    "/auth/session",
-    # IN-08: the OAuth callback is public (state-token-authed inside
-    # the handler). The /install route stays Bearer-required, so it is
-    # NOT in this allowlist. We deliberately do NOT add "/integrations/"
-    # as a prefix entry - single-route, not blanket public.
-    "/integrations/slack/callback",
-    # IN-09: same posture for Discord. /install stays Bearer-required.
-    # /installed and /install-error are the redirect targets the OAuth
-    # callback issues. The browser follows the 302 without a Bearer,
-    # so these MUST be on the allowlist or the browser sees 401
-    # missing_bearer after a successful install.
-    "/integrations/discord/callback",
-    "/integrations/discord/installed",
-    "/integrations/discord/install-error",
-    "/integrations/slack/installed",
-    "/integrations/slack/install-error",
-    # IN-13: GitHub App callback + redirect targets. /install stays
-    # Bearer-required like Slack/Discord.
-    "/integrations/github/callback",
-    "/integrations/github/installed",
-    "/integrations/github/install-error",
-    # IN-14: Notion OAuth callback + redirect targets. /install stays
-    # Bearer-required.
-    "/integrations/notion/callback",
-    "/integrations/notion/installed",
-    "/integrations/notion/install-error",
-    # WhatsApp (Cloud API) webhook ingress. Authentication is Meta's
-    # X-Hub-Signature-256 HMAC (verified inside whatsapp_router), NOT a Bearer
-    # token — same posture as the /webhooks/* prefix. Both the GET subscribe
-    # handshake and the POST event delivery hit this exact path, so the Bearer
-    # middleware MUST skip it or every WhatsApp webhook becomes a 401.
-    "/integrations/whatsapp/webhook",
-})
+_PUBLIC_PATHS = GATEWAY_BEARER_BYPASS_PATHS
 
 
 # Path prefixes that bypass the gateway's bearer-session middleware.
-# Week-4 integration: the CEO-view sub-routers carry their own token
-# auth (`VIEW_CEO_TOKEN` resolved by the stream manager), and the
-# internal rendering endpoints are reached only from in-process
-# adapters. Exposing them publicly on the single Uvicorn host during
-# dogfood is acceptable; real auth lands with Wave-5-adj.
+# These prefixes bypass actor-session bearer auth because each family uses a
+# different boundary: provider signatures, extension OAuth, view tokens, or
+# in-process/internal routing. Keep this list synchronized through
+# services.app.gateway.route_access rather than editing it ad hoc.
 _PUBLIC_PATH_PREFIXES: tuple[str, ...] = (
-    "/view/ceo/",
-    "/rendering/",
-    "/debug/",
-    "/api/debug/",
-    # IN-06: webhook ingress. Authentication is the per-provider
-    # cryptographic signature check inside services.app.webhooks.router -
-    # NOT a Bearer token. The Bearer middleware MUST skip this prefix
-    # or every webhook becomes a 401 with `missing_bearer`.
-    "/webhooks/",
+    *GATEWAY_BEARER_BYPASS_PREFIXES,
 )
 # Overlay packages (e.g. the demo: /v1/demo/companies, /v1/demo/sessions/start;
 # the simulation panel: /simulation/) contribute their own public prefixes via
@@ -91,6 +51,20 @@ def _public_path_prefixes() -> tuple[str, ...]:
     from services.app.gateway.extensions import extension_public_path_prefixes
 
     return _PUBLIC_PATH_PREFIXES + extension_public_path_prefixes()
+
+
+def _auth_bypassed_path(path: str, *, production: bool = False) -> bool:
+    from services.app.gateway.extensions import extension_public_path_prefixes
+
+    return gateway_auth_bypassed(
+        path,
+        extension_public_path_prefixes(production=production),
+    )
+
+
+def _request_is_production(request: Request) -> bool:
+    settings = getattr(request.app.state, "gateway_settings", None)
+    return bool(getattr(settings, "is_production", False))
 
 
 # ---------------------------------------------------------------------
@@ -147,13 +121,21 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             _HTTP_DURATION.observe(
                 duration_ms / 1000.0, method=request.method, route=route
             )
-            log.error(
-                "request_failed",
-                method=request.method,
-                path=request.url.path,
-                duration_ms=round(duration_ms, 2),
-                error=type(e).__name__,
+            record_product_workflow_request(
+                route_template=route,
+                status_code=500,
+                duration_seconds=duration_ms / 1000.0,
             )
+            try:
+                log.error(
+                    "request_failed",
+                    method=request.method,
+                    path=request.url.path,
+                    duration_ms=round(duration_ms, 2),
+                    error=type(e).__name__,
+                )
+            except Exception:  # noqa: BLE001 - preserve the original failure
+                pass
             raise
         duration_ms = (time.monotonic() - started) * 1000
         route = _route_template(request)
@@ -162,6 +144,11 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         )
         _HTTP_DURATION.observe(
             duration_ms / 1000.0, method=request.method, route=route
+        )
+        record_product_workflow_request(
+            route_template=route,
+            status_code=response.status_code,
+            duration_seconds=duration_ms / 1000.0,
         )
         # Auth middleware bound actor_id/tenant_id to contextvars in a
         # downstream task context; Starlette's BaseHTTPMiddleware boundary
@@ -194,9 +181,10 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         if (
-            request.url.path in _PUBLIC_PATHS
-            or request.url.path.startswith("/stream")
-            or any(request.url.path.startswith(p) for p in _public_path_prefixes())
+            _auth_bypassed_path(
+                request.url.path,
+                production=_request_is_production(request),
+            )
         ):
             # Public paths skip auth, BUT if the caller passes a demo
             # bearer token we still resolve it and inject X-Tenant-Id
@@ -272,9 +260,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
         if (
-            request.url.path in _PUBLIC_PATHS
-            or request.url.path.startswith("/stream")
-            or any(request.url.path.startswith(p) for p in _public_path_prefixes())
+            _auth_bypassed_path(request.url.path)
         ):
             return await call_next(request)
         auth: AuthContext | None = getattr(request.state, "auth", None)

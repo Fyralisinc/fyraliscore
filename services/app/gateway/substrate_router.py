@@ -6,6 +6,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Request
 
+from services.platform.access_control.audit import OverrideKind, record_override
+from services.platform.access_control.checks import (
+    AccessDecision,
+    EntityKind,
+    can_read,
+)
+
 
 def build_substrate_router() -> APIRouter:
     router = APIRouter(tags=["substrate"])
@@ -14,19 +21,21 @@ def build_substrate_router() -> APIRouter:
     async def get_observations(
         request: Request, limit: int = 50, offset: int = 0
     ) -> dict[str, Any]:
-        auth = request.state.auth
-        deps = _deps(request)
-        rows = await deps.pool.fetch(
-            """
-            SELECT id, kind, source_channel, occurred_at, content_text
-            FROM observations
-            WHERE tenant_id = $1
-            ORDER BY occurred_at DESC
-            LIMIT $2 OFFSET $3
-            """,
-            auth.tenant_id,
-            _clip(limit, 1, 500),
-            max(offset, 0),
+        rows = await _visible_list(
+            request,
+            kind="observation",
+            table="observations",
+            output_columns=(
+                "id",
+                "kind",
+                "source_channel",
+                "occurred_at",
+                "content_text",
+            ),
+            access_columns=("actor_id", "entities_mentioned", "source_actor_ref"),
+            order_column="occurred_at",
+            limit=limit,
+            offset=offset,
         )
         return {
             "items": [
@@ -39,7 +48,8 @@ def build_substrate_router() -> APIRouter:
                 }
                 for r in rows
             ],
-            "stub": True,
+            "stub": False,
+            "source": "substrate",
         }
 
     @router.get("/models")
@@ -48,10 +58,18 @@ def build_substrate_router() -> APIRouter:
     ) -> dict[str, Any]:
         return await _generic_list(
             request,
-            "models",
-            ("id", "proposition", "confidence", "status", "created_at"),
-            limit,
-            offset,
+            kind="model",
+            table="models",
+            output_columns=(
+                "id",
+                "proposition",
+                "confidence",
+                "status",
+                "created_at",
+            ),
+            access_columns=("visible_to_subjects", "scope_actors", "scope_entities"),
+            limit=limit,
+            offset=offset,
         )
 
     @router.get("/commitments")
@@ -60,10 +78,19 @@ def build_substrate_router() -> APIRouter:
     ) -> dict[str, Any]:
         return await _generic_list(
             request,
-            "commitments",
-            ("id", "title", "state", "owner_id", "due_date", "created_at"),
-            limit,
-            offset,
+            kind="commitment",
+            table="commitments",
+            output_columns=(
+                "id",
+                "title",
+                "state",
+                "owner_id",
+                "due_date",
+                "created_at",
+            ),
+            access_columns=(),
+            limit=limit,
+            offset=offset,
         )
 
     @router.get("/goals")
@@ -72,10 +99,19 @@ def build_substrate_router() -> APIRouter:
     ) -> dict[str, Any]:
         return await _generic_list(
             request,
-            "goals",
-            ("id", "title", "state", "altitude", "cached_health", "created_at"),
-            limit,
-            offset,
+            kind="goal",
+            table="goals",
+            output_columns=(
+                "id",
+                "title",
+                "state",
+                "altitude",
+                "cached_health",
+                "created_at",
+            ),
+            access_columns=(),
+            limit=limit,
+            offset=offset,
         )
 
     @router.get("/decisions")
@@ -84,10 +120,12 @@ def build_substrate_router() -> APIRouter:
     ) -> dict[str, Any]:
         return await _generic_list(
             request,
-            "decisions",
-            ("id", "title", "state", "created_at"),
-            limit,
-            offset,
+            kind="decision",
+            table="decisions",
+            output_columns=("id", "title", "state", "created_at"),
+            access_columns=(),
+            limit=limit,
+            offset=offset,
         )
 
     @router.get("/resources")
@@ -96,10 +134,18 @@ def build_substrate_router() -> APIRouter:
     ) -> dict[str, Any]:
         return await _generic_list(
             request,
-            "resources",
-            ("id", "kind", "identity", "utilization_state", "created_at"),
-            limit,
-            offset,
+            kind="resource",
+            table="resources",
+            output_columns=(
+                "id",
+                "kind",
+                "identity",
+                "utilization_state",
+                "created_at",
+            ),
+            access_columns=("kind AS resource_kind", "metadata"),
+            limit=limit,
+            offset=offset,
         )
 
     return router
@@ -107,33 +153,167 @@ def build_substrate_router() -> APIRouter:
 
 async def _generic_list(
     request: Request,
+    *,
+    kind: EntityKind,
     table: str,
-    columns: tuple[str, ...],
+    output_columns: tuple[str, ...],
+    access_columns: tuple[str, ...],
     limit: int,
     offset: int,
 ) -> dict[str, Any]:
-    auth = request.state.auth
-    deps = _deps(request)
-    col_list = ", ".join(columns)
-    query = (
-        f"SELECT {col_list} FROM {table} "
-        "WHERE tenant_id = $1 "
-        "ORDER BY created_at DESC "
-        "LIMIT $2 OFFSET $3"
-    )
-    rows = await deps.pool.fetch(
-        query, auth.tenant_id, _clip(limit, 1, 500), max(offset, 0)
+    rows = await _visible_list(
+        request,
+        kind=kind,
+        table=table,
+        output_columns=output_columns,
+        access_columns=access_columns,
+        order_column="created_at",
+        limit=limit,
+        offset=offset,
     )
     items: list[dict[str, Any]] = []
     for r in rows:
         item: dict[str, Any] = {}
-        for c in columns:
+        for c in output_columns:
             v = r[c]
             if hasattr(v, "isoformat"):
                 v = v.isoformat()
             item[c] = str(v) if isinstance(v, UUID) else v
         items.append(item)
-    return {"items": items, "stub": True}
+    return {"items": items, "stub": False, "source": "substrate"}
+
+
+async def _visible_list(
+    request: Request,
+    *,
+    kind: EntityKind,
+    table: str,
+    output_columns: tuple[str, ...],
+    access_columns: tuple[str, ...],
+    order_column: str,
+    limit: int,
+    offset: int,
+) -> list[dict[str, Any]]:
+    auth = request.state.auth
+    deps = _deps(request)
+    select_columns = _select_columns(output_columns, access_columns)
+    query = (
+        f"SELECT {select_columns} FROM {table} "
+        "WHERE tenant_id = $1 "
+        f"ORDER BY {order_column} DESC "
+        "LIMIT $2 OFFSET $3"
+    )
+    requested_limit = _clip(limit, 1, 500)
+    visible_offset = max(offset, 0)
+    batch_size = min(max(requested_limit + min(visible_offset, 500), 50), 500)
+    async with deps.pool.acquire() as conn:
+        visible: list[dict[str, Any]] = []
+        visible_seen = 0
+        raw_offset = 0
+        while len(visible) < requested_limit:
+            rows = await conn.fetch(
+                query,
+                auth.tenant_id,
+                batch_size,
+                raw_offset,
+            )
+            if not rows:
+                break
+            raw_offset += len(rows)
+            for row in rows:
+                item = dict(row)
+                entity = _entity_for_access(kind, item, auth.tenant_id)
+                decision: AccessDecision = await can_read(
+                    auth.actor_id,
+                    entity,
+                    conn=conn,
+                    tenant_id=auth.tenant_id,
+                )
+                if not decision.allowed:
+                    continue
+                if visible_seen < visible_offset:
+                    visible_seen += 1
+                    continue
+                await _record_override_if_needed(
+                    decision,
+                    actor_id=auth.actor_id,
+                    entity_type=kind,
+                    entity_id=item.get("id"),
+                    conn=conn,
+                    tenant_id=auth.tenant_id,
+                )
+                visible.append(item)
+                if len(visible) >= requested_limit:
+                    break
+            if len(rows) < batch_size:
+                break
+        return visible
+
+
+def _select_columns(
+    output_columns: tuple[str, ...],
+    access_columns: tuple[str, ...],
+) -> str:
+    columns = ["tenant_id", *output_columns, *access_columns]
+    seen: set[str] = set()
+    selected: list[str] = []
+    for column in columns:
+        output_name = _output_column_name(column)
+        if output_name in seen:
+            continue
+        seen.add(output_name)
+        selected.append(column)
+    return ", ".join(selected)
+
+
+def _output_column_name(column: str) -> str:
+    lowered = column.lower()
+    if " as " in lowered:
+        return column[lowered.rindex(" as ") + 4 :].strip()
+    return column.strip()
+
+
+def _entity_for_access(
+    kind: EntityKind,
+    row: dict[str, Any],
+    tenant_id: UUID,
+) -> dict[str, Any]:
+    entity = dict(row)
+    entity["kind"] = kind
+    entity["tenant_id"] = tenant_id
+    return entity
+
+
+async def _record_override_if_needed(
+    decision: AccessDecision,
+    *,
+    actor_id: UUID,
+    entity_type: str,
+    entity_id: Any,
+    conn: Any,
+    tenant_id: UUID,
+) -> None:
+    if not decision.override_applied:
+        return
+    await record_override(
+        actor_id,
+        entity_type,
+        entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id)),
+        _override_kind(decision.reason),
+        conn=conn,
+        tenant_id=tenant_id,
+        reason=decision.reason,
+    )
+
+
+def _override_kind(reason: str) -> OverrideKind:
+    if reason == "admin_override":
+        return "admin"
+    if reason == "leadership_override":
+        return "leadership"
+    if reason == "model_self_scope":
+        return "first_person"
+    return "system"
 
 
 def _deps(request: Request) -> Any:
