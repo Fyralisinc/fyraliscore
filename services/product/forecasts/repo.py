@@ -36,6 +36,9 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.errors import CompanyOSError, ValidationError
+from services.platform.access_control.checks import EntityKind, can_read_by_id
+from services.platform.access_control.audit import record_override, record_override_if_needed
+from services.platform.access_control.roles import has_role
 
 
 PredictionStatus = Literal["active", "resolved", "superseded"]
@@ -51,6 +54,16 @@ _VALID_CATEGORIES = frozenset({
 _VALID_STATUSES = frozenset({"active", "resolved", "superseded"})
 _VALID_SORTS = frozenset({"earliest_resolution", "latest_resolution",
                           "highest_confidence", "created"})
+
+_TARGET_ACCESS_KIND: dict[str, EntityKind] = {
+    "commitment": "commitment",
+    "goal": "goal",
+    "decision": "decision",
+    "resource": "resource",
+    "customer": "resource",
+    "model": "model",
+    "prediction": "model",
+}
 
 
 class ForecastsRepoError(CompanyOSError):
@@ -83,6 +96,8 @@ class PredictionRow:
     category: str
     target_node_kind: str | None
     target_node_id: UUID | None
+    created_by_actor_id: UUID | None
+    scope_actors: list[UUID]
     target_label: str | None
     confidence: float
     confidence_basis: str | None
@@ -120,6 +135,7 @@ async def list_predictions(
     conn: asyncpg.Connection,
     tenant_id: UUID,
     *,
+    actor_id: UUID | None = None,
     status: str = "active",
     category: str | None = None,
     sort: str = "earliest_resolution",
@@ -145,11 +161,13 @@ async def list_predictions(
     if category is not None:
         args.append(category)
         where += f" AND category = ${len(args)}"
-    args.append(limit)
+    query_limit = 500 if actor_id is not None else limit
+    args.append(query_limit)
 
     sql = f"""
         SELECT id, tenant_id, status, statement, rationale, category,
                target_node_kind, target_node_id, target_label,
+               created_by_actor_id, scope_actors,
                confidence, confidence_basis, falsification_condition,
                key_drivers, impact,
                resolution_at, resolved_at, outcome, resolution_timeliness,
@@ -160,19 +178,30 @@ async def list_predictions(
         LIMIT ${len(args)}
     """
     rows = await conn.fetch(sql, *args)
-    return [_row_to_prediction(r) for r in rows]
+    predictions = [_row_to_prediction(r) for r in rows]
+    if actor_id is not None:
+        predictions = await _filter_visible_predictions(
+            conn,
+            tenant_id,
+            actor_id,
+            predictions,
+        )
+    return predictions[:limit]
 
 
 async def get_prediction(
     conn: asyncpg.Connection,
     tenant_id: UUID,
     prediction_id: UUID,
+    *,
+    actor_id: UUID | None = None,
 ) -> PredictionDetail | None:
     """Fetch a single prediction (with signals). Returns None on miss."""
     row = await conn.fetchrow(
         """
         SELECT id, tenant_id, status, statement, rationale, category,
                target_node_kind, target_node_id, target_label,
+               created_by_actor_id, scope_actors,
                confidence, confidence_basis, falsification_condition,
                key_drivers, impact,
                resolution_at, resolved_at, outcome, resolution_timeliness,
@@ -183,6 +212,14 @@ async def get_prediction(
         prediction_id, tenant_id,
     )
     if row is None:
+        return None
+    prediction = _row_to_prediction(row)
+    if actor_id is not None and not await _prediction_visible(
+        conn,
+        tenant_id,
+        actor_id,
+        prediction,
+    ):
         return None
     sig_rows = await conn.fetch(
         """
@@ -205,7 +242,7 @@ async def get_prediction(
         )
         for r in sig_rows
     ]
-    return PredictionDetail(prediction=_row_to_prediction(row), signals=signals)
+    return PredictionDetail(prediction=prediction, signals=signals)
 
 
 # ---------------------------------------------------------------------
@@ -250,16 +287,19 @@ async def create_prediction(
         INSERT INTO predictions (
           tenant_id, status, statement, rationale, category,
           target_node_kind, target_node_id, target_label,
+          created_by_actor_id, scope_actors,
           confidence, confidence_basis, falsification_condition,
           key_drivers, impact, resolution_at
         ) VALUES (
           $1, $2, $3, $4, $5,
           $6, $7, $8,
-          $9, $10, $11,
-          $12::jsonb, $13::jsonb, $14
+          $9, $10::uuid[],
+          $11, $12, $13,
+          $14::jsonb, $15::jsonb, $16
         )
         RETURNING id, tenant_id, status, statement, rationale, category,
                   target_node_kind, target_node_id, target_label,
+                  created_by_actor_id, scope_actors,
                   confidence, confidence_basis, falsification_condition,
                   key_drivers, impact,
                   resolution_at, resolved_at, outcome, resolution_timeliness,
@@ -269,6 +309,8 @@ async def create_prediction(
         payload.get("target_node_kind"),
         _optional_uuid(payload.get("target_node_id")),
         payload.get("target_label"),
+        _optional_uuid(payload.get("created_by_actor_id")),
+        _uuid_list(payload.get("scope_actors")),
         confidence,
         payload.get("confidence_basis"),
         payload.get("falsification_condition"),
@@ -310,6 +352,7 @@ async def resolve_prediction(
         WHERE id = $1
         RETURNING id, tenant_id, status, statement, rationale, category,
                   target_node_kind, target_node_id, target_label,
+                  created_by_actor_id, scope_actors,
                   confidence, confidence_basis, falsification_condition,
                   key_drivers, impact,
                   resolution_at, resolved_at, outcome, resolution_timeliness,
@@ -333,6 +376,8 @@ async def resolve_prediction(
 async def upcoming_resolutions(
     conn: asyncpg.Connection,
     tenant_id: UUID,
+    *,
+    actor_id: UUID | None = None,
     days: int = 14,
 ) -> list[PredictionRow]:
     """Active predictions whose resolution_at falls within the next
@@ -342,6 +387,7 @@ async def upcoming_resolutions(
         """
         SELECT id, tenant_id, status, statement, rationale, category,
                target_node_kind, target_node_id, target_label,
+               created_by_actor_id, scope_actors,
                confidence, confidence_basis, falsification_condition,
                key_drivers, impact,
                resolution_at, resolved_at, outcome, resolution_timeliness,
@@ -355,12 +401,22 @@ async def upcoming_resolutions(
         """,
         tenant_id, days,
     )
-    return [_row_to_prediction(r) for r in rows]
+    predictions = [_row_to_prediction(r) for r in rows]
+    if actor_id is not None:
+        predictions = await _filter_visible_predictions(
+            conn,
+            tenant_id,
+            actor_id,
+            predictions,
+        )
+    return predictions
 
 
 async def risk_exposure_series(
     conn: asyncpg.Connection,
     tenant_id: UUID,
+    *,
+    actor_id: UUID | None = None,
     metric: str = "arr_at_risk",
     range_days: int = 90,
 ) -> list[dict[str, Any]]:
@@ -374,6 +430,14 @@ async def risk_exposure_series(
     """
     metric = str(metric or "arr_at_risk")
     range_days = max(7, int(range_days))
+    if actor_id is not None:
+        return await _scoped_risk_exposure_series(
+            conn,
+            tenant_id,
+            actor_id=actor_id,
+            metric=metric,
+            range_days=range_days,
+        )
     rows = await conn.fetch(
         """
         SELECT
@@ -429,9 +493,35 @@ async def risk_exposure_series(
 async def summary_counters(
     conn: asyncpg.Connection,
     tenant_id: UUID,
+    *,
+    actor_id: UUID | None = None,
 ) -> dict[str, Any]:
     """Counters for the Forecasts header strip. Read-only helper for
     the router's GET /v1/forecasts/summary."""
+    if actor_id is not None:
+        active = await list_predictions(
+            conn,
+            tenant_id,
+            actor_id=actor_id,
+            status="active",
+            sort="earliest_resolution",
+            limit=200,
+        )
+        now = datetime.now(timezone.utc)
+        upcoming_cutoff = now + timedelta(days=14)
+        upcoming = [
+            p for p in active
+            if now <= p.resolution_at <= upcoming_cutoff
+        ]
+        return {
+            "active_count": len(active),
+            "at_risk_arr": sum(
+                float(p.impact.get("arr_at_risk", 0) or 0.0)
+                for p in active
+            ),
+            "high_confidence_count": sum(1 for p in active if p.confidence >= 0.7),
+            "upcoming_resolutions_count_14d": len(upcoming),
+        }
     active_row = await conn.fetchrow(
         """
         SELECT
@@ -461,6 +551,150 @@ async def summary_counters(
         "high_confidence_count": int(active_row["high_confidence_count"] or 0),
         "upcoming_resolutions_count_14d": int(upcoming or 0),
     }
+
+
+async def _filter_visible_predictions(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    actor_id: UUID,
+    predictions: list[PredictionRow],
+) -> list[PredictionRow]:
+    visible: list[PredictionRow] = []
+    for prediction in predictions:
+        if await _prediction_visible(conn, tenant_id, actor_id, prediction):
+            visible.append(prediction)
+    return visible
+
+
+async def _prediction_visible(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    actor_id: UUID,
+    prediction: PredictionRow,
+) -> bool:
+    if prediction.target_node_kind is None and prediction.target_node_id is None:
+        return await _targetless_prediction_visible(
+            conn,
+            tenant_id,
+            actor_id,
+            prediction_id=prediction.id,
+            created_by_actor_id=prediction.created_by_actor_id,
+            scope_actors=prediction.scope_actors,
+        )
+    if prediction.target_node_kind is None or prediction.target_node_id is None:
+        return False
+    access_kind = _TARGET_ACCESS_KIND.get(prediction.target_node_kind)
+    if access_kind is None:
+        return False
+    decision = await can_read_by_id(
+        actor_id,
+        access_kind,
+        prediction.target_node_id,
+        conn=conn,
+        tenant_id=tenant_id,
+    )
+    await record_override_if_needed(
+        decision,
+        actor_id=actor_id,
+        entity_type=access_kind,
+        entity_id=prediction.target_node_id,
+        conn=conn,
+        tenant_id=tenant_id,
+    )
+    return decision.allowed
+
+
+async def _targetless_prediction_visible(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    actor_id: UUID,
+    *,
+    prediction_id: UUID,
+    created_by_actor_id: UUID | None,
+    scope_actors: list[UUID],
+) -> bool:
+    if created_by_actor_id == actor_id:
+        return True
+    if actor_id in scope_actors:
+        return True
+    if await has_role(actor_id, "admin", conn=conn, tenant_id=tenant_id):
+        await record_override(
+            actor_id,
+            "prediction",
+            prediction_id,
+            "admin",
+            conn=conn,
+            tenant_id=tenant_id,
+            reason="admin_override",
+        )
+        return True
+    if await has_role(actor_id, "leadership", conn=conn, tenant_id=tenant_id):
+        await record_override(
+            actor_id,
+            "prediction",
+            prediction_id,
+            "leadership",
+            conn=conn,
+            tenant_id=tenant_id,
+            reason="leadership_override",
+        )
+        return True
+    return False
+
+
+async def _scoped_risk_exposure_series(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    *,
+    actor_id: UUID,
+    metric: str,
+    range_days: int,
+) -> list[dict[str, Any]]:
+    rows = await conn.fetch(
+        """
+        SELECT id, tenant_id, status, statement, rationale, category,
+               target_node_kind, target_node_id, target_label,
+               created_by_actor_id, scope_actors,
+               confidence, confidence_basis, falsification_condition,
+               key_drivers, impact,
+               resolution_at, resolved_at, outcome, resolution_timeliness,
+               created_at, updated_at
+        FROM predictions
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND resolution_at >= now()
+          AND resolution_at <= now() + make_interval(days => $2)
+        ORDER BY resolution_at ASC
+        """,
+        tenant_id,
+        range_days,
+    )
+    predictions = await _filter_visible_predictions(
+        conn,
+        tenant_id,
+        actor_id,
+        [_row_to_prediction(row) for row in rows],
+    )
+    now = datetime.now(timezone.utc)
+    week_start = now - timedelta(days=now.weekday())
+    week_start = week_start.replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    weeks = max(1, range_days // 7 + 1)
+    series: list[dict[str, Any]] = []
+    for i in range(weeks):
+        bs = week_start + timedelta(days=7 * i)
+        be = bs + timedelta(days=7)
+        value = 0.0
+        for prediction in predictions:
+            if bs <= prediction.resolution_at < be:
+                value += float(prediction.impact.get(metric, 0) or 0.0)
+        series.append({
+            "bucket_start": bs,
+            "bucket_end": be,
+            "value": value,
+        })
+    return series
 
 
 # ---------------------------------------------------------------------
@@ -527,6 +761,8 @@ def _row_to_prediction(r: asyncpg.Record) -> PredictionRow:
         category=r["category"],
         target_node_kind=r["target_node_kind"],
         target_node_id=r["target_node_id"],
+        created_by_actor_id=r["created_by_actor_id"],
+        scope_actors=_coerce_uuid_list(r["scope_actors"]),
         target_label=r["target_label"],
         confidence=float(r["confidence"]),
         confidence_basis=r["confidence_basis"],
@@ -574,6 +810,23 @@ def _coerce_jsonb_list(value: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _coerce_uuid_list(value: Any) -> list[UUID]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        value = list(value) if isinstance(value, tuple) else [value]
+    out: list[UUID] = []
+    for raw in value:
+        if isinstance(raw, UUID):
+            out.append(raw)
+            continue
+        try:
+            out.append(UUID(str(raw)))
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
 def _require_uuid(payload: dict[str, Any], field: str) -> UUID:
     v = payload.get(field)
     if v is None:
@@ -584,6 +837,26 @@ def _require_uuid(payload: dict[str, Any], field: str) -> UUID:
         return UUID(str(v))
     except (ValueError, TypeError) as e:
         raise ValidationError(f"{field} is not a valid UUID", field=field) from e
+
+
+def _uuid_list(value: Any) -> list[UUID]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple, set)):
+        raise ValidationError("scope_actors must be a list", field="scope_actors")
+    out: list[UUID] = []
+    for raw in value:
+        if isinstance(raw, UUID):
+            out.append(raw)
+            continue
+        try:
+            out.append(UUID(str(raw)))
+        except (ValueError, TypeError) as exc:
+            raise ValidationError(
+                "scope_actors must contain valid UUIDs",
+                field="scope_actors",
+            ) from exc
+    return out
 
 
 def _require_str(payload: dict[str, Any], field: str) -> str:

@@ -29,9 +29,21 @@ from lib.shared.errors import ValidationError
 from services.product.forecasts import accuracy as accuracy_mod
 from services.product.forecasts import page as page_mod
 from services.product.forecasts import repo as repo_mod
+from services.platform.access_control.audit import record_override_if_needed
+from services.platform.access_control.checks import EntityKind, can_read_by_id
 
 
 log = logging.getLogger(__name__)
+
+_TARGET_ACCESS_KIND: dict[str, EntityKind] = {
+    "commitment": "commitment",
+    "goal": "goal",
+    "decision": "decision",
+    "resource": "resource",
+    "customer": "resource",
+    "model": "model",
+    "prediction": "model",
+}
 
 
 def build_router() -> APIRouter:
@@ -63,6 +75,7 @@ async def list_endpoint(request: Request) -> JSONResponse:
             rows = await repo_mod.list_predictions(
                 conn,
                 auth.tenant_id,
+                actor_id=auth.actor_id,
                 status=qp.get("status", "active"),
                 category=qp.get("category"),
                 sort=qp.get("sort", "earliest_resolution"),
@@ -81,8 +94,16 @@ async def list_endpoint(request: Request) -> JSONResponse:
 async def summary_endpoint(request: Request) -> JSONResponse:
     auth = _auth(request)
     async with _pool(request).acquire() as conn:
-        counters = await repo_mod.summary_counters(conn, auth.tenant_id)
-        cal = await accuracy_mod.calibration_summary(conn, auth.tenant_id)
+        counters = await repo_mod.summary_counters(
+            conn,
+            auth.tenant_id,
+            actor_id=auth.actor_id,
+        )
+        cal = await accuracy_mod.calibration_summary(
+            conn,
+            auth.tenant_id,
+            actor_id=auth.actor_id,
+        )
     return JSONResponse({
         "active_count": counters["active_count"],
         "at_risk_arr": counters["at_risk_arr"],
@@ -103,12 +124,21 @@ async def accuracy_endpoint(request: Request) -> JSONResponse:
         return _bad("invalid_days")
     async with _pool(request).acquire() as conn:
         bins = await accuracy_mod.accuracy_bins(
-            conn, auth.tenant_id, range_days=range_days,
+            conn, auth.tenant_id, actor_id=auth.actor_id, range_days=range_days,
         )
         recent = await accuracy_mod.recent_resolutions(
-            conn, auth.tenant_id, limit=limit,
+            conn, auth.tenant_id, actor_id=auth.actor_id, limit=limit,
         )
-        cal = await accuracy_mod.calibration_summary(conn, auth.tenant_id)
+        cal = await accuracy_mod.calibration_summary(
+            conn,
+            auth.tenant_id,
+            actor_id=auth.actor_id,
+        )
+    _record_product_workflow_event(
+        workflow="forecasts",
+        event="forecast_accuracy_reviewed",
+        outcome="success",
+    )
     return JSONResponse({
         "bins": [_accuracy_bin_to_wire(b) for b in bins],
         "recent_resolutions": [_resolution_to_wire(r) for r in recent],
@@ -130,7 +160,11 @@ async def risk_exposure_endpoint(request: Request) -> JSONResponse:
         return _bad("invalid_days")
     async with _pool(request).acquire() as conn:
         series = await repo_mod.risk_exposure_series(
-            conn, auth.tenant_id, metric=metric, range_days=days,
+            conn,
+            auth.tenant_id,
+            actor_id=auth.actor_id,
+            metric=metric,
+            range_days=days,
         )
     return JSONResponse({
         "metric": metric,
@@ -153,7 +187,12 @@ async def upcoming_endpoint(request: Request) -> JSONResponse:
     except (TypeError, ValueError):
         return _bad("invalid_days")
     async with _pool(request).acquire() as conn:
-        rows = await repo_mod.upcoming_resolutions(conn, auth.tenant_id, days=days)
+        rows = await repo_mod.upcoming_resolutions(
+            conn,
+            auth.tenant_id,
+            actor_id=auth.actor_id,
+            days=days,
+        )
     return JSONResponse({
         "items": [_serialize_prediction(r) for r in rows],
         "count": len(rows),
@@ -168,12 +207,26 @@ async def create_endpoint(request: Request) -> JSONResponse:
         return body
     body = dict(body)
     body["tenant_id"] = auth.tenant_id
+    body["created_by_actor_id"] = auth.actor_id
+    body["scope_actors"] = [auth.actor_id]
     try:
         async with _pool(request).acquire() as conn:
             async with conn.transaction():
+                target_error = await _check_create_target_access(
+                    conn,
+                    auth,
+                    body,
+                )
+                if target_error is not None:
+                    return target_error
                 row = await repo_mod.create_prediction(conn, body)
     except ValidationError as e:
         return _bad(e.message, **e.context)
+    _record_product_workflow_event(
+        workflow="forecasts",
+        event="forecast_created",
+        outcome="success",
+    )
     return JSONResponse(
         _serialize_prediction(row),
         status_code=httpstatus.HTTP_201_CREATED,
@@ -188,7 +241,10 @@ async def page_endpoint(request: Request) -> JSONResponse:
         return _bad("invalid_horizon_days")
     async with _pool(request).acquire() as conn:
         payload = await page_mod.build_page_payload(
-            conn, auth.tenant_id, horizon_days=horizon_days,
+            conn,
+            auth.tenant_id,
+            actor_id=auth.actor_id,
+            horizon_days=horizon_days,
         )
     return JSONResponse(payload)
 
@@ -196,7 +252,11 @@ async def page_endpoint(request: Request) -> JSONResponse:
 async def patterns_endpoint(request: Request) -> JSONResponse:
     auth = _auth(request)
     async with _pool(request).acquire() as conn:
-        patterns = await page_mod.list_patterns(conn, auth.tenant_id)
+        patterns = await page_mod.list_patterns(
+            conn,
+            auth.tenant_id,
+            actor_id=auth.actor_id,
+        )
     return JSONResponse({"patterns": patterns, "count": len(patterns)})
 
 
@@ -207,9 +267,19 @@ async def detail_v2_endpoint(forecast_id: str, request: Request) -> JSONResponse
     except (ValueError, TypeError):
         return _bad("invalid_forecast_id")
     async with _pool(request).acquire() as conn:
-        detail = await page_mod.build_forecast_detail(conn, auth.tenant_id, fid)
+        detail = await page_mod.build_forecast_detail(
+            conn,
+            auth.tenant_id,
+            fid,
+            actor_id=auth.actor_id,
+        )
     if detail is None:
         return JSONResponse({"error": "not_found"}, status_code=404)
+    _record_product_workflow_event(
+        workflow="forecasts",
+        event="forecast_detail_reviewed",
+        outcome="success",
+    )
     return JSONResponse(detail)
 
 
@@ -242,7 +312,17 @@ async def ask_endpoint(request: Request) -> JSONResponse:
         horizon_days=int(body.get("horizon_days") or 90),
     )
     async with _pool(request).acquire() as conn:
-        resp = await page_mod.handle_ask(conn, auth.tenant_id, req)
+        resp = await page_mod.handle_ask(
+            conn,
+            auth.tenant_id,
+            req,
+            actor_id=auth.actor_id,
+        )
+    _record_product_workflow_event(
+        workflow="forecasts",
+        event="forecast_ask_answered",
+        outcome="success",
+    )
     return JSONResponse(resp)
 
 
@@ -253,9 +333,19 @@ async def detail_endpoint(prediction_id: str, request: Request) -> JSONResponse:
     except (ValueError, TypeError):
         return _bad("invalid_prediction_id")
     async with _pool(request).acquire() as conn:
-        detail = await repo_mod.get_prediction(conn, auth.tenant_id, pid)
+        detail = await repo_mod.get_prediction(
+            conn,
+            auth.tenant_id,
+            pid,
+            actor_id=auth.actor_id,
+        )
     if detail is None:
         return JSONResponse({"error": "not_found"}, status_code=404)
+    _record_product_workflow_event(
+        workflow="forecasts",
+        event="forecast_detail_reviewed",
+        outcome="success",
+    )
     return JSONResponse({
         "prediction": _serialize_prediction(detail.prediction),
         "signals": [_signal_to_wire(signal) for signal in detail.signals],
@@ -274,6 +364,23 @@ def _auth(request: Request):
     return auth
 
 
+def _record_product_workflow_event(
+    *,
+    workflow: str,
+    event: str,
+    outcome: str,
+) -> None:
+    from services.app.gateway.product_workflow_metrics import (
+        record_product_workflow_event,
+    )
+
+    record_product_workflow_event(
+        workflow=workflow,  # type: ignore[arg-type]
+        event=event,  # type: ignore[arg-type]
+        outcome=outcome,  # type: ignore[arg-type]
+    )
+
+
 def _pool(request: Request):
     deps = getattr(request.app.state, "deps", None)
     if deps is None or getattr(deps, "pool", None) is None:
@@ -281,6 +388,56 @@ def _pool(request: Request):
             status_code=500, detail="gateway_deps_not_initialised",
         )
     return deps.pool
+
+
+async def _check_create_target_access(
+    conn: Any,
+    auth: Any,
+    body: dict[str, Any],
+) -> JSONResponse | None:
+    target_kind_raw = body.get("target_node_kind")
+    target_id_raw = body.get("target_node_id")
+    if target_kind_raw is None and target_id_raw is None:
+        return None
+    if target_kind_raw is None or target_id_raw is None:
+        return _bad("forecast_target_incomplete")
+
+    target_kind = str(target_kind_raw)
+    access_kind = _TARGET_ACCESS_KIND.get(target_kind)
+    if access_kind is None:
+        return _bad("forecast_target_kind_unsupported", target_node_kind=target_kind)
+
+    try:
+        target_id = (
+            target_id_raw
+            if isinstance(target_id_raw, UUID)
+            else UUID(str(target_id_raw))
+        )
+    except (TypeError, ValueError):
+        return _bad("forecast_target_id_invalid")
+
+    decision = await can_read_by_id(
+        auth.actor_id,
+        access_kind,
+        target_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
+    await record_override_if_needed(
+        decision,
+        actor_id=auth.actor_id,
+        entity_type=access_kind,
+        entity_id=target_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
+    if not decision.allowed:
+        return JSONResponse(
+            {"error": "forbidden", "reason": decision.reason},
+            status_code=httpstatus.HTTP_403_FORBIDDEN,
+        )
+    body["target_node_id"] = target_id
+    return None
 
 
 def _bad(reason: str, **extra: Any) -> JSONResponse:
