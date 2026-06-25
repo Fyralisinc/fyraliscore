@@ -69,3 +69,28 @@ def test_deploy_production_waits_for_green_ci() -> None:
     assert "github.event.workflow_run.conclusion == 'success'" in workflow
     assert "name: production" in workflow
     assert "\n  push:" not in workflow
+
+
+def test_deploy_workflows_use_compose_canary_helper() -> None:
+    for path in (
+        Path(".github/workflows/deploy-production.yml"),
+        Path(".github/workflows/deploy-staging.yml"),
+    ):
+        workflow = path.read_text()
+        assert "PREV_SHA=\"$(git rev-parse HEAD)\"" in workflow
+        assert "git reset --hard origin/" in workflow
+        assert (
+            'bash scripts/deploy_compose_release.sh --previous-sha "${PREV_SHA}"'
+            in workflow
+        )
+
+
+def test_compose_deploy_helper_has_canary_worker_rollout_and_rollback() -> None:
+    helper = Path("scripts/deploy_compose_release.sh").read_text()
+
+    assert "DEPLOY_GATEWAY_CANARY" in helper
+    assert "GATEWAY_START_GRT_SCHEDULER=0" in helper
+    assert "production_processes" in helper
+    assert "wait_service_health" in helper
+    assert "scripts/check_product_slo_gate.py" in helper
+    assert 'git reset --hard "${PREVIOUS_SHA}"' in helper

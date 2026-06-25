@@ -84,34 +84,4 @@ jobs:
             git fetch origin production
             git reset --hard origin/production
 
-            echo "==> Rebuilding and restarting containers"
-            docker compose pull
-            docker compose up -d --build --remove-orphans
-
-            echo "==> Waiting for gateway health check"
-            if ! timeout 60 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done'; then
-              echo "Gateway failed health after deploy; rolling back to ${PREV_SHA}" >&2
-              git reset --hard "${PREV_SHA}"
-              docker compose up -d --build --remove-orphans
-              timeout 60 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done' || true
-              docker compose ps
-              exit 1
-            fi
-
-            echo "==> Checking product SLO gate"
-            if ! python3 scripts/check_product_slo_gate.py \
-              --prometheus-url "${PRODUCT_SLO_GATE_PROMETHEUS_URL:-http://localhost:9090}" \
-              --wait-seconds "${PRODUCT_SLO_GATE_WAIT_SECONDS:-120}" \
-              --interval-seconds "${PRODUCT_SLO_GATE_INTERVAL_SECONDS:-15}" \
-              --error-burn-max "${PRODUCT_SLO_GATE_ERROR_BURN_MAX:-2}" \
-              --latency-burn-max "${PRODUCT_SLO_GATE_LATENCY_BURN_MAX:-2}"; then
-              echo "Product SLO gate failed after deploy; rolling back to ${PREV_SHA}" >&2
-              git reset --hard "${PREV_SHA}"
-              docker compose up -d --build --remove-orphans
-              timeout 60 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done' || true
-              docker compose ps
-              exit 1
-            fi
-
-            echo "==> Deployment complete"
-            docker compose ps
+            bash scripts/deploy_compose_release.sh --previous-sha "${PREV_SHA}"

@@ -1434,6 +1434,12 @@ Current state:
   `scripts/check_product_slo_gate.py` after gateway health recovery. The gate
   queries only aggregate product workflow error/latency burn recording rules
   and rolls back to the previous SHA when burn exceeds configured thresholds.
+- Staging and production deploy workflows now use
+  `scripts/deploy_compose_release.sh`, which runs a no-traffic gateway canary
+  with schedulers disabled, promotes the gateway only after `/healthz` passes,
+  rolls production worker services one at a time from the runtime process
+  manifest with health gates, and preserves rollback to the previous SHA on
+  canary, health, worker, or product-SLO failure.
 
 Must solve:
 
@@ -1446,7 +1452,7 @@ Must solve:
 - [x] Add promotion process from staging to production with explicit approval.
 - [x] Add release notes template that calls out migrations, feature flags,
   rollback risk, and observability changes.
-- [ ] Add canary/blue-green rollout strategy for gateway and workers.
+- [x] Add canary/blue-green rollout strategy for gateway and workers.
 - [x] Add automatic rollback or pause criteria for SLO breaches.
 - [ ] Add real-provider contract fixtures for every integration.
 - [x] Add docs build to CI and keep navigation strict.

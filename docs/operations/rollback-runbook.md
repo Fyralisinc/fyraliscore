@@ -12,15 +12,18 @@ Both deploy workflows capture the target host's current SHA:
 PREV_SHA="$(git rev-parse HEAD)"
 ```
 
-After rebuild/restart, the workflow waits for:
+Before touching the live gateway, the deploy helper starts a no-traffic gateway
+canary with schedulers disabled. After promotion, the workflow waits for:
 
 ```bash
 curl -sf http://localhost:8000/healthz
 ```
 
-If health does not recover within 60 seconds, the workflow resets to
-`PREV_SHA`, rebuilds, waits for health again, prints compose status, and exits
-failed. Treat that failed workflow as a rollback incident and inspect logs.
+If the canary fails, if health does not recover within the deploy window, if a
+health-gated worker fails during rollout, or if the product SLO gate breaches
+the configured rollback thresholds, the workflow resets to `PREV_SHA`,
+rebuilds, waits for health again, prints compose status, and exits failed. Treat
+that failed workflow as a rollback incident and inspect logs.
 
 ## Manual Rollback
 
