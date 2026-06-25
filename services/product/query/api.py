@@ -164,16 +164,6 @@ def _default_verbs() -> list[VerbModel]:
     ]
 
 
-def _dependency_unavailable_detail(
-    exc: DependencyUnavailableError,
-) -> dict[str, Any]:
-    return {
-        "error": exc.code,
-        "dependency": exc.context.get("dependency"),
-        "operation": exc.context.get("operation"),
-    }
-
-
 def _request_is_production(request: Request) -> bool:
     settings = getattr(request.app.state, "gateway_settings", None)
     return bool(getattr(settings, "is_production", False))
@@ -194,12 +184,12 @@ def _tenant_id_from_header(
             return UUID(x_tenant_id)
         except ValueError as e:
             raise HTTPException(
-                status_code=400, detail="invalid x-tenant-id"
+                status_code=400, detail="invalid_x_tenant_id"
             ) from e
     # The handler factory below binds the dogfood tenant via closure.
     raise HTTPException(
         status_code=400,
-        detail="x-tenant-id header required",
+        detail="x_tenant_id_required",
     )
 
 
@@ -238,11 +228,11 @@ def build_router(
                 return UUID(x_tenant_id)
             except ValueError as e:
                 raise HTTPException(
-                    status_code=400, detail="invalid x-tenant-id"
+                    status_code=400, detail="invalid_x_tenant_id"
                 ) from e
         if default_tenant_id is not None:
             return default_tenant_id
-        raise HTTPException(status_code=400, detail="x-tenant-id header required")
+        raise HTTPException(status_code=400, detail="x_tenant_id_required")
 
     @router.post("/view/ceo/ask", response_model=AskResponseBody)
     async def ask(
@@ -299,7 +289,7 @@ def build_router(
         try:
             resp = await handler.answer_query(req)
         except ValidationError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            raise HTTPException(status_code=400, detail="validation_error") from e
         except DependencyUnavailableError as e:
             log.warning(
                 "ask_dependency_unavailable",
@@ -307,7 +297,11 @@ def build_router(
             )
             raise HTTPException(
                 status_code=503,
-                detail=_dependency_unavailable_detail(e),
+                detail={
+                    "error": e.code,
+                    "dependency": e.context.get("dependency"),
+                    "operation": e.context.get("operation"),
+                },
             ) from e
         except Exception as e:  # noqa: BLE001
             log.exception("ask_handler_failed")
@@ -339,7 +333,7 @@ def build_router(
             if not body.follow_up_query or not body.follow_up_query.strip():
                 raise HTTPException(
                     status_code=400,
-                    detail="follow_up_query required for action=followup",
+                    detail="follow_up_query_required",
                 )
             req = AnswerQueryRequest(
                 tenant_id=tenant_id,
@@ -353,7 +347,7 @@ def build_router(
             try:
                 resp = await handler.answer_query(req)
             except ValidationError as e:
-                raise HTTPException(status_code=400, detail=str(e)) from e
+                raise HTTPException(status_code=400, detail="validation_error") from e
             except DependencyUnavailableError as e:
                 log.warning(
                     "followup_dependency_unavailable",
@@ -361,14 +355,18 @@ def build_router(
                 )
                 raise HTTPException(
                     status_code=503,
-                    detail=_dependency_unavailable_detail(e),
+                    detail={
+                        "error": e.code,
+                        "dependency": e.context.get("dependency"),
+                        "operation": e.context.get("operation"),
+                    },
                 ) from e
             except Exception as e:  # noqa: BLE001
                 log.exception("followup_handler_failed")
                 raise HTTPException(status_code=500, detail="internal_error") from e
             return TurnActionResponseBody(ok=True, new_turn_id=resp.turn_id)
         # Unreachable — Literal enforces the set.
-        raise HTTPException(status_code=400, detail="unknown action")
+        raise HTTPException(status_code=400, detail="unknown_action")
 
     return router
 

@@ -77,6 +77,11 @@ jobs:
       - name: Check concurrency controls
         run: python scripts/check_concurrency_controls.py
 
+      # Blocks product-facing HTTP routes from returning raw exception text or
+      # free-form implementation details instead of bounded error codes.
+      - name: Check product error contract
+        run: python scripts/check_product_error_contract.py
+
       # Keeps `.env.production.example` aligned with fail-closed production
       # settings so deploy operators see required keys before runtime startup.
       - name: Check production env contract

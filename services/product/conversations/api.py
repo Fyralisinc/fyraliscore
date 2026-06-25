@@ -90,7 +90,7 @@ def build_router(
                 )
             )
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail="invalid_probe") from e
         except PermissionError:
             raise HTTPException(status_code=403, detail="card_out_of_scope")
         except Exception:  # noqa: BLE001

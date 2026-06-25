@@ -62,6 +62,11 @@ Support responses must not include:
 - stack traces or internal exception names
 - cross-tenant identifiers
 
+Product-facing route errors must use bounded machine-readable codes such as
+`validation_error`, `invalid_query`, or `dependency_unavailable`; CI runs
+`scripts/check_product_error_contract.py` to block raw exception text and
+free-form implementation details at HTTP boundaries.
+
 ## Workflow Triage
 
 | Workflow | First checks | Next runbook |

@@ -96,6 +96,7 @@ async def test_ask_rejects_empty_query(app):
     ) as client:
         r = await client.post("/view/ceo/ask", json={"query": ""})
     assert r.status_code == 400
+    assert r.json()["detail"] == "validation_error"
 
 
 async def test_ask_maps_rendering_unavailable_to_503(fake_strategies):
@@ -185,6 +186,7 @@ async def test_turn_action_followup_requires_query(app):
             json={"turn_id": str(uuid4()), "action": "followup"},
         )
     assert r.status_code == 400
+    assert r.json()["detail"] == "follow_up_query_required"
 
 
 async def test_turn_action_followup_success(app):

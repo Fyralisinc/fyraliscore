@@ -422,7 +422,7 @@ async def route_card(
     elif body.kind == "question":
         resp = await service.render_card_question(req)
     else:  # defensive; Pydantic validates already
-        raise HTTPException(status_code=400, detail=f"unknown card kind: {body.kind}")
+        raise HTTPException(status_code=400, detail="unknown_card_kind")
     return CardResponseOut(
         body_html=resp.body_html,
         rendering_model_used=resp.rendering_model_used,
