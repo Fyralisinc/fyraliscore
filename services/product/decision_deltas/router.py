@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import asyncpg
@@ -34,9 +34,29 @@ from lib.shared.errors import CompanyOSError, ValidationError
 from services.product.decision_deltas import apply as apply_mod
 from services.product.decision_deltas import promote as promote_mod
 from services.product.decision_deltas import repo as dd_repo
+from services.platform.access_control.audit import record_override_if_needed
+from services.platform.access_control.checks import (
+    AccessDecision,
+    EntityKind,
+    can_read_by_id,
+)
+from services.platform.product_action_audit import record_product_action
+
+
+if TYPE_CHECKING:
+    from services.app.gateway.auth import AuthContext
 
 
 log = logging.getLogger(__name__)
+
+_TARGET_ACCESS_KIND: dict[str, EntityKind] = {
+    "customer": "resource",
+    "resource": "resource",
+    "commitment": "commitment",
+    "goal": "goal",
+    "decision": "decision",
+    "model": "model",
+}
 
 
 def build_router() -> APIRouter:
@@ -59,7 +79,7 @@ def build_router() -> APIRouter:
     return router
 
 
-def _auth(request: Request):
+def _auth(request: Request) -> AuthContext:
     auth = getattr(request.state, "auth", None)
     if auth is None:
         raise HTTPException(status_code=401, detail="unauthorized")
@@ -107,13 +127,19 @@ async def list_route(request: Request) -> dict[str, Any]:
                 target_id=target_id,
                 category=category if category else None,
                 limit=limit,
-            )
+        )
     except ValidationError as e:
         raise HTTPException(
             status_code=400,
             detail={"error": "validation_error", "context": e.to_dict()},
         )
-    return {"items": [_view_to_wire(v) for v in views], "count": len(views)}
+    visible: list[dd_repo.DecisionDeltaView] = []
+    async with _pool(request).acquire() as conn:
+        for view in views:
+            decision = await _delta_target_decision(conn, auth, view)
+            if decision is None or decision.allowed:
+                visible.append(view)
+    return {"items": [_view_to_wire(v) for v in visible], "count": len(visible)}
 
 
 async def get_one(delta_id: str, request: Request) -> dict[str, Any]:
@@ -121,6 +147,7 @@ async def get_one(delta_id: str, request: Request) -> dict[str, Any]:
     did = _parse_uuid(delta_id, "delta_id")
     async with _pool(request).acquire() as conn:
         view = await dd_repo.get_delta(conn, tenant_id=auth.tenant_id, delta_id=did)
+        await _ensure_can_read_delta(conn, auth, view)
     if view is None:
         raise HTTPException(status_code=404, detail="not_found")
     return _view_to_wire(view, with_evidence=True)
@@ -132,11 +159,37 @@ async def accept_route(delta_id: str, request: Request) -> dict[str, Any]:
     try:
         async with _pool(request).acquire() as conn:
             async with conn.transaction():
+                current = await dd_repo.get_delta(
+                    conn, tenant_id=auth.tenant_id, delta_id=did,
+                )
+                await _ensure_can_read_delta(conn, auth, current)
                 view, triggered = await apply_mod.apply_acceptance(
                     conn=conn,
                     tenant_id=auth.tenant_id,
                     delta_id=did,
                     user_id=auth.actor_id,
+                )
+                await _record_delta_action(
+                    conn,
+                    request=request,
+                    auth=auth,
+                    action="decision_delta.accept",
+                    resource_id=did,
+                    before=current,
+                    after=view,
+                    metadata={
+                        "target_updated": bool(triggered.get("target_updated")),
+                        "target_event_id": triggered.get("target_event_id"),
+                        "notifications_dispatched": triggered.get(
+                            "notifications_dispatched"
+                        ),
+                        "resolution_thread_id": triggered.get(
+                            "resolution_thread_id"
+                        ),
+                        "resolution_thread_created": triggered.get(
+                            "resolution_thread_created"
+                        ),
+                    },
                 )
     except dd_repo.DeltaNotFoundError:
         raise HTTPException(status_code=404, detail="not_found")
@@ -166,6 +219,10 @@ async def delegate_route(delta_id: str, request: Request) -> dict[str, Any]:
     try:
         async with _pool(request).acquire() as conn:
             async with conn.transaction():
+                current = await dd_repo.get_delta(
+                    conn, tenant_id=auth.tenant_id, delta_id=did,
+                )
+                await _ensure_can_read_delta(conn, auth, current)
                 await dd_repo.update_status(
                     conn,
                     tenant_id=auth.tenant_id,
@@ -182,6 +239,19 @@ async def delegate_route(delta_id: str, request: Request) -> dict[str, Any]:
                 )
                 view = await dd_repo.get_delta(
                     conn, tenant_id=auth.tenant_id, delta_id=did,
+                )
+                await _record_delta_action(
+                    conn,
+                    request=request,
+                    auth=auth,
+                    action="decision_delta.delegate",
+                    resource_id=did,
+                    before=current,
+                    after=view,
+                    metadata={
+                        "delegate_to_actor_id": str(owner_id),
+                        "note_chars": _text_len(note),
+                    },
                 )
     except dd_repo.DeltaNotFoundError:
         raise HTTPException(status_code=404, detail="not_found")
@@ -210,6 +280,10 @@ async def contest_route(delta_id: str, request: Request) -> dict[str, Any]:
     try:
         async with _pool(request).acquire() as conn:
             async with conn.transaction():
+                current = await dd_repo.get_delta(
+                    conn, tenant_id=auth.tenant_id, delta_id=did,
+                )
+                await _ensure_can_read_delta(conn, auth, current)
                 await dd_repo.update_status(
                     conn,
                     tenant_id=auth.tenant_id,
@@ -226,6 +300,16 @@ async def contest_route(delta_id: str, request: Request) -> dict[str, Any]:
                 )
                 view = await dd_repo.get_delta(
                     conn, tenant_id=auth.tenant_id, delta_id=did,
+                )
+                await _record_delta_action(
+                    conn,
+                    request=request,
+                    auth=auth,
+                    action="decision_delta.contest",
+                    resource_id=did,
+                    before=current,
+                    after=view,
+                    metadata={"reason_chars": _text_len(reason)},
                 )
     except dd_repo.DeltaNotFoundError:
         raise HTTPException(status_code=404, detail="not_found")
@@ -248,6 +332,7 @@ async def add_context_route(delta_id: str, request: Request) -> dict[str, Any]:
 
     async with _pool(request).acquire() as conn:
         current = await dd_repo.get_delta(conn, tenant_id=auth.tenant_id, delta_id=did)
+        await _ensure_can_read_delta(conn, auth, current)
         if current is None:
             raise HTTPException(status_code=404, detail="not_found")
         async with conn.transaction():
@@ -257,6 +342,16 @@ async def add_context_route(delta_id: str, request: Request) -> dict[str, Any]:
                 delta_id=did,
                 actor_id=auth.actor_id,
                 note=note.strip(),
+            )
+            await _record_delta_action(
+                conn,
+                request=request,
+                auth=auth,
+                action="decision_delta.add_context",
+                resource_id=did,
+                before=current,
+                after=current,
+                metadata={"note_chars": _text_len(note)},
             )
         view = await dd_repo.get_delta(conn, tenant_id=auth.tenant_id, delta_id=did)
     assert view is not None
@@ -269,6 +364,23 @@ async def promote_route(recommendation_id: str, request: Request) -> dict[str, A
     try:
         async with _pool(request).acquire() as conn:
             async with conn.transaction():
+                recommendation_decision = await can_read_by_id(
+                    auth.actor_id,
+                    "model",
+                    rid,
+                    conn=conn,
+                    tenant_id=auth.tenant_id,
+                )
+                await record_override_if_needed(
+                    recommendation_decision,
+                    actor_id=auth.actor_id,
+                    entity_type="model",
+                    entity_id=rid,
+                    conn=conn,
+                    tenant_id=auth.tenant_id,
+                )
+                if not recommendation_decision.allowed:
+                    raise _forbidden(recommendation_decision.reason)
                 delta_id = await promote_mod.promote_from_recommendation(
                     conn,
                     tenant_id=auth.tenant_id,
@@ -276,6 +388,17 @@ async def promote_route(recommendation_id: str, request: Request) -> dict[str, A
                 )
                 view = await dd_repo.get_delta(
                     conn, tenant_id=auth.tenant_id, delta_id=delta_id,
+                )
+                await _ensure_can_read_delta(conn, auth, view)
+                await _record_delta_action(
+                    conn,
+                    request=request,
+                    auth=auth,
+                    action="decision_delta.promote_from_recommendation",
+                    resource_id=delta_id,
+                    before=None,
+                    after=view,
+                    metadata={"source_recommendation_id": str(rid)},
                 )
     except ValidationError as e:
         raise HTTPException(
@@ -289,6 +412,117 @@ async def promote_route(recommendation_id: str, request: Request) -> dict[str, A
         )
     assert view is not None
     return {"delta": _view_to_wire(view, with_evidence=True)}
+
+
+async def _ensure_can_read_delta(
+    conn: asyncpg.Connection,
+    auth: AuthContext,
+    view: dd_repo.DecisionDeltaView | None,
+) -> None:
+    if view is None:
+        return
+    decision = await _delta_target_decision(conn, auth, view)
+    if decision is not None and not decision.allowed:
+        raise _forbidden(decision.reason)
+
+
+async def _delta_target_decision(
+    conn: asyncpg.Connection,
+    auth: AuthContext,
+    view: dd_repo.DecisionDeltaView,
+) -> AccessDecision | None:
+    if view.target_node_kind is None and view.target_node_id is None:
+        return None
+    if view.target_node_kind is None or view.target_node_id is None:
+        return AccessDecision(False, "delta_target_incomplete")
+    access_kind = _TARGET_ACCESS_KIND.get(str(view.target_node_kind))
+    if access_kind is None:
+        return AccessDecision(False, "delta_target_kind_unsupported")
+    decision = await can_read_by_id(
+        auth.actor_id,
+        access_kind,
+        view.target_node_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
+    await record_override_if_needed(
+        decision,
+        actor_id=auth.actor_id,
+        entity_type=access_kind,
+        entity_id=view.target_node_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
+    return None if decision.allowed else decision
+
+
+def _forbidden(reason: str) -> HTTPException:
+    return HTTPException(
+        status_code=403,
+        detail={"error": "forbidden", "reason": reason},
+    )
+
+
+async def _record_delta_action(
+    conn: asyncpg.Connection,
+    *,
+    request: Request,
+    auth: AuthContext,
+    action: str,
+    resource_id: UUID,
+    before: dd_repo.DecisionDeltaView | None,
+    after: dd_repo.DecisionDeltaView | None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    await record_product_action(
+        conn,
+        tenant_id=auth.tenant_id,
+        actor_id=auth.actor_id,
+        action=action,
+        resource_type="decision_delta",
+        resource_id=resource_id,
+        metadata=_delta_action_metadata(
+            request=request,
+            before=before,
+            after=after,
+            extra=metadata,
+        ),
+    )
+
+
+def _delta_action_metadata(
+    *,
+    request: Request,
+    before: dd_repo.DecisionDeltaView | None,
+    after: dd_repo.DecisionDeltaView | None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = after or before
+    out: dict[str, Any] = {}
+    request_id = getattr(request.state, "request_id", None)
+    if request_id:
+        out["request_id"] = str(request_id)
+    if before is not None:
+        out["status_before"] = before.status
+    if after is not None:
+        out["status_after"] = after.status
+    if source is not None:
+        if source.target_node_kind:
+            out["target_node_kind"] = source.target_node_kind
+        if source.target_node_id:
+            out["target_node_id"] = str(source.target_node_id)
+        if source.category:
+            out["category"] = source.category
+        if source.source_recommendation_id:
+            out["source_recommendation_id"] = str(source.source_recommendation_id)
+    for key, value in (extra or {}).items():
+        if value is not None:
+            out[key] = value
+    return out
+
+
+def _text_len(value: Any) -> int:
+    return len(value.strip()) if isinstance(value, str) else 0
 
 
 async def _annotate_delegation(

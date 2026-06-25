@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from fastapi import FastAPI, Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.testclient import TestClient
@@ -58,6 +59,17 @@ class _Row:
         return self._data
 
 
+@pytest.fixture(autouse=True)
+def _disable_product_action_audit(monkeypatch) -> None:
+    async def fake_record_product_action(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router.record_product_action",
+        fake_record_product_action,
+    )
+
+
 def _client(
     *,
     tenant_id=None,
@@ -86,6 +98,43 @@ def _client(
     return TestClient(app)
 
 
+def _allow_clarification_access(monkeypatch) -> None:
+    async def fake_access(_conn, _auth, _row):
+        return SimpleNamespace(allowed=True, reason="test")
+
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router._clarification_access_decision",
+        fake_access,
+    )
+
+
+def _deny_clarification_access(monkeypatch, *, reason: str = "hidden") -> None:
+    async def fake_access(_conn, _auth, _row):
+        return SimpleNamespace(allowed=False, reason=reason)
+
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router._clarification_access_decision",
+        fake_access,
+    )
+
+
+def _existing_clarification(monkeypatch, request_id) -> None:
+    async def fake_get(_conn, *, tenant_id, request_id):
+        return _Row(
+            {
+                "id": str(request_id),
+                "status": "open",
+                "object_kind": "observation",
+                "object_id": str(uuid4()),
+            }
+        )
+
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router.get_clarification_request",
+        fake_get,
+    )
+
+
 def test_clarifications_list_requires_authentication() -> None:
     client = _client(authenticated=False)
 
@@ -102,6 +151,7 @@ def test_clarifications_list_delegates(monkeypatch) -> None:
     tenant_id = uuid4()
     conn = object()
     captured = {}
+    _allow_clarification_access(monkeypatch)
 
     async def fake_list(acquired_conn, *, tenant_id, status, limit):
         captured.update(
@@ -147,6 +197,8 @@ def test_clarification_answer_delegates(monkeypatch) -> None:
     request_id = uuid4()
     conn = object()
     captured = {}
+    _allow_clarification_access(monkeypatch)
+    _existing_clarification(monkeypatch, request_id)
 
     async def fake_answer(acquired_conn, *, tenant_id, request_id, answer, answered_by):
         captured.update(
@@ -182,6 +234,70 @@ def test_clarification_answer_delegates(monkeypatch) -> None:
     }
 
 
+def test_clarification_answer_writes_sanitized_product_action_audit(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid4()
+    actor_id = uuid4()
+    request_id = uuid4()
+    observation_id = uuid4()
+    conn = object()
+    captured = {}
+    _allow_clarification_access(monkeypatch)
+    _existing_clarification(monkeypatch, request_id)
+
+    async def fake_answer(acquired_conn, *, tenant_id, request_id, answer, answered_by):
+        return _Row(
+            {
+                "id": str(request_id),
+                "kind": "actor_identity",
+                "status": "answered",
+                "object_kind": "observation",
+                "object_id": str(observation_id),
+                "source_observation_id": str(observation_id),
+                "answer": answer,
+            }
+        )
+
+    async def fake_record_product_action(acquired_conn, **kwargs):
+        captured.update({"conn": acquired_conn, **kwargs})
+
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router.answer_clarification_request",
+        fake_answer,
+    )
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router.record_product_action",
+        fake_record_product_action,
+    )
+    client = _client(tenant_id=tenant_id, actor_id=actor_id, conn=conn)
+
+    response = client.post(
+        f"/v1/clarifications/{request_id}/answer",
+        json={
+            "answer": {
+                "action": "accept_candidate",
+                "notes": "raw customer explanation must stay out of audit metadata",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["conn"] is conn
+    assert captured["tenant_id"] == tenant_id
+    assert captured["actor_id"] == actor_id
+    assert captured["action"] == "clarification.answer"
+    assert captured["resource_type"] == "clarification_request"
+    assert captured["resource_id"] == request_id
+    metadata = captured["metadata"]
+    assert metadata["clarification_kind"] == "actor_identity"
+    assert metadata["object_kind"] == "observation"
+    assert metadata["answer_action"] == "accept_candidate"
+    assert metadata["answer_keys"] == ["action", "notes"]
+    assert metadata["has_source_observation"] is True
+    assert "raw customer explanation" not in str(metadata)
+
+
 def test_clarification_answer_resolves_substrate_candidate(monkeypatch) -> None:
     tenant_id = uuid4()
     actor_id = uuid4()
@@ -189,6 +305,8 @@ def test_clarification_answer_resolves_substrate_candidate(monkeypatch) -> None:
     candidate_id = uuid4()
     conn = object()
     captured = {}
+    _allow_clarification_access(monkeypatch)
+    _existing_clarification(monkeypatch, request_id)
 
     async def fake_answer(acquired_conn, *, tenant_id, request_id, answer, answered_by):
         return _Row(
@@ -250,6 +368,8 @@ def test_clarification_answer_accepts_entity_resolution_candidate(monkeypatch) -
     observation_id = uuid4()
     conn = _Conn()
     canonical_ref = {"type": "customer", "id": str(uuid4())}
+    _allow_clarification_access(monkeypatch)
+    _existing_clarification(monkeypatch, request_id)
 
     async def fake_answer(acquired_conn, *, tenant_id, request_id, answer, answered_by):
         return _Row(
@@ -300,6 +420,8 @@ def test_clarification_answer_creates_new_customer_entity(monkeypatch) -> None:
     resource_id = uuid4()
     conn = _Conn()
     created_calls: list[dict] = []
+    _allow_clarification_access(monkeypatch)
+    _existing_clarification(monkeypatch, request_id)
 
     async def fake_answer(acquired_conn, *, tenant_id, request_id, answer, answered_by):
         return _Row(
@@ -359,6 +481,8 @@ def test_clarification_answer_rejects_entity_resolution_candidate(monkeypatch) -
     request_id = uuid4()
     review_id = uuid4()
     conn = _Conn()
+    _allow_clarification_access(monkeypatch)
+    _existing_clarification(monkeypatch, request_id)
 
     async def fake_answer(acquired_conn, *, tenant_id, request_id, answer, answered_by):
         return _Row(
@@ -390,6 +514,148 @@ def test_clarification_answer_rejects_entity_resolution_candidate(monkeypatch) -
         for query, args in conn.executed
     )
     assert not any("INSERT INTO entity_aliases" in query for query, _args in conn.executed)
+
+
+def test_clarifications_list_filters_inaccessible_rows(monkeypatch) -> None:
+    tenant_id = uuid4()
+    allowed_id = uuid4()
+    denied_id = uuid4()
+
+    async def fake_list(_conn, *, tenant_id, status, limit):
+        return [
+            _Row({"id": str(allowed_id), "kind": "entity_resolution"}),
+            _Row({"id": str(denied_id), "kind": "entity_resolution"}),
+        ]
+
+    async def fake_access(_conn, _auth, row):
+        return SimpleNamespace(
+            allowed=row.id == str(allowed_id),
+            reason="clarification_anchors_visible",
+        )
+
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router.list_clarification_requests",
+        fake_list,
+    )
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router._clarification_access_decision",
+        fake_access,
+    )
+    client = _client(tenant_id=tenant_id, conn=object())
+
+    response = client.get("/v1/clarifications")
+
+    assert response.status_code == 200
+    assert response.json()["count"] == 1
+    assert response.json()["items"][0]["id"] == str(allowed_id)
+
+
+def test_clarification_answer_forbidden_does_not_mutate(monkeypatch) -> None:
+    request_id = uuid4()
+    mutated = False
+    _existing_clarification(monkeypatch, request_id)
+    _deny_clarification_access(monkeypatch, reason="entity_not_found")
+
+    async def fake_answer(*_args, **_kwargs):
+        nonlocal mutated
+        mutated = True
+        return None
+
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router.answer_clarification_request",
+        fake_answer,
+    )
+    client = _client(conn=object())
+
+    response = client.post(
+        f"/v1/clarifications/{request_id}/answer",
+        json={"answer": {"action": "reject_candidate"}},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"error": "forbidden", "reason": "entity_not_found"}
+    assert mutated is False
+
+
+def test_clarification_dismiss_forbidden_does_not_mutate(monkeypatch) -> None:
+    request_id = uuid4()
+    mutated = False
+    _existing_clarification(monkeypatch, request_id)
+    _deny_clarification_access(monkeypatch, reason="not_visible")
+
+    async def fake_dismiss(*_args, **_kwargs):
+        nonlocal mutated
+        mutated = True
+        return None
+
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router.dismiss_clarification_request",
+        fake_dismiss,
+    )
+    client = _client(conn=object())
+
+    response = client.post(
+        f"/v1/clarifications/{request_id}/dismiss",
+        json={"reason": "not relevant"},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"error": "forbidden", "reason": "not_visible"}
+    assert mutated is False
+
+
+def test_clarification_dismiss_writes_sanitized_product_action_audit(
+    monkeypatch,
+) -> None:
+    tenant_id = uuid4()
+    actor_id = uuid4()
+    request_id = uuid4()
+    conn = object()
+    captured = {}
+    _allow_clarification_access(monkeypatch)
+    _existing_clarification(monkeypatch, request_id)
+
+    async def fake_dismiss(acquired_conn, *, tenant_id, request_id, reason, answered_by):
+        return _Row(
+            {
+                "id": str(request_id),
+                "kind": "entity_resolution",
+                "status": "dismissed",
+                "object_kind": "entity_review",
+                "object_id": str(uuid4()),
+            }
+        )
+
+    async def fake_record_product_action(acquired_conn, **kwargs):
+        captured.update({"conn": acquired_conn, **kwargs})
+
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router.dismiss_clarification_request",
+        fake_dismiss,
+    )
+    monkeypatch.setattr(
+        "services.app.gateway.clarifications_router.record_product_action",
+        fake_record_product_action,
+    )
+    client = _client(tenant_id=tenant_id, actor_id=actor_id, conn=conn)
+
+    response = client.post(
+        f"/v1/clarifications/{request_id}/dismiss",
+        json={"reason": "contains customer-specific dismissal text"},
+    )
+
+    assert response.status_code == 200
+    assert captured["conn"] is conn
+    assert captured["tenant_id"] == tenant_id
+    assert captured["actor_id"] == actor_id
+    assert captured["action"] == "clarification.dismiss"
+    assert captured["resource_type"] == "clarification_request"
+    assert captured["resource_id"] == request_id
+    metadata = captured["metadata"]
+    assert metadata["clarification_kind"] == "entity_resolution"
+    assert metadata["object_kind"] == "entity_review"
+    assert metadata["reason_chars"] == len("contains customer-specific dismissal text")
+    assert "customer-specific dismissal text" not in str(metadata)
 
 
 def test_clarification_answer_rejects_invalid_id() -> None:
