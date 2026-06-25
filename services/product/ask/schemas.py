@@ -111,6 +111,7 @@ class AskAnswerPayload(BaseModel):
     confidence: float
     premise_check: dict[str, Any] = Field(default_factory=dict)
     state_facts: list[dict[str, Any]] = Field(default_factory=list)
+    degraded_reasons: list[str] = Field(default_factory=list)
     why: list[str] = Field(default_factory=list)
     counterevidence: list[str] = Field(default_factory=list)
     impact: list[str] = Field(default_factory=list)

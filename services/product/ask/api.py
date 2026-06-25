@@ -21,6 +21,10 @@ from .schemas import (
 )
 
 
+def _bounded_http_error(status_code: int, code: str) -> HTTPException:
+    return HTTPException(status_code=status_code, detail=code)
+
+
 @dataclass(frozen=True)
 class AskAuth:
     tenant_id: UUID
@@ -56,8 +60,8 @@ def build_router(
             try:
                 return AskAuth(tenant_id=UUID(x_tenant_id), viewer_id=UUID(x_actor_id))
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail="invalid auth headers") from exc
-        raise HTTPException(status_code=401, detail="unauthorized")
+                raise _bounded_http_error(400, "invalid_auth_headers") from exc
+        raise _bounded_http_error(401, "unauthorized")
 
     @router.post("/sessions", response_model=AskSessionCreateResponse)
     async def create_session(
@@ -85,9 +89,9 @@ def build_router(
                 body=body,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise _bounded_http_error(400, "invalid_query") from exc
         except LookupError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise _bounded_http_error(404, "ask_session_not_found") from exc
 
     @router.post("/evidence/expand", response_model=EvidenceExpansionResponse)
     async def expand_evidence(
@@ -122,7 +126,7 @@ def build_router(
                 delegate_to=body.delegate_to,
             )
         except LookupError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise _bounded_http_error(404, "proposed_state_change_not_found") from exc
         return ProposedStateChangeActionResponse(change=change)
 
     @router.post("/feedback", response_model=AskFeedbackResponse)

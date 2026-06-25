@@ -172,3 +172,57 @@ async def test_api_accepts_gateway_auth_in_production():
 
     assert created.status_code == 200
     assert created.json()["session"]["tenant_id"] == str(TENANT)
+
+
+async def test_api_validation_errors_use_bounded_codes(monkeypatch):
+    async def fake_can_read(*args, **kwargs):
+        return type("Decision", (), {"allowed": True})()
+
+    monkeypatch.setattr(
+        "services.product.ask.orchestrator.can_read",
+        fake_can_read,
+        raising=True,
+    )
+    store = InMemoryAskStore()
+    orch = AskOrchestrator(
+        store=store,
+        conn_provider=_ConnProvider(),
+        reader=_FakeReader(),
+    )
+    app = FastAPI()
+    app.include_router(
+        build_router(
+            orch,
+            default_tenant_id=TENANT,
+            default_viewer_id=VIEWER,
+        )
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        created = await client.post(
+            "/v1/ask/sessions",
+            json={
+                "initial_scope": AskScope(
+                    type="current_page",
+                    label="Today",
+                ).model_dump(mode="json"),
+                "source_route": "/today",
+            },
+        )
+        session_id = created.json()["session"]["id"]
+        empty_query = await client.post(
+            f"/v1/ask/sessions/{session_id}/messages",
+            json={"query": "   "},
+        )
+        missing_session = await client.post(
+            f"/v1/ask/sessions/{uuid4()}/messages",
+            json={"query": "What changed?"},
+        )
+
+    assert empty_query.status_code == 400
+    assert empty_query.json() == {"detail": "invalid_query"}
+    assert missing_session.status_code == 404
+    assert missing_session.json() == {"detail": "ask_session_not_found"}

@@ -51,6 +51,7 @@ class RetrievalPacket:
     evidence: list[AskEvidenceItem]
     omitted: list[AskEvidenceItem]
     debug: dict[str, Any]
+    degraded_reasons: list[str] = field(default_factory=list)
     state_contract: dict[str, Any] = field(default_factory=dict)
 
 
@@ -276,6 +277,7 @@ class AskOrchestrator:
         async with self._conn_provider() as conn:
             trigger = _trigger_for_scope(tenant_id, query, scope, mode)
             reader_result: SynthesisReaderResult | None = None
+            degraded_reasons: list[str] = []
             try:
                 reader_result = await self._reader.read(
                     conn=conn,
@@ -286,7 +288,11 @@ class AskOrchestrator:
                     question_primitive=intent,
                 )
             except Exception as exc:  # noqa: BLE001
-                _log.warning("ask.sage_reader_failed", error=str(exc))
+                _log.warning(
+                    "ask.sage_reader_failed",
+                    error_type=type(exc).__name__,
+                )
+                degraded_reasons.append("synthesis_reader_fallback")
 
             models = list(reader_result.models) if reader_result else []
             observations = list(reader_result.observations) if reader_result else []
@@ -306,6 +312,8 @@ class AskOrchestrator:
                 *evidence,
             ]
             evidence = _rank_evidence_for_packet(query, intent, evidence)
+            if not models and not observations and not evidence:
+                degraded_reasons.append("no_accessible_synthesis_state")
             omitted = [
                 AskEvidenceItem(
                     id=uuid7(),
@@ -337,6 +345,7 @@ class AskOrchestrator:
                 evidence=evidence,
                 omitted=omitted,
                 debug=debug,
+                degraded_reasons=degraded_reasons,
                 state_contract=state_contract,
             )
 
@@ -1080,6 +1089,14 @@ def _compose_answer(
             f"{len(packet.omitted)} evidence item(s) were omitted from the compact packet; expand evidence to inspect them."
         )
     unknowns.extend(_state_contract_unknowns(state_contract))
+    if "synthesis_reader_fallback" in packet.degraded_reasons:
+        unknowns.append(
+            "Some answer evidence is temporarily unavailable, so this response used a limited fallback read."
+        )
+    if "no_accessible_synthesis_state" in packet.degraded_reasons:
+        unknowns.append(
+            "No accessible Synthesis state was available for this scope at answer time."
+        )
     if sufficiency["missing_roles"]:
         unknowns.append(
             "The compact packet is missing expected answer roles: "
@@ -1096,6 +1113,7 @@ def _compose_answer(
         confidence=confidence,
         premise_check=premise_check,
         state_facts=state_facts,
+        degraded_reasons=packet.degraded_reasons,
         why=why,
         counterevidence=counter or ["No direct counterevidence survived the current packet."],
         impact=impact,

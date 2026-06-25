@@ -88,6 +88,10 @@ still be useful:
 - worker backlog above SLO
 
 The backend already exposes degraded reasons on selected model/map surfaces.
+Ask/query responses also expose bounded `degraded_reasons` when the full
+Synthesis read is unavailable or no accessible tenant state is available; the
+response body stays useful, includes safe remediation context in `unknowns`,
+and does not expose raw dependency errors.
 Remaining UI/API gaps stay tracked in the production readiness checklist.
 
 ## Support Bundle Rules

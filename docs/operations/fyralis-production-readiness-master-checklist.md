@@ -1098,6 +1098,10 @@ Current state:
   `0177_clarification_product_action_audit.sql` widens the bounded action set;
   route tests assert raw answer notes and dismissal reasons are not copied into
   audit metadata.
+- Ask/query responses now surface explicit `degraded_reasons` when Synthesis
+  reader fallback is used or no accessible tenant state exists. The bounded
+  API error contract returns stable codes for invalid queries and missing Ask
+  sessions instead of raw exception text.
 
 Must solve:
 
