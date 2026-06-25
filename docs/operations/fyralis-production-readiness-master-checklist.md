@@ -1011,6 +1011,11 @@ Current state:
   `request.state.auth` has been populated by gateway actor-session auth.
   `DEFAULT_ACTOR_ID`, `DEFAULT_TENANT_ID`, and `COMPANY_OS_TENANT_ID` are all
   forbidden by production runtime settings and the env-template contract.
+- The outbound source endpoint resolver now rejects `SYNTHETIC_SOURCE_API_BASE`
+  in production, so worker/client code cannot silently redirect production
+  source API calls to the fixture-backed spammer. Shared production detection
+  now treats `FYRALIS_ENV`, `COMPANY_OS_ENV`, `APP_ENV`, or `ENVIRONMENT` as
+  hardened-mode signals.
 
 Must solve:
 

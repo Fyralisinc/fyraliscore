@@ -10,6 +10,8 @@ from lib.shared.env import env_name, is_prod
 def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FYRALIS_ENV", raising=False)
     monkeypatch.delenv("COMPANY_OS_ENV", raising=False)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
 
 
 def test_unset_is_not_prod() -> None:
@@ -18,7 +20,10 @@ def test_unset_is_not_prod() -> None:
     assert env_name(default="local") == "local"
 
 
-@pytest.mark.parametrize("var", ["FYRALIS_ENV", "COMPANY_OS_ENV"])
+@pytest.mark.parametrize(
+    "var",
+    ["FYRALIS_ENV", "COMPANY_OS_ENV", "APP_ENV", "ENVIRONMENT"],
+)
 @pytest.mark.parametrize("val", ["prod", "production", "PROD", " Prod "])
 def test_either_var_marks_prod(
     monkeypatch: pytest.MonkeyPatch, var: str, val: str

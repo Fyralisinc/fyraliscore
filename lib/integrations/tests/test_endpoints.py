@@ -13,6 +13,16 @@ import pytest
 from lib.integrations.endpoints import all_endpoints, endpoint
 
 
+@pytest.fixture(autouse=True)
+def _clear_runtime_env(monkeypatch):
+    from lib.integrations import endpoints as endpoint_module
+
+    for key in ("FYRALIS_ENV", "COMPANY_OS_ENV", "APP_ENV", "ENVIRONMENT"):
+        monkeypatch.delenv(key, raising=False)
+    for key in [*endpoint_module._ENV.values(), "SYNTHETIC_SOURCE_API_BASE"]:
+        monkeypatch.delenv(key, raising=False)
+
+
 # ---------------------------------------------------------------------
 # Resolver precedence.
 # ---------------------------------------------------------------------
@@ -40,6 +50,15 @@ def test_single_host_spammer_base(monkeypatch):
     assert endpoint("slack_api") == "http://localhost:9100/slack/api"
     assert endpoint("discord_gateway_bot") == (
         "http://localhost:9100/discord/api/v10/gateway/bot")
+
+
+@pytest.mark.parametrize("env_var", ["FYRALIS_ENV", "APP_ENV", "ENVIRONMENT"])
+def test_single_host_spammer_base_is_forbidden_in_production(monkeypatch, env_var):
+    monkeypatch.setenv(env_var, "production")
+    monkeypatch.setenv("SYNTHETIC_SOURCE_API_BASE", "http://localhost:9100")
+
+    with pytest.raises(RuntimeError, match="SYNTHETIC_SOURCE_API_BASE"):
+        endpoint("github_api")
 
 
 def test_per_source_wins_over_spammer_base(monkeypatch):

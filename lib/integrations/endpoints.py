@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import os
 
+from lib.shared.env import is_prod
+
 
 # name -> production default URL.
 _PROD: dict[str, str] = {
@@ -185,10 +187,15 @@ def endpoint(name: str) -> str:
     single-host spammer base → production default. Trailing slash trimmed."""
     if name not in _PROD:
         raise KeyError(f"unknown endpoint name: {name!r}")
+    spammer_base = os.environ.get(_SPAMMER_BASE_ENV)
+    if spammer_base and is_prod():
+        raise RuntimeError(
+            f"{_SPAMMER_BASE_ENV} is a synthetic test override and must be "
+            "unset in production",
+        )
     explicit = os.environ.get(_ENV[name])
     if explicit:
         return explicit.rstrip("/")
-    spammer_base = os.environ.get(_SPAMMER_BASE_ENV)
     if spammer_base:
         return (spammer_base.rstrip("/") + _SPAMMER_SUBPATH[name]).rstrip("/")
     return _PROD[name]
