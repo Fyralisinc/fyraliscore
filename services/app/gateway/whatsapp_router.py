@@ -115,6 +115,11 @@ async def _resolve_install_secret(
             raise _WhatsAppSecretResolutionError(label=label, original=exc) from exc
         return _decode_secret_bytes(raw, label=label)
     legacy_value = install.get(legacy_field)
+    if legacy_value and is_prod():
+        raise _WhatsAppSecretResolutionError(
+            label=label,
+            original=RuntimeError("legacy_plaintext_secret_disabled"),
+        )
     return str(legacy_value) if legacy_value else None
 
 

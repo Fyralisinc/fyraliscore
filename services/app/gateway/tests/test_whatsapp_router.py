@@ -129,6 +129,50 @@ async def test_debug_register_stores_whatsapp_credentials_as_secret_refs(
     )
 
 
+async def test_whatsapp_secret_resolver_rejects_legacy_plaintext_in_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FYRALIS_ENV", "production")
+
+    with pytest.raises(whatsapp_router._WhatsAppSecretResolutionError) as excinfo:
+        await whatsapp_router._resolve_install_secret(
+            object(),
+            {
+                "tenant_id": uuid4(),
+                "app_secret": "legacy-app-secret",
+                "app_secret_ref": None,
+            },
+            ref_field="app_secret_ref",
+            legacy_field="app_secret",
+            label="app_secret",
+        )
+
+    assert "legacy_plaintext_secret_disabled" in str(excinfo.value.original)
+
+
+async def test_whatsapp_secret_resolver_allows_legacy_plaintext_outside_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("FYRALIS_ENV", raising=False)
+    monkeypatch.delenv("COMPANY_OS_ENV", raising=False)
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+
+    value = await whatsapp_router._resolve_install_secret(
+        object(),
+        {
+            "tenant_id": uuid4(),
+            "app_secret": "legacy-app-secret",
+            "app_secret_ref": None,
+        },
+        ref_field="app_secret_ref",
+        legacy_field="app_secret",
+        label="app_secret",
+    )
+
+    assert value == "legacy-app-secret"
+
+
 async def test_webhook_verify_matches_verify_token_secret_ref(
     whatsapp_client: tuple[httpx.AsyncClient, asyncpg.Pool, FernetSecretStore],
     monkeypatch: pytest.MonkeyPatch,

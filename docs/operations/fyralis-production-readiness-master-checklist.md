@@ -388,6 +388,11 @@ Current state:
   `client_id`/`client_secret` payload; both the shared refresh core and direct
   client mint path prefer that managed secret-ref material and retain env creds
   only as a compatibility fallback.
+- WhatsApp install/debug writes now store `app_secret`, `verify_token`, and
+  `access_token` only through `*_ref` encrypted-secret pointers, and production
+  webhook verification rejects legacy plaintext-column fallback. The
+  `scripts/migrate_whatsapp_secret_refs.py` path remains the migration bridge
+  for pre-ref rows before production cutover.
 - Many production template keys are still env-shaped.
 - Webhook env fallback is disabled in production by contract.
 
@@ -402,7 +407,7 @@ Must solve:
   static file or committed env template.
 - [ ] Rotate all source credentials and webhook secrets through a tested
   rotation flow.
-- [ ] Ensure all provider tokens are stored as opaque `secret_ref` values.
+- [x] Ensure all provider tokens are stored as opaque `secret_ref` values.
 - [ ] Add secret zeroization/uninstall tests for each integration.
 - [x] Confirm every source-specific client resolves secrets at call time or via
   short-lived in-memory cache with TTL.
