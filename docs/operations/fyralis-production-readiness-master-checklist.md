@@ -48,7 +48,7 @@ Every checklist item is done only when:
 
 - [ ] Strict tenant isolation is enforced by both application code and database
   policy under the same DB role used in production.
-- [ ] All externally reachable routes have correct authentication,
+- [x] All externally reachable routes have correct authentication,
   authorization, and audit behavior.
 - [ ] No raw secrets, bearer tokens, webhook signatures, prompts, source
   payloads, or customer text can leave through logs, metrics, errors, or debug
