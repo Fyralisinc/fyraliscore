@@ -63,4 +63,47 @@ async def record_override(
         return None
 
 
-__all__ = ["OverrideKind", "record_override"]
+def override_kind_for_reason(reason: str | None) -> OverrideKind:
+    if reason == "admin_override" or (reason or "").startswith("admin"):
+        return "admin"
+    if reason == "leadership_override" or (reason or "").startswith("leadership"):
+        return "leadership"
+    if reason == "model_self_scope":
+        return "first_person"
+    return "system"
+
+
+async def record_override_if_needed(
+    decision: object,
+    *,
+    actor_id: UUID,
+    entity_type: str,
+    entity_id: UUID | None,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+) -> UUID | None:
+    """Audit an AccessDecision override path.
+
+    Kept in this module so read surfaces can share the same mapping without
+    importing gateway routers or duplicating reason handling.
+    """
+    if not bool(getattr(decision, "override_applied", False)):
+        return None
+    reason = getattr(decision, "reason", None)
+    return await record_override(
+        actor_id,
+        entity_type,
+        entity_id,
+        override_kind_for_reason(reason),
+        conn=conn,
+        tenant_id=tenant_id,
+        reason=reason,
+    )
+
+
+__all__ = [
+    "OverrideKind",
+    "override_kind_for_reason",
+    "record_override",
+    "record_override_if_needed",
+]
