@@ -11,6 +11,13 @@ from fastapi.responses import JSONResponse
 
 from services.app.gateway.artifact_drawers import fetch_commitment_overlay
 from services.app.gateway.auth import AuthContext
+from services.platform.access_control.audit import (
+    record_override_if_needed as record_access_override_if_needed,
+)
+from services.platform.access_control.checks import (
+    AccessDecision,
+    can_read_by_id,
+)
 
 
 def build_structure_router() -> APIRouter:
@@ -54,10 +61,28 @@ async def structure_overlay_endpoint(
 
     deps = _deps(request)
     async with deps.pool.acquire() as conn:
+        decision = await can_read_by_id(
+            auth.actor_id,
+            "commitment",
+            cid,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+        if not decision.allowed:
+            return _access_denial(decision)
+        await _record_override_if_needed(
+            decision,
+            actor_id=auth.actor_id,
+            entity_type="commitment",
+            entity_id=cid,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
         bundle = await fetch_commitment_overlay(
             cid,
             auth.tenant_id,
             conn,
+            actor_id=auth.actor_id,
         )
     if bundle is None:
         return JSONResponse({"error": "not_found"}, status_code=404)
@@ -116,10 +141,28 @@ async def structure_recent_endpoint(
 
         for r in rows:
             cid = r["id"]
+            decision = await can_read_by_id(
+                auth.actor_id,
+                "commitment",
+                cid,
+                conn=conn,
+                tenant_id=auth.tenant_id,
+            )
+            if not decision.allowed:
+                continue
+            await _record_override_if_needed(
+                decision,
+                actor_id=auth.actor_id,
+                entity_type="commitment",
+                entity_id=cid,
+                conn=conn,
+                tenant_id=auth.tenant_id,
+            )
             bundle = await fetch_commitment_overlay(
                 cid,
                 auth.tenant_id,
                 conn,
+                actor_id=auth.actor_id,
             )
             if bundle is None:
                 continue
@@ -153,6 +196,23 @@ async def structure_recent_endpoint(
             gid = str(gr["id"])
             if gid in goals_by_id:
                 continue
+            decision = await can_read_by_id(
+                auth.actor_id,
+                "goal",
+                gr["id"],
+                conn=conn,
+                tenant_id=auth.tenant_id,
+            )
+            if not decision.allowed:
+                continue
+            await _record_override_if_needed(
+                decision,
+                actor_id=auth.actor_id,
+                entity_type="goal",
+                entity_id=gr["id"],
+                conn=conn,
+                tenant_id=auth.tenant_id,
+            )
             altitude = (
                 gr["altitude"]
                 if gr["altitude"] in ("strategic", "operational")
@@ -165,24 +225,6 @@ async def structure_recent_endpoint(
                 "parent_goal_id": (
                     str(gr["parent_goal_id"]) if gr["parent_goal_id"] else None
                 ),
-            }
-
-        actor_rows = await conn.fetch(
-            "SELECT id, display_name, metadata FROM actors "
-            "WHERE tenant_id = $1 AND status = 'active' "
-            "  AND type IN ('human_internal', 'human') "
-            "ORDER BY display_name "
-            "LIMIT 80",
-            auth.tenant_id,
-        )
-        for ar in actor_rows:
-            aid = str(ar["id"])
-            md = _json_dict(ar["metadata"])
-            role = md.get("title") or md.get("role") or "Team member"
-            people_by_id[aid] = {
-                "id": aid,
-                "label": ar["display_name"],
-                "role": role,
             }
 
     return JSONResponse(
@@ -218,29 +260,28 @@ async def structure_resources_aggregate(request: Request) -> JSONResponse:
 
         resources_payload: list[dict[str, Any]] = []
         for r in res_rows:
+            decision = await can_read_by_id(
+                auth.actor_id,
+                "resource",
+                r["id"],
+                conn=conn,
+                tenant_id=auth.tenant_id,
+            )
+            if not decision.allowed:
+                continue
+            await _record_override_if_needed(
+                decision,
+                actor_id=auth.actor_id,
+                entity_type="resource",
+                entity_id=r["id"],
+                conn=conn,
+                tenant_id=auth.tenant_id,
+            )
             cv = _json_dict(r["current_value"])
             md = _json_dict(r["metadata"])
             capacity = cv.get("capacity")
             unit = cv.get("unit") or ""
             label = cv.get("label") or md.get("label") or r["identity"] or "Resource"
-
-            deployed_row = await conn.fetchrow(
-                "SELECT COALESCE(SUM((deployed_quantity->>'value')::float), 0) AS total, "
-                "       COUNT(*) AS deployments "
-                "FROM resource_deployments rd "
-                "JOIN commitments c ON c.id = rd.commitment_id "
-                "WHERE rd.resource_id = $1 "
-                "  AND rd.released_at IS NULL "
-                "  AND c.tenant_id = $2 "
-                "  AND c.terminal_at IS NULL",
-                r["id"],
-                auth.tenant_id,
-            )
-            total_deployed = float(deployed_row["total"] or 0.0)
-            deployments_count = int(deployed_row["deployments"] or 0)
-
-            cap = float(capacity) if isinstance(capacity, (int, float)) else 0.0
-            util_pct = (total_deployed / cap * 100.0) if cap > 0 else 0.0
 
             top_rows = await conn.fetch(
                 "SELECT c.id, c.title, c.state, c.owner_id, "
@@ -251,13 +292,26 @@ async def structure_resources_aggregate(request: Request) -> JSONResponse:
                 "  AND rd.released_at IS NULL "
                 "  AND c.tenant_id = $2 "
                 "  AND c.terminal_at IS NULL "
-                "ORDER BY (rd.deployed_quantity->>'value')::float DESC NULLS LAST "
-                "LIMIT 5",
+                "ORDER BY (rd.deployed_quantity->>'value')::float DESC NULLS LAST",
                 r["id"],
                 auth.tenant_id,
             )
+            top_rows = await _filter_visible_rows(
+                list(top_rows),
+                kind="commitment",
+                id_key="id",
+                actor_id=auth.actor_id,
+                tenant_id=auth.tenant_id,
+                conn=conn,
+            )
+            total_deployed = sum(float(tr["qty"] or 0.0) for tr in top_rows)
+            deployments_count = len(top_rows)
+
+            cap = float(capacity) if isinstance(capacity, (int, float)) else 0.0
+            util_pct = (total_deployed / cap * 100.0) if cap > 0 else 0.0
+
             top_consumers: list[dict[str, Any]] = []
-            for tr in top_rows:
+            for tr in top_rows[:5]:
                 top_consumers.append(
                     {
                         "commitment_id": str(tr["id"]),
@@ -304,6 +358,23 @@ async def structure_resource_overlay(
 
     deps = _deps(request)
     async with deps.pool.acquire() as conn:
+        decision = await can_read_by_id(
+            auth.actor_id,
+            "resource",
+            resource_uuid,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+        if not decision.allowed:
+            return _access_denial(decision)
+        await _record_override_if_needed(
+            decision,
+            actor_id=auth.actor_id,
+            entity_type="resource",
+            entity_id=resource_uuid,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
         r = await conn.fetchrow(
             "SELECT id, kind, identity, description, current_value, "
             "       utilization_state, metadata "
@@ -332,6 +403,14 @@ async def structure_resource_overlay(
             "LIMIT 80",
             resource_uuid,
             auth.tenant_id,
+        )
+        consumers = await _filter_visible_rows(
+            list(consumers),
+            kind="commitment",
+            id_key="id",
+            actor_id=auth.actor_id,
+            tenant_id=auth.tenant_id,
+            conn=conn,
         )
 
         consumers_payload: list[dict[str, Any]] = []
@@ -395,6 +474,69 @@ async def structure_resource_overlay(
             "owners": owners_payload,
         },
         status_code=200,
+    )
+
+
+async def _filter_visible_rows(
+    rows: list[Any],
+    *,
+    kind: str,
+    id_key: str,
+    actor_id: UUID,
+    tenant_id: UUID,
+    conn: Any,
+) -> list[Any]:
+    visible: list[Any] = []
+    for row in rows:
+        entity_id = row[id_key]
+        if not isinstance(entity_id, UUID):
+            entity_id = UUID(str(entity_id))
+        decision = await can_read_by_id(
+            actor_id,
+            kind,  # type: ignore[arg-type]
+            entity_id,
+            conn=conn,
+            tenant_id=tenant_id,
+        )
+        if not decision.allowed:
+            continue
+        await _record_override_if_needed(
+            decision,
+            actor_id=actor_id,
+            entity_type=kind,
+            entity_id=entity_id,
+            conn=conn,
+            tenant_id=tenant_id,
+        )
+        visible.append(row)
+    return visible
+
+
+def _access_denial(decision: AccessDecision) -> JSONResponse:
+    if decision.reason == "entity_not_found":
+        return JSONResponse({"error": "not_found"}, status_code=404)
+    return JSONResponse(
+        {"error": "forbidden", "reason": decision.reason},
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
+
+
+async def _record_override_if_needed(
+    decision: AccessDecision,
+    *,
+    actor_id: UUID,
+    entity_type: str,
+    entity_id: UUID,
+    conn: Any,
+    tenant_id: UUID,
+) -> None:
+    await record_access_override_if_needed(
+        decision,
+        actor_id=actor_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        conn=conn,
+        tenant_id=tenant_id,
     )
 
 
