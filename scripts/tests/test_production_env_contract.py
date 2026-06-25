@@ -220,3 +220,18 @@ def test_env_contract_reports_forbidden_raw_master_kek(tmp_path: Path) -> None:
     assert len(violations) == 1
     assert violations[0].key == "MASTER_KEK"
     assert "must not be present" in violations[0].message
+
+
+def test_env_contract_reports_forbidden_inline_gmail_service_account_json(
+    tmp_path: Path,
+) -> None:
+    template = tmp_path / ".env.production.example"
+    _write_template(template)
+    with template.open("a", encoding="utf-8") as fh:
+        fh.write('GMAIL_SERVICE_ACCOUNT_JSON={"private_key":"raw-key"}\n')
+
+    violations = check_env_contract(template)
+
+    assert len(violations) == 1
+    assert violations[0].key == "GMAIL_SERVICE_ACCOUNT_JSON"
+    assert "must not be present" in violations[0].message
