@@ -33,7 +33,9 @@ def _user_client(app, **kwargs):
         installation_row_id=uuid4(), team_id=_TEAM, user_id=_USER,
         base_url=f"{_HOST}/slack/api", http_client=http, **kwargs,
     )
-    c._user_token = f"spam-slack-user::{_TEAM}::{_USER}"  # bypass secret store
+    c._user_token_cache.set(  # type: ignore[attr-defined]
+        f"spam-slack-user::{_TEAM}::{_USER}", ttl_seconds=float("inf"),
+    )
     return c, http
 
 
@@ -48,7 +50,9 @@ def _bot_client(app):
         installation_row_id=uuid4(), team_id=_TEAM,
         base_url=f"{_HOST}/slack/api", http_client=http,
     )
-    c._bot_token = f"spam-slack::{_TEAM}"
+    c._bot_token_cache.set(  # type: ignore[attr-defined]
+        f"spam-slack::{_TEAM}", ttl_seconds=float("inf"),
+    )
     return c, http
 
 

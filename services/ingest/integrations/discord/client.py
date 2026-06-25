@@ -66,6 +66,7 @@ class DiscordClient:
         wall_budget_s: float = _DEFAULT_WALL_BUDGET_S,
         http_client: httpx.AsyncClient | None = None,
         base_url: str | None = None,
+        bot_token: str | None = None,
     ) -> None:
         from lib.integrations.endpoints import endpoint
         self._api_base = (base_url or endpoint("discord_api")).rstrip("/")
@@ -77,6 +78,7 @@ class DiscordClient:
         self._tenant_resolver = tenant_resolver
         self._max_attempts = max_attempts
         self._wall_budget_s = wall_budget_s
+        self._bot_token_override = bot_token
         self._owns_client = http_client is None
         self._client: httpx.AsyncClient | None = http_client
 
@@ -93,6 +95,8 @@ class DiscordClient:
         Raises `DiscordApiError(code='discord_secret_unavailable')`
         if the env var is unset or empty.
         """
+        if self._bot_token_override is not None:
+            return self._bot_token_override
         token = os.environ.get("DISCORD_BOT_TOKEN", "")
         if not token:
             raise DiscordApiError(

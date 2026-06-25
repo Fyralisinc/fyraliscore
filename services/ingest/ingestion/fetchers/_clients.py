@@ -16,8 +16,8 @@ auth and instead carry a spammer-recognized identity token so the spammer
 can route the request to the right tenant's fixtures — no GitHub App JWT,
 no Slack bot-token secret, no Discord bot token required:
   - github : preseed the installation-token cache with `spam-gh::<inst>`
-  - slack  : preset `_bot_token = spam-slack::<team>`
-  - discord: preset `_bot_token = spam-bot::<guild>`
+  - slack  : preseed the bot-token cache with `spam-slack::<team>`
+  - discord: pass a preset bot token `spam-bot::<guild>`
 The path-keyed endpoints (repo events, history, messages, channels) key on
 globally-unique ids, so only the token-scoped endpoints need this.
 
@@ -265,7 +265,9 @@ async def build_slack_client(
         http_client=await _get_http(),
     )
     if spammer:
-        client._bot_token = f"spam-slack::{team_id}"
+        client._bot_token_cache.set(  # type: ignore[attr-defined]
+            f"spam-slack::{team_id}", ttl_seconds=float("inf"),
+        )
     return await _wrap_source_client("slack", client)
 
 
@@ -285,8 +287,9 @@ async def build_slack_user_client(
     token is resolved from the secret store by label
     `slack_user_token:{team_id}:{user_id}` (or preset in spammer mode).
 
-    SPAMMER MODE: preset `_user_token = spam-slack-user::<team>::<user>` so the
-    spammer routes `conversations.list(types=im,mpim)` to that user's DM
+    SPAMMER MODE: preseed the user-token cache with
+    `spam-slack-user::<team>::<user>` so the spammer routes
+    `conversations.list(types=im,mpim)` to that user's DM
     fixtures — no real xoxp grant or secret material required.
     """
     from services.ingest.integrations.slack.client import SlackUserClient
@@ -305,7 +308,9 @@ async def build_slack_user_client(
         http_client=await _get_http(),
     )
     if spammer:
-        client._user_token = f"spam-slack-user::{team_id}::{user_id}"
+        client._user_token_cache.set(  # type: ignore[attr-defined]
+            f"spam-slack-user::{team_id}::{user_id}", ttl_seconds=float("inf"),
+        )
     return await _wrap_source_client("slack", client)
 
 
@@ -323,9 +328,8 @@ async def build_discord_client(
         installation_row_id=install["id"],
         guild_id=guild_id,
         http_client=await _get_http(),
+        bot_token=f"spam-bot::{guild_id}" if spammer else None,
     )
-    if spammer:
-        client._bot_token = f"spam-bot::{guild_id}"
     return await _wrap_source_client("discord", client)
 
 

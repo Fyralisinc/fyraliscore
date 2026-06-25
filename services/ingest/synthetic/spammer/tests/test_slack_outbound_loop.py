@@ -30,7 +30,9 @@ def _client(app, **kwargs):
         installation_row_id=uuid4(), team_id=_TEAM,
         base_url=f"{_HOST}/slack/api", http_client=http, **kwargs,
     )
-    c._bot_token = f"spam-slack::{_TEAM}"  # bypass secret-store resolution
+    c._bot_token_cache.set(  # type: ignore[attr-defined]
+        f"spam-slack::{_TEAM}", ttl_seconds=float("inf"),
+    )
     return c, http
 
 
