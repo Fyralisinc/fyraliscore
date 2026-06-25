@@ -1,14 +1,14 @@
-name: Deploy to Production
+name: Deploy to Staging
 
 on:
   workflow_run:
     workflows: ["CI"]
-    branches: [production]
+    branches: [main]
     types: [completed]
   workflow_dispatch:
     inputs:
       ci_run_id:
-        description: "CI run id on production containing signed fyraliscore-sboms."
+        description: "CI run id on main containing signed fyraliscore-sboms."
         required: true
         type: string
 
@@ -18,12 +18,12 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy to AWS Lightsail
+    name: Deploy to staging host
     runs-on: ubuntu-latest
     timeout-minutes: 20
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     environment:
-      name: production
+      name: staging
 
     steps:
       - name: Install cosign
@@ -51,7 +51,7 @@ jobs:
         run: |
           set -euo pipefail
           cd release-artifacts
-          COSIGN_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@refs/heads/production"
+          COSIGN_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@refs/heads/main"
           cosign verify-blob \
             --certificate-identity "${COSIGN_IDENTITY}" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
@@ -72,25 +72,25 @@ jobs:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.LIGHTSAIL_HOST }}
-          username: ${{ secrets.LIGHTSAIL_USER }}
-          key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
+          host: ${{ secrets.STAGING_LIGHTSAIL_HOST }}
+          username: ${{ secrets.STAGING_LIGHTSAIL_USER }}
+          key: ${{ secrets.STAGING_LIGHTSAIL_SSH_KEY }}
           script: |
             set -euo pipefail
-            cd ~/fyraliscore
+            cd "${{ secrets.STAGING_APP_DIR }}"
             PREV_SHA="$(git rev-parse HEAD)"
 
-            echo "==> Pulling latest code"
-            git fetch origin production
-            git reset --hard origin/production
+            echo "==> Pulling latest main"
+            git fetch origin main
+            git reset --hard origin/main
 
-            echo "==> Rebuilding and restarting containers"
+            echo "==> Rebuilding and restarting staging containers"
             docker compose pull
             docker compose up -d --build --remove-orphans
 
             echo "==> Waiting for gateway health check"
             if ! timeout 60 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done'; then
-              echo "Gateway failed health after deploy; rolling back to ${PREV_SHA}" >&2
+              echo "Gateway failed health after staging deploy; rolling back to ${PREV_SHA}" >&2
               git reset --hard "${PREV_SHA}"
               docker compose up -d --build --remove-orphans
               timeout 60 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done' || true
@@ -105,7 +105,7 @@ jobs:
               --interval-seconds "${PRODUCT_SLO_GATE_INTERVAL_SECONDS:-15}" \
               --error-burn-max "${PRODUCT_SLO_GATE_ERROR_BURN_MAX:-2}" \
               --latency-burn-max "${PRODUCT_SLO_GATE_LATENCY_BURN_MAX:-2}"; then
-              echo "Product SLO gate failed after deploy; rolling back to ${PREV_SHA}" >&2
+              echo "Product SLO gate failed after staging deploy; rolling back to ${PREV_SHA}" >&2
               git reset --hard "${PREV_SHA}"
               docker compose up -d --build --remove-orphans
               timeout 60 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done' || true
@@ -113,5 +113,5 @@ jobs:
               exit 1
             fi
 
-            echo "==> Deployment complete"
+            echo "==> Staging deployment complete"
             docker compose ps

@@ -9,6 +9,7 @@ the same drift.
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import sys
 import tomllib
@@ -19,6 +20,8 @@ from typing import Iterable, Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ROOTS = ("services", "lib", "scripts", "tests", "benchmarks")
+CLIENT_ASSET_ROOTS = ("ui", "services/app", "services/product")
+CLIENT_ASSET_SUFFIXES = (".html", ".js", ".jsx", ".ts", ".tsx", ".py")
 IGNORED_PARTS = {
     ".git",
     ".mypy_cache",
@@ -26,6 +29,7 @@ IGNORED_PARTS = {
     ".ruff_cache",
     ".venv",
     "__pycache__",
+    "node_modules",
     "site",
     "truss_run",
     "truss_run_2",
@@ -46,6 +50,150 @@ RAW_PENDING_POST_COMMIT_ACTION_INSERT_RE = re.compile(
 RAW_THINK_OBLIGATION_INSERT_RE = re.compile(
     r"\bINSERT\s+INTO\s+think_obligations\b",
     re.IGNORECASE,
+)
+MIGRATION_FILENAME_RE = re.compile(r"^(?P<prefix>\d{4})_.+\.sql$")
+STRICT_RLS_BASELINE_MIGRATION_PREFIX = 164
+PLAINTEXT_SECRET_COLUMN_BASELINE_MIGRATION_PREFIX = 166
+PERMISSIVE_UNBOUND_TENANT_POLICY_RE = re.compile(
+    r"(?:NULLIF\s*\(\s*)?current_setting\s*\(\s*'app\.current_tenant'[^)]*\)"
+    r"(?:\s*,\s*''\s*\))?\s+IS\s+NULL",
+    re.IGNORECASE,
+)
+PLAINTEXT_SECRET_COLUMN_RE = re.compile(
+    r"""
+    (?:\bADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?|^\s*,?\s*)
+    (?P<name>"?[A-Za-z_][A-Za-z0-9_]*"?)
+    \s+
+    (?:TEXT|VARCHAR|BYTEA|JSONB|JSON|CHARACTER\s+VARYING)
+    \b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+SECRET_LIKE_COLUMN_NAME_RE = re.compile(
+    r"(?:secret|token|password|api_key|private_key|client_secret|signing_secret)",
+    re.IGNORECASE,
+)
+SECRET_COLUMN_ALLOWED_SUFFIXES = (
+    "_ref",
+    "_refs",
+    "_hash",
+    "_digest",
+    "_fingerprint",
+    "_ciphertext",
+    "_encrypted",
+    "_last4",
+    "_scope",
+    "_scopes",
+    "_status",
+    "_type",
+)
+DESTRUCTIVE_MIGRATION_MARKER = "destructive-migration-approved:"
+DESTRUCTIVE_MIGRATION_REQUIRED_MARKER_FIELDS = ("backup=", "rollback=", "owner=")
+DESTRUCTIVE_MIGRATION_ALLOWED_FILES = {
+    Path("db/migrations/0026_single_demo_company.sql"),
+    Path("db/migrations/0048_four_stance_propositions.sql"),
+    Path("db/migrations/0093_drop_demo_scaffolding.sql"),
+    Path("db/migrations/0111_sage_query_text_indexes.sql"),
+    Path("db/migrations/0113_compact_model_search_documents.sql"),
+    Path("db/migrations/0115_model_belief_addresses.sql"),
+    Path("db/migrations/0116_search_document_full_text_indexes.sql"),
+    Path("db/migrations/0123_sage_sparse_lookup_indexes.sql"),
+    Path("db/migrations/0127_drop_retired_routing_topology_queues.sql"),
+    Path("db/migrations/0159_customer_commitments_revenue_precision.sql"),
+}
+DESTRUCTIVE_MIGRATION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"\bDROP\s+TABLE\b", re.IGNORECASE),
+        "DROP TABLE",
+    ),
+    (
+        re.compile(r"\bDROP\s+COLUMN\b", re.IGNORECASE),
+        "DROP COLUMN",
+    ),
+    (
+        re.compile(r"\bDROP\s+INDEX\b", re.IGNORECASE),
+        "DROP INDEX",
+    ),
+    (
+        re.compile(r"\bTRUNCATE\b", re.IGNORECASE),
+        "TRUNCATE",
+    ),
+    (
+        re.compile(r"\bDELETE\s+FROM\b", re.IGNORECASE),
+        "DELETE FROM",
+    ),
+    (
+        re.compile(r"\bALTER\s+COLUMN\b.*\bTYPE\b", re.IGNORECASE),
+        "ALTER COLUMN TYPE",
+    ),
+)
+ACCESS_READ_CALL_NAMES = {"can_read", "can_read_by_id"}
+
+NETWORK_CALL_MODULE_PREFIXES = (
+    "httpx",
+    "requests",
+    "openai",
+    "anthropic",
+    "aioboto3",
+    "boto3",
+)
+NETWORK_CALL_SUFFIXES = (
+    ".embed",
+    ".embed_many",
+    ".embed_text",
+    ".complete",
+    ".complete_json",
+    ".render_card",
+    ".render_card_reasoning",
+    ".render_close_line",
+    ".render_conversation_turn",
+    ".render_greeting",
+    ".render_query_grid",
+)
+METRIC_CREATION_CALL_NAMES = {
+    "counter",
+    "gauge",
+    "histogram",
+    "Counter",
+    "Gauge",
+    "Histogram",
+}
+FORBIDDEN_METRIC_LABEL_NAMES = {
+    "tenant",
+    "tenant_id",
+    "actor_id",
+    "user_id",
+    "installation_id",
+    "account_id",
+    "external_id",
+    "email",
+    "owner_email",
+    "query",
+    "prompt",
+    "payload",
+    "body",
+    "channel",
+    "channel_name",
+    "path",
+    "url",
+    "object_key",
+    "source_payload",
+    "source_channel",
+}
+FORBIDDEN_METRIC_LABEL_SUFFIXES = ("_id", "_email", "_url", "_path")
+CLIENT_TOKEN_STORAGE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"\b(?:localStorage|sessionStorage)\s*\.", re.IGNORECASE),
+        "browser auth/session tokens must not be stored in localStorage/sessionStorage",
+    ),
+    (
+        re.compile(r"\?\s*token\s*=", re.IGNORECASE),
+        "browser WebSocket/API auth must not put tokens in query strings",
+    ),
+    (
+        re.compile(r"\bsearchParams\s*\.\s*set\s*\(\s*['\"]token['\"]", re.IGNORECASE),
+        "browser WebSocket/API auth must not put tokens in query strings",
+    ),
 )
 
 RAW_THINK_TRIGGER_INSERT_ALLOWED_FILES = {
@@ -71,6 +219,10 @@ IMPORT_LINTER_IGNORE_IMPORT_LIMITS = {
     "domain does not add new imports of reasoning internals": 15,
     "domain does not add new imports of product code": 1,
     "ingest does not add new imports of app code": 47,
+}
+ACCESS_READ_AUDIT_EXEMPT_FILES = {
+    Path("services/platform/access_control/checks.py"),
+    Path("services/platform/access_control/extension_caps.py"),
 }
 
 
@@ -109,6 +261,154 @@ def _iter_python_files(
             yield rel
 
 
+def _iter_client_asset_files(
+    *,
+    repo_root: Path,
+    roots: Sequence[str] = CLIENT_ASSET_ROOTS,
+) -> Iterable[Path]:
+    for root_name in roots:
+        root = repo_root / root_name
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix not in CLIENT_ASSET_SUFFIXES:
+                continue
+            rel = path.relative_to(repo_root)
+            if any(part in IGNORED_PARTS for part in rel.parts):
+                continue
+            if _is_test_path(rel):
+                continue
+            yield rel
+
+
+def _full_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _full_name(node.value)
+        if prefix:
+            return f"{prefix}.{node.attr}"
+        return node.attr
+    if isinstance(node, ast.Call):
+        return _full_name(node.func)
+    return None
+
+
+def _is_transaction_context(expr: ast.AST) -> bool:
+    name = _full_name(expr)
+    if name is None:
+        return False
+    return (
+        name == "transaction"
+        or name.endswith(".transaction")
+        or name == "tenant_transaction"
+        or name.endswith(".tenant_transaction")
+    )
+
+
+def _network_call_name(call: ast.Call) -> str | None:
+    name = _full_name(call.func)
+    if name is None:
+        return None
+    first = name.split(".", 1)[0]
+    if first in NETWORK_CALL_MODULE_PREFIXES:
+        return name
+    if any(name.endswith(suffix) for suffix in NETWORK_CALL_SUFFIXES):
+        return name
+    return None
+
+
+def _metric_call_name(call: ast.Call) -> str | None:
+    name = _full_name(call.func)
+    if name is None:
+        return None
+    short = name.rsplit(".", 1)[-1]
+    return short if short in METRIC_CREATION_CALL_NAMES else None
+
+
+def _literal_metric_label_names(call: ast.Call) -> list[tuple[str, int]]:
+    label_node: ast.AST | None = call.args[2] if len(call.args) >= 3 else None
+    for keyword in call.keywords:
+        if keyword.arg == "label_names":
+            label_node = keyword.value
+            break
+    if not isinstance(label_node, (ast.Tuple, ast.List)):
+        return []
+    labels: list[tuple[str, int]] = []
+    for element in label_node.elts:
+        if isinstance(element, ast.Constant) and isinstance(element.value, str):
+            labels.append((element.value, element.lineno))
+    return labels
+
+
+def _metric_label_forbidden_reason(label_name: str) -> str | None:
+    normalized = label_name.strip().lower()
+    if normalized in FORBIDDEN_METRIC_LABEL_NAMES:
+        return "forbidden metric label name"
+    if normalized.endswith(FORBIDDEN_METRIC_LABEL_SUFFIXES):
+        return "metric labels must not carry raw ids/emails/urls/paths"
+    return None
+
+
+def _access_read_call_line(tree: ast.AST) -> int | None:
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _full_name(node.func)
+        if name is None:
+            continue
+        if name.rsplit(".", 1)[-1] in ACCESS_READ_CALL_NAMES:
+            return node.lineno
+    return None
+
+
+class _NetworkInTransactionVisitor(ast.NodeVisitor):
+    def __init__(self, *, path: Path) -> None:
+        self.path = path
+        self.transaction_depth = 0
+        self.violations: list[Violation] = []
+
+    def visit_With(self, node: ast.With) -> None:  # noqa: N802 - ast API
+        self._visit_with_body(node)
+
+    def visit_AsyncWith(self, node: ast.AsyncWith) -> None:  # noqa: N802 - ast API
+        self._visit_with_body(node)
+
+    def visit_Call(self, node: ast.Call) -> None:  # noqa: N802 - ast API
+        if self.transaction_depth > 0:
+            call_name = _network_call_name(node)
+            if call_name is not None:
+                self.violations.append(
+                    Violation(
+                        check="network-call-in-transaction",
+                        path=self.path,
+                        line_number=node.lineno,
+                        message=(
+                            f"move {call_name} outside the database "
+                            "transaction block"
+                        ),
+                    )
+                )
+        self.generic_visit(node)
+
+    def _visit_with_body(self, node: ast.With | ast.AsyncWith) -> None:
+        in_transaction = any(
+            _is_transaction_context(item.context_expr) for item in node.items
+        )
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self.visit(item.optional_vars)
+        if in_transaction:
+            self.transaction_depth += 1
+        try:
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            if in_transaction:
+                self.transaction_depth -= 1
+
+
 def _find_raw_insert_violations(
     *,
     repo_root: Path,
@@ -131,6 +431,422 @@ def _find_raw_insert_violations(
                         path=rel,
                         line_number=line_number,
                         message=message,
+                    )
+                )
+    return violations
+
+
+def find_network_call_in_transaction_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    roots: Sequence[str] = ("services", "lib"),
+) -> list[Violation]:
+    """Return obvious network/LLM/embed calls inside transaction blocks.
+
+    This is intentionally lexical and conservative. It prevents newly placing
+    direct HTTP, object-storage, LLM, rendering, or embedding calls inside
+    ``async with conn.transaction()`` / ``tenant_transaction()`` blocks without
+    pretending to solve interprocedural transaction analysis.
+    """
+
+    violations: list[Violation] = []
+    for rel in _iter_python_files(repo_root=repo_root, roots=roots):
+        if _is_test_path(rel):
+            continue
+        try:
+            tree = ast.parse(
+                (repo_root / rel).read_text(encoding="utf-8"),
+                filename=str(rel),
+            )
+        except SyntaxError as exc:
+            violations.append(
+                Violation(
+                    check="network-call-in-transaction",
+                    path=rel,
+                    line_number=exc.lineno or 1,
+                    message=f"could not parse Python file: {exc.msg}",
+                )
+            )
+            continue
+        visitor = _NetworkInTransactionVisitor(path=rel)
+        visitor.visit(tree)
+        violations.extend(visitor.violations)
+    return violations
+
+
+def find_access_read_without_override_audit_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    roots: Sequence[str] = ("services",),
+) -> list[Violation]:
+    """Return read-access checks in production code without audit wiring.
+
+    Admin/leadership/first-person override reads are sensitive enough that any
+    production file calling ``can_read`` or ``can_read_by_id`` must also carry an
+    override-audit path. This is a file-level ratchet because several routers
+    centralize audit writes in local helper functions.
+    """
+
+    violations: list[Violation] = []
+    for rel in _iter_python_files(repo_root=repo_root, roots=roots):
+        if rel in ACCESS_READ_AUDIT_EXEMPT_FILES or _is_test_path(rel):
+            continue
+        text = (repo_root / rel).read_text(encoding="utf-8", errors="ignore")
+        try:
+            tree = ast.parse(text, filename=str(rel))
+        except SyntaxError as exc:
+            violations.append(
+                Violation(
+                    check="access-read-override-audit",
+                    path=rel,
+                    line_number=exc.lineno or 1,
+                    message=f"could not parse Python file: {exc.msg}",
+                )
+            )
+            continue
+        line = _access_read_call_line(tree)
+        if line is None:
+            continue
+        if "record_override" in text:
+            continue
+        violations.append(
+            Violation(
+                check="access-read-override-audit",
+                path=rel,
+                line_number=line,
+                message=(
+                    "files that call can_read/can_read_by_id must also audit "
+                    "override grants via record_override_if_needed or "
+                    "record_override"
+                ),
+            )
+        )
+    return violations
+
+
+def find_forbidden_metric_label_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    roots: Sequence[str] = ("services", "lib", "scripts"),
+) -> list[Violation]:
+    """Return metric families declared with privacy-unsafe label names."""
+
+    violations: list[Violation] = []
+    for rel in _iter_python_files(repo_root=repo_root, roots=roots):
+        if _is_test_path(rel):
+            continue
+        text = (repo_root / rel).read_text(encoding="utf-8", errors="ignore")
+        try:
+            tree = ast.parse(text, filename=str(rel))
+        except SyntaxError as exc:
+            violations.append(
+                Violation(
+                    check="forbidden-metric-label",
+                    path=rel,
+                    line_number=exc.lineno or 1,
+                    message=f"could not parse Python file: {exc.msg}",
+                )
+            )
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or _metric_call_name(node) is None:
+                continue
+            for label_name, line_number in _literal_metric_label_names(node):
+                reason = _metric_label_forbidden_reason(label_name)
+                if reason is None:
+                    continue
+                violations.append(
+                    Violation(
+                        check="forbidden-metric-label",
+                        path=rel,
+                        line_number=line_number,
+                        message=f"{reason}: {label_name!r}",
+                    )
+                )
+    return violations
+
+
+def find_browser_token_storage_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    roots: Sequence[str] = CLIENT_ASSET_ROOTS,
+) -> list[Violation]:
+    """Return first-party browser/client code that stores or URL-carries tokens."""
+
+    violations: list[Violation] = []
+    for rel in _iter_client_asset_files(repo_root=repo_root, roots=roots):
+        text = (repo_root / rel).read_text(encoding="utf-8", errors="ignore")
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            for pattern, message in CLIENT_TOKEN_STORAGE_PATTERNS:
+                if rel.suffix == ".py" and "query strings" in message:
+                    continue
+                if pattern.search(line):
+                    violations.append(
+                        Violation(
+                            check="browser-token-storage",
+                            path=rel,
+                            line_number=line_number,
+                            message=message,
+                        )
+                    )
+                    break
+    return violations
+
+
+def find_migration_filename_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    migrations_dir: Path = Path("db/migrations"),
+) -> list[Violation]:
+    """Return migration files without a unique numeric prefix."""
+
+    root = repo_root / migrations_dir
+    if not root.exists():
+        return [
+            Violation(
+                check="migration-filename-ratchet",
+                path=migrations_dir,
+                line_number=1,
+                message="migration directory is missing",
+            )
+        ]
+
+    violations: list[Violation] = []
+    by_prefix: dict[str, list[Path]] = {}
+    for path in sorted(root.glob("*.sql")):
+        rel = path.relative_to(repo_root)
+        match = MIGRATION_FILENAME_RE.match(path.name)
+        if match is None:
+            violations.append(
+                Violation(
+                    check="migration-filename-ratchet",
+                    path=rel,
+                    line_number=1,
+                    message=(
+                        "migration filenames must start with a unique "
+                        "four-digit prefix, e.g. 0156_example.sql"
+                    ),
+                )
+            )
+            continue
+        by_prefix.setdefault(match.group("prefix"), []).append(rel)
+
+    for prefix, paths in sorted(by_prefix.items()):
+        if len(paths) <= 1:
+            continue
+        joined = ", ".join(str(path) for path in paths)
+        for path in paths:
+            violations.append(
+                Violation(
+                    check="migration-filename-ratchet",
+                    path=path,
+                    line_number=1,
+                    message=f"duplicate migration prefix {prefix}: {joined}",
+                )
+            )
+    return violations
+
+
+def _strip_sql_comments_preserving_lines(text: str) -> str:
+    """Remove SQL comments while keeping line numbers stable enough for CI."""
+
+    stripped_lines: list[str] = []
+    in_block_comment = False
+    for line in text.splitlines():
+        index = 0
+        output: list[str] = []
+        while index < len(line):
+            if in_block_comment:
+                end = line.find("*/", index)
+                if end == -1:
+                    index = len(line)
+                    continue
+                in_block_comment = False
+                index = end + 2
+                continue
+            if line.startswith("/*", index):
+                in_block_comment = True
+                index += 2
+                continue
+            if line.startswith("--", index):
+                break
+            output.append(line[index])
+            index += 1
+        stripped_lines.append("".join(output))
+    return "\n".join(stripped_lines)
+
+
+def _destructive_migration_marker_missing_fields(
+    text: str,
+) -> tuple[int, list[str]] | None:
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        marker_offset = line.find(DESTRUCTIVE_MIGRATION_MARKER)
+        if marker_offset == -1:
+            continue
+        marker = line[marker_offset:]
+        missing = [
+            field
+            for field in DESTRUCTIVE_MIGRATION_REQUIRED_MARKER_FIELDS
+            if field not in marker
+        ]
+        return line_number, missing
+    return None
+
+
+def find_destructive_migration_without_approval_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    migrations_dir: Path = Path("db/migrations"),
+) -> list[Violation]:
+    """Return new destructive migrations without backup/rollback evidence.
+
+    Historical migrations are baselined explicitly. New destructive schema/data
+    changes must carry a marker with operator evidence so release reviewers can
+    find the backup verification, rollback or forward-fix plan, and owner.
+    """
+
+    root = repo_root / migrations_dir
+    if not root.exists():
+        return []
+
+    violations: list[Violation] = []
+    marker_format = (
+        "-- destructive-migration-approved: "
+        "backup=<snapshot-or-ticket> rollback=<runbook-or-ticket> owner=<name>"
+    )
+    for path in sorted(root.glob("*.sql")):
+        rel = path.relative_to(repo_root)
+        if rel in DESTRUCTIVE_MIGRATION_ALLOWED_FILES:
+            continue
+
+        raw_text = path.read_text(encoding="utf-8", errors="ignore")
+        text = _strip_sql_comments_preserving_lines(raw_text)
+        destructive_hits: list[tuple[int, str]] = []
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            for pattern, operation in DESTRUCTIVE_MIGRATION_PATTERNS:
+                if pattern.search(line):
+                    destructive_hits.append((line_number, operation))
+                    break
+
+        if not destructive_hits:
+            continue
+
+        marker_state = _destructive_migration_marker_missing_fields(raw_text)
+        if marker_state is not None:
+            marker_line, missing_fields = marker_state
+            if not missing_fields:
+                continue
+            violations.append(
+                Violation(
+                    check="destructive-migration-approval",
+                    path=rel,
+                    line_number=marker_line,
+                    message=(
+                        "destructive migration approval marker is missing "
+                        f"required field(s): {', '.join(missing_fields)}; "
+                        f"use `{marker_format}`"
+                    ),
+                )
+            )
+            continue
+
+        for line_number, operation in destructive_hits:
+            violations.append(
+                Violation(
+                    check="destructive-migration-approval",
+                    path=rel,
+                    line_number=line_number,
+                    message=(
+                        f"{operation} requires backup verification, a rollback "
+                        f"or forward-fix plan, and an owner; use `{marker_format}`"
+                    ),
+                )
+            )
+    return violations
+
+
+def find_new_permissive_rls_policy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    migrations_dir: Path = Path("db/migrations"),
+    baseline_prefix: int = STRICT_RLS_BASELINE_MIGRATION_PREFIX,
+) -> list[Violation]:
+    """Return post-baseline migrations that add no-tenant RLS bypasses."""
+
+    root = repo_root / migrations_dir
+    if not root.exists():
+        return []
+
+    violations: list[Violation] = []
+    for path in sorted(root.glob("*.sql")):
+        match = MIGRATION_FILENAME_RE.match(path.name)
+        if match is None or int(match.group("prefix")) <= baseline_prefix:
+            continue
+        rel = path.relative_to(repo_root)
+        raw_text = path.read_text(encoding="utf-8", errors="ignore")
+        text = _strip_sql_comments_preserving_lines(raw_text)
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if PERMISSIVE_UNBOUND_TENANT_POLICY_RE.search(line):
+                violations.append(
+                    Violation(
+                        check="new-permissive-rls-policy",
+                        path=rel,
+                        line_number=line_number,
+                        message=(
+                            "new migrations must not permit access when "
+                            "app.current_tenant is unset; bind tenant context "
+                            "or use an audited service role/table"
+                        ),
+                    )
+                )
+    return violations
+
+
+def _plaintext_secret_column_reason(column_name: str) -> str | None:
+    normalized = column_name.strip('"').lower()
+    if not SECRET_LIKE_COLUMN_NAME_RE.search(normalized):
+        return None
+    if normalized.endswith(SECRET_COLUMN_ALLOWED_SUFFIXES):
+        return None
+    return (
+        "new credential-like columns must store opaque secret refs, hashes, "
+        "ciphertext, fingerprints, or metadata; not plaintext secret/token "
+        "values"
+    )
+
+
+def find_plaintext_secret_column_migration_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    migrations_dir: Path = Path("db/migrations"),
+    baseline_prefix: int = PLAINTEXT_SECRET_COLUMN_BASELINE_MIGRATION_PREFIX,
+) -> list[Violation]:
+    """Return post-baseline migrations that add plaintext credential columns."""
+
+    root = repo_root / migrations_dir
+    if not root.exists():
+        return []
+
+    violations: list[Violation] = []
+    for path in sorted(root.glob("*.sql")):
+        match = MIGRATION_FILENAME_RE.match(path.name)
+        if match is None or int(match.group("prefix")) <= baseline_prefix:
+            continue
+        rel = path.relative_to(repo_root)
+        raw_text = path.read_text(encoding="utf-8", errors="ignore")
+        text = _strip_sql_comments_preserving_lines(raw_text)
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            for column_match in PLAINTEXT_SECRET_COLUMN_RE.finditer(line):
+                column_name = column_match.group("name")
+                reason = _plaintext_secret_column_reason(column_name)
+                if reason is None:
+                    continue
+                violations.append(
+                    Violation(
+                        check="plaintext-secret-column-migration",
+                        path=rel,
+                        line_number=line_number,
+                        message=f"{reason}: {column_name.strip('\"')!r}",
                     )
                 )
     return violations
@@ -280,12 +996,28 @@ def find_import_linter_allowlist_violations(
 
 def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     violations: list[Violation] = []
+    violations.extend(find_migration_filename_violations(repo_root=repo_root))
+    violations.extend(
+        find_destructive_migration_without_approval_violations(repo_root=repo_root)
+    )
+    violations.extend(find_new_permissive_rls_policy_violations(repo_root=repo_root))
+    violations.extend(
+        find_plaintext_secret_column_migration_violations(repo_root=repo_root)
+    )
     violations.extend(find_raw_think_trigger_insert_violations(repo_root=repo_root))
     violations.extend(find_raw_model_reeval_insert_violations(repo_root=repo_root))
     violations.extend(
         find_raw_pending_post_commit_action_insert_violations(repo_root=repo_root)
     )
     violations.extend(find_raw_think_obligation_insert_violations(repo_root=repo_root))
+    violations.extend(
+        find_network_call_in_transaction_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_access_read_without_override_audit_violations(repo_root=repo_root)
+    )
+    violations.extend(find_forbidden_metric_label_violations(repo_root=repo_root))
+    violations.extend(find_browser_token_storage_violations(repo_root=repo_root))
     violations.extend(find_import_linter_allowlist_violations(repo_root=repo_root))
     return violations
 

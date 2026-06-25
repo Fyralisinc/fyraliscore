@@ -38,17 +38,38 @@ class Column:
     data_type: str        # information_schema.data_type value (e.g. "uuid", "text", "USER-DEFINED" for vector)
     is_nullable: bool
     has_default: bool = False
+    numeric_precision: int | None = None
+    numeric_scale: int | None = None
 
 
 @dataclass
 class Table:
     columns: dict[str, Column] = field(default_factory=dict)
     indexes: set[str] = field(default_factory=set)
+    checks: set[str] = field(default_factory=set)
     is_partitioned: bool = False
 
 
 def _col(name: str, dtype: str, nullable: bool, default: bool = False) -> tuple[str, Column]:
     return name, Column(name=name, data_type=dtype, is_nullable=nullable, has_default=default)
+
+
+def _col_numeric(
+    name: str,
+    nullable: bool,
+    *,
+    precision: int,
+    scale: int,
+    default: bool = False,
+) -> tuple[str, Column]:
+    return name, Column(
+        name=name,
+        data_type="numeric",
+        is_nullable=nullable,
+        has_default=default,
+        numeric_precision=precision,
+        numeric_scale=scale,
+    )
 
 
 # Data types as reported by information_schema.columns.data_type:
@@ -100,6 +121,29 @@ EXPECTED_TABLES: dict[str, Table] = {
             _col("created_at", TS, True, default=True),
         ]),
         indexes={"actor_identity_mappings_pkey"},
+    ),
+    "whatsapp_installations": Table(
+        columns=dict([
+            _col("id", UUID, False, default=True),
+            _col("tenant_id", UUID, False),
+            _col("phone_number_id", TEXT, False),
+            _col("waba_id", TEXT, True),
+            _col("display_phone_number", TEXT, True),
+            _col("app_secret", TEXT, True),
+            _col("verify_token", TEXT, True),
+            _col("access_token", TEXT, True),
+            _col("enabled", BOOL, False, default=True),
+            _col("created_at", TS, False, default=True),
+            _col("updated_at", TS, False, default=True),
+            _col("app_secret_ref", TEXT, True),
+            _col("verify_token_ref", TEXT, True),
+            _col("access_token_ref", TEXT, True),
+        ]),
+        indexes={
+            "whatsapp_installations_pkey",
+            "whatsapp_installations_phone_number_id_key",
+            "whatsapp_installations_tenant_idx",
+        },
     ),
     "observations": Table(
         columns=dict([
@@ -201,6 +245,10 @@ EXPECTED_TABLES: dict[str, Table] = {
             "models_proposition_kind_idx",   # A2
             "recommendations_active_idx",    # 0022
             "models_topo_embedding_idx",     # S2 / 0032
+        },
+        checks={
+            "models_status_check",
+            "models_archive_reason_check",
         },
     ),
     "model_status_notes": Table(
@@ -369,7 +417,7 @@ EXPECTED_TABLES: dict[str, Table] = {
             _col("commitment_id", UUID, False),
             _col("served_description", TEXT, True),
             _col("relationship_kind", TEXT, False, default=True),
-            _col("revenue_at_risk_usd", "numeric", True),
+            _col_numeric("revenue_at_risk_usd", True, precision=14, scale=2),
             _col("criticality", TEXT, False, default=True),
             _col("created_at", TS, False, default=True),
         ]),
@@ -429,6 +477,42 @@ EXPECTED_TABLES: dict[str, Table] = {
             "actor_sessions_expires_idx",
         },
     ),
+    "ingestion_failures": Table(
+        # 0057_ingestion_failures.sql + 0162 operator workflow.
+        columns=dict([
+            _col("id", UUID, False),
+            _col("tenant_id", UUID, False),
+            _col("source", TEXT, False),
+            _col("failure_kind", TEXT, False),
+            _col("raw_s3_key", TEXT, True),
+            _col("onboarding_shard_id", UUID, True),
+            _col("error_summary", TEXT, False),
+            _col("error_context", JSONB, False, default=True),
+            _col("attempt_count", INT, False, default=True),
+            _col("first_seen_at", TS, False, default=True),
+            _col("last_seen_at", TS, False, default=True),
+            _col("resolved_at", TS, True),
+            _col("resolution_kind", TEXT, True),
+            _col("resolved_by", TEXT, True),
+            _col("quarantined_at", TS, True),
+            _col("quarantined_by", UUID, True),
+            _col("quarantine_reason", TEXT, True),
+        ]),
+        indexes={
+            "ingestion_failures_pkey",
+            "ingestion_failures_tenant_source_unresolved_idx",
+            "ingestion_failures_failure_kind_idx",
+            "ingestion_failures_shard_idx",
+            "ingestion_failures_upsert_key_idx",
+            "ingestion_failures_open_operator_idx",
+            "ingestion_failures_quarantine_idx",
+        },
+        checks={
+            "ingestion_failures_source_check",
+            "ingestion_failures_failure_kind_check",
+            "ingestion_failures_resolution_kind_check",
+        },
+    ),
     "think_trigger_queue": Table(
         # 0004_think_trigger_queue.sql — T1/T2/T3/T4 Think trigger queue.
         # Partially resolves SCHEMA-QUESTION.md Q4.
@@ -447,10 +531,15 @@ EXPECTED_TABLES: dict[str, Table] = {
             _col("locked_at", TS, True),
             _col("completed_at", TS, True),
             _col("batch_parent_id", UUID, True),
+            _col("last_error", TEXT, True),
+            _col("quarantined_at", TS, True),
+            _col("quarantined_by", UUID, True),
+            _col("quarantine_reason", TEXT, True),
         ]),
         indexes={
             "think_trigger_queue_pkey",
             "think_trigger_queue_ready_idx",
+            "think_trigger_queue_dead_letter_idx",
         },
     ),
     # -----------------------------------------------------------------
@@ -668,11 +757,18 @@ EXPECTED_TABLES: dict[str, Table] = {
             _col("last_error", TEXT, False),
             _col("enqueued_at", TS, False),
             _col("dead_lettered_at", TS, False, default=True),
+            _col("quarantined_at", TS, True),
+            _col("quarantined_by", UUID, True),
+            _col("quarantine_reason", TEXT, True),
+            _col("retried_at", TS, True),
+            _col("retried_by", UUID, True),
+            _col("retry_queue_id", UUID, True),
         ]),
         indexes={
             "model_reeval_dead_letter_pkey",
             "model_reeval_dead_letter_tenant_idx",
             "model_reeval_dead_letter_model_idx",
+            "model_reeval_dead_letter_open_idx",
         },
     ),
     "think_anomalies_raw": Table(
@@ -692,6 +788,34 @@ EXPECTED_TABLES: dict[str, Table] = {
             "think_anomalies_raw_pkey",
             "think_anomalies_raw_pending_idx",
             "think_anomalies_raw_run_idx",
+        },
+    ),
+    "pending_post_commit_actions": Table(
+        # 0015 + 0157 — durable post-commit side-effect queue.
+        columns=dict([
+            _col("id", UUID, False, default=True),
+            _col("tenant_id", UUID, False),
+            _col("trigger_id", UUID, False),
+            _col("action_kind", TEXT, False),
+            _col("action_payload", JSONB, False),
+            _col("created_at", TS, False, default=True),
+            _col("scheduled_at", TS, False, default=True),
+            _col("processed_at", TS, True),
+            _col("attempts", INT, False, default=True),
+            _col("last_error", TEXT, True),
+            _col("dead_lettered_at", TS, True),
+            _col("quarantined_at", TS, True),
+            _col("quarantined_by", UUID, True),
+            _col("quarantine_reason", TEXT, True),
+        ]),
+        indexes={
+            "pending_post_commit_actions_pkey",
+            "post_commit_dedup",
+            "post_commit_pending_idx",
+            "post_commit_pending_tenant_idx",
+            "post_commit_trigger_idx",
+            "post_commit_tenant_idx",
+            "post_commit_dead_letter_idx",
         },
     ),
     # -----------------------------------------------------------------
@@ -909,6 +1033,78 @@ EXPECTED_TABLES: dict[str, Table] = {
             "access_override_log_actor_idx",
         },
     ),
+    "operator_action_log": Table(
+        # 0157 — auditable production operator actions.
+        columns=dict([
+            _col("id", UUID, False),
+            _col("tenant_id", UUID, False),
+            _col("actor_id", UUID, False),
+            _col("action", TEXT, False),
+            _col("resource_type", TEXT, False),
+            _col("resource_id", UUID, True),
+            _col("metadata", JSONB, False, default=True),
+            _col("occurred_at", TS, False, default=True),
+        ]),
+        indexes={
+            "operator_action_log_pkey",
+            "operator_action_log_tenant_time_idx",
+            "operator_action_log_actor_idx",
+            "operator_action_log_resource_idx",
+        },
+    ),
+    "product_action_audit_log": Table(
+        # 0168 — auditable user-facing product actions.
+        columns=dict([
+            _col("id", UUID, False),
+            _col("tenant_id", UUID, False),
+            _col("actor_id", UUID, False),
+            _col("action", TEXT, False),
+            _col("resource_type", TEXT, False),
+            _col("resource_id", UUID, True),
+            _col("metadata", JSONB, False, default=True),
+            _col("occurred_at", TS, False, default=True),
+        ]),
+        indexes={
+            "product_action_audit_log_pkey",
+            "product_action_audit_log_tenant_time_idx",
+            "product_action_audit_log_actor_idx",
+            "product_action_audit_log_resource_idx",
+        },
+        checks={"product_action_audit_log_action_check"},
+    ),
+    "backup_recovery_status": Table(
+        # 0158 — deployment-global backup/restore health contract.
+        columns=dict([
+            _col("component", TEXT, False),
+            _col("check_name", TEXT, False),
+            _col("status", TEXT, False),
+            _col("last_success_at", TS, True),
+            _col("last_attempt_at", TS, False, default=True),
+            _col("freshness_slo_seconds", INT, False),
+            _col("details", JSONB, False, default=True),
+            _col("updated_at", TS, False, default=True),
+        ]),
+        indexes={
+            "backup_recovery_status_pkey",
+            "backup_recovery_status_updated_idx",
+            "backup_recovery_status_success_idx",
+        },
+    ),
+    "scheduler_leases": Table(
+        # 0165 — deployment-global row leases for singleton background loops.
+        columns=dict([
+            _col("lease_name", TEXT, False),
+            _col("holder_id", TEXT, False),
+            _col("expires_at", TS, False),
+            _col("acquired_at", TS, False, default=True),
+            _col("refreshed_at", TS, False, default=True),
+            _col("metadata", JSONB, False, default=True),
+        ]),
+        indexes={
+            "scheduler_leases_pkey",
+            "scheduler_leases_expires_at_idx",
+        },
+    ),
     # -----------------------------------------------------------------
     # Week-4 Integration additions — CEO view cache + render costs
     # (0017, 0018)
@@ -1033,6 +1229,24 @@ def fetch_live_tables(cur) -> set[str]:
     return {row[0] for row in cur.fetchall()}
 
 
+def fetch_live_tenant_tables(cur) -> set[str]:
+    cur.execute(
+        """
+        SELECT c.relname
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_attribute a
+          ON a.attrelid = c.oid
+         AND a.attname = 'tenant_id'
+         AND NOT a.attisdropped
+        WHERE n.nspname = 'public'
+          AND c.relkind IN ('r', 'p')
+          AND NOT c.relispartition
+        """
+    )
+    return {row[0] for row in cur.fetchall()}
+
+
 def fetch_live_partitioned_parents(cur) -> set[str]:
     cur.execute(
         """
@@ -1047,7 +1261,8 @@ def fetch_live_partitioned_parents(cur) -> set[str]:
 def fetch_live_columns(cur, table: str) -> dict[str, Column]:
     cur.execute(
         """
-        SELECT column_name, data_type, is_nullable, column_default
+        SELECT column_name, data_type, is_nullable, column_default,
+               numeric_precision, numeric_scale
         FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = %s
         ORDER BY ordinal_position
@@ -1055,12 +1270,21 @@ def fetch_live_columns(cur, table: str) -> dict[str, Column]:
         (table,),
     )
     out: dict[str, Column] = {}
-    for name, dtype, is_nullable, default in cur.fetchall():
+    for (
+        name,
+        dtype,
+        is_nullable,
+        default,
+        numeric_precision,
+        numeric_scale,
+    ) in cur.fetchall():
         out[name] = Column(
             name=name,
             data_type=dtype,
             is_nullable=(is_nullable == "YES"),
             has_default=default is not None,
+            numeric_precision=numeric_precision,
+            numeric_scale=numeric_scale,
         )
     return out
 
@@ -1075,6 +1299,37 @@ def fetch_live_indexes(cur, table: str) -> set[str]:
         (table,),
     )
     return {row[0] for row in cur.fetchall()}
+
+
+def fetch_live_checks(cur, table: str) -> set[str]:
+    cur.execute(
+        """
+        SELECT conname
+        FROM pg_constraint
+        WHERE conrelid = %s::regclass
+          AND contype = 'c'
+        """,
+        (table,),
+    )
+    return {row[0] for row in cur.fetchall()}
+
+
+def fetch_live_rls(cur, table: str) -> tuple[bool, bool]:
+    cur.execute(
+        """
+        SELECT c.relrowsecurity, c.relforcerowsecurity
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public'
+          AND c.relname = %s
+          AND c.relkind IN ('r', 'p')
+        """,
+        (table,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return False, False
+    return bool(row[0]), bool(row[1])
 
 
 # ---------------------------------------------------------------------
@@ -1110,6 +1365,13 @@ def compare(conn) -> list[str]:
         # We only report extras that look like they might be Wave 0
         # typos (prefix match on an expected name).
         # For now we don't fail on extras — only log them at verbose.
+
+        for table_name in sorted(fetch_live_tenant_tables(cur)):
+            rls_enabled, rls_forced = fetch_live_rls(cur, table_name)
+            if not rls_enabled:
+                drifts.append(f"RLS missing: {table_name} is not enabled")
+            if not rls_forced:
+                drifts.append(f"RLS force missing: {table_name} is not forced")
 
         for table_name in sorted(expected_tables & live_tables_all):
             expected = EXPECTED_TABLES[table_name]
@@ -1154,6 +1416,16 @@ def compare(conn) -> list[str]:
                         f"(expected has_default={expected_col.has_default}, "
                         f"live has_default={live_col.has_default})"
                     )
+                if expected_col.numeric_precision is not None and (
+                    expected_col.numeric_precision != live_col.numeric_precision
+                    or expected_col.numeric_scale != live_col.numeric_scale
+                ):
+                    drifts.append(
+                        f"COLUMN numeric precision drift: {table_name}.{col} "
+                        f"(expected numeric({expected_col.numeric_precision},"
+                        f"{expected_col.numeric_scale}), live numeric("
+                        f"{live_col.numeric_precision},{live_col.numeric_scale}))"
+                    )
 
             # Indexes — every expected index must be present; extras are OK
             # (e.g. partition children inherit and add their own names).
@@ -1161,6 +1433,11 @@ def compare(conn) -> list[str]:
             missing_idx = expected.indexes - live_idx
             for i in sorted(missing_idx):
                 drifts.append(f"INDEX missing: {table_name}.{i}")
+
+            live_checks = fetch_live_checks(cur, table_name)
+            missing_checks = expected.checks - live_checks
+            for check in sorted(missing_checks):
+                drifts.append(f"CHECK missing: {table_name}.{check}")
 
     return drifts
 
