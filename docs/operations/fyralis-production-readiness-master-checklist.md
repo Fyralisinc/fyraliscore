@@ -224,6 +224,9 @@ Current state:
   `FYRALIS_ENV`, `COMPANY_OS_ENV`, `APP_ENV`, and `ENVIRONMENT`; any one set to
   `prod`/`production` enables production startup guards, closing the
   company-env-only deployment footgun.
+- Gateway extension startup hooks remain optional outside production, but
+  production-enabled extensions now fail gateway startup if their hooks fail,
+  preventing customer overlay or control hooks from degrading silently.
 - Legacy `/v1/today` now applies row-level `can_read` checks before emitting
   recommendation cards, target entities, card evidence, supporting models,
   financial-resource metrics, recent-signal feed rows, and just-updated model

@@ -291,6 +291,52 @@ async def test_gateway_created_pool_is_closed(
 
 
 @pytest.mark.asyncio
+async def test_production_extension_startup_failure_aborts_lifespan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.app.gateway.main as main_module
+
+    _patch_lightweight_startup(monkeypatch)
+    pool = FakePool()
+
+    async def failing_extension_hooks(
+        app: Any,
+        pool: Any,
+        *,
+        production: bool = False,
+    ) -> None:
+        del app, pool
+        assert production is True
+        raise RuntimeError("customer extension not configured")
+
+    monkeypatch.setattr(
+        main_module,
+        "run_extension_startup_hooks",
+        failing_extension_hooks,
+    )
+
+    startup_status = main_module.StartupStatus()
+    app = main_module.build_app(
+        pool=pool,
+        actor_repo=object(),
+        alias_repo=object(),
+        rate_limiter=RateLimiter(),
+        settings=_settings(environment="production"),
+        configure_logging=False,
+    )
+    app.state.startup_status = startup_status
+
+    with pytest.raises(RuntimeError, match="customer extension"):
+        async with app.router.lifespan_context(app):
+            pass
+
+    component = startup_status.components["extensions"]
+    assert startup_status.failed is True
+    assert component.status == "failed"
+    assert component.required is True
+
+
+@pytest.mark.asyncio
 async def test_gateway_created_pool_reenters_lifespan_with_fresh_deps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

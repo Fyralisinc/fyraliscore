@@ -426,7 +426,8 @@ async def _start_extension_startup_hooks(
     """Run startup hooks contributed by installed gateway extensions.
 
     Core ships none; the demo overlay seeds its config and mounts the
-    simulation panel here. Optional — a failure degrades but never blocks.
+    simulation panel here. Optional outside production; production-enabled
+    extensions must start cleanly or the gateway fails closed.
     """
     try:
         await _await_startup(
@@ -440,6 +441,10 @@ async def _start_extension_startup_hooks(
         )
         startup_status.ok("extensions", required=False)
     except Exception as exc:  # noqa: BLE001 - optional startup work
+        if settings.is_production:
+            startup_status.failed_component("extensions", required=True, exc=exc)
+            log.exception("extension_startup_hooks_failed")
+            raise
         startup_status.degraded("extensions", required=False, exc=exc)
         log.exception("extension_startup_hooks_warning")
 

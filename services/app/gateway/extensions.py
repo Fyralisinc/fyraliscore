@@ -120,15 +120,24 @@ async def run_extension_startup_hooks(
     *,
     production: bool = False,
 ) -> None:
-    """Run each extension's startup hooks; failures are logged, not fatal."""
+    """Run each extension's startup hooks.
+
+    Dev/dogfood extensions are optional and keep the historical degraded-only
+    behavior. A production-enabled extension is part of the runtime contract:
+    if its startup hook fails in production, gateway startup must fail closed.
+    """
     for ext in discovered_extensions():
         if not _extension_allowed(ext, production=production):
             continue
         for hook in ext.startup_hooks:
             try:
                 await hook(app, pool)
-            except Exception:  # noqa: BLE001 - optional startup work
+            except Exception as exc:  # noqa: BLE001 - optional outside production
                 log.exception("gateway_extension_startup_hook_failed", source=ext.name)
+                if production:
+                    raise RuntimeError(
+                        f"gateway extension {ext.name!r} startup hook failed"
+                    ) from exc
 
 
 def reset_for_tests() -> None:
