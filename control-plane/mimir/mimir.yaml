@@ -35,6 +35,17 @@
 # ---------------------------------------------------------------------------
 multitenancy_enabled: true
 
+# ---------------------------------------------------------------------------
+# Tenant federation — lets a query whose X-Scope-OrgID is a bar-joined list of
+# tenant ids (e.g. "acme|globex") read ACROSS those tenants. The fleet Grafana
+# datasource sends such a list so raw-series panels (worker_heartbeat_age_seconds,
+# up, fyralis_dlq_unresolved, …) roll up the whole fleet. (Mimir 2.13 key — no
+# CLI flag needed.) The ruler block below ALSO enables federation so the
+# fleet:* recording rules can evaluate cross-tenant.
+# ---------------------------------------------------------------------------
+tenant_federation:
+  enabled: true
+
 # All-in-one process. Distributor + ingester + querier + query-frontend +
 # query-scheduler + ruler + compactor + store-gateway in one binary.
 target: all
@@ -140,6 +151,10 @@ compactor:
 # ---------------------------------------------------------------------------
 ruler:
   rule_path: /data/ruler-tmp
+  # Evaluate fleet:* recording/alerting rules cross-tenant (a ruler group whose
+  # X-Scope-OrgID is a bar-joined tenant list reads across those tenants).
+  tenant_federation:
+    enabled: true
   ring:
     kvstore:
       store: memberlist

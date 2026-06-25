@@ -335,13 +335,38 @@ def run() -> int:
           f"no gamma bundle remains after rollback (got {bundle_dirs_3b})")
 
     # =====================================================================
-    print("\n== scenario 4: offboard the happy-path tenant ==")
+    print("\n== scenario 4: offboard the happy-path tenant (against the HARDENED console) ==")
     import offboard as off
+
+    # Offboard must exercise the AUTHENTICATED deregister DELETE against the real
+    # hardened console (reusing scenario 3's real_app/real_token), not the
+    # unauthenticated fake console — otherwise the console 401s the deregister and
+    # orphans the row (the production bug this fixes). The happy-path acme tenant
+    # was onboarded against the fake `app` in scenario 1; seed its deployment row
+    # into the hardened console (authenticated) so a present row exists to remove.
+    from lib.deployment import DeploymentRecord  # C4 record shape
+    from lib.primitives import utcnow
+
+    seed_client = cc.ASGIConsoleClient(real_app, token=real_token)
+    seed_record = DeploymentRecord.heartbeat(
+        tenant_id="acme",
+        deployment_id=happy_deployment_id,
+        version=ob.DEFAULT_VERSION,
+        region="us-east",
+        license_expiry=result.license_expiry,
+        telemetry_tier="T1",
+        last_heartbeat_ts=utcnow(),
+    )
+    seed_client.heartbeat(seed_record.to_registry_dict())
+    check(seed_client.has_deployment(happy_deployment_id),
+          "hardened console lists acme before offboard (precondition)")
+    seed_client.close()
 
     summary = off.offboard(
         tenant="acme",
         deployment_id=happy_deployment_id,
-        console_app=app,  # same app from scenario 1 (still lists acme)
+        console_app=real_app,        # the REAL hardened console, not the fake one
+        console_token=real_token,    # authenticate the deregister DELETE (I4)
         registry_path=registry_path,
         bundles_root=bundles_root,
         purge_registry=False,
@@ -351,7 +376,8 @@ def run() -> int:
     rows_off = ca_registry.find_by_tenant("acme", path=registry_path)
     revoked = [r for r in rows_off.values() if r.get("status") == "revoked"]
     check(len(revoked) == 1, "acme registry row is now revoked (proxy 403s the cert)")
-    check(summary["deregistered_from_console"], "offboard deregistered acme from console")
+    check(summary["deregistered_from_console"],
+          "offboard deregistered acme from the hardened console (authenticated DELETE)")
     check(not os.path.isdir(os.path.join(bundles_root, happy_deployment_id)),
           "offboard purged the acme bundle")
 

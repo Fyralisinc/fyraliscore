@@ -57,6 +57,16 @@ def check_datasources() -> dict[str, dict]:
         assert uid, f"datasource {name!r} missing uid"
         by_uid[uid] = ds
 
+        # --- single-tenant CP self-obs Prometheus is NOT X-Scope-OrgID scoped ---
+        # The dedicated control-plane watchdog Prometheus (uid fyralis-cp-prometheus)
+        # is its own single-tenant store, NOT central Mimir; it carries no
+        # X-Scope-OrgID header. Skip the multi-tenancy assertions for it.
+        if uid == "fyralis-cp-prometheus":
+            assert ds.get("type") == "prometheus"
+            print(f"    OK  {name:<16} type={ds.get('type'):<11} "
+                  f"(single-tenant CP self-obs; no {SCOPE_HEADER})")
+            continue
+
         # --- (3) X-Scope-OrgID header MUST be configured ---
         jd = ds.get("jsonData") or {}
         sd = ds.get("secureJsonData") or {}
@@ -75,11 +85,26 @@ def check_datasources() -> dict[str, dict]:
         )
         val = sd[val_key]
 
-        # --- (4) per-customer => templated ; fleet => fleet org id ---
+        # --- (4) per-customer => templated/literal ; fleet => fleet org id ---
         if "fleet" in name.lower() or "fleet" in (uid or ""):
-            assert FLEET_ORG_DEFAULT in val, (
+            # Fleet DSes read cross-tenant. They reference EITHER the documented
+            # "__fleet__" ruler org id OR (with tenant_federation enabled) a
+            # bar-joined real-tenant fan-out (e.g. acme|globex) so RAW series
+            # federate. The env-default form ${FYRALIS_FLEET_ORG_ID:...} is the
+            # signal that this is a fleet reader.
+            assert (FLEET_ORG_DEFAULT in val or "FYRALIS_FLEET_ORG_ID" in val), (
                 f"fleet datasource {name!r} {SCOPE_HEADER} value {val!r} does not "
-                f"reference the fleet/admin org id {FLEET_ORG_DEFAULT!r}"
+                f"reference the fleet/admin org id {FLEET_ORG_DEFAULT!r} or the "
+                f"FYRALIS_FLEET_ORG_ID fan-out"
+            )
+        elif (uid or "").startswith("mimir-"):
+            # Fixed per-tenant Mimir datasource (uid mimir-<tenant>): carries a
+            # LITERAL X-Scope-OrgID (the dashboard tenant_ds var picks which one).
+            # Grafana 11 won't interpolate a template var into secureJsonData, so
+            # a literal value here is REQUIRED, not a defect.
+            assert isinstance(val, str) and val and "${" not in val, (
+                f"per-tenant datasource {name!r} (uid {uid!r}) must carry a LITERAL "
+                f"{SCOPE_HEADER} value, got {val!r}"
             )
         else:
             assert val == TENANT_SCOPE_VALUE, (
@@ -135,7 +160,18 @@ def check_dashboards(known_uids: set[str]) -> None:
         titles.append(title)
         assert uid, f"{f.name} missing dashboard uid"
 
-        # every panel datasource uid must be a provisioned DS (or a builtin)
+        # the per-customer dashboard MUST define the variable that scopes its
+        # panels to one tenant. Either the legacy `tenant_scope` query var OR the
+        # `tenant_ds` datasource-type var (Grafana-11-safe: picks a fixed
+        # per-tenant Mimir DS, since a template var can't be interpolated into
+        # the secureJsonData header).
+        var_names = {v.get("name") for v in
+                     (data.get("templating") or {}).get("list", [])}
+
+        # every panel datasource uid must be a provisioned DS, a builtin, or the
+        # `${tenant_ds}` datasource-VARIABLE binding (resolved per-tenant at query
+        # time to one of the fixed per-tenant Mimir DSes).
+        ds_var_refs = {f"${{{n}}}" for n in var_names}
         referenced = set()
         for panel in data.get("panels", []):
             for tgt in panel.get("targets", []) or []:
@@ -143,20 +179,18 @@ def check_dashboards(known_uids: set[str]) -> None:
                 if isinstance(d, dict) and d.get("uid"):
                     referenced.add(d["uid"])
         builtins = {"-- Grafana --", "-- Mixed --", "-- Dashboard --"}
-        unknown = {u for u in referenced if u not in known_uids and u not in builtins}
+        unknown = {u for u in referenced
+                   if u not in known_uids and u not in builtins
+                   and u not in ds_var_refs}
         assert not unknown, (
             f"{f.name} references unknown datasource uid(s): {unknown}"
         )
 
-        # the per-customer dashboard MUST define the tenant_scope variable that
-        # drives the templated X-Scope-OrgID header.
-        var_names = {v.get("name") for v in
-                     (data.get("templating") or {}).get("list", [])}
         if "tenant" in f.parent.name or "tenant" in title.lower() or \
                 "per-customer" in title.lower():
-            assert "tenant_scope" in var_names, (
+            assert "tenant_scope" in var_names or "tenant_ds" in var_names, (
                 f"{f.name} is the per-customer dashboard but has no "
-                f"`tenant_scope` template variable to drive the DS header"
+                f"`tenant_scope`/`tenant_ds` template variable to scope its panels"
             )
             tenant_var_ok = True
 

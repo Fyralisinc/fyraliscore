@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import sys
 from dataclasses import dataclass, field
 
@@ -278,6 +279,11 @@ def manifest_to_env(manifest: dict, bundle_dir: str, *, control_plane_dir: str) 
         ),
         # A per-tenant compose project name so two deployments never collide.
         "FYRALIS_DEPLOYMENT_NAME": f"fyralis-dp-{_slug(manifest['deployment_id'])}",
+        # Demo data-plane Postgres password — deployment-local (postgres + exporter
+        # on dp-net, never egressed), generated per render rather than carried in the
+        # signed bundle or hardcoded in the compose (scanner-safe). manifest_to_env is
+        # the sole renderer of the overlay .env.
+        "POSTGRES_PASSWORD": secrets.token_urlsafe(24),
     }
 
 

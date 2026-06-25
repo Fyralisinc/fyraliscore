@@ -231,6 +231,14 @@ CP side (does NOT break FR-G1 — no customer secrets in the CP), but it widens 
 compromise of the metering or audit container yields the key that signs releases/licenses/configs
 that agents trust. `rotation.py` + `key_id` keyring make rotation possible, but the MVP runs one
 key in several places.
+**Dev/demo host-permission relaxation (bootstrap):** the non-root audit + metering containers
+(uid 10001) bind-mount `signing/keys/` read-only to load the active private key for the signed
+checkpoint (`audit/cli.py`); `signing/keygen.py` writes the key `0600` owned by the host operator,
+so uid 10001 ("other") cannot read it and `audit verify` fails with `PermissionError`. `bootstrap.sh`
+therefore relaxes the **gitignored** dev/demo signing private key to `0644` on the host bind-mount
+(mirroring the existing proxy/registry/client-key relaxations). **PROD follow-up:** deliver the key
+via a secrets manager with container-matched ownership at `0400`/`0600` (no `0644` host bind-mount),
+or move signing off-host to an HSM/KMS (see the KMS/HSM-backed signing row in §4).
 **Next sprint:** consider a dedicated signing service (or per-purpose subkeys) so
 release/license/config signing is not reachable from the metering/audit blast radius; at minimum
 document the single-key blast radius in the security model + rotation drill.

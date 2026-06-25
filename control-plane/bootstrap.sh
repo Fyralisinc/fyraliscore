@@ -89,6 +89,13 @@ else
   "$PYTHON_BIN" signing/keygen.py --activate
   ok "trust root at $TRUST_ROOT (private key stays gitignored under signing/keys/)"
 fi
+# The non-root audit + metering containers (uid 10001) bind-mount signing/keys/ ro
+# to load the active private key for the signed checkpoint (audit/cli.py). keygen
+# writes it 0600 owned by the host operator -> uid 10001 ("other") cannot read it
+# => PermissionError on `audit verify`. Relax the gitignored DEV/DEMO key (mirrors
+# the proxy/registry/client-key relaxations above). Prod delivers the key via a
+# secrets manager with container-matched ownership, not a 0644 host bind-mount.
+chmod 0644 "$HERE"/signing/keys/*.private.pem 2>/dev/null || true
 
 # ============================================================================ #
 # 3. auth-proxy server cert                                                    #

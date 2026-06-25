@@ -73,7 +73,9 @@ class FakeFleet:
         store_mod = importlib.import_module("store")
         # persist=False => pure in-memory registry (no disk reads/writes, isolated per fleet).
         self._store = store_mod.DeploymentStore(persist=False)
-        self._app = console_app.create_app(self._store)
+        self._ingest_token = "selftest-console-ingest-token"
+        self._app = console_app.create_app(self._store, ingest_token=self._ingest_token)
+        self._auth = {"Authorization": f"Bearer {self._ingest_token}"}
         from fastapi.testclient import TestClient
 
         self._client = TestClient(self._app)
@@ -96,7 +98,9 @@ class FakeFleet:
                 license_expiry=exp,
                 now=now,
             )
-            r = self._client.post("/api/v1/heartbeat", json=rec.to_registry_dict())
+            r = self._client.post(
+                "/api/v1/heartbeat", json=rec.to_registry_dict(), headers=self._auth
+            )
             assert r.status_code == 200, r.text
             ids.append(did)
         return ids
@@ -124,7 +128,9 @@ class FakeFleet:
             last_heartbeat_ts=hb,
             now=now,
         )
-        r = self._client.post("/api/v1/heartbeat", json=rec.to_registry_dict())
+        r = self._client.post(
+            "/api/v1/heartbeat", json=rec.to_registry_dict(), headers=self._auth
+        )
         assert r.status_code == 200, r.text
 
     # -- the ConsoleClient the controller reads ----------------------------- #

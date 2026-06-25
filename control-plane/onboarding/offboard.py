@@ -79,6 +79,7 @@ def offboard(
     deployment_id: Optional[str] = None,
     console_url: Optional[str] = None,
     console_app: object = None,
+    console_token: Optional[str] = None,
     registry_path: str = DEFAULT_REGISTRY_PATH,
     bundles_root: str = DEFAULT_BUNDLES_ROOT,
     purge_registry: bool = False,
@@ -110,7 +111,9 @@ def offboard(
     deregistered = False
     if (console_url or console_app) and deployment_id:
         try:
-            client = cc.make_console_client(console_url=console_url, app=console_app)
+            client = cc.make_console_client(
+                console_url=console_url, app=console_app, token=console_token
+            )
         except cc.ConsoleError as exc:
             _log(f"[2/3] console unavailable, skipping deregister: {exc}")
             client = None
@@ -171,6 +174,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     g.add_argument("--console-url", default=os.environ.get("CONSOLE_URL"))
     g.add_argument("--embedded-console", action="store_true",
                    help="use an in-process fake console (dev/demo)")
+    ap.add_argument("--console-token", default=os.environ.get("CONSOLE_INGEST_TOKEN"),
+                    help="bearer token for the console write path (I4); authenticates the "
+                    "deregister DELETE so the console row is actually removed. "
+                    "Defaults to $CONSOLE_INGEST_TOKEN.")
     ap.add_argument("--registry", default=DEFAULT_REGISTRY_PATH)
     ap.add_argument("--bundles-root", default=DEFAULT_BUNDLES_ROOT)
     ap.add_argument("--purge-registry", action="store_true",
@@ -191,6 +198,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             deployment_id=args.deployment,
             console_url=args.console_url,
             console_app=console_app,
+            console_token=args.console_token,
             registry_path=args.registry,
             bundles_root=args.bundles_root,
             purge_registry=args.purge_registry,

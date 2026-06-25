@@ -51,6 +51,10 @@ deleteDatasources:
     orgId: 1
   - name: CP Self-Obs (Prometheus)
     orgId: 1
+  - name: Mimir acme
+    orgId: 1
+  - name: Mimir globex
+    orgId: 1
 
 datasources:
   # ========================================================================
@@ -118,10 +122,13 @@ datasources:
       manageAlerts: false
       httpHeaderName1: X-Scope-OrgID
     secureJsonData:
-      # FLEET/ADMIN org id — cross-tenant reader. Override with the env var
-      # FYRALIS_FLEET_ORG_ID at provision time if your Mimir uses a different
-      # admin tenant. "__fleet__" is the documented default fleet org id.
-      httpHeaderValue1: ${FYRALIS_FLEET_ORG_ID:__fleet__}
+      # FLEET/ADMIN org id — cross-tenant reader. With tenant_federation enabled
+      # in mimir.yaml, a bar-joined tenant list federates the RAW series across
+      # those tenants (the lone "__fleet__" ruler org holds only the recorded
+      # fleet:* series, NOT the raw worker_heartbeat_age_seconds / up / dlq
+      # series the fleet panels also read). Override at provision time with the
+      # env var FYRALIS_FLEET_ORG_ID; default is the real-tenant fan-out.
+      httpHeaderValue1: ${FYRALIS_FLEET_ORG_ID:acme|globex}
 
   # ========================================================================
   # LOKI (logs) — PER-CUSTOMER scoped  (T2 redacted logs)
@@ -193,3 +200,44 @@ datasources:
       timeInterval: 15s
       httpMethod: POST
       manageAlerts: false
+
+  # ========================================================================
+  # PER-TENANT FIXED Mimir datasources — one per real tenant (acme, globex).
+  # ------------------------------------------------------------------------
+  # Grafana 11 does NOT interpolate a dashboard TEMPLATE variable into
+  # secureJsonData (the X-Scope-OrgID header), so a single templated DS sends
+  # an EMPTY org id ("no org id" 401). Instead the per-customer drill-down
+  # uses a `datasource`-type template var (tenant_ds) that PICKS one of these
+  # fixed, first-class per-tenant datasources, each with a HARD-CODED literal
+  # X-Scope-OrgID. Add a new tenant => add a new block here.
+  # ========================================================================
+  - name: Mimir acme
+    uid: mimir-acme
+    type: prometheus
+    access: proxy
+    url: http://mimir:9009/prometheus
+    orgId: 1
+    isDefault: false
+    editable: false
+    jsonData:
+      prometheusType: Mimir
+      httpMethod: POST
+      timeInterval: 15s
+      httpHeaderName1: X-Scope-OrgID
+    secureJsonData:
+      httpHeaderValue1: acme
+  - name: Mimir globex
+    uid: mimir-globex
+    type: prometheus
+    access: proxy
+    url: http://mimir:9009/prometheus
+    orgId: 1
+    isDefault: false
+    editable: false
+    jsonData:
+      prometheusType: Mimir
+      httpMethod: POST
+      timeInterval: 15s
+      httpHeaderName1: X-Scope-OrgID
+    secureJsonData:
+      httpHeaderValue1: globex
