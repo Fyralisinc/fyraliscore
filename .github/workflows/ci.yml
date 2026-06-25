@@ -92,6 +92,11 @@ jobs:
       - name: Check source lifecycle contract
         run: python scripts/check_source_lifecycle_contract.py
 
+      # Ensures every real-provider contract registry entry has a sanitized
+      # physical fixture committed under tests/contract/fixtures.
+      - name: Check real-provider contract fixture coverage
+        run: python scripts/check_contract_fixture_coverage.py
+
       # Blocks product-facing HTTP routes from returning raw exception text or
       # free-form implementation details instead of bounded error codes.
       - name: Check product error contract

@@ -1542,6 +1542,10 @@ Current state:
 
 - CI has ruff, import-linter, architecture ratchets, production env contract,
   migration prefix uniqueness, strict MkDocs build, and unit/integration tests.
+- Real-provider contract fixtures now cover the registry under
+  `tests/contract/fixtures`, `pytest -m contract tests/contract` runs with no
+  skips, and `scripts/check_contract_fixture_coverage.py` fails CI if a
+  registry entry lacks a sanitized physical fixture.
 - CI now has a targeted `mypy` gate over critical backend contracts: secret
   provider resolution, secret store factory surface, HTTP/log redaction, safe
   gateway error handling, production env contract checks, and architecture
@@ -1611,7 +1615,7 @@ Must solve:
   rollback risk, and observability changes.
 - [x] Add canary/blue-green rollout strategy for gateway and workers.
 - [x] Add automatic rollback or pause criteria for SLO breaches.
-- [ ] Add real-provider contract fixtures for every integration.
+- [x] Add real-provider contract fixtures for every integration.
 - [x] Add docs build to CI and keep navigation strict.
 
 Acceptance evidence:

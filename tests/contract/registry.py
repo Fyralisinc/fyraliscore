@@ -157,11 +157,12 @@ REGISTRY: list[ContractNeed] = [
         "doc-sourced Intuit refresh fixture (request + rotated-token response)",
     ),
     ContractNeed(
-        "ramp", "oauth_token", "refresh", "#26",
-        "RESOLVED (Phase 3): Basic-auth grant_type=refresh_token exchange + "
-        "persist; reactive 401 re-mint in RampClient",
+        "ramp", "oauth_token", "client_credentials", "#26",
+        "RESOLVED (Phase 3): Ramp has NO refresh grant — Basic-auth "
+        "grant_type=client_credentials exchange + persist; reactive 401 "
+        "re-mint in RampClient",
         "covered by tests/contract/test_oauth_refresh_contract.py against the "
-        "doc-sourced Ramp refresh fixture",
+        "doc-sourced Ramp client_credentials fixture",
     ),
     ContractNeed(
         "gusto", "oauth_token", "refresh", "#38",
