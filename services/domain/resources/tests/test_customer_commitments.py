@@ -57,6 +57,46 @@ async def test_link_and_lookup(resources_db, event_id):
     assert found[0][1].revenue_at_risk_usd == Decimal("42000.00")
 
 
+async def test_revenue_at_risk_preserves_cents_and_schema_scale(
+    resources_db,
+    event_id,
+):
+    customer = await _make_customer(resources_db, event_id)
+    cmt = await make_commitment(resources_db)
+
+    link = await cc.link_commitment(
+        customer.id,
+        cmt,
+        tenant_id=TENANT_A,
+        revenue_at_risk_usd=Decimal("123.45"),
+    )
+
+    assert link.revenue_at_risk_usd == Decimal("123.45")
+
+    async with resources_db.acquire() as conn:
+        stored = await conn.fetchval(
+            """
+            SELECT revenue_at_risk_usd
+            FROM customer_commitments
+            WHERE customer_resource_id = $1 AND commitment_id = $2
+            """,
+            customer.id,
+            cmt,
+        )
+        shape = await conn.fetchrow(
+            """
+            SELECT numeric_precision, numeric_scale
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'customer_commitments'
+              AND column_name = 'revenue_at_risk_usd'
+            """
+        )
+
+    assert stored == Decimal("123.45")
+    assert dict(shape) == {"numeric_precision": 14, "numeric_scale": 2}
+
+
 async def test_link_is_idempotent_and_updates_all_mutable_fields(resources_db, event_id):
     customer = await _make_customer(resources_db, event_id)
     cmt = await make_commitment(resources_db)
