@@ -68,6 +68,7 @@ from lib.deployment import (  # noqa: E402
     DeploymentRecord,
     Health,
 )
+from lib.desired_state import DesiredState  # noqa: E402
 from lib.primitives import to_rfc3339, utcnow  # noqa: E402
 
 __all__ = [
@@ -158,8 +159,19 @@ class DeploymentStore:
 
         self._data_dir = Path(data_dir) if data_dir is not None else default_data_dir()
         self._path = self._data_dir / "fleet_registry.json"
+        # Desired-state + applied-facet sidecars (console-roadmap §4). Kept
+        # ALONGSIDE the registry as their own JSON files so the existing
+        # registry persistence/round-trip (and its tests) are untouched — the
+        # desired facet is operator-written, the applied facet is agent-reported,
+        # and neither belongs in the C4 record the heartbeat upserts.
+        self._desired_path = self._data_dir / "desired_state.json"
+        self._applied_path = self._data_dir / "applied_state.json"
+        self._desired: dict[str, DesiredState] = {}
+        self._applied: dict[str, dict] = {}
         if self._persist:
             self._load_from_disk()
+            self._load_desired_from_disk()
+            self._load_applied_from_disk()
 
     # --- properties --------------------------------------------------------
 
@@ -174,6 +186,14 @@ class DeploymentStore:
     @property
     def red_after_s(self) -> int:
         return self._red_after_s
+
+    @property
+    def desired_path(self) -> Path:
+        return self._desired_path
+
+    @property
+    def applied_path(self) -> Path:
+        return self._applied_path
 
     # --- persistence -------------------------------------------------------
 
@@ -231,6 +251,112 @@ class DeploymentStore:
             # Persistence is best-effort; an unwritable data dir must not break
             # the live (in-memory) console.
             return
+
+    # --- desired / applied sidecar persistence (console-roadmap §4) --------
+
+    @staticmethod
+    def _load_json_map(path: Path) -> dict:
+        """Best-effort load a ``{deployment_id: {...}}`` JSON map; {} on any error."""
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            return {}
+        try:
+            data = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _atomic_write_json(self, path: Path, payload: dict) -> None:
+        """Atomically write ``payload`` to ``path`` (best-effort, never raises)."""
+        if not self._persist:
+            return
+        try:
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(
+                dir=str(self._data_dir), prefix="." + path.name + ".", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, indent=2, sort_keys=True)
+                os.replace(tmp, path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        except OSError:
+            return
+
+    def _load_desired_from_disk(self) -> None:
+        rows: dict[str, DesiredState] = {}
+        for dep_id, row in self._load_json_map(self._desired_path).items():
+            try:
+                rows[dep_id] = DesiredState.from_dict(row)
+            except Exception:
+                continue
+        with self._lock:
+            self._desired = rows
+
+    def _flush_desired_to_disk(self) -> None:
+        payload = {dep_id: d.to_dict() for dep_id, d in self._desired.items()}
+        self._atomic_write_json(self._desired_path, payload)
+
+    def _load_applied_from_disk(self) -> None:
+        rows = {
+            dep_id: row
+            for dep_id, row in self._load_json_map(self._applied_path).items()
+            if isinstance(row, dict)
+        }
+        with self._lock:
+            self._applied = rows
+
+    def _flush_applied_to_disk(self) -> None:
+        self._atomic_write_json(self._applied_path, dict(self._applied))
+
+    # --- desired / applied facet API (console-roadmap §4) ------------------
+
+    def put_desired(self, deployment_id: str, desired: DesiredState) -> DesiredState:
+        """Persist the operator-written DESIRED state for ``deployment_id``.
+
+        The stored record's ``deployment_id`` is normalized to the path id so a
+        desired blob can never be filed under the wrong key. Returns the stored
+        :class:`DesiredState`. Auditing + signing of the write are the caller's
+        responsibility (the router does both) — the store is the durable home.
+        """
+        with self._lock:
+            stored = desired.model_copy(update={"deployment_id": deployment_id})
+            self._desired[deployment_id] = stored
+            self._flush_desired_to_disk()
+            return stored
+
+    def get_desired(self, deployment_id: str) -> DesiredState | None:
+        """Return the DESIRED state for ``deployment_id`` (or None if none set)."""
+        with self._lock:
+            return self._desired.get(deployment_id)
+
+    def record_applied(self, deployment_id: str, applied: dict) -> None:
+        """Store the agent-reported APPLIED facets for ``deployment_id``.
+
+        ``applied`` is merged onto any existing applied record so an old agent
+        that only reports some facets does not clobber the rest. Recognized
+        facets: ``applied_config_version``, ``applied_release``,
+        ``acked_action_ids``, ``license_state_applied``. Unknown keys are kept
+        verbatim (forward-compat).
+        """
+        if not applied:
+            return
+        with self._lock:
+            cur = dict(self._applied.get(deployment_id, {}))
+            cur.update(applied)
+            self._applied[deployment_id] = cur
+            self._flush_applied_to_disk()
+
+    def get_applied(self, deployment_id: str) -> dict:
+        """Return the agent-reported APPLIED facets for ``deployment_id`` ({} if none)."""
+        with self._lock:
+            return dict(self._applied.get(deployment_id, {}))
 
     # --- mutation ----------------------------------------------------------
 
@@ -300,18 +426,29 @@ class DeploymentStore:
             return rec
 
     def delete(self, deployment_id: str) -> bool:
-        """Remove a deployment row. Returns True if it existed."""
+        """Remove a deployment row (and any desired/applied sidecar). Returns
+        True if the registry row existed."""
         with self._lock:
             existed = self._rows.pop(deployment_id, None) is not None
+            had_desired = self._desired.pop(deployment_id, None) is not None
+            had_applied = self._applied.pop(deployment_id, None) is not None
             if existed:
                 self._flush_to_disk()
+            if had_desired:
+                self._flush_desired_to_disk()
+            if had_applied:
+                self._flush_applied_to_disk()
             return existed
 
     def clear(self) -> None:
-        """Drop all rows (used by tests)."""
+        """Drop all rows + desired/applied sidecars (used by tests)."""
         with self._lock:
             self._rows.clear()
+            self._desired.clear()
+            self._applied.clear()
             self._flush_to_disk()
+            self._flush_desired_to_disk()
+            self._flush_applied_to_disk()
 
     # --- read (health derived on read) -------------------------------------
 

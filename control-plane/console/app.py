@@ -61,9 +61,22 @@ for _cand in (_HERE, *_HERE.parents):
 from lib.deployment import DeploymentRecord, Health  # noqa: E402
 from lib.primitives import to_rfc3339, utcnow  # noqa: E402
 
+from deps import (  # noqa: E402
+    ConsoleAudit,
+    ConsoleDeps,
+    ConsoleSettings,
+    build_signer,
+    make_require_operator,
+)
 from store import DeploymentStore  # noqa: E402
 
+import importlib  # noqa: E402
+import logging  # noqa: E402
+import pkgutil  # noqa: E402
+
 __all__ = ["app", "create_app", "store"]
+
+_LOG = logging.getLogger("fyralis.console")
 
 
 # --- request models (the wire contracts) -----------------------------------
@@ -132,6 +145,18 @@ def _resolve_ingest_token(explicit: str | None) -> str | None:
     return os.environ.get("CONSOLE_INGEST_TOKEN")
 
 
+def _resolve_operator_token(explicit: str | None) -> str | None:
+    """The configured OPERATOR write token: the explicit arg, else ``OPERATOR_TOKEN``.
+
+    Distinct from the agent's ``CONSOLE_INGEST_TOKEN`` (I4 operator-vs-agent
+    identity). Returns ``None`` when unconfigured — in which case operator WRITE
+    endpoints fail CLOSED (503 via ``require_operator``), never silently open.
+    """
+    if explicit is not None:
+        return explicit
+    return os.environ.get("OPERATOR_TOKEN")
+
+
 def _extract_bearer(authorization: str | None) -> str | None:
     """Pull the token out of an ``Authorization: Bearer <token>`` header."""
     if not authorization:
@@ -146,17 +171,31 @@ def create_app(
     deployment_store: DeploymentStore | None = None,
     *,
     ingest_token: str | None = None,
+    operator_token: str | None = None,
+    signer=None,
+    audit=None,
+    settings: ConsoleSettings | None = None,
+    mount_feature_routers: bool = True,
 ) -> FastAPI:
     """Build the console FastAPI app over ``deployment_store`` (a fresh one by
     default). Exposed as a factory so tests can inject a non-persistent store.
 
-    ``ingest_token`` is the bearer token required on every WRITE endpoint (I4). If
-    ``None`` it is read from ``CONSOLE_INGEST_TOKEN``; if that is also unset the
-    console refuses ALL writes with 503 (fail-closed — a misconfigured console
-    never accepts unauthenticated writes).
+    ``ingest_token`` is the bearer token required on every AGENT WRITE endpoint
+    (register/heartbeat/delete + agent-facing desired GET — I4). If ``None`` it is
+    read from ``CONSOLE_INGEST_TOKEN``; if that is also unset the console refuses
+    those writes with 503 (fail-closed).
+
+    ``operator_token`` is the SEPARATE bearer required on operator WRITE endpoints
+    (desired-state mutations), read from ``OPERATOR_TOKEN`` when ``None``; unset ⇒
+    operator writes fail closed (503). ``signer`` / ``audit`` / ``settings`` are
+    the shared signing/audit/settings handed to feature routers off ``deps`` (each
+    built from the real CP libs when not injected). ``mount_feature_routers``
+    scans ``console/routers/*.py`` for ``register(app, deps)`` (set False in tests
+    that want only the core endpoints).
     """
     st = deployment_store if deployment_store is not None else DeploymentStore()
     configured_token = _resolve_ingest_token(ingest_token)
+    configured_operator_token = _resolve_operator_token(operator_token)
 
     application = FastAPI(
         title="Fyralis BYOC — Fleet Console",
@@ -169,6 +208,7 @@ def create_app(
     # Stash the store on the app so tests / handlers can reach it.
     application.state.store = st
     application.state.ingest_token = configured_token
+    application.state.operator_token = configured_operator_token
 
     def require_write_auth(
         authorization: str | None = Header(default=None),
@@ -233,6 +273,12 @@ def create_app(
             raise HTTPException(
                 status_code=422, detail="body must be a DeploymentRecord object"
             )
+        # ADDITIVE: a heartbeat MAY carry an optional ``applied`` facet (the agent's
+        # reconcile result: applied_config_version / applied_release /
+        # acked_action_ids / license_state_applied). Pop it BEFORE constructing the
+        # strict C4 record (which forbids extras) and record it on the side so the
+        # console can compute drift. Old agents that don't send it still work.
+        applied_facet = payload.pop("applied", None)
         try:
             record = DeploymentRecord(**payload)
         except ValidationError as exc:
@@ -245,6 +291,10 @@ def create_app(
             raise HTTPException(status_code=422, detail=str(exc))
 
         stored = st.upsert(record)  # upsert by deployment_id; health re-derived
+        if isinstance(applied_facet, dict) and applied_facet:
+            # Record the agent-reported applied facets alongside the registry so
+            # GET desired drift (the C1 drill-down) can compute desired-vs-applied.
+            st.record_applied(stored.deployment_id, applied_facet)
         return JSONResponse(content=stored.to_registry_dict())
 
     @application.get(
@@ -289,6 +339,30 @@ def create_app(
             content={"deployment_id": deployment_id, "removed": removed}
         )
 
+    # ------------------------------------------------------ agent-facing desired
+    #
+    # The OUTBOUND-only agent (I2) POLLS this on each tick to learn the operator's
+    # desired state, then VERIFIES (I6) + reconciles + reports applied facets on
+    # its next heartbeat. Guarded by the AGENT write token (CONSOLE_INGEST_TOKEN):
+    # it is the agent's own credential, the same one it already presents on
+    # heartbeat — NOT the operator token. 404 when no desired state has been
+    # written for this deployment yet (the agent simply skips reconcile — I3).
+
+    @application.get(
+        "/api/v1/deployments/{deployment_id}/desired",
+        tags=["agent"],
+        summary="Agent pulls the operator-written DesiredState (404 if none).",
+        dependencies=[Depends(require_write_auth)],
+    )
+    def get_desired(deployment_id: str) -> JSONResponse:
+        desired = st.get_desired(deployment_id)
+        if desired is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"no desired state for deployment_id {deployment_id!r}",
+            )
+        return JSONResponse(content=desired.to_dict())
+
     @application.get("/healthz", tags=["ops"], summary="Liveness probe.")
     def healthz() -> dict:
         return {"status": "ok", "fleet_size": len(st)}
@@ -304,7 +378,70 @@ def create_app(
     def rollup() -> HTMLResponse:
         return HTMLResponse(content=render_rollup(st))
 
+    # ------------------------------------------------------------ feature deps
+    #
+    # Build the ONE deps namespace every feature router gets, then scan
+    # console/routers/*.py for register(app, deps) and call each. Features ADD
+    # files there; they never edit this module.
+    require_operator = make_require_operator(configured_operator_token)
+    built_signer = signer if signer is not None else build_signer()
+    built_audit = audit if audit is not None else ConsoleAudit()
+    deps = ConsoleDeps(
+        store=st,
+        signer=built_signer,
+        audit=built_audit,
+        require_operator=require_operator,
+        require_agent_write=require_write_auth,
+        settings=settings if settings is not None else ConsoleSettings.from_env(),
+    )
+    application.state.deps = deps
+
+    if mount_feature_routers:
+        _mount_feature_routers(application, deps)
+
     return application
+
+
+# --- feature router mount loop ----------------------------------------------
+
+
+def _mount_feature_routers(application: FastAPI, deps: ConsoleDeps) -> list[str]:
+    """Scan ``console/routers/*.py`` and call each module's ``register(app, deps)``.
+
+    A feature plugs in by dropping a module under ``console/routers/`` exposing a
+    module-level ``def register(app, deps): ...``. We import each, and if it has a
+    callable ``register`` we call it with the shared ``deps``.
+
+    NON-FATAL-LOUD: a router that fails to IMPORT, or whose ``register`` raises,
+    is LOGGED at error level and SKIPPED — a single broken feature can never take
+    the console down. Returns the list of router module names successfully
+    registered (for tests / introspection).
+    """
+    import routers as _routers_pkg  # console/routers/__init__.py
+
+    registered: list[str] = []
+    for mod_info in pkgutil.iter_modules(_routers_pkg.__path__):
+        name = mod_info.name
+        if name.startswith("_"):
+            continue  # skip private/helper modules
+        full = f"routers.{name}"
+        try:
+            module = importlib.import_module(full)
+        except Exception as exc:  # broken import must not down the console
+            _LOG.error("console: router %s failed to import (skipped): %s", full, exc)
+            continue
+        register = getattr(module, "register", None)
+        if not callable(register):
+            _LOG.warning("console: router %s has no register(app, deps) — skipped", full)
+            continue
+        try:
+            register(application, deps)
+        except Exception as exc:  # broken register() must not down the console
+            _LOG.error("console: router %s register() raised (skipped): %s", full, exc)
+            continue
+        registered.append(name)
+        _LOG.info("console: mounted feature router %s", full)
+    return registered
 
 
 # --- HTML rollup ------------------------------------------------------------
@@ -367,10 +504,11 @@ def render_rollup(st: DeploymentStore) -> str:
         lic_html = _html.escape(lic_str)
         if lic_expired:
             lic_html = f'<span class="expired">{lic_html}</span>'
+        dep_href = f"/deployments/{_html.escape(rec.deployment_id)}"
         rows_html.append(
             "<tr>"
             f"<td>{_html.escape(rec.tenant_id)}</td>"
-            f"<td class=mono>{_html.escape(rec.deployment_id)}</td>"
+            f'<td class=mono><a href="{dep_href}">{_html.escape(rec.deployment_id)}</a></td>'
             f"<td>{_html.escape(rec.version)}</td>"
             f"<td>{_html.escape(rec.region)}</td>"
             f"<td>{_html.escape(rec.telemetry_tier.value)}</td>"
@@ -421,10 +559,22 @@ def render_rollup(st: DeploymentStore) -> str:
   .expired {{ color:#a11; font-weight:600; }}
   .empty {{ text-align:center; color:#777; padding:1.5rem; }}
   footer {{ margin-top: 1rem; color:#999; font-size:.78rem; }}
+  nav.top {{ margin: 0 0 1rem; font-size:.85rem; }}
+  nav.top a {{ display:inline-block; margin-right:.9rem; color:#2257a8;
+               text-decoration:none; font-weight:600; }}
+  nav.top a:hover {{ text-decoration:underline; }}
+  td a {{ color:#2257a8; text-decoration:none; }}
+  td a:hover {{ text-decoration:underline; }}
 </style>
 </head>
 <body>
   <h1>Fyralis BYOC — Fleet Console</h1>
+  <nav class="top">
+    <a href="/">Fleet</a>
+    <a href="/audit">Audit</a>
+    <a href="/alerts">Alerts</a>
+    <a href="/metering">Metering</a>
+  </nav>
   <div class="sub">Operator rollup over the fleet registry (C4 deployment records).
     Health derived on read: stale &gt; {st.yellow_after_s}s &rarr; yellow,
     missing &gt; {st.red_after_s}s &rarr; red (NFR-5).</div>

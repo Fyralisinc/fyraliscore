@@ -149,6 +149,27 @@ fi
 CONSOLE_INGEST_TOKEN="$(tr -d '\n' < "$TOKEN_FILE")"
 
 # ============================================================================ #
+# 3c. operator write token (OPERATOR_TOKEN, I4 operator-vs-agent identity)      #
+# ============================================================================ #
+# The console's OPERATOR write endpoints (desired-state mutations — remote config
+# push, release pin, action queue, license suspend) require a SEPARATE bearer
+# (OPERATOR_TOKEN) so the operator identity can never be conflated with the
+# agent's CONSOLE_INGEST_TOKEN (I4). Generated ONCE into a gitignored runtime
+# path; the compose passes it to the console (env). With it UNSET the console
+# fails CLOSED on operator writes (503). Operator READS stay open on the operator
+# LAN. TODO(next-sprint): replace this static bearer with operator SSO/OIDC + RBAC.
+OPERATOR_TOKEN_FILE="$RUNTIME_DIR/secrets/operator_token"
+if [[ -s "$OPERATOR_TOKEN_FILE" ]]; then
+  ok "operator token already present ($OPERATOR_TOKEN_FILE) — reusing"
+else
+  say "generating the operator write token (OPERATOR_TOKEN, I4) …"
+  "$PYTHON_BIN" -c "import secrets; print(secrets.token_urlsafe(32))" > "$OPERATOR_TOKEN_FILE"
+  chmod 0600 "$OPERATOR_TOKEN_FILE" 2>/dev/null || true
+  ok "operator token at $OPERATOR_TOKEN_FILE"
+fi
+OPERATOR_TOKEN="$(tr -d '\n' < "$OPERATOR_TOKEN_FILE")"
+
+# ============================================================================ #
 # 4. onboard the demo tenant "acme" -> bundle -> _runtime/                     #
 # ============================================================================ #
 # ---- operator Grafana admin password (no hardcoded default; generated once) -
@@ -233,6 +254,9 @@ AGENT_TELEMETRY_TIER=T1
 # Console write token (I4) — the console requires it on register/heartbeat/delete;
 # the agent reads it from the mounted token file (AGENT_CONSOLE_TOKEN_FILE).
 CONSOLE_INGEST_TOKEN=$CONSOLE_INGEST_TOKEN
+# Operator write token (I4) — required on OPERATOR desired-state writes; distinct
+# from the agent's CONSOLE_INGEST_TOKEN so operator and agent identities never mix.
+OPERATOR_TOKEN=$OPERATOR_TOKEN
 # Operator Grafana admin login — generated, never a hardcoded default.
 GF_ADMIN_USER=$GF_ADMIN_USER
 GF_ADMIN_PASSWORD=$GF_ADMIN_PASSWORD
@@ -278,6 +302,13 @@ esac
 if [[ -f "$ENV_FILE" ]] && ! grep -q '^CONSOLE_INGEST_TOKEN=' "$ENV_FILE"; then
   printf 'CONSOLE_INGEST_TOKEN=%s\n' "$CONSOLE_INGEST_TOKEN" >> "$ENV_FILE"
   ok "appended CONSOLE_INGEST_TOKEN to existing .env"
+fi
+
+# Ensure OPERATOR_TOKEN is in .env even on a consistent-skip run (do_onboard only
+# runs on absent/partial). The console requires it on operator desired writes.
+if [[ -f "$ENV_FILE" ]] && ! grep -q '^OPERATOR_TOKEN=' "$ENV_FILE"; then
+  printf 'OPERATOR_TOKEN=%s\n' "$OPERATOR_TOKEN" >> "$ENV_FILE"
+  ok "appended OPERATOR_TOKEN to existing .env"
 fi
 
 # Ensure GF_ADMIN_PASSWORD is in .env on a consistent-skip run too.

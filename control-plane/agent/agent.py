@@ -47,13 +47,17 @@ from typing import Callable
 
 import _bootstrap  # noqa: F401  (side-effect: sys.path for lib + signing)
 from lib import DeploymentRecord, TelemetryTier
+from lib.desired_state import DesiredState
 from lib.primitives import to_rfc3339, utcnow
 
 from buffer import HeartbeatBuffer
 from config import AgentConfig, load_agent_config
 from config_pull import ConfigPuller
+from desired_pull import DesiredPuller
 from health_probe import HealthProbe, http_healthz_probe
 from license_check import LicenseChecker
+
+import reconcile as _reconcile
 
 LOG = logging.getLogger("fyralis.agent")
 
@@ -127,9 +131,17 @@ class Agent:
     license_checker: LicenseChecker | None = None
     config_puller: ConfigPuller | None = None
     buffer: HeartbeatBuffer | None = None
+    desired_puller: DesiredPuller | None = None
+    # When False, the agent does NOT pull/dispatch desired state (pure-heartbeat
+    # mode, the pre-reconcile behavior). Defaults True; set False to opt out.
+    reconcile_enabled: bool = True
 
     _stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _backoff_s: float = field(default=0.0, init=False, repr=False)
+    # Last applied facets the agent reported (carried onto each heartbeat so the
+    # console can compute drift). Accumulated across ticks.
+    _applied_facets: dict = field(default_factory=dict, init=False, repr=False)
+    _reconcile_discovered: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         cfg = self.config
@@ -154,6 +166,13 @@ class Agent:
         if self.buffer is None:
             self.buffer = HeartbeatBuffer(
                 cfg.buffer_path, max_records=cfg.buffer_max_records
+            )
+        if self.desired_puller is None:
+            self.desired_puller = DesiredPuller(
+                console_url=cfg.console_url,
+                deployment_id=cfg.deployment_id,
+                token=cfg.console_token,
+                timeout_s=cfg.heartbeat_timeout_s,
             )
         self._backoff_s = cfg.backoff_base_s
 
@@ -242,6 +261,13 @@ class Agent:
             flushed, _remaining = self.buffer.flush(self._try_send)
 
         record_dict = record.to_registry_dict()
+        # ADDITIVE: carry the reconcile-derived APPLIED facets on the heartbeat so
+        # the console can compute drift (desired vs applied). The C4 record itself
+        # is strict (extra=forbid), so applied facets ride as a SEPARATE top-level
+        # ``applied`` key the console pops before parsing the record. Omitted when
+        # empty so a pure-heartbeat agent's wire shape is byte-identical to before.
+        if self._applied_facets:
+            record_dict = {**record_dict, "applied": dict(self._applied_facets)}
 
         # 2. If the backlog still has entries, the console is down — buffer this one too.
         if not self.buffer.is_empty():
@@ -285,11 +311,81 @@ class Agent:
         return res.ok
 
     # ------------------------------------------------------------------ #
+    # Desired-state reconcile (I2 pull / I3 resilient / I6 verify)        #
+    # ------------------------------------------------------------------ #
+
+    def _reconcile_ctx(self) -> "_reconcile.ReconcileContext":
+        """Build the context handlers receive (trust root for I6, config dir, …)."""
+        cfg = self.config
+        return _reconcile.ReconcileContext(
+            deployment_id=cfg.deployment_id,
+            trust_root_path=str(cfg.trust_root_path),
+            config_dir=str(cfg.config_dir),
+            tenant_id=cfg.tenant_id,
+            console_url=cfg.console_url,
+            console_token=cfg.console_token,
+            logger=LOG,
+            # Hand handlers the live config puller so a config handler can reuse
+            # the same verify+apply path the agent already uses (I6), plus this
+            # deployment's accumulated APPLIED facets so cross-tick idempotency
+            # works: the config handler skips re-applying an already-applied
+            # version, and the actions handler skips re-running already-acked ids.
+            extra={
+                "config_puller": self.config_puller,
+                "agent": self,
+                "applied_facets": dict(self._applied_facets),
+                "acked_action_ids": list(
+                    self._applied_facets.get("acked_action_ids", [])
+                ),
+            },
+        )
+
+    def reconcile(self) -> dict:
+        """BEST-EFFORT pull the operator's desired state and dispatch it to the
+        handler registry. Returns the merged applied-facet delta this tick.
+
+        I2: outbound GET only. I3: a 404 / any error -> no reconcile, empty delta,
+        never raises. The merged delta is accumulated into ``_applied_facets`` so
+        the next heartbeat carries the applied state for the console's drift view.
+        """
+        if not self.reconcile_enabled:
+            return {}
+        # Lazily autodiscover handlers once (registers the example + any feature
+        # agent/reconcile/<concern>.py). Best-effort — discovery never crashes.
+        if not self._reconcile_discovered:
+            try:
+                _reconcile.autodiscover()
+            except Exception as exc:  # pragma: no cover - discovery is defensive
+                LOG.warning("reconcile autodiscover failed (continuing): %s", exc)
+            self._reconcile_discovered = True
+
+        try:
+            desired = self.desired_puller.pull()
+        except Exception as exc:  # the puller already swallows, belt-and-braces
+            LOG.debug("desired pull raised (skipping reconcile): %s", exc)
+            return {}
+        if desired is None:
+            return {}  # no desired state -> nothing to reconcile (I3)
+
+        delta = _reconcile.dispatch(desired, self._reconcile_ctx())
+        if delta:
+            self._applied_facets = _reconcile.merge_applied(self._applied_facets, delta)
+        return delta
+
+    # ------------------------------------------------------------------ #
     # The loop                                                            #
     # ------------------------------------------------------------------ #
 
     def tick(self, *, now=None) -> TickResult:
-        """One heartbeat cycle: collect -> deliver. Adjusts backoff. Never raises."""
+        """One heartbeat cycle: reconcile -> collect -> deliver. Adjusts backoff.
+        Never raises."""
+        # 1. Best-effort desired-state reconcile (I2 pull, I3 resilient). Wrapped
+        #    so a reconcile hiccup can never stop the heartbeat below.
+        try:
+            self.reconcile()
+        except Exception as exc:  # absolute backstop (I3)
+            LOG.warning("reconcile raised (ignored, heartbeat continues): %s", exc)
+
         record, sli_breached = self.collect(now=now)
         licensed = self.is_licensed()
         delivered, buffered, flushed = self.deliver(record)

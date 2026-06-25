@@ -50,6 +50,9 @@ volumes:
   # Phase 4 — fleet console registry persistence (best-effort JSON under
   # console/data) and the data-plane agent's durable heartbeat buffer (I3).
   console-data:
+  # Hash-chained operator audit trail (I5) the console appends to on every
+  # operator desired-state write; durable across console restarts.
+  console-audit:
   agent-state:
   # Phase 5 — operate-the-fleet persistence.
   #   release-registry-data: published signed release bundles + index.json (WS-RELEASE)
@@ -428,9 +431,25 @@ services:
       # and writes it here). With it UNSET the console fails CLOSED on writes (503),
       # never silently open. Reads stay open for the operator UI (next-sprint: SSO).
       - CONSOLE_INGEST_TOKEN=${CONSOLE_INGEST_TOKEN:?set CONSOLE_INGEST_TOKEN (run ./bootstrap.sh)}
+      # Operator write token (I4) — required on OPERATOR desired-state writes
+      # (remote config push / release pin / action queue / license). DISTINCT from
+      # the agent's CONSOLE_INGEST_TOKEN so operator and agent identities never
+      # mix. Sourced from .env (bootstrap.sh generates it into _runtime/secrets/).
+      # With it UNSET the console fails CLOSED on operator writes (503); operator
+      # READS stay open on the operator LAN (next-sprint: SSO).
+      - OPERATOR_TOKEN=${OPERATOR_TOKEN:?set OPERATOR_TOKEN (run ./bootstrap.sh)}
     volumes:
-      # Durable fleet registry (best-effort JSON persistence under console/data).
+      # Durable fleet registry + desired/applied sidecars (best-effort JSON
+      # persistence under console/data).
       - console-data:/app/console/data
+      # Signing trust root + active key so the console can SIGN operator-pushed
+      # desired config/release bundles (I6) via feature routers' deps.signer. The
+      # image bakes signing/ code; the gitignored key material is mounted from the
+      # host (in prod: a secrets manager). Read-only.
+      - ./signing/trust_root.json:/app/signing/trust_root.json:ro
+      - ./signing/keys:/app/signing/keys:ro
+      # Durable, hash-chained operator audit trail (I5) survives console restarts.
+      - console-audit:/app/audit
     ports:
       # Operator-facing console UI/API. Reachable on cp-net as http://console:8080;
       # published to the host for the operator.

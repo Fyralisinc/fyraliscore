@@ -34,6 +34,11 @@ from .deployment import (
     Health,
     derive_health,
 )
+from .desired_state import (
+    ACTION_ALLOWLIST,
+    DesiredState,
+    compute_drift,
+)
 from .errors import (
     ConfigError,
     ControlPlaneError,
@@ -93,6 +98,10 @@ __all__ = [
     "derive_health",
     "DEFAULT_YELLOW_AFTER_S",
     "DEFAULT_RED_AFTER_S",
+    # desired state (console-roadmap §2/§4)
+    "DesiredState",
+    "compute_drift",
+    "ACTION_ALLOWLIST",
     # primitives
     "utcnow",
     "to_rfc3339",
