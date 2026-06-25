@@ -164,6 +164,7 @@ class DiscordGatewayClient:
         # dispatch handler's `shadow_write_raw` enqueues to;
         # otherwise the flush guarantees nothing about the frame.
         kafka_producer: Any = None,
+        gateway_bot_url: str | None = None,
     ) -> None:
         if not bot_token:
             raise ValueError("bot_token is required")
@@ -188,6 +189,7 @@ class DiscordGatewayClient:
         self._shutdown = asyncio.Event()
         self._on_dispatched = on_dispatched
         self._kafka_producer = kafka_producer
+        self._gateway_bot_url = gateway_bot_url
 
     async def aclose(self) -> None:
         if self._heartbeat_task is not None:
@@ -272,7 +274,7 @@ class DiscordGatewayClient:
     async def _fetch_gateway_url(self) -> str:
         from lib.integrations.endpoints import endpoint
         r = await self._http.get(
-            endpoint("discord_gateway_bot"),
+            self._gateway_bot_url or endpoint("discord_gateway_bot"),
             headers={"Authorization": f"Bot {self._bot_token}"},
         )
         r.raise_for_status()

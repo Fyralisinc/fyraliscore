@@ -368,10 +368,12 @@ Current state:
   bot-authenticated request. Telegram and Signal now resolve connection-session
   secrets through the same TTL cache before opening their transport sessions;
   regression tests prove newly opened clients can pick up rotated session/API
-  hash refs with caching disabled. The Discord Gateway token wrapper and Ramp
-  client-credential material still need managed-provider resolution or explicit
-  restart/rotation rationale before the "every source-specific client" item can
-  close.
+  hash refs with caching disabled. The Discord Gateway worker now accepts a
+  bot-token provider and the production launcher passes an env-reading
+  provider, so reconnect/IDENTIFY attempts pick up `DISCORD_BOT_TOKEN`
+  rotation without process restart. Ramp client-credential material still needs
+  managed-provider resolution or explicit short-lived onboarding-only rationale
+  before the "every source-specific client" item can close.
 - Many production template keys are still env-shaped.
 - Webhook env fallback is disabled in production by contract.
 

@@ -465,7 +465,7 @@ async def _main() -> int:
         )
 
         worker = GatewayWorker(
-            bot_token=config.bot_token,
+            bot_token_provider=lambda: os.environ.get("DISCORD_BOT_TOKEN", ""),
             deps=deps,
             initial_state=resume.initial_state,
             on_dispatched=resume.on_dispatched,

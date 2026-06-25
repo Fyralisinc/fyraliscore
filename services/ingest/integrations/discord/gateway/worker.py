@@ -68,7 +68,8 @@ class GatewayWorker:
     def __init__(
         self,
         *,
-        bot_token: str,
+        bot_token: str | None = None,
+        bot_token_provider: Callable[[], str] | None = None,
         deps: DispatchDeps,
         shutdown_grace_s: float = 5.0,
         # M4.3 — wiring for lease + persisted state. Both default to
@@ -80,15 +81,25 @@ class GatewayWorker:
             "Callable[[GatewaySessionState], Awaitable[None]] | None"
         ) = None,
     ) -> None:
-        if not bot_token:
+        if bot_token_provider is None and not bot_token:
             raise ValueError("bot_token is required")
-        self._bot_token = bot_token
+        self._bot_token_provider = (
+            bot_token_provider
+            if bot_token_provider is not None
+            else lambda: str(bot_token or "")
+        )
         self._deps = deps
         self._shutdown_grace_s = shutdown_grace_s
         self._shutdown_requested = asyncio.Event()
         self._current_client: DiscordGatewayClient | None = None
         self._initial_state = initial_state
         self._on_dispatched = on_dispatched
+
+    def _resolve_bot_token(self) -> str:
+        token = self._bot_token_provider()
+        if not token:
+            raise ValueError("bot_token is required")
+        return token
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
@@ -130,8 +141,13 @@ class GatewayWorker:
                 # state carries the latest session_id/last_seq); we
                 # null it after first use so a re-IDENTIFY path doesn't
                 # incorrectly re-seed from a stale snapshot.
+                try:
+                    bot_token = self._resolve_bot_token()
+                except ValueError:
+                    log.error("discord_gateway_missing_bot_token")
+                    return 2
                 client = DiscordGatewayClient(
-                    bot_token=self._bot_token,
+                    bot_token=bot_token,
                     dispatch_handler=self._dispatch,
                     application_id=self._deps.application_id,
                     initial_state=self._initial_state,

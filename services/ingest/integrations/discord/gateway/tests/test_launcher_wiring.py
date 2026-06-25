@@ -240,6 +240,8 @@ async def test_lease_acquired_and_resume_wired(monkeypatch):
     # Crash-RESUME wiring threaded into the worker.
     assert worker.kwargs["initial_state"] is _SENTINEL_STATE
     assert worker.kwargs["on_dispatched"] is _SENTINEL_HOOK
+    assert "bot_token" not in worker.kwargs
+    assert worker.kwargs["bot_token_provider"]() == "bot-token"
 
 
 async def test_no_application_id_keeps_lease_disables_resume(monkeypatch):
