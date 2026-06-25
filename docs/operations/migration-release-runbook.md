@@ -98,11 +98,24 @@ Use the same command paths in local rehearsal, CI, staging, and production.
 For staging clone rehearsals:
 
 ```bash
-export DATABASE_URL="$STAGING_CLONE_DATABASE_URL"
-.venv/bin/python scripts/apply_db_migrations.py --dsn "$DATABASE_URL"
-.venv/bin/python scripts/check_schema_drift.py --dsn "$DATABASE_URL"
-.venv/bin/python scripts/run_operational_readiness_gates.py
+.venv/bin/python scripts/run_migration_rehearsal.py \
+  --confirm-staging-clone \
+  --status-output /tmp/fyralis-migration-rehearsal.json
 ```
+
+Run the heavier readiness harness after migration/drift when the release
+changes customer-data semantics or durable worker contracts:
+
+```bash
+.venv/bin/python scripts/run_migration_rehearsal.py \
+  --confirm-staging-clone \
+  --run-readiness-gates \
+  --status-output /tmp/fyralis-migration-rehearsal.json
+```
+
+The runner uses `STAGING_CLONE_DATABASE_URL` by default, never
+`DATABASE_URL`, and refuses to start without `--confirm-staging-clone`.
+Attach the JSON result to release notes alongside backup/restore evidence.
 
 ## Rollback And Forward-Fix Decision
 

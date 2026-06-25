@@ -547,12 +547,16 @@ Current state:
   expand/contract policy, release artifacts, rollback versus forward-fix
   decision tree, and backup/snapshot evidence required for destructive
   migrations.
+- `scripts/run_migration_rehearsal.py` provides a staging-clone-only release
+  gate that applies migrations, runs schema drift, optionally runs operational
+  readiness gates, writes bounded JSON evidence, and refuses to start unless
+  the operator passes `--confirm-staging-clone`.
 - `scripts/check_architecture_ratchets.py` now rejects new destructive SQL
   migrations unless they carry a `destructive-migration-approved:` marker with
   backup, rollback, and owner evidence. Historical destructive migrations are
   explicitly baselined.
-- Migrations are mostly idempotent, but staging-clone rollback rehearsals are
-  not yet a routine gate.
+- Migration rehearsal is now an explicit release command; full staging
+  release/load/rollback rehearsals remain tracked in the staging section.
 
 Must solve:
 
@@ -563,7 +567,7 @@ Must solve:
   - dual-write or compatibility read,
   - remove only after one release boundary.
 - [x] Add migration rollback or forward-fix runbooks for every release.
-- [ ] Rehearse migrations against a staging clone before release.
+- [x] Rehearse migrations against a staging clone before release.
 - [x] Require backup/snapshot verification before destructive migrations.
 - [x] Add constraints for app-enforced invariants that matter for corruption
   prevention, including archive reasons and money precision.
@@ -572,6 +576,11 @@ Must solve:
 - [x] Add continuous production alerting for schema/RLS drift.
 
 Acceptance evidence:
+
+- `scripts/run_migration_rehearsal.py` is covered by unit tests proving it
+  requires explicit staging-clone confirmation, runs migration + schema drift
+  commands in order, stops on failed migration apply, and includes readiness
+  gates only when requested.
 
 - Migration rehearsal report attached to each release.
 - `check_schema_drift.py` passes after migrations.
