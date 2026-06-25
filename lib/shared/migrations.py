@@ -181,6 +181,12 @@ async def apply_migration(
 
 
 _LEDGER_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+_OBSOLETE_DEMO_SCAFFOLDING_MIGRATIONS = (
+    "0023_demo_infrastructure.sql",
+    "0026_single_demo_company.sql",
+    "0028_pelago_demo_config.sql",
+    "0093_drop_demo_scaffolding.sql",
+)
 
 
 def _ledger_ddl(table: str) -> str:
@@ -207,6 +213,68 @@ async def _record_applied_migration(
         f"INSERT INTO {table}(filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING",
         filename,
     )
+
+
+async def _baseline_obsolete_demo_scaffolding_if_final_state(
+    conn: asyncpg.Connection,
+    *,
+    already_applied: set[str],
+    ledger_table: str,
+    migration_filenames: set[str],
+) -> None:
+    """Record removed demo scaffolding migrations for post-demo core schemas.
+
+    Older local/test databases predate the Python migration ledger and may
+    already be in the final core state produced by 0093: the shared ``tenants``
+    table remains, demo tables are gone, and ``tenants.demo_config_id`` is
+    gone. Replaying 0023 then 0093 against that state repeatedly adds and drops
+    the same column; Postgres keeps dropped attributes internally, so a
+    long-lived DB can eventually hit the per-table column limit. When the final
+    state is already present, baseline those obsolete demo-only migrations in
+    the ledger instead of replaying the add/drop loop. Fresh DBs are unaffected
+    because ``tenants`` does not exist yet.
+    """
+
+    obsolete_present = set(_OBSOLETE_DEMO_SCAFFOLDING_MIGRATIONS).intersection(
+        migration_filenames
+    )
+    missing = obsolete_present.difference(already_applied)
+    if not missing:
+        return
+
+    state = await conn.fetchrow(
+        """
+        SELECT
+          to_regclass('public.tenants') IS NOT NULL AS has_tenants,
+          to_regclass('public.demo_configs') IS NOT NULL AS has_demo_configs,
+          to_regclass('public.demo_sessions') IS NOT NULL AS has_demo_sessions,
+          to_regclass('public.demo_session_costs') IS NOT NULL
+            AS has_demo_session_costs,
+          EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'tenants'
+              AND column_name = 'demo_config_id'
+          ) AS has_demo_config_id
+        """
+    )
+    if not state:
+        return
+    if not state["has_tenants"]:
+        return
+    if (
+        state["has_demo_configs"]
+        or state["has_demo_sessions"]
+        or state["has_demo_session_costs"]
+        or state["has_demo_config_id"]
+    ):
+        return
+
+    for filename in _OBSOLETE_DEMO_SCAFFOLDING_MIGRATIONS:
+        if filename in missing:
+            await _record_applied_migration(conn, filename, ledger_table)
+            already_applied.add(filename)
 
 
 async def apply_migrations_dir(
@@ -257,6 +325,12 @@ async def apply_migrations_dir(
         await _ensure_schema_migrations(conn, ledger_table)
         rows = await conn.fetch(f"SELECT filename FROM {ledger_table}")
         already_applied = {row["filename"] for row in rows}
+        await _baseline_obsolete_demo_scaffolding_if_final_state(
+            conn,
+            already_applied=already_applied,
+            ledger_table=ledger_table,
+            migration_filenames={path.name for path in files},
+        )
 
         applied: list[str] = []
         for path in files:
