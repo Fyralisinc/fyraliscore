@@ -4,9 +4,10 @@ Single outbound surface for backfill + poll-incremental. Carta's API Platform is
 an **issuer** cap-table REST suite under ``/v1alpha1`` (alpha — expect breaking
 changes), authenticated with an OAuth 2.0 Bearer **access token** (~1 h; no
 refresh grant — re-minted via client_credentials, see
-`integrations/oauth_refresh.py`). The access token is resolved once from the
-secret store (or preset in spammer mode) and reused for the life of the client;
-a reactive 401 re-mint retries the request once with a fresh token.
+`integrations/oauth_refresh.py`). The access token is resolved through a
+short-lived secret-ref cache (or preset in spammer mode), so rotation is picked
+up without process restart. A reactive 401 re-mint retries the request once
+with a fresh token.
 
 CONFIRMED contract (OpenAPI "Issuer v1alpha1" embedded in
 docs.carta.com/api-platform/reference, e.g.
@@ -51,6 +52,7 @@ import httpx
 import structlog
 
 from lib.shared.errors import CartaApiError
+from services.ingest.integrations.secret_cache import SecretValueCache
 
 
 log = structlog.get_logger("integrations.carta.client")
@@ -118,7 +120,7 @@ class CartaClient:
         # refresh_secret_ref holds the client_credentials secret used to re-mint.
         self._install_row_id = install_row_id
         self._refresh_secret_ref = refresh_secret_ref
-        self._access_token: str | None = access_token
+        self._access_token_cache = SecretValueCache(preset=access_token)
         self._token_lock = asyncio.Lock()
         # In production the base is the canonical Carta host; a spammer/test
         # override (api_base_url) wins so backfill points at the mock.
@@ -138,28 +140,17 @@ class CartaClient:
             self._http = None
 
     async def _token(self) -> str:
-        if self._access_token is not None:
-            return self._access_token
-        async with self._token_lock:
-            if self._access_token is not None:
-                return self._access_token
-            if (
-                self._secret_store is None
-                or self._secret_ref is None
-                or self._tenant_id is None
-            ):
-                raise CartaApiError(
-                    "carta client has no access token and cannot resolve "
-                    "one (missing secret_store / secret_ref / tenant_id)",
-                    code="carta_api_unauthorized",
-                )
-            raw = await self._secret_store.get(
-                self._secret_ref, tenant_id=self._tenant_id,
+        return await self._access_token_cache.resolve(
+            lock=self._token_lock,
+            secret_store=self._secret_store,
+            secret_ref=self._secret_ref,
+            tenant_id=self._tenant_id,
+            missing_error=lambda: CartaApiError(
+                "carta client has no access token and cannot resolve "
+                "one (missing secret_store / secret_ref / tenant_id)",
+                code="carta_api_unauthorized",
             )
-            self._access_token = (
-                raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            )
-            return self._access_token
+        )
 
     async def _request(
         self, method: str, path: str, *, params: dict[str, Any] | None = None,
@@ -176,9 +167,10 @@ class CartaClient:
 
         attempt = 0
         reminted = False
+        refreshed_token: str | None = None
         while True:
             attempt += 1
-            token = await self._token()
+            token = refreshed_token or await self._token()
             headers = {
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
@@ -225,7 +217,8 @@ class CartaClient:
                         refresh_secret_ref=self._refresh_secret_ref,
                     )
                     if new_token is not None:
-                        self._access_token = new_token
+                        self._access_token_cache.set(new_token)
+                        refreshed_token = new_token
                         continue
                 raise _api_error_from_response(response, path)
             metrics.record_request("error")

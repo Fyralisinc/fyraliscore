@@ -6,15 +6,20 @@ import pytest
 
 from services.ingest.integrations.brex.client import BrexClient
 from services.ingest.integrations.ashby.client import AshbyClient
+from services.ingest.integrations.carta.client import CartaClient
 from services.ingest.integrations.deel.client import DeelClient
 from services.ingest.integrations.figma.client import FigmaClient
 from services.ingest.integrations.fireflies.client import FirefliesClient
 from services.ingest.integrations.grafana.client import GrafanaClient
+from services.ingest.integrations.gusto.client import GustoClient
 from services.ingest.integrations.hibob.client import HibobClient
 from services.ingest.integrations.jira.client import JiraClient
+from services.ingest.integrations.linkedin.client import LinkedinClient
 from services.ingest.integrations.mercury.client import MercuryClient
 from services.ingest.integrations.miro.client import MiroClient
 from services.ingest.integrations.notion.client import NotionClient
+from services.ingest.integrations.quickbooks.client import QuickBooksClient
+from services.ingest.integrations.ramp.client import RampClient
 from services.ingest.integrations.secret_cache import (
     SECRET_CACHE_TTL_ENV,
     SecretValueCache,
@@ -225,6 +230,79 @@ async def test_static_api_clients_reload_secret_ref_when_cache_ttl_is_zero(
     first = await resolver()
     store.value = "second-token"
     second = await resolver()
+
+    assert (first, second) == ("first-token", "second-token")
+    assert store.calls == [(secret_ref, tenant_id), (secret_ref, tenant_id)]
+
+
+@pytest.mark.parametrize(
+    ("factory", "secret_ref"),
+    [
+        (
+            lambda store, tenant_id, ref: QuickBooksClient(
+                base_url="https://quickbooks.api.intuit.com",
+                realm_id="realm-1",
+                secret_store=store,
+                tenant_id=tenant_id,
+                secret_ref=ref,
+            ),
+            "quickbooks-access-ref",
+        ),
+        (
+            lambda store, tenant_id, ref: GustoClient(
+                base_url="https://api.gusto.com",
+                company_uuid="company-1",
+                secret_store=store,
+                tenant_id=tenant_id,
+                secret_ref=ref,
+            ),
+            "gusto-access-ref",
+        ),
+        (
+            lambda store, tenant_id, ref: RampClient(
+                base_url="https://api.ramp.com/developer/v1",
+                business_id="business-1",
+                secret_store=store,
+                tenant_id=tenant_id,
+                secret_ref=ref,
+            ),
+            "ramp-access-ref",
+        ),
+        (
+            lambda store, tenant_id, ref: CartaClient(
+                base_url="https://api.carta.com",
+                issuer_id="issuer-1",
+                secret_store=store,
+                tenant_id=tenant_id,
+                secret_ref=ref,
+            ),
+            "carta-access-ref",
+        ),
+        (
+            lambda store, tenant_id, ref: LinkedinClient(
+                base_url="https://api.linkedin.com/rest",
+                organization_urn="urn:li:organization:123",
+                secret_store=store,
+                tenant_id=tenant_id,
+                secret_ref=ref,
+            ),
+            "linkedin-access-ref",
+        ),
+    ],
+)
+async def test_oauth_access_token_clients_reload_secret_ref_when_cache_ttl_is_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    factory,
+    secret_ref: str,
+) -> None:
+    monkeypatch.setenv(SECRET_CACHE_TTL_ENV, "0")
+    store = _Store("first-token")
+    tenant_id = uuid4()
+    client = factory(store, tenant_id, secret_ref)
+
+    first = await client._token()
+    store.value = "second-token"
+    second = await client._token()
 
     assert (first, second) == ("first-token", "second-token")
     assert store.calls == [(secret_ref, tenant_id), (secret_ref, tenant_id)]

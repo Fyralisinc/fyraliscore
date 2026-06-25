@@ -9,6 +9,7 @@ import pytest
 
 from lib.shared.errors import QuickBooksApiError
 from services.ingest.integrations.quickbooks.client import QuickBooksClient
+from services.ingest.integrations.secret_cache import SECRET_CACHE_TTL_ENV
 
 pytestmark = pytest.mark.asyncio
 
@@ -59,6 +60,7 @@ def _client(http: httpx.AsyncClient, pool, store) -> QuickBooksClient:
 async def test_quickbooks_client_remints_on_401_and_retries(monkeypatch):
     monkeypatch.setenv("QUICKBOOKS_CLIENT_ID", "cid")
     monkeypatch.setenv("QUICKBOOKS_CLIENT_SECRET", "csec")
+    monkeypatch.setenv(SECRET_CACHE_TTL_ENV, "0")
     store = FakeStore({"access-ref": "stale-token", "refresh-ref": "the-refresh"})
     pool = FakePool()
     state = {"api_calls": 0}

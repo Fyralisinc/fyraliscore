@@ -46,6 +46,10 @@ import httpx
 import structlog
 
 from lib.shared.errors import RampApiError
+from services.ingest.integrations.secret_cache import (
+    SecretValueCache,
+    coerce_secret_text,
+)
 
 
 log = structlog.get_logger("integrations.ramp.client")
@@ -104,7 +108,7 @@ class RampClient:
         # Phase 3: reactive OAuth re-mint on 401 (inert in spammer mode).
         self._install_row_id = install_row_id
         self._refresh_secret_ref = refresh_secret_ref
-        self._access_token: str | None = access_token
+        self._access_token_cache = SecretValueCache(preset=access_token)
         self._token_lock = asyncio.Lock()
         # Client-credentials mint material (falls back to RAMP_CLIENT_ID /
         # RAMP_CLIENT_SECRET env); only used when no token is preset/stored.
@@ -190,15 +194,17 @@ class RampClient:
                 code="ramp_api_error",
                 context={"path": "/token"},
             )
-        self._access_token = token
+        self._access_token_cache.set(token)
         return body
 
     async def _token(self) -> str:
-        if self._access_token is not None:
-            return self._access_token
+        value = self._access_token_cache.get_if_fresh()
+        if value is not None:
+            return value
         async with self._token_lock:
-            if self._access_token is not None:
-                return self._access_token
+            value = self._access_token_cache.get_if_fresh()
+            if value is not None:
+                return value
             if (
                 self._secret_store is not None
                 and self._secret_ref is not None
@@ -207,15 +213,13 @@ class RampClient:
                 raw = await self._secret_store.get(
                     self._secret_ref, tenant_id=self._tenant_id,
                 )
-                self._access_token = (
-                    raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-                )
-                return self._access_token
+                return self._access_token_cache.set(coerce_secret_text(raw))
             cid, csec = self._mint_credentials()
             if cid and csec:
-                await self.mint_token()
-                assert self._access_token is not None
-                return self._access_token
+                body = await self.mint_token()
+                token = body.get("access_token") if isinstance(body, dict) else None
+                if isinstance(token, str) and token:
+                    return token
             raise RampApiError(
                 "ramp client has no access token and cannot resolve or mint "
                 "one (missing secret_store/secret_ref/tenant_id and no "
@@ -264,9 +268,10 @@ class RampClient:
 
         attempt = 0
         reminted = False
+        refreshed_token: str | None = None
         while True:
             attempt += 1
-            token = await self._token()
+            token = refreshed_token or await self._token()
             headers = {
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
@@ -317,15 +322,19 @@ class RampClient:
                         refresh_secret_ref=self._refresh_secret_ref,
                     )
                     if new_token is not None:
-                        self._access_token = new_token
+                        self._access_token_cache.set(new_token)
+                        refreshed_token = new_token
                         continue
                     # Self-mint fallback when the client holds creds directly.
                     cid, csec = self._mint_credentials()
                     if cid and csec:
                         try:
-                            await self.mint_token()
+                            body = await self.mint_token()
                         except RampApiError:
                             raise _api_error_from_response(response, log_path)
+                        token = body.get("access_token") if isinstance(body, dict) else None
+                        if isinstance(token, str) and token:
+                            refreshed_token = token
                         continue
                 raise _api_error_from_response(response, log_path)
             metrics.record_request("error")

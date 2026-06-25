@@ -353,14 +353,17 @@ Current state:
 - `services.ingest.integrations.secret_cache.SecretValueCache` now provides a
   shared short-lived secret-ref cache (`SOURCE_CLIENT_SECRET_CACHE_TTL_SECONDS`,
   default 300s; `0` disables caching). Brex, Jira, Notion, Mercury, Grafana,
-  Deel, Fireflies, Figma, Miro, HiBob, and Ashby clients use it so secret-store
-  token rotation is picked up without process restart while preset
-  test/spammer tokens remain fixed.
-- Static source-token cache coverage now includes a parametrized regression
-  suite that proves TTL-disabled clients re-read `secret_ref` material for each
-  call. OAuth refresh-token clients and special session bootstrap clients still
-  need source-specific rotation tests before the "every source-specific client"
-  item can close.
+  Deel, Fireflies, Figma, Miro, HiBob, Ashby, QuickBooks, Gusto, Ramp, Carta,
+  and LinkedIn clients use it so secret-store token rotation is picked up
+  without process restart while preset test/spammer tokens remain fixed.
+- Static source-token and OAuth access-token cache coverage now includes
+  parametrized regression tests that prove TTL-disabled clients re-read
+  `secret_ref` material for each call. QuickBooks reactive refresh coverage
+  also runs with caching disabled, proving a newly refreshed token is used on
+  the immediate retry instead of falling back to the stale access-token ref.
+  Slack/Discord bot-token clients and Telegram/Signal session clients still
+  need the same treatment or explicit rotation rationale before the "every
+  source-specific client" item can close.
 - Many production template keys are still env-shaped.
 - Webhook env fallback is disabled in production by contract.
 
