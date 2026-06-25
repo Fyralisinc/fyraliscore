@@ -88,14 +88,16 @@ def check_datasources() -> dict[str, dict]:
         # --- (4) per-customer => templated/literal ; fleet => fleet org id ---
         if "fleet" in name.lower() or "fleet" in (uid or ""):
             # Fleet DSes read cross-tenant. They reference EITHER the documented
-            # "__fleet__" ruler org id OR (with tenant_federation enabled) a
-            # bar-joined real-tenant fan-out (e.g. acme|globex) so RAW series
-            # federate. The env-default form ${FYRALIS_FLEET_ORG_ID:...} is the
-            # signal that this is a fleet reader.
-            assert (FLEET_ORG_DEFAULT in val or "FYRALIS_FLEET_ORG_ID" in val), (
+            # "__fleet__" ruler org id, OR (with tenant_federation enabled) a
+            # bar-joined real-tenant fan-out so RAW series federate. The fan-out
+            # MUST be a LITERAL "acme|globex" — Grafana provisioning does not honor
+            # ${VAR:default} in secureJsonData (it sends an empty header -> Mimir
+            # "no org id"), so a bare "|" in the value is the valid fleet signal.
+            is_fanout = "|" in val
+            assert (FLEET_ORG_DEFAULT in val or "FYRALIS_FLEET_ORG_ID" in val or is_fanout), (
                 f"fleet datasource {name!r} {SCOPE_HEADER} value {val!r} does not "
-                f"reference the fleet/admin org id {FLEET_ORG_DEFAULT!r} or the "
-                f"FYRALIS_FLEET_ORG_ID fan-out"
+                f"reference the fleet/admin org id {FLEET_ORG_DEFAULT!r} or a "
+                f"bar-joined tenant fan-out (e.g. 'acme|globex')"
             )
         elif (uid or "").startswith("mimir-"):
             # Fixed per-tenant Mimir datasource (uid mimir-<tenant>): carries a

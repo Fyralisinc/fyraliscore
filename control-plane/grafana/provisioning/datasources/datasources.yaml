@@ -126,9 +126,18 @@ datasources:
       # in mimir.yaml, a bar-joined tenant list federates the RAW series across
       # those tenants (the lone "__fleet__" ruler org holds only the recorded
       # fleet:* series, NOT the raw worker_heartbeat_age_seconds / up / dlq
-      # series the fleet panels also read). Override at provision time with the
-      # env var FYRALIS_FLEET_ORG_ID; default is the real-tenant fan-out.
-      httpHeaderValue1: ${FYRALIS_FLEET_ORG_ID:acme|globex}
+      # series the fleet panels also read).
+      # NOTE: Grafana provisioning does NOT honor ${VAR:default} bash-default
+      # syntax in secureJsonData (it treats "FYRALIS_FLEET_ORG_ID:acme|globex"
+      # as one var name -> not found -> empty header -> Mimir "no org id"). So we
+      # use a LITERAL bar-joined tenant list, exactly like the per-tenant
+      # datasources below. Add a tenant here when you onboard one (the same
+      # obligation as adding its Mimir <tenant> datasource).
+      # Includes __fleet__ so BOTH the RAW series (federated from acme+globex)
+      # AND the ruler's recorded fleet:* SLI series (written under __fleet__)
+      # resolve through this one fleet/admin datasource. The orgs are disjoint
+      # (raw `up` only in acme/globex; fleet:* only in __fleet__) so no double-count.
+      httpHeaderValue1: "acme|globex|__fleet__"
 
   # ========================================================================
   # LOKI (logs) — PER-CUSTOMER scoped  (T2 redacted logs)
@@ -174,7 +183,9 @@ datasources:
       timeout: 60
       httpHeaderName1: X-Scope-OrgID
     secureJsonData:
-      httpHeaderValue1: ${FYRALIS_FLEET_ORG_ID:__fleet__}
+      # Literal fan-out (see the Mimir (fleet) note — Grafana ignores ${VAR:default}).
+      # T1-only tenants have no logs, so this returns empty (expected, not an error).
+      httpHeaderValue1: "acme|globex"
 
   # ========================================================================
   # CP SELF-OBS PROMETHEUS — control-plane self-observability (WS-SELFOBS)
