@@ -29,7 +29,10 @@ from services.workers.maintenance.scheduler import (
 from services.workers.maintenance.weekly import (
     relationship_maintenance_per_tenant,
 )
-from services.workers.housekeeper.retention import run_think_run_artifact_retention
+from services.workers.housekeeper.retention import (
+    run_sage_trace_retention,
+    run_think_run_artifact_retention,
+)
 
 
 _log = structlog.get_logger(__name__)
@@ -100,6 +103,10 @@ async def _relationship_maintenance(pool: asyncpg.Pool) -> Any:
 
 async def _think_run_artifact_retention(pool: asyncpg.Pool) -> Any:
     return await run_think_run_artifact_retention(pool)
+
+
+async def _sage_trace_retention(pool: asyncpg.Pool) -> Any:
+    return await run_sage_trace_retention(pool)
 
 
 async def _backup_recovery_metrics(pool: asyncpg.Pool) -> Any:
@@ -232,6 +239,15 @@ def build_housekeeper_descriptors(
             initial_delay=_env_seconds(
                 "HOUSEKEEPER_THINK_ARTIFACT_RETENTION_INITIAL_DELAY_S",
                 180,
+            ),
+        ),
+        _descriptor(
+            "sage_trace_retention",
+            _sage_trace_retention,
+            _env_seconds("HOUSEKEEPER_SAGE_TRACE_RETENTION_INTERVAL_S", 86400),
+            initial_delay=_env_seconds(
+                "HOUSEKEEPER_SAGE_TRACE_RETENTION_INITIAL_DELAY_S",
+                210,
             ),
         ),
         _descriptor(

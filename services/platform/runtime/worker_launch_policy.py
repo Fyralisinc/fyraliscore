@@ -92,6 +92,7 @@ _POLICIES: tuple[WorkerLaunchPolicy, ...] = (
             "access_matview_refresh",
             "relationship_maintenance",
             "think_run_artifact_retention",
+            "sage_trace_retention",
             "backup_recovery_metrics",
             "db_activity_metrics",
         ),

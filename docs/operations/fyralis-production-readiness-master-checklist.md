@@ -456,8 +456,13 @@ Current state:
   submitted body or PII-bearing invalid input.
 - `think_run_artifacts` now has a default-enabled housekeeper retention job
   with env-controlled TTL, batch size, dry-run mode, schedule interval, and
-  bounded Prometheus metrics. Partitioning and retention coverage for other
-  debug-heavy tables still remain open.
+  bounded Prometheus metrics.
+- SAGE utility trace tables (`sage_reader_activations`, `retrieval_plans`,
+  `omitted_evidence`, and `inquiry_outcome_events`) now have a
+  default-enabled `sage_trace_retention` housekeeper job with env-controlled
+  TTL, batch size, dry-run mode, schedule interval, bounded Prometheus metrics,
+  and Postgres coverage that proves bounded deletion across the trace catalog.
+  Time partitioning still remains open.
 - Shared Prometheus families reject forbidden label names, unsafe label values,
   and opt-in per-family label value allowlists now reject undeclared free-form
   values.
@@ -621,8 +626,13 @@ Current state:
   `THINK_RUN_ARTIFACT_RETENTION_BATCH_SIZE`,
   `THINK_RUN_ARTIFACT_RETENTION_DRY_RUN`,
   `HOUSEKEEPER_THINK_ARTIFACT_RETENTION_INTERVAL_S`).
+- SAGE utility trace retention is enforced by the housekeeper worker through
+  `sage_trace_retention`, defaulting to a 90-day TTL and 5,000-row delete
+  batches (`SAGE_TRACE_RETENTION_DAYS`, `SAGE_TRACE_RETENTION_BATCH_SIZE`,
+  `SAGE_TRACE_RETENTION_DRY_RUN`,
+  `HOUSEKEEPER_SAGE_TRACE_RETENTION_INTERVAL_S`).
 - The retention delete is bounded and tested against Postgres so large debug
-  artifact tables cannot be removed in one unbounded transaction.
+  artifact and trace tables cannot be removed in one unbounded transaction.
 - Retention metrics expose only bounded labels:
   `housekeeper_retention_rows_total`,
   `housekeeper_retention_eligible_rows`, and

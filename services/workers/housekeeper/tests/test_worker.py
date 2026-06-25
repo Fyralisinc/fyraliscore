@@ -25,6 +25,7 @@ def test_housekeeper_default_registry_keeps_expensive_jobs_disabled(monkeypatch)
         "access_matview_refresh",
         "relationship_maintenance",
         "think_run_artifact_retention",
+        "sage_trace_retention",
         "backup_recovery_metrics",
         "db_activity_metrics",
         "calibration_updater",

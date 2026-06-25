@@ -15,6 +15,7 @@ longer than the class below unless a customer-specific exception is recorded.
 | Raw ingestion tier | Raw webhook/event objects in S3/MinIO/Kafka raw lanes | 30 days | Raw S3 writes are tagged with `fyralis-data-class=raw-ingestion` and `fyralis-retention-days`; normalizer reads verify `content_hash` before parsing. Object-store lifecycle must consume those tags. |
 | Large object blobs/chunks | Drive files, attachments, extracted chunks, blob metadata | Customer lifetime or source uninstall plus deletion window | Policy only. Lifecycle automation remains open. |
 | Think debug artifacts | `think_run_artifacts` prompt/response/validation payloads | 30 days | Enforced by `think_run_artifact_retention` housekeeper job. |
+| SAGE utility traces | `sage_reader_activations`, `retrieval_plans`, `omitted_evidence`, `inquiry_outcome_events` | 90 days | Enforced by `sage_trace_retention` housekeeper job. |
 | Quality and cost telemetry | `think_runs`, `think_run_costs`, aggregate metrics | 13 months aggregated, 30-90 days high-cardinality detail | Partial. Metrics retention depends on Prometheus/remote storage config. |
 | Audit trails | `audit_events`, `access_override_log`, `operator_action_log`, install audit | 7 years unless contract requires longer | Policy only. Must not be deleted by routine cleanup. |
 | Dead-letter/operator queues | Post-commit DLQ, model re-eval DLQ, exhausted Think triggers | Until triaged, then 90 days after retry/quarantine | Operator surfaces exist; expiry after resolution remains open. |
@@ -33,12 +34,27 @@ THINK_RUN_ARTIFACT_RETENTION_DRY_RUN=0
 HOUSEKEEPER_THINK_ARTIFACT_RETENTION_INTERVAL_S=86400
 ```
 
+The housekeeper worker also runs `sage_trace_retention` by default for
+non-canonical SAGE utility trace tables.
+
+Configuration:
+
+```env
+SAGE_TRACE_RETENTION_DAYS=90
+SAGE_TRACE_RETENTION_BATCH_SIZE=5000
+SAGE_TRACE_RETENTION_DRY_RUN=0
+HOUSEKEEPER_SAGE_TRACE_RETENTION_INTERVAL_S=86400
+```
+
 Operational metrics:
 
 ```text
 housekeeper_retention_rows_total{table="think_run_artifacts",mode="delete|dry_run"}
 housekeeper_retention_eligible_rows{table="think_run_artifacts"}
 housekeeper_retention_last_run_timestamp_seconds{table="think_run_artifacts",status="ok"}
+housekeeper_retention_rows_total{table="sage_reader_activations",mode="delete|dry_run"}
+housekeeper_retention_eligible_rows{table="sage_reader_activations"}
+housekeeper_retention_last_run_timestamp_seconds{table="sage_reader_activations",status="ok"}
 ```
 
 Run dry-run mode before changing TTLs in production. A dry run reports the
