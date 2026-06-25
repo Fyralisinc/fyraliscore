@@ -874,9 +874,10 @@ Current state:
   credential-looking variables into `secret_ref`/`*_secret_ref` install
   parameters.
 - Admin-paste install routers now have explicit bad-credential write-order
-  coverage for QuickBooks, Jira, Mercury, Gusto, Ramp, Carta, and LinkedIn:
-  invalid credentials return a structured 400 and leave no install rows,
-  `encrypted_secrets`, onboarding triggers, or webhook resolver rows behind.
+  coverage for QuickBooks, Jira, Mercury, Brex, Deel, Fireflies, Gusto, Ramp,
+  Miro, Figma, Carta, and LinkedIn: invalid credentials return a structured
+  400 and leave no install rows, `encrypted_secrets`, onboarding triggers, or
+  webhook resolver rows behind.
 
 Must solve:
 

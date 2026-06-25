@@ -15,9 +15,14 @@ from cryptography.fernet import Fernet
 from fastapi import FastAPI
 
 from lib.shared.errors import (
+    BrexApiError,
     CartaApiError,
+    DeelApiError,
+    FigmaApiError,
+    FirefliesApiError,
     GustoApiError,
     LinkedinApiError,
+    MiroApiError,
     RampApiError,
 )
 from lib.shared.secrets import FernetSecretStore
@@ -26,7 +31,17 @@ from lib.shared.secrets import FernetSecretStore
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 
-_SOURCES = ("gusto", "ramp", "carta", "linkedin")
+_SOURCES = (
+    "brex",
+    "carta",
+    "deel",
+    "figma",
+    "fireflies",
+    "gusto",
+    "linkedin",
+    "miro",
+    "ramp",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -44,10 +59,19 @@ async def _clean_source_rows(fresh_db: asyncpg.Pool):
     await fresh_db.execute("DELETE FROM ramp_entities")
     await fresh_db.execute("DELETE FROM carta_entities")
     await fresh_db.execute("DELETE FROM linkedin_entities")
+    await fresh_db.execute("DELETE FROM brex_accounts")
+    await fresh_db.execute("DELETE FROM deel_contracts")
+    await fresh_db.execute("DELETE FROM miro_boards")
+    await fresh_db.execute("DELETE FROM figma_files")
     await fresh_db.execute("DELETE FROM gusto_installations")
     await fresh_db.execute("DELETE FROM ramp_installations")
     await fresh_db.execute("DELETE FROM carta_installations")
     await fresh_db.execute("DELETE FROM linkedin_installations")
+    await fresh_db.execute("DELETE FROM brex_installations")
+    await fresh_db.execute("DELETE FROM deel_installations")
+    await fresh_db.execute("DELETE FROM fireflies_installations")
+    await fresh_db.execute("DELETE FROM miro_installations")
+    await fresh_db.execute("DELETE FROM figma_installations")
     await fresh_db.execute("DELETE FROM encrypted_secrets")
     await fresh_db.execute("DELETE FROM tenants WHERE name = 'admin-paste-write-order-test'")
 
@@ -157,6 +181,119 @@ async def test_gusto_finalize_bad_credentials_writes_nothing(
     await _assert_no_durable_state(fresh_db, tenant, "gusto_installations", "gusto")
 
 
+async def test_brex_finalize_bad_credentials_writes_nothing(
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.ingest.integrations.brex import oauth as brex_oauth
+
+    class _FailingBrexClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def list_accounts(self):
+            raise BrexApiError("401 token rejected", code="brex_api_unauthorized")
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(brex_oauth, "BrexClient", _FailingBrexClient)
+    tenant = await _seed_tenant(fresh_db)
+    app, _ = _make_app(fresh_db, tenant, brex_oauth.router)
+
+    payload = {
+        "api_token": "bad-brex-api-token",
+        "organization_id": "brex-org-bad",
+        "webhook_secret": "bad-brex-webhook-secret",
+    }
+    response = await _post_json(app, "/integrations/brex/connect/finalize", payload)
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "brex_auth_failed"
+    assert "bad-brex-api-token" not in response.text
+    assert "bad-brex-webhook-secret" not in response.text
+    await _assert_no_durable_state(fresh_db, tenant, "brex_installations", "brex")
+
+
+async def test_deel_finalize_bad_credentials_writes_nothing(
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.ingest.integrations.deel import oauth as deel_oauth
+
+    class _FailingDeelClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def list_contracts(self):
+            raise DeelApiError("401 token rejected", code="deel_api_unauthorized")
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(deel_oauth, "DeelClient", _FailingDeelClient)
+    tenant = await _seed_tenant(fresh_db)
+    app, _ = _make_app(fresh_db, tenant, deel_oauth.router)
+
+    payload = {
+        "api_token": "bad-deel-api-token",
+        "organization_id": "deel-org-bad",
+        "webhook_secret": "bad-deel-webhook-secret",
+    }
+    response = await _post_json(app, "/integrations/deel/connect/finalize", payload)
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "deel_auth_failed"
+    assert "bad-deel-api-token" not in response.text
+    assert "bad-deel-webhook-secret" not in response.text
+    await _assert_no_durable_state(fresh_db, tenant, "deel_installations", "deel")
+
+
+async def test_fireflies_finalize_bad_credentials_writes_nothing(
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.ingest.integrations.fireflies import oauth as fireflies_oauth
+
+    class _FailingFirefliesClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def get_workspace(self):
+            raise FirefliesApiError(
+                "401 token rejected",
+                code="fireflies_api_unauthorized",
+            )
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(fireflies_oauth, "FirefliesClient", _FailingFirefliesClient)
+    tenant = await _seed_tenant(fresh_db)
+    app, _ = _make_app(fresh_db, tenant, fireflies_oauth.router)
+
+    payload = {
+        "api_token": "bad-fireflies-api-token",
+        "webhook_secret": "bad-fireflies-webhook-secret",
+    }
+    response = await _post_json(
+        app,
+        "/integrations/fireflies/connect/finalize",
+        payload,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "fireflies_auth_failed"
+    assert "bad-fireflies-api-token" not in response.text
+    assert "bad-fireflies-webhook-secret" not in response.text
+    await _assert_no_durable_state(
+        fresh_db,
+        tenant,
+        "fireflies_installations",
+        "fireflies",
+    )
+
+
 async def test_ramp_finalize_bad_credentials_writes_nothing(
     fresh_db: asyncpg.Pool,
     monkeypatch: pytest.MonkeyPatch,
@@ -188,6 +325,75 @@ async def test_ramp_finalize_bad_credentials_writes_nothing(
     assert "bad-ramp-access-token" not in response.text
     assert "bad-ramp-webhook-token" not in response.text
     await _assert_no_durable_state(fresh_db, tenant, "ramp_installations", "ramp")
+
+
+async def test_miro_finalize_bad_credentials_writes_nothing(
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.ingest.integrations.miro import oauth as miro_oauth
+
+    class _FailingMiroClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def list_boards(self):
+            raise MiroApiError("401 token rejected", code="miro_api_unauthorized")
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(miro_oauth, "MiroClient", _FailingMiroClient)
+    tenant = await _seed_tenant(fresh_db)
+    app, _ = _make_app(fresh_db, tenant, miro_oauth.router)
+
+    payload = {
+        "api_token": "bad-miro-api-token",
+        "org_id": "miro-org-bad",
+        "webhook_secret": "bad-miro-webhook-secret",
+    }
+    response = await _post_json(app, "/integrations/miro/connect/finalize", payload)
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "miro_auth_failed"
+    assert "bad-miro-api-token" not in response.text
+    assert "bad-miro-webhook-secret" not in response.text
+    await _assert_no_durable_state(fresh_db, tenant, "miro_installations", "miro")
+
+
+async def test_figma_finalize_bad_credentials_writes_nothing(
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.ingest.integrations.figma import oauth as figma_oauth
+
+    class _FailingFigmaClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def list_files(self, team_id: str):
+            raise FigmaApiError("401 token rejected", code="figma_api_unauthorized")
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(figma_oauth, "FigmaClient", _FailingFigmaClient)
+    tenant = await _seed_tenant(fresh_db)
+    app, _ = _make_app(fresh_db, tenant, figma_oauth.router)
+
+    payload = {
+        "api_token": "bad-figma-api-token",
+        "team_id": "figma-team-bad",
+        "webhook_id": "figma-webhook-bad",
+        "webhook_secret": "bad-figma-webhook-secret",
+    }
+    response = await _post_json(app, "/integrations/figma/connect/finalize", payload)
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "figma_auth_failed"
+    assert "bad-figma-api-token" not in response.text
+    assert "bad-figma-webhook-secret" not in response.text
+    await _assert_no_durable_state(fresh_db, tenant, "figma_installations", "figma")
 
 
 async def test_carta_finalize_bad_credentials_writes_nothing(
