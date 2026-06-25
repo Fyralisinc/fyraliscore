@@ -65,7 +65,7 @@ Every checklist item is done only when:
 
 ### P1 Gate - Production Launch Quality
 
-- [ ] Product-critical worker fabric is deployed or deliberately disabled by
+- [x] Product-critical worker fabric is deployed or deliberately disabled by
   product decision.
 - [ ] Access control is applied consistently to product routes and realtime
   delivery.
