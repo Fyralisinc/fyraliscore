@@ -220,6 +220,10 @@ Current state:
   `fyraliscore-demo` overlay/customer UI deployment.
 - Production settings and the env contract now require `GATEWAY_MOUNT_SIM=0`;
   `GATEWAY_MOUNT_SIM=1` fails gateway startup in production.
+- Gateway production detection now honors the canonical runtime labels
+  `FYRALIS_ENV`, `COMPANY_OS_ENV`, `APP_ENV`, and `ENVIRONMENT`; any one set to
+  `prod`/`production` enables production startup guards, closing the
+  company-env-only deployment footgun.
 - Legacy `/v1/today` now applies row-level `can_read` checks before emitting
   recommendation cards, target entities, card evidence, supporting models,
   financial-resource metrics, recent-signal feed rows, and just-updated model

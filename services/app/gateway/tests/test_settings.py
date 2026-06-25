@@ -93,6 +93,30 @@ def test_gateway_production_rejects_default_tenant_fallbacks() -> None:
         )
 
 
+def test_gateway_production_detection_uses_all_runtime_env_labels() -> None:
+    company_only = _prod_env()
+    company_only.pop("FYRALIS_ENV")
+    company_only["COMPANY_OS_ENV"] = "prod"
+    settings = GatewaySettings.from_env(company_only)
+    assert settings.is_production is True
+    assert settings.environment == "prod"
+    assert settings.spec_demo_routes_enabled is False
+
+    mixed_label = _prod_env()
+    mixed_label["FYRALIS_ENV"] = "staging"
+    mixed_label["APP_ENV"] = "production"
+    settings = GatewaySettings.from_env(mixed_label)
+    assert settings.is_production is True
+    assert settings.environment == "prod"
+
+    missing_explicit_prod_guard = _prod_env()
+    missing_explicit_prod_guard.pop("FYRALIS_ENV")
+    missing_explicit_prod_guard["COMPANY_OS_ENV"] = "production"
+    missing_explicit_prod_guard.pop("DEBUG_ENDPOINTS_ENABLED")
+    with pytest.raises(ValueError, match="DEBUG_ENDPOINTS_ENABLED"):
+        GatewaySettings.from_env(missing_explicit_prod_guard)
+
+
 def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> None:
     with pytest.raises(ValueError, match="AUTH_BOOTSTRAP_SECRET"):
         GatewaySettings.from_env({"FYRALIS_ENV": "production"})

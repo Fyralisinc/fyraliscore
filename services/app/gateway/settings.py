@@ -36,12 +36,15 @@ def _env_optional_bool(
 
 
 def _env_name(source: Mapping[str, str]) -> str:
-    return (
-        source.get("FYRALIS_ENV")
-        or source.get("APP_ENV")
-        or source.get("ENVIRONMENT")
-        or "development"
-    ).strip().lower()
+    values = [
+        (source.get("FYRALIS_ENV") or "").strip().lower(),
+        (source.get("COMPANY_OS_ENV") or "").strip().lower(),
+        (source.get("APP_ENV") or "").strip().lower(),
+        (source.get("ENVIRONMENT") or "").strip().lower(),
+    ]
+    if any(value in {"prod", "production"} for value in values):
+        return "prod"
+    return next((value for value in values if value), "development")
 
 
 def _is_production(env_name: str) -> bool:
