@@ -13,6 +13,7 @@ from scripts.check_architecture_ratchets import (
     find_new_permissive_rls_policy_violations,
     find_plaintext_secret_column_migration_violations,
     find_raw_secret_ref_argument_violations,
+    find_rollback_data_deletion_violations,
     find_raw_model_reeval_insert_violations,
     find_raw_pending_post_commit_action_insert_violations,
     find_raw_think_trigger_insert_violations,
@@ -778,3 +779,39 @@ ignore_imports = ["a -> b"]
     )
 
     assert violations == []
+
+
+def test_rollback_data_deletion_check_flags_volume_wipe(tmp_path: Path) -> None:
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "deploy-production.yml").write_text(
+        "script: |\n  docker compose down --volumes\n",
+        encoding="utf-8",
+    )
+
+    violations = find_rollback_data_deletion_violations(repo_root=tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].check == "rollback-data-deletion"
+    assert "volume wipe" in violations[0].message
+
+
+def test_rollback_data_deletion_check_allows_code_only_rollback(
+    tmp_path: Path,
+) -> None:
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "deploy_compose_release.sh").write_text(
+        "# docker compose down -v is forbidden\n"
+        'git reset --hard "${PREVIOUS_SHA}"\n'
+        "docker compose up -d --build --remove-orphans\n",
+        encoding="utf-8",
+    )
+
+    violations = find_rollback_data_deletion_violations(repo_root=tmp_path)
+
+    assert violations == []
+
+
+def test_production_rollback_automation_does_not_delete_data() -> None:
+    assert find_rollback_data_deletion_violations() == []

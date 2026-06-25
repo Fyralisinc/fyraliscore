@@ -234,6 +234,33 @@ ACCESS_READ_AUDIT_EXEMPT_FILES = {
     Path("services/platform/access_control/checks.py"),
     Path("services/platform/access_control/extension_caps.py"),
 }
+PRODUCTION_ROLLBACK_AUTOMATION_FILES = (
+    Path(".github/workflows/deploy-production.yml"),
+    Path(".github/workflows/deploy-staging.yml"),
+    Path("scripts/deploy_compose_release.sh"),
+)
+ROLLBACK_DATA_DELETION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"\bdocker\s+compose\s+down\b[^\n]*(?:-v|--volumes)\b"),
+        "docker compose volume wipe",
+    ),
+    (
+        re.compile(r"\bdocker\s+volume\s+(?:rm|prune)\b"),
+        "docker volume deletion",
+    ),
+    (
+        re.compile(r"\bDROP\s+TABLE\b", re.IGNORECASE),
+        "DROP TABLE",
+    ),
+    (
+        re.compile(r"\bTRUNCATE\b", re.IGNORECASE),
+        "TRUNCATE",
+    ),
+    (
+        re.compile(r"\bDELETE\s+FROM\b", re.IGNORECASE),
+        "DELETE FROM",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -1069,6 +1096,42 @@ def find_import_linter_allowlist_violations(
     return violations
 
 
+def find_rollback_data_deletion_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    files: Sequence[Path] = PRODUCTION_ROLLBACK_AUTOMATION_FILES,
+) -> list[Violation]:
+    """Return production deploy/rollback automation that can delete data."""
+
+    violations: list[Violation] = []
+    for rel in files:
+        path = repo_root / rel
+        if not path.exists():
+            continue
+        for line_number, raw_line in enumerate(
+            path.read_text(encoding="utf-8", errors="ignore").splitlines(),
+            start=1,
+        ):
+            line = raw_line.split("#", 1)[0]
+            for pattern, operation in ROLLBACK_DATA_DELETION_PATTERNS:
+                if pattern.search(line):
+                    violations.append(
+                        Violation(
+                            check="rollback-data-deletion",
+                            path=rel,
+                            line_number=line_number,
+                            message=(
+                                f"{operation} is forbidden in production "
+                                "deploy/rollback automation; roll back code, "
+                                "pause/quarantine work, or restore from an "
+                                "explicit backup runbook instead"
+                            ),
+                        )
+                    )
+                    break
+    return violations
+
+
 def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     violations: list[Violation] = []
     violations.extend(find_migration_filename_violations(repo_root=repo_root))
@@ -1095,6 +1158,7 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     violations.extend(find_forbidden_metric_label_violations(repo_root=repo_root))
     violations.extend(find_browser_token_storage_violations(repo_root=repo_root))
     violations.extend(find_import_linter_allowlist_violations(repo_root=repo_root))
+    violations.extend(find_rollback_data_deletion_violations(repo_root=repo_root))
     return violations
 
 

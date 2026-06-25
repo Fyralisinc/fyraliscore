@@ -607,6 +607,10 @@ Current state:
   `scripts/record_backup_recovery_status.py`; the default-enabled housekeeper
   `backup_recovery_metrics` job exports freshness, attempt, age, and
   `fresh|stale|missing|failed` gauges with bounded labels.
+- Architecture ratchets now scan production deploy/rollback automation and fail
+  if workflows or release helpers add data-destructive rollback commands such as
+  `docker compose down -v`, `docker compose down --volumes`,
+  `docker volume rm/prune`, `DROP TABLE`, `TRUNCATE`, or `DELETE FROM`.
 - Full retention policy, partitioning, backup automation, and restore rehearsal
   are tracked in
   [data-retention-backup-recovery.md](data-retention-backup-recovery.md);
@@ -623,7 +627,7 @@ Must solve:
 - [x] Document restore order: database, object raw tier, broker offsets/state,
   secrets, application config.
 - [x] Add backup freshness and restore-test metrics.
-- [ ] Ensure rollback never deletes customer data.
+- [x] Ensure rollback never deletes customer data.
 
 Acceptance evidence:
 
