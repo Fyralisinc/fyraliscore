@@ -1007,10 +1007,14 @@ Current state:
   GitHub proves the installation token and repository grant before committing
   `provider_installations` or onboarding triggers, and Notion token-exchange
   failures leave no install rows, onboarding triggers, or encrypted secrets.
-- Google Calendar and Google Drive dedicated uninstall now clears local native
-  push-channel ids, resource ids, verification tokens, expirations, and watch
-  state from watched resource rows, so stale Google pushes cannot resolve after
-  the source is disabled.
+- Gmail uninstall now calls Gmail `users.stop()` for active watches, attempts
+  per-tenant Pub/Sub teardown, marks local Pub/Sub topics torn down even if
+  provider teardown fails, disables the install row, and clears local mailbox
+  watch cursors, expirations, timing, and error state. Google Calendar and
+  Google Drive dedicated uninstall now clears local native push-channel ids,
+  resource ids, verification tokens, expirations, and watch state from watched
+  resource rows, so stale Google pushes cannot resolve after the source is
+  disabled.
 
 Must solve:
 
@@ -1032,10 +1036,10 @@ Must solve:
   or disables secrets. Generic `provider_installations` uninstall now disables
   rows and removes the generic `secret_ref`; dedicated QuickBooks, Gusto, Ramp,
   Carta, LinkedIn, Jira, Mercury, Brex, Deel, Fireflies, Miro, Grafana, Figma,
-  HiBob, Ashby, AWS, Telegram, Signal, Google Calendar, and Google Drive
-  uninstall now disables source install rows and clears per-install secret refs
-  or native local watch state. External provider webhook deregistration/watch
-  teardown remains open.
+  HiBob, Ashby, AWS, Telegram, Signal, Gmail, Google Calendar, and Google
+  Drive uninstall now disables source install rows and clears per-install
+  secret refs or native local watch state. External non-Google provider webhook
+  deregistration remains open.
 - [x] Customer/admin UI or CLI exposes install health and last successful sync.
 
 Acceptance evidence:
