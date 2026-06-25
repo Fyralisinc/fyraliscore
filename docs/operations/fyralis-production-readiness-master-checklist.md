@@ -1269,6 +1269,10 @@ Current state:
   source-installation management, queue-depth inspection, support-bundle export,
   and ingestion DLQ list/replay/quarantine, requiring the operator actor to
   exist in the tenant and hold tenant-wide `admin` or `leadership`.
+- Gateway admin-grade mutations now write tenant-scoped operator audit rows:
+  DLQ list/retry/quarantine, Today brand updates, and manual Map projection
+  refreshes all insert `operator_action_log` records with actor, tenant,
+  resource, and sanitized metadata.
 - [operator-runbook-index.md](runbook-index.md) maps every required operator
   scenario to a primary runbook and first verification signal. A coverage test
   fails when one of the required scenarios is dropped from the index.
@@ -1298,7 +1302,7 @@ Must solve:
   - rotate secret,
   - run health validation,
   - export sanitized support bundle.
-- [ ] Ensure every admin action is authenticated, authorized, audited, and
+- [x] Ensure every admin action is authenticated, authorized, audited, and
   tenant-scoped.
 
 Acceptance evidence:

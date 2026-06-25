@@ -182,7 +182,7 @@ async def test_today_brand_update_allows_leadership_actor(
 
     row = await gateway_pool.fetchrow(
         """
-        SELECT current_value
+        SELECT id, current_value
         FROM resources
         WHERE tenant_id = $1
           AND kind = 'ip'
@@ -196,3 +196,21 @@ async def test_today_brand_update_allows_leadership_actor(
     if isinstance(current_value, str):
         current_value = json.loads(current_value)
     assert current_value == {"name": "Customer Intelligence"}
+
+    audit_row = await gateway_pool.fetchrow(
+        """
+        SELECT actor_id, action, resource_type, resource_id, metadata
+        FROM operator_action_log
+        WHERE tenant_id = $1
+          AND action = 'today.brand.update'
+        """,
+        tenant_id,
+    )
+    assert audit_row is not None
+    assert audit_row["actor_id"] == actor_id
+    assert audit_row["resource_type"] == "resource"
+    assert audit_row["resource_id"] == row["id"]
+    metadata = audit_row["metadata"]
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    assert metadata == {"name": "Customer Intelligence"}

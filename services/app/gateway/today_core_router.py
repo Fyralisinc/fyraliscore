@@ -21,6 +21,7 @@ from services.platform.access_control.checks import (
     can_read_by_id,
 )
 from services.platform.access_control.roles import has_role
+from services.platform.operator_action_audit import record_operator_action
 
 
 _ARTIFACT_ACCESS_KIND: dict[str, EntityKind] = {
@@ -215,6 +216,7 @@ def build_today_core_router() -> APIRouter:
                     auth.tenant_id,
                 )
                 if existing is None:
+                    resource_id = uuid7()
                     await conn.execute(
                         """
                         INSERT INTO resources (
@@ -223,19 +225,29 @@ def build_today_core_router() -> APIRouter:
                         ) VALUES ($1, $2, 'ip', 'fyralis.brand_name',
                                   $3::jsonb, now(), now())
                         """,
-                        uuid7(),
+                        resource_id,
                         auth.tenant_id,
                         json.dumps({"name": new_name}),
                     )
                 else:
+                    resource_id = existing["id"]
                     await conn.execute(
                         "UPDATE resources SET current_value = $2::jsonb, "
                         "last_updated_at = now() "
                         "WHERE id = $1 AND tenant_id = $3",
-                        existing["id"],
+                        resource_id,
                         json.dumps({"name": new_name}),
                         auth.tenant_id,
                     )
+                await record_operator_action(
+                    conn,
+                    tenant_id=auth.tenant_id,
+                    actor_id=auth.actor_id,
+                    action="today.brand.update",
+                    resource_type="resource",
+                    resource_id=resource_id,
+                    metadata={"name": new_name},
+                )
         return JSONResponse({"ok": True, "name": new_name}, status_code=200)
 
     return router

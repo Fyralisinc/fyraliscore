@@ -910,6 +910,25 @@ async def test_refresh_projection_invalidates_cache_and_refits(
     )
     assert cache_row2 is not None
     assert cache_row2["cached_at"] > fitted_first
+    audit_row = await gateway_pool.fetchrow(
+        """
+        SELECT actor_id, action, resource_type, resource_id, metadata
+        FROM operator_action_log
+        WHERE tenant_id = $1
+          AND action = 'map.projection.refresh'
+        """,
+        tenant_id,
+    )
+    assert audit_row is not None
+    assert audit_row["actor_id"] == actor_id
+    assert audit_row["resource_type"] == "map_projection"
+    assert audit_row["resource_id"] is None
+    metadata = audit_row["metadata"]
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    assert metadata["model_count"] == 8
+    assert metadata["n_neighbors"] >= 1
+    assert metadata["min_dist"] >= 0.0
 
 
 @pytest.mark.asyncio

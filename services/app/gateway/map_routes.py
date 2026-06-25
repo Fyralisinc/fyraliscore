@@ -43,6 +43,7 @@ from services.platform.access_control.checks import (
     can_read,
 )
 from services.platform.access_control.roles import has_role
+from services.platform.operator_action_audit import record_operator_action
 from services.reasoning.topology.umap_projector import UMAPProjector
 
 
@@ -275,6 +276,21 @@ def register_map_routes(app: FastAPI) -> None:
             n_neighbors=int(cache.get("n_neighbors") or 15),
             min_dist=float(cache.get("min_dist") or 0.15),
         )
+        async with deps.pool.acquire() as conn:
+            await record_operator_action(
+                conn,
+                tenant_id=auth.tenant_id,
+                actor_id=auth.actor_id,
+                action="map.projection.refresh",
+                resource_type="map_projection",
+                metadata={
+                    "model_count": resp.model_count,
+                    "trustworthiness": resp.trustworthiness,
+                    "n_neighbors": resp.n_neighbors,
+                    "min_dist": resp.min_dist,
+                    "fitted_at": resp.fitted_at.isoformat(),
+                },
+            )
         return JSONResponse(_pydantic_dump(resp))
 
 
