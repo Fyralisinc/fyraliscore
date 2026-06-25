@@ -565,10 +565,10 @@ def _pool_from_request(request: Request) -> Any:
     try:
         deps = get_gateway_deps(request)
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail="gateway_deps_unavailable") from exc
+        raise HTTPException(status_code=503, detail="service_unavailable") from exc
     pool = getattr(deps, "pool", None)
     if pool is None:
-        raise HTTPException(status_code=503, detail="database_pool_unavailable")
+        raise HTTPException(status_code=503, detail="service_unavailable")
     return pool
 
 

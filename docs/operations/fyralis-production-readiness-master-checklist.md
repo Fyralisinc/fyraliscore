@@ -1137,6 +1137,9 @@ Current state:
   extension read APIs, dashboard customer detail, and clarification validation
   now return bounded error codes instead of driver, validation, or exception
   strings.
+- The same gateway error contract now rejects implementation-detail response
+  codes such as database, pool, SQL, table, RLS, traceback, and gateway-deps
+  terms; debug/dev helpers now return neutral `service_unavailable` details.
 
 Must solve:
 

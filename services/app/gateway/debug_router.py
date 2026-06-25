@@ -83,7 +83,7 @@ async def _pool_from_request(req: Request) -> asyncpg.Pool:
     pool = getattr(req.app.state, "pool", None)
     if pool is not None:
         return pool
-    raise HTTPException(status_code=500, detail="pool unavailable")
+    raise HTTPException(status_code=500, detail="service_unavailable")
 
 
 # --------------------------------------------------------------------

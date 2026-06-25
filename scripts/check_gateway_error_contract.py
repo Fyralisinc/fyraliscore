@@ -13,6 +13,26 @@ from typing import Iterable, Sequence
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GATEWAY_ROOT = REPO_ROOT / "services" / "app" / "gateway"
 EXCEPTION_NAMES = {"e", "exc", "err", "error"}
+IMPLEMENTATION_DETAIL_TERMS = (
+    "asyncpg",
+    "bypassrls",
+    "column",
+    "database",
+    "db_",
+    "gateway deps",
+    "gateway_deps",
+    "migration",
+    "pool",
+    "postgres",
+    "provider_installations",
+    "rls",
+    "sql",
+    "stack",
+    "superuser",
+    "table",
+    "tenant_flags",
+    "traceback",
+)
 
 
 @dataclass(frozen=True)
@@ -45,26 +65,36 @@ def validate_gateway_error_contract(paths: Iterable[Path]) -> list[Violation]:
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and _call_name(node.func) == "HTTPException":
                 detail = _keyword(node, "detail")
-                if detail is not None and _contains_raw_exception_text(detail):
-                    violations.append(
-                        Violation(
-                            path,
-                            getattr(detail, "lineno", getattr(node, "lineno", 1)),
-                            "HTTPException detail must not expose raw exception text",
-                        )
-                    )
+                if detail is not None:
+                    violations.extend(_validate_response_boundary(path, detail))
             if isinstance(node, ast.Call) and _call_name(node.func).endswith(
                 "JSONResponse"
             ):
                 content = _json_response_content(node)
-                if content is not None and _contains_raw_exception_text(content):
-                    violations.append(
-                        Violation(
-                            path,
-                            getattr(content, "lineno", getattr(node, "lineno", 1)),
-                            "JSONResponse content must not expose raw exception text",
-                        )
-                    )
+                if content is not None:
+                    violations.extend(_validate_response_boundary(path, content))
+    return violations
+
+
+def _validate_response_boundary(path: Path, node: ast.AST) -> list[Violation]:
+    violations: list[Violation] = []
+    if _contains_raw_exception_text(node):
+        violations.append(
+            Violation(
+                path,
+                getattr(node, "lineno", 1),
+                "response content must not expose raw exception text",
+            )
+        )
+    for literal in _iter_string_literals(node):
+        if _contains_implementation_detail(literal.value):
+            violations.append(
+                Violation(
+                    path,
+                    literal.lineno,
+                    "response content must not expose implementation details",
+                )
+            )
     return violations
 
 
@@ -84,6 +114,19 @@ def _contains_raw_exception_text(node: ast.AST) -> bool:
             for value in node.values
         )
     return any(_contains_raw_exception_text(child) for child in ast.iter_child_nodes(node))
+
+
+def _iter_string_literals(node: ast.AST) -> Iterable[ast.Constant]:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Constant) and isinstance(child.value, str):
+            yield child
+
+
+def _contains_implementation_detail(value: str) -> bool:
+    normalized = value.strip().lower()
+    if not normalized:
+        return False
+    return any(term in normalized for term in IMPLEMENTATION_DETAIL_TERMS)
 
 
 def _is_exception_name(node: ast.AST) -> bool:

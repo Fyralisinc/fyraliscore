@@ -96,7 +96,7 @@ def _resolve_tenant(req: Request) -> UUID:
 def _deps(req: Request):  # type: ignore[no-untyped-def]
     deps = getattr(req.app.state, "deps", None)
     if deps is None:
-        raise HTTPException(status_code=500, detail="gateway deps unavailable")
+        raise HTTPException(status_code=500, detail="service_unavailable")
     return deps
 
 
