@@ -67,7 +67,7 @@ Every checklist item is done only when:
 
 - [x] Product-critical worker fabric is deployed or deliberately disabled by
   product decision.
-- [ ] Access control is applied consistently to product routes and realtime
+- [x] Access control is applied consistently to product routes and realtime
   delivery.
 - [x] CI blocks merges on tests, architecture ratchets, env contracts, schema
   drift checks, and privacy probes.
