@@ -39,8 +39,8 @@ from services.ingest.integrations.slack.oauth import (
 
 
 _TENANT_NAME = "integration-hardening-test"
-_ACTOR_DISPLAY = "Prajwal (integration test)"
-_ACTOR_EMAIL = "rachin.kalakheti@gmail.com"
+_ACTOR_DISPLAY = "Integration Test User"
+_ACTOR_EMAIL = "integration-user@example.test"
 
 
 async def _get_or_create_tenant(pool: asyncpg.Pool) -> UUID:
