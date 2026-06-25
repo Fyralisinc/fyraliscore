@@ -11,6 +11,26 @@ from services.app.gateway.settings import GatewaySettings
 _PROD_BOOTSTRAP_SECRET = "prod-bootstrap-secret-32chars-minimum"
 
 
+def _prod_env(**overrides: str) -> dict[str, str]:
+    values = {
+        "FYRALIS_ENV": "production",
+        "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
+        "DEBUG_ENDPOINTS_ENABLED": "0",
+        "FINANCE_PANEL_ENABLED": "false",
+        "SLACK_DM_PANEL_ENABLED": "false",
+        "SPEC_DEMO_ROUTES_ENABLED": "0",
+        "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
+        "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
+        "GATEWAY_MOUNT_SIM": "0",
+        "GATEWAY_REQUIRE_REALTIME": "0",
+        "GATEWAY_REQUIRE_GITHUB_INTEGRATION": "0",
+        "GATEWAY_REQUIRE_INGESTION_DATA_PLANE": "1",
+        "GATEWAY_START_GRT_SCHEDULER": "1",
+    }
+    values.update(overrides)
+    return values
+
+
 def test_gateway_sensitive_panels_default_disabled() -> None:
     settings = GatewaySettings.from_env({})
     assert settings.debug_endpoints_enabled is False
@@ -52,17 +72,7 @@ def test_gateway_debug_endpoints_require_explicit_opt_in() -> None:
 
 
 def test_gateway_production_rejects_default_tenant_fallbacks() -> None:
-    base = {
-        "FYRALIS_ENV": "production",
-        "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-        "DEBUG_ENDPOINTS_ENABLED": "0",
-        "FINANCE_PANEL_ENABLED": "false",
-        "SLACK_DM_PANEL_ENABLED": "false",
-        "SPEC_DEMO_ROUTES_ENABLED": "0",
-        "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
-        "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
-        "GATEWAY_MOUNT_SIM": "0",
-    }
+    base = _prod_env()
 
     with pytest.raises(ValueError, match="DEFAULT_TENANT_ID"):
         GatewaySettings.from_env(
@@ -96,191 +106,60 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
         )
 
     with pytest.raises(ValueError, match="FINANCE_PANEL_ENABLED=false"):
-        GatewaySettings.from_env(
-            {
-                "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-                "DEBUG_ENDPOINTS_ENABLED": "0",
-            }
-        )
+        values = _prod_env(DEBUG_ENDPOINTS_ENABLED="0")
+        values.pop("FINANCE_PANEL_ENABLED")
+        GatewaySettings.from_env(values)
 
     with pytest.raises(ValueError, match="SLACK_DM_PANEL_ENABLED"):
-        GatewaySettings.from_env(
-            {
-                "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-                "DEBUG_ENDPOINTS_ENABLED": "0",
-                "FINANCE_PANEL_ENABLED": "false",
-                "SLACK_DM_PANEL_ENABLED": "true",
-                "SPEC_DEMO_ROUTES_ENABLED": "0",
-                "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
-                "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
-                "GATEWAY_MOUNT_SIM": "0",
-            }
-        )
+        GatewaySettings.from_env(_prod_env(SLACK_DM_PANEL_ENABLED="true"))
 
     with pytest.raises(ValueError, match="DEBUG_ENDPOINTS_ENABLED=.+production"):
-        GatewaySettings.from_env(
-            {
-                "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-                "FINANCE_PANEL_ENABLED": "false",
-                "SLACK_DM_PANEL_ENABLED": "false",
-                "SPEC_DEMO_ROUTES_ENABLED": "0",
-                "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
-                "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
-                "GATEWAY_MOUNT_SIM": "0",
-            }
-        )
+        values = _prod_env()
+        values.pop("DEBUG_ENDPOINTS_ENABLED")
+        GatewaySettings.from_env(values)
 
     with pytest.raises(ValueError, match="DEBUG_ENDPOINTS_ENABLED"):
-        GatewaySettings.from_env(
-            {
-                "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-                "DEBUG_ENDPOINTS_ENABLED": "1",
-                "FINANCE_PANEL_ENABLED": "false",
-                "SLACK_DM_PANEL_ENABLED": "false",
-                "SPEC_DEMO_ROUTES_ENABLED": "0",
-                "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
-                "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
-                "GATEWAY_MOUNT_SIM": "0",
-            }
-        )
+        GatewaySettings.from_env(_prod_env(DEBUG_ENDPOINTS_ENABLED="1"))
 
     with pytest.raises(ValueError, match="SPEC_DEMO_ROUTES_ENABLED"):
-        GatewaySettings.from_env(
-            {
-                "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-                "DEBUG_ENDPOINTS_ENABLED": "0",
-                "FINANCE_PANEL_ENABLED": "false",
-                "SLACK_DM_PANEL_ENABLED": "false",
-                "SPEC_DEMO_ROUTES_ENABLED": "1",
-                "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
-                "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
-                "GATEWAY_MOUNT_SIM": "0",
-            }
-        )
+        GatewaySettings.from_env(_prod_env(SPEC_DEMO_ROUTES_ENABLED="1"))
 
     with pytest.raises(ValueError, match="WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED"):
-        GatewaySettings.from_env(
-            {
-                "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-                "DEBUG_ENDPOINTS_ENABLED": "0",
-                "FINANCE_PANEL_ENABLED": "false",
-                "SLACK_DM_PANEL_ENABLED": "false",
-                "SPEC_DEMO_ROUTES_ENABLED": "0",
-                "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "1",
-                "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
-                "GATEWAY_MOUNT_SIM": "0",
-            }
-        )
+        GatewaySettings.from_env(_prod_env(WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED="1"))
 
     with pytest.raises(ValueError, match="VIEW_CEO_STATIC_TOKENS_ENABLED"):
-        GatewaySettings.from_env(
-            {
-                "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-                "DEBUG_ENDPOINTS_ENABLED": "0",
-                "FINANCE_PANEL_ENABLED": "false",
-                "SLACK_DM_PANEL_ENABLED": "false",
-                "SPEC_DEMO_ROUTES_ENABLED": "0",
-                "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
-                "VIEW_CEO_STATIC_TOKENS_ENABLED": "1",
-                "GATEWAY_MOUNT_SIM": "0",
-            }
-        )
+        GatewaySettings.from_env(_prod_env(VIEW_CEO_STATIC_TOKENS_ENABLED="1"))
 
     with pytest.raises(ValueError, match="VIEW_CEO_STATIC_TOKENS"):
         GatewaySettings.from_env(
-            {
-                "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-                "DEBUG_ENDPOINTS_ENABLED": "0",
-                "FINANCE_PANEL_ENABLED": "false",
-                "SLACK_DM_PANEL_ENABLED": "false",
-                "SPEC_DEMO_ROUTES_ENABLED": "0",
-                "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
-                "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
-                "GATEWAY_MOUNT_SIM": "0",
-                "VIEW_CEO_STATIC_TOKENS": (
-                    "token:00000000-0000-0000-0000-000000000001"
-                ),
-            }
+            _prod_env(
+                **{
+                    "VIEW_CEO_STATIC_TOKENS": (
+                        "token:00000000-0000-0000-0000-000000000001"
+                    ),
+                },
+            )
         )
 
     with pytest.raises(ValueError, match="SPEC_DEMO_ROUTES_ENABLED=false"):
-        GatewaySettings.from_env(
-            {
-                "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-                "DEBUG_ENDPOINTS_ENABLED": "0",
-                "FINANCE_PANEL_ENABLED": "false",
-                "SLACK_DM_PANEL_ENABLED": "false",
-                "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
-                "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
-                "GATEWAY_MOUNT_SIM": "0",
-            }
-        )
+        values = _prod_env()
+        values.pop("SPEC_DEMO_ROUTES_ENABLED")
+        GatewaySettings.from_env(values)
 
     with pytest.raises(ValueError, match="WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED=false"):
-        GatewaySettings.from_env(
-            {
-                "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-                "DEBUG_ENDPOINTS_ENABLED": "0",
-                "FINANCE_PANEL_ENABLED": "false",
-                "SLACK_DM_PANEL_ENABLED": "false",
-                "SPEC_DEMO_ROUTES_ENABLED": "0",
-                "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
-                "GATEWAY_MOUNT_SIM": "0",
-            }
-        )
+        values = _prod_env()
+        values.pop("WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED")
+        GatewaySettings.from_env(values)
 
     with pytest.raises(ValueError, match="GATEWAY_MOUNT_SIM"):
-        GatewaySettings.from_env(
-            {
-                "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-                "DEBUG_ENDPOINTS_ENABLED": "0",
-                "FINANCE_PANEL_ENABLED": "false",
-                "SLACK_DM_PANEL_ENABLED": "false",
-                "SPEC_DEMO_ROUTES_ENABLED": "0",
-                "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
-                "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
-                "GATEWAY_MOUNT_SIM": "1",
-            }
-        )
+        GatewaySettings.from_env(_prod_env(GATEWAY_MOUNT_SIM="1"))
 
     with pytest.raises(ValueError, match="GATEWAY_MOUNT_SIM=false"):
-        GatewaySettings.from_env(
-            {
-                "FYRALIS_ENV": "production",
-                "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-                "DEBUG_ENDPOINTS_ENABLED": "0",
-                "FINANCE_PANEL_ENABLED": "false",
-                "SLACK_DM_PANEL_ENABLED": "false",
-                "SPEC_DEMO_ROUTES_ENABLED": "0",
-                "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
-                "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
-            }
-        )
+        values = _prod_env()
+        values.pop("GATEWAY_MOUNT_SIM")
+        GatewaySettings.from_env(values)
 
-    settings = GatewaySettings.from_env(
-        {
-            "FYRALIS_ENV": "production",
-            "AUTH_BOOTSTRAP_SECRET": _PROD_BOOTSTRAP_SECRET,
-            "DEBUG_ENDPOINTS_ENABLED": "0",
-            "FINANCE_PANEL_ENABLED": "false",
-            "SLACK_DM_PANEL_ENABLED": "false",
-            "SPEC_DEMO_ROUTES_ENABLED": "0",
-            "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
-            "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
-            "GATEWAY_MOUNT_SIM": "0",
-        }
-    )
+    settings = GatewaySettings.from_env(_prod_env())
     assert settings.auth_bootstrap_secret == _PROD_BOOTSTRAP_SECRET
     assert settings.debug_endpoints_enabled is False
     assert settings.finance_panel_enabled is False
@@ -289,6 +168,43 @@ def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> N
     assert settings.websocket_query_token_auth_enabled is False
     assert settings.websocket_session_cookie_name == "fyralis_session"
     assert settings.mount_sim is False
+    assert settings.require_realtime is False
+    assert settings.require_github_integration is False
+    assert settings.require_ingestion_data_plane is True
+    assert settings.start_grt_scheduler is True
+
+
+def test_gateway_production_requires_explicit_runtime_intent_flags() -> None:
+    for key in (
+        "GATEWAY_REQUIRE_REALTIME",
+        "GATEWAY_REQUIRE_GITHUB_INTEGRATION",
+        "GATEWAY_START_GRT_SCHEDULER",
+    ):
+        values = _prod_env()
+        values.pop(key)
+        with pytest.raises(ValueError, match=key):
+            GatewaySettings.from_env(values)
+
+    values = _prod_env()
+    values.pop("GATEWAY_REQUIRE_INGESTION_DATA_PLANE")
+    with pytest.raises(ValueError, match="GATEWAY_REQUIRE_INGESTION_DATA_PLANE"):
+        GatewaySettings.from_env(values)
+
+    with pytest.raises(ValueError, match="GATEWAY_REQUIRE_INGESTION_DATA_PLANE=1"):
+        GatewaySettings.from_env(
+            _prod_env(GATEWAY_REQUIRE_INGESTION_DATA_PLANE="0")
+        )
+
+    settings = GatewaySettings.from_env(
+        _prod_env(
+            GATEWAY_REQUIRE_REALTIME="1",
+            GATEWAY_REQUIRE_GITHUB_INTEGRATION="1",
+            GATEWAY_START_GRT_SCHEDULER="0",
+        )
+    )
+    assert settings.require_realtime is True
+    assert settings.require_github_integration is True
+    assert settings.start_grt_scheduler is False
 
 
 @pytest.mark.asyncio

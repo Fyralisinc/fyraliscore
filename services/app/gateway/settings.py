@@ -64,6 +64,38 @@ def _required_disabled_in_production(
     return False
 
 
+def _required_bool_in_production(
+    env: Mapping[str, str],
+    name: str,
+    *,
+    production: bool,
+    default: bool,
+) -> bool:
+    if not production:
+        return _env_bool(env, name, default=default)
+    if name not in env or env.get(name, "") == "":
+        raise ValueError(f"{name}=0 or 1 must be set explicitly in production")
+    return _env_bool(env, name, default=default)
+
+
+def _required_enabled_in_production(
+    env: Mapping[str, str],
+    name: str,
+    *,
+    production: bool,
+    default: bool,
+) -> bool:
+    value = _required_bool_in_production(
+        env,
+        name,
+        production=production,
+        default=default,
+    )
+    if production and not value:
+        raise ValueError(f"{name}=1 must be set in production")
+    return value
+
+
 def _demo_routes_enabled(
     env: Mapping[str, str],
     name: str,
@@ -228,24 +260,28 @@ class GatewaySettings:
                 "GATEWAY_CEO_VIEW_ENABLED",
                 default=True,
             ),
-            require_realtime=_env_bool(
+            require_realtime=_required_bool_in_production(
                 source,
                 "GATEWAY_REQUIRE_REALTIME",
+                production=production,
                 default=False,
             ),
-            require_github_integration=_env_bool(
+            require_github_integration=_required_bool_in_production(
                 source,
                 "GATEWAY_REQUIRE_GITHUB_INTEGRATION",
+                production=production,
                 default=False,
             ),
-            require_ingestion_data_plane=_env_bool(
+            require_ingestion_data_plane=_required_enabled_in_production(
                 source,
                 "GATEWAY_REQUIRE_INGESTION_DATA_PLANE",
+                production=production,
                 default=False,
             ),
-            start_grt_scheduler=_env_bool(
+            start_grt_scheduler=_required_bool_in_production(
                 source,
                 "GATEWAY_START_GRT_SCHEDULER",
+                production=production,
                 default=True,
             ),
             debug_endpoints_enabled=_required_disabled_in_production(

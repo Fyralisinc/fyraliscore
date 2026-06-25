@@ -36,6 +36,10 @@ def _production_settings() -> GatewaySettings:
             "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
             "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
             "GATEWAY_MOUNT_SIM": "0",
+            "GATEWAY_REQUIRE_REALTIME": "0",
+            "GATEWAY_REQUIRE_GITHUB_INTEGRATION": "0",
+            "GATEWAY_REQUIRE_INGESTION_DATA_PLANE": "1",
+            "GATEWAY_START_GRT_SCHEDULER": "1",
         }
     )
 

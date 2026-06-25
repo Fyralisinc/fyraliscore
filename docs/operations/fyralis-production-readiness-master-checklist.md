@@ -1015,6 +1015,11 @@ Current state:
   `AUTH_BOOTSTRAP_SECRET` values; the route-inventory audit and production env
   template use/document a 32-character minimum so `/auth/session` cannot be
   bootstrapped with a trivial shared secret.
+- Production gateway settings now require explicit runtime intent flags for
+  realtime, GitHub integration, and GRT scheduler ownership, and reject
+  production startup unless `GATEWAY_REQUIRE_INGESTION_DATA_PLANE=1`.
+  `scripts/check_production_env_contract.py` keeps the template aligned with
+  these fail-closed startup requirements.
 - The outbound source endpoint resolver now rejects `SYNTHETIC_SOURCE_API_BASE`
   in production, so worker/client code cannot silently redirect production
   source API calls to the fixture-backed spammer. Shared production detection
