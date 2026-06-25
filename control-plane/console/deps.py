@@ -236,7 +236,10 @@ class ConsoleAudit:
         signing_keyring: Any = None,
         trust_root_path: Optional[str] = None,
     ) -> None:
-        self._log_path = log_path
+        # Default the audit-log path from $CONSOLE_AUDIT_LOG when not given, so the
+        # containerized console writes to its persisted audit-data volume rather
+        # than audit_log's HERE-relative default (/app/audit, the baked code dir).
+        self._log_path = log_path or os.environ.get("CONSOLE_AUDIT_LOG") or None
         self._keyring = signing_keyring
         self._trust_root_path = trust_root_path
         self._log = None

@@ -6,3 +6,8 @@ pydantic>=2.0
 # control-plane/lib/__init__.py configures structured logging on import, so the
 # console image (which imports lib) needs structlog at runtime.
 structlog>=24.1
+# The control surface SIGNS operator-pushed desired config/release (deps.signer,
+# I6) + appends to the hash-chained audit log — both pull in signing/ (ed25519 via
+# cryptography). The alert + metering feature routers fetch Mimir over httpx.
+cryptography>=42.0
+httpx>=0.27

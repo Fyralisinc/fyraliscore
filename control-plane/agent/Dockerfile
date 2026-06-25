@@ -46,9 +46,13 @@ COPY agent/    /app/agent/
 ENV PYTHONPATH=/app:/app/signing:/app/agent
 
 # Drop privileges — the agent never needs root and never binds a port.
+# /var/lib/fyralis-agent is the compose `agent-state` volume mountpoint (durable
+# heartbeat buffer for I3 + the reconcile applied-config dir). Create it OWNED BY
+# the agent uid in the image so a fresh named volume inherits writable ownership
+# (otherwise docker creates the mountpoint root-owned and uid 10010 can't write).
 RUN useradd --system --no-create-home --uid 10010 agent \
-    && mkdir -p /app/agent/applied-config \
-    && chown -R agent:agent /app
+    && mkdir -p /app/agent/applied-config /var/lib/fyralis-agent/applied-config \
+    && chown -R agent:agent /app /var/lib/fyralis-agent
 USER agent
 
 WORKDIR /app/agent

@@ -438,6 +438,10 @@ services:
       # With it UNSET the console fails CLOSED on operator writes (503); operator
       # READS stay open on the operator LAN (next-sprint: SSO).
       - OPERATOR_TOKEN=${OPERATOR_TOKEN:?set OPERATOR_TOKEN (run ./bootstrap.sh)}
+      # Where the console writes its hash-chained audit log (the console-audit
+      # volume below). A DATA path — NOT under /app/audit, which is the baked
+      # audit CODE the volume would otherwise shadow.
+      - CONSOLE_AUDIT_LOG=/app/console/audit-data/audit.log.jsonl
     volumes:
       # Durable fleet registry + desired/applied sidecars (best-effort JSON
       # persistence under console/data).
@@ -449,7 +453,9 @@ services:
       - ./signing/trust_root.json:/app/signing/trust_root.json:ro
       - ./signing/keys:/app/signing/keys:ro
       # Durable, hash-chained operator audit trail (I5) survives console restarts.
-      - console-audit:/app/audit
+      # Mounted at a DATA path (see CONSOLE_AUDIT_LOG) — NOT /app/audit, which is
+      # the baked audit code the empty volume would shadow.
+      - console-audit:/app/console/audit-data
     ports:
       # Operator-facing console UI/API. Reachable on cp-net as http://console:8080;
       # published to the host for the operator.
