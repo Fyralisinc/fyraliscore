@@ -399,12 +399,20 @@ async def test_gmail_oauth_callback_writes_onboarding_trigger(
     monkeypatch.setattr(
         tenant_context, "get_pool", lambda: fresh_db,
     )
-    # Patch dwd.get_minter to return a stub so we don't need a real
-    # Google service-account JSON.
-    from services.ingest.integrations.gmail import dwd
+    from services.ingest.integrations.gmail import oauth as gmail_oauth
+
     class _StubMinter:
         service_account_email = "sa@test-project.iam.gserviceaccount.com"
-    monkeypatch.setattr(dwd, "get_minter", lambda: _StubMinter())
+    monkeypatch.setattr(gmail_oauth, "get_minter", lambda: _StubMinter())
+
+    async def _verify_ok(directory, *, workspace_domain):
+        return None
+
+    async def _provision_noop(**kwargs):
+        return None
+
+    monkeypatch.setattr(gmail_oauth, "_verify_dwd_grant", _verify_ok)
+    monkeypatch.setattr(gmail_oauth, "_provision_install", _provision_noop)
 
     tenant = await _seed_tenant(fresh_db, "gmail")
     app = _make_gmail_app(fresh_db, tenant)
@@ -436,6 +444,60 @@ async def test_gmail_oauth_callback_writes_onboarding_trigger(
     assert trig["trigger_kind"] == "install"
     assert trig["installation_row_id"] is None
     assert trig["gmail_installation_id"] == install_id
+
+
+async def test_gmail_finalize_dwd_failure_writes_nothing(
+    fresh_db: asyncpg.Pool, _gmail_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lib.shared import tenant_context
+    from services.ingest.integrations.gmail.client import GoogleApiError
+    from services.ingest.integrations.gmail import oauth as gmail_oauth
+
+    monkeypatch.setattr(
+        tenant_context, "get_pool", lambda: fresh_db,
+    )
+
+    class _StubMinter:
+        service_account_email = "sa@test-project.iam.gserviceaccount.com"
+
+    monkeypatch.setattr(gmail_oauth, "get_minter", lambda: _StubMinter())
+
+    async def _verify_fails(directory, *, workspace_domain):
+        raise GoogleApiError("403 caller does not have permission")
+
+    monkeypatch.setattr(gmail_oauth, "_verify_dwd_grant", _verify_fails)
+
+    tenant = await _seed_tenant(fresh_db, "gmail-bad-dwd")
+    app = _make_gmail_app(fresh_db, tenant)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://t",
+    ) as c:
+        r = await c.post(
+            "/integrations/gmail/connect/finalize",
+            json={
+                "workspace_domain": "test.example.com",
+                "admin_email": "admin@test.example.com",
+                "scope": "gmail.metadata",
+                "inclusion_spec": {"mode": "all"},
+            },
+        )
+
+    assert r.status_code == 400, r.text
+    body = r.json()
+    assert body["ok"] is False
+    assert body["error_code"] == "dwd_grant_invalid"
+    assert body["remediation"]["client_id"] == "test-sa-client-id"
+    assert await fresh_db.fetchval(
+        "SELECT count(*) FROM gmail_installations WHERE tenant_id = $1",
+        tenant,
+    ) == 0
+    assert await fresh_db.fetchval(
+        "SELECT count(*) FROM onboarding_triggers "
+        "WHERE tenant_id = $1 AND source = 'gmail'",
+        tenant,
+    ) == 0
 
 
 # =====================================================================

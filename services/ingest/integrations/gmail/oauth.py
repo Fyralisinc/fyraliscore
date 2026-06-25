@@ -119,29 +119,7 @@ async def connect_preflight(request: Request) -> JSONResponse:
                 directory, workspace_domain=workspace_domain,
             )
         except (GoogleApiError, DwdError) as exc:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "ok": False,
-                    "error_code": "dwd_grant_invalid",
-                    "message": (
-                        "Directory API call failed. The most common cause is a "
-                        "missing or mis-scoped Domain-Wide Delegation grant in "
-                        "your Workspace Admin Console."
-                    ),
-                    "remediation": {
-                        "step1": "Open Admin Console → Security → API controls → Domain-wide Delegation",
-                        "step2": "Add a new entry with Client ID:",
-                        "client_id": _service_account_client_id(),
-                        "step3": "Authorize these OAuth scopes (comma-separated):",
-                        "required_scopes": [
-                            SCOPE_ALIAS[scope_alias],
-                            *DIRECTORY_READ_SCOPES,
-                        ],
-                    },
-                    "underlying_error": str(exc)[:300],
-                },
-            )
+            return _dwd_remediation(scope_alias, exc)
 
     return JSONResponse(content={
         "ok": True,
@@ -156,7 +134,13 @@ async def connect_preflight(request: Request) -> JSONResponse:
 
 @router.post("/connect/finalize")
 async def connect_finalize(request: Request) -> JSONResponse:
-    """Create the installation row and kick off async provisioning."""
+    """Create the installation row and kick off async provisioning.
+
+    Finalize re-checks the DWD grant before the first durable write. Preflight
+    is an operator UX step, but production safety cannot depend on the browser
+    having called it or on the grant still being valid by the time finalize is
+    submitted.
+    """
     tenant_id = _tenant_from_request(request)
     body = await request.json()
     workspace_domain = (body.get("workspace_domain") or "").strip().lower()
@@ -170,6 +154,12 @@ async def connect_finalize(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="inclusion_spec must be an object")
 
     minter = get_minter()
+    try:
+        async with GoogleHttpClient(minter) as http:
+            directory = DirectoryClient(http, admin_email)
+            await _verify_dwd_grant(directory, workspace_domain=workspace_domain)
+    except (GoogleApiError, DwdError) as exc:
+        return _dwd_remediation(scope_alias, exc)
 
     async with tenant_transaction(tenant_id) as tctx:
         # Upsert install row (idempotent on (tenant_id, workspace_domain)).
@@ -330,6 +320,50 @@ def _record_source_event(
         event=event,
         outcome=outcome,
     )
+
+
+def _dwd_remediation(scope_alias: str, exc: Exception) -> JSONResponse:
+    """Shared DWD-grant-missing payload for Gmail preflight and finalize."""
+    return JSONResponse(
+        status_code=400,
+        content={
+            "ok": False,
+            "error_code": "dwd_grant_invalid",
+            "message": (
+                "Directory API call failed. The most common cause is a "
+                "missing or mis-scoped Domain-Wide Delegation grant in "
+                "your Workspace Admin Console."
+            ),
+            "remediation": {
+                "step1": "Open Admin Console → Security → API controls → Domain-wide Delegation",
+                "step2": "Add a new entry with Client ID:",
+                "client_id": _service_account_client_id(),
+                "step3": "Authorize these OAuth scopes (comma-separated):",
+                "required_scopes": [
+                    SCOPE_ALIAS[scope_alias],
+                    *DIRECTORY_READ_SCOPES,
+                ],
+            },
+            "underlying_error": str(exc)[:300],
+        },
+    )
+
+
+async def _verify_dwd_grant(
+    directory: DirectoryClient,
+    *,
+    workspace_domain: str,
+) -> None:
+    """Probe the Directory scopes used by Gmail onboarding without enumerating
+    the whole domain.
+
+    The first-page calls prove that user, group, and org-unit Directory scopes
+    are authorized before finalize writes the install row. Detailed selection
+    still happens in the async provisioner.
+    """
+    await directory.list_users(domain=workspace_domain, page_size=1)
+    await directory.list_groups(domain=workspace_domain, page_size=1)
+    await directory.list_org_units()
 
 
 async def _provision_install(

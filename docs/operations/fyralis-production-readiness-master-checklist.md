@@ -878,6 +878,10 @@ Current state:
   Miro, Figma, Carta, and LinkedIn: invalid credentials return a structured
   400 and leave no install rows, `encrypted_secrets`, onboarding triggers, or
   webhook resolver rows behind.
+- Gmail DWD finalize now performs a lightweight Directory API grant probe
+  before opening the tenant transaction; missing or revoked DWD grants return
+  the same remediation payload as preflight and leave no Gmail installation or
+  onboarding trigger rows behind.
 
 Must solve:
 
