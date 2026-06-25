@@ -21,13 +21,14 @@ Two families of key:
     NEW observation; identical re-fetches dedup. Each versioned
     constructor names its discriminator in its docstring.
 
-**Adopted-verbatim keys are deliberately NOT here.** A Stripe `evt_…`, a
-GitHub `node_id`, an RFC-5322 `Message-ID`, a Linear object id, a system
+**Adopted-verbatim keys are explicitly registered here.** A Stripe `evt_…`,
+a GitHub `node_id`, an RFC-5322 `Message-ID`, a Linear object id, a system
 payload's caller-supplied id — these are unique upstream and assigned
 directly by their handler. There is no composition to centralize and
 nothing that can drift, so wrapping them would add indirection without
 the drift-protection that is this module's whole point. This module owns
-every **composed** key; pass-throughs stay inline.
+every **composed** key; pass-throughs stay inline but are documented in
+`ADOPTED_VERBATIM_KEYS`.
 
 Pure functions: no I/O, no ingestion imports (leaf module).
 """
@@ -219,7 +220,27 @@ def brex_balance(account_id: str, as_of_date: str) -> str:
 def ramp_transaction(business_id: str, txn_id: str, state: str) -> str:
     """`ramp:{business}:txn:{id}:{state}` — VERSIONED by state so a
     declined/disputed transition lands a new observation."""
-    return f"ramp:{business_id}:txn:{txn_id}:{state}"
+    return ramp_entity("transaction", business_id, txn_id, state)
+
+
+def ramp_entity(
+    record_type: str, business_id: str, entity_id: str, state: str,
+) -> str:
+    """`ramp:{business}:{segment}:{id}:{state}` — VERSIONED by state for
+    Ramp's mutable record families."""
+    segments = {
+        "transaction": "txn",
+        "reimbursement": "reimb",
+        "card": "card",
+        "user": "user",
+    }
+    return f"ramp:{business_id}:{segments[record_type]}:{entity_id}:{state}"
+
+
+def ramp_change(business_id: str, entity_id: str, version: str) -> str:
+    """`ramp:{business}:txn:{id}:chg:{version}` — thin live-webhook change
+    event, versioned by the stable Ramp event id when present."""
+    return f"ramp:{business_id}:txn:{entity_id}:chg:{version}"
 
 
 # --- Gusto (OAuth / QuickBooks archetype) ----------------------------
@@ -280,6 +301,15 @@ def figma_event(team_id: str, event_id: str, version: object) -> str:
     return f"figma:{team_id}:event:{event_id}:{version}"
 
 
+# --- LinkedIn (poll/backfill archetype) ------------------------------
+def linkedin_entity(
+    organization_urn: str, entity_kind: str, entity_id: str,
+) -> str:
+    """`linkedin:{org}:{kind}:{id}` — discriminated by record kind; statistics
+    use the time-bucket start as the id."""
+    return f"linkedin:{organization_urn}:{entity_kind}:{entity_id}"
+
+
 # --- Signal (Telegram/gateway archetype) -----------------------------
 def signal_message(
     installation_id: object, thread_id: object, message_id: object,
@@ -320,6 +350,30 @@ def carta_entity(
     return f"carta:{firm_id}:{entity_kind}:{entity_id}:{version}"
 
 
+# --- HiBob (HR backfill / webhook archetype) -------------------------
+def hibob_entity(
+    company_id: str, entity_kind: str, entity_id: str, version: str,
+) -> str:
+    """`hibob:{company}:{entity}:{id}:{version}` — namespaced by company and
+    VERSIONED by modified/version value."""
+    return f"hibob:{company_id}:{entity_kind}:{entity_id}:{version}"
+
+
+def hibob_change(
+    company_id: str, entity_kind: str, entity_id: str, version: str,
+) -> str:
+    """Thin HiBob webhook change key, using the normal entity key with
+    `chg:{version}` in the version slot."""
+    return hibob_entity(company_id, entity_kind, entity_id, f"chg:{version}")
+
+
+# --- Ashby (ATS backfill / webhook archetype) ------------------------
+def ashby_entity(org_id: str, entity_kind: str, entity_id: str) -> str:
+    """`ashby:{org}:{kind}:{id}` — stable recruiting entity id,
+    discriminated by entity kind."""
+    return f"ashby:{org_id}:{entity_kind}:{entity_id}"
+
+
 # --- WhatsApp (Cloud API webhook — live ingestion) -------------------
 def whatsapp_message(phone_number_id: object, wamid: str) -> str:
     """`whatsapp:{phone_number_id}:{wamid}` — IMMUTABLE. The WhatsApp message id
@@ -338,7 +392,22 @@ def whatsapp_status(phone_number_id: object, wamid: str, status: str) -> str:
     return f"whatsapp:{phone_number_id}:status:{wamid}:{status}"
 
 
+ADOPTED_VERBATIM_KEYS = {
+    "calendar:event": "first-party calendar event id",
+    "email:message": "RFC-5322 Message-ID",
+    "github:comment": "GitHub node_id",
+    "github:review": "GitHub node_id",
+    "github:check_run": "GitHub node_id",
+    "linear:issue": "Linear object id",
+    "linear:comment": "Linear object id",
+    "linear:project": "Linear object id",
+    "stripe:event": "Stripe evt_* event id",
+    "system": "caller-supplied external_id",
+}
+
+
 __all__ = [
+    "ashby_entity",
     "aws_event",
     "brex_balance",
     "brex_transaction",
@@ -359,15 +428,20 @@ __all__ = [
     "grafana_annotation",
     "gusto_change",
     "gusto_entity",
+    "hibob_change",
+    "hibob_entity",
     "jira_comment",
     "jira_issue",
     "jira_transition",
+    "linkedin_entity",
     "mercury_balance",
     "mercury_transaction",
     "miro_item",
     "notion_object",
     "quickbooks_change",
     "quickbooks_entity",
+    "ramp_change",
+    "ramp_entity",
     "ramp_transaction",
     "signal_message",
     "slack_message",

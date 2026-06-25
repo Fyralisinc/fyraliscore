@@ -87,3 +87,21 @@ async def test_configured_but_missing_bearer_is_401(
     ) as c:
         r = await c.post("/webhooks/gmail/pubsub")
     assert r.status_code == 401
+
+
+async def test_configured_but_malformed_bearer_is_401(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GMAIL_PUBSUB_PUSH_OIDC_AUDIENCE", "https://app.test/webhooks/gmail/pubsub")
+    monkeypatch.setenv("GMAIL_PUBSUB_PUSH_OIDC_SA", "push-sa@proj.iam.gserviceaccount.com")
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_app()), base_url="http://t",
+    ) as c:
+        r = await c.post(
+            "/webhooks/gmail/pubsub",
+            headers={"Authorization": "Bearer malformed"},
+        )
+
+    assert r.status_code == 401
+    assert r.json()["detail"] == "oidc_invalid"

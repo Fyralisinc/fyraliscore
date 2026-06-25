@@ -33,6 +33,9 @@ VerificationReason = Literal[
     "signature_mismatch",
     "secret_not_configured",
     "tenant_not_resolved",
+    "malformed_body",
+    "missing_passcode",
+    "passcode_mismatch",
 ]
 
 

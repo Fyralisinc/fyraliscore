@@ -499,6 +499,68 @@ _PROVIDER_CHANNEL: dict[str, str] = {
 }
 
 
+_WEBHOOK_RETRY_AFTER_SECONDS = "30"
+
+
+def _safe_public_webhook_response(
+    *,
+    provider: str,
+    code: str,
+    message: str,
+    status_code: int,
+) -> JSONResponse:
+    headers = (
+        {"Retry-After": _WEBHOOK_RETRY_AFTER_SECONDS}
+        if status_code in {500, 502, 503, 504}
+        else None
+    )
+    return JSONResponse(
+        {
+            "code": code,
+            "message": message,
+            "context": {"provider": provider},
+        },
+        status_code=status_code,
+        headers=headers,
+    )
+
+
+def _public_payload_rejected_response(provider: str) -> JSONResponse:
+    return _safe_public_webhook_response(
+        provider=provider,
+        code="webhook_payload_rejected",
+        message="webhook payload rejected",
+        status_code=400,
+    )
+
+
+def _public_processing_unavailable_response(provider: str) -> JSONResponse:
+    return _safe_public_webhook_response(
+        provider=provider,
+        code="webhook_processing_unavailable",
+        message="webhook processing temporarily unavailable",
+        status_code=503,
+    )
+
+
+def _log_public_ingest_error(
+    *,
+    provider: str,
+    status_code: int,
+    exc: BaseException,
+) -> None:
+    context = getattr(exc, "context", None)
+    log.warning(
+        "webhook_inline_ingest_failed",
+        provider=provider,
+        status_code=status_code,
+        error_type=type(exc).__name__,
+        error_code=getattr(exc, "code", None),
+        recoverable=getattr(exc, "recoverable", False),
+        context_keys=sorted(context) if isinstance(context, dict) else [],
+    )
+
+
 def _err_response(
     err: WebhookVerificationError,
     status_code: int = 401,
@@ -1329,14 +1391,7 @@ async def _inline_ingest_response(
         try:
             payload = json.loads(verified.body)
         except json.JSONDecodeError:
-            return JSONResponse(
-                {
-                    "code": "invalid_json",
-                    "message": "verified body is not valid JSON",
-                    "context": {"provider": provider},
-                },
-                status_code=400,
-            )
+            return _public_payload_rejected_response(provider)
 
     deps = _deps(request)
     try:
@@ -1351,14 +1406,12 @@ async def _inline_ingest_response(
             request_headers=safe_headers(request.headers),
         )
     except HandlerNotFound:
-        return JSONResponse(
-            {
-                "code": "handler_not_found",
-                "message": f"no ingestion handler for channel {channel!r}",
-                "context": {"provider": provider, "channel": channel},
-            },
-            status_code=501,
+        log.error(
+            "webhook_inline_ingest_handler_missing",
+            provider=provider,
+            channel=channel,
         )
+        return _public_processing_unavailable_response(provider)
     except PayloadTooLarge:
         return JSONResponse(
             {
@@ -1369,15 +1422,14 @@ async def _inline_ingest_response(
             status_code=413,
         )
     except ValidationError as exc:
-        return JSONResponse(
-            {"code": exc.code, "message": exc.message, "context": exc.context},
-            status_code=400,
-        )
+        _log_public_ingest_error(provider=provider, status_code=400, exc=exc)
+        return _public_payload_rejected_response(provider)
     except CompanyOSError as exc:
-        return JSONResponse(
-            {"code": exc.code, "message": exc.message, "context": exc.context},
-            status_code=400,
-        )
+        if exc.recoverable:
+            _log_public_ingest_error(provider=provider, status_code=503, exc=exc)
+            return _public_processing_unavailable_response(provider)
+        _log_public_ingest_error(provider=provider, status_code=400, exc=exc)
+        return _public_payload_rejected_response(provider)
 
     if not suppress_shadow_write:
         await _maybe_shadow_write_webhook(

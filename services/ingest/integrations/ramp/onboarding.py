@@ -31,6 +31,9 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
+from services.app.webhooks.provider_installations import (
+    upsert_provider_installation_for_tenant,
+)
 from services.ingest.integrations.ramp import metrics
 from services.ingest.integrations.ramp.client import DEFAULT_ENTITIES
 
@@ -129,17 +132,12 @@ async def register_webhook_installation(
     """Register / refresh the provider_installations row the webhook edge uses to
     resolve the tenant + load the verifier token. installation_id is the businessId
     (matches tenant_resolver._extract_ramp)."""
-    await pool.execute(
-        """
-        INSERT INTO provider_installations
-            (id, tenant_id, provider, installation_id, secret_ref, enabled)
-        VALUES ($1, $2, 'ramp', $3, $4, TRUE)
-        ON CONFLICT (provider, installation_id) DO UPDATE
-            SET tenant_id = EXCLUDED.tenant_id,
-                secret_ref = EXCLUDED.secret_ref,
-                enabled = TRUE
-        """,
-        uuid7(), tenant_id, business_id, webhook_secret_ref,
+    await upsert_provider_installation_for_tenant(
+        pool,
+        provider="ramp",
+        tenant_id=tenant_id,
+        installation_id=business_id,
+        secret_ref=webhook_secret_ref,
     )
     log.info("ramp_webhook_installation_registered", business_id=business_id)
 

@@ -29,6 +29,9 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
+from services.app.webhooks.provider_installations import (
+    upsert_provider_installation_for_tenant,
+)
 from services.ingest.integrations.ashby import metrics
 from services.ingest.integrations.ashby.client import DEFAULT_ENTITIES
 
@@ -132,17 +135,12 @@ async def register_webhook_installation(
     `tenant_resolver._PATH_RESOLVED_PROVIDERS`). `org_id` is the path segment;
     the body `organizationId` read by `_extract_ashby` is now only a
     legacy/synthetic fallback for posts to the bare endpoint."""
-    await pool.execute(
-        """
-        INSERT INTO provider_installations
-            (id, tenant_id, provider, installation_id, secret_ref, enabled)
-        VALUES ($1, $2, 'ashby', $3, $4, TRUE)
-        ON CONFLICT (provider, installation_id) DO UPDATE
-            SET tenant_id = EXCLUDED.tenant_id,
-                secret_ref = EXCLUDED.secret_ref,
-                enabled = TRUE
-        """,
-        uuid7(), tenant_id, org_id, webhook_secret_ref,
+    await upsert_provider_installation_for_tenant(
+        pool,
+        provider="ashby",
+        tenant_id=tenant_id,
+        installation_id=org_id,
+        secret_ref=webhook_secret_ref,
     )
     log.info("ashby_webhook_installation_registered", org_id=org_id)
 

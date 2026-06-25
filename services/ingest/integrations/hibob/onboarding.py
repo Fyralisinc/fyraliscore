@@ -31,6 +31,9 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
+from services.app.webhooks.provider_installations import (
+    upsert_provider_installation_for_tenant,
+)
 from services.ingest.integrations.hibob import metrics
 from services.ingest.integrations.hibob.client import DEFAULT_ENTITIES
 
@@ -139,17 +142,12 @@ async def register_webhook_installation(
         per-endpoint secret model is wired, installation_id should key on the
         endpoint identifier, not the company id.
     """
-    await pool.execute(
-        """
-        INSERT INTO provider_installations
-            (id, tenant_id, provider, installation_id, secret_ref, enabled)
-        VALUES ($1, $2, 'hibob', $3, $4, TRUE)
-        ON CONFLICT (provider, installation_id) DO UPDATE
-            SET tenant_id = EXCLUDED.tenant_id,
-                secret_ref = EXCLUDED.secret_ref,
-                enabled = TRUE
-        """,
-        uuid7(), tenant_id, company_id, webhook_secret_ref,
+    await upsert_provider_installation_for_tenant(
+        pool,
+        provider="hibob",
+        tenant_id=tenant_id,
+        installation_id=company_id,
+        secret_ref=webhook_secret_ref,
     )
     log.info("hibob_webhook_installation_registered", company_id=company_id)
 

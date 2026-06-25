@@ -34,6 +34,7 @@ from typing import Any
 
 from lib.shared.errors import ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
@@ -62,19 +63,7 @@ _STATE_CHANGE_STATUSES = {
 }
 
 
-def ashby_entity(org_id: str, entity_kind: str, entity_id: str) -> str:
-    """`ashby:{org}:{kind}:{id}` — namespaced by org and DISCRIMINATED by
-    entity_kind so multiple recruiting entity kinds sharing an id never collide.
-    Per the CONTRACT this external_id is NOT version-suffixed.
-
-    TODO(human): during the wiring phase move this constructor to
-        `services/ingest/ingestion/idempotency/__init__.py` as
-        `ashby_entity(org_id, entity_kind, entity_id)` (the canonical home,
-        mirroring `carta_entity`) and import it here. That module is a SHARED
-        file this phase must not edit, so the format lives here for now — the
-        format string MUST stay byte-identical across the move.
-    """
-    return f"ashby:{org_id}:{entity_kind}:{entity_id}"
+ashby_entity = idempotency.ashby_entity
 
 
 def _utcnow() -> datetime:
