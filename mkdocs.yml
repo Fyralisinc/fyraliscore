@@ -159,10 +159,37 @@ nav:
       - Ingestion:
           - Overview: ingestion/README.md
           - Canonical architecture: ingestion/architecture.md
+          - End-to-end flow and architecture: ingestion/ingestion-flow-and-architecture.md
           - Source isolation: ingestion/source-isolation.md
           - Finance sources: ingestion/finance-sources.md
           - Finance API map: ingestion/finance-api-map.md
           - Slack DM (test env): ingestion/slack-dm-demo.md
+          - Source flow deep dives:
+              - Ashby: ingestion/flows/ashby-ingestion.md
+              - AWS: ingestion/flows/aws-ingestion.md
+              - Brex: ingestion/flows/brex-ingestion.md
+              - Carta: ingestion/flows/carta-ingestion.md
+              - Deel: ingestion/flows/deel-ingestion.md
+              - Discord: ingestion/flows/discord-ingestion.md
+              - Figma: ingestion/flows/figma-ingestion.md
+              - Fireflies: ingestion/flows/fireflies-ingestion.md
+              - GitHub: ingestion/flows/github-ingestion.md
+              - Gmail: ingestion/flows/gmail-ingestion.md
+              - Google Calendar: ingestion/flows/google_calendar-ingestion.md
+              - Google Drive: ingestion/flows/google_drive-ingestion.md
+              - Grafana: ingestion/flows/grafana-ingestion.md
+              - Gusto: ingestion/flows/gusto-ingestion.md
+              - HiBob: ingestion/flows/hibob-ingestion.md
+              - Jira: ingestion/flows/jira-ingestion.md
+              - LinkedIn: ingestion/flows/linkedin-ingestion.md
+              - Mercury: ingestion/flows/mercury-ingestion.md
+              - Miro: ingestion/flows/miro-ingestion.md
+              - Notion: ingestion/flows/notion-ingestion.md
+              - QuickBooks: ingestion/flows/quickbooks-ingestion.md
+              - Ramp: ingestion/flows/ramp-ingestion.md
+              - Signal: ingestion/flows/signal-ingestion.md
+              - Slack: ingestion/flows/slack-ingestion.md
+              - Telegram: ingestion/flows/telegram-ingestion.md
           - Sources:
               - Slack: ingestion/sources/slack.md
               - GitHub: ingestion/sources/github.md
