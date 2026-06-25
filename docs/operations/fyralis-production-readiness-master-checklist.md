@@ -55,7 +55,7 @@ Every checklist item is done only when:
   artifacts.
 - [x] Webhook and source ingress paths verify signatures/OIDC or are explicitly
   bearer-authenticated internal paths.
-- [ ] LLM, embedding, source API, HTTP rendering, and object-storage calls are
+- [x] LLM, embedding, source API, HTTP rendering, and object-storage calls are
   not made inside database transactions.
 - [ ] Durable queues have idempotent application, leases, heartbeat, orphan
   recovery, and dead-letter visibility.
@@ -680,8 +680,9 @@ Current state:
   gateway, Think, post-commit, housekeeper, maintenance workers, source
   gateways, source schedulers, ingestion writers/workers, and extension workers.
 - CI architecture ratchets now include a conservative AST check that rejects
-  direct HTTP, object-storage, LLM/rendering, and embedding calls placed
-  lexically inside `conn.transaction()` or `tenant_transaction()` blocks.
+  direct HTTP, object-storage, queue publish, source fetcher, batch-provider,
+  LLM/rendering, and embedding calls placed lexically inside
+  `conn.transaction()` or `tenant_transaction()` blocks.
 
 Must solve:
 
@@ -701,7 +702,8 @@ Must solve:
 
 Acceptance evidence:
 
-- Static no-network-in-transaction test passes.
+- Static no-network-in-transaction test passes, including fixtures for batch
+  APIs, object storage, source fetchers, and queue publish calls.
 - Production launcher pgbouncer wiring ratchet passes.
 - Load test with delayed LLM/Ollama does not exhaust DB pool.
 - DB p95 acquire wait remains under target during staging soak.

@@ -153,13 +153,69 @@ NETWORK_CALL_SUFFIXES = (
     ".embed_text",
     ".complete",
     ".complete_json",
+    ".file_text",
+    ".get_object",
+    ".get_verified",
+    ".put_if_absent",
+    ".put_object",
     ".render_card",
     ".render_card_reasoning",
     ".render_close_line",
     ".render_conversation_turn",
     ".render_greeting",
     ".render_query_grid",
+    ".submit_jsonl",
 )
+NETWORK_CALL_FUNCTION_NAMES = {
+    "fetch_page_aws",
+    "fetch_page_ashby",
+    "fetch_page_brex",
+    "fetch_page_carta",
+    "fetch_page_deel",
+    "fetch_page_discord",
+    "fetch_page_figma",
+    "fetch_page_fireflies",
+    "fetch_page_github",
+    "fetch_page_gmail",
+    "fetch_page_google_calendar",
+    "fetch_page_google_drive",
+    "fetch_page_grafana",
+    "fetch_page_gusto",
+    "fetch_page_hibob",
+    "fetch_page_jira",
+    "fetch_page_linkedin",
+    "fetch_page_mercury",
+    "fetch_page_miro",
+    "fetch_page_notion",
+    "fetch_page_quickbooks",
+    "fetch_page_ramp",
+    "fetch_page_signal",
+    "fetch_page_slack",
+    "fetch_page_telegram",
+    "publish_dlq",
+    "publish_embedding_request",
+    "publish_progress_event",
+    "publish_progress_events",
+    "publish_summarization_request",
+}
+NETWORK_CALL_METHOD_NAMES = {
+    "get_messages",
+    "produce",
+    "request_bytes",
+    "retrieve_bot_user",
+    "retrieve_page",
+    "submit_jsonl",
+    "watch",
+    "watch_changes",
+    "watch_events",
+}
+NETWORK_CALL_OBJECT_METHODS = {
+    "batch_client.retrieve",
+    "client.retrieve",
+    "raw_s3.get",
+    "s3.get",
+    "s3_client.get",
+}
 METRIC_CREATION_CALL_NAMES = {
     "counter",
     "gauge",
@@ -348,7 +404,12 @@ def _network_call_name(call: ast.Call) -> str | None:
     if name is None:
         return None
     first = name.split(".", 1)[0]
+    short = name.rsplit(".", 1)[-1]
     if first in NETWORK_CALL_MODULE_PREFIXES:
+        return name
+    if name in NETWORK_CALL_OBJECT_METHODS:
+        return name
+    if short in NETWORK_CALL_FUNCTION_NAMES or short in NETWORK_CALL_METHOD_NAMES:
         return name
     if any(name.endswith(suffix) for suffix in NETWORK_CALL_SUFFIXES):
         return name

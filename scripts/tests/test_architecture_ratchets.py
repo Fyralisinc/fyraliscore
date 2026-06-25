@@ -710,6 +710,71 @@ async def run(tenant_id):
     assert violations[0].path == Path("services/ingest/bad.py")
 
 
+def test_network_call_in_transaction_check_flags_batch_api_inside_tx(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "services" / "ingest"
+    source.mkdir(parents=True)
+    (source / "bad.py").write_text(
+        """
+async def run(conn, client):
+    async with conn.transaction():
+        await client.submit_jsonl("{}", metadata={})
+        await client.retrieve("batch_123")
+        await client.file_text("file_123")
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_network_call_in_transaction_violations(repo_root=tmp_path)
+
+    assert {v.line_number for v in violations} == {3, 4, 5}
+    assert {v.path for v in violations} == {Path("services/ingest/bad.py")}
+
+
+def test_network_call_in_transaction_check_flags_object_storage_inside_tx(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "services" / "ingest"
+    source.mkdir(parents=True)
+    (source / "bad.py").write_text(
+        """
+async def run(conn, s3_client):
+    async with conn.transaction():
+        await s3_client.put_if_absent("key", b"body")
+        await s3_client.get("key")
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_network_call_in_transaction_violations(repo_root=tmp_path)
+
+    assert {v.line_number for v in violations} == {3, 4}
+    assert {v.path for v in violations} == {Path("services/ingest/bad.py")}
+
+
+def test_network_call_in_transaction_check_flags_source_fetcher_and_publish_inside_tx(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "services" / "ingest"
+    source.mkdir(parents=True)
+    (source / "bad.py").write_text(
+        """
+async def run(conn, producer):
+    async with conn.transaction():
+        await fetch_page_gmail("cursor")
+        await publish_embedding_request(producer=producer)
+        await producer.produce("topic", key=b"k", value=b"v")
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_network_call_in_transaction_violations(repo_root=tmp_path)
+
+    assert {v.line_number for v in violations} == {3, 4, 5}
+    assert {v.path for v in violations} == {Path("services/ingest/bad.py")}
+
+
 def test_network_call_in_transaction_check_allows_network_outside_tx(
     tmp_path: Path,
 ) -> None:
