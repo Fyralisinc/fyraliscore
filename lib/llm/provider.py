@@ -1084,6 +1084,54 @@ class LLMProvider(abc.ABC):
             _estimate_tokens_from_text(content),
         )
 
+    def _record_provider_usage_or_estimate(
+        self,
+        *,
+        provider_transport: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_creation_tokens: int,
+        system: str,
+        user: str,
+        schema_hint: str,
+        content: str,
+    ) -> None:
+        if input_tokens > 0 and output_tokens > 0:
+            self._record_usage(
+                input_tokens,
+                output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+            )
+            return
+
+        estimated_input = _estimate_tokens_from_text(system, user, schema_hint)
+        estimated_output = _estimate_tokens_from_text(content)
+        final_input = input_tokens if input_tokens > 0 else estimated_input
+        final_output = output_tokens if output_tokens > 0 else estimated_output
+        final_cache_read = min(max(0, cache_read_tokens), final_input)
+        final_cache_creation = min(
+            max(0, cache_creation_tokens),
+            max(0, final_input - final_cache_read),
+        )
+        _log.warning(
+            "llm.usage_missing",
+            provider=self.config.provider,
+            model=self.config.model,
+            transport=provider_transport,
+            observed_input_tokens=input_tokens,
+            observed_output_tokens=output_tokens,
+            estimated_input_tokens=estimated_input,
+            estimated_output_tokens=estimated_output,
+        )
+        self._record_usage(
+            final_input,
+            final_output,
+            cache_read_tokens=final_cache_read,
+            cache_creation_tokens=final_cache_creation,
+        )
+
     @abc.abstractmethod
     async def _raw_call(
         self,
@@ -1342,16 +1390,22 @@ class AnthropicProvider(LLMProvider):
             raise LLMError("empty response from anthropic", model=self.config.model)
         # OP-2: record input/output tokens if an aggregator is installed.
         inp, outp, cache_read, cache_creation = _extract_anthropic_usage(response)
-        self._record_usage(
-            inp, outp,
-            cache_read_tokens=cache_read,
-            cache_creation_tokens=cache_creation,
-        )
-        # Concatenate text blocks.
-        return "".join(
+        content = "".join(
             getattr(b, "text", "") for b in response.content
             if getattr(b, "type", None) == "text"
         )
+        self._record_provider_usage_or_estimate(
+            provider_transport="anthropic",
+            input_tokens=inp,
+            output_tokens=outp,
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_creation,
+            system=system_full,
+            user=user,
+            schema_hint=schema_hint,
+            content=content,
+        )
+        return content
 
 
 class OpenAIProvider(LLMProvider):
@@ -1418,10 +1472,16 @@ class OpenAIProvider(LLMProvider):
             raise LLMError("empty response from openai", model=self.config.model)
         # OP-2: record input/output tokens if an aggregator is installed.
         inp, outp, cache_read, cache_creation = _extract_openai_usage(response)
-        self._record_usage(
-            inp, outp,
+        self._record_provider_usage_or_estimate(
+            provider_transport="openai_chat",
+            input_tokens=inp,
+            output_tokens=outp,
             cache_read_tokens=cache_read,
             cache_creation_tokens=cache_creation,
+            system=system_full,
+            user=user,
+            schema_hint=schema_hint,
+            content=content,
         )
         return content
 
@@ -1530,15 +1590,21 @@ class CodexProvider(LLMProvider):
             )
 
         response = await _through_breaker(self.config.provider, _do_call)
-        inp, outp, cache_read, cache_creation = _extract_openai_usage(response)
-        self._record_usage(
-            inp, outp,
-            cache_read_tokens=cache_read,
-            cache_creation_tokens=cache_creation,
-        )
         content = _responses_output_text(response)
         if not content:
             raise LLMError("empty response from codex", model=self.config.model)
+        inp, outp, cache_read, cache_creation = _extract_openai_usage(response)
+        self._record_provider_usage_or_estimate(
+            provider_transport="codex_responses",
+            input_tokens=inp,
+            output_tokens=outp,
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_creation,
+            system=system_full,
+            user=user,
+            schema_hint=schema_hint,
+            content=content,
+        )
         return content
 
     async def _raw_call_app_server(
@@ -2142,12 +2208,18 @@ class DeepSeekProvider(OpenAIProvider):
                 )
             # OP-2: record usage (strict-mode responses carry the same usage block).
             inp, outp, cache_read, cache_creation = _extract_openai_usage(response)
-            self._record_usage(
-                inp, outp,
+            raw = tool_calls[0].function.arguments
+            self._record_provider_usage_or_estimate(
+                provider_transport="deepseek_tool_call",
+                input_tokens=inp,
+                output_tokens=outp,
                 cache_read_tokens=cache_read,
                 cache_creation_tokens=cache_creation,
+                system=system,
+                user=user_msg,
+                schema_hint=json.dumps(strict_schema),
+                content=raw,
             )
-            raw = tool_calls[0].function.arguments
             # DeepSeek strict mode occasionally drops the closing quote
             # on a key, producing `"key: value` instead of `"key": value`.
             # Try a repair pass before declaring failure.

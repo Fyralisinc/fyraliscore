@@ -68,6 +68,59 @@ def _valid_payload() -> str:
     return json.dumps({"claim": "Alice ships fast", "confidence": 0.7, "kind": "state"})
 
 
+def test_provider_records_actual_usage_when_present() -> None:
+    provider = ScriptedProvider(
+        [],
+        LLMConfig(provider="openai", api_key="test", model="gpt-4o"),
+    )
+    usage = LLMUsageAggregator()
+    provider.set_usage_aggregator(usage)
+
+    provider._record_provider_usage_or_estimate(
+        provider_transport="openai_chat",
+        input_tokens=42,
+        output_tokens=9,
+        cache_read_tokens=5,
+        cache_creation_tokens=0,
+        system="system",
+        user="user",
+        schema_hint="{}",
+        content=_valid_payload(),
+    )
+
+    assert usage.call_count == 1
+    assert usage.total_input_tokens == 42
+    assert usage.total_output_tokens == 9
+    assert usage.total_cache_read_tokens == 5
+    assert usage.total_cost_usd > 0
+
+
+def test_provider_estimates_usage_when_sdk_usage_is_missing() -> None:
+    provider = ScriptedProvider(
+        [],
+        LLMConfig(provider="openai", api_key="test", model="gpt-4o"),
+    )
+    usage = LLMUsageAggregator()
+    provider.set_usage_aggregator(usage)
+
+    provider._record_provider_usage_or_estimate(
+        provider_transport="openai_chat",
+        input_tokens=0,
+        output_tokens=0,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
+        system="system prompt",
+        user="user prompt",
+        schema_hint='{"type":"object"}',
+        content=_valid_payload(),
+    )
+
+    assert usage.call_count == 1
+    assert usage.total_input_tokens > 0
+    assert usage.total_output_tokens > 0
+    assert usage.total_cost_usd > 0
+
+
 # =====================================================================
 # Config
 # =====================================================================

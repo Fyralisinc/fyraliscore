@@ -2,6 +2,8 @@
 the OpenAI embeddings endpoint so tests stay offline-safe + deterministic."""
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 import respx
@@ -13,7 +15,9 @@ from lib.embeddings.openai_backend import (
     OpenAIEmbedder,
     OpenAIEmbedderConfig,
     OpenAIEmbedderError,
+    _record_openai_breaker_exception,
 )
+from lib.shared.circuit_breaker import AsyncCircuitBreaker, CircuitState
 
 
 BASE = "http://openai-mock/v1"
@@ -33,6 +37,16 @@ def _cfg(**overrides) -> OpenAIEmbedderConfig:
     )
     defaults.update(overrides)
     return OpenAIEmbedderConfig(**defaults)
+
+
+def _breaker(name: str, *, min_samples: int = 2) -> AsyncCircuitBreaker:
+    return AsyncCircuitBreaker(
+        name=name,
+        failure_threshold=0.5,
+        min_samples=min_samples,
+        open_duration=30.0,
+        record_exception=_record_openai_breaker_exception,
+    )
 
 
 def _embed_response(texts: list[str], dim: int = DEFAULT_OPENAI_DIM) -> dict:
@@ -129,6 +143,38 @@ async def test_embed_batch_over_chunk_size_multiple_requests():
     assert len(out) == 20
 
 
+async def test_embed_batch_respects_client_concurrency_budget():
+    cfg = _cfg(
+        expected_dim=1,
+        max_batch_per_request=1,
+        max_concurrent_requests=2,
+    )
+    e = OpenAIEmbedder(cfg)
+    active = 0
+    max_active = 0
+
+    async def _fake_post(path, body):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        data = [
+            {"index": i, "embedding": [float(len(text))]}
+            for i, text in enumerate(body["input"])
+        ]
+        active -= 1
+        return {"data": data, "model": cfg.model}
+
+    e._post_with_retry = _fake_post  # type: ignore[method-assign]
+    try:
+        out = await e.embed_batch(["a", "bb", "ccc", "dddd", "eeeee"])
+    finally:
+        await e.close()
+
+    assert [v[0] for v in out] == [1.0, 2.0, 3.0, 4.0, 5.0]
+    assert max_active == 2
+
+
 async def test_embed_batch_preserves_order_when_response_reorders():
     texts = ["alpha", "beta", "gamma"]
 
@@ -184,6 +230,44 @@ async def test_401_no_retry():
                 await e.embed("x")
         # 4xx (non-429) MUST NOT retry.
         assert route.call_count == 1
+
+
+async def test_401_does_not_count_against_breaker():
+    breaker = _breaker("openai_embedding_401_test", min_samples=1)
+    with respx.mock(base_url=BASE) as mock:
+        route = mock.post("/embeddings").respond(401, text="bad key")
+        async with OpenAIEmbedder(
+            _cfg(max_retries=3),
+            breaker=breaker,
+        ) as e:
+            with pytest.raises(OpenAIEmbedderError, match="401"):
+                await e.embed("x")
+
+    assert route.call_count == 1
+    assert breaker.state == CircuitState.CLOSED
+    assert breaker.status()["samples"] == 0
+
+
+async def test_500_fast_fails_when_breaker_is_open():
+    breaker = _breaker("openai_embedding_open_test", min_samples=2)
+    with respx.mock(base_url=BASE) as mock:
+        route = mock.post("/embeddings").respond(500, text="busy")
+        async with OpenAIEmbedder(
+            _cfg(max_retries=1),
+            breaker=breaker,
+        ) as e:
+            for _ in range(2):
+                with pytest.raises(OpenAIEmbedderError, match="500"):
+                    await e.embed("x")
+
+            assert breaker.state == CircuitState.OPEN
+            with pytest.raises(OpenAIEmbedderError) as exc:
+                await e.embed("x")
+
+    assert route.call_count == 2
+    assert exc.value.context["circuit_open"] is True
+    assert exc.value.context["attempts"] == 0
+    assert exc.value.context["breaker"] == "openai_embedding_open_test"
 
 
 async def test_response_data_length_mismatch_raises():

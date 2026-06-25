@@ -26,6 +26,7 @@ import httpx
 
 from lib.embeddings.base import EmbedderDimensionMismatch, EmbedderError
 from lib.observability import counter, histogram
+from lib.shared.circuit_breaker import AsyncCircuitBreaker, CircuitOpenError
 
 
 EMBEDDING_DIM = 768  # SCHEMA-LOCK.md S1.1 / S2.1 / S6.1 — VECTOR(768)
@@ -69,6 +70,19 @@ class OllamaDimensionMismatch(EmbedderDimensionMismatch, OllamaError):
     default_code = "ollama_dimension_mismatch"
 
 
+def _record_ollama_breaker_exception(exc: BaseException) -> bool:
+    if not isinstance(exc, OllamaError):
+        return True
+    status = exc.context.get("status")
+    if status is None:
+        return True
+    try:
+        status_code = int(status)
+    except (TypeError, ValueError):
+        return True
+    return status_code >= 500
+
+
 @dataclass(frozen=True)
 class OllamaConfig:
     base_url: str = "http://localhost:11434"
@@ -78,6 +92,7 @@ class OllamaConfig:
     initial_backoff_s: float = 0.2
     backoff_factor: float = 2.0
     expected_dim: int = EMBEDDING_DIM
+    max_concurrency: int = 4
 
     @classmethod
     def from_env(cls) -> "OllamaConfig":
@@ -85,6 +100,9 @@ class OllamaConfig:
             base_url=os.environ.get("OLLAMA_URL", cls.base_url),
             model=os.environ.get("OLLAMA_EMBED_MODEL", cls.model),
             timeout_s=float(os.environ.get("OLLAMA_TIMEOUT_S", cls.timeout_s)),
+            max_concurrency=max(
+                1, int(os.environ.get("OLLAMA_EMBED_MAX_CONCURRENCY", "4"))
+            ),
         )
 
 
@@ -99,12 +117,17 @@ class OllamaClient:
         config: OllamaConfig | None = None,
         *,
         client: httpx.AsyncClient | None = None,
+        breaker: AsyncCircuitBreaker | None = None,
     ) -> None:
         self.config = config or OllamaConfig.from_env()
         self._own_client = client is None
         self._client = client or httpx.AsyncClient(
             base_url=self.config.base_url,
             timeout=self.config.timeout_s,
+        )
+        self._breaker = breaker or AsyncCircuitBreaker(
+            name="ollama_embedding",
+            record_exception=_record_ollama_breaker_exception,
         )
 
     async def close(self) -> None:
@@ -163,12 +186,43 @@ class OllamaClient:
         """
         if not texts:
             return []
-        return await asyncio.gather(*(self.embed(t) for t in texts))
+        sem = asyncio.Semaphore(max(1, int(self.config.max_concurrency)))
+
+        async def _embed_one(text: str) -> list[float]:
+            async with sem:
+                return await self.embed(text)
+
+        return await asyncio.gather(*(_embed_one(t) for t in texts))
 
     # -----------------------------------------------------------------
     # Internals
     # -----------------------------------------------------------------
     async def _post_with_retry(
+        self,
+        path: str,
+        body: dict[str, Any],
+        *,
+        operation: str = "embed",
+    ) -> dict[str, Any]:
+        try:
+            return await self._breaker.call(
+                lambda: self._post_with_retry_uncircuited(
+                    path,
+                    body,
+                    operation=operation,
+                )
+            )
+        except CircuitOpenError as exc:
+            raise OllamaError(
+                "ollama embedding circuit breaker is open",
+                path=path,
+                operation=operation,
+                attempts=0,
+                circuit_open=True,
+                breaker=exc.context.get("breaker"),
+            ) from exc
+
+    async def _post_with_retry_uncircuited(
         self,
         path: str,
         body: dict[str, Any],

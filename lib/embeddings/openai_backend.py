@@ -44,6 +44,7 @@ from typing import Any
 import httpx
 
 from lib.embeddings.base import EmbedderDimensionMismatch, EmbedderError
+from lib.shared.circuit_breaker import AsyncCircuitBreaker, CircuitOpenError
 
 
 DEFAULT_OPENAI_MODEL = "text-embedding-3-small"
@@ -57,6 +58,19 @@ class OpenAIEmbedderError(EmbedderError):
 
 class OpenAIDimensionMismatch(EmbedderDimensionMismatch):
     default_code = "openai_dimension_mismatch"
+
+
+def _record_openai_breaker_exception(exc: BaseException) -> bool:
+    if not isinstance(exc, OpenAIEmbedderError):
+        return True
+    status = exc.context.get("status")
+    if status is None:
+        return True
+    try:
+        status_code = int(status)
+    except (TypeError, ValueError):
+        return True
+    return status_code == 429 or status_code >= 500
 
 
 @dataclass(frozen=True)
@@ -73,6 +87,7 @@ class OpenAIEmbedderConfig:
     # batch in chunks of this size; smaller defaults reduce the latency
     # impact of any one transient failure.
     max_batch_per_request: int = 256
+    max_concurrent_requests: int = 4
 
     @classmethod
     def from_env(cls) -> "OpenAIEmbedderConfig":
@@ -87,6 +102,9 @@ class OpenAIEmbedderConfig:
             model=os.environ.get("OPENAI_EMBED_MODEL", DEFAULT_OPENAI_MODEL),
             expected_dim=int(os.environ.get("OPENAI_EMBED_DIM", DEFAULT_OPENAI_DIM)),
             timeout_s=float(os.environ.get("OPENAI_TIMEOUT_S", 30.0)),
+            max_concurrent_requests=max(
+                1, int(os.environ.get("OPENAI_EMBED_MAX_CONCURRENT_REQUESTS", "4"))
+            ),
         )
 
 
@@ -98,6 +116,7 @@ class OpenAIEmbedder:
         config: OpenAIEmbedderConfig | None = None,
         *,
         client: httpx.AsyncClient | None = None,
+        breaker: AsyncCircuitBreaker | None = None,
     ) -> None:
         self.config = config or OpenAIEmbedderConfig.from_env()
         self._own_client = client is None
@@ -108,6 +127,10 @@ class OpenAIEmbedder:
                 "Authorization": f"Bearer {self.config.api_key}",
                 "Content-Type": "application/json",
             },
+        )
+        self._breaker = breaker or AsyncCircuitBreaker(
+            name="openai_embedding",
+            record_exception=_record_openai_breaker_exception,
         )
 
     async def close(self) -> None:
@@ -147,7 +170,13 @@ class OpenAIEmbedder:
             self._embed_many(texts[i : i + chunk])
             for i in range(0, len(texts), chunk)
         ]
-        chunks = await asyncio.gather(*tasks)
+        sem = asyncio.Semaphore(max(1, int(self.config.max_concurrent_requests)))
+
+        async def _run(coro):
+            async with sem:
+                return await coro
+
+        chunks = await asyncio.gather(*(_run(task) for task in tasks))
         out: list[list[float]] = []
         for c in chunks:
             out.extend(c)
@@ -196,6 +225,24 @@ class OpenAIEmbedder:
         return out
 
     async def _post_with_retry(
+        self,
+        path: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            return await self._breaker.call(
+                lambda: self._post_with_retry_uncircuited(path, body)
+            )
+        except CircuitOpenError as exc:
+            raise OpenAIEmbedderError(
+                "OpenAI embedding circuit breaker is open",
+                path=path,
+                attempts=0,
+                circuit_open=True,
+                breaker=exc.context.get("breaker"),
+            ) from exc
+
+    async def _post_with_retry_uncircuited(
         self,
         path: str,
         body: dict[str, Any],
