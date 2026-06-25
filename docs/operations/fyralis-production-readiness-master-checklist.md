@@ -397,6 +397,10 @@ Current state:
   dedicated OAuth/API-key/session/WhatsApp source families, and a parametrized
   uninstall SQL ratchet that proves every secret-bearing dedicated source spec
   clears all configured ref columns.
+- Source and webhook credential rotation is covered by the lifecycle contract,
+  generic and dedicated `rotate-secret` operator tests, OAuth refresh rotation
+  tests, and webhook verifier rotation-overlap tests for DB-backed and
+  provider-specific secrets.
 - Many production template keys are still env-shaped.
 - Webhook env fallback is disabled in production by contract.
 
@@ -409,7 +413,7 @@ Must solve:
   a managed secret provider is available.
 - [x] Load `MASTER_KEK` or equivalent wrapping key from KMS/Vault, not from a
   static file or committed env template.
-- [ ] Rotate all source credentials and webhook secrets through a tested
+- [x] Rotate all source credentials and webhook secrets through a tested
   rotation flow.
 - [x] Ensure all provider tokens are stored as opaque `secret_ref` values.
 - [x] Add secret zeroization/uninstall tests for each integration.
