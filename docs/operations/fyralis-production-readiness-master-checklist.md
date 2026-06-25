@@ -71,7 +71,7 @@ Every checklist item is done only when:
   delivery.
 - [x] CI blocks merges on tests, architecture ratchets, env contracts, schema
   drift checks, and privacy probes.
-- [ ] Observability covers gateway, ingestion, reasoning, workers, database,
+- [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and
   rollback rehearsal.
