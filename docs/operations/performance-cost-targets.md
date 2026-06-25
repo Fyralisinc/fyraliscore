@@ -117,6 +117,25 @@ The generated plan includes:
   `CUTOVER_DRYRUN_PROVIDER_WEIGHTS` so noisy webhook sources can be weighted
   deliberately
 
+## Concurrency Controls
+
+Per-tenant and expensive-worker controls are registered in
+`services.platform.performance.concurrency_controls`. CI runs
+`scripts/check_concurrency_controls.py` to ensure each registered control is
+present in `.env.production.example` and in the production env contract.
+
+Current controls:
+
+- `THINK_MAX_CONCURRENCY_PER_TENANT`: Think semaphore keyed by tenant.
+- `ANOMALY_T3_BUDGET_PER_MIN`: anomaly-to-Think budget per tenant.
+- `ENTITY_RESOLVER_LLM_BUDGET_PER_MIN`: entity resolver LLM budget per tenant.
+- `TOPOLOGY_SWEEPER_LIMIT_PER_TENANT`: topology sweep batch limit per tenant.
+- `RELATIONSHIP_ONTOLOGY_PROPOSALS_LIMIT_PER_TENANT`: proposal aggregation
+  batch limit per tenant.
+- `SAGE_TOPOLOGY_OPTIMIZER_LIMIT`: bounded optimizer batch size.
+- `HOUSEKEEPER_ENABLE_EXPENSIVE_JOBS=0`: expensive housekeeper families remain
+  disabled unless deliberately enabled.
+
 ## Load Test Acceptance
 
 A load or soak report is valid only if it records:

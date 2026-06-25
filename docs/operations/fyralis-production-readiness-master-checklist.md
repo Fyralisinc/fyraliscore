@@ -1375,6 +1375,11 @@ Current state:
   paths, and index-review notes. CI runs
   `scripts/check_product_query_budgets.py` so new workflows cannot avoid the
   budget registry.
+- `services.platform.performance.concurrency_controls` now registers the
+  tenant-scoped and expensive-worker controls for Think, anomaly processing,
+  entity resolution, topology sweeping, ontology proposals, and SAGE topology
+  optimization. The production env contract and CI checker require those knobs
+  in `.env.production.example`, with expensive housekeeper jobs defaulting off.
 
 Must solve:
 
@@ -1392,7 +1397,7 @@ Must solve:
   onboarding, and product reads.
 - [ ] Verify noisy-source isolation.
 - [ ] Verify one tenant cannot starve another tenant in shared workers.
-- [ ] Add per-tenant concurrency controls for Think and expensive workers.
+- [x] Add per-tenant concurrency controls for Think and expensive workers.
 - [x] Add LLM token, spend, and request ceilings.
 - [x] Add source API rate limits and backoff budgets.
 - [x] Add query performance budgets and index review for every hot endpoint.
