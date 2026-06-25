@@ -8,6 +8,7 @@ from scripts.run_operational_readiness_gates import (
     GateResult,
     MANUAL_REQUIRED,
     PASS,
+    _github_required_checks_gate,
     _production_env_contract_gate,
     _schema_drift_gate,
 )
@@ -51,6 +52,43 @@ def test_schema_drift_gate_runs_against_configured_database(monkeypatch) -> None
     assert calls[0][1][-1] == "scripts/check_schema_drift.py"
 
 
+def test_github_required_checks_gate_requires_live_context(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _github_required_checks_gate(args)
+
+    assert result.status == MANUAL_REQUIRED
+    assert result.metrics == {
+        "github_token_present": False,
+        "github_repository_present": False,
+    }
+    assert result.artifacts["policy"] == ".github/main-required-checks.json"
+
+
+def test_github_required_checks_gate_runs_when_token_and_repo_exist(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "fyralisinc/fyraliscore")
+    calls = []
+
+    def fake_run_command_gate(name, command, **kwargs):
+        calls.append((name, command, kwargs))
+        return GateResult(name=name, status=PASS, details=kwargs["details"])
+
+    monkeypatch.setattr(gates, "_run_command_gate", fake_run_command_gate)
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _github_required_checks_gate(args)
+
+    assert result.status == PASS
+    assert calls[0][0] == "github_main_required_checks"
+    assert calls[0][1][-1] == "--live"
+
+
 def test_ci_workflow_runs_migrations_before_schema_drift() -> None:
     workflow = Path(".github/workflows/ci.yml").read_text()
 
@@ -58,6 +96,12 @@ def test_ci_workflow_runs_migrations_before_schema_drift() -> None:
     drift_idx = workflow.index("scripts/check_schema_drift.py")
 
     assert apply_idx < drift_idx
+
+
+def test_ci_workflow_checks_required_merge_policy() -> None:
+    workflow = Path(".github/workflows/ci.yml").read_text()
+
+    assert "scripts/check_github_required_checks.py" in workflow
 
 
 def test_deploy_production_waits_for_green_ci() -> None:

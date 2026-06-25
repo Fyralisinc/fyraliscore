@@ -1444,10 +1444,16 @@ Current state:
   rolls production worker services one at a time from the runtime process
   manifest with health gates, and preserves rollback to the previous SHA on
   canary, health, worker, or product-SLO failure.
+- `.github/main-required-checks.json` now defines the required `main` branch CI
+  contexts. CI runs `scripts/check_github_required_checks.py` to keep that
+  policy aligned with workflow job names, and the operational readiness harness
+  runs the same verifier in live mode when `GITHUB_REPOSITORY` and a GitHub
+  token are available so branch protection/rulesets can be proven before
+  release.
 
 Must solve:
 
-- [ ] Ensure CI status checks are required for merge to `main`.
+- [x] Ensure CI status checks are required for merge to `main`.
 - [x] Add type-checking gate for critical backend modules.
 - [x] Add security scanning for dependencies and container images.
 - [x] Add SBOM generation for release artifacts.

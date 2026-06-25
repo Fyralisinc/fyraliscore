@@ -32,6 +32,7 @@ environment are present:
 | Gate | Production question |
 | --- | --- |
 | Production env contract | Does `.env.production.example` still expose the fail-closed production settings operators must fill before deploy, reject known weak defaults such as the local Grafana password, and keep raw app/provider secret placeholders blank? |
+| GitHub main required checks | Does the live `main` branch protection or active repository ruleset require every checked-in CI gate listed in `.github/main-required-checks.json`? |
 | Feedback-loop gap harness | Do archival cleanup, evidence attachment, no-op proof, graph context use, and question-policy learning still work? |
 | 50-batch storyline report | Did the last 50-batch run meet product, calibration, and queue-drain thresholds? |
 | Schema drift | Does the live migrated database match the schema lock expectations? |
@@ -39,6 +40,10 @@ environment are present:
 | Synthetic load generator smoke | Does the M-Load sender still sign, skew, duplicate, and report traffic correctly? |
 | Calibration suite | Does calibration compute, write, and read back bounded offsets? |
 | Permission/privacy probes | Do tenant isolation and resolver security checks prevent cross-tenant reads? |
+
+The GitHub gate needs `GITHUB_REPOSITORY` plus `GITHUB_TOKEN` or `GH_TOKEN`
+with read access to branch protection/rulesets. Without that token, the gate is
+reported as `manual_required` rather than silently passing.
 
 ## SLO And Alert Thresholds
 

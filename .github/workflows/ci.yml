@@ -62,6 +62,11 @@ jobs:
       - name: Check architecture ratchets
         run: python scripts/check_architecture_ratchets.py
 
+      # Keeps the checked-in main-branch required status-check policy aligned
+      # with the workflow job names GitHub exposes for branch protection.
+      - name: Check required merge checks policy
+        run: python scripts/check_github_required_checks.py
+
       # Keeps `.env.production.example` aligned with fail-closed production
       # settings so deploy operators see required keys before runtime startup.
       - name: Check production env contract
