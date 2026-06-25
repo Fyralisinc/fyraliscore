@@ -909,6 +909,10 @@ async def build_linkedin_client(
         access_token=("spam-linkedin" if spammer else None),
         http_client=await _get_http(),
         api_base_url=(endpoint("linkedin_api") if spammer else None),
+        install_row_id=(install["id"] if "id" in install else None),
+        refresh_secret_ref=(
+            install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
+        ),
     )
     return await _wrap_source_client("linkedin", client)
 

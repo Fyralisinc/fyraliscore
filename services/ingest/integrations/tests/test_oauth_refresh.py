@@ -13,6 +13,7 @@ import pytest
 
 from services.ingest.integrations.oauth_refresh import (
     OAuthRefreshError,
+    REFRESH_CONFIGS,
     ensure_fresh_access_token,
     needs_refresh,
     refresh_and_persist,
@@ -138,6 +139,57 @@ async def test_carta_remints_via_client_credentials_from_install(monkeypatch):
     sql, args = pool.executed[0]
     assert "UPDATE carta_installations" in sql
     assert args[1] == "carta-cc-ref"  # refresh_secret_ref preserved
+
+
+async def test_refresh_and_persist_linkedin_body_auth_and_updates_row(monkeypatch):
+    monkeypatch.setenv("LINKEDIN_CLIENT_ID", "li-cid")
+    monkeypatch.setenv("LINKEDIN_CLIENT_SECRET", "li-secret")
+    store = FakeStore({"linkedin-refresh-ref": "OLD-linkedin-refresh"})
+    pool = FakePool()
+    captured: dict = {}
+    body = {
+        "access_token": "linkedin-new-access",
+        "refresh_token": "linkedin-returned-refresh",
+        "expires_in": 86400,
+    }
+
+    async with _http(body, captured=captured) as http:
+        refreshed = await refresh_and_persist(
+            provider="linkedin", pool=pool, secret_store=store, http=http,
+            tenant_id=TENANT, install_row_id=INSTALL,
+            refresh_secret_ref="linkedin-refresh-ref", now=NOW,
+        )
+
+    assert captured["form"]["grant_type"] == "refresh_token"
+    assert captured["form"]["refresh_token"] == "OLD-linkedin-refresh"
+    assert captured["form"]["client_id"] == "li-cid"
+    assert captured["form"]["client_secret"] == "li-secret"
+    assert "authorization" not in captured["headers"]
+    assert refreshed.access_token == "linkedin-new-access"
+    assert refreshed.refresh_token == "linkedin-returned-refresh"
+    labels = [lbl for _ref, lbl, _val in store.puts]
+    assert any("linkedin_access_token" in lbl for lbl in labels)
+    assert any("linkedin_refresh_token" in lbl for lbl in labels)
+    sql, args = pool.executed[0]
+    assert "UPDATE linkedin_installations" in sql
+    assert args[2] == NOW + timedelta(seconds=86400)
+    assert args[3] == INSTALL and args[4] == TENANT
+
+
+async def test_refresh_configs_cover_all_refresh_backed_install_tables():
+    """Every dedicated install table that stores OAuth refresh-token material
+    must be reachable by the shared refresh core."""
+    refresh_token_tables = {
+        "quickbooks_installations",
+        "gusto_installations",
+        "linkedin_installations",
+    }
+    configured = {
+        cfg.install_table
+        for cfg in REFRESH_CONFIGS.values()
+        if cfg.grant_type == "refresh_token"
+    }
+    assert refresh_token_tables <= configured
 
 
 # --- ensure_fresh_access_token: proactive vs reactive ---------------------

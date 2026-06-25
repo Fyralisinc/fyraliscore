@@ -28,6 +28,11 @@ Provider matrix (VERIFIED against official docs — see each fixture's
     form field (docs.carta.com/carta/docs/client-credentials-flow). The stored
     `refresh_secret_ref` holds the client-credentials *secret*, not an OAuth
     refresh token. No refresh token is returned.
+  - **LinkedIn** — `grant_type=refresh_token`, client creds in the **body**,
+    programmatic refresh tokens for approved partners only, access tokens
+    refreshed at `POST https://www.linkedin.com/oauth/v2/accessToken`.
+    LinkedIn returns a refresh token in the refresh response; persist the
+    returned value so Fyralis follows the provider payload if the token changes.
 
 Token-endpoint URLs + client credentials are **app-level config** (env), not
 per-install secrets:
@@ -56,8 +61,8 @@ from lib.observability import counter, histogram
 log = structlog.get_logger("integrations.oauth_refresh")
 
 
-# Provider is bounded by the refresh-capable source set (QBO/Ramp/Gusto/Carta
-# today); outcome is a closed enum so silent token-rotation failure becomes
+# Provider is bounded by the refresh-capable source set (QBO/Ramp/Gusto/Carta/
+# LinkedIn today); outcome is a closed enum so silent token-rotation failure becomes
 # an alertable rate instead of a slow-burn outage.
 _ATTEMPTS = counter(
     "oauth_refresh_attempts_total",
@@ -195,6 +200,16 @@ REFRESH_CONFIGS: dict[str, RefreshConfig] = {
             "read_issuer_info read_issuer_stakeholders "
             "read_issuer_shareclasses read_issuer_securities",
         ),
+    ),
+    "linkedin": _cfg(
+        # LinkedIn programmatic refresh-token exchange (Microsoft Learn,
+        # programmatic-refresh-tokens): form-encoded grant_type=refresh_token
+        # with refresh_token + client_id + client_secret in the body. The
+        # endpoint returns a refresh_token alongside the new access token; store
+        # it so the install row tracks the provider's current credential.
+        "linkedin", "https://www.linkedin.com/oauth/v2/accessToken",
+        "refresh_token", "body", rotates=True,
+        install_table="linkedin_installations", default_expires_in=86400,
     ),
 }
 
@@ -357,9 +372,8 @@ async def refresh_and_persist(
     Persistence mirrors the env-encrypted secret-store model: `put` a new
     ciphertext row for the access token (and the rotated refresh token, if any),
     then UPDATE the install's `secret_ref` / `refresh_secret_ref` /
-    `token_expires_at` to point at the new refs. All four install tables
-    (quickbooks/ramp/gusto/carta_installations) share these column names + an
-    `id` PK, so this is generic.
+    `token_expires_at` to point at the new refs. The refresh-managed install
+    tables share these column names + an `id` PK, so this is generic.
 
     Raises `OAuthRefreshError` on a failed exchange — the caller marks the shard
     degraded (it never crashes the worker or silently drops data).

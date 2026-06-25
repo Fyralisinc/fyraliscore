@@ -15,12 +15,10 @@ lookup probe), and the authenticated member must hold the ADMINISTRATOR page
 role for the organization (per the Community-Management docs).
 
 TODO(human): ACCESS IS PARTNER-GATED — the Community Management API tiers are
-    approval-only. (1) obtain the program approval (Standard/Advanced tier or
-    Talent partner agreement) before real traffic. (2) wire a refresh-on-401
-    loop in the client — LinkedIn access tokens are ~60 days, and programmatic
-    refresh tokens (~1 year) are only issued to approved partner programs;
-    `finalize` persists refresh_secret_ref/token_expires_at but no refresh
-    exchange is implemented yet.
+    approval-only. Obtain program approval (Standard/Advanced tier or Talent
+    partner agreement) before real traffic. Refresh-on-401 is wired through the
+    shared OAuth refresh core, but it only works for installs whose LinkedIn app
+    is authorized to receive programmatic refresh tokens.
 
 LinkedIn is POLL-ONLY: there is NO webhook, so this wizard does NOT accept a
 webhook verifier token and never registers a provider_installations row. The live

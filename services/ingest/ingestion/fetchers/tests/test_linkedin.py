@@ -20,6 +20,8 @@ pytestmark = pytest.mark.asyncio
 
 _ORG = "urn:li:organization:123"
 _BASE = "https://api.linkedin.com/rest"
+_TENANT = "11111111-1111-1111-1111-111111111111"
+_INSTALL = "22222222-2222-2222-2222-222222222222"
 
 
 def _post(n: int, modified_ms: int) -> dict:
@@ -131,6 +133,88 @@ async def test_get_organization_probe_uses_numeric_id_path():
     await client.aclose()
     assert info["localizedName"] == "Acme"
     assert captured[0].url.path == "/rest/organizations/123"
+
+
+class _RefreshStore:
+    def __init__(self, initial: dict[str, str]) -> None:
+        self._data = dict(initial)
+        self._n = 0
+
+    async def get(self, ref, *, tenant_id):
+        return self._data[ref].encode("utf-8")
+
+    async def put(self, plaintext, *, label, tenant_id):
+        self._n += 1
+        ref = f"new-ref-{self._n}"
+        self._data[ref] = (
+            plaintext.decode("utf-8") if isinstance(plaintext, bytes) else plaintext
+        )
+        return ref
+
+
+class _RefreshPool:
+    def __init__(self) -> None:
+        self.executed: list[tuple] = []
+
+    async def execute(self, sql, *args):
+        self.executed.append((sql, args))
+
+
+async def test_client_refreshes_linkedin_token_on_401_and_retries(monkeypatch):
+    monkeypatch.setenv("LINKEDIN_CLIENT_ID", "linkedin-client-id")
+    monkeypatch.setenv("LINKEDIN_CLIENT_SECRET", "linkedin-client-secret")
+    store = _RefreshStore({
+        "access-ref": "stale-linkedin-token",
+        "refresh-ref": "linkedin-refresh-token",
+    })
+    pool = _RefreshPool()
+    state = {"api_calls": 0}
+    captured: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == "https://www.linkedin.com/oauth/v2/accessToken":
+            captured["token_form"] = dict(
+                httpx.QueryParams(request.content.decode("utf-8"))
+            )
+            return httpx.Response(200, json={
+                "access_token": "fresh-linkedin-token",
+                "refresh_token": "returned-linkedin-refresh",
+                "expires_in": 86400,
+            })
+
+        state["api_calls"] += 1
+        if "Bearer fresh-linkedin-token" in request.headers.get(
+            "authorization", ""
+        ):
+            return httpx.Response(
+                200, json={"elements": [], "paging": {"links": []}},
+            )
+        return httpx.Response(401, json={"message": "expired"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = LinkedinClient(
+            base_url=_BASE,
+            organization_urn=_ORG,
+            pool=pool,
+            secret_store=store,
+            tenant_id=_TENANT,
+            secret_ref="access-ref",
+            http_client=http,
+            install_row_id=_INSTALL,
+            refresh_secret_ref="refresh-ref",
+        )
+        rows, next_start = await client.list_posts()
+
+    assert rows == [] and next_start is None
+    assert state["api_calls"] == 2
+    assert captured["token_form"] == {
+        "grant_type": "refresh_token",
+        "refresh_token": "linkedin-refresh-token",
+        "client_id": "linkedin-client-id",
+        "client_secret": "linkedin-client-secret",
+    }
+    assert len(pool.executed) == 1
+    assert "UPDATE linkedin_installations" in pool.executed[0][0]
 
 
 # ---------------------------------------------------------------------
