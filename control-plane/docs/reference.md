@@ -6,7 +6,9 @@
 > model, the data flow, the six invariants, and the trust model; see
 > [`operations.md`](./operations.md) for the lifecycle runbooks. The normative contracts
 > are in [`../SPRINT_PLAN.md`](../SPRINT_PLAN.md); the build journal is in
-> [`../BUILD_LOG.md`](../BUILD_LOG.md).
+> [`../BUILD_LOG.md`](../BUILD_LOG.md). For the **forward-looking** plan of what can
+> be added to the operator Console (turning it from a read-only dashboard into a
+> control surface), see [`console-roadmap.md`](./console-roadmap.md).
 
 All paths below are relative to `control-plane/`. Python tooling runs in a virtualenv with
 `requirements.txt` installed (`cryptography`, `fastapi`, `uvicorn`, `httpx`, `h11`,
