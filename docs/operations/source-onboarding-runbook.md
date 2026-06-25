@@ -148,7 +148,11 @@ local watch cursors and expirations so stale pushes cannot resolve after the
 source is disabled. WhatsApp also uses this dedicated path; it maps the
 `enabled` install flag into the same operator status/pause/resume/uninstall
 contract and rotates its `app_secret_ref`, `verify_token_ref`, and
-`access_token_ref` fields.
+`access_token_ref` fields. Dedicated webhook-capable source uninstall also
+disables the matching local `provider_installations` resolver row when present
+and reports `webhook_cleanup_status` plus `webhook_cleanup_complete` in the
+operator output and audit context. Treat `provider_row_missing` as an
+investigation item before declaring cleanup complete.
 
 Pause requirements:
 
@@ -177,6 +181,8 @@ deletion.
 5. Keep audit rows and uninstall metadata.
 6. Quarantine in-flight source work that cannot safely complete.
 7. Record uninstall status and last successful cleanup step.
+8. For webhook sources, verify the local resolver row is disabled and the
+   uninstall result reports `webhook_cleanup_complete=true`.
 
 Data deletion is separate from uninstall. Follow
 [Data retention, backup, and recovery](data-retention-backup-recovery.md) for

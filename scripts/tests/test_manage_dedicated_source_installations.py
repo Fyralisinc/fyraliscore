@@ -15,6 +15,8 @@ from scripts.manage_dedicated_source_installations import (
     DedicatedSourceInstallationCliError,
     _installation_projection_sql,
     _uninstall_installation,
+    _webhook_cleanup_complete,
+    _webhook_cleanup_status,
     build_parser,
     run_command,
 )
@@ -449,6 +451,11 @@ async def test_dedicated_uninstall_disables_rows_deletes_refs_and_audits_safely(
         assert result["installation"]["has_refresh_secret_ref"] is False
         assert result["installation"]["has_webhook_secret_ref"] is False
         assert result["installation"]["webhook_provider_row_updated"] is True
+        assert (
+            result["installation"]["webhook_cleanup_status"]
+            == "local_resolver_disabled"
+        )
+        assert result["installation"]["webhook_cleanup_complete"] is True
 
         install_row = await conn.fetchrow(
             """
@@ -496,6 +503,8 @@ async def test_dedicated_uninstall_disables_rows_deletes_refs_and_audits_safely(
         assert operator_metadata["source"] == "gusto"
         assert operator_metadata["refs_deleted"] == 3
         assert operator_metadata["webhook_provider_row_updated"] is True
+        assert operator_metadata["webhook_cleanup_status"] == "local_resolver_disabled"
+        assert operator_metadata["webhook_cleanup_complete"] is True
         install_audit_context = _metadata(
             await conn.fetchrow(
                 """
@@ -509,6 +518,10 @@ async def test_dedicated_uninstall_disables_rows_deletes_refs_and_audits_safely(
             )
         )
         assert install_audit_context["refs_deleted"] == 3
+        assert install_audit_context["webhook_cleanup_status"] == (
+            "local_resolver_disabled"
+        )
+        assert install_audit_context["webhook_cleanup_complete"] is True
         combined = json.dumps(
             {
                 "result": result,
@@ -1024,6 +1037,30 @@ def test_google_workspace_sources_have_no_secret_ref_lifecycle_specs() -> None:
         )
 
 
+def test_webhook_cleanup_status_requires_local_resolver_disable() -> None:
+    assert (
+        _webhook_cleanup_status(
+            spec=SPECS["gusto"],
+            provider_row_updated=True,
+        )
+        == "local_resolver_disabled"
+    )
+    missing_status = _webhook_cleanup_status(
+        spec=SPECS["gusto"],
+        provider_row_updated=False,
+    )
+
+    assert missing_status == "provider_row_missing"
+    assert _webhook_cleanup_complete(missing_status) is False
+    assert (
+        _webhook_cleanup_status(
+            spec=SPECS["google_calendar"],
+            provider_row_updated=False,
+        )
+        == "not_applicable"
+    )
+
+
 def test_installation_projection_supports_sources_without_ref_columns() -> None:
     projection = _installation_projection_sql(
         SPECS["google_drive"],
@@ -1150,6 +1187,8 @@ async def test_google_calendar_uninstall_clears_native_watch_state(
         assert result["installation"]["enabled"] is False
         assert result["installation"]["refs_seen"] == 0
         assert result["installation"]["refs_deleted"] == 0
+        assert result["installation"]["webhook_cleanup_status"] == "not_applicable"
+        assert result["installation"]["webhook_cleanup_complete"] is True
         assert result["installation"]["native_google_watch_rows_cleared"] == 1
         watch_row = await conn.fetchrow(
             """

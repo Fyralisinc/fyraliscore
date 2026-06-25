@@ -34,6 +34,7 @@ GENERIC_PROVIDER_INSTALLATION_SOURCES: tuple[str, ...] = (
 REQUIRED_LIFECYCLE_COMMANDS: frozenset[str] = frozenset(
     {"status", "pause", "resume", "uninstall", "rotate-secret"}
 )
+WEBHOOK_SECRET_REF_COLUMN = "webhook_secret_ref"
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,36 @@ def validate_source_lifecycle_contract(
             violations.append(
                 SourceLifecycleViolation(
                     f"dedicated source {source!r} ref_columns must be a tuple"
+                )
+            )
+        ref_columns = getattr(spec, "ref_columns", ())
+        if isinstance(ref_columns, tuple) and WEBHOOK_SECRET_REF_COLUMN in ref_columns:
+            if not getattr(spec, "webhook_installation_id_column", None):
+                violations.append(
+                    SourceLifecycleViolation(
+                        f"dedicated source {source!r} has {WEBHOOK_SECRET_REF_COLUMN} "
+                        "but no webhook_installation_id_column for local resolver cleanup"
+                    )
+                )
+        if getattr(spec, "webhook_installation_id_transform", None) and not getattr(
+            spec,
+            "webhook_installation_id_column",
+            None,
+        ):
+            violations.append(
+                SourceLifecycleViolation(
+                    f"dedicated source {source!r} has webhook_installation_id_transform "
+                    "but no webhook_installation_id_column"
+                )
+            )
+        if getattr(spec, "native_google_watch_table", False) and (
+            not getattr(spec, "entity_table", None)
+            or not getattr(spec, "entity_install_column", None)
+        ):
+            violations.append(
+                SourceLifecycleViolation(
+                    f"dedicated source {source!r} declares native_google_watch_table "
+                    "without entity_table/entity_install_column"
                 )
             )
 

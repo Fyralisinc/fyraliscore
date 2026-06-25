@@ -276,6 +276,10 @@ SECRET_FIELD_TO_COLUMN = {
     "access-token": "access_token_ref",
 }
 
+WEBHOOK_CLEANUP_NOT_APPLICABLE = "not_applicable"
+WEBHOOK_CLEANUP_LOCAL_RESOLVER_DISABLED = "local_resolver_disabled"
+WEBHOOK_CLEANUP_PROVIDER_ROW_MISSING = "provider_row_missing"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -560,6 +564,13 @@ async def run_command(
                             "refs_seen": len(refs),
                             "refs_deleted": 0,
                             "secret_delete_errors": 0,
+                            "webhook_cleanup_status": (
+                                _webhook_cleanup_status(
+                                    spec=spec,
+                                    provider_row_updated=False,
+                                )
+                            ),
+                            "webhook_cleanup_complete": False,
                         },
                     }
 
@@ -575,6 +586,7 @@ async def run_command(
                     except Exception as exc:  # pragma: no cover - backend-specific
                         delete_errors[column] = exc.__class__.__name__
 
+                provider_installation_id = _provider_installation_id(row, spec)
                 updated = await _uninstall_installation(
                     conn,
                     tenant_id=tenant_id,
@@ -586,8 +598,15 @@ async def run_command(
                     conn,
                     tenant_id=tenant_id,
                     spec=spec,
-                    installation_id=_provider_installation_id(row, spec),
+                    installation_id=provider_installation_id,
                     clear_secret_ref="webhook_secret_ref" in deleted_columns,
+                )
+                webhook_cleanup_status = _webhook_cleanup_status(
+                    spec=spec,
+                    provider_row_updated=webhook_row_updated,
+                )
+                webhook_cleanup_complete = _webhook_cleanup_complete(
+                    webhook_cleanup_status
                 )
                 native_watch_rows_cleared = await _clear_native_google_watch_state(
                     conn,
@@ -617,6 +636,8 @@ async def run_command(
                             "webhook_secret_ref" in spec.ref_columns
                         ),
                         "webhook_provider_row_updated": webhook_row_updated,
+                        "webhook_cleanup_status": webhook_cleanup_status,
+                        "webhook_cleanup_complete": webhook_cleanup_complete,
                         "native_google_watch_rows_cleared": (
                             native_watch_rows_cleared
                         ),
@@ -633,6 +654,8 @@ async def run_command(
                         "scope_id_hash": _hash_scope_value(row[spec.scope_column]),
                         "refs_seen": len(refs),
                         "refs_deleted": len(deleted_columns),
+                        "webhook_cleanup_status": webhook_cleanup_status,
+                        "webhook_cleanup_complete": webhook_cleanup_complete,
                         **(
                             {"secret_delete_errors": len(delete_errors)}
                             if delete_errors
@@ -648,6 +671,8 @@ async def run_command(
                     "webhook_secret_ref" in spec.ref_columns
                 )
                 installation["webhook_provider_row_updated"] = webhook_row_updated
+                installation["webhook_cleanup_status"] = webhook_cleanup_status
+                installation["webhook_cleanup_complete"] = webhook_cleanup_complete
                 installation["native_google_watch_rows_cleared"] = (
                     native_watch_rows_cleared
                 )
@@ -871,6 +896,25 @@ async def _uninstall_provider_installation(
         installation_id,
     )
     return _rows_changed(status) > 0
+
+
+def _webhook_cleanup_status(
+    *,
+    spec: SourceSpec,
+    provider_row_updated: bool,
+) -> str:
+    if "webhook_secret_ref" not in spec.ref_columns:
+        return WEBHOOK_CLEANUP_NOT_APPLICABLE
+    if provider_row_updated:
+        return WEBHOOK_CLEANUP_LOCAL_RESOLVER_DISABLED
+    return WEBHOOK_CLEANUP_PROVIDER_ROW_MISSING
+
+
+def _webhook_cleanup_complete(status: str) -> bool:
+    return status in {
+        WEBHOOK_CLEANUP_NOT_APPLICABLE,
+        WEBHOOK_CLEANUP_LOCAL_RESOLVER_DISABLED,
+    }
 
 
 async def _clear_native_google_watch_state(

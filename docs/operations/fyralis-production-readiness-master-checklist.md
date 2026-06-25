@@ -988,7 +988,11 @@ Current state:
   refs on uninstall, handles AWS account/region selectors, handles no-secret
   Google Workspace DWD install rows, maps WhatsApp's `enabled` flag into the
   same lifecycle contract, and disables matching webhook resolver rows for
-  webhook-capable sources.
+  webhook-capable sources. Dedicated uninstall now emits
+  `webhook_cleanup_status`/`webhook_cleanup_complete` in operator output and
+  audit context, while the source lifecycle ratchet blocks any new
+  `webhook_secret_ref` source that does not declare a provider-installation
+  resolver key for local ingress shutdown.
 - Architecture ratchets now block new plaintext credential columns in
   migrations and block production integration code from passing raw
   credential-looking variables into `secret_ref`/`*_secret_ref` install
@@ -1038,8 +1042,9 @@ Must solve:
   Carta, LinkedIn, Jira, Mercury, Brex, Deel, Fireflies, Miro, Grafana, Figma,
   HiBob, Ashby, AWS, Telegram, Signal, Gmail, Google Calendar, and Google
   Drive uninstall now disables source install rows and clears per-install
-  secret refs or native local watch state. External non-Google provider webhook
-  deregistration remains open.
+  secret refs or native local watch state. Webhook-capable dedicated sources
+  are required to disable the matching local resolver row and report cleanup
+  status. External non-Google provider webhook deregistration remains open.
 - [x] Customer/admin UI or CLI exposes install health and last successful sync.
 
 Acceptance evidence:
