@@ -67,6 +67,11 @@ jobs:
       - name: Check required merge checks policy
         run: python scripts/check_github_required_checks.py
 
+      # Ensures every bounded product workflow has explicit p95/p99 query
+      # budgets plus hot-path/index-review evidence before soak testing.
+      - name: Check product query performance budgets
+        run: python scripts/check_product_query_budgets.py
+
       # Keeps `.env.production.example` aligned with fail-closed production
       # settings so deploy operators see required keys before runtime startup.
       - name: Check production env contract

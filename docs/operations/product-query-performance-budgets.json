@@ -1,0 +1,158 @@
+{
+  "version": 1,
+  "source_enum": "services.app.gateway.product_workflow_metrics.PRODUCT_WORKFLOWS",
+  "workflows": {
+    "today": {
+      "owner": "product-platform",
+      "beta_p95_seconds": 2.0,
+      "beta_p99_seconds": 5.0,
+      "ga_p95_seconds": 1.5,
+      "ga_p99_seconds": 3.0,
+      "hot_paths": ["/v1/today", "/today/deltas/{delta_id}/apply"],
+      "index_review": [
+        "actor_visible_* materialized views are refreshed by housekeeper",
+        "today target/entity lookups use tenant_id plus target ids"
+      ]
+    },
+    "ask": {
+      "owner": "product-platform",
+      "beta_p95_seconds": 8.0,
+      "beta_p99_seconds": 15.0,
+      "ga_p95_seconds": 6.0,
+      "ga_p99_seconds": 12.0,
+      "hot_paths": ["/v1/ask", "/v1/ask/sessions/{session_id}/messages"],
+      "index_review": [
+        "ask session/message lookups are tenant/session scoped",
+        "retrieval paths must stay bounded by configured evidence/model limits"
+      ]
+    },
+    "recommendations": {
+      "owner": "product-platform",
+      "beta_p95_seconds": 2.0,
+      "beta_p99_seconds": 5.0,
+      "ga_p95_seconds": 1.5,
+      "ga_p99_seconds": 3.0,
+      "hot_paths": [
+        "/v1/recommendations",
+        "/v1/recommendations/{recommendation_id}/act",
+        "/v1/cards/{card_id}/probe"
+      ],
+      "index_review": [
+        "recommendation rows are tenant/status scoped",
+        "model-backed rows pass through actor-visible model access checks"
+      ]
+    },
+    "forecasts": {
+      "owner": "product-platform",
+      "beta_p95_seconds": 2.5,
+      "beta_p99_seconds": 6.0,
+      "ga_p95_seconds": 2.0,
+      "ga_p99_seconds": 4.0,
+      "hot_paths": ["/v1/forecasts", "/v1/forecasts/detail/{forecast_id}"],
+      "index_review": [
+        "prediction lists are tenant/status/target scoped",
+        "targetless rows use creator/scope actor metadata"
+      ]
+    },
+    "decision_review": {
+      "owner": "product-platform",
+      "beta_p95_seconds": 2.0,
+      "beta_p99_seconds": 5.0,
+      "ga_p95_seconds": 1.5,
+      "ga_p99_seconds": 3.0,
+      "hot_paths": [
+        "/v1/decision_deltas/{delta_id}/accept",
+        "/v1/resolution_threads/{thread_id}/evaluate",
+        "/clarifications/{clarification_id}/answer"
+      ],
+      "index_review": [
+        "decision/resolution rows are tenant/status scoped",
+        "mutation reads gate target entities before updates"
+      ]
+    },
+    "model_map": {
+      "owner": "product-platform",
+      "beta_p95_seconds": 3.0,
+      "beta_p99_seconds": 8.0,
+      "ga_p95_seconds": 2.0,
+      "ga_p99_seconds": 5.0,
+      "hot_paths": ["/map/snapshot", "/model/items/{item_id}/trace"],
+      "index_review": [
+        "map projections are precomputed and tenant scoped",
+        "model trace reads use tenant/model ids and actor-visible checks"
+      ]
+    },
+    "ceo_view": {
+      "owner": "product-platform",
+      "beta_p95_seconds": 3.0,
+      "beta_p99_seconds": 8.0,
+      "ga_p95_seconds": 2.0,
+      "ga_p99_seconds": 5.0,
+      "hot_paths": ["/view/ceo/home", "/view/ceo/force-refresh"],
+      "index_review": [
+        "CEO snapshot cache refresh is lease-protected",
+        "manual refresh mutates tenant-wide cache only after role check"
+      ]
+    },
+    "source_onboarding": {
+      "owner": "ingestion-platform",
+      "beta_p95_seconds": 5.0,
+      "beta_p99_seconds": 15.0,
+      "ga_p95_seconds": 4.0,
+      "ga_p99_seconds": 10.0,
+      "hot_paths": ["/integrations/gmail/status", "/finance/{source}/status"],
+      "index_review": [
+        "install status queries are tenant/source scoped",
+        "onboarding progress reads use source_onboarding_runs tenant indexes"
+      ]
+    },
+    "dashboard": {
+      "owner": "product-platform",
+      "beta_p95_seconds": 2.0,
+      "beta_p99_seconds": 5.0,
+      "ga_p95_seconds": 1.5,
+      "ga_p99_seconds": 3.0,
+      "hot_paths": ["/dashboard", "/dashboard/revenue-at-risk"],
+      "index_review": [
+        "dashboard aggregates read tenant-scoped substrate rows",
+        "capacity/revenue widgets gate nested rows through actor access"
+      ]
+    },
+    "substrate": {
+      "owner": "platform",
+      "beta_p95_seconds": 1.5,
+      "beta_p99_seconds": 4.0,
+      "ga_p95_seconds": 1.0,
+      "ga_p99_seconds": 3.0,
+      "hot_paths": ["/observations", "/models", "/commitments"],
+      "index_review": [
+        "legacy substrate list endpoints keep tenant_id filters",
+        "per-row can_read checks are required before emission"
+      ]
+    },
+    "rendering": {
+      "owner": "product-platform",
+      "beta_p95_seconds": 4.0,
+      "beta_p99_seconds": 10.0,
+      "ga_p95_seconds": 3.0,
+      "ga_p99_seconds": 6.0,
+      "hot_paths": ["/rendering/card", "/rendering/query"],
+      "index_review": [
+        "rendering adapters use long-lived HTTP clients and circuit breakers",
+        "database access must finish before remote rendering calls"
+      ]
+    },
+    "history": {
+      "owner": "product-platform",
+      "beta_p95_seconds": 3.0,
+      "beta_p99_seconds": 8.0,
+      "ga_p95_seconds": 2.0,
+      "ga_p99_seconds": 5.0,
+      "hot_paths": ["/v1/history", "/v1/history/summary"],
+      "index_review": [
+        "history reads are tenant scoped and actor filtered",
+        "summary counters must stay bounded by time/window predicates"
+      ]
+    }
+  }
+}

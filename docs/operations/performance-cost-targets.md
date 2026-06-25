@@ -42,6 +42,12 @@ SLOs.
 | Post-commit queue drain | <= 5m | <= 2m |
 | DLQ unresolved target | 0 sustained | 0 sustained |
 
+Per-workflow query budgets and hot-path index-review evidence are tracked in
+`docs/operations/product-query-performance-budgets.json`. CI runs
+`scripts/check_product_query_budgets.py` to ensure every bounded gateway
+product workflow has p95/p99 budgets, at least one classifier-backed hot path,
+and explicit query/index review notes before a soak report can claim coverage.
+
 ## Cost Budgets
 
 | Budget | Beta limit | GA limit |

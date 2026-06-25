@@ -1370,6 +1370,11 @@ Current state:
   cost ceiling from the same beta/GA profiles, including fixed compute,
   LLM/embedding budgets, object-store growth, Postgres growth, and
   observability assumptions.
+- `docs/operations/product-query-performance-budgets.json` now maps every
+  bounded gateway product workflow to p95/p99 budgets, classifier-backed hot
+  paths, and index-review notes. CI runs
+  `scripts/check_product_query_budgets.py` so new workflows cannot avoid the
+  budget registry.
 
 Must solve:
 
@@ -1390,7 +1395,7 @@ Must solve:
 - [ ] Add per-tenant concurrency controls for Think and expensive workers.
 - [x] Add LLM token, spend, and request ceilings.
 - [x] Add source API rate limits and backoff budgets.
-- [ ] Add query performance budgets and index review for every hot endpoint.
+- [x] Add query performance budgets and index review for every hot endpoint.
 - [ ] Verify p95/p99 latency and queue drain targets.
 - [x] Produce a cost model for compute, DB, broker, object storage, embeddings,
   and LLM calls.
