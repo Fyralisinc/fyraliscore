@@ -41,6 +41,8 @@ def test_ga_scaled_load_plan_preserves_shape_with_smoke_counts() -> None:
     assert m_load["qps"] == 1
     assert m_load["duration_s"] == 300
     assert m_load["provider_weights"] == {"slack": 0.75, "github": 0.25}
+    product_reads = plan["generators"]["product_reads"]
+    assert product_reads["recommendation_actions"] == 25
 
 
 def test_cutover_env_renders_m_load_variables() -> None:

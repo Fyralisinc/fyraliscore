@@ -60,6 +60,18 @@ rate-limit gates and bounded 429 retry budgets. Embedding spend and a full
 provider-specific source API call-ceiling model still need enforcement before
 GA.
 
+To estimate launch costs from the same beta/GA usage profiles, run:
+
+```bash
+uv run python scripts/estimate_production_cost_profile.py beta
+uv run python scripts/estimate_production_cost_profile.py ga \
+  --object-storage-usd-per-gb-month 0.023 \
+  --postgres-storage-usd-per-gb-month 0.115
+```
+
+The estimator keeps provider pricing configurable. Attach the rendered JSON to
+soak reports with the exact unit prices used for that environment.
+
 ## Required Load Data Shape
 
 Synthetic datasets must include:

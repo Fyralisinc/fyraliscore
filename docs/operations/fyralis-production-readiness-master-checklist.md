@@ -1366,6 +1366,10 @@ Current state:
   environment variables. The existing synthetic webhook sender now accepts
   provider weights so load plans can deliberately represent noisy-source
   shapes.
+- `scripts/estimate_production_cost_profile.py` now renders a configurable
+  cost ceiling from the same beta/GA profiles, including fixed compute,
+  LLM/embedding budgets, object-store growth, Postgres growth, and
+  observability assumptions.
 
 Must solve:
 
@@ -1388,7 +1392,7 @@ Must solve:
 - [x] Add source API rate limits and backoff budgets.
 - [ ] Add query performance budgets and index review for every hot endpoint.
 - [ ] Verify p95/p99 latency and queue drain targets.
-- [ ] Produce a cost model for compute, DB, broker, object storage, embeddings,
+- [x] Produce a cost model for compute, DB, broker, object storage, embeddings,
   and LLM calls.
 
 Acceptance evidence:

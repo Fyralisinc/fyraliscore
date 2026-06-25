@@ -55,6 +55,12 @@ class TenantLoadProfile:
     today_requests_per_day: int
     recommendation_actions_per_day: int
     source_lifecycle_actions_per_day: int
+    think_llm_spend_budget_usd_per_day: float
+    think_llm_token_budget_per_day: int
+    think_llm_request_budget_per_day: int
+    embedding_spend_budget_usd_per_day: float
+    object_storage_growth_gb_per_month: int
+    postgres_storage_growth_gb_per_month: int
     source_mix: tuple[str, ...]
 
 
@@ -77,6 +83,12 @@ PROFILES: dict[ProfileName, TenantLoadProfile] = {
         today_requests_per_day=2_500,
         recommendation_actions_per_day=250,
         source_lifecycle_actions_per_day=10,
+        think_llm_spend_budget_usd_per_day=25.0,
+        think_llm_token_budget_per_day=5_000_000,
+        think_llm_request_budget_per_day=5_000,
+        embedding_spend_budget_usd_per_day=10.0,
+        object_storage_growth_gb_per_month=300,
+        postgres_storage_growth_gb_per_month=50,
         source_mix=BETA_SOURCE_MIX,
     ),
     "ga": TenantLoadProfile(
@@ -97,6 +109,12 @@ PROFILES: dict[ProfileName, TenantLoadProfile] = {
         today_requests_per_day=25_000,
         recommendation_actions_per_day=2_500,
         source_lifecycle_actions_per_day=100,
+        think_llm_spend_budget_usd_per_day=100.0,
+        think_llm_token_budget_per_day=25_000_000,
+        think_llm_request_budget_per_day=50_000,
+        embedding_spend_budget_usd_per_day=50.0,
+        object_storage_growth_gb_per_month=3_000,
+        postgres_storage_growth_gb_per_month=500,
         source_mix=GA_SOURCE_MIX,
     ),
 }
@@ -208,6 +226,32 @@ def build_load_plan(
             "think": {
                 "triggers": _scaled_count(profile.think_triggers_per_day, scale),
             },
+        },
+        "cost_budgets": {
+            "think_llm_spend_usd_per_day": round(
+                profile.think_llm_spend_budget_usd_per_day * scale,
+                4,
+            ),
+            "think_llm_tokens_per_day": _scaled_count(
+                profile.think_llm_token_budget_per_day,
+                scale,
+            ),
+            "think_llm_requests_per_day": _scaled_count(
+                profile.think_llm_request_budget_per_day,
+                scale,
+            ),
+            "embedding_spend_usd_per_day": round(
+                profile.embedding_spend_budget_usd_per_day * scale,
+                4,
+            ),
+            "object_storage_growth_gb_per_month": _scaled_count(
+                profile.object_storage_growth_gb_per_month,
+                scale,
+            ),
+            "postgres_storage_growth_gb_per_month": _scaled_count(
+                profile.postgres_storage_growth_gb_per_month,
+                scale,
+            ),
         },
     }
 
