@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Protocol
@@ -19,7 +20,15 @@ from uuid import uuid4
 
 import httpx
 
+from lib.shared.circuit_breaker import AsyncCircuitBreaker, CircuitOpenError
+from lib.shared.errors import DependencyUnavailableError
 from lib.shared.env import is_prod
+from lib.shared.http_retry import (
+    HttpRetryConfig,
+    SleepFn,
+    is_retryable_httpx_error,
+    sleep_before_retry,
+)
 from services.product.greeting.snapshot import (
     FounderContext,
     QueryGridSnapshot,
@@ -28,6 +37,12 @@ from services.product.greeting.snapshot import (
 
 
 log = logging.getLogger(__name__)
+
+
+def _record_rendering_breaker_exception(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return is_retryable_httpx_error(exc)
+    return True
 
 
 # =====================================================================
@@ -295,12 +310,12 @@ class MockRenderingAdapter:
             1 for sc in snapshot.recent_state_changes
             if sc.entity_kind in ("resource", "commitment")
         )
-        # Calibration stub until the calibration bridge is wired.
-        calibration_pct = 74
-        body = (
-            f"{signal_count} signals tracked, "
-            f"{external_moves} external moves, "
-            f"calibration {calibration_pct}%."
+        calibration_pct = _calibration_pct_for_close_line(snapshot)
+        body = _compose_close_line_body(
+            signal_count=signal_count,
+            external_moves=external_moves,
+            calibration_pct=calibration_pct,
+            calibration_sample_count=snapshot.calibration_sample_count,
         )
         return RenderedCloseLine(
             body=body,
@@ -338,21 +353,103 @@ class HttpRenderingAdapter:
         *,
         timeout_s: float = 30.0,
         client: httpx.AsyncClient | None = None,
+        retry_config: HttpRetryConfig | None = None,
+        breaker: AsyncCircuitBreaker | None = None,
+        sleep: SleepFn = asyncio.sleep,
     ):
         self._base = endpoint_base.rstrip("/")
         self._timeout = timeout_s
         self._client = client
+        self._owned_client: httpx.AsyncClient | None = None
+        self._retry_config = retry_config or HttpRetryConfig()
+        self._breaker = breaker or AsyncCircuitBreaker(
+            name="greeting_rendering",
+            record_exception=_record_rendering_breaker_exception,
+        )
+        self._sleep = sleep
+
+    def _client_for_request(self) -> httpx.AsyncClient:
+        if self._client is not None:
+            return self._client
+        if self._owned_client is None:
+            self._owned_client = httpx.AsyncClient(timeout=self._timeout)
+        return self._owned_client
+
+    async def aclose(self) -> None:
+        if self._owned_client is not None:
+            await self._owned_client.aclose()
+            self._owned_client = None
+
+    def _unavailable_error(
+        self,
+        *,
+        path: str,
+        exc: BaseException,
+        attempts: int | None = None,
+        circuit_open: bool = False,
+    ) -> DependencyUnavailableError:
+        status_code = (
+            exc.response.status_code if isinstance(exc, httpx.HTTPStatusError)
+            else None
+        )
+        context: dict[str, Any] = {
+            "attempts": attempts
+            if attempts is not None
+            else self._retry_config.max_attempts,
+            "status_code": status_code,
+            "url": f"{self._base}{path}",
+            "cause_type": type(exc).__name__,
+        }
+        if circuit_open:
+            context["circuit_open"] = True
+            if isinstance(exc, CircuitOpenError):
+                context["breaker"] = exc.context.get("breaker")
+        return DependencyUnavailableError(
+            "rendering",
+            path.strip("/") or "root",
+            **context,
+        )
 
     async def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        client = self._client or httpx.AsyncClient(timeout=self._timeout)
-        owned = self._client is None
         try:
-            resp = await client.post(f"{self._base}{path}", json=payload)
-            resp.raise_for_status()
-            return resp.json()
-        finally:
-            if owned:
-                await client.aclose()
+            return await self._breaker.call(
+                lambda: self._post_with_retries(path=path, payload=payload)
+            )
+        except CircuitOpenError as exc:
+            raise self._unavailable_error(
+                path=path,
+                exc=exc,
+                attempts=0,
+                circuit_open=True,
+            ) from exc
+
+    async def _post_with_retries(
+        self,
+        *,
+        path: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        client = self._client_for_request()
+        url = f"{self._base}{path}"
+        last_error: BaseException | None = None
+        for attempt_index in range(self._retry_config.max_attempts):
+            try:
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+            except Exception as exc:
+                if not is_retryable_httpx_error(exc):
+                    raise
+                last_error = exc
+                if attempt_index >= self._retry_config.max_attempts - 1:
+                    break
+                await sleep_before_retry(
+                    attempt_index=attempt_index,
+                    config=self._retry_config,
+                    sleep=self._sleep,
+                )
+        assert last_error is not None
+        raise self._unavailable_error(path=path, exc=last_error) from last_error
 
     async def render_greeting(
         self,
@@ -553,7 +650,21 @@ class HttpRenderingAdapter:
             1 for sc in snapshot.recent_state_changes
             if sc.entity_kind in ("resource", "commitment")
         )
-        calibration_pct = 74
+        calibration_pct = _calibration_pct_for_close_line(snapshot)
+        if not _has_calibration_samples(snapshot):
+            return RenderedCloseLine(
+                body=_compose_close_line_body(
+                    signal_count=signal_count,
+                    external_moves=external_moves,
+                    calibration_pct=calibration_pct,
+                    calibration_sample_count=snapshot.calibration_sample_count,
+                ),
+                signal_count=signal_count,
+                external_moves=external_moves,
+                calibration_pct=calibration_pct,
+                rendering_model_used="local-close-line/1",
+                cost_usd=0.0,
+            )
         resp = await self._post(
             "/rendering/close-line",
             {
@@ -710,6 +821,8 @@ def _snapshot_to_rnd_wire(snapshot: SubstrateSnapshot) -> dict[str, Any]:
         },
         "time_of_day_bucket": snapshot.time_of_day_bucket,
         "signals_watched_count": signals_watched_count,
+        "calibration_pct": snapshot.calibration_pct,
+        "calibration_sample_count": snapshot.calibration_sample_count,
     }
 
 
@@ -733,6 +846,38 @@ def _min_snapshot_wire_for_grid(grid: QueryGridSnapshot) -> dict[str, Any]:
         "time_of_day_bucket": grid.time_of_day_bucket,
         "signals_watched_count": 0,
     }
+
+
+def _has_calibration_samples(snapshot: SubstrateSnapshot) -> bool:
+    return (
+        snapshot.calibration_pct is not None
+        and snapshot.calibration_sample_count > 0
+    )
+
+
+def _calibration_pct_for_close_line(snapshot: SubstrateSnapshot) -> int:
+    if not _has_calibration_samples(snapshot):
+        return 0
+    return max(0, min(100, int(snapshot.calibration_pct or 0)))
+
+
+def _compose_close_line_body(
+    *,
+    signal_count: int,
+    external_moves: int,
+    calibration_pct: int,
+    calibration_sample_count: int,
+) -> str:
+    calibration_text = (
+        f"calibration {calibration_pct}%"
+        if calibration_sample_count > 0
+        else "calibration warming"
+    )
+    return (
+        f"{signal_count} signals tracked, "
+        f"{external_moves} external moves, "
+        f"{calibration_text}."
+    )
 
 
 def _card_focus_from_candidate(

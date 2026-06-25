@@ -68,6 +68,17 @@ def build_ceo_api_router(
             )
         tenant_id = stream_manager.resolve_token(token)
         if tenant_id is None:
+            try:
+                from services.app.gateway.auth import validate_token
+
+                deps = getattr(request.app.state, "deps", None)
+                pool = deps.pool if deps else None
+                ctx = await validate_token(pool, token) if pool else None
+                if ctx is not None:
+                    return ctx.tenant_id, str(ctx.actor_id)
+            except Exception:
+                pass
+        if tenant_id is None:
             if default_tenant_id is not None:
                 return default_tenant_id, "default"
             raise HTTPException(
@@ -244,9 +255,29 @@ def _extract_token(request: Request) -> str | None:
         "Authorization"
     )
     if auth and auth.lower().startswith("bearer "):
-        return auth[len("Bearer "):].strip()
-    token = request.query_params.get("token")
-    return token
+        return auth[len("Bearer ") :].strip()
+    cookie_token = _session_cookie_token(request)
+    if cookie_token:
+        return cookie_token
+    if _query_token_auth_enabled(request):
+        token = request.query_params.get("token")
+        return token.strip() if isinstance(token, str) and token.strip() else None
+    return None
+
+
+def _session_cookie_token(request: Request) -> str | None:
+    settings = getattr(request.app.state, "gateway_settings", None)
+    cookie_name = str(
+        getattr(settings, "websocket_session_cookie_name", "fyralis_session")
+        or "fyralis_session"
+    )
+    token = request.cookies.get(cookie_name)
+    return token.strip() if isinstance(token, str) and token.strip() else None
+
+
+def _query_token_auth_enabled(request: Request) -> bool:
+    settings = getattr(request.app.state, "gateway_settings", None)
+    return bool(getattr(settings, "websocket_query_token_auth_enabled", False))
 
 
 def _iso(ts: datetime | None) -> str:

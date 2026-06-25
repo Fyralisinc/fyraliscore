@@ -16,10 +16,11 @@ Wire contract:
   client → server:
     { "action": "ping" }  # optional — server responds with heartbeat
 
-Auth: simple static token (query param `?token=<tok>` OR
-`Authorization: Bearer <tok>`). Real auth is deferred; the token maps
-to a tenant_id via an env-configurable registry so dogfood can wire a
-single tenant without a full gateway-style auth path.
+Auth: token via `Authorization: Bearer <tok>` or the configured browser session
+cookie, with the legacy `?token=<tok>` fallback allowed only when gateway
+settings permit query-token WebSocket auth. Static dogfood tokens can still map
+to a tenant_id when enabled; otherwise actor-session tokens are resolved through
+the gateway session table.
 
 Tenant isolation: each connection is scoped to exactly one tenant_id
 at handshake; the manager only delivers messages for that tenant.
@@ -65,7 +66,9 @@ class StaticTenantTokenMap:
     tokens: dict[str, UUID] = field(default_factory=dict)
 
     @classmethod
-    def from_env(cls) -> "StaticTenantTokenMap":
+    def from_env(cls, *, enabled: bool = True) -> "StaticTenantTokenMap":
+        if not enabled:
+            return cls(tokens={})
         raw = os.environ.get("VIEW_CEO_STATIC_TOKENS", "").strip()
         out: dict[str, UUID] = {}
         if raw:
@@ -93,6 +96,7 @@ class StaticTenantTokenMap:
 class _ClientState:
     id: UUID
     tenant_id: UUID
+    actor_id: UUID | None
     queue: asyncio.Queue[dict[str, Any]]
     closed: bool = False
 
@@ -121,10 +125,16 @@ class ViewCeoStreamManager:
     # -----------------------------------------------------------------
     # Handshake / register
     # -----------------------------------------------------------------
-    async def register(self, tenant_id: UUID) -> _ClientState:
+    async def register(
+        self,
+        tenant_id: UUID,
+        *,
+        actor_id: UUID | None = None,
+    ) -> _ClientState:
         state = _ClientState(
             id=uuid4(),
             tenant_id=tenant_id,
+            actor_id=actor_id,
             queue=asyncio.Queue(maxsize=CLIENT_QUEUE_MAX),
         )
         async with self._lock:
@@ -210,17 +220,20 @@ def build_ceo_stream_router(manager: ViewCeoStreamManager) -> APIRouter:
     async def ws_ceo_stream(ws: WebSocket) -> None:
         await ws.accept()
 
-        # --- Auth: Bearer header OR ?token= query --------------------
+        # --- Auth: Bearer header, browser cookie, then dev-only ?token fallback.
         token: str | None = None
         auth_hdr = ws.headers.get("authorization") or ws.headers.get("Authorization")
         if auth_hdr and auth_hdr.lower().startswith("bearer "):
-            token = auth_hdr[len("Bearer "):].strip()
+            token = auth_hdr[len("Bearer ") :].strip()
         if not token:
+            token = _session_cookie_token(ws)
+        if not token and _query_token_auth_enabled(ws):
             token = ws.query_params.get("token")
         if not token:
             await _close_with(ws, CLOSE_POLICY_VIOLATION, "missing_token")
             return
 
+        actor_id: UUID | None = None
         tenant_id = manager.resolve_token(token)
         if tenant_id is None:
             # Fall back to actor_sessions (demo / real auth tokens).
@@ -232,13 +245,14 @@ def build_ceo_stream_router(manager: ViewCeoStreamManager) -> APIRouter:
                     ctx = await validate_token(pool, token)
                     if ctx is not None:
                         tenant_id = ctx.tenant_id
+                        actor_id = ctx.actor_id
             except Exception:
                 pass
         if tenant_id is None:
             await _close_with(ws, CLOSE_POLICY_VIOLATION, "invalid_token")
             return
 
-        state = await manager.register(tenant_id)
+        state = await manager.register(tenant_id, actor_id=actor_id)
 
         # Send initial hello so the client can correlate.
         await _safe_send(
@@ -247,6 +261,7 @@ def build_ceo_stream_router(manager: ViewCeoStreamManager) -> APIRouter:
                 "type": "hello",
                 "tenant_id": str(tenant_id),
                 "client_id": str(state.id),
+                "actor_id": str(actor_id) if actor_id is not None else None,
             },
         )
 
@@ -338,6 +353,21 @@ async def _safe_send(ws: WebSocket, payload: dict[str, Any]) -> None:
         await ws.send_text(json.dumps(payload, default=_default_json))
     except Exception:
         pass
+
+
+def _query_token_auth_enabled(ws: WebSocket) -> bool:
+    settings = getattr(ws.app.state, "gateway_settings", None)
+    return bool(getattr(settings, "websocket_query_token_auth_enabled", False))
+
+
+def _session_cookie_token(ws: WebSocket) -> str | None:
+    settings = getattr(ws.app.state, "gateway_settings", None)
+    cookie_name = str(
+        getattr(settings, "websocket_session_cookie_name", "fyralis_session")
+        or "fyralis_session"
+    )
+    token = ws.cookies.get(cookie_name)
+    return token.strip() if isinstance(token, str) and token.strip() else None
 
 
 async def _close_with(ws: WebSocket, code: int, reason: str) -> None:

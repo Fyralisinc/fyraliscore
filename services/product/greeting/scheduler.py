@@ -30,11 +30,12 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Literal
 from uuid import UUID
 
 import asyncpg
 
+from lib.shared.db_leases import PostgresLease, default_lease_holder_id
 from services.product.greeting.cache import CACHE_KEYS, ViewCeoCacheRepo
 from services.product.greeting.rendering_adapter import (
     MockRenderingAdapter,
@@ -56,6 +57,8 @@ from services.product.greeting.snapshot import (
 
 
 log = logging.getLogger(__name__)
+
+CardKind = Literal["observation", "decision", "question"]
 
 
 # LISTEN channel: the post-commit worker (OP-1) can NOTIFY this channel
@@ -120,17 +123,28 @@ class _StreamPublisher:
 
 @dataclass
 class SchedulerConfig:
-    refresh_interval_seconds: int = 15 * 60
+    refresh_interval_seconds: float = 15 * 60
     # Seconds between polls of `pending_post_commit_actions` for
     # trigger-driven refresh (also serves as the fallback when NOTIFY
     # misses).
-    post_commit_poll_seconds: int = 30
+    post_commit_poll_seconds: float = 30
     # Seconds between time-of-day boundary checks.
-    tod_check_seconds: int = 60
+    tod_check_seconds: float = 60
     # Max concurrent rendering calls per tenant refresh.
     max_concurrent_renders: int = 6
     # Founder-context default (single-tenant dogfood).
     default_founder: FounderContext | None = None
+    # Background loops are singleton across gateway replicas. Manual refreshes
+    # stay available on every replica through the API surface.
+    leader_election_enabled: bool = True
+    leader_lease_name: str = "gateway:greeting_scheduler"
+    leader_lease_ttl_seconds: float = 30.0
+    leader_lease_refresh_seconds: float = 10.0
+    leader_lease_retry_seconds: float = 2.0
+    leader_lease_holder_id: str | None = None
+    tenant_refresh_lease_enabled: bool = True
+    tenant_refresh_lease_ttl_seconds: float = 5 * 60
+    tenant_refresh_lease_prefix: str = "gateway:greeting_refresh"
 
 
 @dataclass(frozen=True)
@@ -169,6 +183,11 @@ class _RefreshPayloads:
     close_line: dict[str, Any]
 
 
+class _NoopLease:
+    async def release(self) -> bool:
+        return True
+
+
 class GreetingScheduler:
     """One scheduler per process. Manages a set of tenant refreshes.
 
@@ -205,6 +224,13 @@ class GreetingScheduler:
         self._tenant_locks: dict[UUID, asyncio.Lock] = {}
 
         self._tasks: list[asyncio.Task] = []
+        self._leader_task: asyncio.Task | None = None
+        self._leader_lease: PostgresLease | None = None
+        self._lease_holder_id = (
+            self._config.leader_lease_holder_id
+            or default_lease_holder_id("gateway:greeting_scheduler")
+        )
+        self._is_leader = False
         self._listen_conn: asyncpg.Connection | None = None
         self._stopped = asyncio.Event()
         self._started = False
@@ -236,6 +262,86 @@ class GreetingScheduler:
             return
         self._started = True
         self._stopped.clear()
+        if self._config.leader_election_enabled:
+            self._leader_task = asyncio.create_task(
+                self._leader_supervisor_loop(),
+                name="grt_leader",
+            )
+            return
+        self._start_worker_tasks()
+
+    async def _leader_supervisor_loop(self) -> None:
+        lease = self._get_leader_lease()
+        retry_s = max(0.1, float(self._config.leader_lease_retry_seconds))
+        refresh_s = max(0.1, float(self._config.leader_lease_refresh_seconds))
+        try:
+            while not self._stopped.is_set():
+                try:
+                    acquired = await lease.acquire()
+                    if not acquired:
+                        await self._sleep_until_stopped(retry_s)
+                        continue
+                    self._is_leader = True
+                    log.info(
+                        "grt.leader_acquired",
+                        extra={
+                            "lease_name": lease.lease_name,
+                            "holder_id": lease.holder_id,
+                            "ttl_seconds": lease.ttl_seconds,
+                        },
+                    )
+                    self._start_worker_tasks()
+                    while not self._stopped.is_set():
+                        await self._sleep_until_stopped(refresh_s)
+                        if self._stopped.is_set():
+                            break
+                        if not await lease.refresh():
+                            log.warning(
+                                "grt.leader_lost",
+                                extra={
+                                    "lease_name": lease.lease_name,
+                                    "holder_id": lease.holder_id,
+                                },
+                            )
+                            break
+                    await self._stop_worker_tasks()
+                    self._is_leader = False
+                    if self._stopped.is_set() and lease.is_held():
+                        await lease.release()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("grt.leader_loop_error")
+                    await self._stop_worker_tasks()
+                    self._is_leader = False
+                    await self._sleep_until_stopped(retry_s)
+        finally:
+            await self._stop_worker_tasks()
+            self._is_leader = False
+            if lease.is_held():
+                with contextlib.suppress(Exception):
+                    await lease.release()
+
+    async def _sleep_until_stopped(self, timeout: float) -> None:
+        try:
+            await asyncio.wait_for(self._stopped.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+
+    def _get_leader_lease(self) -> PostgresLease:
+        if self._leader_lease is None:
+            self._leader_lease = PostgresLease(
+                self._pool,
+                lease_name=self._config.leader_lease_name,
+                holder_id=self._lease_holder_id,
+                ttl_seconds=self._config.leader_lease_ttl_seconds,
+                metadata={"component": "greeting_scheduler"},
+            )
+        return self._leader_lease
+
+    def _start_worker_tasks(self) -> None:
+        if self._tasks:
+            return
         self._tasks = [
             asyncio.create_task(
                 self._scheduled_refresh_loop(), name="grt_scheduled"
@@ -251,10 +357,7 @@ class GreetingScheduler:
             ),
         ]
 
-    async def stop(self) -> None:
-        if not self._started:
-            return
-        self._stopped.set()
+    async def _stop_worker_tasks(self) -> None:
         for t in self._tasks:
             t.cancel()
         for t in self._tasks:
@@ -265,7 +368,28 @@ class GreetingScheduler:
             with contextlib.suppress(Exception):
                 await self._listen_conn.close()
             self._listen_conn = None
-        self._started = False
+
+    def is_leader(self) -> bool:
+        return self._is_leader
+
+    async def stop(self) -> None:
+        if self._started:
+            self._stopped.set()
+            if self._leader_task is not None:
+                self._leader_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await self._leader_task
+                self._leader_task = None
+            await self._stop_worker_tasks()
+            if self._leader_lease is not None and self._leader_lease.is_held():
+                with contextlib.suppress(Exception):
+                    await self._leader_lease.release()
+            self._is_leader = False
+            self._started = False
+        close_rendering = getattr(self._rendering, "aclose", None)
+        if close_rendering is not None:
+            with contextlib.suppress(Exception):
+                await close_rendering()
 
     # -----------------------------------------------------------------
     # Public refresh entry points
@@ -301,22 +425,65 @@ class GreetingScheduler:
 
         lock = self._tenant_locks.setdefault(tenant_id, asyncio.Lock())
         async with lock:
+            refresh_lease = await self._acquire_tenant_refresh_lease(
+                tenant_id,
+                reason=reason,
+            )
+            if refresh_lease is None:
+                return
             started = _now_utc()
-            # Inspect existing cache ages to drive Phase 4 staleness logs.
-            prior = await self._cache.get_all(tenant_id)
-            await self._refresh_tenant_inner(
-                tenant_id, founder, reason=reason, prior=prior
-            )
-            self._last_refresh_at[tenant_id] = started
-            dur_ms = int((_now_utc() - started).total_seconds() * 1000)
-            log.info(
-                "grt.refresh_ok",
-                extra={
-                    "tenant_id": str(tenant_id),
-                    "reason": reason,
-                    "duration_ms": dur_ms,
-                },
-            )
+            try:
+                # Inspect existing cache ages to drive Phase 4 staleness logs.
+                prior = await self._cache.get_all(tenant_id)
+                await self._refresh_tenant_inner(
+                    tenant_id, founder, reason=reason, prior=prior
+                )
+                self._last_refresh_at[tenant_id] = started
+                dur_ms = int((_now_utc() - started).total_seconds() * 1000)
+                log.info(
+                    "grt.refresh_ok",
+                    extra={
+                        "tenant_id": str(tenant_id),
+                        "reason": reason,
+                        "duration_ms": dur_ms,
+                    },
+                )
+            finally:
+                with contextlib.suppress(Exception):
+                    await refresh_lease.release()
+
+    async def _acquire_tenant_refresh_lease(
+        self,
+        tenant_id: UUID,
+        *,
+        reason: str,
+    ) -> PostgresLease | _NoopLease | None:
+        if not self._config.tenant_refresh_lease_enabled:
+            return _NoopLease()
+        lease = PostgresLease(
+            self._pool,
+            lease_name=(
+                f"{self._config.tenant_refresh_lease_prefix}:{tenant_id}"
+            ),
+            holder_id=self._lease_holder_id,
+            ttl_seconds=self._config.tenant_refresh_lease_ttl_seconds,
+            metadata={
+                "component": "greeting_scheduler",
+                "tenant_id": str(tenant_id),
+                "reason": reason,
+            },
+        )
+        if await lease.acquire():
+            return lease
+        log.info(
+            "grt.refresh_skipped_lease_held",
+            extra={
+                "tenant_id": str(tenant_id),
+                "reason": reason,
+                "lease_name": lease.lease_name,
+            },
+        )
+        return None
 
     # -----------------------------------------------------------------
     # Inner refresh — compose snapshot, render, cache, publish.
@@ -467,27 +634,39 @@ class GreetingScheduler:
         fallback_rendering: MockRenderingAdapter,
     ) -> list[RenderedCard]:
         tasks: list[asyncio.Task] = []
-        for kind, focus_snaps in (
+        card_groups: tuple[tuple[CardKind, list[SubstrateSnapshot]], ...] = (
             ("observation", snapshots.observation_cards),
             ("decision", snapshots.decision_cards),
             ("question", snapshots.question_cards),
-        ):
+        )
+
+        def render_call(
+            snap: SubstrateSnapshot,
+            kind: CardKind,
+        ) -> Callable[[], Any]:
+            async def _call() -> RenderedCard:
+                return await self._rendering.render_card(snap, founder, kind)
+
+            return _call
+
+        def fallback_call(
+            snap: SubstrateSnapshot,
+            kind: CardKind,
+        ) -> Callable[[], Any]:
+            async def _call() -> RenderedCard:
+                return await fallback_rendering.render_card(snap, founder, kind)
+
+            return _call
+
+        for kind, focus_snaps in card_groups:
             for snap in focus_snaps:
                 tasks.append(
                     asyncio.create_task(
                         _bounded_render(
                             render_sem,
                             label=f"card:{kind}",
-                            render=lambda snap=snap, kind=kind: (
-                                self._rendering.render_card(snap, founder, kind)
-                            ),
-                            fallback=lambda snap=snap, kind=kind: (
-                                fallback_rendering.render_card(
-                                    snap,
-                                    founder,
-                                    kind,
-                                )
-                            ),
+                            render=render_call(snap, kind),
+                            fallback=fallback_call(snap, kind),
                         )
                     )
                 )
@@ -503,6 +682,41 @@ class GreetingScheduler:
         fallback_rendering: MockRenderingAdapter,
     ) -> list[RenderedCardReasoning]:
         tasks: list[asyncio.Task] = []
+
+        def render_call(
+            card: RenderedCard,
+            focus_snap: SubstrateSnapshot,
+            evidence_refs: list[dict[str, Any]],
+        ) -> Callable[[], Any]:
+            async def _call() -> RenderedCardReasoning:
+                return await self._rendering.render_card_reasoning(
+                    focus_snap,
+                    founder,
+                    card.kind,
+                    card_subject=_card_subject_label(card),
+                    card_body_context=card.body_html,
+                    supporting_evidence=evidence_refs,
+                )
+
+            return _call
+
+        def fallback_call(
+            card: RenderedCard,
+            focus_snap: SubstrateSnapshot,
+            evidence_refs: list[dict[str, Any]],
+        ) -> Callable[[], Any]:
+            async def _call() -> RenderedCardReasoning:
+                return await fallback_rendering.render_card_reasoning(
+                    focus_snap,
+                    founder,
+                    card.kind,
+                    card_subject=_card_subject_label(card),
+                    card_body_context=card.body_html,
+                    supporting_evidence=evidence_refs,
+                )
+
+            return _call
+
         for card, focus_snap in zip(cards, card_focuses):
             evidence_refs = _gather_card_evidence(card, focus_snap)
             tasks.append(
@@ -510,22 +724,8 @@ class GreetingScheduler:
                     _bounded_render(
                         render_sem,
                         label=f"card_reasoning:{card.kind}",
-                        render=lambda card=card, focus_snap=focus_snap, evidence_refs=evidence_refs: self._rendering.render_card_reasoning(
-                            focus_snap,
-                            founder,
-                            card.kind,
-                            card_subject=_card_subject_label(card),
-                            card_body_context=card.body_html,
-                            supporting_evidence=evidence_refs,
-                        ),
-                        fallback=lambda card=card, focus_snap=focus_snap, evidence_refs=evidence_refs: fallback_rendering.render_card_reasoning(
-                            focus_snap,
-                            founder,
-                            card.kind,
-                            card_subject=_card_subject_label(card),
-                            card_body_context=card.body_html,
-                            supporting_evidence=evidence_refs,
-                        ),
+                        render=render_call(card, focus_snap, evidence_refs),
+                        fallback=fallback_call(card, focus_snap, evidence_refs),
                     )
                 )
             )
