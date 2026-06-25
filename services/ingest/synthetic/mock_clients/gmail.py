@@ -32,7 +32,7 @@ class MockGmailClient(_MockBase):
     `fixture` is a dict produced by `services.ingest.synthetic.fixtures.
     gmail_generator.make_gmail_mailbox(...)`. Shape:
         {
-          "email": "alice@x.com",
+          "email": "alice@x.example",
           "messages": [{"id": ..., "threadId": ..., ...}, ...],
           "history_events": [{"id": "1234", "messages": [...]}, ...],
           "starting_history_id": "1000",

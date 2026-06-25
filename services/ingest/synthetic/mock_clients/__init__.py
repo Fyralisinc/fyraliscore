@@ -18,7 +18,7 @@ Wiring at test time:
     )
     from services.ingest.synthetic.fault_profiles import HAPPY_PATH
 
-    fixture = make_gmail_mailbox(email="alice@x.com", messages=10)
+    fixture = make_gmail_mailbox(email="alice@x.example", messages=10)
     client = MockGmailClient(fixture=fixture, profile=HAPPY_PATH)
 
     async def _open(install):

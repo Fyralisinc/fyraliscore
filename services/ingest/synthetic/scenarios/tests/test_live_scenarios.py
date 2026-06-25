@@ -28,7 +28,7 @@ def test_mixed_preset_has_five_tenants() -> None:
 
 def test_per_tenant_burst_is_frozen() -> None:
     t = PerTenantBurst(
-        tenant_slug="x", mailbox_email="x@y.com",
+        tenant_slug="x", mailbox_email="x@y.example",
         burst_pattern=[(0, 1)],
     )
     import pytest
@@ -39,7 +39,7 @@ def test_per_tenant_burst_is_frozen() -> None:
 def test_live_pubsub_scenario_defaults() -> None:
     s = LivePubSubScenario(tenants=[
         PerTenantBurst(
-            tenant_slug="t", mailbox_email="t@y.com",
+            tenant_slug="t", mailbox_email="t@y.example",
             burst_pattern=[(0, 1)],
         ),
     ])

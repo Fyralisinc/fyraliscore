@@ -53,7 +53,7 @@ STEADY_STATE_PUBSUB = LivePubSubScenario(
     tenants=[
         PerTenantBurst(
             tenant_slug="steady",
-            mailbox_email="steady@x.com",
+            mailbox_email="steady@x.example",
             burst_pattern=[(1000, 1)] * 10,  # 1 msg/s × 10
         ),
     ],
@@ -63,7 +63,7 @@ BURSTY_PUBSUB = LivePubSubScenario(
     tenants=[
         PerTenantBurst(
             tenant_slug="bursty",
-            mailbox_email="bursty@x.com",
+            mailbox_email="bursty@x.example",
             burst_pattern=[(0, 50), (30000, 0)],  # 50 in burst, idle 30s
         ),
     ],
@@ -73,7 +73,7 @@ MIXED_PUBSUB = LivePubSubScenario(
     tenants=[
         PerTenantBurst(
             tenant_slug=f"mixed-{i}",
-            mailbox_email=f"mixed-{i}@x.com",
+            mailbox_email=f"mixed-{i}@x.example",
             burst_pattern=(
                 [(500, 2)] * 5 if i % 2 == 0
                 else [(0, 10), (5000, 1)]

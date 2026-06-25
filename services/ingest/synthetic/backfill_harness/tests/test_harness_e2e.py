@@ -60,7 +60,7 @@ async def test_harness_single_tenant_gmail_completes(
         BackfillScenario(
             tenant_slug="e2e-gmail",
             source="gmail",
-            fixture_params={"email": "alice@e2e.com", "messages": 5},
+            fixture_params={"email": "alice@e2e.example", "messages": 5},
             expected_observation_count=5,
         ),
     ]
@@ -88,7 +88,7 @@ async def test_harness_parallel_4_tenants_mixed_sources(
         BackfillScenario(
             tenant_slug="e2e-multi-gmail",
             source="gmail",
-            fixture_params={"email": "a@e2e.com", "messages": 3},
+            fixture_params={"email": "a@e2e.example", "messages": 3},
         ),
         BackfillScenario(
             tenant_slug="e2e-multi-github",
@@ -144,7 +144,7 @@ async def test_harness_gmail_against_real_port_spammer(
         BackfillScenario(
             tenant_slug="e2e-gmail-spammer",
             source="gmail",
-            fixture_params={"email": "spam@e2e.com", "messages": 5},
+            fixture_params={"email": "spam@e2e.example", "messages": 5},
             expected_observation_count=5,
         ),
     ]
@@ -186,7 +186,7 @@ async def test_harness_single_tenant_per_source_produces_observations(
     scenarios = [
         BackfillScenario(
             tenant_slug="e2e-src-gmail", source="gmail",
-            fixture_params={"email": "g@e2e.com", "messages": 4},
+            fixture_params={"email": "g@e2e.example", "messages": 4},
             expected_observation_count=4,
         ),
         BackfillScenario(
@@ -252,7 +252,7 @@ async def test_harness_e2e_backfill_to_observation_chain(
     scenarios = [
         BackfillScenario(
             tenant_slug="chain-gmail", source="gmail",
-            fixture_params={"email": "c@e2e.com", "messages": 2},
+            fixture_params={"email": "c@e2e.example", "messages": 2},
         ),
         BackfillScenario(
             tenant_slug="chain-slack", source="slack",

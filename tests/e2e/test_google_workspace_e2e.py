@@ -70,8 +70,8 @@ import asyncpg  # noqa: E402
 
 
 _TENANT_ID = UUID("00000000-0000-0000-0000-00000000600c")  # "GOOG"
-_DOMAIN = "acme.com"
-_ADMIN = "admin@acme.com"
+_DOMAIN = "acme.example"
+_ADMIN = "admin@acme.example"
 _SA_EMAIL = "fyralis-workspace@fyralis-sandbox.iam.gserviceaccount.com"
 _SHARED_DRIVE_ID = "0AItHelios"
 
@@ -79,12 +79,12 @@ _SHARED_DRIVE_ID = "0AItHelios"
 # sources. Resolves (via the Directory API mock) to: alice (explicit + group),
 # bob (group), carol (org unit). dave is opted out; erin is suspended.
 _INCLUSION_SPEC = {
-    "users": ["alice@acme.com"],
-    "groups": ["eng@acme.com"],
+    "users": ["alice@acme.example"],
+    "groups": ["eng@acme.example"],
     "org_units": ["/Sales"],
 }
-_OPTOUTS = {"dave@acme.com"}
-_EXPECTED_USERS = ["alice@acme.com", "bob@acme.com", "carol@acme.com"]
+_OPTOUTS = {"dave@acme.example"}
+_EXPECTED_USERS = ["alice@acme.example", "bob@acme.example", "carol@acme.example"]
 
 
 # =====================================================================
@@ -117,7 +117,7 @@ def _gmail_msg(mid: str, thread: str, frm: str, to: str, subject: str,
         "payload": {
             "mimeType": "text/plain",
             "headers": [
-                {"name": "Message-ID", "value": f"<{mid}@acme.com>"},
+                {"name": "Message-ID", "value": f"<{mid}@acme.example>"},
                 {"name": "From", "value": frm},
                 {"name": "To", "value": to},
                 {"name": "Subject", "value": subject},
@@ -163,24 +163,24 @@ def _drive_file(fid: str, name: str, owner: str, version: int, *,
 
 
 def build_org():
-    """Construct the WorkspaceOrg fixture for acme.com."""
+    """Construct the WorkspaceOrg fixture for acme.example."""
     from services.ingest.synthetic.mock_servers.google_workspace import WorkspaceOrg
 
     now = datetime.now(timezone.utc)
     now_ms = int(now.timestamp() * 1000)
 
     users = [
-        _user("alice@acme.com", "/Engineering"),
-        _user("bob@acme.com", "/Engineering"),
-        _user("carol@acme.com", "/Sales"),
-        _user("dave@acme.com", "/Sales"),               # opted out
-        _user("erin@acme.com", "/Sales", suspended=True),  # filtered (suspended)
+        _user("alice@acme.example", "/Engineering"),
+        _user("bob@acme.example", "/Engineering"),
+        _user("carol@acme.example", "/Sales"),
+        _user("dave@acme.example", "/Sales"),               # opted out
+        _user("erin@acme.example", "/Sales", suspended=True),  # filtered (suspended)
     ]
-    groups = [{"email": "eng@acme.com", "name": "Engineering", "directMembersCount": "2"}]
+    groups = [{"email": "eng@acme.example", "name": "Engineering", "directMembersCount": "2"}]
     group_members = {
-        "eng@acme.com": [
-            {"type": "USER", "email": "alice@acme.com", "role": "MEMBER"},
-            {"type": "USER", "email": "bob@acme.com", "role": "MEMBER"},
+        "eng@acme.example": [
+            {"type": "USER", "email": "alice@acme.example", "role": "MEMBER"},
+            {"type": "USER", "email": "bob@acme.example", "role": "MEMBER"},
         ],
     }
     org_units = [
@@ -190,60 +190,60 @@ def build_org():
 
     # Per-user Gmail mailboxes (Message-ID drives external_id).
     gmail = {
-        "alice@acme.com": {"history_id": "1001", "messages": [
-            _gmail_msg("a-msg-1", "t-a1", "ext@partner.com", "alice@acme.com",
+        "alice@acme.example": {"history_id": "1001", "messages": [
+            _gmail_msg("a-msg-1", "t-a1", "ext@partner.example", "alice@acme.example",
                        "Series B term sheet", "Attaching the revised term sheet.", now_ms),
-            _gmail_msg("a-msg-2", "t-a2", "alice@acme.com", "bob@acme.com",
+            _gmail_msg("a-msg-2", "t-a2", "alice@acme.example", "bob@acme.example",
                        "Re: standup", "Pushed the fix to main.", now_ms),
         ]},
-        "bob@acme.com": {"history_id": "2002", "messages": [
-            _gmail_msg("b-msg-1", "t-b1", "ci@acme.com", "bob@acme.com",
+        "bob@acme.example": {"history_id": "2002", "messages": [
+            _gmail_msg("b-msg-1", "t-b1", "ci@acme.example", "bob@acme.example",
                        "Build green", "All checks passed on PR #412.", now_ms),
         ]},
-        "carol@acme.com": {"history_id": "3003", "messages": [
-            _gmail_msg("c-msg-1", "t-c1", "lead@bigco.com", "carol@acme.com",
+        "carol@acme.example": {"history_id": "3003", "messages": [
+            _gmail_msg("c-msg-1", "t-c1", "lead@bigco.example", "carol@acme.example",
                        "Renewal", "Happy to renew at the current tier.", now_ms),
         ]},
     }
 
     # Per-user calendars; alice gets an incremental delta (new + cancellation).
     calendar = {
-        "alice@acme.com": {
+        "alice@acme.example": {
             "events": [
-                _cal_event("a-standup", "alice@acme.com", "Eng standup", now + timedelta(days=1),
-                           attendees=[{"email": "alice@acme.com", "responseStatus": "accepted"},
-                                      {"email": "bob@acme.com", "responseStatus": "accepted"}]),
-                _cal_event("a-investor", "alice@acme.com", "Investor sync", now + timedelta(days=2)),
+                _cal_event("a-standup", "alice@acme.example", "Eng standup", now + timedelta(days=1),
+                           attendees=[{"email": "alice@acme.example", "responseStatus": "accepted"},
+                                      {"email": "bob@acme.example", "responseStatus": "accepted"}]),
+                _cal_event("a-investor", "alice@acme.example", "Investor sync", now + timedelta(days=2)),
             ],
             "delta": [
-                _cal_event("a-board", "alice@acme.com", "Board meeting", now + timedelta(days=5),
+                _cal_event("a-board", "alice@acme.example", "Board meeting", now + timedelta(days=5),
                            updated=now + timedelta(minutes=10)),
                 {"kind": "calendar#event", "id": "a-standup", "status": "cancelled",
                  "updated": _iso(now + timedelta(minutes=11))},
             ],
         },
-        "bob@acme.com": {
-            "events": [_cal_event("b-1on1", "bob@acme.com", "1:1 with Alice", now + timedelta(days=1, hours=3))],
+        "bob@acme.example": {
+            "events": [_cal_event("b-1on1", "bob@acme.example", "1:1 with Alice", now + timedelta(days=1, hours=3))],
             "delta": [],
         },
-        "carol@acme.com": {
-            "events": [_cal_event("c-qbr", "carol@acme.com", "QBR with BigCo", now + timedelta(days=3))],
+        "carol@acme.example": {
+            "events": [_cal_event("c-qbr", "carol@acme.example", "QBR with BigCo", now + timedelta(days=3))],
             "delta": [],
         },
     }
 
     # Per-user My Drive (one Google Doc each, with extractable text).
     drive_my = {
-        "alice@acme.com": {
-            "files": [_drive_file("d-alice-roadmap", "Roadmap", "alice@acme.com", 3)],
+        "alice@acme.example": {
+            "files": [_drive_file("d-alice-roadmap", "Roadmap", "alice@acme.example", 3)],
             "exports": {"d-alice-roadmap": "Roadmap: ship Atlas in Q3, Helios in Q4."},
         },
-        "bob@acme.com": {
-            "files": [_drive_file("d-bob-notes", "Arch notes", "bob@acme.com", 2)],
+        "bob@acme.example": {
+            "files": [_drive_file("d-bob-notes", "Arch notes", "bob@acme.example", 2)],
             "exports": {"d-bob-notes": "Arch: move to event sourcing for the ledger."},
         },
-        "carol@acme.com": {
-            "files": [_drive_file("d-carol-deck", "BigCo deck", "carol@acme.com", 1)],
+        "carol@acme.example": {
+            "files": [_drive_file("d-carol-deck", "BigCo deck", "carol@acme.example", 1)],
             "exports": {"d-carol-deck": "BigCo renewal: upsell to enterprise tier."},
         },
     }
@@ -251,7 +251,7 @@ def build_org():
     shared_drives = [{"id": _SHARED_DRIVE_ID, "name": "Helios Program"}]
     drive_shared = {
         _SHARED_DRIVE_ID: {
-            "files": [_drive_file("d-helios-charter", "Helios charter", "alice@acme.com", 1)],
+            "files": [_drive_file("d-helios-charter", "Helios charter", "alice@acme.example", 1)],
             "exports": {"d-helios-charter": "Helios charter: cross-functional, GA target Q4."},
         },
     }
@@ -456,8 +456,8 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
             assert resolved == _EXPECTED_USERS, (
                 f"directory resolution wrong: {resolved} != {_EXPECTED_USERS}"
             )
-            assert "dave@acme.com" not in resolved, "opt-out not subtracted"
-            assert "erin@acme.com" not in resolved, "suspended user not filtered"
+            assert "dave@acme.example" not in resolved, "opt-out not subtracted"
+            assert "erin@acme.example" not in resolved, "suspended user not filtered"
 
             # Shared-drive enumeration uses the SA impersonating the first user.
             drive_client = GoogleDriveClient(http, scope=resolve_scope("drive.readonly"))
@@ -535,8 +535,8 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
 
         # -- 5. Calendar incremental delta (warm-start alice from her syncToken).
         incr_shard = {
-            "shard_kind": "google_calendar_events", "calendar_id": "alice@acme.com",
-            "owner_email": "alice@acme.com", "installation_id": str(cal_install),
+            "shard_kind": "google_calendar_events", "calendar_id": "alice@acme.example",
+            "owner_email": "alice@acme.example", "installation_id": str(cal_install),
             "sync_token": "sync-1",
         }
         await _drain(pool, fetch_page_google_calendar, "google_calendar:event", cal_row, incr_shard)
@@ -577,7 +577,7 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
             "AND source_channel='gmail:' AND content->>'subject'=$2",
             _TENANT_ID, "Series B term sheet",
         )
-        assert alice_ext == f"gmail:{gmail_install}:a-msg-1@acme.com", alice_ext
+        assert alice_ext == f"gmail:{gmail_install}:a-msg-1@acme.example", alice_ext
 
         # Calendar mutable-source semantics: the cancellation is a distinct
         # state_change observation (versioned external_id keeps both).
@@ -605,9 +605,9 @@ async def _run_e2e(*, verbose: bool, keep: bool = False) -> None:
 
         # Cross-path dedup: re-ingesting an already-seen calendar event no-ops.
         from services.ingest.ingestion.core import ingest
-        twin = dict(org.calendar["bob@acme.com"]["events"][0])
-        twin["_fyralis_calendar_id"] = "bob@acme.com"
-        twin["_fyralis_owner_email"] = "bob@acme.com"
+        twin = dict(org.calendar["bob@acme.example"]["events"][0])
+        twin["_fyralis_calendar_id"] = "bob@acme.example"
+        twin["_fyralis_owner_email"] = "bob@acme.example"
         res = await ingest("google_calendar:event", twin, pool=pool, tenant_id=_TENANT_ID)
         assert res.deduped is True, "re-ingest should dedup"
 

@@ -94,7 +94,7 @@ def _make_handler(fixtures: JiraFixtures, hits: dict[str, int]):
                 hits["myself"] = hits.get("myself", 0) + 1
                 self._json(200, {
                     "accountId": "sandbox-account",
-                    "emailAddress": "sandbox@acme.com",
+                    "emailAddress": "sandbox@acme.example",
                     "displayName": "Sandbox Bot",
                 })
                 return

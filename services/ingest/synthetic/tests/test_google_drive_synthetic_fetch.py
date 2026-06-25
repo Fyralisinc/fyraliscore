@@ -46,7 +46,7 @@ def _install() -> dict[str, object]:
 
 def _shard(
     *,
-    owner_email: str = "alice@acme.com",
+    owner_email: str = "alice@acme.example",
     drive_id: str = "my-drive",
     drive_kind: str = "my_drive",
     start_page_token: str | None = None,  # None -> FULL backfill via list_files
@@ -246,7 +246,7 @@ def test_synthetic_drive_rate_limit_fault(monkeypatch):
     # 1. Raw client surface raises the shared production rate-limit type.
     raw = MockGoogleDriveClient(fixture=fixture, profile=profile)
     with pytest.raises(GoogleRateLimited):
-        asyncio.run(raw.get_start_page_token(user_email="alice@acme.com",
+        asyncio.run(raw.get_start_page_token(user_email="alice@acme.example",
                                              drive_id="my-drive"))
 
     # Make retry backoff instant so the test doesn't sleep through the budget.
