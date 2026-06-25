@@ -52,6 +52,33 @@ class SourceSpec:
 
 
 SPECS: dict[str, SourceSpec] = {
+    "gmail": SourceSpec(
+        source="gmail",
+        table="gmail_installations",
+        scope_column="workspace_domain",
+        ref_columns=(),
+        entity_table="gmail_mailbox_watches",
+        entity_install_column="gmail_installation_id",
+        base_url_column=None,
+    ),
+    "google_calendar": SourceSpec(
+        source="google_calendar",
+        table="google_calendar_installations",
+        scope_column="workspace_domain",
+        ref_columns=(),
+        entity_table="google_calendar_calendars",
+        entity_install_column="google_calendar_installation_id",
+        base_url_column=None,
+    ),
+    "google_drive": SourceSpec(
+        source="google_drive",
+        table="google_drive_installations",
+        scope_column="workspace_domain",
+        ref_columns=(),
+        entity_table="google_drive_targets",
+        entity_install_column="google_drive_installation_id",
+        base_url_column=None,
+    ),
     "quickbooks": SourceSpec(
         source="quickbooks",
         table="quickbooks_installations",
@@ -488,11 +515,6 @@ async def run_command(
                 }
 
             if args.command == "uninstall":
-                if not args.dry_run and secret_store is None:
-                    raise DedicatedSourceInstallationCliError(
-                        "uninstall requires a configured secret store unless "
-                        "--dry-run is set"
-                    )
                 row = await _select_single_installation(
                     conn,
                     tenant_id=tenant_id,
@@ -502,6 +524,11 @@ async def run_command(
                     for_update=True,
                 )
                 refs = _refs_from_row(row, spec)
+                if refs and not args.dry_run and secret_store is None:
+                    raise DedicatedSourceInstallationCliError(
+                        "uninstall requires a configured secret store unless "
+                        "--dry-run is set or the installation has no secret refs"
+                    )
                 if args.dry_run:
                     return {
                         "ok": True,
@@ -645,16 +672,13 @@ async def _select_installations(
     values: list[Any] = [tenant_id]
     clauses = _selector_clause(args=args, spec=spec, values=values)
     entity_count_sql = _entity_count_sql(spec)
-    base_url_sql = _base_url_sql(spec)
-    extra_columns_sql = _extra_columns_sql(spec)
+    projection_sql = _installation_projection_sql(
+        spec,
+        entity_count_sql=entity_count_sql,
+    )
     rows = await conn.fetch(
         f"""
-        SELECT i.id, i.tenant_id, i.{spec.scope_column},
-               {base_url_sql} AS base_url,
-               i.created_at, i.disabled_at,
-               {', '.join(f'i.{column}' for column in spec.ref_columns)},
-               {extra_columns_sql}
-               {entity_count_sql} AS entity_count
+        SELECT {projection_sql}
           FROM {spec.table} i
          WHERE {' AND '.join(f"i.{clause}" for clause in clauses)}
          ORDER BY i.created_at DESC, i.{spec.scope_column}
@@ -702,8 +726,11 @@ async def _set_disabled_at(
     clauses = _selector_clause(args=args, spec=spec, values=values)
     disabled_expression = "now()" if disabled else "NULL"
     entity_count_sql = _entity_count_subquery_sql(spec)
-    base_url_sql = _base_url_sql(spec)
-    extra_columns_sql = _extra_columns_sql(spec)
+    projection_sql = _installation_projection_sql(
+        spec,
+        entity_count_sql=entity_count_sql,
+        extra_fields=("selected.disabled_before",),
+    )
     row = await conn.fetchrow(
         f"""
         WITH selected AS (
@@ -716,13 +743,7 @@ async def _set_disabled_at(
            SET disabled_at = {disabled_expression}
           FROM selected
          WHERE i.id = selected.id
-        RETURNING i.id, i.tenant_id, i.{spec.scope_column},
-                  {base_url_sql} AS base_url,
-                  i.created_at, i.disabled_at,
-                  {', '.join(f'i.{column}' for column in spec.ref_columns)},
-                  {extra_columns_sql}
-                  selected.disabled_before,
-                  {entity_count_sql} AS entity_count
+        RETURNING {projection_sql}
         """,
         *values,
     )
@@ -747,20 +768,17 @@ async def _uninstall_installation(
     assignments = ["disabled_at = now()"]
     assignments.extend(f"{column} = NULL" for column in clear_columns)
     entity_count_sql = _entity_count_subquery_sql(spec)
-    base_url_sql = _base_url_sql(spec)
-    extra_columns_sql = _extra_columns_sql(spec)
+    projection_sql = _installation_projection_sql(
+        spec,
+        entity_count_sql=entity_count_sql,
+    )
     row = await conn.fetchrow(
         f"""
         UPDATE {spec.table} i
            SET {', '.join(assignments)}
          WHERE i.tenant_id = $1
            AND i.id = $2
-        RETURNING i.id, i.tenant_id, i.{spec.scope_column},
-                  {base_url_sql} AS base_url,
-                  i.created_at, i.disabled_at,
-                  {', '.join(f'i.{column}' for column in spec.ref_columns)},
-                  {extra_columns_sql}
-                  {entity_count_sql} AS entity_count
+        RETURNING {projection_sql}
         """,
         tenant_id,
         row_id,
@@ -839,16 +857,31 @@ def _entity_count_subquery_sql(spec: SourceSpec) -> str:
     return _entity_count_sql(spec)
 
 
+def _installation_projection_sql(
+    spec: SourceSpec,
+    *,
+    entity_count_sql: str,
+    extra_fields: tuple[str, ...] = (),
+) -> str:
+    fields = [
+        "i.id",
+        "i.tenant_id",
+        f"i.{spec.scope_column}",
+        f"{_base_url_sql(spec)} AS base_url",
+        "i.created_at",
+        "i.disabled_at",
+    ]
+    fields.extend(f"i.{column}" for column in spec.ref_columns)
+    fields.extend(f"i.{column}" for column in spec.extra_output_columns)
+    fields.extend(extra_fields)
+    fields.append(f"{entity_count_sql} AS entity_count")
+    return ",\n               ".join(fields)
+
+
 def _base_url_sql(spec: SourceSpec) -> str:
     if spec.base_url_column is None:
         return "NULL::text"
     return f"i.{spec.base_url_column}"
-
-
-def _extra_columns_sql(spec: SourceSpec) -> str:
-    if not spec.extra_output_columns:
-        return ""
-    return "".join(f"i.{column},\n               " for column in spec.extra_output_columns)
 
 
 def _provider_installation_id(row: asyncpg.Record, spec: SourceSpec) -> str | None:

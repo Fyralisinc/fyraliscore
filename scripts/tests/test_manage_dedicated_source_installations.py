@@ -13,6 +13,7 @@ from lib.shared.secrets import FernetSecretStore
 from scripts.manage_dedicated_source_installations import (
     SPECS,
     DedicatedSourceInstallationCliError,
+    _installation_projection_sql,
     build_parser,
     run_command,
 )
@@ -838,3 +839,34 @@ def test_dedicated_rotate_webhook_rejects_poll_only_source() -> None:
 
     with pytest.raises(DedicatedSourceInstallationCliError, match="not supported"):
         _column_for_secret_field(SPECS["linkedin"], args.secret_field)
+
+
+def test_google_workspace_sources_have_no_secret_ref_lifecycle_specs() -> None:
+    expected = {
+        "gmail": ("gmail_installations", "gmail_mailbox_watches"),
+        "google_calendar": (
+            "google_calendar_installations",
+            "google_calendar_calendars",
+        ),
+        "google_drive": ("google_drive_installations", "google_drive_targets"),
+    }
+
+    for source, (table, entity_table) in expected.items():
+        spec = SPECS[source]
+        assert spec.table == table
+        assert spec.scope_column == "workspace_domain"
+        assert spec.ref_columns == ()
+        assert spec.entity_table == entity_table
+        assert spec.base_url_column is None
+
+
+def test_installation_projection_supports_sources_without_ref_columns() -> None:
+    projection = _installation_projection_sql(
+        SPECS["google_drive"],
+        entity_count_sql="0::int",
+    )
+
+    assert "i.id" in projection
+    assert "NULL::text AS base_url" in projection
+    assert "secret_ref" not in projection
+    assert ",\n               ,\n" not in projection

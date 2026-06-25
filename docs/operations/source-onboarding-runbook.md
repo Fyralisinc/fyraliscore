@@ -136,6 +136,14 @@ known shared app-level secrets that must outlive one installation. Generic
 uninstall does not prove provider-side webhook/watch deletion; run the
 source-specific uninstall checklist below before declaring cleanup complete.
 
+Dedicated source install tables are managed with
+`scripts/manage_dedicated_source_installations.py` for status, pause, resume,
+rotation where the table owns secret refs, and uninstall. Google Workspace DWD
+sources (`gmail`, `google_calendar`, and `google_drive`) use this dedicated
+path too; their install rows do not carry per-install secret refs, so uninstall
+disables the row and related shards without requiring secret-store deletion for
+the install row itself.
+
 Pause requirements:
 
 - Mark the install paused or disabled in the provider installation table.

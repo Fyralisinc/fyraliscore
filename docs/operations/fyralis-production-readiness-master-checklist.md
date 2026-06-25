@@ -890,15 +890,17 @@ Current state:
 
 - Generic `provider_installations` lifecycle operations are covered by
   `scripts/manage_source_installations.py`.
-- Dedicated OAuth/admin-paste/API-key install tables for QuickBooks, Gusto,
-  Ramp, Carta, LinkedIn, Jira, Mercury, Brex, Deel, Fireflies, Miro, Grafana,
-  Figma, HiBob, Ashby, AWS, Telegram, and Signal are now covered by
+- Dedicated OAuth/admin-paste/API-key/DWD install tables for Gmail, Google
+  Calendar, Google Drive, QuickBooks, Gusto, Ramp, Carta, LinkedIn, Jira,
+  Mercury, Brex, Deel, Fireflies, Miro, Grafana, Figma, HiBob, Ashby, AWS,
+  Telegram, and Signal are now covered by
   `scripts/manage_dedicated_source_installations.py` for status, pause, resume,
-  credential rotation, and uninstall. The tool binds `app.current_tenant`,
-  writes bounded operator audit rows, zeroizes access/refresh/webhook secret
-  refs and live/backfill session refs on uninstall, handles AWS account/region
-  selectors, and disables matching webhook resolver rows for webhook-capable
-  sources.
+  credential rotation where the source owns per-install secret refs, and
+  uninstall. The tool binds `app.current_tenant`, writes bounded operator audit
+  rows, zeroizes access/refresh/webhook secret refs and live/backfill session
+  refs on uninstall, handles AWS account/region selectors, handles no-secret
+  Google Workspace DWD install rows, and disables matching webhook resolver rows
+  for webhook-capable sources.
 - Architecture ratchets now block new plaintext credential columns in
   migrations and block production integration code from passing raw
   credential-looking variables into `secret_ref`/`*_secret_ref` install
