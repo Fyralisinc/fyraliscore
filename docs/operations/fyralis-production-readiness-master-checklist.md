@@ -120,8 +120,8 @@ Every checklist item is done only when:
 - [x] BYOC runner evidence intake has a signed submission contract, gateway
   route, self-auth route classification, DB-backed sanitized scalar receipt
   storage, existing evidence-intake key-ref resolution, readiness-gate coverage,
-  storage-shape ratchet, and tests rejecting raw runner report fields or
-  customer-data markers.
+  customer-side/local submit CLI, storage-shape ratchet, and tests rejecting
+  raw runner report fields or customer-data markers.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

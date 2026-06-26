@@ -204,6 +204,7 @@ def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:
     assert "services/app/gateway/tests/test_byoc_control_plane_router.py" in (
         result.command
     )
+    assert "scripts/tests/test_submit_byoc_runner_evidence.py" in result.command
 
 
 def test_byoc_post_deploy_validation_gate_passes_offline_contract() -> None:

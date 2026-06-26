@@ -215,6 +215,12 @@ Repo-owned artifacts for this first slice:
   apply-plan bodies, artifact inventories, raw report JSON, URLs, logs, request
   bodies, prompts, credentials, or PII. Architecture ratchets forbid JSON/blob
   body columns and raw-runner-report shaped columns for this table.
+- `scripts/submit_byoc_runner_evidence.py` is the customer-side/local
+  automation bridge for that route. It reads the runner report, derives and
+  HMAC-signs only the sanitized summary, writes the signed submission JSON for
+  audit if requested, and posts to the hosted route only when `--submit-url` is
+  supplied. This keeps local CI and customer handoff flows testable without
+  staging credentials.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.

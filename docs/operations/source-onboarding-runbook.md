@@ -113,6 +113,14 @@ runner report. The backend stores a scalar
 `fyralis.byoc.runner_evidence_receipt.v1` receipt with deployment/agent
 identity, revision intent, pass/fail status, and aggregate counts only.
 
+```bash
+FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY="<local-signing-material>" \
+scripts/submit_byoc_runner_evidence.py \
+  --runner-report <agent-runner-report.json> \
+  --key-ref <control-plane/byoc/evidence-intake-key-ref> \
+  --submit-url https://<control-plane>/byoc/control-plane/runner-evidence
+```
+
 ## Source Coverage
 
 | Source | Production source doc | Credential style | Production launch note |
