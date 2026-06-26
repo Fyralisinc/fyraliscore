@@ -32,6 +32,7 @@ environment are present:
 | Gate | Production question |
 | --- | --- |
 | Production env contract | Does `.env.production.example` still expose the fail-closed production settings operators must fill before deploy, reject known weak defaults such as the local Grafana password, and keep raw app/provider secret placeholders blank? |
+| BYOC local contracts and preflight | Do the BYOC data-plane, permissions/IAM, AWS IaC, Terraform scaffold, bootstrap bundle, bootstrap dry-run, agent, evidence, and aggregate preflight contracts still pass without cloud credentials, child report details, command output, or customer data leaving the data plane? |
 | GitHub main required checks | Does the live `main` branch protection or active repository ruleset require every checked-in CI gate listed in `.github/main-required-checks.json`? |
 | Feedback-loop gap harness | Do archival cleanup, evidence attachment, no-op proof, graph context use, and question-policy learning still work? |
 | 50-batch storyline report | Did the last 50-batch run meet product, calibration, and queue-drain thresholds? |

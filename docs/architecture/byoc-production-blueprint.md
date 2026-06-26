@@ -190,6 +190,15 @@ Repo-owned artifacts for this first slice:
   local evidence for CI or customer handoff. The runner replays only local
   contract/hash/offline-validation checks, prepares signature-command evidence
   as counts, and never executes cloud apply, live probes, or mutating commands.
+- `services/platform/runtime/byoc_preflight_bundle.py` and
+  `scripts/run_byoc_preflight_bundle.py` aggregate the customer-side local
+  preflight flow into one sanitized report. The command runs the data-plane,
+  permissions/IAM, AWS IaC package, Terraform scaffold validation, bootstrap
+  bundle, bootstrap dry-run runner, and offline post-deploy checks through
+  in-process APIs, then emits only section status, aggregate counts, bounded
+  failure codes, and safe execution flags. It never embeds child report
+  details, command output, artifact refs, endpoint URLs, credentials, raw
+  payloads, prompts, logs, embeddings, or PII.
 - `services/platform/runtime/byoc_evidence_ledger.py`,
   `scripts/generate_byoc_evidence_ledger.py`, and
   `deploy/byoc/evidence-ledger.example.yaml` define the sanitized deployment

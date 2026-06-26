@@ -19,6 +19,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_evidence_package_gate,
     _byoc_evidence_ledger_gate,
     _byoc_permissions_contract_gate,
+    _byoc_preflight_bundle_gate,
     _byoc_post_deploy_validation_gate,
     _github_required_checks_gate,
     _production_env_contract_gate,
@@ -148,6 +149,26 @@ def test_byoc_bootstrap_runner_gate_passes_for_checked_in_plan() -> None:
         "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "env_template": ".env.production.example",
+    }
+
+
+def test_byoc_preflight_bundle_gate_passes_for_checked_in_contracts() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_preflight_bundle_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_preflight_bundle.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        "iac_package": "deploy/byoc/aws/iac-package.example.yaml",
+        "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+        "plan": "deploy/byoc/bootstrap-plan.example.yaml",
         "env_template": ".env.production.example",
     }
 

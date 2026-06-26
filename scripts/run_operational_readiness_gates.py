@@ -658,6 +658,35 @@ def _byoc_bootstrap_runner_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_preflight_bundle_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_preflight_bundle",
+        _python_command(
+            "scripts/run_byoc_preflight_bundle.py",
+            "--json",
+            "--env-file",
+            ".env.production.example",
+        ),
+        details=(
+            "BYOC preflight bundle aggregates customer-side local contract, "
+            "Terraform scaffold, bootstrap bundle, dry-run runner, and offline "
+            "post-deploy validation evidence without child report details or "
+            "command output."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+            "iac_package": "deploy/byoc/aws/iac-package.example.yaml",
+            "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+            "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+            "env_template": ".env.production.example",
+        },
+    )
+
+
 def _byoc_agent_probe_gate(args: argparse.Namespace) -> GateResult:
     env = _base_env()
     env.setdefault(
@@ -860,6 +889,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_bootstrap_bundle_gate(args),
         _byoc_bootstrap_plan_gate(args),
         _byoc_bootstrap_runner_gate(args),
+        _byoc_preflight_bundle_gate(args),
         _byoc_agent_probe_gate(args),
         _byoc_agent_runner_gate(args),
         _byoc_evidence_ledger_gate(args),

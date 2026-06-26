@@ -30,9 +30,19 @@ used by the customer-side bootstrap runner, run
 evidence report with no raw command output or artifact refs, then run
 `scripts/run_byoc_post_deploy_validation.py --require-live` from inside the
 customer data plane with the local gateway URL, worker health URLs, production
-database DSN, broker endpoint, and object-store endpoint. If the live validator
-writes a JSON report, set `FYRALIS_BYOC_EVIDENCE_SIGNING_SECRET` locally and
-summarize it with:
+database DSN, broker endpoint, and object-store endpoint.
+
+For customer handoff or support triage, the local preflight bundle wraps the
+non-live checks above into one sanitized aggregate report:
+
+```bash
+scripts/run_byoc_preflight_bundle.py --json \
+  --env-file <customer-byoc.env> \
+  --output <byoc-preflight-report.json>
+```
+
+The preflight bundle is a summary only. Keep using the individual commands when
+operators need to diagnose a specific failing section.
 
 ```bash
 scripts/run_byoc_terraform_plan_validation.py --json \
@@ -45,6 +55,9 @@ environment, operators may add `--run-terraform-validate` and
 root. The report still excludes stdout, stderr, plan JSON, provider
 credentials, and raw Terraform output; it records only bounded status metadata
 and exit code.
+
+If the live validator writes a JSON report, set
+`FYRALIS_BYOC_EVIDENCE_SIGNING_SECRET` locally and summarize it with:
 
 ```bash
 scripts/generate_byoc_evidence_ledger.py \

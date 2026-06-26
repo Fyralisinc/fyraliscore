@@ -110,6 +110,11 @@ Every checklist item is done only when:
 - [x] BYOC bootstrap-runner dry-run has a local evidence report command,
   sanitized JSON/YAML output, contract/hash/offline-validation execution, and
   readiness gate before real customer-cloud apply work begins.
+- [x] BYOC customer-side preflight has a sanitized aggregate command that
+  summarizes data-plane, permissions/IAM, AWS IaC, Terraform scaffold,
+  bootstrap-bundle, bootstrap-runner, and offline post-deploy checks without
+  child report details, command output, artifact refs, URLs, credentials, or
+  customer data.
 - [x] BYOC deployment evidence has a checked-in sanitized ledger contract,
   generator/checker CLI, aggregate-only evidence summaries, and readiness gate
   covering plan, Terraform scaffold validation, bootstrap-runner, and offline
