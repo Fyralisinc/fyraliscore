@@ -23,11 +23,20 @@ from services.platform.runtime.byoc_control_plane_intake import (
     validate_evidence_receipt_read_auth_headers,
     validate_evidence_package_submission,
 )
+from services.platform.runtime.byoc_runner_evidence_intake import (
+    ByocRunnerEvidenceIntakeStore,
+    ByocRunnerEvidenceReceipt,
+    ByocRunnerEvidenceSubmissionRequest,
+    InMemoryByocRunnerEvidenceIntakeStore,
+    PostgresByocRunnerEvidenceIntakeStore,
+    validate_runner_evidence_submission,
+)
 
 
 def build_byoc_control_plane_router(
     *,
     store: ByocEvidencePackageIntakeStore | None = None,
+    runner_evidence_store: ByocRunnerEvidenceIntakeStore | None = None,
     signing_secret: str | None = None,
     signing_key_ref: str | None = None,
 ) -> APIRouter:
@@ -67,6 +76,41 @@ def build_byoc_control_plane_router(
                 detail={"errors": [violation.render() for violation in violations]},
             )
         intake_store = store or _store_from_state(request)
+        return await intake_store.put(submission)
+
+    @router.post(
+        "/runner-evidence",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def submit_runner_evidence(
+        request: Request,
+        submission: ByocRunnerEvidenceSubmissionRequest,
+    ) -> ByocRunnerEvidenceReceipt:
+        resolved_key = await _resolve_control_plane_key(
+            request,
+            purpose="evidence_package_submission",
+            key_ref=submission.signature.key_ref,
+            signing_secret=signing_secret,
+            signing_key_ref=signing_key_ref,
+        )
+        violations = validate_runner_evidence_submission(
+            submission,
+            signing_secret=resolved_key.secret,
+            expected_key_ref=resolved_key.key_ref,
+        )
+        if violations:
+            status_code = (
+                status.HTTP_403_FORBIDDEN
+                if any("signature" in violation.code for violation in violations)
+                else status.HTTP_400_BAD_REQUEST
+            )
+            raise HTTPException(
+                status_code=status_code,
+                detail={"errors": [violation.render() for violation in violations]},
+            )
+        intake_store = runner_evidence_store or _runner_evidence_store_from_state(
+            request
+        )
         return await intake_store.put(submission)
 
     @router.get("/evidence-packages")
@@ -215,6 +259,23 @@ def _store_from_state(request: Request) -> ByocEvidencePackageIntakeStore:
         return created
     created = InMemoryByocEvidencePackageIntakeStore()
     request.app.state.byoc_evidence_intake_store = created
+    return created
+
+
+def _runner_evidence_store_from_state(
+    request: Request,
+) -> ByocRunnerEvidenceIntakeStore:
+    existing = getattr(request.app.state, "byoc_runner_evidence_intake_store", None)
+    if existing is not None:
+        return existing
+    deps = getattr(request.app.state, "deps", None)
+    pool = getattr(deps, "pool", None)
+    if pool is not None:
+        created = PostgresByocRunnerEvidenceIntakeStore(pool)
+        request.app.state.byoc_runner_evidence_intake_store = created
+        return created
+    created = InMemoryByocRunnerEvidenceIntakeStore()
+    request.app.state.byoc_runner_evidence_intake_store = created
     return created
 
 

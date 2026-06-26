@@ -105,6 +105,13 @@ bodies. The runner report may include apply-plan evidence, but that evidence is
 `plan_only` and must have a zero mutating-step count. Artifact verification
 evidence may include artifact roles, kinds, SHA-256 digests, and counts only;
 do not archive artifact refs, Sigstore bundle refs, or raw verification output.
+Where hosted control-plane intake is enabled, derive a signed
+`fyralis.byoc.runner_evidence_submission.v1` payload from the report and submit
+it to `POST /byoc/control-plane/runner-evidence` using the evidence intake
+signing key reference. Submit only the derived runner summary, not the raw
+runner report. The backend stores a scalar
+`fyralis.byoc.runner_evidence_receipt.v1` receipt with deployment/agent
+identity, revision intent, pass/fail status, and aggregate counts only.
 
 ## Source Coverage
 

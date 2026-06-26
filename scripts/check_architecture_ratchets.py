@@ -296,6 +296,9 @@ BYOC_EVIDENCE_RECEIPT_MIGRATION_PATH = Path(
 BYOC_AGENT_REGISTRATION_MIGRATION_PATH = Path(
     "db/migrations/0181_byoc_agent_registrations.sql"
 )
+BYOC_RUNNER_EVIDENCE_RECEIPT_MIGRATION_PATH = Path(
+    "db/migrations/0182_byoc_runner_evidence_receipts.sql"
+)
 BYOC_AGENT_FALSE_TELEMETRY_FLAGS = (
     "raw_logs_allowed",
     "raw_payloads_allowed",
@@ -335,6 +338,25 @@ BYOC_AGENT_REGISTRATION_FORBIDDEN_STORAGE_PATTERNS: tuple[
             re.IGNORECASE,
         ),
         "BYOC agent registration storage must not include raw agent body columns",
+    ),
+)
+BYOC_RUNNER_EVIDENCE_RECEIPT_FORBIDDEN_STORAGE_PATTERNS: tuple[
+    tuple[re.Pattern[str], str],
+    ...,
+] = (
+    (
+        re.compile(r"\b(?:JSONB|JSON|BYTEA)\b", re.IGNORECASE),
+        "BYOC runner evidence receipt storage must not store JSON or byte payload bodies",
+    ),
+    (
+        re.compile(
+            r"\b(?:raw_[a-z0-9_]*|runner_report|report_body|report_json|"
+            r"checks|iterations|apply_plan_ids|artifact_verification_ids|"
+            r"artifact_inventory|artifact_digest|request_body|response_body|"
+            r"payload|prompt|log_text|pii|secret_value|token_value)\b",
+            re.IGNORECASE,
+        ),
+        "BYOC runner evidence receipt storage must not include raw runner body columns",
     ),
 )
 BYOC_AGENT_NO_RAW_TOKEN_MODELS = (
@@ -1052,6 +1074,62 @@ def find_byoc_agent_registration_storage_violations(
     return violations
 
 
+def find_byoc_runner_evidence_receipt_storage_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    migration_path: Path = BYOC_RUNNER_EVIDENCE_RECEIPT_MIGRATION_PATH,
+) -> list[Violation]:
+    """Return BYOC runner receipt drift that could persist raw runner reports."""
+
+    path = repo_root / migration_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-runner-evidence-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC runner evidence receipt migration is missing",
+            )
+        ]
+
+    text = _strip_sql_comments_preserving_lines(
+        path.read_text(encoding="utf-8", errors="ignore")
+    )
+    violations: list[Violation] = []
+    if "CREATE TABLE IF NOT EXISTS byoc_runner_evidence_receipts" not in text:
+        violations.append(
+            Violation(
+                check="byoc-runner-evidence-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC runner evidence receipt table must be created explicitly",
+            )
+        )
+    if "stored_scope = 'sanitized_metadata_only'" not in text:
+        violations.append(
+            Violation(
+                check="byoc-runner-evidence-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC runner evidence receipts must pin sanitized metadata scope",
+            )
+        )
+
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        for pattern, message in BYOC_RUNNER_EVIDENCE_RECEIPT_FORBIDDEN_STORAGE_PATTERNS:
+            if pattern.search(line):
+                violations.append(
+                    Violation(
+                        check="byoc-runner-evidence-receipt-storage",
+                        path=migration_path,
+                        line_number=line_number,
+                        message=message,
+                    )
+                )
+                break
+    return violations
+
+
 def _class_field_assignments(
     node: ast.ClassDef | None,
 ) -> dict[str, ast.AnnAssign]:
@@ -1605,6 +1683,9 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     )
     violations.extend(
         find_byoc_agent_registration_storage_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_runner_evidence_receipt_storage_violations(repo_root=repo_root)
     )
     violations.extend(find_import_linter_allowlist_violations(repo_root=repo_root))
     violations.extend(find_rollback_data_deletion_violations(repo_root=repo_root))

@@ -13,6 +13,10 @@ from services.app.gateway.byoc_control_plane_router import (
     build_byoc_control_plane_router,
 )
 from services.app.gateway.settings import GatewaySettings
+from services.platform.runtime.byoc_agent_runner import (
+    ByocAgentRunnerInputs,
+    run_byoc_agent_runner,
+)
 from services.platform.runtime.byoc_control_plane_intake import (
     InMemoryByocEvidencePackageIntakeStore,
     evidence_package_submission_payload,
@@ -20,15 +24,24 @@ from services.platform.runtime.byoc_control_plane_intake import (
     signed_evidence_package_submission,
 )
 from services.platform.runtime.byoc_evidence_package import load_byoc_evidence_package
+from services.platform.runtime.byoc_runner_evidence_intake import (
+    InMemoryByocRunnerEvidenceIntakeStore,
+    runner_evidence_submission_payload,
+    runner_evidence_summary_from_report,
+    signed_runner_evidence_submission,
+)
 
 
 ROOT = Path(__file__).resolve().parents[4]
 PACKAGE = load_byoc_evidence_package(ROOT / "deploy/byoc/evidence-package.example.yaml")
+MANIFEST_PATH = ROOT / "deploy/byoc/dataplane.example.yaml"
+BUNDLE_NEXT_PATH = ROOT / "deploy/byoc/bootstrap-bundle.next.example.yaml"
 SIGNING_SECRET = "local-control-plane-intake-secret"
 SIGNING_KEY_REF = "control-plane/byoc/evidence-intake-key"
 AGENT_ID = "agt_intake01"
 AGENT_VERSION = "0.1.0"
 SUBMITTED_AT = datetime(2026, 6, 26, 12, 30, tzinfo=UTC)
+INSTALL_TOKEN = "local-control-plane-runner-evidence-token"
 
 
 def _submission(*, signing_secret: str = SIGNING_SECRET):
@@ -40,6 +53,36 @@ def _submission(*, signing_secret: str = SIGNING_SECRET):
         submitted_at=SUBMITTED_AT,
     )
     return signed_evidence_package_submission(
+        payload,
+        signing_secret=signing_secret,
+        key_ref=SIGNING_KEY_REF,
+    )
+
+
+async def _runner_submission(*, signing_secret: str = SIGNING_SECRET):
+    report = await run_byoc_agent_runner(
+        ByocAgentRunnerInputs(
+            manifest_path=MANIFEST_PATH,
+            install_token=INSTALL_TOKEN,
+            agent_id="agt_runnerrouter01",
+            agent_version="2026.06.26-router",
+            nonce_prefix="nonce-runner-router",
+            iterations=1,
+            mock_desired_revision="2026.06.26-2",
+            mock_config_epoch=3,
+            bootstrap_bundle_path=BUNDLE_NEXT_PATH,
+            verify_local_bundle_files=True,
+            repo_root=ROOT,
+            requested_at=datetime(2026, 6, 26, 12, 0, tzinfo=UTC),
+            sent_at=datetime(2026, 6, 26, 12, 1, tzinfo=UTC),
+        )
+    )
+    payload = runner_evidence_submission_payload(
+        evidence=runner_evidence_summary_from_report(report),
+        nonce="nonce-runner-router-001",
+        submitted_at=SUBMITTED_AT,
+    )
+    return signed_runner_evidence_submission(
         payload,
         signing_secret=signing_secret,
         key_ref=SIGNING_KEY_REF,
@@ -69,6 +112,35 @@ class _FakeReceiptPool:
 
     async def fetchrow(self, query: str, *args):
         self.calls.append((query, args))
+        if (
+            query.lstrip().upper().startswith("INSERT")
+            and "byoc_runner_evidence_receipts" in query
+        ):
+            row = {
+                "receipt_id": args[0],
+                "deployment_id": args[1],
+                "customer_id": args[2],
+                "agent_id": args[3],
+                "agent_version": args[4],
+                "cloud_provider": args[5],
+                "region": args[6],
+                "control_plane_mode": args[7],
+                "evidence_digest": args[8],
+                "current_artifact_revision": args[9],
+                "desired_revision": args[10],
+                "rollout_action": args[11],
+                "runner_status": args[12],
+                "required_checks_passed": args[13],
+                "apply_plan_count": args[14],
+                "artifact_verification_count": args[15],
+                "digest_pinned_artifact_count": args[16],
+                "local_digest_checked_count": args[17],
+                "submitted_at": args[18],
+                "accepted_at": args[19],
+                "stored_scope": args[20],
+            }
+            self.rows[row["receipt_id"]] = row
+            return row
         if query.lstrip().upper().startswith("INSERT"):
             row = {
                 "receipt_id": args[0],
@@ -172,6 +244,31 @@ async def test_byoc_control_plane_accepts_signed_evidence_package() -> None:
     assert receipt_list.json()["result_count"] == 1
     assert "source_artifacts" not in receipt_list.text
     assert "gateway.customer.internal" not in receipt_list.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_accepts_signed_runner_evidence() -> None:
+    runner_store = InMemoryByocRunnerEvidenceIntakeStore()
+    app, _ = _app()
+    app.state.byoc_runner_evidence_intake_store = runner_store
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/runner-evidence",
+            json=(await _runner_submission()).model_dump(mode="json"),
+        )
+
+    assert response.status_code == 202
+    receipt = response.json()
+    assert receipt["status"] == "accepted"
+    assert receipt["stored_scope"] == "sanitized_metadata_only"
+    assert receipt["apply_plan_count"] == 1
+    assert receipt["artifact_verification_count"] == 1
+    assert len(runner_store.records) == 1
+    assert '"checks":' not in response.text
+    assert "iterations" not in response.text
+    assert "gateway_image" not in response.text
+    assert INSTALL_TOKEN not in response.text
 
 
 @pytest.mark.asyncio
@@ -330,6 +427,31 @@ async def test_byoc_control_plane_uses_postgres_store_from_gateway_deps() -> Non
 
 
 @pytest.mark.asyncio
+async def test_byoc_control_plane_uses_postgres_store_for_runner_evidence() -> None:
+    pool = _FakeReceiptPool()
+    app = FastAPI()
+    app.state.deps = SimpleNamespace(pool=pool)
+    app.state.byoc_evidence_intake_secret = SIGNING_SECRET
+    app.state.byoc_evidence_intake_key_ref = SIGNING_KEY_REF
+    app.include_router(build_byoc_control_plane_router())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/runner-evidence",
+            json=(await _runner_submission()).model_dump(mode="json"),
+        )
+
+    assert response.status_code == 202
+    assert pool.calls
+    flattened_args = " ".join(str(arg) for _, args in pool.calls for arg in args)
+    assert "fyralis.byoc.runner_evidence_summary.v1" not in flattened_args
+    assert "apply_plan_ids" not in flattened_args
+    assert "artifact_verification_ids" not in flattened_args
+    assert "gateway_image" not in flattened_args
+    assert INSTALL_TOKEN not in flattened_args
+
+
+@pytest.mark.asyncio
 async def test_byoc_control_plane_rejects_bad_signature() -> None:
     app, _ = _app()
     transport = httpx.ASGITransport(app=app)
@@ -337,6 +459,22 @@ async def test_byoc_control_plane_rejects_bad_signature() -> None:
         response = await client.post(
             "/byoc/control-plane/evidence-packages",
             json=_submission(signing_secret="wrong-secret").model_dump(mode="json"),
+        )
+
+    assert response.status_code == 403
+    assert "invalid_signature" in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_rejects_bad_runner_evidence_signature() -> None:
+    app, _ = _app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/runner-evidence",
+            json=(await _runner_submission(signing_secret="wrong-secret")).model_dump(
+                mode="json"
+            ),
         )
 
     assert response.status_code == 403
@@ -358,6 +496,20 @@ async def test_byoc_control_plane_requires_configured_intake_secret() -> None:
 
 
 @pytest.mark.asyncio
+async def test_byoc_control_plane_requires_configured_runner_evidence_secret() -> None:
+    app, _ = _app(configured=False)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/runner-evidence",
+            json=(await _runner_submission()).model_dump(mode="json"),
+        )
+
+    assert response.status_code == 503
+    assert "not configured" in response.text
+
+
+@pytest.mark.asyncio
 async def test_byoc_control_plane_rejects_raw_report_extra_field() -> None:
     app, _ = _app()
     submission = _submission().model_dump(mode="json")
@@ -368,6 +520,24 @@ async def test_byoc_control_plane_rejects_raw_report_extra_field() -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/byoc/control-plane/evidence-packages",
+            json=submission,
+        )
+
+    assert response.status_code == 422
+    assert "Extra inputs are not permitted" in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_rejects_runner_evidence_raw_extra_field() -> None:
+    app, _ = _app()
+    submission = (await _runner_submission()).model_dump(mode="json")
+    submission["evidence"]["checks"] = [
+        {"details": "https://gateway.customer.internal token=secret"}
+    ]
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/runner-evidence",
             json=submission,
         )
 

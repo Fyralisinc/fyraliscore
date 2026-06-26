@@ -201,6 +201,20 @@ Repo-owned artifacts for this first slice:
   allowed only for local/test app-state wiring. Architecture ratchets forbid
   receipt JSON/blob/body columns so raw evidence packages and live report
   details cannot become control-plane storage.
+- `services/platform/runtime/byoc_runner_evidence_intake.py` extends that
+  hosted intake with a signed sanitized runner-evidence envelope. Customer-side
+  runner automation derives a `fyralis.byoc.runner_evidence_summary.v1`
+  payload from the local bounded agent runner report, preserving only
+  deployment/agent identity, revision intent, pass/fail status, apply-plan and
+  artifact-verification IDs, and aggregate counts. It submits the canonical
+  HMAC-signed `fyralis.byoc.runner_evidence_submission.v1` payload to `POST
+  /byoc/control-plane/runner-evidence` using the existing evidence intake
+  signing-key purpose. The gateway stores only a
+  `fyralis.byoc.runner_evidence_receipt.v1` scalar receipt in
+  `byoc_runner_evidence_receipts`; it does not store runner checks, iterations,
+  apply-plan bodies, artifact inventories, raw report JSON, URLs, logs, request
+  bodies, prompts, credentials, or PII. Architecture ratchets forbid JSON/blob
+  body columns and raw-runner-report shaped columns for this table.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
