@@ -113,6 +113,13 @@ Repo-owned artifacts for this first slice:
   local evidence for CI or customer handoff. The runner replays only local
   contract/hash/offline-validation checks, prepares signature-command evidence
   as counts, and never executes cloud apply, live probes, or mutating commands.
+- `services/platform/runtime/byoc_evidence_ledger.py`,
+  `scripts/generate_byoc_evidence_ledger.py`, and
+  `deploy/byoc/evidence-ledger.example.yaml` define the sanitized deployment
+  evidence ledger. It records only deployment identity, pass/fail status,
+  aggregate check counts, bounded failure codes, operation counts, and
+  sanitized digests from the plan, bootstrap-runner report, and offline
+  post-deploy validator.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -829,6 +836,7 @@ Validation sequence:
    - Confirm the plan contains no mutating cloud commands or credential
      requirements.
    - Emit the sanitized bootstrap-runner dry-run evidence report.
+   - Emit the sanitized BYOC deployment evidence ledger.
    - Verify the signed bootstrap bundle manifest and all local artifact hashes.
    - Verify bootstrap runner cosign checks completed before any apply step.
    - `/healthz`, `/readyz`, `/metrics` for gateway and workers.
@@ -1289,6 +1297,9 @@ Minimum gates before first enterprise customer:
   customer-side runner has an ordered non-mutating plan before live apply.
 - Keep the bootstrap-runner evidence report sanitized and local-only until the
   first customer cloud profile supplies real staging credentials.
+- Keep the evidence ledger contract-backed and sanitized; it may leave the data
+  plane as deployment metadata, but raw report details, commands, artifact refs,
+  credentials, payloads, prompts, logs, embeddings, and PII must not.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment and heartbeat schema contract-backed;

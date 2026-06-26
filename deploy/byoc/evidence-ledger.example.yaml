@@ -1,0 +1,96 @@
+schema_version: fyralis.byoc.evidence_ledger.v1
+deployment_id: dep_example01
+customer_id: cus_example01
+environment: prod
+cloud_provider: aws
+region: us-east-1
+artifact_revision: 2026.06.26-1
+generated_at: '2026-06-26T12:00:00Z'
+generated_by: fyralis-core
+export_scope: sanitized_metadata_only
+overall_status: pass
+required_evidence_passed: true
+privacy:
+  raw_payloads_included: false
+  prompts_included: false
+  embeddings_included: false
+  raw_logs_included: false
+  pii_included: false
+  credentials_included: false
+  artifact_refs_included: false
+  command_output_included: false
+  report_details_included: false
+evidence:
+- kind: bootstrap_plan
+  status: pass
+  required_checks_passed: true
+  observed_at: '2026-06-26T12:00:00Z'
+  source:
+    type: file
+    ref: deploy/byoc/bootstrap-plan.example.yaml
+    digest: sha256:148ea4b590419817e3d1d90727708e2858c99127d3bebe11ad4bcfca080ca661
+  check_summary:
+    total: 2
+    required: 2
+    passed: 2
+    failed: 0
+    skipped: 0
+    failed_required: 0
+  failed_check_codes: []
+  step_count: 10
+  operation_counts:
+    validate_contracts: 1
+    verify_artifact_signatures: 1
+    verify_local_artifact_hashes: 1
+    inspect_permission_boundaries: 1
+    plan_private_network: 1
+    plan_stateful_services: 1
+    render_runtime_release: 1
+    prepare_agent_enrollment: 1
+    run_post_deploy_validation: 1
+    emit_handoff_summary: 1
+- kind: bootstrap_runner
+  status: pass
+  required_checks_passed: true
+  observed_at: '2026-06-26T12:00:00Z'
+  source:
+    type: local_runner
+    ref: generated:byoc_bootstrap_runner
+    digest: sha256:892a2d1fbd86ddc654a8b5a1c2c645099bef79d4cd4e0b159d88f06e045e6deb
+  check_summary:
+    total: 16
+    required: 16
+    passed: 16
+    failed: 0
+    skipped: 0
+    failed_required: 0
+  failed_check_codes: []
+  step_count: 10
+  operation_counts:
+    validate_contracts: 1
+    verify_artifact_signatures: 1
+    verify_local_artifact_hashes: 1
+    inspect_permission_boundaries: 1
+    plan_private_network: 1
+    plan_stateful_services: 1
+    render_runtime_release: 1
+    prepare_agent_enrollment: 1
+    run_post_deploy_validation: 1
+    emit_handoff_summary: 1
+- kind: post_deploy_validation
+  status: pass
+  required_checks_passed: true
+  observed_at: '2026-06-26T12:00:00Z'
+  source:
+    type: offline_validator
+    ref: generated:byoc_post_deploy_validation
+    digest: sha256:f7a496534aa066395afa9330205ff3e7321a2a884c0f314c147a8293564cead0
+  check_summary:
+    total: 9
+    required: 8
+    passed: 4
+    failed: 0
+    skipped: 5
+    failed_required: 0
+  failed_check_codes: []
+  operation_counts: {}

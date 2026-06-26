@@ -593,6 +593,33 @@ def _byoc_bootstrap_runner_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_evidence_ledger_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_evidence_ledger",
+        _python_command(
+            "scripts/generate_byoc_evidence_ledger.py",
+            "--check-ledger",
+            "deploy/byoc/evidence-ledger.example.yaml",
+            "--env-file",
+            ".env.production.example",
+        ),
+        details=(
+            "Checked-in BYOC evidence ledger records only sanitized "
+            "deployment metadata, aggregate counts, and bounded failure codes."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+            "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+            "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "env_template": ".env.production.example",
+        },
+    )
+
+
 def _byoc_post_deploy_validation_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_post_deploy_validation",
@@ -652,6 +679,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_bootstrap_bundle_gate(args),
         _byoc_bootstrap_plan_gate(args),
         _byoc_bootstrap_runner_gate(args),
+        _byoc_evidence_ledger_gate(args),
         _byoc_post_deploy_validation_gate(args),
         _github_required_checks_gate(args),
         _feedback_gap_gate(args),
