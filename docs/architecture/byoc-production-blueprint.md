@@ -126,6 +126,13 @@ Repo-owned artifacts for this first slice:
   import. The ledger imports only status, required flags, bounded check names,
   and counts, while discarding report details, endpoint strings, URLs, and
   metrics.
+- `services/platform/runtime/byoc_evidence_package.py`,
+  `scripts/generate_byoc_evidence_package.py`, and
+  `deploy/byoc/evidence-package.example.yaml` define the sanitized customer
+  handoff package. It embeds only the sanitized evidence ledger, digest-pinned
+  source artifact refs, and optional signed-envelope metadata; it never embeds
+  raw post-deploy reports, command output, endpoint URLs, artifact refs,
+  credentials, payloads, prompts, logs, embeddings, or PII.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -1312,6 +1319,10 @@ Minimum gates before first enterprise customer:
   report digest, timestamp, and agent/runtime proof are verified before
   summarization. Never attach the raw validator JSON to a control-plane or
   support handoff artifact.
+- Generate customer handoff artifacts through
+  `scripts/generate_byoc_evidence_package.py`; the package may leave the data
+  plane only after `--check-package` passes and the raw live validator report is
+  excluded.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment and heartbeat schema contract-backed;

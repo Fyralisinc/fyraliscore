@@ -103,6 +103,9 @@ Every checklist item is done only when:
 - [x] BYOC live report imports can require a signed evidence envelope that
   verifies deployment identity, report digest, timestamp freshness, signing key
   reference, and HMAC proof before the report is summarized.
+- [x] BYOC customer handoff evidence has a checked-in sanitized package
+  contract, generator/checker CLI, source artifact digest ratchet, optional
+  signed-envelope metadata, and readiness gate.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

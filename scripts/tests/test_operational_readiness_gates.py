@@ -12,6 +12,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_bootstrap_plan_gate,
     _byoc_bootstrap_runner_gate,
     _byoc_dataplane_contract_gate,
+    _byoc_evidence_package_gate,
     _byoc_evidence_ledger_gate,
     _byoc_permissions_contract_gate,
     _byoc_post_deploy_validation_gate,
@@ -124,6 +125,25 @@ def test_byoc_evidence_ledger_gate_passes_for_checked_in_ledger() -> None:
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
         "env_template": ".env.production.example",
+    }
+
+
+def test_byoc_evidence_package_gate_passes_for_checked_in_package() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_evidence_package_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/generate_byoc_evidence_package.py" in result.command
+    assert "--check-package" in result.command
+    assert result.artifacts == {
+        "package": "deploy/byoc/evidence-package.example.yaml",
+        "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+        "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+        "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
     }
 
 
