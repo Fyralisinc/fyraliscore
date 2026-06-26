@@ -633,16 +633,25 @@ def _byoc_agent_runner_gate(args: argparse.Namespace) -> GateResult:
             "2026.06.26-2",
             "--mock-config-epoch",
             "1",
+            "--bootstrap-bundle",
+            "deploy/byoc/bootstrap-bundle.next.example.yaml",
+            "--verify-local-bundle-files",
+            "--repo-root",
+            str(REPO_ROOT),
         ),
         details=(
             "BYOC data-plane agent runner enrolls once, polls metadata-only "
             "desired state, builds sanitized non-mutating apply-plan evidence, "
-            "and submits privacy-safe heartbeats through the bounded local "
+            "maps the desired revision to digest-pinned bundle metadata, and "
+            "submits privacy-safe heartbeats through the bounded local "
             "control-plane loop."
         ),
         timeout_s=min(args.command_timeout_s, 30),
         env=env,
-        artifacts={"manifest": "deploy/byoc/dataplane.example.yaml"},
+        artifacts={
+            "manifest": "deploy/byoc/dataplane.example.yaml",
+            "bundle": "deploy/byoc/bootstrap-bundle.next.example.yaml",
+        },
     )
 
 

@@ -59,6 +59,25 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--mock-config-epoch", type=int, default=0)
+    parser.add_argument(
+        "--bootstrap-bundle",
+        type=Path,
+        help=(
+            "Optional BYOC bootstrap bundle used to build sanitized artifact "
+            "verification evidence for apply_revision desired state."
+        ),
+    )
+    parser.add_argument(
+        "--verify-local-bundle-files",
+        action="store_true",
+        help="Hash local_path artifacts in --bootstrap-bundle before reporting.",
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path.cwd(),
+        help="Repository root used for --verify-local-bundle-files.",
+    )
     parser.add_argument("--timeout-seconds", type=float, default=5.0)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--output", type=Path)
@@ -85,6 +104,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    if args.verify_local_bundle_files and args.bootstrap_bundle is None:
+        print(
+            "--verify-local-bundle-files requires --bootstrap-bundle",
+            file=sys.stderr,
+        )
+        return 2
 
     install_token = os.environ.get(args.install_token_env, "")
     if not install_token.strip():
@@ -108,6 +133,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 control_plane_url=args.control_plane_url,
                 mock_desired_revision=args.mock_desired_revision,
                 mock_config_epoch=args.mock_config_epoch,
+                bootstrap_bundle_path=args.bootstrap_bundle,
+                verify_local_bundle_files=args.verify_local_bundle_files,
+                repo_root=args.repo_root,
                 timeout_s=args.timeout_seconds,
             )
         )

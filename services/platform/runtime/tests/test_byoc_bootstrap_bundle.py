@@ -19,6 +19,7 @@ from services.platform.runtime.byoc_permissions import load_byoc_permissions_man
 
 ROOT = Path(__file__).resolve().parents[4]
 BUNDLE = ROOT / "deploy/byoc/bootstrap-bundle.example.yaml"
+NEXT_BUNDLE = ROOT / "deploy/byoc/bootstrap-bundle.next.example.yaml"
 DATAPLANE = ROOT / "deploy/byoc/dataplane.example.yaml"
 PERMISSIONS = ROOT / "deploy/byoc/permissions.example.yaml"
 
@@ -48,6 +49,18 @@ def test_checked_in_bootstrap_bundle_matches_byoc_contracts() -> None:
         "source_sbom",
         "image_sbom",
     }
+
+
+def test_next_revision_bootstrap_bundle_is_digest_pinned() -> None:
+    bundle = load_byoc_bootstrap_bundle(NEXT_BUNDLE)
+
+    assert validate_bootstrap_bundle_contract(
+        bundle,
+        verify_local_files=True,
+        repo_root=ROOT,
+    ) == []
+    assert bundle.artifact_revision == "2026.06.26-2"
+    assert all(artifact.digest.startswith("sha256:") for artifact in bundle.artifacts)
 
 
 def test_bootstrap_bundle_schema_is_exportable() -> None:

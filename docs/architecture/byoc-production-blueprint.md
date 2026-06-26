@@ -89,16 +89,25 @@ Repo-owned artifacts for this first slice:
   loop skeleton. The runner enrolls once, polls metadata-only desired state for
   a caller-bounded number of iterations, sends one privacy-safe heartbeat per
   iteration, and emits a sanitized report that contains only scalar status,
-  cadence, revision, apply-plan, and aggregate count fields. For
-  `apply_revision` desired state it builds a `plan_only`,
-  zero-mutation-count apply plan with bounded step codes; it intentionally does
-  not apply revisions, rotate tokens, issue mTLS credentials, or daemonize.
+  cadence, revision, apply-plan, artifact-verification, and aggregate count
+  fields. For `apply_revision` desired state it builds a `plan_only`,
+  zero-mutation-count apply plan with bounded step codes and, when supplied a
+  bootstrap bundle, verifies that the desired revision maps to digest-pinned
+  artifact metadata; it intentionally does not apply revisions, rotate tokens,
+  issue mTLS credentials, or daemonize.
 - `services/platform/runtime/byoc_agent_apply_plan.py` defines the sanitized
   non-mutating apply-plan contract. The plan records only current/desired
   revision metadata, config epoch, bounded step names, and mutation counts; it
   rejects unchanged revisions, mutating execution modes, mutating step counts,
   raw URL markers, signatures, payloads, prompts, embeddings, and secret-like
   material.
+- `services/platform/runtime/byoc_agent_artifact_verification.py` defines the
+  sanitized artifact verification evidence contract. It validates the apply
+  plan against a bootstrap bundle whose `artifact_revision` matches the desired
+  revision, checks bundle digest pinning and optional local file digests, and
+  emits only roles, kinds, SHA-256 digests, counts, and bounded IDs. It never
+  emits artifact refs, URLs, Sigstore bundle refs, signatures, payloads,
+  prompts, embeddings, or secret-like material.
 - `services/platform/runtime/byoc_agent_control_plane.py`,
   `services/app/gateway/byoc_agent_keys.py`, and
   `services/app/gateway/byoc_agent_router.py` provide the first hosted agent
@@ -133,6 +142,10 @@ Repo-owned artifacts for this first slice:
 - `deploy/byoc/bootstrap-bundle.example.yaml` is the credential-free example
   bundle tying the data-plane manifest, permission manifest, agent image,
   runtime images, Helm chart, AWS IAM skeleton, and SBOM artifacts together.
+- `deploy/byoc/bootstrap-bundle.next.example.yaml` is the credential-free
+  next-revision bundle fixture used by the local agent runner to prove
+  `apply_revision` desired state can be tied to digest-pinned artifact
+  metadata without mutating customer infrastructure.
 - `scripts/verify_byoc_bootstrap_bundle.py` verifies the bundle locally and can
   print the cosign verification commands a customer-side bootstrap runner must
   execute before applying cloud resources.

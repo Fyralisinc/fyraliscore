@@ -94,13 +94,17 @@ mock desired revision that differs from the manifest artifact revision:
 FYRALIS_BYOC_INSTALL_TOKEN="<managed-secret-value-loaded-locally>" \
 scripts/run_byoc_agent_runner.py --json --iterations 2 \
   --mock-desired-revision 2026.06.26-2 --mock-config-epoch 1 \
+  --bootstrap-bundle deploy/byoc/bootstrap-bundle.next.example.yaml \
+  --verify-local-bundle-files \
   --output <agent-runner-report.json>
 ```
 
 Archive only the generated report. Do not archive shell history, raw install
 tokens, live control-plane URLs, desired-state bodies, or request/response
 bodies. The runner report may include apply-plan evidence, but that evidence is
-`plan_only` and must have a zero mutating-step count.
+`plan_only` and must have a zero mutating-step count. Artifact verification
+evidence may include artifact roles, kinds, SHA-256 digests, and counts only;
+do not archive artifact refs, Sigstore bundle refs, or raw verification output.
 
 ## Source Coverage
 

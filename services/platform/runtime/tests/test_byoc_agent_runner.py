@@ -16,6 +16,8 @@ from services.platform.runtime.byoc_contract import load_byoc_manifest
 
 ROOT = Path(__file__).resolve().parents[4]
 MANIFEST_PATH = ROOT / "deploy/byoc/dataplane.example.yaml"
+BUNDLE_NEXT_PATH = ROOT / "deploy/byoc/bootstrap-bundle.next.example.yaml"
+BUNDLE_CURRENT_PATH = ROOT / "deploy/byoc/bootstrap-bundle.example.yaml"
 MANIFEST = load_byoc_manifest(MANIFEST_PATH)
 INSTALL_TOKEN = "local-install-token-for-agent-runner-tests"
 
@@ -86,6 +88,7 @@ async def test_agent_runner_builds_non_mutating_apply_plan_for_revision_change()
     assert payload["final_desired_revision"] == "2026.06.26-2"
     assert payload["final_config_epoch"] == 3
     assert payload["apply_plan_count"] == 1
+    assert payload["artifact_verification_count"] == 0
     assert payload["apply_plans"][0]["schema_version"] == (
         "fyralis.byoc.agent.apply_plan_evidence.v1"
     )
@@ -103,6 +106,77 @@ async def test_agent_runner_builds_non_mutating_apply_plan_for_revision_change()
     assert MANIFEST.connectivity.control_plane_url not in serialized
     assert "signature" not in serialized_apply_plans.lower()
     assert "payload" not in serialized_apply_plans.lower()
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_builds_artifact_verification_for_apply_plan() -> None:
+    report = await run_byoc_agent_runner(
+        ByocAgentRunnerInputs(
+            manifest_path=MANIFEST_PATH,
+            install_token=INSTALL_TOKEN,
+            agent_id="agt_runner001",
+            agent_version="2026.06.26-test",
+            nonce_prefix="nonce-agent-runner-test",
+            iterations=1,
+            mock_desired_revision="2026.06.26-2",
+            mock_config_epoch=3,
+            bootstrap_bundle_path=BUNDLE_NEXT_PATH,
+            verify_local_bundle_files=True,
+            repo_root=ROOT,
+            requested_at=datetime(2026, 6, 26, 12, 0, tzinfo=UTC),
+            sent_at=datetime(2026, 6, 26, 12, 1, tzinfo=UTC),
+        )
+    )
+
+    payload = json.loads(render_agent_runner_report_json(report))
+    serialized_artifacts = json.dumps(
+        payload["artifact_verifications"],
+        sort_keys=True,
+    )
+
+    assert report.required_checks_passed is True
+    assert payload["apply_plan_count"] == 1
+    assert payload["artifact_verification_count"] == 1
+    assert payload["artifact_verifications"][0]["schema_version"] == (
+        "fyralis.byoc.agent.artifact_verification_evidence.v1"
+    )
+    assert payload["artifact_verifications"][0]["desired_revision"] == "2026.06.26-2"
+    assert payload["artifact_verifications"][0]["artifact_count"] == 7
+    assert payload["artifact_verifications"][0]["digest_pinned_artifact_count"] == 7
+    assert payload["artifact_verifications"][0]["local_digest_checked_count"] == 1
+    assert payload["apply_plans"][0]["artifact_verification_status"] == "pass"
+    assert payload["apply_plans"][0]["artifact_verification_id"] == (
+        payload["artifact_verifications"][0]["verification_id"]
+    )
+    assert payload["iterations"][0]["artifact_verification_status"] == "pass"
+    assert "artifact_verification_contract" in {
+        check["name"] for check in payload["checks"]
+    }
+    assert MANIFEST.connectivity.control_plane_url not in serialized_artifacts
+    assert "://" not in serialized_artifacts
+    assert "signature" not in serialized_artifacts.lower()
+    assert "sigstore" not in serialized_artifacts.lower()
+    assert "bundle_ref" not in serialized_artifacts.lower()
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_rejects_artifact_bundle_revision_mismatch() -> None:
+    report = await run_byoc_agent_runner(
+        ByocAgentRunnerInputs(
+            manifest_path=MANIFEST_PATH,
+            install_token=INSTALL_TOKEN,
+            agent_id="agt_runner001",
+            nonce_prefix="nonce-agent-runner-test",
+            mock_desired_revision="2026.06.26-2",
+            bootstrap_bundle_path=BUNDLE_CURRENT_PATH,
+        )
+    )
+
+    assert report.status == "fail"
+    assert report.artifact_verification_count == 0
+    assert "artifact_verification_contract" in {
+        check.name for check in report.checks if check.status == "fail"
+    }
 
 
 @pytest.mark.asyncio

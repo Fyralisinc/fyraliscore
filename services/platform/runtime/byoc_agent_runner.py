@@ -20,10 +20,20 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import ValidationError
 
+from services.platform.runtime.byoc_agent_artifact_verification import (
+    ByocAgentArtifactVerificationEvidence,
+    build_artifact_verification_evidence,
+    validate_artifact_verification_contract,
+)
 from services.platform.runtime.byoc_agent_apply_plan import (
     ByocAgentApplyPlan,
     build_apply_revision_plan,
     validate_apply_plan_contract,
+)
+from services.platform.runtime.byoc_bootstrap_bundle import (
+    ByocBootstrapBundleManifest,
+    load_byoc_bootstrap_bundle,
+    render_validation_errors as render_bundle_validation_errors,
 )
 from services.platform.runtime.byoc_agent_contract import (
     ByocAgentComponentStatus,
@@ -82,6 +92,8 @@ class ByocAgentRunnerIteration:
     config_epoch: int
     apply_plan_status: AgentRunnerStatus | None
     apply_plan_id: str | None
+    artifact_verification_status: AgentRunnerStatus | None
+    artifact_verification_id: str | None
     heartbeat_status: AgentRunnerStatus
     poll_after_seconds: int
 
@@ -98,6 +110,34 @@ class ByocAgentRunnerApplyPlanEvidence:
     planned_step_count: int
     mutating_step_count: int
     step_names: tuple[str, ...]
+    artifact_verification_status: AgentRunnerStatus | None
+    artifact_verification_id: str | None
+    artifact_count: int | None
+    digest_pinned_artifact_count: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ByocAgentRunnerArtifactDigestEvidence:
+    role: str
+    kind: str
+    digest: str
+    local_digest_checked: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ByocAgentRunnerArtifactVerificationEvidence:
+    schema_version: Literal["fyralis.byoc.agent.artifact_verification_evidence.v1"]
+    status: AgentRunnerStatus
+    verification_id: str
+    plan_id: str
+    current_revision: str
+    desired_revision: str
+    bundle_artifact_revision: str
+    artifact_count: int
+    digest_pinned_artifact_count: int
+    local_digest_checked_count: int
+    required_artifact_roles: tuple[str, ...]
+    artifacts: tuple[ByocAgentRunnerArtifactDigestEvidence, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +162,7 @@ class ByocAgentRunnerReport:
     desired_state_poll_count: int
     heartbeat_count: int
     apply_plan_count: int
+    artifact_verification_count: int
     final_desired_revision: str | None
     final_rollout_action: str | None
     final_config_epoch: int | None
@@ -131,6 +172,7 @@ class ByocAgentRunnerReport:
     checks: list[ByocAgentRunnerCheck]
     iterations: list[ByocAgentRunnerIteration]
     apply_plans: list[ByocAgentRunnerApplyPlanEvidence]
+    artifact_verifications: list[ByocAgentRunnerArtifactVerificationEvidence]
 
     def as_json(self) -> dict[str, object]:
         return asdict(self)
@@ -149,6 +191,9 @@ class ByocAgentRunnerInputs:
     control_plane_url: str | None = None
     mock_desired_revision: str | None = None
     mock_config_epoch: int = 0
+    bootstrap_bundle_path: Path | None = None
+    verify_local_bundle_files: bool = False
+    repo_root: Path | None = None
     timeout_s: float = 5.0
     requested_at: datetime | None = None
     sent_at: datetime | None = None
@@ -161,11 +206,16 @@ async def run_byoc_agent_runner(
     checks: list[ByocAgentRunnerCheck] = []
     iterations: list[ByocAgentRunnerIteration] = []
     apply_plans: list[ByocAgentRunnerApplyPlanEvidence] = []
+    artifact_verifications: list[ByocAgentRunnerArtifactVerificationEvidence] = []
     mode: AgentRunnerMode = "live" if inputs.control_plane_url else "mock"
 
     manifest, manifest_checks = _load_manifest(inputs.manifest_path)
     checks.extend(manifest_checks)
     checks.extend(_input_checks(inputs))
+    bundle: ByocBootstrapBundleManifest | None = None
+    if inputs.bootstrap_bundle_path is not None and _required_checks_passed(checks):
+        bundle, bundle_checks = _load_bootstrap_bundle(inputs.bootstrap_bundle_path)
+        checks.extend(bundle_checks)
 
     enrollment_response: ByocAgentEnrollmentResponse | None = None
     desired_state_response: ByocAgentDesiredStateResponse | None = None
@@ -173,6 +223,7 @@ async def run_byoc_agent_runner(
     desired_state_poll_count = 0
     heartbeat_count = 0
     apply_plan_count = 0
+    artifact_verification_count = 0
 
     if manifest is not None and _required_checks_passed(checks):
         enrollment, enrollment_checks = _build_enrollment(inputs, manifest)
@@ -219,13 +270,16 @@ async def run_byoc_agent_runner(
                             desired_state_poll_count,
                             heartbeat_count,
                             apply_plan_count,
+                            artifact_verification_count,
                         ) = await _run_iterations(
                             client,
                             inputs,
                             manifest,
+                            bundle,
                             checks,
                             iterations,
                             apply_plans,
+                            artifact_verifications,
                         )
 
     required_checks_passed = _required_checks_passed(checks)
@@ -252,6 +306,7 @@ async def run_byoc_agent_runner(
         desired_state_poll_count=desired_state_poll_count,
         heartbeat_count=heartbeat_count,
         apply_plan_count=apply_plan_count,
+        artifact_verification_count=artifact_verification_count,
         final_desired_revision=(
             desired_state_response.desired_revision
             if desired_state_response is not None
@@ -289,6 +344,7 @@ async def run_byoc_agent_runner(
         checks=checks,
         iterations=iterations,
         apply_plans=apply_plans,
+        artifact_verifications=artifact_verifications,
     )
 
 
@@ -308,12 +364,15 @@ async def _run_iterations(
     client: httpx.AsyncClient,
     inputs: ByocAgentRunnerInputs,
     manifest: ByocDataPlaneManifest,
+    bundle: ByocBootstrapBundleManifest | None,
     checks: list[ByocAgentRunnerCheck],
     iterations: list[ByocAgentRunnerIteration],
     apply_plans: list[ByocAgentRunnerApplyPlanEvidence],
+    artifact_verifications: list[ByocAgentRunnerArtifactVerificationEvidence],
 ) -> tuple[
     ByocAgentDesiredStateResponse | None,
     ByocAgentHeartbeatResponse | None,
+    int,
     int,
     int,
     int,
@@ -323,6 +382,7 @@ async def _run_iterations(
     desired_state_poll_count = 0
     heartbeat_count = 0
     apply_plan_count = 0
+    artifact_verification_count = 0
     last_seen_desired_revision: str | None = manifest.artifact_revision
 
     for iteration_index in range(inputs.iterations):
@@ -342,12 +402,28 @@ async def _run_iterations(
         desired_state_poll_count += 1
         last_seen_desired_revision = latest_desired.desired_revision
         apply_plan_evidence: ByocAgentRunnerApplyPlanEvidence | None = None
+        artifact_evidence: ByocAgentRunnerArtifactVerificationEvidence | None = None
         if latest_desired.rollout_action == "apply_revision":
             plan, plan_check = _build_apply_plan(manifest, latest_desired)
             checks.append(plan_check)
             if plan is None:
                 break
-            apply_plan_evidence = _apply_plan_evidence(plan)
+            if bundle is not None:
+                artifact_evidence, artifact_check = _build_artifact_verification(
+                    inputs,
+                    manifest,
+                    plan,
+                    bundle,
+                )
+                checks.append(artifact_check)
+                if artifact_evidence is None:
+                    break
+                artifact_verifications.append(artifact_evidence)
+                artifact_verification_count += 1
+            apply_plan_evidence = _apply_plan_evidence(
+                plan,
+                artifact_evidence=artifact_evidence,
+            )
             apply_plans.append(apply_plan_evidence)
             apply_plan_count += 1
 
@@ -382,6 +458,16 @@ async def _run_iterations(
                     if apply_plan_evidence is not None
                     else None
                 ),
+                artifact_verification_status=(
+                    artifact_evidence.status
+                    if artifact_evidence is not None
+                    else None
+                ),
+                artifact_verification_id=(
+                    artifact_evidence.verification_id
+                    if artifact_evidence is not None
+                    else None
+                ),
                 heartbeat_status=_PASS,
                 poll_after_seconds=latest_heartbeat.poll_after_seconds,
             )
@@ -393,6 +479,7 @@ async def _run_iterations(
         desired_state_poll_count,
         heartbeat_count,
         apply_plan_count,
+        artifact_verification_count,
     )
 
 
@@ -450,6 +537,39 @@ def _load_manifest(
     return manifest, checks
 
 
+def _load_bootstrap_bundle(
+    path: Path,
+) -> tuple[ByocBootstrapBundleManifest | None, list[ByocAgentRunnerCheck]]:
+    try:
+        bundle = load_byoc_bootstrap_bundle(path)
+    except ValidationError as exc:
+        return None, [
+            _check(
+                "bootstrap_bundle_schema",
+                _FAIL,
+                required=True,
+                details="; ".join(render_bundle_validation_errors(exc)),
+            )
+        ]
+    except Exception as exc:  # noqa: BLE001
+        return None, [
+            _check(
+                "bootstrap_bundle_schema",
+                _FAIL,
+                required=True,
+                details=f"{type(exc).__name__}: could not load BYOC bootstrap bundle.",
+            )
+        ]
+    return bundle, [
+        _check(
+            "bootstrap_bundle_schema",
+            _PASS,
+            required=True,
+            details="BYOC bootstrap bundle schema is valid.",
+        )
+    ]
+
+
 def _input_checks(inputs: ByocAgentRunnerInputs) -> list[ByocAgentRunnerCheck]:
     checks: list[ByocAgentRunnerCheck] = []
     if not inputs.install_token.strip():
@@ -497,6 +617,15 @@ def _input_checks(inputs: ByocAgentRunnerInputs) -> list[ByocAgentRunnerCheck]:
                 _FAIL,
                 required=True,
                 details="Timeout must be positive.",
+            )
+        )
+    if inputs.verify_local_bundle_files and inputs.bootstrap_bundle_path is None:
+        checks.append(
+            _check(
+                "bootstrap_bundle_required",
+                _FAIL,
+                required=True,
+                details="Local bundle file verification requires bootstrap_bundle_path.",
             )
         )
     if inputs.mock_config_epoch < 0:
@@ -673,6 +802,8 @@ def _build_apply_plan(
 
 def _apply_plan_evidence(
     plan: ByocAgentApplyPlan,
+    *,
+    artifact_evidence: ByocAgentRunnerArtifactVerificationEvidence | None,
 ) -> ByocAgentRunnerApplyPlanEvidence:
     return ByocAgentRunnerApplyPlanEvidence(
         schema_version="fyralis.byoc.agent.apply_plan_evidence.v1",
@@ -685,6 +816,101 @@ def _apply_plan_evidence(
         planned_step_count=plan.planned_step_count,
         mutating_step_count=plan.mutating_step_count,
         step_names=tuple(step.name for step in plan.steps),
+        artifact_verification_status=(
+            artifact_evidence.status if artifact_evidence is not None else None
+        ),
+        artifact_verification_id=(
+            artifact_evidence.verification_id
+            if artifact_evidence is not None
+            else None
+        ),
+        artifact_count=(
+            artifact_evidence.artifact_count
+            if artifact_evidence is not None
+            else None
+        ),
+        digest_pinned_artifact_count=(
+            artifact_evidence.digest_pinned_artifact_count
+            if artifact_evidence is not None
+            else None
+        ),
+    )
+
+
+def _build_artifact_verification(
+    inputs: ByocAgentRunnerInputs,
+    manifest: ByocDataPlaneManifest,
+    plan: ByocAgentApplyPlan,
+    bundle: ByocBootstrapBundleManifest,
+) -> tuple[ByocAgentRunnerArtifactVerificationEvidence | None, ByocAgentRunnerCheck]:
+    repo_root = inputs.repo_root or Path.cwd()
+    try:
+        evidence = build_artifact_verification_evidence(
+            plan,
+            bundle,
+            manifest,
+            verify_local_files=inputs.verify_local_bundle_files,
+            repo_root=repo_root,
+        )
+    except ValidationError as exc:
+        return None, _check(
+            "artifact_verification_contract",
+            _FAIL,
+            required=True,
+            details="; ".join(error["msg"] for error in exc.errors()),
+        )
+    violations = validate_artifact_verification_contract(
+        evidence,
+        plan=plan,
+        bundle=bundle,
+        manifest=manifest,
+        verify_local_files=inputs.verify_local_bundle_files,
+        repo_root=repo_root,
+    )
+    if violations:
+        return None, _check(
+            "artifact_verification_contract",
+            _FAIL,
+            required=True,
+            details="; ".join(violation.render() for violation in violations),
+        )
+    return _artifact_verification_evidence(evidence), _check(
+        "artifact_verification_contract",
+        _PASS,
+        required=True,
+        details="Desired revision maps to digest-pinned bundle metadata.",
+        metrics={
+            "artifact_count": evidence.artifact_count,
+            "digest_pinned_artifact_count": evidence.digest_pinned_artifact_count,
+            "local_digest_checked_count": evidence.local_digest_checked_count,
+        },
+    )
+
+
+def _artifact_verification_evidence(
+    evidence: ByocAgentArtifactVerificationEvidence,
+) -> ByocAgentRunnerArtifactVerificationEvidence:
+    return ByocAgentRunnerArtifactVerificationEvidence(
+        schema_version="fyralis.byoc.agent.artifact_verification_evidence.v1",
+        status=_PASS,
+        verification_id=evidence.verification_id,
+        plan_id=evidence.plan_id,
+        current_revision=evidence.current_revision,
+        desired_revision=evidence.desired_revision,
+        bundle_artifact_revision=evidence.bundle_artifact_revision,
+        artifact_count=evidence.artifact_count,
+        digest_pinned_artifact_count=evidence.digest_pinned_artifact_count,
+        local_digest_checked_count=evidence.local_digest_checked_count,
+        required_artifact_roles=evidence.required_artifact_roles,
+        artifacts=tuple(
+            ByocAgentRunnerArtifactDigestEvidence(
+                role=artifact.role,
+                kind=artifact.kind,
+                digest=artifact.digest,
+                local_digest_checked=artifact.local_digest_checked,
+            )
+            for artifact in evidence.artifacts
+        ),
     )
 
 
@@ -962,6 +1188,8 @@ def _manifest_identity(manifest: ByocDataPlaneManifest | None) -> dict[str, str]
 __all__ = [
     "ByocAgentRunnerCheck",
     "ByocAgentRunnerApplyPlanEvidence",
+    "ByocAgentRunnerArtifactDigestEvidence",
+    "ByocAgentRunnerArtifactVerificationEvidence",
     "ByocAgentRunnerInputs",
     "ByocAgentRunnerIteration",
     "ByocAgentRunnerReport",
