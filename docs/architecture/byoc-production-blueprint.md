@@ -77,6 +77,12 @@ Repo-owned artifacts for this first slice:
   tests. It is intentionally not the hosted control plane; it lets bootstrap
   and agent work prove the egress-only registration and heartbeat shape before
   cloud credentials, mTLS issuance, persistence, or dashboard workflows exist.
+- `services/platform/runtime/byoc_agent_probe.py` and
+  `scripts/run_byoc_agent_probe.py` provide the local executable data-plane
+  agent proof. The probe reads install-token material only from process memory,
+  signs the enrollment request, submits one bounded heartbeat to the local mock
+  control-plane contract by default, and emits a sanitized JSON/YAML report
+  with no token, URL, raw payload, prompt, log, embedding, or PII fields.
 - `services/platform/runtime/byoc_permissions.py` defines the backend-owned
   customer-cloud permission contract. It validates role boundaries, explicit
   AWS actions, scoped resources, `iam:PassRole` service constraints, no

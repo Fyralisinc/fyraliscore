@@ -79,8 +79,9 @@ Every checklist item is done only when:
   and object-store endpoint reachability.
 - [x] BYOC agent enrollment and heartbeat have strict backend-owned schemas,
   HMAC install-token proof over canonical metadata, raw-token-free requests,
-  privacy-safe heartbeat telemetry, and a local mock control-plane contract
-  harness.
+  privacy-safe heartbeat telemetry, a local mock control-plane contract
+  harness, and a readiness-gated local agent probe that emits sanitized status
+  metadata only.
 - [x] BYOC customer-cloud permissions have a checked-in manifest, AWS IAM
   skeleton, validator, and readiness gate that reject broad admin policies,
   unbounded `iam:PassRole`, mutating control-plane roles, missing boundaries,

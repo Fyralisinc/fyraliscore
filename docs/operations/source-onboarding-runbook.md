@@ -63,6 +63,18 @@ contract and submitted a privacy-safe `fyralis.byoc.agent.heartbeat.v1`
 heartbeat. The heartbeat must report only bounded component status codes,
 validation state, and aggregate telemetry-contract flags.
 
+For the local contract proof before a hosted control-plane agent endpoint is
+available, run the mock-backed probe from inside the customer data-plane
+context:
+
+```bash
+FYRALIS_BYOC_INSTALL_TOKEN="<managed-secret-value-loaded-locally>" \
+scripts/run_byoc_agent_probe.py --json --output <agent-probe-report.json>
+```
+
+Archive only the generated report. Do not archive shell history, raw install
+tokens, live control-plane URLs, or request/response bodies.
+
 ## Source Coverage
 
 | Source | Production source doc | Credential style | Production launch note |

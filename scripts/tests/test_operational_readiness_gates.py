@@ -8,6 +8,7 @@ from scripts.run_operational_readiness_gates import (
     GateResult,
     MANUAL_REQUIRED,
     PASS,
+    _byoc_agent_probe_gate,
     _byoc_bootstrap_bundle_gate,
     _byoc_bootstrap_plan_gate,
     _byoc_bootstrap_runner_gate,
@@ -108,6 +109,19 @@ def test_byoc_bootstrap_runner_gate_passes_for_checked_in_plan() -> None:
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
         "env_template": ".env.production.example",
     }
+
+
+def test_byoc_agent_probe_gate_passes_for_checked_in_manifest() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_agent_probe_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_agent_probe.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {"manifest": "deploy/byoc/dataplane.example.yaml"}
+    assert "local-byoc-agent-probe-token" not in result.stdout_tail
 
 
 def test_byoc_evidence_ledger_gate_passes_for_checked_in_ledger() -> None:
