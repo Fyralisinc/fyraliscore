@@ -671,13 +671,16 @@ def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
     return _pytest_gate(
         "byoc_control_plane_intake",
         [
+            "services/platform/runtime/tests/test_byoc_agent_control_plane.py",
             "services/platform/runtime/tests/test_byoc_control_plane_intake.py",
+            "services/app/gateway/tests/test_byoc_agent_router.py",
             "services/app/gateway/tests/test_byoc_control_plane_router.py",
             "services/app/gateway/tests/test_route_access_policy.py",
         ],
         details=(
-            "BYOC control-plane intake accepts only signed sanitized evidence "
-            "packages and stores receipt metadata only."
+            "BYOC control-plane intake accepts signed agent enrollment, "
+            "privacy-safe heartbeat, and signed sanitized evidence packages "
+            "while storing metadata only."
         ),
         args=args,
         timeout_s=min(args.command_timeout_s, 60),

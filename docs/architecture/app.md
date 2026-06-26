@@ -128,6 +128,8 @@ graph TD
 | Gateway route mounts | `services/app/gateway/route_mounts.py` | Mounts focused gateway/product/ingest routers in one ordered place. |
 | BYOC control-plane intake | `services/app/gateway/byoc_control_plane_router.py` | Self-authenticated evidence-package intake route; verifies signed submissions and signed receipt reads, and stores sanitized scalar receipts only. |
 | BYOC control-plane keys | `services/app/gateway/byoc_control_plane_keys.py` | Resolves evidence submission/read HMAC keys by `key_ref` from managed app-secret refs, with static app-state fallback only outside production. |
+| BYOC agent control plane | `services/app/gateway/byoc_agent_router.py` | Self-authenticated agent enrollment and heartbeat route; verifies install-token HMAC proof by managed secret ref, accepts enrolled-agent heartbeats, and stores sanitized status aggregates only. |
+| BYOC agent keys | `services/app/gateway/byoc_agent_keys.py` | Resolves data-plane install-token material by `key_ref` from managed secret refs, with static app-state fallback only outside production. |
 | BYOC agent probe | `services/platform/runtime/byoc_agent_probe.py` | Local executable data-plane agent proof; signs enrollment, submits one bounded heartbeat through the mock/live control-plane contract, and emits sanitized status metadata only. |
 | Gateway extension seam | `services/app/gateway/extensions.py` | Discovers installed `company_os.gateway_extensions` entry points; each contributes routers (e.g. overlay `/v1/demo/*`), startup hooks (Pelago seed, simulation mount), and public path prefixes. |
 | Gateway state wiring | `services/app/gateway/state_wiring.py` | Secret store, tenant resolver, tenant flags, GitHub client/cache, Kafka/S3 data-plane clients. |

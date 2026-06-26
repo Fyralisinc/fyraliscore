@@ -6,6 +6,7 @@ from scripts.check_architecture_ratchets import (
     find_access_read_without_override_audit_violations,
     find_browser_token_storage_violations,
     find_byoc_agent_contract_privacy_violations,
+    find_byoc_agent_registration_storage_violations,
     find_byoc_evidence_receipt_storage_violations,
     find_byoc_manifest_privacy_violations,
     find_destructive_migration_without_approval_violations,
@@ -1077,6 +1078,55 @@ CREATE TABLE IF NOT EXISTS byoc_evidence_package_receipts (
     violations = find_byoc_evidence_receipt_storage_violations(repo_root=tmp_path)
 
     assert violations == []
+
+
+def test_byoc_agent_registration_storage_check_flags_raw_body_columns(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0181_byoc_agent_registrations.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_agent_registrations (
+  deployment_id TEXT NOT NULL,
+  heartbeat_body JSONB,
+  stored_scope TEXT NOT NULL CHECK (stored_scope = 'sanitized_agent_metadata_only')
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_agent_registration_storage_violations(repo_root=tmp_path)
+
+    assert [violation.check for violation in violations] == [
+        "byoc-agent-registration-storage",
+    ]
+    assert {violation.line_number for violation in violations} == {3}
+
+
+def test_byoc_agent_registration_storage_check_requires_sanitized_scope(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0181_byoc_agent_registrations.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_agent_registrations (
+  deployment_id TEXT NOT NULL
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_agent_registration_storage_violations(repo_root=tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-agent-registration-storage"
+    assert "sanitized metadata scope" in violations[0].message
+
+
+def test_byoc_agent_registration_storage_check_allows_checked_in_migration() -> None:
+    assert find_byoc_agent_registration_storage_violations() == []
 
 
 def test_production_rollback_automation_does_not_delete_data() -> None:

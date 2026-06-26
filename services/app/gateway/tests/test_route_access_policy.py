@@ -80,6 +80,9 @@ def test_static_gateway_route_inventory_classifies_security_boundaries() -> None
     byoc_intake = by_path["/byoc/control-plane/evidence-packages"].policy
     assert byoc_intake.access is RouteAccess.SELF_AUTHENTICATED
     assert byoc_intake.gateway_bearer_required is False
+    byoc_agent = by_path["/byoc/agent/enroll"].policy
+    assert byoc_agent.access is RouteAccess.SELF_AUTHENTICATED
+    assert byoc_agent.gateway_bearer_required is False
     assert by_path["/api/admin/dead-letters"].policy.access is RouteAccess.ADMIN
     assert by_path["/api/admin/dead-letters"].policy.gateway_bearer_required is True
 

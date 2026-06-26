@@ -63,9 +63,17 @@ contract and submitted a privacy-safe `fyralis.byoc.agent.heartbeat.v1`
 heartbeat. The heartbeat must report only bounded component status codes,
 validation state, and aggregate telemetry-contract flags.
 
-For the local contract proof before a hosted control-plane agent endpoint is
-available, run the mock-backed probe from inside the customer data-plane
-context:
+Where the hosted control-plane agent endpoint is enabled, enrollment uses
+`POST /byoc/agent/enroll` with the signed
+`fyralis.byoc.agent.enrollment.v1` request, and heartbeat uses
+`POST /byoc/agent/heartbeat` with the `fyralis.byoc.agent.heartbeat.v1`
+payload. Production enrollment resolves the request `key_ref` through
+`FYRALIS_DATA_PLANE_AGENT_INSTALL_TOKEN_SECRET_REF`; raw install tokens are
+local/test only. The backend persists only sanitized registration metadata and
+latest heartbeat aggregate counts.
+
+For local contract proof or customer handoff before live agent endpoint wiring,
+run the mock-backed probe from inside the customer data-plane context:
 
 ```bash
 FYRALIS_BYOC_INSTALL_TOKEN="<managed-secret-value-loaded-locally>" \

@@ -169,6 +169,10 @@ def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:
 
     assert result.status == PASS
     assert result.command is not None
+    assert "services/platform/runtime/tests/test_byoc_agent_control_plane.py" in (
+        result.command
+    )
+    assert "services/app/gateway/tests/test_byoc_agent_router.py" in result.command
     assert "services/platform/runtime/tests/test_byoc_control_plane_intake.py" in (
         result.command
     )

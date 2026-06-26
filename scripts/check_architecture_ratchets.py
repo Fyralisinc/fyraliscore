@@ -293,6 +293,9 @@ BYOC_AGENT_CONTRACT_PATH = Path("services/platform/runtime/byoc_agent_contract.p
 BYOC_EVIDENCE_RECEIPT_MIGRATION_PATH = Path(
     "db/migrations/0180_byoc_evidence_package_receipts.sql"
 )
+BYOC_AGENT_REGISTRATION_MIGRATION_PATH = Path(
+    "db/migrations/0181_byoc_agent_registrations.sql"
+)
 BYOC_AGENT_FALSE_TELEMETRY_FLAGS = (
     "raw_logs_allowed",
     "raw_payloads_allowed",
@@ -314,6 +317,24 @@ BYOC_EVIDENCE_RECEIPT_FORBIDDEN_STORAGE_PATTERNS: tuple[
             re.IGNORECASE,
         ),
         "BYOC evidence receipt storage must not include package/report body columns",
+    ),
+)
+BYOC_AGENT_REGISTRATION_FORBIDDEN_STORAGE_PATTERNS: tuple[
+    tuple[re.Pattern[str], str],
+    ...,
+] = (
+    (
+        re.compile(r"\b(?:JSONB|JSON|BYTEA)\b", re.IGNORECASE),
+        "BYOC agent registration storage must not store JSON or byte payload bodies",
+    ),
+    (
+        re.compile(
+            r"\b(?:raw_[a-z0-9_]*|enrollment_body|heartbeat_body|request_body|"
+            r"response_body|payload|prompt|log_text|pii|secret_value|"
+            r"token_value|install_token_value|private_key|client_cert_body)\b",
+            re.IGNORECASE,
+        ),
+        "BYOC agent registration storage must not include raw agent body columns",
     ),
 )
 BYOC_AGENT_NO_RAW_TOKEN_MODELS = (
@@ -975,6 +996,62 @@ def find_byoc_evidence_receipt_storage_violations(
     return violations
 
 
+def find_byoc_agent_registration_storage_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    migration_path: Path = BYOC_AGENT_REGISTRATION_MIGRATION_PATH,
+) -> list[Violation]:
+    """Return BYOC agent registry drift that could persist raw agent data."""
+
+    path = repo_root / migration_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-agent-registration-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC agent registration migration is missing",
+            )
+        ]
+
+    text = _strip_sql_comments_preserving_lines(
+        path.read_text(encoding="utf-8", errors="ignore")
+    )
+    violations: list[Violation] = []
+    if "CREATE TABLE IF NOT EXISTS byoc_agent_registrations" not in text:
+        violations.append(
+            Violation(
+                check="byoc-agent-registration-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC agent registration table must be created explicitly",
+            )
+        )
+    if "stored_scope = 'sanitized_agent_metadata_only'" not in text:
+        violations.append(
+            Violation(
+                check="byoc-agent-registration-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC agent registrations must pin sanitized metadata scope",
+            )
+        )
+
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        for pattern, message in BYOC_AGENT_REGISTRATION_FORBIDDEN_STORAGE_PATTERNS:
+            if pattern.search(line):
+                violations.append(
+                    Violation(
+                        check="byoc-agent-registration-storage",
+                        path=migration_path,
+                        line_number=line_number,
+                        message=message,
+                    )
+                )
+                break
+    return violations
+
+
 def _class_field_assignments(
     node: ast.ClassDef | None,
 ) -> dict[str, ast.AnnAssign]:
@@ -1525,6 +1602,9 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     )
     violations.extend(
         find_byoc_evidence_receipt_storage_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_agent_registration_storage_violations(repo_root=repo_root)
     )
     violations.extend(find_import_linter_allowlist_violations(repo_root=repo_root))
     violations.extend(find_rollback_data_deletion_violations(repo_root=repo_root))

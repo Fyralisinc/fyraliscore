@@ -83,7 +83,10 @@ _EXTENSION = RouteAccessPolicy(
 )
 _BYOC_CONTROL_PLANE = RouteAccessPolicy(
     access=RouteAccess.SELF_AUTHENTICATED,
-    reason="BYOC data-plane agent route authenticated by signed submission payload",
+    reason=(
+        "BYOC data-plane route authenticated by signed enrollment, "
+        "signed evidence submissions, or mTLS-bound agent identity"
+    ),
     gateway_bearer_required=False,
 )
 _INTERNAL_BEARER = RouteAccessPolicy(
@@ -135,6 +138,7 @@ GATEWAY_BEARER_BYPASS_PREFIX_POLICIES: tuple[
     ("/api/debug/", _DEBUG),
     ("/webhooks/", _PROVIDER_SIGNED),
     ("/ext/", _EXTENSION),
+    ("/byoc/agent/", _BYOC_CONTROL_PLANE),
     ("/byoc/control-plane/", _BYOC_CONTROL_PLANE),
 )
 
