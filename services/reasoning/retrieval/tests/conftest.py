@@ -140,14 +140,44 @@ async def tx_conn(fresh_db: asyncpg.Pool) -> AsyncGenerator[asyncpg.Connection, 
             await fresh_db.release(conn)
 
 
-@pytest.fixture
-def tenant() -> uuid.UUID:
-    return uuid7()
+async def _insert_test_tenant(
+    pool: asyncpg.Pool,
+    tenant_id: uuid.UUID,
+    *,
+    name: str,
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO tenants (id, name, is_demo)
+            VALUES ($1, $2, false)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            tenant_id,
+            name,
+        )
 
 
-@pytest.fixture
-def other_tenant() -> uuid.UUID:
-    return uuid7()
+@pytest_asyncio.fixture
+async def tenant(fresh_db: asyncpg.Pool) -> uuid.UUID:
+    tenant_id = uuid7()
+    await _insert_test_tenant(
+        fresh_db,
+        tenant_id,
+        name="retrieval test tenant",
+    )
+    return tenant_id
+
+
+@pytest_asyncio.fixture
+async def other_tenant(fresh_db: asyncpg.Pool) -> uuid.UUID:
+    tenant_id = uuid7()
+    await _insert_test_tenant(
+        fresh_db,
+        tenant_id,
+        name="retrieval other test tenant",
+    )
+    return tenant_id
 
 
 @pytest_asyncio.fixture

@@ -58,7 +58,7 @@ async def test_error_to_dict_shape() -> None:
 
 
 def test_failure_reasons_are_closed_set() -> None:
-    """The reason field accepts only the six closed-set values from
+    """The reason field accepts only the closed-set values from
     FR-005. The Literal type pins them; this test documents the set."""
     from services.app.webhooks.verifier import VerificationReason
     import typing
@@ -70,6 +70,9 @@ def test_failure_reasons_are_closed_set() -> None:
         "signature_mismatch",
         "secret_not_configured",
         "tenant_not_resolved",
+        "malformed_body",
+        "missing_passcode",
+        "passcode_mismatch",
     }
 
 

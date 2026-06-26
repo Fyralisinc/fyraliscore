@@ -79,6 +79,11 @@ ModelArchiveReason = Literal[
     "acted_upon",          # the recommended change was applied
     "dismissed_by_user",   # the user explicitly rejected the recommendation
     "situation_resolved",  # the underlying condition no longer holds
+    # Hypothesis ratification lifecycle reasons.
+    "hypothesis_dismissed_by_user",
+    "hypothesis_user_approved",
+    "hypothesis_user_corrected",
+    "hypothesis_user_other",
 ]
 
 ModelStatusNoteKind = Literal["first_person_override", "manual", "system"]
