@@ -15,6 +15,12 @@ bounded onboarding state, source-family enablement, aggregate health, and
 sanitized failure codes; it must not receive source credentials, raw payloads,
 prompts, logs, or PII.
 
+Before enabling the first source in a BYOC deployment, run
+`scripts/run_byoc_post_deploy_validation.py --require-live` from inside the
+customer data plane with the local gateway URL, worker health URLs, production
+database DSN, broker endpoint, and object-store endpoint. Source onboarding
+should remain paused until required checks pass.
+
 ## Source Coverage
 
 | Source | Production source doc | Credential style | Production launch note |

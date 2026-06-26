@@ -9,6 +9,7 @@ from scripts.run_operational_readiness_gates import (
     MANUAL_REQUIRED,
     PASS,
     _byoc_dataplane_contract_gate,
+    _byoc_post_deploy_validation_gate,
     _github_required_checks_gate,
     _production_env_contract_gate,
     _schema_drift_gate,
@@ -34,6 +35,20 @@ def test_byoc_dataplane_contract_gate_passes_for_checked_in_manifest() -> None:
     assert result.command is not None
     assert result.command[-1] == "deploy/byoc/dataplane.example.yaml"
     assert result.artifacts["manifest"] == "deploy/byoc/dataplane.example.yaml"
+
+
+def test_byoc_post_deploy_validation_gate_passes_offline_contract() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_post_deploy_validation_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_post_deploy_validation.py" in result.command
+    assert result.artifacts == {
+        "manifest": "deploy/byoc/dataplane.example.yaml",
+        "env_template": ".env.production.example",
+    }
 
 
 def test_schema_drift_gate_requires_staging_database_url(monkeypatch) -> None:

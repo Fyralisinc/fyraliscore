@@ -61,6 +61,12 @@ Repo-owned artifacts for this first slice:
   manifest example used by tests and readiness gates.
 - `scripts/validate_byoc_dataplane_manifest.py` validates JSON/YAML manifests
   and can print the JSON schema for control-plane or IaC consumers.
+- `scripts/run_byoc_post_deploy_validation.py` runs the local post-deploy
+  validator. In CI/offline mode it validates the manifest, production env
+  contract, enabled runtime processes, secret refs, and telemetry privacy
+  settings. In live mode it can additionally require gateway/worker health
+  URLs, the production DB role/RLS probe, broker TCP reachability, and
+  object-store endpoint reachability.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -1342,6 +1348,8 @@ Minimum gates before first enterprise customer:
 - Keep the data-plane manifest/schema as the source of truth for bootstrap,
   agent, and IaC package compatibility.
 - Validate the checked-in BYOC manifest in operational readiness gates.
+- Run the post-deploy validator in offline CI mode and live customer-data-plane
+  mode before enabling source onboarding.
 - Build data-plane agent.
 - Publish signed Terraform/Helm artifacts.
 - Build AWS first profile.

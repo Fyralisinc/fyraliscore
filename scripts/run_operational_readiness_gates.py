@@ -494,6 +494,29 @@ def _byoc_dataplane_contract_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_post_deploy_validation_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_post_deploy_validation",
+        _python_command(
+            "scripts/run_byoc_post_deploy_validation.py",
+            "--manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--env-file",
+            ".env.production.example",
+        ),
+        details=(
+            "BYOC post-deploy validator passes its offline manifest, env, "
+            "runtime, secret-ref, and telemetry privacy checks."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "manifest": "deploy/byoc/dataplane.example.yaml",
+            "env_template": ".env.production.example",
+        },
+    )
+
+
 def _github_required_checks_gate(args: argparse.Namespace) -> GateResult:
     token_present = bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
     repo_present = bool(os.environ.get("GITHUB_REPOSITORY"))
@@ -526,6 +549,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _artifact_gate(),
         _production_env_contract_gate(args),
         _byoc_dataplane_contract_gate(args),
+        _byoc_post_deploy_validation_gate(args),
         _github_required_checks_gate(args),
         _feedback_gap_gate(args),
         _storyline_report_gate(args),

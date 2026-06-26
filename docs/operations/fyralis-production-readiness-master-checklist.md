@@ -74,6 +74,9 @@ Every checklist item is done only when:
 - [x] BYOC deployment shape has a checked-in data-plane manifest contract,
   validator, production env guard, and readiness/architecture ratchets for
   egress-only control-plane connectivity and privacy-safe telemetry defaults.
+- [x] BYOC post-deploy validation has an offline CI mode plus live-probe hooks
+  for gateway/worker health, production DB role/RLS safety, broker reachability,
+  and object-store endpoint reachability.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and
