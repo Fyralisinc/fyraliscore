@@ -5,6 +5,7 @@ from pathlib import Path
 from scripts.check_architecture_ratchets import (
     find_access_read_without_override_audit_violations,
     find_browser_token_storage_violations,
+    find_byoc_agent_contract_privacy_violations,
     find_byoc_manifest_privacy_violations,
     find_destructive_migration_without_approval_violations,
     find_forbidden_metric_label_violations,
@@ -967,6 +968,46 @@ data_residency:
 
 def test_byoc_manifest_privacy_check_allows_checked_in_manifest() -> None:
     assert find_byoc_manifest_privacy_violations() == []
+
+
+def test_byoc_agent_contract_privacy_check_flags_raw_token_or_telemetry(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_agent_contract.py").write_text(
+        """
+from typing import Literal
+
+class ByocAgentTelemetryState:
+    raw_logs_allowed: bool = True
+    raw_payloads_allowed: Literal[False] = False
+    raw_prompts_allowed: Literal[False] = False
+    pii_allowed: Literal[False] = False
+
+class ByocAgentEnrollmentPayload:
+    install_token: str
+
+class ByocAgentEnrollmentRequest:
+    pass
+
+class ByocAgentHeartbeat:
+    pass
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_agent_contract_privacy_violations(repo_root=tmp_path)
+
+    assert [violation.check for violation in violations] == [
+        "byoc-agent-contract-privacy",
+        "byoc-agent-contract-privacy",
+    ]
+    assert {violation.line_number for violation in violations} == {4, 10}
+
+
+def test_byoc_agent_contract_privacy_check_allows_checked_in_contract() -> None:
+    assert find_byoc_agent_contract_privacy_violations() == []
 
 
 def test_production_rollback_automation_does_not_delete_data() -> None:

@@ -19,7 +19,11 @@ Before enabling the first source in a BYOC deployment, run
 `scripts/run_byoc_post_deploy_validation.py --require-live` from inside the
 customer data plane with the local gateway URL, worker health URLs, production
 database DSN, broker endpoint, and object-store endpoint. Source onboarding
-should remain paused until required checks pass.
+should remain paused until required checks pass and the data-plane agent has
+successfully completed the `fyralis.byoc.agent.enrollment.v1` registration
+contract and submitted a privacy-safe `fyralis.byoc.agent.heartbeat.v1`
+heartbeat. The heartbeat must report only bounded component status codes,
+validation state, and aggregate telemetry-contract flags.
 
 ## Source Coverage
 

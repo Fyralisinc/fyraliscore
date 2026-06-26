@@ -77,6 +77,10 @@ Every checklist item is done only when:
 - [x] BYOC post-deploy validation has an offline CI mode plus live-probe hooks
   for gateway/worker health, production DB role/RLS safety, broker reachability,
   and object-store endpoint reachability.
+- [x] BYOC agent enrollment and heartbeat have strict backend-owned schemas,
+  HMAC install-token proof over canonical metadata, raw-token-free requests,
+  privacy-safe heartbeat telemetry, and a local mock control-plane contract
+  harness.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

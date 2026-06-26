@@ -289,6 +289,18 @@ BYOC_MANIFEST_DIRECTION_RE = re.compile(
     r"^\s*direction\s*:\s*(?P<value>\S+)",
     re.IGNORECASE,
 )
+BYOC_AGENT_CONTRACT_PATH = Path("services/platform/runtime/byoc_agent_contract.py")
+BYOC_AGENT_FALSE_TELEMETRY_FLAGS = (
+    "raw_logs_allowed",
+    "raw_payloads_allowed",
+    "raw_prompts_allowed",
+    "pii_allowed",
+)
+BYOC_AGENT_NO_RAW_TOKEN_MODELS = (
+    "ByocAgentEnrollmentPayload",
+    "ByocAgentEnrollmentRequest",
+    "ByocAgentHeartbeat",
+)
 
 RAW_THINK_TRIGGER_INSERT_ALLOWED_FILES = {
     Path("services/domain/triggers.py"),
@@ -806,6 +818,97 @@ def find_byoc_manifest_privacy_violations(
                     )
                     break
     return violations
+
+
+def find_byoc_agent_contract_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_AGENT_CONTRACT_PATH,
+) -> list[Violation]:
+    """Return BYOC agent contract drift that could expose raw customer data."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-agent-contract-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC agent contract module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    telemetry_class = classes.get("ByocAgentTelemetryState")
+    telemetry_fields = _class_field_assignments(telemetry_class)
+    violations: list[Violation] = []
+
+    for field_name in BYOC_AGENT_FALSE_TELEMETRY_FLAGS:
+        assignment = telemetry_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-agent-contract-privacy",
+                    path=contract_path,
+                    line_number=telemetry_class.lineno if telemetry_class else 1,
+                    message=(
+                        f"BYOC agent telemetry must keep {field_name} pinned "
+                        "to Literal[False] = False"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[False]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not False
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-agent-contract-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        f"BYOC agent telemetry must keep {field_name} pinned "
+                        "to Literal[False] = False"
+                    ),
+                )
+            )
+
+    for class_name in BYOC_AGENT_NO_RAW_TOKEN_MODELS:
+        fields = _class_field_assignments(classes.get(class_name))
+        assignment = fields.get("install_token")
+        if assignment is not None:
+            violations.append(
+                Violation(
+                    check="byoc-agent-contract-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        f"{class_name} must not serialize raw install_token; "
+                        "only install_token_secret_ref may leave the data plane"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def _class_field_assignments(
+    node: ast.ClassDef | None,
+) -> dict[str, ast.AnnAssign]:
+    if node is None:
+        return {}
+    fields: dict[str, ast.AnnAssign] = {}
+    for child in node.body:
+        if isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+            fields[child.target.id] = child
+    return fields
 
 
 def find_migration_filename_violations(
@@ -1341,6 +1444,9 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
         )
     )
     violations.extend(find_byoc_manifest_privacy_violations(repo_root=repo_root))
+    violations.extend(
+        find_byoc_agent_contract_privacy_violations(repo_root=repo_root)
+    )
     violations.extend(find_import_linter_allowlist_violations(repo_root=repo_root))
     violations.extend(find_rollback_data_deletion_violations(repo_root=repo_root))
     return violations

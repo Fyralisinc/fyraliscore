@@ -67,6 +67,16 @@ Repo-owned artifacts for this first slice:
   settings. In live mode it can additionally require gateway/worker health
   URLs, the production DB role/RLS probe, broker TCP reachability, and
   object-store endpoint reachability.
+- `services/platform/runtime/byoc_agent_contract.py` defines the backend-owned
+  data-plane agent enrollment and heartbeat contract. Enrollment proves a
+  customer-side install-token secret by HMAC over a canonical request while
+  serializing only the secret reference; heartbeat payloads are bounded status
+  codes plus aggregate telemetry flags and reject raw logs, payloads, prompts,
+  PII, and free-form customer text.
+- The same module exposes a local mock control-plane FastAPI app for contract
+  tests. It is intentionally not the hosted control plane; it lets bootstrap
+  and agent work prove the egress-only registration and heartbeat shape before
+  cloud credentials, mTLS issuance, persistence, or dashboard workflows exist.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -460,8 +470,15 @@ Preferred model: data-plane agent pull.
 - The agent initiates mTLS to the Fyralis control plane over outbound 443.
 - The agent authenticates with a deployment certificate bound to deployment ID,
   customer ID, cloud account/project, and allowed region.
+- Initial enrollment uses the backend-owned
+  `fyralis.byoc.agent.enrollment.v1` request shape: the agent signs canonical
+  deployment metadata with the locally resolved install token and sends only
+  the token's secret reference plus HMAC proof to the control plane.
 - The agent polls desired state, verifies signatures, applies changes locally,
   and reports status.
+- Heartbeats use the backend-owned `fyralis.byoc.agent.heartbeat.v1` shape and
+  carry only bounded component status codes, validation state, desired revision
+  alignment, and aggregate telemetry-contract flags.
 - The control plane never opens an inbound socket into the customer network.
 
 Optional private connectivity:
@@ -1350,7 +1367,10 @@ Minimum gates before first enterprise customer:
 - Validate the checked-in BYOC manifest in operational readiness gates.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
-- Build data-plane agent.
+- Keep the data-plane agent enrollment and heartbeat schema contract-backed;
+  use the local mock control-plane harness until the hosted control plane
+  provides real mTLS, persistence, token rotation, and desired-state endpoints.
+- Build data-plane agent daemon.
 - Publish signed Terraform/Helm artifacts.
 - Build AWS first profile.
 - Implement onboarding portal state machine.
