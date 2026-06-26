@@ -25,6 +25,11 @@ from services.platform.runtime.byoc_evidence_ledger import (
     verify_evidence_envelope,
 )
 from services.platform.runtime.byoc_permissions import load_byoc_permissions_manifest
+from services.platform.runtime.byoc_terraform_plan_validation import (
+    ByocTerraformPlanValidationInputs,
+    render_terraform_plan_validation_json,
+    run_byoc_terraform_plan_validation,
+)
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -32,6 +37,8 @@ PLAN = ROOT / "deploy/byoc/bootstrap-plan.example.yaml"
 DATAPLANE = ROOT / "deploy/byoc/dataplane.example.yaml"
 PERMISSIONS = ROOT / "deploy/byoc/permissions.example.yaml"
 BUNDLE = ROOT / "deploy/byoc/bootstrap-bundle.example.yaml"
+IAC_PACKAGE = ROOT / "deploy/byoc/aws/iac-package.example.yaml"
+IAM_TEMPLATE = ROOT / "deploy/byoc/aws/iam.bootstrap.template.yaml"
 LEDGER = ROOT / "deploy/byoc/evidence-ledger.example.yaml"
 GENERATED_AT = datetime(2026, 6, 26, 12, 0, tzinfo=UTC)
 SIGNING_SECRET = "local-evidence-signing-secret"
@@ -57,6 +64,8 @@ def _generate() -> ByocDeploymentEvidenceLedger:
         dataplane_manifest_path=DATAPLANE,
         permissions_manifest_path=PERMISSIONS,
         bootstrap_bundle_path=BUNDLE,
+        iac_package_path=IAC_PACKAGE,
+        iam_template_path=IAM_TEMPLATE,
         env_path=ROOT / ".env.production.example",
         generated_at=GENERATED_AT,
         repo_root=ROOT,
@@ -128,6 +137,14 @@ def test_checked_in_evidence_ledger_matches_generated_contract() -> None:
         dataplane_manifest=dataplane,
         plan=plan,
     ) == []
+    terraform = next(
+        evidence
+        for evidence in checked_in.evidence
+        if evidence.kind == "terraform_plan_validation"
+    )
+    assert terraform.source.type == "local_terraform_validator"
+    assert terraform.operation_counts["contract_only_validation"] == 1
+    assert terraform.operation_counts["terraform_modules"] == 5
 
 
 def test_evidence_ledger_is_sanitized_metadata_only() -> None:
@@ -136,6 +153,8 @@ def test_evidence_ledger_is_sanitized_metadata_only() -> None:
     assert "cosign verify" not in rendered
     assert "helm template" not in rendered
     assert "ghcr.io" not in rendered
+    assert "terraform plan" not in rendered.lower()
+    assert "terraform apply" not in rendered.lower()
     assert "control.fyralis.example" not in rendered
     assert "raw_payloads_included: false" in rendered
     assert "command_output_included: false" in rendered
@@ -200,6 +219,8 @@ def test_evidence_ledger_summarizes_live_report_without_details(
         dataplane_manifest_path=DATAPLANE,
         permissions_manifest_path=PERMISSIONS,
         bootstrap_bundle_path=BUNDLE,
+        iac_package_path=IAC_PACKAGE,
+        iam_template_path=IAM_TEMPLATE,
         post_deploy_report_path=report_path,
         generated_at=GENERATED_AT,
         repo_root=ROOT,
@@ -218,6 +239,52 @@ def test_evidence_ledger_summarizes_live_report_without_details(
     assert "postgresql://user:password" not in rendered
 
 
+def test_evidence_ledger_imports_terraform_validation_report_safely(
+    tmp_path: Path,
+) -> None:
+    plan, dataplane, permissions, bundle = _inputs()
+    report = run_byoc_terraform_plan_validation(
+        ByocTerraformPlanValidationInputs(
+            iac_package_path=IAC_PACKAGE,
+            dataplane_manifest_path=DATAPLANE,
+            permissions_manifest_path=PERMISSIONS,
+            iam_template_path=IAM_TEMPLATE,
+            repo_root=ROOT,
+        )
+    )
+    report_path = tmp_path / "terraform-validation-report.json"
+    report_path.write_text(
+        render_terraform_plan_validation_json(report),
+        encoding="utf-8",
+    )
+
+    ledger = generate_evidence_ledger(
+        plan=plan,
+        dataplane_manifest=dataplane,
+        permissions_manifest=permissions,
+        bootstrap_bundle=bundle,
+        plan_path=PLAN,
+        dataplane_manifest_path=DATAPLANE,
+        permissions_manifest_path=PERMISSIONS,
+        bootstrap_bundle_path=BUNDLE,
+        iac_package_path=IAC_PACKAGE,
+        iam_template_path=IAM_TEMPLATE,
+        terraform_validation_report_path=report_path,
+        generated_at=GENERATED_AT,
+        repo_root=ROOT,
+    )
+    terraform = next(
+        evidence
+        for evidence in ledger.evidence
+        if evidence.kind == "terraform_plan_validation"
+    )
+
+    assert terraform.source.type == "terraform_plan_report_file"
+    assert terraform.source.ref == "generated:external_terraform_plan_report"
+    assert terraform.check_summary.failed == 0
+    assert "terraform plan" not in ledger.model_dump_json().lower()
+
+
 def test_evidence_ledger_verifies_signed_live_report_envelope(
     tmp_path: Path,
 ) -> None:
@@ -234,6 +301,8 @@ def test_evidence_ledger_verifies_signed_live_report_envelope(
         dataplane_manifest_path=DATAPLANE,
         permissions_manifest_path=PERMISSIONS,
         bootstrap_bundle_path=BUNDLE,
+        iac_package_path=IAC_PACKAGE,
+        iam_template_path=IAM_TEMPLATE,
         post_deploy_report_path=report_path,
         post_deploy_envelope_path=envelope_path,
         evidence_signing_secret=SIGNING_SECRET,
@@ -317,6 +386,8 @@ def test_signed_live_report_requires_signing_secret(tmp_path: Path) -> None:
             dataplane_manifest_path=DATAPLANE,
             permissions_manifest_path=PERMISSIONS,
             bootstrap_bundle_path=BUNDLE,
+            iac_package_path=IAC_PACKAGE,
+            iam_template_path=IAM_TEMPLATE,
             post_deploy_report_path=report_path,
             post_deploy_envelope_path=envelope_path,
             generated_at=GENERATED_AT,
@@ -339,6 +410,8 @@ def test_evidence_ledger_fails_from_live_report_failure(
         dataplane_manifest_path=DATAPLANE,
         permissions_manifest_path=PERMISSIONS,
         bootstrap_bundle_path=BUNDLE,
+        iac_package_path=IAC_PACKAGE,
+        iam_template_path=IAM_TEMPLATE,
         post_deploy_report_path=report_path,
         generated_at=GENERATED_AT,
         repo_root=ROOT,

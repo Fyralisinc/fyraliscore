@@ -49,6 +49,27 @@ evidence:
     prepare_agent_enrollment: 1
     run_post_deploy_validation: 1
     emit_handoff_summary: 1
+- kind: terraform_plan_validation
+  status: pass
+  required_checks_passed: true
+  observed_at: '2026-06-26T12:00:00Z'
+  source:
+    type: local_terraform_validator
+    ref: generated:byoc_terraform_plan_validation
+    digest: sha256:5bef7cab247eded8aa1e0bc18a2cf49787fcb8f531cac971beac1065067f7c94
+  check_summary:
+    total: 10
+    required: 10
+    passed: 10
+    failed: 0
+    skipped: 0
+    failed_required: 0
+  failed_check_codes: []
+  step_count: 5
+  operation_counts:
+    contract_only_validation: 1
+    terraform_modules: 5
+    terraform_files: 10
 - kind: bootstrap_runner
   status: pass
   required_checks_passed: true

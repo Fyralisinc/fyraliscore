@@ -96,6 +96,10 @@ Every checklist item is done only when:
   files, required tags/variables, identity alignment with the
   data-plane/permissions/IAM contracts, generated-output drift detection, and
   no raw secret/customer-data values before live module work begins.
+- [x] BYOC Terraform scaffold validation has a customer-side contract-only
+  report CLI, sanitized JSON/YAML output, no Terraform plan JSON or command
+  output, ledger summary import, and readiness gate before live Terraform plan
+  or apply work begins.
 - [x] BYOC bootstrap artifacts have a checked-in signed-bundle manifest,
   verifier CLI, local hash checks for checked-in IaC files, digest-pinned
   image/chart/SBOM refs, and a readiness gate before cloud apply work begins.
@@ -107,7 +111,8 @@ Every checklist item is done only when:
   readiness gate before real customer-cloud apply work begins.
 - [x] BYOC deployment evidence has a checked-in sanitized ledger contract,
   generator/checker CLI, aggregate-only evidence summaries, and readiness gate
-  covering plan, bootstrap-runner, and offline post-deploy validation results.
+  covering plan, Terraform scaffold validation, bootstrap-runner, and offline
+  post-deploy validation results.
 - [x] BYOC live post-deploy reports can be imported into the evidence ledger
   through a sanitized summary path that drops report details, URLs, endpoint
   strings, metrics, credentials, payloads, prompts, logs, embeddings, and PII.

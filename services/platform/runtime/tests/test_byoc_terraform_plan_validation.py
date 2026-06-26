@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from services.platform.runtime.byoc_terraform_plan_validation import (
+    ByocTerraformPlanValidationInputs,
+    load_byoc_terraform_plan_validation_report,
+    render_terraform_plan_validation_json,
+    run_byoc_terraform_plan_validation,
+)
+
+
+ROOT = Path(__file__).resolve().parents[4]
+IAC_PACKAGE = ROOT / "deploy/byoc/aws/iac-package.example.yaml"
+DATAPLANE = ROOT / "deploy/byoc/dataplane.example.yaml"
+PERMISSIONS = ROOT / "deploy/byoc/permissions.example.yaml"
+IAM_TEMPLATE = ROOT / "deploy/byoc/aws/iam.bootstrap.template.yaml"
+
+
+def _inputs(repo_root: Path = ROOT) -> ByocTerraformPlanValidationInputs:
+    return ByocTerraformPlanValidationInputs(
+        iac_package_path=IAC_PACKAGE,
+        dataplane_manifest_path=DATAPLANE,
+        permissions_manifest_path=PERMISSIONS,
+        iam_template_path=IAM_TEMPLATE,
+        repo_root=repo_root,
+    )
+
+
+def test_terraform_plan_validation_passes_checked_in_scaffold() -> None:
+    report = run_byoc_terraform_plan_validation(_inputs())
+
+    assert report.status == "pass"
+    assert report.required_checks_passed is True
+    assert report.execution_mode == "contract_only"
+    assert report.terraform_plan_json_included is False
+    assert report.terraform_command_output_included is False
+    assert report.module_count == 5
+    assert "terraform_plan_contract_only" in {check.name for check in report.checks}
+
+
+def test_terraform_plan_validation_report_is_sanitized() -> None:
+    rendered = render_terraform_plan_validation_json(
+        run_byoc_terraform_plan_validation(_inputs())
+    )
+
+    assert "ghcr.io" not in rendered
+    assert "terraform plan" not in rendered.lower()
+    assert "terraform apply" not in rendered.lower()
+    assert "raw_payload" not in rendered
+    assert "token_value" not in rendered
+
+
+def test_terraform_plan_validation_reports_scaffold_drift(tmp_path: Path) -> None:
+    _copy_package_tree(tmp_path)
+    module_file = tmp_path / "deploy/byoc/aws/terraform/modules/runtime/main.tf"
+    module_file.write_text(
+        module_file.read_text(encoding="utf-8")
+        + '\nresource "aws_cloudwatch_log_group" "raw" { name = "unsafe" }\n',
+        encoding="utf-8",
+    )
+    report = run_byoc_terraform_plan_validation(
+        ByocTerraformPlanValidationInputs(
+            iac_package_path=tmp_path / "deploy/byoc/aws/iac-package.example.yaml",
+            dataplane_manifest_path=DATAPLANE,
+            permissions_manifest_path=PERMISSIONS,
+            iam_template_path=IAM_TEMPLATE,
+            repo_root=tmp_path,
+        )
+    )
+
+    assert report.status == "fail"
+    assert "iac_package_contract" in {
+        check.name for check in report.checks if check.status == "fail"
+    }
+
+
+def test_terraform_plan_validation_loads_report(tmp_path: Path) -> None:
+    report = run_byoc_terraform_plan_validation(_inputs())
+    path = tmp_path / "terraform-validation-report.json"
+    path.write_text(render_terraform_plan_validation_json(report), encoding="utf-8")
+
+    loaded = load_byoc_terraform_plan_validation_report(path)
+
+    assert loaded == report
+
+
+def test_terraform_plan_validation_rejects_extra_report_fields(tmp_path: Path) -> None:
+    report = run_byoc_terraform_plan_validation(_inputs()).as_json()
+    report["raw_output"] = "terraform validate output"
+    path = tmp_path / "terraform-validation-report.json"
+    path.write_text(json.dumps(report), encoding="utf-8")
+
+    with pytest.raises(ValidationError):
+        load_byoc_terraform_plan_validation_report(path)
+
+
+def _copy_package_tree(tmp_path: Path) -> None:
+    for source in (ROOT / "deploy/byoc/aws").rglob("*"):
+        if not source.is_file():
+            continue
+        rel = source.relative_to(ROOT)
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")

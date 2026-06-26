@@ -23,6 +23,7 @@ from scripts.run_operational_readiness_gates import (
     _github_required_checks_gate,
     _production_env_contract_gate,
     _schema_drift_gate,
+    _byoc_terraform_plan_validation_gate,
 )
 
 
@@ -73,6 +74,25 @@ def test_byoc_aws_iac_package_gate_passes_for_checked_in_scaffold() -> None:
     assert "--check-package" in result.command
     assert result.artifacts == {
         "package": "deploy/byoc/aws/iac-package.example.yaml",
+        "terraform_root": "deploy/byoc/aws/terraform",
+        "terraform_modules": "deploy/byoc/aws/terraform/modules",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+    }
+
+
+def test_byoc_terraform_plan_validation_gate_passes_for_checked_in_scaffold() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_terraform_plan_validation_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_terraform_plan_validation.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {
+        "iac_package": "deploy/byoc/aws/iac-package.example.yaml",
         "terraform_root": "deploy/byoc/aws/terraform",
         "terraform_modules": "deploy/byoc/aws/terraform/modules",
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
@@ -179,6 +199,8 @@ def test_byoc_evidence_ledger_gate_passes_for_checked_in_ledger() -> None:
         "ledger": "deploy/byoc/evidence-ledger.example.yaml",
         "plan": "deploy/byoc/bootstrap-plan.example.yaml",
         "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+        "iac_package": "deploy/byoc/aws/iac-package.example.yaml",
+        "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
         "env_template": ".env.production.example",

@@ -20,6 +20,8 @@ Before enabling the first source in a BYOC deployment, run
 manifest and AWS/IAM skeleton used for the deployment, run
 `scripts/generate_byoc_aws_iac_package.py --check-package` against the AWS IaC
 package scaffold, placeholder component modules, and referenced manifests, run
+the Terraform validation report CLI to archive a contract-only report with no
+raw command output or plan JSON, run
 `scripts/verify_byoc_bootstrap_bundle.py --verify-local-files` against the
 signed bundle manifest used by the bootstrap runner, run
 `scripts/generate_byoc_bootstrap_plan.py --check-plan` against the dry-run plan
@@ -33,7 +35,13 @@ writes a JSON report, set `FYRALIS_BYOC_EVIDENCE_SIGNING_SECRET` locally and
 summarize it with:
 
 ```bash
+scripts/run_byoc_terraform_plan_validation.py --json \
+  --output <terraform-validation-report.json>
+```
+
+```bash
 scripts/generate_byoc_evidence_ledger.py \
+  --terraform-validation-report <terraform-validation-report.json> \
   --post-deploy-report <report.json> \
   --post-deploy-envelope <envelope.json>
 ```

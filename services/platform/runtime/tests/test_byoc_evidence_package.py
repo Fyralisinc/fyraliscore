@@ -34,6 +34,7 @@ PLAN = ROOT / "deploy/byoc/bootstrap-plan.example.yaml"
 DATAPLANE = ROOT / "deploy/byoc/dataplane.example.yaml"
 PERMISSIONS = ROOT / "deploy/byoc/permissions.example.yaml"
 AWS_IAC_PACKAGE = ROOT / "deploy/byoc/aws/iac-package.example.yaml"
+IAM_TEMPLATE = ROOT / "deploy/byoc/aws/iam.bootstrap.template.yaml"
 BUNDLE = ROOT / "deploy/byoc/bootstrap-bundle.example.yaml"
 LEDGER = ROOT / "deploy/byoc/evidence-ledger.example.yaml"
 PACKAGE = ROOT / "deploy/byoc/evidence-package.example.yaml"
@@ -126,6 +127,8 @@ def _signed_ledger(tmp_path: Path) -> tuple[Path, Path]:
         dataplane_manifest_path=DATAPLANE,
         permissions_manifest_path=PERMISSIONS,
         bootstrap_bundle_path=BUNDLE,
+        iac_package_path=AWS_IAC_PACKAGE,
+        iam_template_path=IAM_TEMPLATE,
         post_deploy_report_path=report_path,
         post_deploy_envelope_path=envelope_path,
         evidence_signing_secret=SIGNING_SECRET,

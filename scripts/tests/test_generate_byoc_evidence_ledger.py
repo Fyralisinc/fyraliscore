@@ -90,7 +90,10 @@ def test_generate_byoc_evidence_ledger_json_output(capsys) -> None:
     payload = json.loads(captured.out)
     assert code == 0
     assert payload["export_scope"] == "sanitized_metadata_only"
-    assert payload["evidence"][1]["kind"] == "bootstrap_runner"
+    assert _evidence(payload, "terraform_plan_validation")["source"]["type"] == (
+        "local_terraform_validator"
+    )
+    assert _evidence(payload, "bootstrap_runner")["source"]["type"] == "local_runner"
 
 
 def test_generate_byoc_evidence_ledger_imports_live_report_safely(
@@ -110,7 +113,7 @@ def test_generate_byoc_evidence_ledger_imports_live_report_safely(
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     rendered = json.dumps(payload)
-    validation = payload["evidence"][2]
+    validation = _evidence(payload, "post_deploy_validation")
     assert code == 0
     assert validation["source"]["type"] == "post_deploy_report_file"
     assert validation["check_summary"]["total"] == 2
@@ -136,7 +139,9 @@ def test_generate_byoc_evidence_ledger_reports_live_failure(
     payload = json.loads(captured.out)
     assert code == 0
     assert payload["overall_status"] == "fail"
-    assert payload["evidence"][2]["failed_check_codes"] == ["gateway_health"]
+    assert _evidence(payload, "post_deploy_validation")["failed_check_codes"] == [
+        "gateway_health"
+    ]
 
 
 def test_generate_byoc_evidence_ledger_verifies_signed_live_report(
@@ -160,7 +165,7 @@ def test_generate_byoc_evidence_ledger_verifies_signed_live_report(
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
-    validation = payload["evidence"][2]
+    validation = _evidence(payload, "post_deploy_validation")
     assert code == 0
     assert validation["source"]["type"] == "signed_post_deploy_report_file"
     assert validation["signature_verified"] is True
@@ -261,3 +266,7 @@ def test_generate_byoc_evidence_ledger_check_rejects_extra_details(
     captured = capsys.readouterr()
     assert code == 1
     assert "Extra inputs are not permitted" in captured.err
+
+
+def _evidence(payload: dict, kind: str) -> dict:
+    return next(entry for entry in payload["evidence"] if entry["kind"] == kind)

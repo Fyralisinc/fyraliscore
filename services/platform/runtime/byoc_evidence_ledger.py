@@ -41,6 +41,12 @@ from services.platform.runtime.byoc_contract import (
     DeploymentEnvironment,
 )
 from services.platform.runtime.byoc_permissions import ByocPermissionsManifest
+from services.platform.runtime.byoc_terraform_plan_validation import (
+    ByocTerraformPlanValidationInputs,
+    ByocTerraformPlanValidationReport,
+    load_byoc_terraform_plan_validation_report,
+    run_byoc_terraform_plan_validation,
+)
 from services.platform.runtime.byoc_validation import (
     ByocValidationInputs,
     ByocValidationReport,
@@ -50,6 +56,7 @@ from services.platform.runtime.byoc_validation import (
 
 EvidenceKind = Literal[
     "bootstrap_plan",
+    "terraform_plan_validation",
     "bootstrap_runner",
     "post_deploy_validation",
 ]
@@ -57,6 +64,8 @@ EvidenceStatus = Literal["pass", "fail", "skipped"]
 EvidenceSourceType = Literal[
     "file",
     "local_runner",
+    "local_terraform_validator",
+    "terraform_plan_report_file",
     "offline_validator",
     "post_deploy_report_file",
     "signed_post_deploy_report_file",
@@ -81,7 +90,12 @@ _FORBIDDEN_IMPORTED_CHECK_NAME_FRAGMENTS = frozenset(
     }
 )
 _REQUIRED_EVIDENCE_KINDS: frozenset[EvidenceKind] = frozenset(
-    {"bootstrap_plan", "bootstrap_runner", "post_deploy_validation"}
+    {
+        "bootstrap_plan",
+        "terraform_plan_validation",
+        "bootstrap_runner",
+        "post_deploy_validation",
+    }
 )
 _BLOCKING_STATUSES = {"fail"}
 
@@ -424,7 +438,10 @@ def generate_evidence_ledger(
     dataplane_manifest_path: Path,
     permissions_manifest_path: Path,
     bootstrap_bundle_path: Path,
+    iac_package_path: Path,
+    iam_template_path: Path,
     env_path: Path | None = None,
+    terraform_validation_report_path: Path | None = None,
     post_deploy_report_path: Path | None = None,
     post_deploy_envelope_path: Path | None = None,
     evidence_signing_secret: str | None = None,
@@ -456,6 +473,16 @@ def generate_evidence_ledger(
         observed_at=observed_at,
         repo_root=repo_root,
     )
+    terraform_entry = _terraform_plan_validation_entry(
+        iac_package_path=iac_package_path,
+        dataplane_manifest_path=dataplane_manifest_path,
+        permissions_manifest_path=permissions_manifest_path,
+        iam_template_path=iam_template_path,
+        terraform_validation_report_path=terraform_validation_report_path,
+        manifest=dataplane_manifest,
+        observed_at=observed_at,
+        repo_root=repo_root,
+    )
     runner_report = run_byoc_bootstrap_runner(
         ByocBootstrapRunnerInputs(
             plan_path=plan_path,
@@ -480,6 +507,7 @@ def generate_evidence_ledger(
     )
     evidence = (
         plan_entry,
+        terraform_entry,
         _runner_evidence_entry(runner_report, observed_at=observed_at),
         validation_entry,
     )
@@ -742,6 +770,60 @@ def _post_deploy_validation_entry(
     )
 
 
+def _terraform_plan_validation_entry(
+    *,
+    iac_package_path: Path,
+    dataplane_manifest_path: Path,
+    permissions_manifest_path: Path,
+    iam_template_path: Path,
+    terraform_validation_report_path: Path | None,
+    manifest: ByocDataPlaneManifest,
+    observed_at: datetime,
+    repo_root: Path,
+) -> ByocEvidenceEntry:
+    if terraform_validation_report_path is not None:
+        report = load_byoc_terraform_plan_validation_report(
+            terraform_validation_report_path
+        )
+        violations = _terraform_report_identity_violations(report, manifest)
+        if violations:
+            rendered = "; ".join(violation.render() for violation in violations)
+            raise ValueError(
+                f"Terraform validation report identity failed: {rendered}"
+            )
+        return _terraform_validation_evidence_entry(
+            report,
+            observed_at=observed_at,
+            source=ByocEvidenceSource(
+                type="terraform_plan_report_file",
+                ref=_evidence_source_ref(
+                    terraform_validation_report_path,
+                    repo_root=repo_root,
+                    external_ref="generated:external_terraform_plan_report",
+                ),
+                digest=_terraform_validation_summary_digest(report),
+            ),
+        )
+    report = run_byoc_terraform_plan_validation(
+        ByocTerraformPlanValidationInputs(
+            iac_package_path=iac_package_path,
+            dataplane_manifest_path=dataplane_manifest_path,
+            permissions_manifest_path=permissions_manifest_path,
+            iam_template_path=iam_template_path,
+            repo_root=repo_root,
+        )
+    )
+    return _terraform_validation_evidence_entry(
+        report,
+        observed_at=observed_at,
+        source=ByocEvidenceSource(
+            type="local_terraform_validator",
+            ref="generated:byoc_terraform_plan_validation",
+            digest=_terraform_validation_summary_digest(report),
+        ),
+    )
+
+
 def validate_evidence_ledger_contract(
     ledger: ByocDeploymentEvidenceLedger,
     *,
@@ -788,6 +870,14 @@ def validate_evidence_ledger_contract(
                     "evidence.bootstrap_plan.operation_counts",
                     "operation_counts_required",
                     "bootstrap plan evidence must include operation counts",
+                )
+            )
+        if entry.kind == "terraform_plan_validation" and not entry.operation_counts:
+            violations.append(
+                _violation(
+                    "evidence.terraform_plan_validation.operation_counts",
+                    "operation_counts_required",
+                    "Terraform validation evidence must include bounded counts",
                 )
             )
     return violations
@@ -908,6 +998,32 @@ def _runner_evidence_entry(
     )
 
 
+def _terraform_validation_evidence_entry(
+    report: ByocTerraformPlanValidationReport,
+    *,
+    observed_at: datetime,
+    source: ByocEvidenceSource,
+) -> ByocEvidenceEntry:
+    summary = _check_summary(report.checks)
+    failed_codes = _failed_check_codes(report.checks)
+    status: EvidenceStatus = "pass" if report.required_checks_passed else "fail"
+    return ByocEvidenceEntry(
+        kind="terraform_plan_validation",
+        status=status,
+        required_checks_passed=report.required_checks_passed,
+        observed_at=observed_at,
+        source=source,
+        check_summary=summary,
+        failed_check_codes=failed_codes,
+        step_count=report.module_count,
+        operation_counts={
+            "contract_only_validation": 1,
+            "terraform_modules": report.module_count,
+            "terraform_files": report.terraform_file_count,
+        },
+    )
+
+
 def _validation_evidence_entry(
     report: ByocValidationReport | ByocImportedValidationReport,
     *,
@@ -943,6 +1059,28 @@ def _validation_summary_digest(
             "checks": summary.model_dump(mode="json"),
             "failed_check_codes": failed_codes,
             "status": status,
+        }
+    )
+
+
+def _terraform_validation_summary_digest(
+    report: ByocTerraformPlanValidationReport,
+) -> str:
+    summary = _check_summary(report.checks)
+    failed_codes = _failed_check_codes(report.checks)
+    status: EvidenceStatus = "pass" if report.required_checks_passed else "fail"
+    return _summary_digest(
+        {
+            "checks": summary.model_dump(mode="json"),
+            "execution_mode": report.execution_mode,
+            "failed_check_codes": failed_codes,
+            "module_count": report.module_count,
+            "status": status,
+            "terraform_command_output_included": (
+                report.terraform_command_output_included
+            ),
+            "terraform_file_count": report.terraform_file_count,
+            "terraform_plan_json_included": report.terraform_plan_json_included,
         }
     )
 
@@ -995,6 +1133,30 @@ def _compare_plan_manifest(
     plan: ByocBootstrapPlanManifest,
 ) -> list[ByocEvidenceLedgerViolation]:
     return _compare_identity(ledger, plan, "bootstrap_plan")
+
+
+def _terraform_report_identity_violations(
+    report: ByocTerraformPlanValidationReport,
+    manifest: ByocDataPlaneManifest,
+) -> list[ByocEvidenceLedgerViolation]:
+    violations: list[ByocEvidenceLedgerViolation] = []
+    for field in (
+        "deployment_id",
+        "customer_id",
+        "environment",
+        "cloud_provider",
+        "region",
+        "artifact_revision",
+    ):
+        if getattr(report, field) != getattr(manifest, field):
+            violations.append(
+                _violation(
+                    field,
+                    "terraform_report_manifest_mismatch",
+                    f"Terraform validation report {field} does not match manifest",
+                )
+            )
+    return violations
 
 
 def _compare_identity(

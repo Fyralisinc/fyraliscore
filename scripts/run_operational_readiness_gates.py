@@ -551,6 +551,38 @@ def _byoc_aws_iac_package_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_terraform_plan_validation_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_terraform_plan_validation",
+        _python_command(
+            "scripts/run_byoc_terraform_plan_validation.py",
+            "--json",
+            "--iac-package",
+            "deploy/byoc/aws/iac-package.example.yaml",
+            "--dataplane-manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--permissions-manifest",
+            "deploy/byoc/permissions.example.yaml",
+            "--iam-template",
+            "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        ),
+        details=(
+            "BYOC Terraform scaffold validation emits contract-only, "
+            "raw-output-free evidence for the AWS module layout."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "iac_package": "deploy/byoc/aws/iac-package.example.yaml",
+            "terraform_root": "deploy/byoc/aws/terraform",
+            "terraform_modules": "deploy/byoc/aws/terraform/modules",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        },
+    )
+
+
 def _byoc_bootstrap_bundle_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_bootstrap_bundle",
@@ -699,7 +731,8 @@ def _byoc_evidence_ledger_gate(args: argparse.Namespace) -> GateResult:
         ),
         details=(
             "Checked-in BYOC evidence ledger records only sanitized "
-            "deployment metadata, aggregate counts, and bounded failure codes."
+            "deployment metadata, aggregate counts, bounded failure codes, and "
+            "contract-only Terraform validation evidence."
         ),
         timeout_s=min(args.command_timeout_s, 30),
         env=_base_env(),
@@ -707,6 +740,8 @@ def _byoc_evidence_ledger_gate(args: argparse.Namespace) -> GateResult:
             "ledger": "deploy/byoc/evidence-ledger.example.yaml",
             "plan": "deploy/byoc/bootstrap-plan.example.yaml",
             "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+            "iac_package": "deploy/byoc/aws/iac-package.example.yaml",
+            "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
             "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
             "permissions_manifest": "deploy/byoc/permissions.example.yaml",
             "env_template": ".env.production.example",
@@ -820,6 +855,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_dataplane_contract_gate(args),
         _byoc_permissions_contract_gate(args),
         _byoc_aws_iac_package_gate(args),
+        _byoc_terraform_plan_validation_gate(args),
         _byoc_bootstrap_bundle_gate(args),
         _byoc_bootstrap_plan_gate(args),
         _byoc_bootstrap_runner_gate(args),

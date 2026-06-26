@@ -151,6 +151,13 @@ Repo-owned artifacts for this first slice:
   output.
   `scripts/validate_byoc_aws_iac_package.py` remains available for direct
   package validation when generation is not needed.
+- `services/platform/runtime/byoc_terraform_plan_validation.py` and
+  `scripts/run_byoc_terraform_plan_validation.py` emit the customer-side
+  Terraform scaffold validation report. The report is contract-only: it proves
+  the package schema, identity alignment, generated-output drift status,
+  placeholder module coverage, and non-mutating flags without running
+  `terraform plan`, copying plan JSON, storing Terraform command output, or
+  requiring cloud credentials.
 - `services/platform/runtime/byoc_bootstrap_bundle.py` defines the signed
   bootstrap bundle contract. It requires digest-pinned image/chart/IaC/SBOM
   artifacts, Sigstore bundle metadata, matching signing identity, deployment
@@ -185,8 +192,9 @@ Repo-owned artifacts for this first slice:
   `deploy/byoc/evidence-ledger.example.yaml` define the sanitized deployment
   evidence ledger. It records only deployment identity, pass/fail status,
   aggregate check counts, bounded failure codes, operation counts, and
-  sanitized digests from the plan, bootstrap-runner report, and offline
-  post-deploy validator. When a customer-side live post-deploy report is
+  sanitized digests from the plan, Terraform scaffold validation report,
+  bootstrap-runner report, and offline post-deploy validator. When a
+  customer-side live post-deploy report is
   available, pass it with `--post-deploy-report`. If a signed envelope is
   supplied with `--post-deploy-envelope`, the ledger verifies deployment
   identity, report digest, timestamp freshness, and HMAC signature before

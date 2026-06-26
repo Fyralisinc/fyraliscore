@@ -54,9 +54,29 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="BYOC bootstrap bundle manifest referenced by the plan.",
     )
     parser.add_argument(
+        "--iac-package",
+        type=Path,
+        default=Path("deploy/byoc/aws/iac-package.example.yaml"),
+        help="BYOC AWS IaC package manifest to validate for Terraform evidence.",
+    )
+    parser.add_argument(
+        "--iam-template",
+        type=Path,
+        default=Path("deploy/byoc/aws/iam.bootstrap.template.yaml"),
+        help="AWS IAM skeleton referenced by the IaC package.",
+    )
+    parser.add_argument(
         "--env-file",
         type=Path,
         help="Optional env file for offline post-deploy validation evidence.",
+    )
+    parser.add_argument(
+        "--terraform-validation-report",
+        type=Path,
+        help=(
+            "Optional sanitized Terraform validation report to summarize "
+            "without copying report details."
+        ),
     )
     parser.add_argument(
         "--post-deploy-report",
@@ -141,7 +161,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             dataplane_manifest_path=args.dataplane_manifest,
             permissions_manifest_path=args.permissions_manifest,
             bootstrap_bundle_path=args.bootstrap_bundle,
+            iac_package_path=args.iac_package,
+            iam_template_path=args.iam_template,
             env_path=args.env_file,
+            terraform_validation_report_path=args.terraform_validation_report,
             post_deploy_report_path=args.post_deploy_report,
             post_deploy_envelope_path=args.post_deploy_envelope,
             evidence_signing_secret=signing_secret,
@@ -179,7 +202,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except ImportError as exc:  # pragma: no cover - dev/test installs PyYAML.
             _print_errors("Failed to render YAML", [str(exc)])
             return 1
-        print(yaml.safe_dump(payload, sort_keys=False, width=1_000_000))
+        sys.stdout.write(yaml.safe_dump(payload, sort_keys=False, width=1_000_000))
     return 0
 
 
