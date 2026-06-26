@@ -120,9 +120,12 @@ Repo-owned artifacts for this first slice:
   aggregate check counts, bounded failure codes, operation counts, and
   sanitized digests from the plan, bootstrap-runner report, and offline
   post-deploy validator. When a customer-side live post-deploy report is
-  available, pass it with `--post-deploy-report`; the ledger imports only
-  status, required flags, bounded check names, and counts, while discarding
-  report details, endpoint strings, URLs, and metrics.
+  available, pass it with `--post-deploy-report`. If a signed envelope is
+  supplied with `--post-deploy-envelope`, the ledger verifies deployment
+  identity, report digest, timestamp freshness, and HMAC signature before
+  import. The ledger imports only status, required flags, bounded check names,
+  and counts, while discarding report details, endpoint strings, URLs, and
+  metrics.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -1304,8 +1307,11 @@ Minimum gates before first enterprise customer:
   plane as deployment metadata, but raw report details, commands, artifact refs,
   credentials, payloads, prompts, logs, embeddings, and PII must not.
 - Summarize customer-side live post-deploy reports through
-  `scripts/generate_byoc_evidence_ledger.py --post-deploy-report`; never attach
-  the raw validator JSON to a control-plane or support handoff artifact.
+  `scripts/generate_byoc_evidence_ledger.py --post-deploy-report`. For customer
+  handoff, require a matching `--post-deploy-envelope` and signing secret so
+  report digest, timestamp, and agent/runtime proof are verified before
+  summarization. Never attach the raw validator JSON to a control-plane or
+  support handoff artifact.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment and heartbeat schema contract-backed;

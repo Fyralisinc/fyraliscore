@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
 from collections import Counter
@@ -58,9 +59,12 @@ EvidenceSourceType = Literal[
     "local_runner",
     "offline_validator",
     "post_deploy_report_file",
+    "signed_post_deploy_report_file",
 ]
+EvidenceReportKind = Literal["post_deploy_validation"]
 _DEPLOYMENT_ID_RE = re.compile(r"^dep_[A-Za-z0-9][A-Za-z0-9_-]{5,79}$")
 _CUSTOMER_ID_RE = re.compile(r"^cus_[A-Za-z0-9][A-Za-z0-9_-]{5,79}$")
+_AGENT_ID_RE = re.compile(r"^agt_[A-Za-z0-9][A-Za-z0-9_-]{5,79}$")
 _SAFE_REF_RE = re.compile(r"^(?:generated:[A-Za-z0-9_.:-]+|[A-Za-z0-9_./+=,-]+)$")
 _SAFE_CODE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -134,6 +138,98 @@ class ByocImportedValidationReport(_ImportedModel):
         return self
 
 
+class ByocEvidenceEnvelopeSignature(_StrictModel):
+    algorithm: Literal["hmac-sha256"] = "hmac-sha256"
+    key_ref: str
+    value: str
+
+    @field_validator("key_ref")
+    @classmethod
+    def _key_ref_must_be_present(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("key_ref must not be empty")
+        return value
+
+    @field_validator("value")
+    @classmethod
+    def _signature_must_be_sha256_hex(cls, value: str) -> str:
+        value = value.strip().lower()
+        if len(value) != 64:
+            raise ValueError("signature value must be a SHA-256 hex digest")
+        try:
+            int(value, 16)
+        except ValueError as exc:
+            raise ValueError("signature value must be hex encoded") from exc
+        return value
+
+
+class ByocEvidenceEnvelopePayload(_StrictModel):
+    schema_version: Literal["fyralis.byoc.evidence_envelope.v1"]
+    deployment_id: str
+    customer_id: str
+    agent_id: str
+    artifact_revision: str
+    cloud_provider: CloudProvider
+    region: str
+    report_kind: EvidenceReportKind = "post_deploy_validation"
+    report_digest: str
+    issued_at: datetime
+    expires_at: datetime
+    nonce: str = Field(min_length=16, max_length=128)
+    signing_key_ref: str
+
+    @field_validator("deployment_id")
+    @classmethod
+    def _deployment_id_shape(cls, value: str) -> str:
+        value = value.strip()
+        if not _DEPLOYMENT_ID_RE.match(value):
+            raise ValueError("deployment_id must look like dep_<stable-id>")
+        return value
+
+    @field_validator("customer_id")
+    @classmethod
+    def _customer_id_shape(cls, value: str) -> str:
+        value = value.strip()
+        if not _CUSTOMER_ID_RE.match(value):
+            raise ValueError("customer_id must look like cus_<stable-id>")
+        return value
+
+    @field_validator("agent_id")
+    @classmethod
+    def _agent_id_shape(cls, value: str) -> str:
+        value = value.strip()
+        if not _AGENT_ID_RE.match(value):
+            raise ValueError("agent_id must look like agt_<stable-id>")
+        return value
+
+    @field_validator("artifact_revision", "region", "nonce", "signing_key_ref")
+    @classmethod
+    def _strings_must_be_present(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("envelope fields must not be empty")
+        return value
+
+    @field_validator("report_digest")
+    @classmethod
+    def _digest_must_be_sha256(cls, value: str) -> str:
+        value = value.strip().lower()
+        if not _SHA256_RE.match(value):
+            raise ValueError("report_digest must look like sha256:<64-hex>")
+        return value
+
+    @model_validator(mode="after")
+    def _expiry_must_follow_issue_time(self) -> "ByocEvidenceEnvelopePayload":
+        if self.expires_at <= self.issued_at:
+            raise ValueError("expires_at must be after issued_at")
+        return self
+
+
+class ByocEvidenceEnvelope(ByocEvidenceEnvelopePayload):
+    signature: ByocEvidenceEnvelopeSignature
+
+
 class ByocEvidencePrivacyContract(_StrictModel):
     raw_payloads_included: Literal[False] = False
     prompts_included: Literal[False] = False
@@ -204,6 +300,8 @@ class ByocEvidenceEntry(_StrictModel):
     failed_check_codes: tuple[str, ...] = ()
     step_count: int | None = Field(default=None, ge=0)
     operation_counts: dict[str, int] = Field(default_factory=dict)
+    signature_verified: bool | None = None
+    envelope_digest: str | None = None
 
     @field_validator("failed_check_codes")
     @classmethod
@@ -225,6 +323,16 @@ class ByocEvidenceEntry(_StrictModel):
                 raise ValueError("operation counts must be non-negative")
             normalized[key] = count
         return normalized
+
+    @field_validator("envelope_digest")
+    @classmethod
+    def _envelope_digest_must_be_sha256(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().lower()
+        if not _SHA256_RE.match(value):
+            raise ValueError("envelope_digest must look like sha256:<64-hex>")
+        return value
 
     @model_validator(mode="after")
     def _status_must_match_required_checks(self) -> "ByocEvidenceEntry":
@@ -318,6 +426,10 @@ def generate_evidence_ledger(
     bootstrap_bundle_path: Path,
     env_path: Path | None = None,
     post_deploy_report_path: Path | None = None,
+    post_deploy_envelope_path: Path | None = None,
+    evidence_signing_secret: str | None = None,
+    envelope_verified_at: datetime | None = None,
+    max_envelope_age_seconds: int = 86_400,
     generated_at: datetime | None = None,
     repo_root: Path | None = None,
 ) -> ByocDeploymentEvidenceLedger:
@@ -358,6 +470,11 @@ def generate_evidence_ledger(
         dataplane_manifest_path=dataplane_manifest_path,
         env_path=env_path,
         post_deploy_report_path=post_deploy_report_path,
+        post_deploy_envelope_path=post_deploy_envelope_path,
+        manifest=dataplane_manifest,
+        evidence_signing_secret=evidence_signing_secret,
+        envelope_verified_at=envelope_verified_at or observed_at,
+        max_envelope_age_seconds=max_envelope_age_seconds,
         observed_at=observed_at,
         repo_root=repo_root,
     )
@@ -385,6 +502,160 @@ def generate_evidence_ledger(
     )
 
 
+def evidence_envelope_payload(
+    *,
+    manifest: ByocDataPlaneManifest,
+    report_path: Path,
+    agent_id: str,
+    nonce: str,
+    issued_at: datetime,
+    expires_at: datetime,
+) -> ByocEvidenceEnvelopePayload:
+    return ByocEvidenceEnvelopePayload(
+        schema_version="fyralis.byoc.evidence_envelope.v1",
+        deployment_id=manifest.deployment_id,
+        customer_id=manifest.customer_id,
+        agent_id=agent_id,
+        artifact_revision=manifest.artifact_revision,
+        cloud_provider=manifest.cloud_provider,
+        region=manifest.region,
+        report_kind="post_deploy_validation",
+        report_digest=_file_digest(report_path),
+        issued_at=issued_at,
+        expires_at=expires_at,
+        nonce=nonce,
+        signing_key_ref=manifest.secrets.agent_client_certificate_secret_ref,
+    )
+
+
+def signed_evidence_envelope(
+    payload: ByocEvidenceEnvelopePayload,
+    *,
+    signing_secret: str,
+) -> ByocEvidenceEnvelope:
+    if not signing_secret:
+        raise ValueError("signing_secret must not be empty")
+    signature = ByocEvidenceEnvelopeSignature(
+        key_ref=payload.signing_key_ref,
+        value=_hmac_sha256(canonical_evidence_envelope_payload(payload), signing_secret),
+    )
+    return ByocEvidenceEnvelope(**payload.model_dump(), signature=signature)
+
+
+def canonical_evidence_envelope_payload(
+    payload: ByocEvidenceEnvelopePayload,
+) -> bytes:
+    data = payload.model_dump(mode="json")
+    return json.dumps(data, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def load_evidence_envelope(path: Path) -> ByocEvidenceEnvelope:
+    data = _load_mapping(path)
+    if not isinstance(data, dict):
+        raise ValueError("BYOC evidence envelope must be a JSON/YAML object")
+    return ByocEvidenceEnvelope.model_validate(data)
+
+
+def verify_evidence_envelope(
+    envelope: ByocEvidenceEnvelope,
+    *,
+    report_path: Path,
+    manifest: ByocDataPlaneManifest,
+    signing_secret: str,
+    verified_at: datetime | None = None,
+    max_age_seconds: int = 86_400,
+) -> list[ByocEvidenceLedgerViolation]:
+    violations: list[ByocEvidenceLedgerViolation] = []
+    now = verified_at or datetime.now(UTC)
+    if not signing_secret:
+        violations.append(
+            _violation("signature", "missing_signing_secret", "signing secret is empty")
+        )
+        return violations
+
+    violations.extend(_compare_envelope_identity(envelope, manifest))
+    if envelope.signing_key_ref != manifest.secrets.agent_client_certificate_secret_ref:
+        violations.append(
+            _violation(
+                "signing_key_ref",
+                "signing_key_ref_mismatch",
+                "envelope signing key ref does not match the data-plane manifest",
+            )
+        )
+    if envelope.signature.key_ref != envelope.signing_key_ref:
+        violations.append(
+            _violation(
+                "signature.key_ref",
+                "signature_key_ref_mismatch",
+                "signature key_ref must match signing_key_ref",
+            )
+        )
+    if envelope.report_digest != _file_digest(report_path):
+        violations.append(
+            _violation(
+                "report_digest",
+                "report_digest_mismatch",
+                "envelope report digest does not match the report file",
+            )
+        )
+    if envelope.issued_at > now:
+        violations.append(
+            _violation("issued_at", "issued_in_future", "envelope is from the future")
+        )
+    if envelope.expires_at <= now:
+        violations.append(
+            _violation("expires_at", "envelope_expired", "evidence envelope expired")
+        )
+    if max_age_seconds > 0 and (now - envelope.issued_at).total_seconds() > max_age_seconds:
+        violations.append(
+            _violation("issued_at", "envelope_too_old", "evidence envelope is too old")
+        )
+
+    expected = _hmac_sha256(
+        canonical_evidence_envelope_payload(_payload_from_envelope(envelope)),
+        signing_secret,
+    )
+    if not hmac.compare_digest(expected, envelope.signature.value):
+        violations.append(
+            _violation("signature.value", "invalid_signature", "invalid signature")
+        )
+    return violations
+
+
+def _payload_from_envelope(
+    envelope: ByocEvidenceEnvelope,
+) -> ByocEvidenceEnvelopePayload:
+    data = envelope.model_dump(exclude={"signature"})
+    return ByocEvidenceEnvelopePayload.model_validate(data)
+
+
+def _compare_envelope_identity(
+    envelope: ByocEvidenceEnvelope,
+    manifest: ByocDataPlaneManifest,
+) -> list[ByocEvidenceLedgerViolation]:
+    violations: list[ByocEvidenceLedgerViolation] = []
+    for field in (
+        "deployment_id",
+        "customer_id",
+        "artifact_revision",
+        "cloud_provider",
+        "region",
+    ):
+        if getattr(envelope, field) != getattr(manifest, field):
+            violations.append(
+                _violation(
+                    field,
+                    "envelope_manifest_mismatch",
+                    f"evidence envelope {field} does not match manifest",
+                )
+            )
+    return violations
+
+
+def _hmac_sha256(payload: bytes, secret: str) -> str:
+    return hmac.new(secret.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+
+
 def load_post_deploy_validation_report(path: Path) -> ByocImportedValidationReport:
     data = _load_mapping(path)
     if not isinstance(data, dict):
@@ -397,16 +668,44 @@ def _post_deploy_validation_entry(
     dataplane_manifest_path: Path,
     env_path: Path | None,
     post_deploy_report_path: Path | None,
+    post_deploy_envelope_path: Path | None,
+    manifest: ByocDataPlaneManifest,
+    evidence_signing_secret: str | None,
+    envelope_verified_at: datetime,
+    max_envelope_age_seconds: int,
     observed_at: datetime,
     repo_root: Path,
 ) -> ByocEvidenceEntry:
     if post_deploy_report_path is not None:
+        envelope: ByocEvidenceEnvelope | None = None
+        if post_deploy_envelope_path is not None:
+            if evidence_signing_secret is None:
+                raise ValueError(
+                    "evidence signing secret is required with "
+                    "--post-deploy-envelope"
+                )
+            envelope = load_evidence_envelope(post_deploy_envelope_path)
+            violations = verify_evidence_envelope(
+                envelope,
+                report_path=post_deploy_report_path,
+                manifest=manifest,
+                signing_secret=evidence_signing_secret,
+                verified_at=envelope_verified_at,
+                max_age_seconds=max_envelope_age_seconds,
+            )
+            if violations:
+                rendered = "; ".join(violation.render() for violation in violations)
+                raise ValueError(f"evidence envelope verification failed: {rendered}")
         imported = load_post_deploy_validation_report(post_deploy_report_path)
         return _validation_evidence_entry(
             imported,
             observed_at=observed_at,
             source=ByocEvidenceSource(
-                type="post_deploy_report_file",
+                type=(
+                    "signed_post_deploy_report_file"
+                    if envelope is not None
+                    else "post_deploy_report_file"
+                ),
                 ref=_evidence_source_ref(
                     post_deploy_report_path,
                     repo_root=repo_root,
@@ -414,7 +713,15 @@ def _post_deploy_validation_entry(
                 ),
                 digest=_validation_summary_digest(imported),
             ),
+            signature_verified=envelope is not None,
+            envelope_digest=(
+                _file_digest(post_deploy_envelope_path)
+                if post_deploy_envelope_path is not None
+                else None
+            ),
         )
+    if post_deploy_envelope_path is not None:
+        raise ValueError("--post-deploy-envelope requires --post-deploy-report")
     report = run_byoc_post_deploy_validation(
         ByocValidationInputs(
             manifest_path=dataplane_manifest_path,
@@ -430,6 +737,8 @@ def _post_deploy_validation_entry(
             ref="generated:byoc_post_deploy_validation",
             digest=_validation_summary_digest(report),
         ),
+        signature_verified=None,
+        envelope_digest=None,
     )
 
 
@@ -604,6 +913,8 @@ def _validation_evidence_entry(
     *,
     observed_at: datetime,
     source: ByocEvidenceSource,
+    signature_verified: bool | None,
+    envelope_digest: str | None,
 ) -> ByocEvidenceEntry:
     summary = _check_summary(report.checks)
     failed_codes = _failed_check_codes(report.checks)
@@ -616,6 +927,8 @@ def _validation_evidence_entry(
         source=source,
         check_summary=summary,
         failed_check_codes=failed_codes,
+        signature_verified=signature_verified,
+        envelope_digest=envelope_digest,
     )
 
 

@@ -100,6 +100,9 @@ Every checklist item is done only when:
 - [x] BYOC live post-deploy reports can be imported into the evidence ledger
   through a sanitized summary path that drops report details, URLs, endpoint
   strings, metrics, credentials, payloads, prompts, logs, embeddings, and PII.
+- [x] BYOC live report imports can require a signed evidence envelope that
+  verifies deployment identity, report digest, timestamp freshness, signing key
+  reference, and HMAC proof before the report is summarized.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

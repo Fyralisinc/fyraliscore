@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import yaml
 
 from scripts.generate_byoc_evidence_ledger import main
+from services.platform.runtime.byoc_contract import load_byoc_manifest
+from services.platform.runtime.byoc_evidence_ledger import (
+    evidence_envelope_payload,
+    signed_evidence_envelope,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "deploy/byoc/evidence-ledger.example.yaml"
+DATAPLANE = ROOT / "deploy/byoc/dataplane.example.yaml"
+GENERATED_AT = datetime(2026, 6, 26, 12, 0, tzinfo=UTC)
+SIGNING_SECRET = "local-evidence-signing-secret"
 
 
 def _live_report(path: Path, *, failed: bool = False) -> Path:
@@ -32,6 +41,24 @@ def _live_report(path: Path, *, failed: bool = False) -> Path:
         ],
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _envelope(path: Path, report_path: Path) -> Path:
+    manifest = load_byoc_manifest(DATAPLANE)
+    payload = evidence_envelope_payload(
+        manifest=manifest,
+        report_path=report_path,
+        agent_id="agt_example01",
+        nonce="nonce-for-evidence-envelope-001",
+        issued_at=GENERATED_AT,
+        expires_at=GENERATED_AT + timedelta(hours=1),
+    )
+    envelope = signed_evidence_envelope(payload, signing_secret=SIGNING_SECRET)
+    path.write_text(
+        json.dumps(envelope.model_dump(mode="json"), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -110,6 +137,58 @@ def test_generate_byoc_evidence_ledger_reports_live_failure(
     assert code == 0
     assert payload["overall_status"] == "fail"
     assert payload["evidence"][2]["failed_check_codes"] == ["gateway_health"]
+
+
+def test_generate_byoc_evidence_ledger_verifies_signed_live_report(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    report = _live_report(tmp_path / "post-deploy-report.json")
+    envelope = _envelope(tmp_path / "post-deploy-envelope.json", report)
+    monkeypatch.setenv("FYRALIS_BYOC_EVIDENCE_SIGNING_SECRET", SIGNING_SECRET)
+
+    code = main([
+        "--json",
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--post-deploy-report",
+        str(report),
+        "--post-deploy-envelope",
+        str(envelope),
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    validation = payload["evidence"][2]
+    assert code == 0
+    assert validation["source"]["type"] == "signed_post_deploy_report_file"
+    assert validation["signature_verified"] is True
+    assert validation["envelope_digest"].startswith("sha256:")
+
+
+def test_generate_byoc_evidence_ledger_rejects_missing_envelope_secret(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    report = _live_report(tmp_path / "post-deploy-report.json")
+    envelope = _envelope(tmp_path / "post-deploy-envelope.json", report)
+    monkeypatch.delenv("FYRALIS_BYOC_EVIDENCE_SIGNING_SECRET", raising=False)
+
+    code = main([
+        "--json",
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--post-deploy-report",
+        str(report),
+        "--post-deploy-envelope",
+        str(envelope),
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "evidence signing secret is required" in captured.err
 
 
 def test_generate_byoc_evidence_ledger_prints_schema(capsys) -> None:

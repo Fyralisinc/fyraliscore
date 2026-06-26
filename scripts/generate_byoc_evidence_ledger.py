@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -66,6 +67,22 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--post-deploy-envelope",
+        type=Path,
+        help="Optional signed evidence envelope for --post-deploy-report.",
+    )
+    parser.add_argument(
+        "--evidence-signing-secret-env",
+        default="FYRALIS_BYOC_EVIDENCE_SIGNING_SECRET",
+        help="Environment variable containing the local evidence signing secret.",
+    )
+    parser.add_argument(
+        "--max-envelope-age-seconds",
+        type=int,
+        default=86_400,
+        help="Maximum signed evidence envelope age to accept.",
+    )
+    parser.add_argument(
         "--check-ledger",
         type=Path,
         help="Existing evidence ledger to validate and compare to generated output.",
@@ -110,6 +127,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.check_ledger is not None:
             existing = load_byoc_evidence_ledger(args.check_ledger)
             generated_at = existing.generated_at
+        signing_secret = (
+            os.environ.get(args.evidence_signing_secret_env)
+            if args.post_deploy_envelope is not None
+            else None
+        )
         generated = generate_evidence_ledger(
             plan=plan,
             dataplane_manifest=dataplane,
@@ -121,6 +143,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             bootstrap_bundle_path=args.bootstrap_bundle,
             env_path=args.env_file,
             post_deploy_report_path=args.post_deploy_report,
+            post_deploy_envelope_path=args.post_deploy_envelope,
+            evidence_signing_secret=signing_secret,
+            max_envelope_age_seconds=args.max_envelope_age_seconds,
             generated_at=generated_at,
             repo_root=args.repo_root.resolve(),
         )

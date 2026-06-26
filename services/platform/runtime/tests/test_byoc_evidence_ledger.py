@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -14,11 +14,15 @@ from services.platform.runtime.byoc_bootstrap_plan import load_byoc_bootstrap_pl
 from services.platform.runtime.byoc_contract import load_byoc_manifest
 from services.platform.runtime.byoc_evidence_ledger import (
     ByocDeploymentEvidenceLedger,
+    evidence_envelope_payload,
     byoc_evidence_ledger_json_schema,
     generate_evidence_ledger,
+    load_evidence_envelope,
     load_byoc_evidence_ledger,
     load_post_deploy_validation_report,
+    signed_evidence_envelope,
     validate_evidence_ledger_contract,
+    verify_evidence_envelope,
 )
 from services.platform.runtime.byoc_permissions import load_byoc_permissions_manifest
 
@@ -30,6 +34,7 @@ PERMISSIONS = ROOT / "deploy/byoc/permissions.example.yaml"
 BUNDLE = ROOT / "deploy/byoc/bootstrap-bundle.example.yaml"
 LEDGER = ROOT / "deploy/byoc/evidence-ledger.example.yaml"
 GENERATED_AT = datetime(2026, 6, 26, 12, 0, tzinfo=UTC)
+SIGNING_SECRET = "local-evidence-signing-secret"
 
 
 def _inputs():
@@ -87,6 +92,24 @@ def _live_report(path: Path, *, failed: bool = False) -> Path:
         ],
     }
     path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _envelope(path: Path, report_path: Path) -> Path:
+    _, dataplane, _, _ = _inputs()
+    payload = evidence_envelope_payload(
+        manifest=dataplane,
+        report_path=report_path,
+        agent_id="agt_example01",
+        nonce="nonce-for-evidence-envelope-001",
+        issued_at=GENERATED_AT,
+        expires_at=GENERATED_AT + timedelta(hours=1),
+    )
+    envelope = signed_evidence_envelope(payload, signing_secret=SIGNING_SECRET)
+    path.write_text(
+        json.dumps(envelope.model_dump(mode="json"), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     return path
 
 
@@ -193,6 +216,112 @@ def test_evidence_ledger_summarizes_live_report_without_details(
     assert "gateway.customer.internal" not in rendered
     assert "super-secret" not in rendered
     assert "postgresql://user:password" not in rendered
+
+
+def test_evidence_ledger_verifies_signed_live_report_envelope(
+    tmp_path: Path,
+) -> None:
+    plan, dataplane, permissions, bundle = _inputs()
+    report_path = _live_report(tmp_path / "post-deploy-report.json")
+    envelope_path = _envelope(tmp_path / "post-deploy-envelope.json", report_path)
+
+    ledger = generate_evidence_ledger(
+        plan=plan,
+        dataplane_manifest=dataplane,
+        permissions_manifest=permissions,
+        bootstrap_bundle=bundle,
+        plan_path=PLAN,
+        dataplane_manifest_path=DATAPLANE,
+        permissions_manifest_path=PERMISSIONS,
+        bootstrap_bundle_path=BUNDLE,
+        post_deploy_report_path=report_path,
+        post_deploy_envelope_path=envelope_path,
+        evidence_signing_secret=SIGNING_SECRET,
+        envelope_verified_at=GENERATED_AT + timedelta(minutes=5),
+        generated_at=GENERATED_AT,
+        repo_root=ROOT,
+    )
+    validation = next(
+        evidence
+        for evidence in ledger.evidence
+        if evidence.kind == "post_deploy_validation"
+    )
+
+    assert validation.source.type == "signed_post_deploy_report_file"
+    assert validation.signature_verified is True
+    assert validation.envelope_digest is not None
+    assert validation.source.ref == "generated:external_post_deploy_report"
+
+
+def test_evidence_envelope_rejects_digest_mismatch(tmp_path: Path) -> None:
+    _, dataplane, _, _ = _inputs()
+    report_path = _live_report(tmp_path / "post-deploy-report.json")
+    envelope = load_evidence_envelope(_envelope(tmp_path / "envelope.json", report_path))
+    report_path.write_text('{"status":"pass","required_checks_passed":true,"checks":[]}')
+
+    violations = verify_evidence_envelope(
+        envelope,
+        report_path=report_path,
+        manifest=dataplane,
+        signing_secret=SIGNING_SECRET,
+        verified_at=GENERATED_AT + timedelta(minutes=5),
+    )
+
+    assert "report_digest_mismatch" in {violation.code for violation in violations}
+
+
+def test_evidence_envelope_rejects_invalid_signature(tmp_path: Path) -> None:
+    _, dataplane, _, _ = _inputs()
+    report_path = _live_report(tmp_path / "post-deploy-report.json")
+    envelope = load_evidence_envelope(_envelope(tmp_path / "envelope.json", report_path))
+
+    violations = verify_evidence_envelope(
+        envelope,
+        report_path=report_path,
+        manifest=dataplane,
+        signing_secret="wrong-secret",
+        verified_at=GENERATED_AT + timedelta(minutes=5),
+    )
+
+    assert "invalid_signature" in {violation.code for violation in violations}
+
+
+def test_evidence_envelope_rejects_expired_envelope(tmp_path: Path) -> None:
+    _, dataplane, _, _ = _inputs()
+    report_path = _live_report(tmp_path / "post-deploy-report.json")
+    envelope = load_evidence_envelope(_envelope(tmp_path / "envelope.json", report_path))
+
+    violations = verify_evidence_envelope(
+        envelope,
+        report_path=report_path,
+        manifest=dataplane,
+        signing_secret=SIGNING_SECRET,
+        verified_at=GENERATED_AT + timedelta(hours=2),
+    )
+
+    assert "envelope_expired" in {violation.code for violation in violations}
+
+
+def test_signed_live_report_requires_signing_secret(tmp_path: Path) -> None:
+    plan, dataplane, permissions, bundle = _inputs()
+    report_path = _live_report(tmp_path / "post-deploy-report.json")
+    envelope_path = _envelope(tmp_path / "post-deploy-envelope.json", report_path)
+
+    with pytest.raises(ValueError, match="signing secret"):
+        generate_evidence_ledger(
+            plan=plan,
+            dataplane_manifest=dataplane,
+            permissions_manifest=permissions,
+            bootstrap_bundle=bundle,
+            plan_path=PLAN,
+            dataplane_manifest_path=DATAPLANE,
+            permissions_manifest_path=PERMISSIONS,
+            bootstrap_bundle_path=BUNDLE,
+            post_deploy_report_path=report_path,
+            post_deploy_envelope_path=envelope_path,
+            generated_at=GENERATED_AT,
+            repo_root=ROOT,
+        )
 
 
 def test_evidence_ledger_fails_from_live_report_failure(
