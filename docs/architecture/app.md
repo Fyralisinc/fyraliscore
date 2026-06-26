@@ -56,7 +56,8 @@ owns:
   receives signed sanitized evidence-package submissions from the data-plane
   agent and records only bounded receipt metadata. Gateway deployments with
   database dependencies use the Postgres receipt store; the in-memory store is
-  kept for standalone contract tests.
+  kept for standalone contract tests. Receipt reads and bounded list queries
+  require signed read headers and return sanitized scalar metadata only.
 - **Webhook ingress** (`services/app/webhooks/router.py`): captures raw bytes,
   verifies the per-provider signature, resolves the tenant
   (`provider_installations` via the IN-08 tenant resolver + envelope-encrypted
@@ -123,7 +124,7 @@ graph TD
 | Gateway settings | `services/app/gateway/settings.py` | Fail-closed production settings, including BYOC deployment identity, egress-only control-plane connectivity, agent auth mode, and raw telemetry controls. |
 | Gateway middleware | `services/app/gateway/middleware.py` | Request context, bearer-session auth, public path allowlist, rate limiting. |
 | Gateway route mounts | `services/app/gateway/route_mounts.py` | Mounts focused gateway/product/ingest routers in one ordered place. |
-| BYOC control-plane intake | `services/app/gateway/byoc_control_plane_router.py` | Self-authenticated evidence-package intake route; verifies signed submissions and stores sanitized scalar receipts only. |
+| BYOC control-plane intake | `services/app/gateway/byoc_control_plane_router.py` | Self-authenticated evidence-package intake route; verifies signed submissions and signed receipt reads, and stores sanitized scalar receipts only. |
 | Gateway extension seam | `services/app/gateway/extensions.py` | Discovers installed `company_os.gateway_extensions` entry points; each contributes routers (e.g. overlay `/v1/demo/*`), startup hooks (Pelago seed, simulation mount), and public path prefixes. |
 | Gateway state wiring | `services/app/gateway/state_wiring.py` | Secret store, tenant resolver, tenant flags, GitHub client/cache, Kafka/S3 data-plane clients. |
 | CEO-view wiring | `services/app/gateway/ceo_view_wiring.py` | Rendering, greeting, query, conversations, Google ingress, and debug mounting. |
@@ -147,6 +148,10 @@ graph TD
 - `POST /byoc/control-plane/evidence-packages` — signed BYOC evidence-package
   intake; returns a sanitized receipt without storing raw reports or package
   bodies.
+- `GET /byoc/control-plane/evidence-packages` and
+  `GET /byoc/control-plane/evidence-packages/{receipt_id}` — signed BYOC
+  receipt automation reads; list queries require `deployment_id` or
+  `customer_id` and return sanitized scalar metadata only.
 - `GET /metrics` — Prometheus scrape of webhook verification + tenant-resolver counters (public; no Bearer).
 - `GET/POST /view/ceo/*`, etc. — core product surfaces (see [Product](product.md)).
   Overlay surfaces such as `/v1/demo/*` appear only when the demo extension is installed.

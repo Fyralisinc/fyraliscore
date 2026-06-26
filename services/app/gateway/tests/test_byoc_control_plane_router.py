@@ -14,6 +14,7 @@ from services.app.gateway.byoc_control_plane_router import (
 from services.platform.runtime.byoc_control_plane_intake import (
     InMemoryByocEvidencePackageIntakeStore,
     evidence_package_submission_payload,
+    signed_evidence_receipt_read_headers,
     signed_evidence_package_submission,
 )
 from services.platform.runtime.byoc_evidence_package import load_byoc_evidence_package
@@ -40,6 +41,22 @@ def _submission(*, signing_secret: str = SIGNING_SECRET):
         payload,
         signing_secret=signing_secret,
         key_ref=SIGNING_KEY_REF,
+    )
+
+
+def _read_headers(
+    path: str,
+    *,
+    query: str = "",
+    nonce: str = "nonce-intake-router-read-001",
+) -> dict[str, str]:
+    return signed_evidence_receipt_read_headers(
+        method="GET",
+        path=path,
+        query=query,
+        signing_secret=SIGNING_SECRET,
+        key_ref=SIGNING_KEY_REF,
+        nonce=nonce,
     )
 
 
@@ -73,6 +90,25 @@ class _FakeReceiptPool:
             return row
         return self.rows.get(args[0])
 
+    async def fetch(self, query: str, *args):
+        self.calls.append((query, args))
+        rows = list(self.rows.values())
+        arg_index = 0
+        if "deployment_id = $" in query:
+            deployment_id = args[arg_index]
+            arg_index += 1
+            rows = [row for row in rows if row["deployment_id"] == deployment_id]
+        if "customer_id = $" in query:
+            customer_id = args[arg_index]
+            arg_index += 1
+            rows = [row for row in rows if row["customer_id"] == customer_id]
+        limit = args[-1]
+        rows.sort(
+            key=lambda row: (row["accepted_at"], row["receipt_id"]),
+            reverse=True,
+        )
+        return rows[:limit]
+
 
 def _app(
     *,
@@ -99,8 +135,25 @@ async def test_byoc_control_plane_accepts_signed_evidence_package() -> None:
         )
         assert response.status_code == 202
         receipt = response.json()
-        lookup = await client.get(
+        lookup_path = (
             f"/byoc/control-plane/evidence-packages/{receipt['receipt_id']}"
+        )
+        lookup = await client.get(
+            lookup_path,
+            headers=_read_headers(
+                lookup_path,
+                nonce="nonce-intake-router-read-lookup",
+            ),
+        )
+        query = f"deployment_id={PACKAGE.deployment_id}&limit=10"
+        list_path = "/byoc/control-plane/evidence-packages"
+        receipt_list = await client.get(
+            f"{list_path}?{query}",
+            headers=_read_headers(
+                list_path,
+                query=query,
+                nonce="nonce-intake-router-read-list",
+            ),
         )
 
     assert receipt["status"] == "accepted"
@@ -113,6 +166,39 @@ async def test_byoc_control_plane_accepts_signed_evidence_package() -> None:
     assert '"evidence":' not in lookup.text
     assert "gateway.customer.internal" not in lookup.text
     assert "postgresql://" not in lookup.text
+    assert receipt_list.status_code == 200
+    assert receipt_list.json()["result_count"] == 1
+    assert "source_artifacts" not in receipt_list.text
+    assert "gateway.customer.internal" not in receipt_list.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_receipt_reads_require_signed_headers() -> None:
+    app, _ = _app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/byoc/control-plane/evidence-packages/evpkg_0")
+
+    assert response.status_code == 403
+    assert "missing_read_auth_headers" in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_receipt_list_requires_query_bound() -> None:
+    app, _ = _app()
+    list_path = "/byoc/control-plane/evidence-packages"
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            list_path,
+            headers=_read_headers(
+                list_path,
+                nonce="nonce-intake-router-unbounded-list",
+            ),
+        )
+
+    assert response.status_code == 400
+    assert "deployment_id or customer_id" in response.text
 
 
 @pytest.mark.asyncio
@@ -129,8 +215,20 @@ async def test_byoc_control_plane_uses_postgres_store_from_gateway_deps() -> Non
             "/byoc/control-plane/evidence-packages",
             json=_submission().model_dump(mode="json"),
         )
+        query = f"deployment_id={PACKAGE.deployment_id}&customer_id={PACKAGE.customer_id}"
+        list_path = "/byoc/control-plane/evidence-packages"
+        receipt_list = await client.get(
+            f"{list_path}?{query}",
+            headers=_read_headers(
+                list_path,
+                query=query,
+                nonce="nonce-intake-router-pg-list",
+            ),
+        )
 
     assert response.status_code == 202
+    assert receipt_list.status_code == 200
+    assert receipt_list.json()["result_count"] == 1
     assert pool.calls
     flattened_args = " ".join(str(arg) for _, args in pool.calls for arg in args)
     assert "source_artifacts" not in flattened_args

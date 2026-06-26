@@ -142,9 +142,12 @@ Repo-owned artifacts for this first slice:
   signatures, and package contract violations. When gateway database
   dependencies are present, receipts persist in
   `byoc_evidence_package_receipts` as scalar metadata only; the in-memory store
-  remains for standalone contract tests. Architecture ratchets forbid receipt
-  JSON/blob/body columns so raw evidence packages and live report details cannot
-  become control-plane storage.
+  remains for standalone contract tests. Receipt lookup and list APIs are
+  backend automation surfaces only: reads require short-lived HMAC-signed
+  headers, and list queries must be bounded by deployment or customer. The
+  response contract returns sanitized scalar receipt metadata only. Architecture
+  ratchets forbid receipt JSON/blob/body columns so raw evidence packages and
+  live report details cannot become control-plane storage.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -1338,7 +1341,8 @@ Minimum gates before first enterprise customer:
 - Submit evidence packages to the control-plane intake API only as signed
   `fyralis.byoc.evidence_package_submission.v1` payloads; control-plane storage
   may retain only the generated sanitized receipt metadata in
-  `byoc_evidence_package_receipts`.
+  `byoc_evidence_package_receipts`. Query receipt metadata only with signed
+  read headers and deployment/customer bounds.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment and heartbeat schema contract-backed;

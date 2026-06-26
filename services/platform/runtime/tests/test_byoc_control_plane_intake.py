@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from services.platform.runtime.byoc_control_plane_intake import (
+    ByocEvidencePackageReceiptQuery,
     ByocEvidencePackageSubmissionPayload,
     ByocEvidencePackageSubmissionRequest,
     InMemoryByocEvidencePackageIntakeStore,
@@ -16,7 +17,9 @@ from services.platform.runtime.byoc_control_plane_intake import (
     digest_evidence_package,
     evidence_package_submission_payload,
     model_json_schema_bundle,
+    signed_evidence_receipt_read_headers,
     signed_evidence_package_submission,
+    validate_evidence_receipt_read_auth_headers,
     validate_evidence_package_submission,
 )
 from services.platform.runtime.byoc_evidence_package import load_byoc_evidence_package
@@ -31,19 +34,25 @@ AGENT_VERSION = "0.1.0"
 SUBMITTED_AT = datetime(2026, 6, 26, 12, 30, tzinfo=UTC)
 
 
-def _payload() -> ByocEvidencePackageSubmissionPayload:
+def _payload(
+    *,
+    nonce: str = "nonce-intake-contract-001",
+) -> ByocEvidencePackageSubmissionPayload:
     return evidence_package_submission_payload(
         package=PACKAGE,
         agent_id=AGENT_ID,
         agent_version=AGENT_VERSION,
-        nonce="nonce-intake-contract-001",
+        nonce=nonce,
         submitted_at=SUBMITTED_AT,
     )
 
 
-def _request() -> ByocEvidencePackageSubmissionRequest:
+def _request(
+    *,
+    nonce: str = "nonce-intake-contract-001",
+) -> ByocEvidencePackageSubmissionRequest:
     return signed_evidence_package_submission(
-        _payload(),
+        _payload(nonce=nonce),
         signing_secret=SIGNING_SECRET,
         key_ref=SIGNING_KEY_REF,
     )
@@ -78,6 +87,25 @@ class _FakeReceiptPool:
             self.rows[row["receipt_id"]] = row
             return row
         return self.rows.get(args[0])
+
+    async def fetch(self, query: str, *args):
+        self.calls.append((query, args))
+        rows = list(self.rows.values())
+        arg_index = 0
+        if "deployment_id = $" in query:
+            deployment_id = args[arg_index]
+            arg_index += 1
+            rows = [row for row in rows if row["deployment_id"] == deployment_id]
+        if "customer_id = $" in query:
+            customer_id = args[arg_index]
+            arg_index += 1
+            rows = [row for row in rows if row["customer_id"] == customer_id]
+        limit = args[-1]
+        rows.sort(
+            key=lambda row: (row["accepted_at"], row["receipt_id"]),
+            reverse=True,
+        )
+        return rows[:limit]
 
 
 def test_signed_submission_verifies_without_serializing_secret() -> None:
@@ -159,6 +187,35 @@ async def test_intake_store_records_only_sanitized_receipt_metadata() -> None:
 
 
 @pytest.mark.asyncio
+async def test_intake_store_lists_bounded_sanitized_receipt_metadata() -> None:
+    store = InMemoryByocEvidencePackageIntakeStore()
+    await store.put(
+        _request(nonce="nonce-intake-contract-list-001"),
+        accepted_at=datetime(2026, 6, 26, 12, 30, tzinfo=UTC),
+    )
+    latest_receipt = await store.put(
+        _request(nonce="nonce-intake-contract-list-002"),
+        accepted_at=datetime(2026, 6, 26, 12, 35, tzinfo=UTC),
+    )
+
+    page = await store.list_receipts(
+        ByocEvidencePackageReceiptQuery(
+            deployment_id=PACKAGE.deployment_id,
+            customer_id=PACKAGE.customer_id,
+            limit=1,
+        )
+    )
+
+    assert page.schema_version == "fyralis.byoc.evidence_package_receipt_list.v1"
+    assert page.result_count == 1
+    assert page.items[0].receipt == latest_receipt
+    rendered = page.model_dump_json()
+    assert "source_artifacts" not in rendered
+    assert "evidence_ledger" not in rendered
+    assert "gateway.customer.internal" not in rendered
+
+
+@pytest.mark.asyncio
 async def test_postgres_intake_store_writes_only_scalar_receipt_metadata() -> None:
     pool = _FakeReceiptPool()
     store = PostgresByocEvidencePackageIntakeStore(pool)
@@ -180,6 +237,105 @@ async def test_postgres_intake_store_writes_only_scalar_receipt_metadata() -> No
     assert "raw_report" not in flattened_args
 
 
+@pytest.mark.asyncio
+async def test_postgres_intake_store_lists_only_scalar_receipt_metadata() -> None:
+    pool = _FakeReceiptPool()
+    store = PostgresByocEvidencePackageIntakeStore(pool)
+    await store.put(
+        _request(nonce="nonce-intake-contract-pg-list-001"),
+        accepted_at=datetime(2026, 6, 26, 12, 30, tzinfo=UTC),
+    )
+    latest_receipt = await store.put(
+        _request(nonce="nonce-intake-contract-pg-list-002"),
+        accepted_at=datetime(2026, 6, 26, 12, 35, tzinfo=UTC),
+    )
+
+    page = await store.list_receipts(
+        ByocEvidencePackageReceiptQuery(
+            deployment_id=PACKAGE.deployment_id,
+            customer_id=PACKAGE.customer_id,
+            limit=1,
+        )
+    )
+
+    assert page.result_count == 1
+    assert page.items[0].receipt == latest_receipt
+    flattened_args = json.dumps([str(arg) for _, args in pool.calls for arg in args])
+    assert "fyralis.byoc.evidence_package.v1" not in flattened_args
+    assert "source_artifacts" not in flattened_args
+    assert "raw_report" not in flattened_args
+
+
+def test_receipt_query_requires_deployment_or_customer_bound() -> None:
+    with pytest.raises(ValidationError, match="deployment_id or customer_id"):
+        ByocEvidencePackageReceiptQuery()
+
+
+def test_receipt_read_auth_headers_verify_without_serializing_secret() -> None:
+    headers = signed_evidence_receipt_read_headers(
+        method="GET",
+        path="/byoc/control-plane/evidence-packages",
+        query=f"deployment_id={PACKAGE.deployment_id}",
+        signing_secret=SIGNING_SECRET,
+        key_ref=SIGNING_KEY_REF,
+        nonce="nonce-intake-read-auth-001",
+        timestamp=SUBMITTED_AT,
+    )
+
+    assert SIGNING_SECRET not in json.dumps(headers)
+    assert validate_evidence_receipt_read_auth_headers(
+        headers,
+        method="GET",
+        path="/byoc/control-plane/evidence-packages",
+        query=f"deployment_id={PACKAGE.deployment_id}",
+        signing_secret=SIGNING_SECRET,
+        expected_key_ref=SIGNING_KEY_REF,
+        now=SUBMITTED_AT,
+    ) == []
+
+
+def test_receipt_read_auth_rejects_bad_signature_or_stale_timestamp() -> None:
+    headers = signed_evidence_receipt_read_headers(
+        method="GET",
+        path="/byoc/control-plane/evidence-packages",
+        query=f"deployment_id={PACKAGE.deployment_id}",
+        signing_secret=SIGNING_SECRET,
+        key_ref=SIGNING_KEY_REF,
+        nonce="nonce-intake-read-auth-002",
+        timestamp=SUBMITTED_AT,
+    )
+
+    bad_signature = {
+        **headers,
+        "x-fyralis-byoc-read-signature": "0" * 64,
+    }
+    bad_signature_violations = validate_evidence_receipt_read_auth_headers(
+        bad_signature,
+        method="GET",
+        path="/byoc/control-plane/evidence-packages",
+        query=f"deployment_id={PACKAGE.deployment_id}",
+        signing_secret=SIGNING_SECRET,
+        expected_key_ref=SIGNING_KEY_REF,
+        now=SUBMITTED_AT,
+    )
+    assert [violation.code for violation in bad_signature_violations] == [
+        "invalid_signature"
+    ]
+
+    assert "stale_read_auth" in {
+        violation.code
+        for violation in validate_evidence_receipt_read_auth_headers(
+            headers,
+            method="GET",
+            path="/byoc/control-plane/evidence-packages",
+            query=f"deployment_id={PACKAGE.deployment_id}",
+            signing_secret=SIGNING_SECRET,
+            expected_key_ref=SIGNING_KEY_REF,
+            now=datetime(2026, 6, 26, 12, 40, 1, tzinfo=UTC),
+        )
+    }
+
+
 def test_intake_schema_bundle_is_exportable() -> None:
     bundle = model_json_schema_bundle()
 
@@ -188,4 +344,7 @@ def test_intake_schema_bundle_is_exportable() -> None:
     )
     assert bundle["receipt"]["properties"]["schema_version"]["const"] == (
         "fyralis.byoc.evidence_package_receipt.v1"
+    )
+    assert bundle["receipt_list"]["properties"]["schema_version"]["const"] == (
+        "fyralis.byoc.evidence_package_receipt_list.v1"
     )
