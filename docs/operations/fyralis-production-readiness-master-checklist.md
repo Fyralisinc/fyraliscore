@@ -97,6 +97,9 @@ Every checklist item is done only when:
 - [x] BYOC deployment evidence has a checked-in sanitized ledger contract,
   generator/checker CLI, aggregate-only evidence summaries, and readiness gate
   covering plan, bootstrap-runner, and offline post-deploy validation results.
+- [x] BYOC live post-deploy reports can be imported into the evidence ledger
+  through a sanitized summary path that drops report details, URLs, endpoint
+  strings, metrics, credentials, payloads, prompts, logs, embeddings, and PII.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

@@ -53,12 +53,29 @@ EvidenceKind = Literal[
     "post_deploy_validation",
 ]
 EvidenceStatus = Literal["pass", "fail", "skipped"]
-EvidenceSourceType = Literal["file", "local_runner", "offline_validator"]
+EvidenceSourceType = Literal[
+    "file",
+    "local_runner",
+    "offline_validator",
+    "post_deploy_report_file",
+]
 _DEPLOYMENT_ID_RE = re.compile(r"^dep_[A-Za-z0-9][A-Za-z0-9_-]{5,79}$")
 _CUSTOMER_ID_RE = re.compile(r"^cus_[A-Za-z0-9][A-Za-z0-9_-]{5,79}$")
 _SAFE_REF_RE = re.compile(r"^(?:generated:[A-Za-z0-9_.:-]+|[A-Za-z0-9_./+=,-]+)$")
 _SAFE_CODE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_FORBIDDEN_IMPORTED_CHECK_NAME_FRAGMENTS = frozenset(
+    {
+        "body",
+        "credential",
+        "email",
+        "payload",
+        "prompt",
+        "secret",
+        "token",
+        "url",
+    }
+)
 _REQUIRED_EVIDENCE_KINDS: frozenset[EvidenceKind] = frozenset(
     {"bootstrap_plan", "bootstrap_runner", "post_deploy_validation"}
 )
@@ -67,6 +84,54 @@ _BLOCKING_STATUSES = {"fail"}
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class _ImportedModel(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+
+class ByocImportedValidationCheck(_ImportedModel):
+    name: str
+    status: EvidenceStatus
+    required: bool
+
+    @field_validator("name")
+    @classmethod
+    def _name_must_be_bounded(cls, value: str) -> str:
+        value = value.strip()
+        lowered = value.lower()
+        if not value or not _SAFE_CODE_RE.match(value):
+            raise ValueError("imported validation check name must be bounded")
+        if any(
+            fragment in lowered
+            for fragment in _FORBIDDEN_IMPORTED_CHECK_NAME_FRAGMENTS
+        ):
+            raise ValueError("imported validation check name must not describe data")
+        return value
+
+
+class ByocImportedValidationReport(_ImportedModel):
+    status: EvidenceStatus
+    required_checks_passed: bool
+    checks: tuple[ByocImportedValidationCheck, ...]
+
+    @field_validator("checks")
+    @classmethod
+    def _checks_must_be_present(
+        cls,
+        value: tuple[ByocImportedValidationCheck, ...],
+    ) -> tuple[ByocImportedValidationCheck, ...]:
+        if not value:
+            raise ValueError("imported validation report must include checks")
+        return value
+
+    @model_validator(mode="after")
+    def _status_must_match_required_checks(self) -> "ByocImportedValidationReport":
+        if self.required_checks_passed and self.status == "fail":
+            raise ValueError("passing required checks cannot have fail status")
+        if not self.required_checks_passed and self.status == "pass":
+            raise ValueError("failed required checks cannot have pass status")
+        return self
 
 
 class ByocEvidencePrivacyContract(_StrictModel):
@@ -252,6 +317,7 @@ def generate_evidence_ledger(
     permissions_manifest_path: Path,
     bootstrap_bundle_path: Path,
     env_path: Path | None = None,
+    post_deploy_report_path: Path | None = None,
     generated_at: datetime | None = None,
     repo_root: Path | None = None,
 ) -> ByocDeploymentEvidenceLedger:
@@ -288,17 +354,17 @@ def generate_evidence_ledger(
             env_path=env_path,
         )
     )
-    validation_report = run_byoc_post_deploy_validation(
-        ByocValidationInputs(
-            manifest_path=dataplane_manifest_path,
-            env_path=env_path,
-            require_live=False,
-        )
+    validation_entry = _post_deploy_validation_entry(
+        dataplane_manifest_path=dataplane_manifest_path,
+        env_path=env_path,
+        post_deploy_report_path=post_deploy_report_path,
+        observed_at=observed_at,
+        repo_root=repo_root,
     )
     evidence = (
         plan_entry,
         _runner_evidence_entry(runner_report, observed_at=observed_at),
-        _validation_evidence_entry(validation_report, observed_at=observed_at),
+        validation_entry,
     )
     failed = any(entry.status in _BLOCKING_STATUSES for entry in evidence)
     return ByocDeploymentEvidenceLedger(
@@ -316,6 +382,54 @@ def generate_evidence_ledger(
         required_evidence_passed=not failed,
         privacy=ByocEvidencePrivacyContract(),
         evidence=evidence,
+    )
+
+
+def load_post_deploy_validation_report(path: Path) -> ByocImportedValidationReport:
+    data = _load_mapping(path)
+    if not isinstance(data, dict):
+        raise ValueError("BYOC post-deploy validation report must be a JSON/YAML object")
+    return ByocImportedValidationReport.model_validate(data)
+
+
+def _post_deploy_validation_entry(
+    *,
+    dataplane_manifest_path: Path,
+    env_path: Path | None,
+    post_deploy_report_path: Path | None,
+    observed_at: datetime,
+    repo_root: Path,
+) -> ByocEvidenceEntry:
+    if post_deploy_report_path is not None:
+        imported = load_post_deploy_validation_report(post_deploy_report_path)
+        return _validation_evidence_entry(
+            imported,
+            observed_at=observed_at,
+            source=ByocEvidenceSource(
+                type="post_deploy_report_file",
+                ref=_evidence_source_ref(
+                    post_deploy_report_path,
+                    repo_root=repo_root,
+                    external_ref="generated:external_post_deploy_report",
+                ),
+                digest=_validation_summary_digest(imported),
+            ),
+        )
+    report = run_byoc_post_deploy_validation(
+        ByocValidationInputs(
+            manifest_path=dataplane_manifest_path,
+            env_path=env_path,
+            require_live=False,
+        )
+    )
+    return _validation_evidence_entry(
+        report,
+        observed_at=observed_at,
+        source=ByocEvidenceSource(
+            type="offline_validator",
+            ref="generated:byoc_post_deploy_validation",
+            digest=_validation_summary_digest(report),
+        ),
     )
 
 
@@ -486,9 +600,10 @@ def _runner_evidence_entry(
 
 
 def _validation_evidence_entry(
-    report: ByocValidationReport,
+    report: ByocValidationReport | ByocImportedValidationReport,
     *,
     observed_at: datetime,
+    source: ByocEvidenceSource,
 ) -> ByocEvidenceEntry:
     summary = _check_summary(report.checks)
     failed_codes = _failed_check_codes(report.checks)
@@ -498,19 +613,24 @@ def _validation_evidence_entry(
         status=status,
         required_checks_passed=report.required_checks_passed,
         observed_at=observed_at,
-        source=ByocEvidenceSource(
-            type="offline_validator",
-            ref="generated:byoc_post_deploy_validation",
-            digest=_summary_digest(
-                {
-                    "checks": summary.model_dump(mode="json"),
-                    "failed_check_codes": failed_codes,
-                    "status": status,
-                }
-            ),
-        ),
+        source=source,
         check_summary=summary,
         failed_check_codes=failed_codes,
+    )
+
+
+def _validation_summary_digest(
+    report: ByocValidationReport | ByocImportedValidationReport,
+) -> str:
+    summary = _check_summary(report.checks)
+    failed_codes = _failed_check_codes(report.checks)
+    status: EvidenceStatus = "pass" if report.required_checks_passed else "fail"
+    return _summary_digest(
+        {
+            "checks": summary.model_dump(mode="json"),
+            "failed_check_codes": failed_codes,
+            "status": status,
+        }
     )
 
 
@@ -597,6 +717,13 @@ def _repo_relative_path(path: Path, *, repo_root: Path) -> Path:
         return path
 
 
+def _evidence_source_ref(path: Path, *, repo_root: Path, external_ref: str) -> str:
+    rel = _repo_relative_path(path, repo_root=repo_root)
+    if rel.is_absolute() or ".." in rel.parts:
+        return external_ref
+    return rel.as_posix()
+
+
 def _resolve_repo_path(path: Path, *, repo_root: Path) -> Path:
     return path if path.is_absolute() else repo_root / path
 
@@ -638,9 +765,12 @@ __all__ = [
     "ByocEvidenceLedgerViolation",
     "ByocEvidencePrivacyContract",
     "ByocEvidenceSource",
+    "ByocImportedValidationCheck",
+    "ByocImportedValidationReport",
     "byoc_evidence_ledger_json_schema",
     "generate_evidence_ledger",
     "load_byoc_evidence_ledger",
+    "load_post_deploy_validation_report",
     "render_validation_errors",
     "validate_evidence_ledger_contract",
 ]

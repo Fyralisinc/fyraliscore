@@ -119,7 +119,10 @@ Repo-owned artifacts for this first slice:
   evidence ledger. It records only deployment identity, pass/fail status,
   aggregate check counts, bounded failure codes, operation counts, and
   sanitized digests from the plan, bootstrap-runner report, and offline
-  post-deploy validator.
+  post-deploy validator. When a customer-side live post-deploy report is
+  available, pass it with `--post-deploy-report`; the ledger imports only
+  status, required flags, bounded check names, and counts, while discarding
+  report details, endpoint strings, URLs, and metrics.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -1300,6 +1303,9 @@ Minimum gates before first enterprise customer:
 - Keep the evidence ledger contract-backed and sanitized; it may leave the data
   plane as deployment metadata, but raw report details, commands, artifact refs,
   credentials, payloads, prompts, logs, embeddings, and PII must not.
+- Summarize customer-side live post-deploy reports through
+  `scripts/generate_byoc_evidence_ledger.py --post-deploy-report`; never attach
+  the raw validator JSON to a control-plane or support handoff artifact.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment and heartbeat schema contract-backed;

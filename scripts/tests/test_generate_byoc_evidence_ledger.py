@@ -12,6 +12,29 @@ ROOT = Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "deploy/byoc/evidence-ledger.example.yaml"
 
 
+def _live_report(path: Path, *, failed: bool = False) -> Path:
+    payload = {
+        "status": "fail" if failed else "pass",
+        "required_checks_passed": not failed,
+        "checks": [
+            {
+                "name": "gateway_health",
+                "status": "fail" if failed else "pass",
+                "required": True,
+                "details": "https://gateway.customer.internal token=secret",
+            },
+            {
+                "name": "database_rls_safety",
+                "status": "pass",
+                "required": True,
+                "details": "postgresql://user:password@db.internal/fyralis",
+            },
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
 def test_generate_byoc_evidence_ledger_yaml_output(capsys) -> None:
     code = main([
         "--generated-at",
@@ -41,6 +64,52 @@ def test_generate_byoc_evidence_ledger_json_output(capsys) -> None:
     assert code == 0
     assert payload["export_scope"] == "sanitized_metadata_only"
     assert payload["evidence"][1]["kind"] == "bootstrap_runner"
+
+
+def test_generate_byoc_evidence_ledger_imports_live_report_safely(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    report = _live_report(tmp_path / "post-deploy-report.json")
+
+    code = main([
+        "--json",
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--post-deploy-report",
+        str(report),
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    rendered = json.dumps(payload)
+    validation = payload["evidence"][2]
+    assert code == 0
+    assert validation["source"]["type"] == "post_deploy_report_file"
+    assert validation["check_summary"]["total"] == 2
+    assert "gateway.customer.internal" not in rendered
+    assert "postgresql://user:password" not in rendered
+
+
+def test_generate_byoc_evidence_ledger_reports_live_failure(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    report = _live_report(tmp_path / "post-deploy-report.json", failed=True)
+
+    code = main([
+        "--json",
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--post-deploy-report",
+        str(report),
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 0
+    assert payload["overall_status"] == "fail"
+    assert payload["evidence"][2]["failed_check_codes"] == ["gateway_health"]
 
 
 def test_generate_byoc_evidence_ledger_prints_schema(capsys) -> None:

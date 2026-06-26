@@ -23,12 +23,14 @@ signed bundle manifest used by the bootstrap runner, run
 `scripts/generate_byoc_bootstrap_plan.py --check-plan` against the dry-run plan
 used by the customer-side bootstrap runner, run
 `scripts/run_byoc_bootstrap_runner.py --json` to archive a sanitized local
-evidence report with no raw command output or artifact refs, run
-`scripts/generate_byoc_evidence_ledger.py --check-ledger <ledger>` to verify
-the sanitized deployment evidence ledger, then run
+evidence report with no raw command output or artifact refs, then run
 `scripts/run_byoc_post_deploy_validation.py --require-live` from inside the
 customer data plane with the local gateway URL, worker health URLs, production
-database DSN, broker endpoint, and object-store endpoint. Source onboarding
+database DSN, broker endpoint, and object-store endpoint. If the live validator
+writes a JSON report, summarize it with
+`scripts/generate_byoc_evidence_ledger.py --post-deploy-report <report.json>`;
+then run `scripts/generate_byoc_evidence_ledger.py --check-ledger <ledger>` to
+verify the ledger contract. Source onboarding
 should remain paused until required checks pass and the data-plane agent has
 successfully completed the `fyralis.byoc.agent.enrollment.v1` registration
 contract and submitted a privacy-safe `fyralis.byoc.agent.heartbeat.v1`

@@ -58,6 +58,14 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Optional env file for offline post-deploy validation evidence.",
     )
     parser.add_argument(
+        "--post-deploy-report",
+        type=Path,
+        help=(
+            "Optional customer-side post-deploy validator report to summarize "
+            "without copying report details."
+        ),
+    )
+    parser.add_argument(
         "--check-ledger",
         type=Path,
         help="Existing evidence ledger to validate and compare to generated output.",
@@ -112,6 +120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             permissions_manifest_path=args.permissions_manifest,
             bootstrap_bundle_path=args.bootstrap_bundle,
             env_path=args.env_file,
+            post_deploy_report_path=args.post_deploy_report,
             generated_at=generated_at,
             repo_root=args.repo_root.resolve(),
         )
