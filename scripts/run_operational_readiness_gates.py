@@ -519,6 +519,32 @@ def _byoc_permissions_contract_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_bootstrap_bundle_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_bootstrap_bundle",
+        _python_command(
+            "scripts/verify_byoc_bootstrap_bundle.py",
+            "deploy/byoc/bootstrap-bundle.example.yaml",
+            "--dataplane-manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--permissions-manifest",
+            "deploy/byoc/permissions.example.yaml",
+            "--verify-local-files",
+        ),
+        details=(
+            "Checked-in BYOC bootstrap bundle pins signed image/chart/IaC "
+            "artifacts, matches deployment contracts, and verifies local hashes."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        },
+    )
+
+
 def _byoc_post_deploy_validation_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_post_deploy_validation",
@@ -575,6 +601,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _production_env_contract_gate(args),
         _byoc_dataplane_contract_gate(args),
         _byoc_permissions_contract_gate(args),
+        _byoc_bootstrap_bundle_gate(args),
         _byoc_post_deploy_validation_gate(args),
         _github_required_checks_gate(args),
         _feedback_gap_gate(args),

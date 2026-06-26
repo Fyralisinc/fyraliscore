@@ -88,6 +88,17 @@ Repo-owned artifacts for this first slice:
 - `scripts/validate_byoc_permissions_manifest.py` validates the permission
   manifest against the data-plane manifest and optional AWS IAM skeleton, and
   prints JSON schemas for future IaC/control-plane generators.
+- `services/platform/runtime/byoc_bootstrap_bundle.py` defines the signed
+  bootstrap bundle contract. It requires digest-pinned image/chart/IaC/SBOM
+  artifacts, Sigstore bundle metadata, matching signing identity, deployment
+  manifest alignment, and optional local SHA-256 verification for checked-in
+  IaC files.
+- `deploy/byoc/bootstrap-bundle.example.yaml` is the credential-free example
+  bundle tying the data-plane manifest, permission manifest, agent image,
+  runtime images, Helm chart, AWS IAM skeleton, and SBOM artifacts together.
+- `scripts/verify_byoc_bootstrap_bundle.py` verifies the bundle locally and can
+  print the cosign verification commands a customer-side bootstrap runner must
+  execute before applying cloud resources.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -800,6 +811,8 @@ Validation sequence:
    - Produce/consume test event on every per-source topic.
    - Verify DLQ topic and DLQ writer.
 6. Application checks
+   - Verify the signed bootstrap bundle manifest and all local artifact hashes.
+   - Verify bootstrap runner cosign checks completed before any apply step.
    - `/healthz`, `/readyz`, `/metrics` for gateway and workers.
    - Auth session minting disabled without bootstrap secret.
    - Debug panels disabled.
@@ -1252,6 +1265,8 @@ Minimum gates before first enterprise customer:
 - Validate the checked-in BYOC manifest in operational readiness gates.
 - Keep the customer-cloud permission manifest and AWS IAM skeleton
   contract-backed before generating production Terraform/CloudFormation.
+- Keep the bootstrap bundle manifest contract-backed so images, Helm charts,
+  IaC templates, SBOMs, and signatures are verified before cloud apply.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment and heartbeat schema contract-backed;

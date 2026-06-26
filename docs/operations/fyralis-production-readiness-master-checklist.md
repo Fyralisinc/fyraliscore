@@ -85,6 +85,9 @@ Every checklist item is done only when:
   skeleton, validator, and readiness gate that reject broad admin policies,
   unbounded `iam:PassRole`, mutating control-plane roles, missing boundaries,
   and control-plane access to customer data or secret material.
+- [x] BYOC bootstrap artifacts have a checked-in signed-bundle manifest,
+  verifier CLI, local hash checks for checked-in IaC files, digest-pinned
+  image/chart/SBOM refs, and a readiness gate before cloud apply work begins.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

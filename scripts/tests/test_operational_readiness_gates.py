@@ -8,6 +8,7 @@ from scripts.run_operational_readiness_gates import (
     GateResult,
     MANUAL_REQUIRED,
     PASS,
+    _byoc_bootstrap_bundle_gate,
     _byoc_dataplane_contract_gate,
     _byoc_permissions_contract_gate,
     _byoc_post_deploy_validation_gate,
@@ -50,6 +51,22 @@ def test_byoc_permissions_contract_gate_passes_for_checked_in_manifest() -> None
         "manifest": "deploy/byoc/permissions.example.yaml",
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
         "aws_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+    }
+
+
+def test_byoc_bootstrap_bundle_gate_passes_for_checked_in_bundle() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_bootstrap_bundle_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/verify_byoc_bootstrap_bundle.py" in result.command
+    assert "--verify-local-files" in result.command
+    assert result.artifacts == {
+        "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
     }
 
 

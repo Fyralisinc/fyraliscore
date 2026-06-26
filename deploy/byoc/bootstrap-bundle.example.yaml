@@ -1,0 +1,95 @@
+schema_version: fyralis.byoc.bootstrap_bundle.v1
+deployment_id: dep_example01
+customer_id: cus_example01
+environment: prod
+cloud_provider: aws
+region: us-east-1
+artifact_revision: 2026.06.26-1
+release_channel: production
+source_commit: 0123456789abcdef0123456789abcdef01234567
+created_at: "2026-06-26T12:00:00Z"
+signing_certificate_identity: https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production
+signing_oidc_issuer: https://token.actions.githubusercontent.com
+requires_cosign_min_version: 2.4.0
+
+artifacts:
+  - role: gateway_image
+    kind: container_image
+    ref: ghcr.io/fyralisinc/fyraliscore-gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+    size_bytes: 268435456
+    signature:
+      provider: sigstore-keyless
+      bundle_ref: ghcr.io/fyralisinc/fyraliscore-gateway.sigstore
+      certificate_identity: https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production
+      oidc_issuer: https://token.actions.githubusercontent.com
+      transparency_log_included: true
+
+  - role: worker_image
+    kind: container_image
+    ref: ghcr.io/fyralisinc/fyraliscore-worker@sha256:2222222222222222222222222222222222222222222222222222222222222222
+    digest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+    size_bytes: 268435456
+    signature:
+      provider: sigstore-keyless
+      bundle_ref: ghcr.io/fyralisinc/fyraliscore-worker.sigstore
+      certificate_identity: https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production
+      oidc_issuer: https://token.actions.githubusercontent.com
+      transparency_log_included: true
+
+  - role: data_plane_agent_image
+    kind: container_image
+    ref: ghcr.io/fyralisinc/fyralis-byoc-agent@sha256:3333333333333333333333333333333333333333333333333333333333333333
+    digest: sha256:3333333333333333333333333333333333333333333333333333333333333333
+    size_bytes: 134217728
+    signature:
+      provider: sigstore-keyless
+      bundle_ref: ghcr.io/fyralisinc/fyralis-byoc-agent.sigstore
+      certificate_identity: https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production
+      oidc_issuer: https://token.actions.githubusercontent.com
+      transparency_log_included: true
+
+  - role: helm_chart
+    kind: helm_chart
+    ref: oci://ghcr.io/fyralisinc/charts/fyralis-byoc@sha256:4444444444444444444444444444444444444444444444444444444444444444
+    digest: sha256:4444444444444444444444444444444444444444444444444444444444444444
+    signature:
+      provider: sigstore-keyless
+      bundle_ref: oci://ghcr.io/fyralisinc/charts/fyralis-byoc.sigstore
+      certificate_identity: https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production
+      oidc_issuer: https://token.actions.githubusercontent.com
+      transparency_log_included: true
+
+  - role: iam_bootstrap_template
+    kind: cloudformation_template
+    ref: deploy/byoc/aws/iam.bootstrap.template.yaml
+    digest: sha256:85472394a36b43bb0273b43c292be2ce052422c09986512b77c6f77a56ad8fff
+    local_path: deploy/byoc/aws/iam.bootstrap.template.yaml
+    signature:
+      provider: sigstore-keyless
+      bundle_ref: deploy/byoc/aws/iam.bootstrap.template.yaml.sigstore
+      certificate_identity: https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production
+      oidc_issuer: https://token.actions.githubusercontent.com
+      transparency_log_included: true
+
+  - role: source_sbom
+    kind: sbom
+    ref: ghcr.io/fyralisinc/fyraliscore-source-sbom@sha256:5555555555555555555555555555555555555555555555555555555555555555
+    digest: sha256:5555555555555555555555555555555555555555555555555555555555555555
+    signature:
+      provider: sigstore-keyless
+      bundle_ref: ghcr.io/fyralisinc/fyraliscore-source-sbom.sigstore
+      certificate_identity: https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production
+      oidc_issuer: https://token.actions.githubusercontent.com
+      transparency_log_included: true
+
+  - role: image_sbom
+    kind: sbom
+    ref: ghcr.io/fyralisinc/fyraliscore-image-sbom@sha256:6666666666666666666666666666666666666666666666666666666666666666
+    digest: sha256:6666666666666666666666666666666666666666666666666666666666666666
+    signature:
+      provider: sigstore-keyless
+      bundle_ref: ghcr.io/fyralisinc/fyraliscore-image-sbom.sigstore
+      certificate_identity: https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production
+      oidc_issuer: https://token.actions.githubusercontent.com
+      transparency_log_included: true
