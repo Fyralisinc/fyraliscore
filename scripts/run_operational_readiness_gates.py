@@ -679,8 +679,8 @@ def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
         ],
         details=(
             "BYOC control-plane intake accepts signed agent enrollment, "
-            "privacy-safe heartbeat, and signed sanitized evidence packages "
-            "while storing metadata only."
+            "privacy-safe heartbeat, signed desired-state polling, and signed "
+            "sanitized evidence packages while storing metadata only."
         ),
         args=args,
         timeout_s=min(args.command_timeout_s, 60),

@@ -19,11 +19,14 @@ from services.platform.runtime.byoc_agent_contract import (
     ByocAgentHeartbeatResponse,
 )
 from services.platform.runtime.byoc_agent_control_plane import (
+    ByocAgentDesiredStatePollRequest,
+    ByocAgentDesiredStateResponse,
     ByocAgentRegistryStore,
     InMemoryByocAgentRegistryStore,
     PostgresByocAgentRegistryStore,
     validate_agent_enrollment_request,
     validate_agent_heartbeat_request,
+    validate_desired_state_poll_request,
 )
 from services.platform.runtime.byoc_contract import CloudProvider, TelemetryMode
 
@@ -123,6 +126,49 @@ def build_byoc_agent_router(
         response = await (store or _store_from_state(request)).heartbeat(
             heartbeat,
             desired_revision=heartbeat.artifact_revision,
+            poll_after_seconds=poll_after_seconds,
+        )
+        if response is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"errors": ["agent_id: agent_not_enrolled"]},
+            )
+        return response
+
+    @router.post("/desired-state")
+    async def poll_desired_state(
+        request: Request,
+        poll: ByocAgentDesiredStatePollRequest,
+    ) -> ByocAgentDesiredStateResponse:
+        resolved_token = await _resolve_install_token(
+            request,
+            key_ref=poll.signature.key_ref,
+            install_token=install_token,
+            install_token_secret_ref=install_token_secret_ref,
+        )
+        expected = _expected_identity_from_state(
+            request,
+            telemetry_contract=telemetry_contract,
+        )
+        violations = validate_desired_state_poll_request(
+            poll,
+            install_token=resolved_token.secret,
+            expected_install_token_secret_ref=resolved_token.key_ref,
+            expected_deployment_id=expected.deployment_id,
+            expected_customer_id=expected.customer_id,
+        )
+        if violations:
+            status_code = (
+                status.HTTP_403_FORBIDDEN
+                if any("signature" in violation.path for violation in violations)
+                else status.HTTP_400_BAD_REQUEST
+            )
+            raise HTTPException(
+                status_code=status_code,
+                detail={"errors": [violation.render() for violation in violations]},
+            )
+        response = await (store or _store_from_state(request)).desired_state(
+            poll,
             poll_after_seconds=poll_after_seconds,
         )
         if response is None:

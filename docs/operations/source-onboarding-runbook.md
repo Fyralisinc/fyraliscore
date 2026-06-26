@@ -70,7 +70,11 @@ Where the hosted control-plane agent endpoint is enabled, enrollment uses
 payload. Production enrollment resolves the request `key_ref` through
 `FYRALIS_DATA_PLANE_AGENT_INSTALL_TOKEN_SECRET_REF`; raw install tokens are
 local/test only. The backend persists only sanitized registration metadata and
-latest heartbeat aggregate counts.
+latest heartbeat aggregate counts. Agents pull revision/config intent through
+`POST /byoc/agent/desired-state` with the signed
+`fyralis.byoc.agent.desired_state_poll.v1` request; the response contains only
+desired revision, rollout action, poll cadence, telemetry contract, and config
+epoch metadata.
 
 For local contract proof or customer handoff before live agent endpoint wiring,
 run the mock-backed probe from inside the customer data-plane context:

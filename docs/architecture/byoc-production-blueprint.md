@@ -86,14 +86,18 @@ Repo-owned artifacts for this first slice:
 - `services/platform/runtime/byoc_agent_control_plane.py`,
   `services/app/gateway/byoc_agent_keys.py`, and
   `services/app/gateway/byoc_agent_router.py` provide the first hosted agent
-  enrollment and heartbeat API. `POST /byoc/agent/enroll` verifies the HMAC
-  install-token proof after resolving the request `key_ref` through
+  enrollment, heartbeat, and desired-state polling API. `POST
+  /byoc/agent/enroll` verifies the HMAC install-token proof after resolving
+  the request `key_ref` through
   `FYRALIS_DATA_PLANE_AGENT_INSTALL_TOKEN_SECRET_REF`; `POST
   /byoc/agent/heartbeat` accepts only enrolled agents and persists latest
   heartbeat aggregate counts plus bounded status codes in
-  `byoc_agent_registrations`. The route stores no request bodies, signature
-  values, raw tokens, mTLS material, logs, payloads, prompts, endpoint URLs, or
-  PII. Production mTLS issuance and fleet reconciliation remain deferred.
+  `byoc_agent_registrations`; `POST /byoc/agent/desired-state` requires a
+  signed poll request from an enrolled agent and returns only desired revision,
+  rollout action, poll cadence, telemetry contract, and config epoch metadata.
+  The route stores no request bodies, signature values, raw tokens, mTLS
+  material, logs, payloads, prompts, endpoint URLs, config bodies, or PII.
+  Production mTLS issuance and fleet reconciliation remain deferred.
 - `services/platform/runtime/byoc_permissions.py` defines the backend-owned
   customer-cloud permission contract. It validates role boundaries, explicit
   AWS actions, scoped resources, `iam:PassRole` service constraints, no

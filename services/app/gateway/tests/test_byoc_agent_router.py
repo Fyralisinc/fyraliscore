@@ -19,6 +19,8 @@ from services.platform.runtime.byoc_agent_contract import (
 )
 from services.platform.runtime.byoc_agent_control_plane import (
     InMemoryByocAgentRegistryStore,
+    desired_state_poll_payload,
+    signed_desired_state_poll_request,
 )
 from services.platform.runtime.byoc_contract import load_byoc_manifest
 
@@ -133,6 +135,21 @@ def _heartbeat(sequence: int = 1):
     )
 
 
+def _desired_state_poll(*, install_token: str = INSTALL_TOKEN):
+    payload = desired_state_poll_payload(
+        deployment_id=MANIFEST.deployment_id,
+        customer_id=MANIFEST.customer_id,
+        agent_id=AGENT_ID,
+        agent_version=AGENT_VERSION,
+        artifact_revision=MANIFEST.artifact_revision,
+        install_token_secret_ref=INSTALL_TOKEN_REF,
+        nonce="nonce-agent-router-desired-001",
+        last_seen_desired_revision=MANIFEST.artifact_revision,
+        requested_at=datetime(2026, 6, 26, 12, 3, tzinfo=UTC),
+    )
+    return signed_desired_state_poll_request(payload, install_token=install_token)
+
+
 def _app(*, configured: bool = True) -> tuple[FastAPI, InMemoryByocAgentRegistryStore]:
     store = InMemoryByocAgentRegistryStore()
     app = FastAPI()
@@ -157,11 +174,22 @@ async def test_byoc_agent_router_accepts_enrollment_and_heartbeat() -> None:
             "/byoc/agent/heartbeat",
             json=_heartbeat().model_dump(mode="json"),
         )
+        desired_state_response = await client.post(
+            "/byoc/agent/desired-state",
+            json=_desired_state_poll().model_dump(mode="json"),
+        )
 
     assert enrollment_response.status_code == 200
     assert enrollment_response.json()["status"] == "accepted"
     assert heartbeat_response.status_code == 200
     assert heartbeat_response.json()["status"] == "accepted"
+    assert desired_state_response.status_code == 200
+    desired_state = desired_state_response.json()
+    assert desired_state["status"] == "accepted"
+    assert desired_state["rollout_action"] == "none"
+    assert desired_state["config_scope"] == "metadata_only"
+    assert INSTALL_TOKEN not in desired_state_response.text
+    assert "signature" not in desired_state_response.text.lower()
     assert len(store.records) == 1
     serialized_state = store.records[0].model_dump_json()
     assert INSTALL_TOKEN not in serialized_state
@@ -196,6 +224,40 @@ async def test_byoc_agent_router_rejects_heartbeat_before_enrollment() -> None:
 
     assert response.status_code == 403
     assert "agent_not_enrolled" in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_agent_router_rejects_desired_state_before_enrollment() -> None:
+    app, _ = _app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/agent/desired-state",
+            json=_desired_state_poll().model_dump(mode="json"),
+        )
+
+    assert response.status_code == 403
+    assert "agent_not_enrolled" in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_agent_router_rejects_bad_desired_state_signature() -> None:
+    app, _ = _app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/byoc/agent/enroll",
+            json=_enrollment().model_dump(mode="json"),
+        )
+        response = await client.post(
+            "/byoc/agent/desired-state",
+            json=_desired_state_poll(install_token="wrong-token").model_dump(
+                mode="json"
+            ),
+        )
+
+    assert response.status_code == 403
+    assert "invalid_signature" in response.text
 
 
 @pytest.mark.asyncio
@@ -302,9 +364,14 @@ async def test_byoc_agent_router_uses_postgres_store_from_gateway_deps() -> None
             "/byoc/agent/heartbeat",
             json=_heartbeat().model_dump(mode="json"),
         )
+        desired_state_response = await client.post(
+            "/byoc/agent/desired-state",
+            json=_desired_state_poll().model_dump(mode="json"),
+        )
 
     assert enrollment_response.status_code == 200
     assert heartbeat_response.status_code == 200
+    assert desired_state_response.status_code == 200
     flattened_args = " ".join(str(arg) for _, args in pool.calls for arg in args)
     assert INSTALL_TOKEN not in flattened_args
     assert "signature" not in flattened_args.lower()
