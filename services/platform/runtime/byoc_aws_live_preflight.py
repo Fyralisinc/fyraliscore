@@ -302,6 +302,13 @@ def render_aws_live_preflight_yaml(report: ByocAwsLivePreflightReport) -> str:
     return yaml.safe_dump(report.as_json(), sort_keys=False, width=1_000_000)
 
 
+def load_byoc_aws_live_preflight_report(path: Path) -> ByocAwsLivePreflightReport:
+    data = _load_mapping(path)
+    if not isinstance(data, dict):
+        raise ValueError("BYOC AWS live preflight report must be a JSON/YAML object")
+    return ByocAwsLivePreflightReport.model_validate(data)
+
+
 def _load_dataplane(
     path: Path,
 ) -> tuple[ByocDataPlaneManifest | None, list[ByocAwsLivePreflightCheck]]:
@@ -915,3 +922,14 @@ def _assert_report_is_sanitized(
     for value in sensitive_values:
         if value and value in rendered:
             raise ValueError("AWS live preflight report leaked sensitive AWS metadata")
+
+
+def _load_mapping(path: Path) -> Any:
+    raw = path.read_text(encoding="utf-8")
+    if path.suffix.lower() == ".json":
+        return json.loads(raw)
+    try:
+        import yaml  # type: ignore[import-untyped]
+    except ImportError as exc:  # pragma: no cover - dev/test installs PyYAML.
+        raise RuntimeError("YAML reports require PyYAML") from exc
+    return yaml.safe_load(raw)

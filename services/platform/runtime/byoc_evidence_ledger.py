@@ -21,6 +21,10 @@ from pydantic import (
     model_validator,
 )
 
+from services.platform.runtime.byoc_aws_live_preflight import (
+    ByocAwsLivePreflightReport,
+    load_byoc_aws_live_preflight_report,
+)
 from services.platform.runtime.byoc_bootstrap_bundle import (
     ByocBootstrapBundleManifest,
 )
@@ -56,6 +60,7 @@ from services.platform.runtime.byoc_validation import (
 
 EvidenceKind = Literal[
     "bootstrap_plan",
+    "aws_live_preflight",
     "terraform_plan_validation",
     "bootstrap_runner",
     "post_deploy_validation",
@@ -63,6 +68,7 @@ EvidenceKind = Literal[
 EvidenceStatus = Literal["pass", "fail", "skipped"]
 EvidenceSourceType = Literal[
     "file",
+    "aws_live_preflight_report_file",
     "local_runner",
     "local_terraform_validator",
     "terraform_plan_report_file",
@@ -441,6 +447,7 @@ def generate_evidence_ledger(
     iac_package_path: Path,
     iam_template_path: Path,
     env_path: Path | None = None,
+    aws_live_preflight_report_path: Path | None = None,
     terraform_validation_report_path: Path | None = None,
     post_deploy_report_path: Path | None = None,
     post_deploy_envelope_path: Path | None = None,
@@ -483,6 +490,12 @@ def generate_evidence_ledger(
         observed_at=observed_at,
         repo_root=repo_root,
     )
+    aws_live_entry = _aws_live_preflight_entry(
+        aws_live_preflight_report_path=aws_live_preflight_report_path,
+        manifest=dataplane_manifest,
+        observed_at=observed_at,
+        repo_root=repo_root,
+    )
     runner_report = run_byoc_bootstrap_runner(
         ByocBootstrapRunnerInputs(
             plan_path=plan_path,
@@ -505,12 +518,19 @@ def generate_evidence_ledger(
         observed_at=observed_at,
         repo_root=repo_root,
     )
-    evidence = (
+    evidence_entries: list[ByocEvidenceEntry] = [
         plan_entry,
         terraform_entry,
-        _runner_evidence_entry(runner_report, observed_at=observed_at),
-        validation_entry,
+    ]
+    if aws_live_entry is not None:
+        evidence_entries.append(aws_live_entry)
+    evidence_entries.extend(
+        [
+            _runner_evidence_entry(runner_report, observed_at=observed_at),
+            validation_entry,
+        ]
     )
+    evidence = tuple(evidence_entries)
     failed = any(entry.status in _BLOCKING_STATUSES for entry in evidence)
     return ByocDeploymentEvidenceLedger(
         schema_version="fyralis.byoc.evidence_ledger.v1",
@@ -824,6 +844,35 @@ def _terraform_plan_validation_entry(
     )
 
 
+def _aws_live_preflight_entry(
+    *,
+    aws_live_preflight_report_path: Path | None,
+    manifest: ByocDataPlaneManifest,
+    observed_at: datetime,
+    repo_root: Path,
+) -> ByocEvidenceEntry | None:
+    if aws_live_preflight_report_path is None:
+        return None
+    report = load_byoc_aws_live_preflight_report(aws_live_preflight_report_path)
+    violations = _aws_live_preflight_report_identity_violations(report, manifest)
+    if violations:
+        rendered = "; ".join(violation.render() for violation in violations)
+        raise ValueError(f"AWS live preflight report identity failed: {rendered}")
+    return _aws_live_preflight_evidence_entry(
+        report,
+        observed_at=observed_at,
+        source=ByocEvidenceSource(
+            type="aws_live_preflight_report_file",
+            ref=_evidence_source_ref(
+                aws_live_preflight_report_path,
+                repo_root=repo_root,
+                external_ref="generated:external_aws_live_preflight_report",
+            ),
+            digest=_aws_live_preflight_summary_digest(report),
+        ),
+    )
+
+
 def validate_evidence_ledger_contract(
     ledger: ByocDeploymentEvidenceLedger,
     *,
@@ -1025,6 +1074,41 @@ def _terraform_validation_evidence_entry(
     )
 
 
+def _aws_live_preflight_evidence_entry(
+    report: ByocAwsLivePreflightReport,
+    *,
+    observed_at: datetime,
+    source: ByocEvidenceSource,
+) -> ByocEvidenceEntry:
+    summary = _check_summary(report.checks)
+    failed_codes = _failed_check_codes(report.checks)
+    status: EvidenceStatus = "pass" if report.required_checks_passed else "fail"
+    return ByocEvidenceEntry(
+        kind="aws_live_preflight",
+        status=status,
+        required_checks_passed=report.required_checks_passed,
+        observed_at=observed_at,
+        source=source,
+        check_summary=summary,
+        failed_check_codes=failed_codes,
+        operation_counts={
+            "live_aws_api_call_executions": int(report.live_aws_api_calls_executed),
+            "readonly_api_probe_executions": int(
+                report.readonly_api_probe_executed
+            ),
+            "iam_policy_simulation_executions": int(
+                report.iam_policy_simulation_executed
+            ),
+            "checked_permission_evaluations": (
+                report.checked_permission_evaluation_count
+            ),
+            "denied_permission_evaluations": (
+                report.denied_permission_evaluation_count
+            ),
+        },
+    )
+
+
 def _validation_evidence_entry(
     report: ByocValidationReport | ByocImportedValidationReport,
     *,
@@ -1084,6 +1168,29 @@ def _terraform_validation_summary_digest(
             "terraform_plan_json_included": report.terraform_plan_json_included,
             "terraform_plan_executed": report.terraform_plan_executed,
             "terraform_validate_executed": report.terraform_validate_executed,
+        }
+    )
+
+
+def _aws_live_preflight_summary_digest(report: ByocAwsLivePreflightReport) -> str:
+    summary = _check_summary(report.checks)
+    failed_codes = _failed_check_codes(report.checks)
+    status: EvidenceStatus = "pass" if report.required_checks_passed else "fail"
+    return _summary_digest(
+        {
+            "checks": summary.model_dump(mode="json"),
+            "cloud_credentials_required": report.cloud_credentials_required,
+            "execution_mode": report.execution_mode,
+            "failed_check_codes": failed_codes,
+            "iam_policy_simulation_executed": (
+                report.iam_policy_simulation_executed
+            ),
+            "live_aws_api_calls_executed": report.live_aws_api_calls_executed,
+            "mutating_aws_api_calls_executed": (
+                report.mutating_aws_api_calls_executed
+            ),
+            "readonly_api_probe_executed": report.readonly_api_probe_executed,
+            "status": status,
         }
     )
 
@@ -1157,6 +1264,30 @@ def _terraform_report_identity_violations(
                     field,
                     "terraform_report_manifest_mismatch",
                     f"Terraform validation report {field} does not match manifest",
+                )
+            )
+    return violations
+
+
+def _aws_live_preflight_report_identity_violations(
+    report: ByocAwsLivePreflightReport,
+    manifest: ByocDataPlaneManifest,
+) -> list[ByocEvidenceLedgerViolation]:
+    violations: list[ByocEvidenceLedgerViolation] = []
+    for field in (
+        "deployment_id",
+        "customer_id",
+        "environment",
+        "cloud_provider",
+        "region",
+        "artifact_revision",
+    ):
+        if getattr(report, field) != getattr(manifest, field):
+            violations.append(
+                _violation(
+                    field,
+                    "aws_live_preflight_report_manifest_mismatch",
+                    f"AWS live preflight report {field} does not match manifest",
                 )
             )
     return violations

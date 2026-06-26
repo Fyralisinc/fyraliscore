@@ -128,8 +128,8 @@ Every checklist item is done only when:
   markers.
 - [x] BYOC deployment evidence has a checked-in sanitized ledger contract,
   generator/checker CLI, aggregate-only evidence summaries, and readiness gate
-  covering plan, Terraform scaffold validation, bootstrap-runner, and offline
-  post-deploy validation results.
+  covering plan, Terraform scaffold validation, optional AWS live-preflight
+  import, bootstrap-runner, and offline post-deploy validation results.
 - [x] BYOC live post-deploy reports can be imported into the evidence ledger
   through a sanitized summary path that drops report details, URLs, endpoint
   strings, metrics, credentials, payloads, prompts, logs, embeddings, and PII.

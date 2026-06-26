@@ -117,6 +117,7 @@ If the live validator writes a JSON report, set
 
 ```bash
 scripts/generate_byoc_evidence_ledger.py \
+  --aws-live-preflight-report <aws-live-preflight-report.json> \
   --terraform-validation-report <terraform-validation-report.json> \
   --post-deploy-report <report.json> \
   --post-deploy-envelope <envelope.json>

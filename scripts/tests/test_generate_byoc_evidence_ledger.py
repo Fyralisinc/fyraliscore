@@ -7,6 +7,10 @@ from pathlib import Path
 import yaml
 
 from scripts.generate_byoc_evidence_ledger import main
+from services.platform.runtime.byoc_aws_live_preflight import (
+    ByocAwsLivePreflightInputs,
+    run_byoc_aws_live_preflight,
+)
 from services.platform.runtime.byoc_contract import load_byoc_manifest
 from services.platform.runtime.byoc_evidence_ledger import (
     evidence_envelope_payload,
@@ -17,6 +21,8 @@ from services.platform.runtime.byoc_evidence_ledger import (
 ROOT = Path(__file__).resolve().parents[2]
 LEDGER = ROOT / "deploy/byoc/evidence-ledger.example.yaml"
 DATAPLANE = ROOT / "deploy/byoc/dataplane.example.yaml"
+PERMISSIONS = ROOT / "deploy/byoc/permissions.example.yaml"
+IAM_TEMPLATE = ROOT / "deploy/byoc/aws/iam.bootstrap.template.yaml"
 GENERATED_AT = datetime(2026, 6, 26, 12, 0, tzinfo=UTC)
 SIGNING_SECRET = "local-evidence-signing-secret"
 
@@ -59,6 +65,22 @@ def _envelope(path: Path, report_path: Path) -> Path:
         json.dumps(envelope.model_dump(mode="json"), indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    return path
+
+
+def _aws_live_preflight_report(path: Path, *, region: str | None = None) -> Path:
+    report = run_byoc_aws_live_preflight(
+        ByocAwsLivePreflightInputs(
+            dataplane_manifest_path=DATAPLANE,
+            permissions_manifest_path=PERMISSIONS,
+            iam_template_path=IAM_TEMPLATE,
+            skip_live_aws=True,
+        )
+    )
+    data = report.model_dump(mode="json")
+    if region is not None:
+        data["region"] = region
+    path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
     return path
 
 
@@ -170,6 +192,57 @@ def test_generate_byoc_evidence_ledger_verifies_signed_live_report(
     assert validation["source"]["type"] == "signed_post_deploy_report_file"
     assert validation["signature_verified"] is True
     assert validation["envelope_digest"].startswith("sha256:")
+
+
+def test_generate_byoc_evidence_ledger_imports_aws_live_preflight_safely(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    report = _aws_live_preflight_report(tmp_path / "aws-live-preflight.json")
+
+    code = main([
+        "--json",
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--env-file",
+        ".env.production.example",
+        "--aws-live-preflight-report",
+        str(report),
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    rendered = json.dumps(payload)
+    evidence = _evidence(payload, "aws_live_preflight")
+    assert code == 0
+    assert evidence["source"]["type"] == "aws_live_preflight_report_file"
+    assert evidence["check_summary"]["total"] > 0
+    assert evidence["operation_counts"]["live_aws_api_call_executions"] == 0
+    assert "123456789012" not in rendered
+    assert "arn:aws" not in rendered
+    assert "simulation_principal" not in rendered
+
+
+def test_generate_byoc_evidence_ledger_rejects_aws_live_identity_mismatch(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    report = _aws_live_preflight_report(
+        tmp_path / "aws-live-preflight.json",
+        region="us-west-2",
+    )
+
+    code = main([
+        "--json",
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--aws-live-preflight-report",
+        str(report),
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "AWS live preflight report identity failed" in captured.err
 
 
 def test_generate_byoc_evidence_ledger_rejects_missing_envelope_secret(

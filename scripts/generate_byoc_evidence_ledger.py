@@ -71,6 +71,15 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Optional env file for offline post-deploy validation evidence.",
     )
     parser.add_argument(
+        "--aws-live-preflight-report",
+        type=Path,
+        help=(
+            "Optional customer-side AWS live preflight report to summarize "
+            "without copying account IDs, ARNs, policy documents, command "
+            "output, credentials, or report details."
+        ),
+    )
+    parser.add_argument(
         "--terraform-validation-report",
         type=Path,
         help=(
@@ -164,6 +173,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             iac_package_path=args.iac_package,
             iam_template_path=args.iam_template,
             env_path=args.env_file,
+            aws_live_preflight_report_path=args.aws_live_preflight_report,
             terraform_validation_report_path=args.terraform_validation_report,
             post_deploy_report_path=args.post_deploy_report,
             post_deploy_envelope_path=args.post_deploy_envelope,

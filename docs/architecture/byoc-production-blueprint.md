@@ -233,14 +233,16 @@ Repo-owned artifacts for this first slice:
   evidence ledger. It records only deployment identity, pass/fail status,
   aggregate check counts, bounded failure codes, operation counts, and
   sanitized digests from the plan, Terraform scaffold validation report,
-  bootstrap-runner report, and offline post-deploy validator. When a
-  customer-side live post-deploy report is
-  available, pass it with `--post-deploy-report`. If a signed envelope is
-  supplied with `--post-deploy-envelope`, the ledger verifies deployment
-  identity, report digest, timestamp freshness, and HMAC signature before
-  import. The ledger imports only status, required flags, bounded check names,
-  and counts, while discarding report details, endpoint strings, URLs, and
-  metrics.
+  bootstrap-runner report, optional AWS live-preflight report, and offline
+  post-deploy validator. When a customer-side AWS live-preflight report is
+  available, pass it with `--aws-live-preflight-report`; the ledger verifies
+  deployment identity and imports only status, required flags, bounded check
+  names, and counts. When a customer-side live post-deploy report is available,
+  pass it with `--post-deploy-report`. If a signed envelope is supplied with
+  `--post-deploy-envelope`, the ledger verifies deployment identity, report
+  digest, timestamp freshness, and HMAC signature before import. The ledger
+  discards report details, account IDs, ARNs, endpoint strings, URLs, policy
+  documents, command output, credentials, and metrics.
 - `services/platform/runtime/byoc_evidence_package.py`,
   `scripts/generate_byoc_evidence_package.py`, and
   `deploy/byoc/evidence-package.example.yaml` define the sanitized customer
