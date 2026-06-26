@@ -61,6 +61,51 @@ async def test_agent_runner_enrolls_polls_and_heartbeats_for_bounded_iterations(
 
 
 @pytest.mark.asyncio
+async def test_agent_runner_builds_non_mutating_apply_plan_for_revision_change() -> None:
+    report = await run_byoc_agent_runner(
+        ByocAgentRunnerInputs(
+            manifest_path=MANIFEST_PATH,
+            install_token=INSTALL_TOKEN,
+            agent_id="agt_runner001",
+            agent_version="2026.06.26-test",
+            nonce_prefix="nonce-agent-runner-test",
+            iterations=1,
+            mock_desired_revision="2026.06.26-2",
+            mock_config_epoch=3,
+            requested_at=datetime(2026, 6, 26, 12, 0, tzinfo=UTC),
+            sent_at=datetime(2026, 6, 26, 12, 1, tzinfo=UTC),
+        )
+    )
+
+    payload = json.loads(render_agent_runner_report_json(report))
+    serialized = json.dumps(payload, sort_keys=True)
+    serialized_apply_plans = json.dumps(payload["apply_plans"], sort_keys=True)
+
+    assert report.required_checks_passed is True
+    assert payload["final_rollout_action"] == "apply_revision"
+    assert payload["final_desired_revision"] == "2026.06.26-2"
+    assert payload["final_config_epoch"] == 3
+    assert payload["apply_plan_count"] == 1
+    assert payload["apply_plans"][0]["schema_version"] == (
+        "fyralis.byoc.agent.apply_plan_evidence.v1"
+    )
+    assert payload["apply_plans"][0]["status"] == "pass"
+    assert payload["apply_plans"][0]["current_revision"] == MANIFEST.artifact_revision
+    assert payload["apply_plans"][0]["desired_revision"] == "2026.06.26-2"
+    assert payload["apply_plans"][0]["execution_mode"] == "plan_only"
+    assert payload["apply_plans"][0]["mutating_step_count"] == 0
+    assert payload["iterations"][0]["apply_plan_status"] == "pass"
+    assert payload["iterations"][0]["apply_plan_id"] == (
+        payload["apply_plans"][0]["plan_id"]
+    )
+    assert "apply_plan_contract" in {check["name"] for check in payload["checks"]}
+    assert INSTALL_TOKEN not in serialized
+    assert MANIFEST.connectivity.control_plane_url not in serialized
+    assert "signature" not in serialized_apply_plans.lower()
+    assert "payload" not in serialized_apply_plans.lower()
+
+
+@pytest.mark.asyncio
 async def test_agent_runner_fails_without_install_token_material() -> None:
     report = await run_byoc_agent_runner(
         ByocAgentRunnerInputs(

@@ -87,17 +87,20 @@ scripts/run_byoc_agent_probe.py --json --output <agent-probe-report.json>
 ```
 
 For bounded local runner proof, run the loop skeleton with an explicit
-iteration cap:
+iteration cap. To exercise non-mutating apply-plan evidence, provide a local
+mock desired revision that differs from the manifest artifact revision:
 
 ```bash
 FYRALIS_BYOC_INSTALL_TOKEN="<managed-secret-value-loaded-locally>" \
 scripts/run_byoc_agent_runner.py --json --iterations 2 \
+  --mock-desired-revision 2026.06.26-2 --mock-config-epoch 1 \
   --output <agent-runner-report.json>
 ```
 
 Archive only the generated report. Do not archive shell history, raw install
 tokens, live control-plane URLs, desired-state bodies, or request/response
-bodies.
+bodies. The runner report may include apply-plan evidence, but that evidence is
+`plan_only` and must have a zero mutating-step count.
 
 ## Source Coverage
 

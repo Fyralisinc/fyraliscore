@@ -9,6 +9,7 @@ and emit a sanitized report.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -19,6 +20,11 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import ValidationError
 
+from services.platform.runtime.byoc_agent_apply_plan import (
+    ByocAgentApplyPlan,
+    build_apply_revision_plan,
+    validate_apply_plan_contract,
+)
 from services.platform.runtime.byoc_agent_contract import (
     ByocAgentComponentStatus,
     ByocAgentEnrollmentRequest,
@@ -55,6 +61,7 @@ _PASS: AgentRunnerStatus = "pass"
 _FAIL: AgentRunnerStatus = "fail"
 _LOCALHOSTS = {"localhost", "127.0.0.1", "::1"}
 _MAX_ITERATIONS = 10
+_SAFE_CODE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,8 +80,24 @@ class ByocAgentRunnerIteration:
     desired_revision: str
     rollout_action: str
     config_epoch: int
+    apply_plan_status: AgentRunnerStatus | None
+    apply_plan_id: str | None
     heartbeat_status: AgentRunnerStatus
     poll_after_seconds: int
+
+
+@dataclass(frozen=True, slots=True)
+class ByocAgentRunnerApplyPlanEvidence:
+    schema_version: Literal["fyralis.byoc.agent.apply_plan_evidence.v1"]
+    status: AgentRunnerStatus
+    plan_id: str
+    current_revision: str
+    desired_revision: str
+    config_epoch: int
+    execution_mode: str
+    planned_step_count: int
+    mutating_step_count: int
+    step_names: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +121,7 @@ class ByocAgentRunnerReport:
     enrollment_status: AgentRunnerStatus | None
     desired_state_poll_count: int
     heartbeat_count: int
+    apply_plan_count: int
     final_desired_revision: str | None
     final_rollout_action: str | None
     final_config_epoch: int | None
@@ -106,6 +130,7 @@ class ByocAgentRunnerReport:
     telemetry_contract: str | None
     checks: list[ByocAgentRunnerCheck]
     iterations: list[ByocAgentRunnerIteration]
+    apply_plans: list[ByocAgentRunnerApplyPlanEvidence]
 
     def as_json(self) -> dict[str, object]:
         return asdict(self)
@@ -122,6 +147,8 @@ class ByocAgentRunnerInputs:
     iterations: int = 1
     validation_status: HeartbeatStatus = "passing"
     control_plane_url: str | None = None
+    mock_desired_revision: str | None = None
+    mock_config_epoch: int = 0
     timeout_s: float = 5.0
     requested_at: datetime | None = None
     sent_at: datetime | None = None
@@ -133,6 +160,7 @@ async def run_byoc_agent_runner(
     started = time.monotonic()
     checks: list[ByocAgentRunnerCheck] = []
     iterations: list[ByocAgentRunnerIteration] = []
+    apply_plans: list[ByocAgentRunnerApplyPlanEvidence] = []
     mode: AgentRunnerMode = "live" if inputs.control_plane_url else "mock"
 
     manifest, manifest_checks = _load_manifest(inputs.manifest_path)
@@ -144,6 +172,7 @@ async def run_byoc_agent_runner(
     heartbeat_response: ByocAgentHeartbeatResponse | None = None
     desired_state_poll_count = 0
     heartbeat_count = 0
+    apply_plan_count = 0
 
     if manifest is not None and _required_checks_passed(checks):
         enrollment, enrollment_checks = _build_enrollment(inputs, manifest)
@@ -156,6 +185,8 @@ async def run_byoc_agent_runner(
                     app=build_local_byoc_agent_control_plane_app(
                         manifest,
                         install_token=inputs.install_token,
+                        desired_revision=inputs.mock_desired_revision,
+                        config_epoch=inputs.mock_config_epoch,
                     )
                 )
                 checks.append(
@@ -187,12 +218,14 @@ async def run_byoc_agent_runner(
                             heartbeat_response,
                             desired_state_poll_count,
                             heartbeat_count,
+                            apply_plan_count,
                         ) = await _run_iterations(
                             client,
                             inputs,
                             manifest,
                             checks,
                             iterations,
+                            apply_plans,
                         )
 
     required_checks_passed = _required_checks_passed(checks)
@@ -218,6 +251,7 @@ async def run_byoc_agent_runner(
         enrollment_status=_PASS if enrollment_response is not None else None,
         desired_state_poll_count=desired_state_poll_count,
         heartbeat_count=heartbeat_count,
+        apply_plan_count=apply_plan_count,
         final_desired_revision=(
             desired_state_response.desired_revision
             if desired_state_response is not None
@@ -254,6 +288,7 @@ async def run_byoc_agent_runner(
         ),
         checks=checks,
         iterations=iterations,
+        apply_plans=apply_plans,
     )
 
 
@@ -275,9 +310,11 @@ async def _run_iterations(
     manifest: ByocDataPlaneManifest,
     checks: list[ByocAgentRunnerCheck],
     iterations: list[ByocAgentRunnerIteration],
+    apply_plans: list[ByocAgentRunnerApplyPlanEvidence],
 ) -> tuple[
     ByocAgentDesiredStateResponse | None,
     ByocAgentHeartbeatResponse | None,
+    int,
     int,
     int,
 ]:
@@ -285,6 +322,7 @@ async def _run_iterations(
     latest_heartbeat: ByocAgentHeartbeatResponse | None = None
     desired_state_poll_count = 0
     heartbeat_count = 0
+    apply_plan_count = 0
     last_seen_desired_revision: str | None = manifest.artifact_revision
 
     for iteration_index in range(inputs.iterations):
@@ -303,6 +341,15 @@ async def _run_iterations(
             break
         desired_state_poll_count += 1
         last_seen_desired_revision = latest_desired.desired_revision
+        apply_plan_evidence: ByocAgentRunnerApplyPlanEvidence | None = None
+        if latest_desired.rollout_action == "apply_revision":
+            plan, plan_check = _build_apply_plan(manifest, latest_desired)
+            checks.append(plan_check)
+            if plan is None:
+                break
+            apply_plan_evidence = _apply_plan_evidence(plan)
+            apply_plans.append(apply_plan_evidence)
+            apply_plan_count += 1
 
         sequence = inputs.starting_sequence + iteration_index
         heartbeat, heartbeat_checks = _build_heartbeat(
@@ -325,6 +372,16 @@ async def _run_iterations(
                 desired_revision=latest_desired.desired_revision,
                 rollout_action=latest_desired.rollout_action,
                 config_epoch=latest_desired.config_epoch,
+                apply_plan_status=(
+                    apply_plan_evidence.status
+                    if apply_plan_evidence is not None
+                    else None
+                ),
+                apply_plan_id=(
+                    apply_plan_evidence.plan_id
+                    if apply_plan_evidence is not None
+                    else None
+                ),
                 heartbeat_status=_PASS,
                 poll_after_seconds=latest_heartbeat.poll_after_seconds,
             )
@@ -335,6 +392,7 @@ async def _run_iterations(
         latest_heartbeat,
         desired_state_poll_count,
         heartbeat_count,
+        apply_plan_count,
     )
 
 
@@ -441,6 +499,45 @@ def _input_checks(inputs: ByocAgentRunnerInputs) -> list[ByocAgentRunnerCheck]:
                 details="Timeout must be positive.",
             )
         )
+    if inputs.mock_config_epoch < 0:
+        checks.append(
+            _check(
+                "mock_config_epoch_bound",
+                _FAIL,
+                required=True,
+                details="Mock config epoch must be non-negative.",
+                metrics={"config_epoch": inputs.mock_config_epoch},
+            )
+        )
+    if inputs.mock_desired_revision is not None:
+        mock_desired_revision = inputs.mock_desired_revision.strip()
+        if inputs.control_plane_url:
+            checks.append(
+                _check(
+                    "mock_desired_revision_scope",
+                    _FAIL,
+                    required=True,
+                    details="Mock desired revision is allowed only with local mode.",
+                )
+            )
+        elif not _SAFE_CODE_RE.match(mock_desired_revision):
+            checks.append(
+                _check(
+                    "mock_desired_revision_bound",
+                    _FAIL,
+                    required=True,
+                    details="Mock desired revision must be a bounded identifier.",
+                )
+            )
+        else:
+            checks.append(
+                _check(
+                    "mock_desired_revision_bound",
+                    _PASS,
+                    required=True,
+                    details="Mock desired revision is bounded and local-only.",
+                )
+            )
     return checks
 
 
@@ -538,6 +635,57 @@ def _build_desired_state_poll(
             metrics={"iteration": iteration_index + 1},
         )
     ]
+
+
+def _build_apply_plan(
+    manifest: ByocDataPlaneManifest,
+    desired_state: ByocAgentDesiredStateResponse,
+) -> tuple[ByocAgentApplyPlan | None, ByocAgentRunnerCheck]:
+    try:
+        plan = build_apply_revision_plan(manifest, desired_state)
+    except ValidationError as exc:
+        return None, _check(
+            "apply_plan_contract",
+            _FAIL,
+            required=True,
+            details="; ".join(error["msg"] for error in exc.errors()),
+        )
+    violations = validate_apply_plan_contract(plan)
+    if violations:
+        return None, _check(
+            "apply_plan_contract",
+            _FAIL,
+            required=True,
+            details="; ".join(violation.render() for violation in violations),
+        )
+    return plan, _check(
+        "apply_plan_contract",
+        _PASS,
+        required=True,
+        details="Apply revision desired state produced a non-mutating plan.",
+        metrics={
+            "config_epoch": plan.config_epoch,
+            "planned_step_count": plan.planned_step_count,
+            "mutating_step_count": plan.mutating_step_count,
+        },
+    )
+
+
+def _apply_plan_evidence(
+    plan: ByocAgentApplyPlan,
+) -> ByocAgentRunnerApplyPlanEvidence:
+    return ByocAgentRunnerApplyPlanEvidence(
+        schema_version="fyralis.byoc.agent.apply_plan_evidence.v1",
+        status=_PASS,
+        plan_id=plan.plan_id,
+        current_revision=plan.current_revision,
+        desired_revision=plan.desired_revision,
+        config_epoch=plan.config_epoch,
+        execution_mode=plan.execution_mode,
+        planned_step_count=plan.planned_step_count,
+        mutating_step_count=plan.mutating_step_count,
+        step_names=tuple(step.name for step in plan.steps),
+    )
 
 
 def _build_heartbeat(
@@ -813,6 +961,7 @@ def _manifest_identity(manifest: ByocDataPlaneManifest | None) -> dict[str, str]
 
 __all__ = [
     "ByocAgentRunnerCheck",
+    "ByocAgentRunnerApplyPlanEvidence",
     "ByocAgentRunnerInputs",
     "ByocAgentRunnerIteration",
     "ByocAgentRunnerReport",

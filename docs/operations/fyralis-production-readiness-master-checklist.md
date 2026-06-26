@@ -82,9 +82,9 @@ Every checklist item is done only when:
   raw-token-free requests, privacy-safe heartbeat telemetry, a local mock
   control-plane contract harness, a readiness-gated local agent probe, hosted
   gateway enrollment, heartbeat, and signed desired-state polling routes, a
-  readiness-gated bounded agent runner skeleton, managed install-token key-ref
-  resolution, sanitized scalar registration storage, and a storage-shape
-  ratchet.
+  readiness-gated bounded agent runner skeleton with non-mutating apply-plan
+  evidence, managed install-token key-ref resolution, sanitized scalar
+  registration storage, and a storage-shape ratchet.
 - [x] BYOC customer-cloud permissions have a checked-in manifest, AWS IAM
   skeleton, validator, and readiness gate that reject broad admin policies,
   unbounded `iam:PassRole`, mutating control-plane roles, missing boundaries,

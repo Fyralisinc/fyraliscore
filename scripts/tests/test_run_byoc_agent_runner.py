@@ -30,6 +30,32 @@ def test_run_byoc_agent_runner_json_output(monkeypatch, capsys) -> None:
     assert INSTALL_TOKEN not in serialized
 
 
+def test_run_byoc_agent_runner_apply_plan_output(monkeypatch, capsys) -> None:
+    monkeypatch.setenv(DEFAULT_INSTALL_TOKEN_ENV, INSTALL_TOKEN)
+
+    code = main(
+        [
+            "--json",
+            "--mock-desired-revision",
+            "2026.06.26-2",
+            "--mock-config-epoch",
+            "4",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    serialized = json.dumps(payload, sort_keys=True)
+    assert code == 0
+    assert payload["final_rollout_action"] == "apply_revision"
+    assert payload["apply_plan_count"] == 1
+    assert payload["apply_plans"][0]["execution_mode"] == "plan_only"
+    assert payload["apply_plans"][0]["mutating_step_count"] == 0
+    assert payload["apply_plans"][0]["config_epoch"] == 4
+    assert INSTALL_TOKEN not in serialized
+    assert "signature" not in serialized.lower()
+
+
 def test_run_byoc_agent_runner_yaml_output(monkeypatch, capsys) -> None:
     monkeypatch.setenv(DEFAULT_INSTALL_TOKEN_ENV, INSTALL_TOKEN)
 
@@ -74,4 +100,26 @@ def test_run_byoc_agent_runner_rejects_unbounded_iterations(monkeypatch, capsys)
     captured = capsys.readouterr()
     assert code == 2
     assert "--iterations must be between 1 and 10" in captured.err
+    assert captured.out == ""
+
+
+def test_run_byoc_agent_runner_rejects_mock_desired_revision_for_live_url(
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv(DEFAULT_INSTALL_TOKEN_ENV, INSTALL_TOKEN)
+
+    code = main(
+        [
+            "--json",
+            "--control-plane-url",
+            "https://control.example.com",
+            "--mock-desired-revision",
+            "2026.06.26-2",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "--mock-desired-revision is allowed only" in captured.err
     assert captured.out == ""

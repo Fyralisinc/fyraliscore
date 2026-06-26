@@ -51,6 +51,14 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
             "contract harness."
         ),
     )
+    parser.add_argument(
+        "--mock-desired-revision",
+        help=(
+            "Local mock desired revision used to exercise apply-plan evidence. "
+            "Allowed only when --control-plane-url is omitted."
+        ),
+    )
+    parser.add_argument("--mock-config-epoch", type=int, default=0)
     parser.add_argument("--timeout-seconds", type=float, default=5.0)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--output", type=Path)
@@ -67,6 +75,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if args.iterations < 1 or args.iterations > MAX_ITERATIONS:
         print(f"--iterations must be between 1 and {MAX_ITERATIONS}", file=sys.stderr)
+        return 2
+    if args.mock_config_epoch < 0:
+        print("--mock-config-epoch must be non-negative", file=sys.stderr)
+        return 2
+    if args.control_plane_url and args.mock_desired_revision:
+        print(
+            "--mock-desired-revision is allowed only with the local mock harness",
+            file=sys.stderr,
+        )
         return 2
 
     install_token = os.environ.get(args.install_token_env, "")
@@ -89,6 +106,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 iterations=args.iterations,
                 validation_status=args.validation_status,
                 control_plane_url=args.control_plane_url,
+                mock_desired_revision=args.mock_desired_revision,
+                mock_config_epoch=args.mock_config_epoch,
                 timeout_s=args.timeout_seconds,
             )
         )

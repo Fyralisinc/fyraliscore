@@ -135,6 +135,8 @@ def test_byoc_agent_runner_gate_passes_for_checked_in_manifest() -> None:
     assert "scripts/run_byoc_agent_runner.py" in result.command
     assert "--json" in result.command
     assert "--iterations" in result.command
+    assert "--mock-desired-revision" in result.command
+    assert "--mock-config-epoch" in result.command
     assert result.artifacts == {"manifest": "deploy/byoc/dataplane.example.yaml"}
     assert "local-byoc-agent-runner-token" not in result.stdout_tail
 

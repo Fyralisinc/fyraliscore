@@ -89,8 +89,16 @@ Repo-owned artifacts for this first slice:
   loop skeleton. The runner enrolls once, polls metadata-only desired state for
   a caller-bounded number of iterations, sends one privacy-safe heartbeat per
   iteration, and emits a sanitized report that contains only scalar status,
-  cadence, revision, and aggregate count fields. It intentionally does not
-  apply revisions, rotate tokens, issue mTLS credentials, or daemonize.
+  cadence, revision, apply-plan, and aggregate count fields. For
+  `apply_revision` desired state it builds a `plan_only`,
+  zero-mutation-count apply plan with bounded step codes; it intentionally does
+  not apply revisions, rotate tokens, issue mTLS credentials, or daemonize.
+- `services/platform/runtime/byoc_agent_apply_plan.py` defines the sanitized
+  non-mutating apply-plan contract. The plan records only current/desired
+  revision metadata, config epoch, bounded step names, and mutation counts; it
+  rejects unchanged revisions, mutating execution modes, mutating step counts,
+  raw URL markers, signatures, payloads, prompts, embeddings, and secret-like
+  material.
 - `services/platform/runtime/byoc_agent_control_plane.py`,
   `services/app/gateway/byoc_agent_keys.py`, and
   `services/app/gateway/byoc_agent_router.py` provide the first hosted agent
@@ -188,12 +196,12 @@ Repo-owned artifacts for this first slice:
   `scripts/run_operational_readiness_gates.py` include the first automation
   hooks for BYOC contract drift.
 
-This intentionally defers cloud apply, real agent reconciliation actions,
-production Terraform/CloudFormation modules, hosted onboarding UI, mTLS/token
-rotation, and fleet dashboard work until a first-customer cloud/profile is
-selected. Those systems should consume these manifests and the bounded runner
-contract instead of inventing new deployment, permission, or agent protocol
-shape.
+This intentionally defers cloud apply, real agent reconciliation actions beyond
+non-mutating apply-plan evidence, production Terraform/CloudFormation modules,
+hosted onboarding UI, mTLS/token rotation, and fleet dashboard work until a
+first-customer cloud/profile is selected. Those systems should consume these
+manifests and the bounded runner contract instead of inventing new deployment,
+permission, or agent protocol shape.
 
 ## Current Fyralis Baseline
 

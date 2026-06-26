@@ -629,11 +629,16 @@ def _byoc_agent_runner_gate(args: argparse.Namespace) -> GateResult:
             "--json",
             "--iterations",
             "2",
+            "--mock-desired-revision",
+            "2026.06.26-2",
+            "--mock-config-epoch",
+            "1",
         ),
         details=(
             "BYOC data-plane agent runner enrolls once, polls metadata-only "
-            "desired state, and submits privacy-safe heartbeats through the "
-            "bounded local control-plane loop."
+            "desired state, builds sanitized non-mutating apply-plan evidence, "
+            "and submits privacy-safe heartbeats through the bounded local "
+            "control-plane loop."
         ),
         timeout_s=min(args.command_timeout_s, 30),
         env=env,

@@ -24,6 +24,8 @@ def build_local_byoc_agent_control_plane_app(
     manifest: ByocDataPlaneManifest,
     *,
     install_token: str,
+    desired_revision: str | None = None,
+    config_epoch: int = 0,
 ) -> FastAPI:
     """Build an in-process egress target for local BYOC agent checks.
 
@@ -34,6 +36,7 @@ def build_local_byoc_agent_control_plane_app(
 
     app = FastAPI(title="Fyralis BYOC Local Agent Control Plane")
     store = InMemoryByocAgentRegistryStore()
+    resolved_desired_revision = desired_revision or manifest.artifact_revision
 
     @app.post("/byoc/agent/enroll")
     async def enroll(
@@ -57,7 +60,7 @@ def build_local_byoc_agent_control_plane_app(
             )
         return await store.enroll(
             request,
-            desired_revision=manifest.artifact_revision,
+            desired_revision=resolved_desired_revision,
             heartbeat_interval_seconds=(
                 manifest.connectivity.heartbeat_interval_seconds
             ),
@@ -85,6 +88,7 @@ def build_local_byoc_agent_control_plane_app(
         response = await store.desired_state(
             request,
             poll_after_seconds=manifest.connectivity.agent_poll_interval_seconds,
+            config_epoch=config_epoch,
         )
         if response is None:
             raise HTTPException(
@@ -111,7 +115,7 @@ def build_local_byoc_agent_control_plane_app(
             )
         response = await store.heartbeat(
             request,
-            desired_revision=manifest.artifact_revision,
+            desired_revision=resolved_desired_revision,
             poll_after_seconds=manifest.connectivity.agent_poll_interval_seconds,
         )
         if response is None:
