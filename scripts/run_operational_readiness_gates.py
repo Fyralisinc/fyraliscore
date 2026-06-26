@@ -616,6 +616,31 @@ def _byoc_agent_probe_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_agent_runner_gate(args: argparse.Namespace) -> GateResult:
+    env = _base_env()
+    env.setdefault(
+        "FYRALIS_BYOC_INSTALL_TOKEN",
+        "local-byoc-agent-runner-token-for-readiness-gate",
+    )
+    return _run_command_gate(
+        "byoc_agent_runner",
+        _python_command(
+            "scripts/run_byoc_agent_runner.py",
+            "--json",
+            "--iterations",
+            "2",
+        ),
+        details=(
+            "BYOC data-plane agent runner enrolls once, polls metadata-only "
+            "desired state, and submits privacy-safe heartbeats through the "
+            "bounded local control-plane loop."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=env,
+        artifacts={"manifest": "deploy/byoc/dataplane.example.yaml"},
+    )
+
+
 def _byoc_evidence_ledger_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_evidence_ledger",
@@ -748,6 +773,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_bootstrap_plan_gate(args),
         _byoc_bootstrap_runner_gate(args),
         _byoc_agent_probe_gate(args),
+        _byoc_agent_runner_gate(args),
         _byoc_evidence_ledger_gate(args),
         _byoc_evidence_package_gate(args),
         _byoc_control_plane_intake_gate(args),

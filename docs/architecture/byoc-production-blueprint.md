@@ -84,6 +84,13 @@ Repo-owned artifacts for this first slice:
   local mock control-plane contract, submits one bounded heartbeat, and emits a
   sanitized JSON/YAML report with no token, URL, raw payload, prompt, log,
   embedding, or PII fields.
+- `services/platform/runtime/byoc_agent_runner.py` and
+  `scripts/run_byoc_agent_runner.py` provide the first bounded data-plane agent
+  loop skeleton. The runner enrolls once, polls metadata-only desired state for
+  a caller-bounded number of iterations, sends one privacy-safe heartbeat per
+  iteration, and emits a sanitized report that contains only scalar status,
+  cadence, revision, and aggregate count fields. It intentionally does not
+  apply revisions, rotate tokens, issue mTLS credentials, or daemonize.
 - `services/platform/runtime/byoc_agent_control_plane.py`,
   `services/app/gateway/byoc_agent_keys.py`, and
   `services/app/gateway/byoc_agent_router.py` provide the first hosted agent
@@ -181,10 +188,12 @@ Repo-owned artifacts for this first slice:
   `scripts/run_operational_readiness_gates.py` include the first automation
   hooks for BYOC contract drift.
 
-This intentionally defers cloud apply, agent reconciliation, production
-Terraform/CloudFormation modules, hosted onboarding UI, and fleet dashboard work
-until a first-customer cloud/profile is selected. Those systems should consume
-these manifests instead of inventing new deployment or permission shape.
+This intentionally defers cloud apply, real agent reconciliation actions,
+production Terraform/CloudFormation modules, hosted onboarding UI, mTLS/token
+rotation, and fleet dashboard work until a first-customer cloud/profile is
+selected. Those systems should consume these manifests and the bounded runner
+contract instead of inventing new deployment, permission, or agent protocol
+shape.
 
 ## Current Fyralis Baseline
 
@@ -1376,7 +1385,8 @@ Minimum gates before first enterprise customer:
   schema contract-backed; use the local mock control-plane harness for
   offline proof while hosted deployments continue toward real mTLS, durable
   fleet reconciliation, and token rotation.
-- Build data-plane agent daemon.
+- Extend the bounded data-plane agent runner into a packaged daemon once mTLS,
+  token rotation, and customer-cloud process supervision are selected.
 - Publish signed Terraform/Helm artifacts.
 - Build AWS first profile.
 - Implement onboarding portal state machine.

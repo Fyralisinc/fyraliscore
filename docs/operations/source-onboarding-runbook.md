@@ -86,6 +86,15 @@ FYRALIS_BYOC_INSTALL_TOKEN="<managed-secret-value-loaded-locally>" \
 scripts/run_byoc_agent_probe.py --json --output <agent-probe-report.json>
 ```
 
+For bounded local runner proof, run the loop skeleton with an explicit
+iteration cap:
+
+```bash
+FYRALIS_BYOC_INSTALL_TOKEN="<managed-secret-value-loaded-locally>" \
+scripts/run_byoc_agent_runner.py --json --iterations 2 \
+  --output <agent-runner-report.json>
+```
+
 Archive only the generated report. Do not archive shell history, raw install
 tokens, live control-plane URLs, desired-state bodies, or request/response
 bodies.
