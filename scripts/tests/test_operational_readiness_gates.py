@@ -21,6 +21,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_evidence_ledger_gate,
     _byoc_permissions_contract_gate,
     _byoc_preflight_bundle_gate,
+    _byoc_source_onboarding_gate,
     _byoc_post_deploy_validation_gate,
     _github_required_checks_gate,
     _production_env_contract_gate,
@@ -263,6 +264,18 @@ def test_byoc_evidence_package_gate_passes_for_checked_in_package() -> None:
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
         "aws_iac_package": "deploy/byoc/aws/iac-package.example.yaml",
     }
+
+
+def test_byoc_source_onboarding_gate_passes_for_checked_in_package() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_source_onboarding_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/check_byoc_source_onboarding_gate.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {"package": "deploy/byoc/evidence-package.example.yaml"}
 
 
 def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:

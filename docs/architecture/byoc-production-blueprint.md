@@ -251,6 +251,14 @@ Repo-owned artifacts for this first slice:
   signed-envelope metadata; it never embeds raw post-deploy reports, command
   output, endpoint URLs, artifact refs, credentials, payloads, prompts, logs,
   embeddings, or PII.
+- `services/platform/runtime/byoc_source_onboarding_gate.py` and
+  `scripts/check_byoc_source_onboarding_gate.py` provide the backend-owned
+  first-source enablement gate. The gate reads only sanitized evidence packages
+  or ledgers and returns a bounded pass/fail report. Operators may require AWS
+  live-preflight evidence, live post-deploy evidence, or signed post-deploy
+  evidence before enabling source credentials; no source payloads, provider
+  credentials, account IDs, ARNs, endpoint URLs, logs, prompts, or PII are
+  inspected or serialized.
 - `services/platform/runtime/byoc_control_plane_intake.py` and
   `services/app/gateway/byoc_control_plane_router.py` define the first hosted
   control-plane intake contract for sanitized evidence packages and other

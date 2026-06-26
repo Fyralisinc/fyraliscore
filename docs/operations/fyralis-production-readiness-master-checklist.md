@@ -139,6 +139,10 @@ Every checklist item is done only when:
 - [x] BYOC customer handoff evidence has a checked-in sanitized package
   contract, generator/checker CLI, source artifact and AWS IaC package digest
   ratchets, optional signed-envelope metadata, and readiness gate.
+- [x] BYOC first-source enablement has a backend source-onboarding gate that
+  consumes only sanitized evidence package/ledger metadata, supports optional
+  AWS live-preflight and live/signed post-deploy requirements, emits bounded
+  pass/fail output, and is included in readiness gates.
 - [x] BYOC control-plane evidence intake has a signed submission contract,
   gateway route, self-auth route classification, DB-backed sanitized scalar
   receipt storage, signed receipt lookup/list automation reads, bounded query

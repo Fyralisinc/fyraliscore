@@ -133,6 +133,7 @@ graph TD
 | BYOC agent keys | `services/app/gateway/byoc_agent_keys.py` | Resolves data-plane install-token material by `key_ref` from managed secret refs, with static app-state fallback only outside production. |
 | BYOC agent probe | `services/platform/runtime/byoc_agent_probe.py` | Local executable data-plane agent proof; signs enrollment, submits one bounded heartbeat through the mock/live control-plane contract, and emits sanitized status metadata only. |
 | BYOC AWS live preflight | `services/platform/runtime/byoc_aws_live_preflight.py` | Customer-side read-only AWS preflight; verifies STS identity, optional describe/list probes, and optional IAM simulation while emitting only sanitized status/count metadata. |
+| BYOC source onboarding gate | `services/platform/runtime/byoc_source_onboarding_gate.py` | Offline first-source enablement gate; reads sanitized BYOC evidence packages or ledgers and emits bounded pass/fail metadata before source credentials are enabled. |
 | Gateway extension seam | `services/app/gateway/extensions.py` | Discovers installed `company_os.gateway_extensions` entry points; each contributes routers (e.g. overlay `/v1/demo/*`), startup hooks (Pelago seed, simulation mount), and public path prefixes. |
 | Gateway state wiring | `services/app/gateway/state_wiring.py` | Secret store, tenant resolver, tenant flags, GitHub client/cache, Kafka/S3 data-plane clients. |
 | CEO-view wiring | `services/app/gateway/ceo_view_wiring.py` | Rendering, greeting, query, conversations, Google ingress, and debug mounting. |

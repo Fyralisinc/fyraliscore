@@ -153,6 +153,21 @@ contract, pulled metadata-only desired state through
 bounded component status codes, validation state, and aggregate
 telemetry-contract flags.
 
+Immediately before enabling the first source, run the source-onboarding gate.
+For a customer credential/live-readiness handoff, require AWS live-preflight
+evidence and live post-deploy evidence:
+
+```bash
+scripts/check_byoc_source_onboarding_gate.py --json \
+  --evidence-package <package> \
+  --require-aws-live-preflight \
+  --require-live-post-deploy
+```
+
+Add `--require-signed-post-deploy` for production cutover packages that must
+prove the live validator report was signed before import. The gate consumes
+only the sanitized package or ledger and emits bounded pass/fail metadata.
+
 Where the hosted control-plane agent endpoint is enabled, enrollment uses
 `POST /byoc/agent/enroll` with the signed
 `fyralis.byoc.agent.enrollment.v1` request, and heartbeat uses

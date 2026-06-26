@@ -835,6 +835,26 @@ def _byoc_evidence_package_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_source_onboarding_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_source_onboarding_gate",
+        _python_command(
+            "scripts/check_byoc_source_onboarding_gate.py",
+            "--json",
+            "--evidence-package",
+            "deploy/byoc/evidence-package.example.yaml",
+        ),
+        details=(
+            "BYOC source-onboarding gate allows first-source enablement only "
+            "after sanitized deployment evidence has passed; stricter live "
+            "AWS/post-deploy requirements remain operator opt-ins."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={"package": "deploy/byoc/evidence-package.example.yaml"},
+    )
+
+
 def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
     return _pytest_gate(
         "byoc_control_plane_intake",
@@ -927,6 +947,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_agent_runner_gate(args),
         _byoc_evidence_ledger_gate(args),
         _byoc_evidence_package_gate(args),
+        _byoc_source_onboarding_gate(args),
         _byoc_control_plane_intake_gate(args),
         _byoc_post_deploy_validation_gate(args),
         _github_required_checks_gate(args),
