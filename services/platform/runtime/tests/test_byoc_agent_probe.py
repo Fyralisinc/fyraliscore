@@ -21,7 +21,7 @@ INSTALL_TOKEN = "local-install-token-for-agent-probe-tests"
 
 
 @pytest.mark.asyncio
-async def test_agent_probe_enrolls_and_sends_sanitized_heartbeat() -> None:
+async def test_agent_probe_enrolls_polls_desired_state_and_sends_heartbeat() -> None:
     report = await run_byoc_agent_probe(
         ByocAgentProbeInputs(
             manifest_path=MANIFEST_PATH,
@@ -40,9 +40,14 @@ async def test_agent_probe_enrolls_and_sends_sanitized_heartbeat() -> None:
     assert report.required_checks_passed is True
     assert payload["status"] == "pass"
     assert payload["control_plane_mode"] == "mock"
+    assert payload["enrollment_status"] == "pass"
+    assert payload["desired_state_status"] == "pass"
+    assert payload["heartbeat_status"] == "pass"
     assert payload["deployment_id"] == MANIFEST.deployment_id
     assert payload["customer_id"] == MANIFEST.customer_id
     assert payload["desired_revision"] == MANIFEST.artifact_revision
+    assert payload["rollout_action"] == "none"
+    assert payload["config_epoch"] == 0
     assert payload["heartbeat_interval_seconds"] == (
         MANIFEST.connectivity.heartbeat_interval_seconds
     )
@@ -52,6 +57,7 @@ async def test_agent_probe_enrolls_and_sends_sanitized_heartbeat() -> None:
     assert INSTALL_TOKEN not in serialized
     assert MANIFEST.connectivity.control_plane_url not in serialized
     assert '"value"' not in serialized
+    assert "desired_state_request" in {check["name"] for check in payload["checks"]}
 
 
 @pytest.mark.asyncio
@@ -71,6 +77,7 @@ async def test_agent_probe_fails_without_install_token_material() -> None:
         check.name for check in report.checks if check.status == "fail"
     }
     assert report.enrollment_status is None
+    assert report.desired_state_status is None
     assert report.heartbeat_status is None
 
 

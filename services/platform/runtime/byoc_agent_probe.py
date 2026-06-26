@@ -1,10 +1,11 @@
-"""Local BYOC data-plane agent enrollment and heartbeat probe.
+"""Local BYOC data-plane agent enrollment, desired-state, and heartbeat probe.
 
 The long-running customer-side data-plane agent is still future work. This
 module gives CI, bootstrap tooling, and operators a small executable contract:
-prove enrollment with the managed install-token material, submit one bounded
-heartbeat, and emit a sanitized report that can be archived without exposing
-tokens, URLs, raw payloads, prompts, logs, or PII.
+prove enrollment with the managed install-token material, pull metadata-only
+desired state, submit one bounded heartbeat, and emit a sanitized report that
+can be archived without exposing tokens, URLs, raw payloads, prompts, logs, or
+PII.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from typing import Literal
 from urllib.parse import urlparse
 
 import httpx
+from fastapi import FastAPI, HTTPException
 from pydantic import ValidationError
 
 from services.platform.runtime.byoc_agent_contract import (
@@ -26,11 +28,20 @@ from services.platform.runtime.byoc_agent_contract import (
     ByocAgentEnrollmentResponse,
     ByocAgentHeartbeat,
     ByocAgentHeartbeatResponse,
-    build_mock_control_plane_app,
     enrollment_payload_from_manifest,
     heartbeat_from_manifest,
     signed_enrollment_request,
     validate_heartbeat_contract,
+)
+from services.platform.runtime.byoc_agent_control_plane import (
+    ByocAgentDesiredStatePollRequest,
+    ByocAgentDesiredStateResponse,
+    InMemoryByocAgentRegistryStore,
+    desired_state_poll_payload,
+    signed_desired_state_poll_request,
+    validate_agent_enrollment_request,
+    validate_agent_heartbeat_request,
+    validate_desired_state_poll_request,
 )
 from services.platform.runtime.byoc_contract import (
     ByocDataPlaneManifest,
@@ -75,8 +86,11 @@ class ByocAgentProbeReport:
     agent_id: str
     agent_version: str
     enrollment_status: AgentProbeStatus | None
+    desired_state_status: AgentProbeStatus | None
     heartbeat_status: AgentProbeStatus | None
     desired_revision: str | None
+    rollout_action: str | None
+    config_epoch: int | None
     heartbeat_interval_seconds: int | None
     poll_after_seconds: int | None
     telemetry_contract: str | None
@@ -131,6 +145,7 @@ async def run_byoc_agent_probe(
 
     payload: ByocAgentEnrollmentPayload | None = None
     enrollment: ByocAgentEnrollmentRequest | None = None
+    desired_state_poll: ByocAgentDesiredStatePollRequest | None = None
     heartbeat: ByocAgentHeartbeat | None = None
     if manifest is not None and _required_checks_passed(checks):
         payload, payload_checks = _build_enrollment_payload(inputs, manifest)
@@ -139,17 +154,29 @@ async def run_byoc_agent_probe(
             enrollment, enrollment_checks = _sign_enrollment(inputs, payload)
             checks.extend(enrollment_checks)
         if enrollment is not None:
+            desired_state_poll, desired_state_checks = _build_desired_state_poll(
+                inputs,
+                manifest,
+            )
+            checks.extend(desired_state_checks)
+        if desired_state_poll is not None:
             heartbeat, heartbeat_checks = _build_heartbeat(inputs, manifest)
             checks.extend(heartbeat_checks)
 
     enroll_response: ByocAgentEnrollmentResponse | None = None
+    desired_state_response: ByocAgentDesiredStateResponse | None = None
     heartbeat_response: ByocAgentHeartbeatResponse | None = None
-    if manifest is not None and enrollment is not None and heartbeat is not None:
+    if (
+        manifest is not None
+        and enrollment is not None
+        and desired_state_poll is not None
+        and heartbeat is not None
+    ):
         transport: httpx.AsyncBaseTransport | None = None
         base_url = "http://byoc-agent-probe.local"
         if mode == "mock":
             transport = httpx.ASGITransport(
-                app=build_mock_control_plane_app(
+                app=_build_mock_agent_control_plane_app(
                     manifest,
                     install_token=inputs.install_token,
                 )
@@ -181,6 +208,14 @@ async def run_byoc_agent_probe(
                 )
                 checks.append(enroll_check)
                 if enroll_response is not None:
+                    desired_state_response, desired_state_check = (
+                        await _post_desired_state(
+                            client,
+                            desired_state_poll,
+                        )
+                    )
+                    checks.append(desired_state_check)
+                if desired_state_response is not None:
                     heartbeat_response, heartbeat_check = await _post_heartbeat(
                         client,
                         heartbeat,
@@ -206,11 +241,30 @@ async def run_byoc_agent_probe(
         agent_id=inputs.agent_id,
         agent_version=inputs.agent_version,
         enrollment_status=_PASS if enroll_response is not None else None,
+        desired_state_status=_PASS if desired_state_response is not None else None,
         heartbeat_status=_PASS if heartbeat_response is not None else None,
         desired_revision=(
-            heartbeat_response.desired_revision
-            if heartbeat_response is not None
-            else enroll_response.desired_revision if enroll_response is not None else None
+            desired_state_response.desired_revision
+            if desired_state_response is not None
+            else (
+                heartbeat_response.desired_revision
+                if heartbeat_response is not None
+                else (
+                    enroll_response.desired_revision
+                    if enroll_response is not None
+                    else None
+                )
+            )
+        ),
+        rollout_action=(
+            desired_state_response.rollout_action
+            if desired_state_response is not None
+            else None
+        ),
+        config_epoch=(
+            desired_state_response.config_epoch
+            if desired_state_response is not None
+            else None
         ),
         heartbeat_interval_seconds=(
             enroll_response.heartbeat_interval_seconds
@@ -218,9 +272,13 @@ async def run_byoc_agent_probe(
             else None
         ),
         poll_after_seconds=(
-            heartbeat_response.poll_after_seconds
-            if heartbeat_response is not None
-            else None
+            desired_state_response.poll_after_seconds
+            if desired_state_response is not None
+            else (
+                heartbeat_response.poll_after_seconds
+                if heartbeat_response is not None
+                else None
+            )
         ),
         telemetry_contract=(
             enroll_response.telemetry_contract
@@ -356,6 +414,56 @@ def _sign_enrollment(
     ]
 
 
+def _build_desired_state_poll(
+    inputs: ByocAgentProbeInputs,
+    manifest: ByocDataPlaneManifest,
+) -> tuple[ByocAgentDesiredStatePollRequest | None, list[ByocAgentProbeCheck]]:
+    try:
+        payload = desired_state_poll_payload(
+            deployment_id=manifest.deployment_id,
+            customer_id=manifest.customer_id,
+            agent_id=inputs.agent_id,
+            agent_version=inputs.agent_version,
+            artifact_revision=manifest.artifact_revision,
+            install_token_secret_ref=manifest.secrets.bootstrap_token_secret_ref,
+            nonce=f"{inputs.nonce}-desired",
+            last_seen_desired_revision=manifest.artifact_revision,
+            requested_at=inputs.requested_at or datetime.now(UTC),
+        )
+        poll = signed_desired_state_poll_request(
+            payload,
+            install_token=inputs.install_token,
+        )
+    except ValidationError as exc:
+        return None, [
+            _check(
+                "desired_state_poll_contract",
+                _FAIL,
+                required=True,
+                details="; ".join(error["msg"] for error in exc.errors()),
+            )
+        ]
+    except ValueError as exc:
+        return None, [
+            _check(
+                "desired_state_poll_contract",
+                _FAIL,
+                required=True,
+                details=str(exc),
+            )
+        ]
+    return poll, [
+        _check(
+            "desired_state_poll_contract",
+            _PASS,
+            required=True,
+            details=(
+                "Desired-state poll was HMAC signed and requests metadata only."
+            ),
+        )
+    ]
+
+
 def _build_heartbeat(
     inputs: ByocAgentProbeInputs,
     manifest: ByocDataPlaneManifest,
@@ -438,6 +546,103 @@ def _validate_live_control_plane_url(url: str) -> ByocAgentProbeCheck:
     )
 
 
+def _build_mock_agent_control_plane_app(
+    manifest: ByocDataPlaneManifest,
+    *,
+    install_token: str,
+) -> FastAPI:
+    app = FastAPI(title="Fyralis BYOC Agent Probe Mock Control Plane")
+    store = InMemoryByocAgentRegistryStore()
+
+    @app.post("/byoc/agent/enroll")
+    async def enroll(
+        request: ByocAgentEnrollmentRequest,
+    ) -> ByocAgentEnrollmentResponse:
+        violations = validate_agent_enrollment_request(
+            request,
+            install_token=install_token,
+            expected_install_token_secret_ref=(
+                manifest.secrets.bootstrap_token_secret_ref
+            ),
+            expected_deployment_id=manifest.deployment_id,
+            expected_customer_id=manifest.customer_id,
+            expected_cloud_provider=manifest.cloud_provider,
+            expected_region=manifest.region,
+        )
+        if violations:
+            raise HTTPException(
+                status_code=403,
+                detail={"errors": [violation.render() for violation in violations]},
+            )
+        return await store.enroll(
+            request,
+            desired_revision=manifest.artifact_revision,
+            heartbeat_interval_seconds=(
+                manifest.connectivity.heartbeat_interval_seconds
+            ),
+            telemetry_contract=manifest.telemetry.contract,
+        )
+
+    @app.post("/byoc/agent/desired-state")
+    async def desired_state(
+        request: ByocAgentDesiredStatePollRequest,
+    ) -> ByocAgentDesiredStateResponse:
+        violations = validate_desired_state_poll_request(
+            request,
+            install_token=install_token,
+            expected_install_token_secret_ref=(
+                manifest.secrets.bootstrap_token_secret_ref
+            ),
+            expected_deployment_id=manifest.deployment_id,
+            expected_customer_id=manifest.customer_id,
+        )
+        if violations:
+            raise HTTPException(
+                status_code=403,
+                detail={"errors": [violation.render() for violation in violations]},
+            )
+        response = await store.desired_state(
+            request,
+            poll_after_seconds=manifest.connectivity.agent_poll_interval_seconds,
+        )
+        if response is None:
+            raise HTTPException(
+                status_code=403,
+                detail={"errors": ["agent_id: agent_not_enrolled"]},
+            )
+        return response
+
+    @app.post("/byoc/agent/heartbeat")
+    async def heartbeat(
+        request: ByocAgentHeartbeat,
+    ) -> ByocAgentHeartbeatResponse:
+        violations = validate_agent_heartbeat_request(
+            request,
+            expected_deployment_id=manifest.deployment_id,
+            expected_customer_id=manifest.customer_id,
+            expected_telemetry_mode=manifest.telemetry.mode,
+            expected_telemetry_contract=manifest.telemetry.contract,
+        )
+        if violations:
+            raise HTTPException(
+                status_code=403,
+                detail={"errors": [violation.render() for violation in violations]},
+            )
+        response = await store.heartbeat(
+            request,
+            desired_revision=manifest.artifact_revision,
+            poll_after_seconds=manifest.connectivity.agent_poll_interval_seconds,
+        )
+        if response is None:
+            raise HTTPException(
+                status_code=403,
+                detail={"errors": ["agent_id: agent_not_enrolled"]},
+            )
+        return response
+
+    return app
+
+
 async def _post_enrollment(
     client: httpx.AsyncClient,
     enrollment: ByocAgentEnrollmentRequest,
@@ -485,6 +690,59 @@ async def _post_enrollment(
         required=True,
         details="Enrollment request accepted.",
         metrics={"status_code": response.status_code},
+    )
+
+
+async def _post_desired_state(
+    client: httpx.AsyncClient,
+    poll: ByocAgentDesiredStatePollRequest,
+) -> tuple[ByocAgentDesiredStateResponse | None, ByocAgentProbeCheck]:
+    try:
+        response = await client.post(
+            "/byoc/agent/desired-state",
+            json=poll.model_dump(mode="json"),
+        )
+    except httpx.TimeoutException:
+        return None, _check(
+            "desired_state_request",
+            _FAIL,
+            required=True,
+            details="Desired-state request timed out.",
+        )
+    except httpx.HTTPError:
+        return None, _check(
+            "desired_state_request",
+            _FAIL,
+            required=True,
+            details="Desired-state request failed before a contract response.",
+        )
+    if response.status_code != 200:
+        return None, _check(
+            "desired_state_request",
+            _FAIL,
+            required=True,
+            details="Desired-state request was rejected by the control plane.",
+            metrics={"status_code": response.status_code},
+        )
+    try:
+        parsed = ByocAgentDesiredStateResponse.model_validate(response.json())
+    except (ValueError, ValidationError):
+        return None, _check(
+            "desired_state_response_contract",
+            _FAIL,
+            required=True,
+            details="Desired-state response did not match the agent contract.",
+            metrics={"status_code": response.status_code},
+        )
+    return parsed, _check(
+        "desired_state_request",
+        _PASS,
+        required=True,
+        details="Desired-state request accepted with metadata-only intent.",
+        metrics={
+            "status_code": response.status_code,
+            "config_epoch": parsed.config_epoch,
+        },
     )
 
 

@@ -23,7 +23,9 @@ def test_run_byoc_agent_probe_json_output(monkeypatch, capsys) -> None:
     assert payload["status"] == "pass"
     assert payload["control_plane_mode"] == "mock"
     assert payload["enrollment_status"] == "pass"
+    assert payload["desired_state_status"] == "pass"
     assert payload["heartbeat_status"] == "pass"
+    assert payload["rollout_action"] == "none"
     assert INSTALL_TOKEN not in serialized
 
 

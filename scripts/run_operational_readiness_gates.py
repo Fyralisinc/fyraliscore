@@ -606,8 +606,9 @@ def _byoc_agent_probe_gate(args: argparse.Namespace) -> GateResult:
             "--json",
         ),
         details=(
-            "BYOC data-plane agent probe completes enrollment and a privacy-safe "
-            "heartbeat through the local control-plane contract."
+            "BYOC data-plane agent probe completes enrollment, metadata-only "
+            "desired-state polling, and a privacy-safe heartbeat through the "
+            "local control-plane contract."
         ),
         timeout_s=min(args.command_timeout_s, 30),
         env=env,

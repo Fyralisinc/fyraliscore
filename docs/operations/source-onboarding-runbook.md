@@ -59,9 +59,11 @@ submission/read signing `key_ref` values must resolve through
 raw signing-key env values are local/test only. Source onboarding
 should remain paused until required checks pass and the data-plane agent has
 successfully completed the `fyralis.byoc.agent.enrollment.v1` registration
-contract and submitted a privacy-safe `fyralis.byoc.agent.heartbeat.v1`
-heartbeat. The heartbeat must report only bounded component status codes,
-validation state, and aggregate telemetry-contract flags.
+contract, pulled metadata-only desired state through
+`fyralis.byoc.agent.desired_state_poll.v1`, and submitted a privacy-safe
+`fyralis.byoc.agent.heartbeat.v1` heartbeat. The heartbeat must report only
+bounded component status codes, validation state, and aggregate
+telemetry-contract flags.
 
 Where the hosted control-plane agent endpoint is enabled, enrollment uses
 `POST /byoc/agent/enroll` with the signed
@@ -85,7 +87,8 @@ scripts/run_byoc_agent_probe.py --json --output <agent-probe-report.json>
 ```
 
 Archive only the generated report. Do not archive shell history, raw install
-tokens, live control-plane URLs, or request/response bodies.
+tokens, live control-plane URLs, desired-state bodies, or request/response
+bodies.
 
 ## Source Coverage
 

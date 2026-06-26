@@ -77,13 +77,13 @@ Every checklist item is done only when:
 - [x] BYOC post-deploy validation has an offline CI mode plus live-probe hooks
   for gateway/worker health, production DB role/RLS safety, broker reachability,
   and object-store endpoint reachability.
-- [x] BYOC agent enrollment and heartbeat have strict backend-owned schemas,
-  HMAC install-token proof over canonical metadata, raw-token-free requests,
-  privacy-safe heartbeat telemetry, a local mock control-plane contract
-  harness, a readiness-gated local agent probe, hosted gateway enrollment,
-  heartbeat, and signed desired-state polling routes, managed install-token
-  key-ref resolution, sanitized scalar registration storage, and a
-  storage-shape ratchet.
+- [x] BYOC agent enrollment, desired-state polling, and heartbeat have strict
+  backend-owned schemas, HMAC install-token proof over canonical metadata,
+  raw-token-free requests, privacy-safe heartbeat telemetry, a local mock
+  control-plane contract harness, a readiness-gated local agent probe, hosted
+  gateway enrollment, heartbeat, and signed desired-state polling routes,
+  managed install-token key-ref resolution, sanitized scalar registration
+  storage, and a storage-shape ratchet.
 - [x] BYOC customer-cloud permissions have a checked-in manifest, AWS IAM
   skeleton, validator, and readiness gate that reject broad admin policies,
   unbounded `iam:PassRole`, mutating control-plane roles, missing boundaries,

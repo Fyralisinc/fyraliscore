@@ -80,9 +80,10 @@ Repo-owned artifacts for this first slice:
 - `services/platform/runtime/byoc_agent_probe.py` and
   `scripts/run_byoc_agent_probe.py` provide the local executable data-plane
   agent proof. The probe reads install-token material only from process memory,
-  signs the enrollment request, submits one bounded heartbeat to the local mock
-  control-plane contract by default, and emits a sanitized JSON/YAML report
-  with no token, URL, raw payload, prompt, log, embedding, or PII fields.
+  signs the enrollment request, pulls metadata-only desired state from the
+  local mock control-plane contract, submits one bounded heartbeat, and emits a
+  sanitized JSON/YAML report with no token, URL, raw payload, prompt, log,
+  embedding, or PII fields.
 - `services/platform/runtime/byoc_agent_control_plane.py`,
   `services/app/gateway/byoc_agent_keys.py`, and
   `services/app/gateway/byoc_agent_router.py` provide the first hosted agent
@@ -1371,9 +1372,10 @@ Minimum gates before first enterprise customer:
   through the managed secret provider; do not ship raw signing-key env values.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
-- Keep the data-plane agent enrollment and heartbeat schema contract-backed;
-  use the local mock control-plane harness until the hosted control plane
-  provides real mTLS, persistence, token rotation, and desired-state endpoints.
+- Keep the data-plane agent enrollment, desired-state polling, and heartbeat
+  schema contract-backed; use the local mock control-plane harness for
+  offline proof while hosted deployments continue toward real mTLS, durable
+  fleet reconciliation, and token rotation.
 - Build data-plane agent daemon.
 - Publish signed Terraform/Helm artifacts.
 - Build AWS first profile.
