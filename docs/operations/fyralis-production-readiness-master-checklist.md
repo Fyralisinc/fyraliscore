@@ -90,6 +90,11 @@ Every checklist item is done only when:
   skeleton, validator, and readiness gate that reject broad admin policies,
   unbounded `iam:PassRole`, mutating control-plane roles, missing boundaries,
   and control-plane access to customer data or secret material.
+- [x] BYOC AWS live preflight has a customer-side read-only report CLI,
+  optional STS/read-only API/IAM simulation checks, a no-credential CI smoke
+  gate, sanitized JSON/YAML output, and an architecture ratchet preventing
+  account IDs, ARNs, profile names, endpoint URLs, policy documents,
+  credentials, command output, or customer data from being serialized.
 - [x] BYOC AWS IaC package has a checked-in scaffold manifest, Terraform root,
   placeholder component modules, generator/checker, validator, and readiness
   gate that prove customer-side execution, scaffold-only/non-mutating Terraform

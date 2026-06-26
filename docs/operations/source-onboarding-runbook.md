@@ -27,7 +27,10 @@ signed bundle manifest used by the bootstrap runner, run
 `scripts/generate_byoc_bootstrap_plan.py --check-plan` against the dry-run plan
 used by the customer-side bootstrap runner, run
 `scripts/run_byoc_bootstrap_runner.py --json` to archive a sanitized local
-evidence report with no raw command output or artifact refs, then run
+evidence report with no raw command output or artifact refs, run
+`scripts/run_byoc_aws_live_preflight.py --json` from inside the customer AWS
+execution context to verify the selected account/profile against the
+permissions manifest, then run
 `scripts/run_byoc_post_deploy_validation.py --require-live` from inside the
 customer data plane with the local gateway URL, worker health URLs, production
 database DSN, broker endpoint, and object-store endpoint.
@@ -43,6 +46,41 @@ scripts/run_byoc_preflight_bundle.py --json \
 
 The preflight bundle is a summary only. Keep using the individual commands when
 operators need to diagnose a specific failing section.
+
+For the first real AWS credential test, run the read-only live preflight inside
+the customer boundary. The basic command verifies STS caller identity against
+the account contract in the permissions manifest:
+
+```bash
+scripts/run_byoc_aws_live_preflight.py --json \
+  --dataplane-manifest <customer-dataplane.yaml> \
+  --permissions-manifest <customer-permissions.yaml> \
+  --iam-template <customer-iam-skeleton.yaml> \
+  --output <aws-live-preflight-report.json>
+```
+
+For a deeper customer-side permissions check, add read-only describe/list
+probes and IAM policy simulation for the bootstrap role. The simulation
+principal ARN is used only for the local AWS API call and is not serialized:
+
+```bash
+scripts/run_byoc_aws_live_preflight.py --json \
+  --dataplane-manifest <customer-dataplane.yaml> \
+  --permissions-manifest <customer-permissions.yaml> \
+  --iam-template <customer-iam-skeleton.yaml> \
+  --run-readonly-api-probes \
+  --run-iam-policy-simulation \
+  --simulation-principal-arn <customer-bootstrap-role-arn> \
+  --output <aws-live-preflight-report.json>
+```
+
+The AWS live-preflight report contains only bounded status, booleans, and
+counts. It must not include account IDs, ARNs, profile names, endpoint URLs,
+policy documents, command output, credentials, source payloads, prompts, logs,
+or PII. For a one-command handoff report, the aggregate preflight may include
+this section with `--run-aws-live-preflight`; do not use
+`--skip-aws-live-preflight-aws` for customer readiness because that flag is only
+for CI/report-contract smoke tests.
 
 Where the hosted control-plane intake is enabled, sign and submit the preflight
 summary with the evidence intake key:

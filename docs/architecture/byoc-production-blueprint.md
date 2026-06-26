@@ -134,6 +134,18 @@ Repo-owned artifacts for this first slice:
 - `scripts/validate_byoc_permissions_manifest.py` validates the permission
   manifest against the data-plane manifest and optional AWS IAM skeleton, and
   prints JSON schemas for future IaC/control-plane generators.
+- `services/platform/runtime/byoc_aws_live_preflight.py` and
+  `scripts/run_byoc_aws_live_preflight.py` provide the customer-side
+  read-only AWS credential/profile preflight for the first live account test.
+  The default live run verifies STS caller identity against the permissions
+  manifest account contract; operators may add harmless describe/list probes
+  and IAM `SimulatePrincipalPolicy` for a selected manifest role. The report
+  stores only bounded status, counts, and booleans: no account IDs, ARNs, AWS
+  profile names, endpoint URLs, policy documents, credentials, command output,
+  customer payloads, prompts, logs, embeddings, or PII. CI uses
+  `--skip-live-aws` to prove the report shape without cloud credentials, and
+  architecture ratchets prevent serialized AWS identity fields from being added
+  to the report model.
 - `deploy/byoc/aws/iac-package.example.yaml`,
   `deploy/byoc/aws/terraform/*`, and
   `scripts/generate_byoc_aws_iac_package.py` define the first AWS BYOC IaC
@@ -198,7 +210,10 @@ Repo-owned artifacts for this first slice:
   in-process APIs, then emits only section status, aggregate counts, bounded
   failure codes, and safe execution flags. It never embeds child report
   details, command output, artifact refs, endpoint URLs, credentials, raw
-  payloads, prompts, logs, embeddings, or PII.
+  payloads, prompts, logs, embeddings, or PII. Operators may opt into the
+  sanitized AWS live-preflight section with `--run-aws-live-preflight`; in that
+  mode the aggregate bundle records only whether cloud credentials were
+  required, whether live AWS calls executed, and aggregate check counts.
 - `services/platform/runtime/byoc_preflight_intake.py` and
   `scripts/submit_byoc_preflight_report.py` provide the signed handoff path
   for those aggregate reports. Customer-side automation signs a canonical

@@ -7,6 +7,7 @@ from scripts.check_architecture_ratchets import (
     find_browser_token_storage_violations,
     find_byoc_agent_contract_privacy_violations,
     find_byoc_agent_registration_storage_violations,
+    find_byoc_aws_live_preflight_privacy_violations,
     find_byoc_evidence_receipt_storage_violations,
     find_byoc_manifest_privacy_violations,
     find_byoc_preflight_report_receipt_storage_violations,
@@ -1012,6 +1013,80 @@ class ByocAgentHeartbeat:
 
 def test_byoc_agent_contract_privacy_check_allows_checked_in_contract() -> None:
     assert find_byoc_agent_contract_privacy_violations() == []
+
+
+def test_byoc_aws_live_preflight_privacy_check_flags_serialized_identity(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_aws_live_preflight.py").write_text(
+        """
+from typing import Literal
+
+class ByocAwsLivePreflightPrivacyContract:
+    account_id_included: Literal[False] = False
+    caller_arn_included: Literal[False] = False
+    role_arn_included: Literal[False] = False
+    aws_profile_included: Literal[False] = False
+    aws_endpoint_urls_included: Literal[False] = False
+    credentials_included: Literal[False] = False
+    command_output_included: Literal[False] = False
+    policy_documents_included: Literal[False] = False
+    raw_customer_data_included: Literal[False] = False
+
+class ByocAwsLivePreflightReport:
+    account_id: str
+    caller_arn: str
+    cloud_credentials_required: bool
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_aws_live_preflight_privacy_violations(repo_root=tmp_path)
+
+    assert [violation.check for violation in violations] == [
+        "byoc-aws-live-preflight-privacy",
+        "byoc-aws-live-preflight-privacy",
+    ]
+    assert {violation.line_number for violation in violations} == {15, 16}
+
+
+def test_byoc_aws_live_preflight_privacy_check_requires_false_flags(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_aws_live_preflight.py").write_text(
+        """
+from typing import Literal
+
+class ByocAwsLivePreflightPrivacyContract:
+    account_id_included: bool = True
+    caller_arn_included: Literal[False] = False
+    role_arn_included: Literal[False] = False
+    aws_profile_included: Literal[False] = False
+    aws_endpoint_urls_included: Literal[False] = False
+    credentials_included: Literal[False] = False
+    command_output_included: Literal[False] = False
+    policy_documents_included: Literal[False] = False
+    raw_customer_data_included: Literal[False] = False
+
+class ByocAwsLivePreflightReport:
+    cloud_credentials_required: bool
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_aws_live_preflight_privacy_violations(repo_root=tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-aws-live-preflight-privacy"
+    assert violations[0].line_number == 4
+
+
+def test_byoc_aws_live_preflight_privacy_check_allows_checked_in_contract() -> None:
+    assert find_byoc_aws_live_preflight_privacy_violations() == []
 
 
 def test_byoc_evidence_receipt_storage_check_flags_json_body_columns(

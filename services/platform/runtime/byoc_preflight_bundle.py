@@ -26,6 +26,10 @@ from pydantic import (
     model_validator,
 )
 
+from services.platform.runtime.byoc_aws_live_preflight import (
+    ByocAwsLivePreflightInputs,
+    run_byoc_aws_live_preflight,
+)
 from services.platform.runtime.byoc_aws_iac_package import (
     load_byoc_aws_iac_package,
     render_validation_errors as render_iac_validation_errors,
@@ -169,8 +173,10 @@ class ByocPreflightBundleReport(_StrictModel):
     region: str | None = None
     artifact_revision: str | None = None
     terraform_validate_executed: bool = False
+    aws_live_preflight_requested: bool = False
+    aws_live_preflight_executed: bool = False
     terraform_plan_executed: Literal[False] = False
-    cloud_credentials_required: Literal[False] = False
+    cloud_credentials_required: bool = False
     mutating_cloud_commands_executed: Literal[False] = False
     privacy: ByocPreflightPrivacyContract
     sections: tuple[ByocPreflightSection, ...]
@@ -210,6 +216,15 @@ class ByocPreflightBundleInputs:
     run_terraform_validate: bool = False
     terraform_bin: str = "terraform"
     terraform_validate_timeout_seconds: int = 30
+    run_aws_live_preflight: bool = False
+    skip_aws_live_preflight_aws: bool = False
+    run_aws_readonly_api_probes: bool = False
+    run_aws_iam_policy_simulation: bool = False
+    aws_simulation_principal_arn: str | None = None
+    aws_simulation_role_name: str = "bootstrap_provisioner"
+    aws_profile: str | None = None
+    aws_region: str | None = None
+    expected_aws_account_id: str | None = None
 
 
 def run_byoc_preflight_bundle(
@@ -217,7 +232,7 @@ def run_byoc_preflight_bundle(
 ) -> ByocPreflightBundleReport:
     started = time.monotonic()
     repo_root = inputs.repo_root.resolve()
-    sections = (
+    sections_list = [
         _dataplane_section(inputs),
         _permissions_section(inputs, repo_root=repo_root),
         _aws_iac_package_section(inputs, repo_root=repo_root),
@@ -225,13 +240,20 @@ def run_byoc_preflight_bundle(
         _bootstrap_bundle_section(inputs, repo_root=repo_root),
         _bootstrap_runner_section(inputs, repo_root=repo_root),
         _post_deploy_validation_section(inputs),
-    )
+    ]
+    if inputs.run_aws_live_preflight:
+        sections_list.append(_aws_live_preflight_section(inputs))
+    sections = tuple(sections_list)
     required_sections_passed = all(
         section.status != _FAIL for section in sections if section.required
     )
     identity = _identity_from_inputs(inputs)
     terraform_section = next(
         section for section in sections if section.name == "terraform_validation"
+    )
+    aws_live_section = next(
+        (section for section in sections if section.name == "aws_live_preflight"),
+        None,
     )
     return ByocPreflightBundleReport(
         schema_version="fyralis.byoc.preflight_bundle.v1",
@@ -248,8 +270,16 @@ def run_byoc_preflight_bundle(
         terraform_validate_executed=bool(
             terraform_section.metrics.get("terraform_validate_executed", False)
         ),
+        aws_live_preflight_requested=inputs.run_aws_live_preflight,
+        aws_live_preflight_executed=bool(
+            aws_live_section is not None
+            and aws_live_section.metrics.get("live_aws_api_calls_executed", False)
+        ),
         terraform_plan_executed=False,
-        cloud_credentials_required=False,
+        cloud_credentials_required=bool(
+            aws_live_section is not None
+            and aws_live_section.metrics.get("cloud_credentials_required", False)
+        ),
         mutating_cloud_commands_executed=False,
         privacy=ByocPreflightPrivacyContract(),
         sections=sections,
@@ -508,6 +538,56 @@ def _post_deploy_validation_section(
         report.checks,
         required_checks_passed=report.required_checks_passed,
         metrics={"offline_mode": True, "live_probes_required": False},
+    )
+
+
+def _aws_live_preflight_section(
+    inputs: ByocPreflightBundleInputs,
+) -> ByocPreflightSection:
+    try:
+        report = run_byoc_aws_live_preflight(
+            ByocAwsLivePreflightInputs(
+                dataplane_manifest_path=inputs.dataplane_manifest_path,
+                permissions_manifest_path=inputs.permissions_manifest_path,
+                iam_template_path=inputs.iam_template_path,
+                aws_profile=inputs.aws_profile,
+                aws_region=inputs.aws_region,
+                expected_account_id=inputs.expected_aws_account_id,
+                skip_live_aws=inputs.skip_aws_live_preflight_aws,
+                run_readonly_api_probes=inputs.run_aws_readonly_api_probes,
+                run_iam_policy_simulation=inputs.run_aws_iam_policy_simulation,
+                simulation_principal_arn=inputs.aws_simulation_principal_arn,
+                simulation_role_name=inputs.aws_simulation_role_name,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _load_error_section(
+            "aws_live_preflight",
+            "child_report_failed",
+            1,
+            error_type=type(exc).__name__,
+        )
+    return _checks_section(
+        "aws_live_preflight",
+        report.checks,
+        required_checks_passed=report.required_checks_passed,
+        metrics={
+            "live_aws_api_calls_executed": report.live_aws_api_calls_executed,
+            "cloud_credentials_required": report.cloud_credentials_required,
+            "mutating_aws_api_calls_executed": report.mutating_aws_api_calls_executed,
+            "iam_policy_simulation_requested": (
+                report.iam_policy_simulation_requested
+            ),
+            "iam_policy_simulation_executed": report.iam_policy_simulation_executed,
+            "checked_permission_evaluation_count": (
+                report.checked_permission_evaluation_count
+            ),
+            "denied_permission_evaluation_count": (
+                report.denied_permission_evaluation_count
+            ),
+            "readonly_api_probe_requested": report.readonly_api_probe_requested,
+            "readonly_api_probe_executed": report.readonly_api_probe_executed,
+        },
     )
 
 

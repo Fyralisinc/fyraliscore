@@ -519,6 +519,35 @@ def _byoc_permissions_contract_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_aws_live_preflight_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_aws_live_preflight_contract",
+        _python_command(
+            "scripts/run_byoc_aws_live_preflight.py",
+            "--json",
+            "--skip-live-aws",
+            "--dataplane-manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--permissions-manifest",
+            "deploy/byoc/permissions.example.yaml",
+            "--iam-template",
+            "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        ),
+        details=(
+            "BYOC AWS live preflight emits a sanitized report contract for "
+            "customer-side STS, read-only API probes, and optional IAM "
+            "simulation without requiring cloud credentials in CI."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        },
+    )
+
+
 def _byoc_aws_iac_package_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_aws_iac_package",
@@ -886,6 +915,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _production_env_contract_gate(args),
         _byoc_dataplane_contract_gate(args),
         _byoc_permissions_contract_gate(args),
+        _byoc_aws_live_preflight_gate(args),
         _byoc_aws_iac_package_gate(args),
         _byoc_terraform_plan_validation_gate(args),
         _byoc_bootstrap_bundle_gate(args),

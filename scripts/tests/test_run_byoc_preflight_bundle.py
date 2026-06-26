@@ -21,6 +21,9 @@ def test_run_byoc_preflight_bundle_json_output(capsys) -> None:
     assert payload["execution_mode"] == "customer_side_local"
     assert payload["privacy"]["command_output_included"] is False
     assert payload["terraform_plan_executed"] is False
+    assert payload["aws_live_preflight_requested"] is False
+    assert payload["aws_live_preflight_executed"] is False
+    assert payload["cloud_credentials_required"] is False
     assert {section["name"] for section in payload["sections"]} >= {
         "permissions_manifest",
         "aws_iac_package",
@@ -48,6 +51,31 @@ def test_run_byoc_preflight_bundle_writes_output(
     captured = capsys.readouterr()
     assert code == 0
     assert json.loads(output.read_text(encoding="utf-8")) == json.loads(captured.out)
+
+
+def test_run_byoc_preflight_bundle_can_add_aws_live_contract_smoke(
+    capsys,
+) -> None:
+    code = main([
+        "--json",
+        "--env-file",
+        str(ENV_TEMPLATE),
+        "--run-aws-live-preflight",
+        "--skip-aws-live-preflight-aws",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    rendered = json.dumps(payload)
+    section = _section(payload, "aws_live_preflight")
+    assert code == 0
+    assert payload["aws_live_preflight_requested"] is True
+    assert payload["aws_live_preflight_executed"] is False
+    assert payload["cloud_credentials_required"] is False
+    assert section["status"] == "pass"
+    assert section["metrics"]["live_aws_api_calls_executed"] is False
+    assert "123456789012" not in rendered
+    assert "arn:aws" not in rendered
 
 
 def test_run_byoc_preflight_bundle_reports_failure(

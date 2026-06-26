@@ -89,6 +89,59 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Timeout for --run-terraform-validate; accepted range is 1-300.",
     )
     parser.add_argument(
+        "--run-aws-live-preflight",
+        action="store_true",
+        help=(
+            "Add the read-only AWS live preflight section. By default this runs "
+            "STS identity; add the AWS probe/simulation flags for deeper checks."
+        ),
+    )
+    parser.add_argument(
+        "--skip-aws-live-preflight-aws",
+        action="store_true",
+        help=(
+            "When --run-aws-live-preflight is set, skip AWS API calls and run "
+            "only the local contract/report-shape smoke."
+        ),
+    )
+    parser.add_argument(
+        "--run-aws-readonly-api-probes",
+        action="store_true",
+        help="Run harmless AWS describe/list probes in the live AWS section.",
+    )
+    parser.add_argument(
+        "--run-aws-iam-policy-simulation",
+        action="store_true",
+        help=(
+            "Run IAM SimulatePrincipalPolicy for the selected manifest role. "
+            "Requires --aws-simulation-principal-arn."
+        ),
+    )
+    parser.add_argument(
+        "--aws-simulation-principal-arn",
+        help="AWS role/user ARN to simulate; never serialized into the report.",
+    )
+    parser.add_argument(
+        "--aws-simulation-role-name",
+        default="bootstrap_provisioner",
+        help="Permissions-manifest role to simulate in AWS IAM.",
+    )
+    parser.add_argument(
+        "--aws-profile",
+        help="Optional local AWS profile for live preflight; never serialized.",
+    )
+    parser.add_argument(
+        "--aws-region",
+        help="Optional AWS region override for live preflight.",
+    )
+    parser.add_argument(
+        "--expected-aws-account-id",
+        help=(
+            "Optional expected AWS account override for live preflight; defaults "
+            "to the permissions manifest and is never serialized."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit JSON instead of YAML.",
@@ -119,6 +172,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             terraform_validate_timeout_seconds=(
                 args.terraform_validate_timeout_seconds
             ),
+            run_aws_live_preflight=args.run_aws_live_preflight,
+            skip_aws_live_preflight_aws=args.skip_aws_live_preflight_aws,
+            run_aws_readonly_api_probes=args.run_aws_readonly_api_probes,
+            run_aws_iam_policy_simulation=args.run_aws_iam_policy_simulation,
+            aws_simulation_principal_arn=args.aws_simulation_principal_arn,
+            aws_simulation_role_name=args.aws_simulation_role_name,
+            aws_profile=args.aws_profile,
+            aws_region=args.aws_region,
+            expected_aws_account_id=args.expected_aws_account_id,
         )
     )
     rendered = (
