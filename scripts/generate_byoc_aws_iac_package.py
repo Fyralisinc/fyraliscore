@@ -164,7 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except ImportError as exc:  # pragma: no cover - dev/test installs PyYAML.
             _print_errors("Failed to render YAML", [str(exc)])
             return 1
-        print(yaml.safe_dump(payload, sort_keys=False, width=1_000_000))
+        sys.stdout.write(yaml.safe_dump(payload, sort_keys=False, width=1_000_000))
     return 0
 
 

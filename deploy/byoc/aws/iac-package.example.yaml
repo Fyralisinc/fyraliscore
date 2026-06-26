@@ -6,12 +6,10 @@ cloud_provider: aws
 region: us-east-1
 artifact_revision: 2026.06.26-1
 package_status: scaffold_only
-
 references:
   dataplane_manifest_path: deploy/byoc/dataplane.example.yaml
   permissions_manifest_path: deploy/byoc/permissions.example.yaml
   iam_skeleton_path: deploy/byoc/aws/iam.bootstrap.template.yaml
-
 execution:
   owner: customer_side_runner
   terraform_apply_allowed: false
@@ -19,63 +17,110 @@ execution:
   control_plane_mutating_access_allowed: false
   stores_remote_state_in_control_plane: false
   no_inbound_control_plane_ports: true
-
 terraform:
   root_module_path: deploy/byoc/aws/terraform
-  required_version: ">= 1.6.0"
+  required_version: '>= 1.6.0'
   provider_source: hashicorp/aws
   provider_region_variable: region
   backend: customer_managed
   files:
-    - path: deploy/byoc/aws/terraform/versions.tf
-      role: provider_versions
+  - path: deploy/byoc/aws/terraform/versions.tf
+    role: provider_versions
+    required: true
+    declares_resources: false
+  - path: deploy/byoc/aws/terraform/variables.tf
+    role: input_variables
+    required: true
+    declares_resources: false
+  - path: deploy/byoc/aws/terraform/locals.tf
+    role: deployment_contract
+    required: true
+    declares_resources: false
+  - path: deploy/byoc/aws/terraform/main.tf
+    role: module_calls
+    required: true
+    declares_resources: false
+  - path: deploy/byoc/aws/terraform/outputs.tf
+    role: operator_outputs
+    required: true
+    declares_resources: false
+  modules:
+  - name: iam
+    component: iam
+    source_path: deploy/byoc/aws/terraform/modules/iam
+    scaffold_status: declared
+    files:
+    - path: deploy/byoc/aws/terraform/modules/iam/main.tf
+      role: module_contract
       required: true
       declares_resources: false
-    - path: deploy/byoc/aws/terraform/variables.tf
-      role: input_variables
+  - name: network
+    component: network
+    source_path: deploy/byoc/aws/terraform/modules/network
+    scaffold_status: placeholder
+    files:
+    - path: deploy/byoc/aws/terraform/modules/network/main.tf
+      role: module_contract
       required: true
       declares_resources: false
-    - path: deploy/byoc/aws/terraform/locals.tf
-      role: deployment_contract
+  - name: data_services
+    component: data_services
+    source_path: deploy/byoc/aws/terraform/modules/data_services
+    scaffold_status: placeholder
+    files:
+    - path: deploy/byoc/aws/terraform/modules/data_services/main.tf
+      role: module_contract
       required: true
       declares_resources: false
-    - path: deploy/byoc/aws/terraform/outputs.tf
-      role: operator_outputs
+  - name: runtime
+    component: runtime
+    source_path: deploy/byoc/aws/terraform/modules/runtime
+    scaffold_status: placeholder
+    files:
+    - path: deploy/byoc/aws/terraform/modules/runtime/main.tf
+      role: module_contract
       required: true
       declares_resources: false
-
+  - name: data_plane_agent
+    component: data_plane_agent
+    source_path: deploy/byoc/aws/terraform/modules/data_plane_agent
+    scaffold_status: placeholder
+    files:
+    - path: deploy/byoc/aws/terraform/modules/data_plane_agent/main.tf
+      role: module_contract
+      required: true
+      declares_resources: false
 safety:
   customer_side_bootstrap_required: true
   raw_customer_data_variables_allowed: false
   raw_secret_values_allowed: false
   outbound_control_plane_port: 443
   required_resource_tag_keys:
-    - fyralis:deployment-id
-    - fyralis:customer-id
-    - fyralis:managed
-    - fyralis:environment
+  - fyralis:deployment-id
+  - fyralis:customer-id
+  - fyralis:managed
+  - fyralis:environment
   required_variables:
-    - deployment_id
-    - customer_id
-    - environment
-    - region
-    - aws_account_id
-    - cloudformation_stack_prefix
-    - permissions_boundary_policy_arn
-
+  - deployment_id
+  - customer_id
+  - environment
+  - region
+  - aws_account_id
+  - cloudformation_stack_prefix
+  - permissions_boundary_policy_arn
 components:
-  - name: iam
-    source_contract: deploy/byoc/permissions.example.yaml
-    scaffold_status: declared
-  - name: network
-    source_contract: deploy/byoc/dataplane.example.yaml
-    scaffold_status: placeholder
-  - name: data_services
-    source_contract: deploy/byoc/dataplane.example.yaml
-    scaffold_status: placeholder
-  - name: runtime
-    source_contract: deploy/byoc/bootstrap-bundle.example.yaml
-    scaffold_status: placeholder
-  - name: data_plane_agent
-    source_contract: deploy/byoc/dataplane.example.yaml
-    scaffold_status: placeholder
+- name: iam
+  source_contract: deploy/byoc/permissions.example.yaml
+  scaffold_status: declared
+- name: network
+  source_contract: deploy/byoc/dataplane.example.yaml
+  scaffold_status: placeholder
+- name: data_services
+  source_contract: deploy/byoc/dataplane.example.yaml
+  scaffold_status: placeholder
+- name: runtime
+  source_contract: deploy/byoc/bootstrap-bundle.example.yaml
+  scaffold_status: placeholder
+- name: data_plane_agent
+  source_contract: deploy/byoc/dataplane.example.yaml
+  scaffold_status: placeholder

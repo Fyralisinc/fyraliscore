@@ -19,7 +19,7 @@ Before enabling the first source in a BYOC deployment, run
 `scripts/validate_byoc_permissions_manifest.py` against the customer permission
 manifest and AWS/IAM skeleton used for the deployment, run
 `scripts/generate_byoc_aws_iac_package.py --check-package` against the AWS IaC
-package scaffold and referenced manifests, run
+package scaffold, placeholder component modules, and referenced manifests, run
 `scripts/verify_byoc_bootstrap_bundle.py --verify-local-files` against the
 signed bundle manifest used by the bootstrap runner, run
 `scripts/generate_byoc_bootstrap_plan.py --check-plan` against the dry-run plan

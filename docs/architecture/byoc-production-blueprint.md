@@ -139,11 +139,16 @@ Repo-owned artifacts for this first slice:
   `scripts/generate_byoc_aws_iac_package.py` define the first AWS BYOC IaC
   package scaffold. This slice is intentionally non-mutating: the Terraform
   root declares provider constraints, input variables, required tags, safety
-  locals, and operator outputs only. The generator/checker re-renders the
-  package from the data-plane, permissions, and IAM skeleton manifests, verifies
-  deployment identity, rejects Terraform `resource`, backend, external-data,
-  provisioner, and raw secret/customer-data value fragments, and fails if the
-  checked-in manifest or Terraform scaffold drifts from generated output.
+  locals, component module calls, metadata-only module contract outputs, and
+  operator outputs only. The generated component modules (`iam`, `network`,
+  `data_services`, `runtime`, and `data_plane_agent`) are placeholders with no
+  Terraform resources; they reserve the production module layout and expose
+  contract metadata for plan-only validation. The generator/checker re-renders
+  the package from the data-plane, permissions, and IAM skeleton manifests,
+  verifies deployment identity, rejects Terraform `resource`, backend,
+  external-data, provisioner, and raw secret/customer-data value fragments, and
+  fails if the checked-in manifest or Terraform scaffold drifts from generated
+  output.
   `scripts/validate_byoc_aws_iac_package.py` remains available for direct
   package validation when generation is not needed.
 - `services/platform/runtime/byoc_bootstrap_bundle.py` defines the signed

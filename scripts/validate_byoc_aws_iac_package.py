@@ -182,6 +182,9 @@ def _render_result(
                     "terraform_files": [
                         file.path for file in package.terraform.files
                     ],
+                    "terraform_modules": [
+                        module.source_path for module in package.terraform.modules
+                    ],
                 }
             )
         sys.stdout.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")

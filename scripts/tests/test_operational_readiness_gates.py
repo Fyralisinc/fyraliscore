@@ -74,6 +74,7 @@ def test_byoc_aws_iac_package_gate_passes_for_checked_in_scaffold() -> None:
     assert result.artifacts == {
         "package": "deploy/byoc/aws/iac-package.example.yaml",
         "terraform_root": "deploy/byoc/aws/terraform",
+        "terraform_modules": "deploy/byoc/aws/terraform/modules",
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
         "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",

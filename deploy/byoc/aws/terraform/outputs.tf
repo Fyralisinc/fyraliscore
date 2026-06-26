@@ -22,3 +22,14 @@ output "expected_role_names" {
   description = "Runtime/IAM role names expected by the permissions manifest."
   value       = local.expected_role_names
 }
+
+output "module_contracts" {
+  description = "Metadata-only contracts exposed by each non-mutating component module."
+  value = {
+    iam = module.iam.module_contract
+    network = module.network.module_contract
+    data_services = module.data_services.module_contract
+    runtime = module.runtime.module_contract
+    data_plane_agent = module.data_plane_agent.module_contract
+  }
+}

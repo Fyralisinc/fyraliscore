@@ -46,6 +46,25 @@ def test_checked_in_aws_iac_package_matches_contracts() -> None:
     assert package.package_status == "scaffold_only"
     assert package.execution.terraform_apply_allowed is False
     assert package.execution.no_inbound_control_plane_ports is True
+    assert {file.role for file in package.terraform.files} == {
+        "provider_versions",
+        "input_variables",
+        "deployment_contract",
+        "module_calls",
+        "operator_outputs",
+    }
+    assert {module.component for module in package.terraform.modules} == {
+        "iam",
+        "network",
+        "data_services",
+        "runtime",
+        "data_plane_agent",
+    }
+    assert all(
+        file.declares_resources is False
+        for module in package.terraform.modules
+        for file in module.files
+    )
 
 
 def test_aws_iac_package_schema_is_exportable() -> None:
@@ -114,6 +133,43 @@ def test_aws_iac_package_rejects_sensitive_terraform_fragments(
     }
 
 
+def test_aws_iac_package_rejects_mutating_module_resource(
+    tmp_path: Path,
+) -> None:
+    _copy_package_tree(tmp_path)
+    module_file = tmp_path / "deploy/byoc/aws/terraform/modules/runtime/main.tf"
+    module_file.write_text(
+        module_file.read_text(encoding="utf-8")
+        + '\nresource "aws_cloudwatch_log_group" "raw" { name = "unsafe" }\n',
+        encoding="utf-8",
+    )
+    package = load_byoc_aws_iac_package(
+        tmp_path / "deploy/byoc/aws/iac-package.example.yaml"
+    )
+
+    violations = validate_aws_iac_package_contract(package, repo_root=tmp_path)
+
+    assert "terraform_resource_block_forbidden" in {
+        violation.code for violation in violations
+    }
+
+
+def test_aws_iac_package_rejects_missing_required_module() -> None:
+    data = deepcopy(_package_data())
+    data["terraform"]["modules"] = [
+        module
+        for module in data["terraform"]["modules"]
+        if module["component"] != "network"
+    ]
+    package = ByocAwsIacPackage.model_validate(data)
+
+    violations = validate_aws_iac_package_contract(package, repo_root=ROOT)
+
+    assert "missing_required_terraform_module" in {
+        violation.code for violation in violations
+    }
+
+
 def test_aws_iac_package_rejects_missing_required_tag(
     tmp_path: Path,
 ) -> None:
@@ -144,14 +200,10 @@ def test_aws_iac_package_schema_rejects_apply_enabled() -> None:
 
 
 def _copy_package_tree(tmp_path: Path) -> None:
-    for rel in (
-        "deploy/byoc/aws/iac-package.example.yaml",
-        "deploy/byoc/aws/terraform/versions.tf",
-        "deploy/byoc/aws/terraform/variables.tf",
-        "deploy/byoc/aws/terraform/locals.tf",
-        "deploy/byoc/aws/terraform/outputs.tf",
-    ):
-        source = ROOT / rel
+    for source in (ROOT / "deploy/byoc/aws").rglob("*"):
+        if not source.is_file():
+            continue
+        rel = source.relative_to(ROOT)
         target = tmp_path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")

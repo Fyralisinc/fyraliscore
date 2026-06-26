@@ -30,6 +30,16 @@ def test_generate_byoc_aws_iac_package_json_output(capsys) -> None:
     payload = json.loads(captured.out)
     assert code == 0
     assert payload["terraform"]["root_module_path"] == "deploy/byoc/aws/terraform"
+    assert "module_calls" in {
+        file["role"] for file in payload["terraform"]["files"]
+    }
+    assert {module["component"] for module in payload["terraform"]["modules"]} == {
+        "iam",
+        "network",
+        "data_services",
+        "runtime",
+        "data_plane_agent",
+    }
     assert payload["safety"]["required_variables"] == [
         "deployment_id",
         "customer_id",
@@ -128,6 +138,8 @@ def test_generate_byoc_aws_iac_package_write_mode(
     assert package_output.exists()
     assert (tmp_path / "deploy/byoc/aws/terraform/versions.tf").exists()
     assert (tmp_path / "deploy/byoc/aws/terraform/variables.tf").exists()
+    assert (tmp_path / "deploy/byoc/aws/terraform/main.tf").exists()
+    assert (tmp_path / "deploy/byoc/aws/terraform/modules/iam/main.tf").exists()
 
 
 def test_generate_byoc_aws_iac_package_prints_schema(capsys) -> None:
@@ -142,14 +154,10 @@ def test_generate_byoc_aws_iac_package_prints_schema(capsys) -> None:
 
 
 def _copy_package_tree(tmp_path: Path) -> None:
-    for rel in (
-        "deploy/byoc/aws/iac-package.example.yaml",
-        "deploy/byoc/aws/terraform/versions.tf",
-        "deploy/byoc/aws/terraform/variables.tf",
-        "deploy/byoc/aws/terraform/locals.tf",
-        "deploy/byoc/aws/terraform/outputs.tf",
-    ):
-        source = ROOT / rel
+    for source in (ROOT / "deploy/byoc/aws").rglob("*"):
+        if not source.is_file():
+            continue
+        rel = source.relative_to(ROOT)
         target = tmp_path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")

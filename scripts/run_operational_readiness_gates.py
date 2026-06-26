@@ -535,13 +535,15 @@ def _byoc_aws_iac_package_gate(args: argparse.Namespace) -> GateResult:
         ),
         details=(
             "Checked-in BYOC AWS IaC scaffold is customer-side, non-mutating, "
-            "identity-aligned, and declares required tags and variables."
+            "identity-aligned, and declares required module, tag, and variable "
+            "contracts."
         ),
         timeout_s=min(args.command_timeout_s, 30),
         env=_base_env(),
         artifacts={
             "package": "deploy/byoc/aws/iac-package.example.yaml",
             "terraform_root": "deploy/byoc/aws/terraform",
+            "terraform_modules": "deploy/byoc/aws/terraform/modules",
             "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
             "permissions_manifest": "deploy/byoc/permissions.example.yaml",
             "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",

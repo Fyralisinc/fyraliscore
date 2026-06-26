@@ -55,6 +55,7 @@ def test_validate_byoc_aws_iac_package_json_output(capsys) -> None:
     assert payload["valid"] is True
     assert payload["terraform_root_module"] == "deploy/byoc/aws/terraform"
     assert "deploy/byoc/aws/terraform/variables.tf" in payload["terraform_files"]
+    assert "deploy/byoc/aws/terraform/modules/iam" in payload["terraform_modules"]
 
 
 def test_validate_byoc_aws_iac_package_prints_schema(capsys) -> None:
@@ -94,14 +95,10 @@ def test_validate_byoc_aws_iac_package_reports_contract_errors(
 
 
 def _copy_package_tree(tmp_path: Path) -> None:
-    for rel in (
-        "deploy/byoc/aws/iac-package.example.yaml",
-        "deploy/byoc/aws/terraform/versions.tf",
-        "deploy/byoc/aws/terraform/variables.tf",
-        "deploy/byoc/aws/terraform/locals.tf",
-        "deploy/byoc/aws/terraform/outputs.tf",
-    ):
-        source = ROOT / rel
+    for source in (ROOT / "deploy/byoc/aws").rglob("*"):
+        if not source.is_file():
+            continue
+        rel = source.relative_to(ROOT)
         target = tmp_path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")

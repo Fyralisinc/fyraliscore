@@ -27,7 +27,7 @@ source_artifacts:
   digest: sha256:44008f607c71db0e4fd9f3c85b58c73223cc56c8d2cdf887b56fbf93a6c7b664
 - kind: aws_iac_package
   ref: deploy/byoc/aws/iac-package.example.yaml
-  digest: sha256:f318d86eef646933acc17e4acd08a1c4eeabd9db9a4621ce6a378c447053dbe8
+  digest: sha256:9a85e0802c2ca1bc09ff541357176d7644f227e3e003365cbb08f94fd4499e7f
 - kind: bootstrap_bundle
   ref: deploy/byoc/bootstrap-bundle.example.yaml
   digest: sha256:dae0c21c403ad1c9d50c708a7fa4fcc97aa638da0c6744db8bce6df7604bbf44

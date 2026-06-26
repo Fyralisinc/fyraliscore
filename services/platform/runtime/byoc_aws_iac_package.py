@@ -27,8 +27,10 @@ TerraformFileRole = Literal[
     "provider_versions",
     "input_variables",
     "deployment_contract",
+    "module_calls",
     "operator_outputs",
 ]
+TerraformModuleFileRole = Literal["module_contract"]
 ScaffoldComponentStatus = Literal["declared", "placeholder"]
 
 _DEPLOYMENT_ID_RE = re.compile(r"^dep_[A-Za-z0-9][A-Za-z0-9_-]{5,79}$")
@@ -51,10 +53,23 @@ _FORBIDDEN_TERRAFORM_FRAGMENTS = (
     "token_value",
 )
 _REQUIRED_TERRAFORM_FILE_ROLES = frozenset(
-    {"provider_versions", "input_variables", "deployment_contract", "operator_outputs"}
+    {
+        "provider_versions",
+        "input_variables",
+        "deployment_contract",
+        "module_calls",
+        "operator_outputs",
+    }
 )
 _REQUIRED_COMPONENTS = frozenset(
     {"iam", "network", "data_services", "runtime", "data_plane_agent"}
+)
+_COMPONENT_SPECS = (
+    ("iam", "permissions_manifest", "declared"),
+    ("network", "dataplane_manifest", "placeholder"),
+    ("data_services", "dataplane_manifest", "placeholder"),
+    ("runtime", "bootstrap_bundle", "placeholder"),
+    ("data_plane_agent", "dataplane_manifest", "placeholder"),
 )
 _DEFAULT_REQUIRED_VARIABLES = (
     "deployment_id",
@@ -128,6 +143,49 @@ class ByocTerraformFile(_StrictModel):
         return _relative_path(value)
 
 
+class ByocTerraformModuleFile(_StrictModel):
+    path: str
+    role: TerraformModuleFileRole = "module_contract"
+    required: Literal[True] = True
+    declares_resources: Literal[False] = False
+
+    @field_validator("path")
+    @classmethod
+    def _path_must_be_relative(cls, value: str) -> str:
+        return _relative_path(value)
+
+
+class ByocTerraformModule(_StrictModel):
+    name: str
+    component: str
+    source_path: str
+    scaffold_status: ScaffoldComponentStatus
+    files: tuple[ByocTerraformModuleFile, ...]
+
+    @field_validator("name", "component")
+    @classmethod
+    def _name_must_be_bounded(cls, value: str) -> str:
+        value = value.strip()
+        if not re.match(r"^[a-z][a-z0-9_]{1,80}$", value):
+            raise ValueError("Terraform module names must be bounded codes")
+        return value
+
+    @field_validator("source_path")
+    @classmethod
+    def _source_path_must_be_relative(cls, value: str) -> str:
+        return _relative_path(value)
+
+    @field_validator("files")
+    @classmethod
+    def _files_must_be_present(
+        cls,
+        value: tuple[ByocTerraformModuleFile, ...],
+    ) -> tuple[ByocTerraformModuleFile, ...]:
+        if not value:
+            raise ValueError("Terraform module files must not be empty")
+        return value
+
+
 class ByocTerraformScaffold(_StrictModel):
     root_module_path: str
     required_version: str
@@ -135,6 +193,7 @@ class ByocTerraformScaffold(_StrictModel):
     provider_region_variable: Literal["region"] = "region"
     backend: TerraformBackend = "customer_managed"
     files: tuple[ByocTerraformFile, ...]
+    modules: tuple[ByocTerraformModule, ...]
 
     @field_validator("root_module_path")
     @classmethod
@@ -157,6 +216,16 @@ class ByocTerraformScaffold(_StrictModel):
     ) -> tuple[ByocTerraformFile, ...]:
         if not value:
             raise ValueError("files must not be empty")
+        return value
+
+    @field_validator("modules")
+    @classmethod
+    def _modules_must_be_present(
+        cls,
+        value: tuple[ByocTerraformModule, ...],
+    ) -> tuple[ByocTerraformModule, ...]:
+        if not value:
+            raise ValueError("modules must not be empty")
         return value
 
 
@@ -303,6 +372,31 @@ def validate_aws_iac_package_contract(
             )
         )
 
+    module_components = [module.component for module in package.terraform.modules]
+    for name in sorted(_REQUIRED_COMPONENTS - set(module_components)):
+        violations.append(
+            _violation(
+                "terraform.modules",
+                "missing_required_terraform_module",
+                f"{name!r} module is required in the AWS IaC scaffold",
+            )
+        )
+    duplicate_module_components = sorted(
+        {
+            component
+            for component in module_components
+            if module_components.count(component) > 1
+        }
+    )
+    for component in duplicate_module_components:
+        violations.append(
+            _violation(
+                "terraform.modules",
+                "duplicate_terraform_module_component",
+                f"{component!r} is listed by more than one Terraform module",
+            )
+        )
+
     root = repo_root or Path.cwd()
     all_tf_text = ""
     for file in package.terraform.files:
@@ -310,6 +404,25 @@ def validate_aws_iac_package_contract(
         path = root / file.path
         if path.exists():
             all_tf_text += "\n" + path.read_text(encoding="utf-8", errors="ignore")
+    for module in package.terraform.modules:
+        violations.extend(
+            _validate_terraform_module(
+                module,
+                package,
+                component_status={
+                    component.name: component.scaffold_status
+                    for component in package.components
+                },
+                repo_root=root,
+            )
+        )
+        for file in module.files:
+            path = root / file.path
+            if path.exists():
+                all_tf_text += "\n" + path.read_text(
+                    encoding="utf-8",
+                    errors="ignore",
+                )
     for variable in package.safety.required_variables:
         if variable not in _declared_variables(all_tf_text):
             violations.append(
@@ -364,6 +477,12 @@ def generate_aws_iac_package(
             declares_resources=False,
         ),
         ByocTerraformFile(
+            path=f"{root_path}/main.tf",
+            role="module_calls",
+            required=True,
+            declares_resources=False,
+        ),
+        ByocTerraformFile(
             path=f"{root_path}/outputs.tf",
             role="operator_outputs",
             required=True,
@@ -401,6 +520,7 @@ def generate_aws_iac_package(
             provider_region_variable="region",
             backend="customer_managed",
             files=terraform_files,
+            modules=_terraform_modules(root_path),
         ),
         safety=ByocAwsIacSafety(
             customer_side_bootstrap_required=True,
@@ -410,33 +530,34 @@ def generate_aws_iac_package(
             required_resource_tag_keys=permissions_manifest.aws.required_resource_tag_keys,
             required_variables=_DEFAULT_REQUIRED_VARIABLES,
         ),
-        components=(
+        components=tuple(
             ByocAwsIacComponent(
-                name="iam",
-                source_contract=_path_string(source_paths["permissions_manifest"]),
-                scaffold_status="declared",
-            ),
-            ByocAwsIacComponent(
-                name="network",
-                source_contract=_path_string(source_paths["dataplane_manifest"]),
-                scaffold_status="placeholder",
-            ),
-            ByocAwsIacComponent(
-                name="data_services",
-                source_contract=_path_string(source_paths["dataplane_manifest"]),
-                scaffold_status="placeholder",
-            ),
-            ByocAwsIacComponent(
-                name="runtime",
-                source_contract=_path_string(source_paths["bootstrap_bundle"]),
-                scaffold_status="placeholder",
-            ),
-            ByocAwsIacComponent(
-                name="data_plane_agent",
-                source_contract=_path_string(source_paths["dataplane_manifest"]),
-                scaffold_status="placeholder",
-            ),
+                name=name,
+                source_contract=_path_string(source_paths[source_key]),
+                scaffold_status=status,
+            )
+            for name, source_key, status in _COMPONENT_SPECS
         ),
+    )
+
+
+def _terraform_modules(root_path: str) -> tuple[ByocTerraformModule, ...]:
+    return tuple(
+        ByocTerraformModule(
+            name=name,
+            component=name,
+            source_path=f"{root_path}/modules/{name}",
+            scaffold_status=status,
+            files=(
+                ByocTerraformModuleFile(
+                    path=f"{root_path}/modules/{name}/main.tf",
+                    role="module_contract",
+                    required=True,
+                    declares_resources=False,
+                ),
+            ),
+        )
+        for name, _, status in _COMPONENT_SPECS
     )
 
 
@@ -453,7 +574,13 @@ def render_terraform_scaffold(
             package,
             iam_template=iam_template,
         ),
-        by_role["operator_outputs"]: _render_outputs_tf(),
+        by_role["module_calls"]: _render_main_tf(package),
+        by_role["operator_outputs"]: _render_outputs_tf(package),
+        **{
+            file.path: _render_module_contract_tf(module)
+            for module in package.terraform.modules
+            for file in module.files
+        },
     }
 
 
@@ -503,10 +630,127 @@ def _validate_terraform_file(
             )
         ]
     text = full_path.read_text(encoding="utf-8", errors="ignore")
-    if file.declares_resources is False and _TERRAFORM_RESOURCE_RE.search(text):
+    violations.extend(
+        _validate_terraform_text(
+            text,
+            path=f"terraform.files.{file.role}",
+            declares_resources=file.declares_resources,
+        )
+    )
+    return violations
+
+
+def _validate_terraform_module(
+    module: ByocTerraformModule,
+    package: ByocAwsIacPackage,
+    *,
+    component_status: Mapping[str, ScaffoldComponentStatus],
+    repo_root: Path,
+) -> list[ByocAwsIacPackageViolation]:
+    violations: list[ByocAwsIacPackageViolation] = []
+    root_path = Path(package.terraform.root_module_path)
+    modules_root = root_path / "modules"
+    module_path = Path(module.source_path)
+    if root_path not in (module_path, *module_path.parents):
         violations.append(
             _violation(
-                f"terraform.files.{file.role}",
+                f"terraform.modules.{module.name}.source_path",
+                "terraform_module_outside_root",
+                "Terraform module source paths must live under root_module_path",
+            )
+        )
+    if module_path.parent != modules_root:
+        violations.append(
+            _violation(
+                f"terraform.modules.{module.name}.source_path",
+                "terraform_module_not_direct_child",
+                "Terraform module source paths must live under root_module_path/modules",
+            )
+        )
+    if module.name != module.component:
+        violations.append(
+            _violation(
+                f"terraform.modules.{module.name}.component",
+                "terraform_module_name_mismatch",
+                "Terraform module name must match its BYOC component",
+            )
+        )
+    expected_status = component_status.get(module.component)
+    if expected_status is None:
+        violations.append(
+            _violation(
+                f"terraform.modules.{module.name}.component",
+                "terraform_module_component_unknown",
+                "Terraform module component must match a declared BYOC component",
+            )
+        )
+    elif module.scaffold_status != expected_status:
+        violations.append(
+            _violation(
+                f"terraform.modules.{module.name}.scaffold_status",
+                "terraform_module_status_mismatch",
+                "Terraform module status must match the declared BYOC component",
+            )
+        )
+    for file in module.files:
+        violations.extend(
+            _validate_terraform_module_file(
+                file,
+                module=module,
+                repo_root=repo_root,
+            )
+        )
+    return violations
+
+
+def _validate_terraform_module_file(
+    file: ByocTerraformModuleFile,
+    *,
+    module: ByocTerraformModule,
+    repo_root: Path,
+) -> list[ByocAwsIacPackageViolation]:
+    violations: list[ByocAwsIacPackageViolation] = []
+    module_path = Path(module.source_path)
+    file_path = Path(file.path)
+    if module_path not in (file_path, *file_path.parents):
+        violations.append(
+            _violation(
+                f"terraform.modules.{module.name}.files.{file.role}.path",
+                "terraform_module_file_outside_module",
+                "Terraform module files must live under the module source path",
+            )
+        )
+    full_path = repo_root / file.path
+    if not full_path.exists():
+        return [
+            _violation(
+                f"terraform.modules.{module.name}.files.{file.role}.path",
+                "terraform_module_file_missing",
+                "Terraform module scaffold file is missing",
+            )
+        ]
+    text = full_path.read_text(encoding="utf-8", errors="ignore")
+    violations.extend(
+        _validate_terraform_text(
+            text,
+            path=f"terraform.modules.{module.name}.files.{file.role}",
+            declares_resources=file.declares_resources,
+        )
+    )
+    return violations
+
+
+def _validate_terraform_text(
+    text: str,
+    *,
+    path: str,
+    declares_resources: bool,
+) -> list[ByocAwsIacPackageViolation]:
+    violations: list[ByocAwsIacPackageViolation] = []
+    if declares_resources is False and _TERRAFORM_RESOURCE_RE.search(text):
+        violations.append(
+            _violation(
+                path,
                 "terraform_resource_block_forbidden",
                 "scaffold-only AWS IaC package must not declare resource blocks",
             )
@@ -514,7 +758,7 @@ def _validate_terraform_file(
     if _TERRAFORM_BACKEND_RE.search(text):
         violations.append(
             _violation(
-                f"terraform.files.{file.role}",
+                path,
                 "terraform_backend_block_forbidden",
                 "scaffold must not hard-code Terraform backend state",
             )
@@ -522,7 +766,7 @@ def _validate_terraform_file(
     if _TERRAFORM_EXTERNAL_DATA_RE.search(text):
         violations.append(
             _violation(
-                f"terraform.files.{file.role}",
+                path,
                 "terraform_external_data_forbidden",
                 "scaffold must not execute external data providers",
             )
@@ -530,7 +774,7 @@ def _validate_terraform_file(
     if _TERRAFORM_PROVISIONER_RE.search(text):
         violations.append(
             _violation(
-                f"terraform.files.{file.role}",
+                path,
                 "terraform_provisioner_block_forbidden",
                 "scaffold must not execute Terraform provisioners",
             )
@@ -540,7 +784,7 @@ def _validate_terraform_file(
         if fragment in lowered:
             violations.append(
                 _violation(
-                    f"terraform.files.{file.role}",
+                    path,
                     "terraform_sensitive_or_exec_fragment_forbidden",
                     f"{fragment!r} must not appear in scaffold-only IaC",
                 )
@@ -711,7 +955,33 @@ def _render_locals_tf(
 """
 
 
-def _render_outputs_tf() -> str:
+def _render_main_tf(package: ByocAwsIacPackage) -> str:
+    blocks: list[str] = []
+    root_path = Path(package.terraform.root_module_path)
+    for module in package.terraform.modules:
+        module_source = Path(module.source_path).relative_to(root_path).as_posix()
+        blocks.append(
+            f"""module "{module.name}" {{
+  source = "./{module_source}"
+
+  deployment_id                 = var.deployment_id
+  customer_id                   = var.customer_id
+  environment                   = var.environment
+  region                        = var.region
+  aws_account_id                = var.aws_account_id
+  cloudformation_stack_prefix   = var.cloudformation_stack_prefix
+  permissions_boundary_policy_arn = var.permissions_boundary_policy_arn
+  required_tags                 = local.required_tags
+}}"""
+        )
+    return "\n\n".join(blocks) + "\n"
+
+
+def _render_outputs_tf(package: ByocAwsIacPackage) -> str:
+    module_lines = "\n".join(
+        f"    {module.name} = module.{module.name}.module_contract"
+        for module in package.terraform.modules
+    )
     return """output "deployment_id" {
   description = "Deployment identifier accepted by this AWS BYOC scaffold."
   value       = var.deployment_id
@@ -736,6 +1006,81 @@ output "expected_role_names" {
   description = "Runtime/IAM role names expected by the permissions manifest."
   value       = local.expected_role_names
 }
+""" + f"""
+output "module_contracts" {{
+  description = "Metadata-only contracts exposed by each non-mutating component module."
+  value = {{
+{module_lines}
+  }}
+}}
+"""
+
+
+def _render_module_contract_tf(module: ByocTerraformModule) -> str:
+    return f"""variable "deployment_id" {{
+  description = "Stable Fyralis BYOC deployment identifier."
+  type        = string
+}}
+
+variable "customer_id" {{
+  description = "Stable Fyralis customer identifier."
+  type        = string
+}}
+
+variable "environment" {{
+  description = "Deployment environment."
+  type        = string
+}}
+
+variable "region" {{
+  description = "AWS region for customer-owned data-plane resources."
+  type        = string
+}}
+
+variable "aws_account_id" {{
+  description = "Customer AWS account identifier that owns the data plane."
+  type        = string
+}}
+
+variable "cloudformation_stack_prefix" {{
+  description = "Customer-approved stack prefix for Fyralis BYOC resources."
+  type        = string
+}}
+
+variable "permissions_boundary_policy_arn" {{
+  description = "Customer-owned IAM permissions boundary applied to Fyralis roles."
+  type        = string
+}}
+
+variable "required_tags" {{
+  description = "Required customer-resource tags supplied by the root module."
+  type        = map(string)
+}}
+
+locals {{
+  module_contract = {{
+    component                     = "{module.component}"
+    scaffold_status               = "{module.scaffold_status}"
+    deployment_id                 = var.deployment_id
+    customer_id                   = var.customer_id
+    environment                   = var.environment
+    region                        = var.region
+    aws_account_id                = var.aws_account_id
+    cloudformation_stack_prefix   = var.cloudformation_stack_prefix
+    permissions_boundary_policy_arn = var.permissions_boundary_policy_arn
+    resource_blocks_declared      = false
+    mutating_actions_allowed      = false
+    customer_data_inputs_allowed  = false
+    sensitive_inputs_allowed      = false
+    control_plane_inbound_allowed = false
+    required_tag_keys             = sort(keys(var.required_tags))
+  }}
+}}
+
+output "module_contract" {{
+  description = "Metadata-only, non-mutating BYOC component module contract."
+  value       = local.module_contract
+}}
 """
 
 
