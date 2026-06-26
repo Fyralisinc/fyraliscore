@@ -545,6 +545,29 @@ def _byoc_bootstrap_bundle_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_bootstrap_plan_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_bootstrap_plan",
+        _python_command(
+            "scripts/generate_byoc_bootstrap_plan.py",
+            "--check-plan",
+            "deploy/byoc/bootstrap-plan.example.yaml",
+        ),
+        details=(
+            "Checked-in BYOC bootstrap dry-run plan matches current manifests "
+            "and contains no mutating cloud commands."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+            "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        },
+    )
+
+
 def _byoc_post_deploy_validation_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_post_deploy_validation",
@@ -602,6 +625,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_dataplane_contract_gate(args),
         _byoc_permissions_contract_gate(args),
         _byoc_bootstrap_bundle_gate(args),
+        _byoc_bootstrap_plan_gate(args),
         _byoc_post_deploy_validation_gate(args),
         _github_required_checks_gate(args),
         _feedback_gap_gate(args),

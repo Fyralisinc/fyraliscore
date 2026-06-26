@@ -19,7 +19,9 @@ Before enabling the first source in a BYOC deployment, run
 `scripts/validate_byoc_permissions_manifest.py` against the customer permission
 manifest and AWS/IAM skeleton used for the deployment, run
 `scripts/verify_byoc_bootstrap_bundle.py --verify-local-files` against the
-signed bundle manifest used by the bootstrap runner, then run
+signed bundle manifest used by the bootstrap runner, run
+`scripts/generate_byoc_bootstrap_plan.py --check-plan` against the dry-run plan
+used by the customer-side bootstrap runner, then run
 `scripts/run_byoc_post_deploy_validation.py --require-live` from inside the
 customer data plane with the local gateway URL, worker health URLs, production
 database DSN, broker endpoint, and object-store endpoint. Source onboarding

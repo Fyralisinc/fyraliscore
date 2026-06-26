@@ -99,6 +99,15 @@ Repo-owned artifacts for this first slice:
 - `scripts/verify_byoc_bootstrap_bundle.py` verifies the bundle locally and can
   print the cosign verification commands a customer-side bootstrap runner must
   execute before applying cloud resources.
+- `services/platform/runtime/byoc_bootstrap_plan.py` defines the non-mutating
+  bootstrap dry-run plan contract. It orders prerequisite validation, artifact
+  verification, identity review, private network planning, stateful service
+  planning, runtime rendering, agent enrollment preparation, post-deploy
+  validation, and handoff without requiring cloud credentials.
+- `deploy/byoc/bootstrap-plan.example.yaml` is the generated checked-in dry-run
+  plan for the example manifests, and
+  `scripts/generate_byoc_bootstrap_plan.py --check-plan` proves it still
+  matches the current contracts.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -811,6 +820,9 @@ Validation sequence:
    - Produce/consume test event on every per-source topic.
    - Verify DLQ topic and DLQ writer.
 6. Application checks
+   - Verify the checked-in bootstrap dry-run plan matches current manifests.
+   - Confirm the plan contains no mutating cloud commands or credential
+     requirements.
    - Verify the signed bootstrap bundle manifest and all local artifact hashes.
    - Verify bootstrap runner cosign checks completed before any apply step.
    - `/healthz`, `/readyz`, `/metrics` for gateway and workers.
@@ -1267,6 +1279,8 @@ Minimum gates before first enterprise customer:
   contract-backed before generating production Terraform/CloudFormation.
 - Keep the bootstrap bundle manifest contract-backed so images, Helm charts,
   IaC templates, SBOMs, and signatures are verified before cloud apply.
+- Keep the generated dry-run bootstrap plan contract-backed so the
+  customer-side runner has an ordered non-mutating plan before live apply.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment and heartbeat schema contract-backed;
