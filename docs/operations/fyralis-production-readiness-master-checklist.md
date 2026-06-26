@@ -91,10 +91,11 @@ Every checklist item is done only when:
   unbounded `iam:PassRole`, mutating control-plane roles, missing boundaries,
   and control-plane access to customer data or secret material.
 - [x] BYOC AWS IaC package has a checked-in scaffold manifest, Terraform root,
-  validator, and readiness gate that prove customer-side execution,
-  scaffold-only/non-mutating Terraform files, required tags/variables, identity
-  alignment with the data-plane/permissions/IAM contracts, and no raw
-  secret/customer-data values before live module work begins.
+  generator/checker, validator, and readiness gate that prove customer-side
+  execution, scaffold-only/non-mutating Terraform files, required
+  tags/variables, identity alignment with the data-plane/permissions/IAM
+  contracts, generated-output drift detection, and no raw secret/customer-data
+  values before live module work begins.
 - [x] BYOC bootstrap artifacts have a checked-in signed-bundle manifest,
   verifier CLI, local hash checks for checked-in IaC files, digest-pinned
   image/chart/SBOM refs, and a readiness gate before cloud apply work begins.

@@ -136,14 +136,16 @@ Repo-owned artifacts for this first slice:
   prints JSON schemas for future IaC/control-plane generators.
 - `deploy/byoc/aws/iac-package.example.yaml`,
   `deploy/byoc/aws/terraform/*`, and
-  `scripts/validate_byoc_aws_iac_package.py` define the first AWS BYOC IaC
+  `scripts/generate_byoc_aws_iac_package.py` define the first AWS BYOC IaC
   package scaffold. This slice is intentionally non-mutating: the Terraform
   root declares provider constraints, input variables, required tags, safety
-  locals, and operator outputs only. The validator verifies deployment identity
-  against the data-plane, permissions, and IAM skeleton manifests; rejects
-  Terraform `resource`, backend, external-data, provisioner, and raw
-  secret/customer-data value fragments; and proves required tag/variable
-  declarations are present before live AWS module work begins.
+  locals, and operator outputs only. The generator/checker re-renders the
+  package from the data-plane, permissions, and IAM skeleton manifests, verifies
+  deployment identity, rejects Terraform `resource`, backend, external-data,
+  provisioner, and raw secret/customer-data value fragments, and fails if the
+  checked-in manifest or Terraform scaffold drifts from generated output.
+  `scripts/validate_byoc_aws_iac_package.py` remains available for direct
+  package validation when generation is not needed.
 - `services/platform/runtime/byoc_bootstrap_bundle.py` defines the signed
   bootstrap bundle contract. It requires digest-pinned image/chart/IaC/SBOM
   artifacts, Sigstore bundle metadata, matching signing identity, deployment

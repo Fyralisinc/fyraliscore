@@ -5,7 +5,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -56,6 +56,36 @@ _REQUIRED_TERRAFORM_FILE_ROLES = frozenset(
 _REQUIRED_COMPONENTS = frozenset(
     {"iam", "network", "data_services", "runtime", "data_plane_agent"}
 )
+_DEFAULT_REQUIRED_VARIABLES = (
+    "deployment_id",
+    "customer_id",
+    "environment",
+    "region",
+    "aws_account_id",
+    "cloudformation_stack_prefix",
+    "permissions_boundary_policy_arn",
+)
+_VARIABLE_DESCRIPTIONS = {
+    "deployment_id": (
+        "Stable Fyralis BYOC deployment identifier from the data-plane manifest."
+    ),
+    "customer_id": "Stable Fyralis customer identifier from the data-plane manifest.",
+    "environment": "Deployment environment from the data-plane manifest.",
+    "region": "AWS region for customer-owned data-plane resources.",
+    "aws_account_id": "Customer AWS account identifier that owns the data plane.",
+    "cloudformation_stack_prefix": (
+        "Customer-approved stack prefix for Fyralis BYOC resources."
+    ),
+    "permissions_boundary_policy_arn": (
+        "Customer-owned IAM permissions boundary applied to Fyralis roles."
+    ),
+}
+_TAG_VALUE_EXPRESSION = {
+    "fyralis:deployment-id": "var.deployment_id",
+    "fyralis:customer-id": "var.customer_id",
+    "fyralis:managed": '"true"',
+    "fyralis:environment": "var.environment",
+}
 
 
 class _StrictModel(BaseModel):
@@ -302,6 +332,131 @@ def validate_aws_iac_package_contract(
     return violations
 
 
+def generate_aws_iac_package(
+    *,
+    dataplane_manifest: ByocDataPlaneManifest,
+    permissions_manifest: ByocPermissionsManifest,
+    iam_template: ByocAwsIamTemplateSkeleton,
+    source_paths: Mapping[str, Path],
+    terraform_root_path: Path = Path("deploy/byoc/aws/terraform"),
+    package_status: PackageStatus = "scaffold_only",
+) -> ByocAwsIacPackage:
+    if permissions_manifest.aws is None:
+        raise ValueError("AWS permissions manifest block is required")
+    root_path = _path_string(terraform_root_path)
+    terraform_files = (
+        ByocTerraformFile(
+            path=f"{root_path}/versions.tf",
+            role="provider_versions",
+            required=True,
+            declares_resources=False,
+        ),
+        ByocTerraformFile(
+            path=f"{root_path}/variables.tf",
+            role="input_variables",
+            required=True,
+            declares_resources=False,
+        ),
+        ByocTerraformFile(
+            path=f"{root_path}/locals.tf",
+            role="deployment_contract",
+            required=True,
+            declares_resources=False,
+        ),
+        ByocTerraformFile(
+            path=f"{root_path}/outputs.tf",
+            role="operator_outputs",
+            required=True,
+            declares_resources=False,
+        ),
+    )
+    return ByocAwsIacPackage(
+        schema_version="fyralis.byoc.aws.iac_package.v1",
+        deployment_id=dataplane_manifest.deployment_id,
+        customer_id=dataplane_manifest.customer_id,
+        environment=dataplane_manifest.environment,
+        cloud_provider="aws",
+        region=dataplane_manifest.region,
+        artifact_revision=dataplane_manifest.artifact_revision,
+        package_status=package_status,
+        references=ByocAwsIacReferences(
+            dataplane_manifest_path=_path_string(source_paths["dataplane_manifest"]),
+            permissions_manifest_path=_path_string(
+                source_paths["permissions_manifest"]
+            ),
+            iam_skeleton_path=_path_string(source_paths["iam_skeleton"]),
+        ),
+        execution=ByocAwsIacExecution(
+            owner="customer_side_runner",
+            terraform_apply_allowed=False,
+            cloud_credentials_required_for_validation=False,
+            control_plane_mutating_access_allowed=False,
+            stores_remote_state_in_control_plane=False,
+            no_inbound_control_plane_ports=True,
+        ),
+        terraform=ByocTerraformScaffold(
+            root_module_path=root_path,
+            required_version=">= 1.6.0",
+            provider_source="hashicorp/aws",
+            provider_region_variable="region",
+            backend="customer_managed",
+            files=terraform_files,
+        ),
+        safety=ByocAwsIacSafety(
+            customer_side_bootstrap_required=True,
+            raw_customer_data_variables_allowed=False,
+            raw_secret_values_allowed=False,
+            outbound_control_plane_port=443,
+            required_resource_tag_keys=permissions_manifest.aws.required_resource_tag_keys,
+            required_variables=_DEFAULT_REQUIRED_VARIABLES,
+        ),
+        components=(
+            ByocAwsIacComponent(
+                name="iam",
+                source_contract=_path_string(source_paths["permissions_manifest"]),
+                scaffold_status="declared",
+            ),
+            ByocAwsIacComponent(
+                name="network",
+                source_contract=_path_string(source_paths["dataplane_manifest"]),
+                scaffold_status="placeholder",
+            ),
+            ByocAwsIacComponent(
+                name="data_services",
+                source_contract=_path_string(source_paths["dataplane_manifest"]),
+                scaffold_status="placeholder",
+            ),
+            ByocAwsIacComponent(
+                name="runtime",
+                source_contract=_path_string(source_paths["bootstrap_bundle"]),
+                scaffold_status="placeholder",
+            ),
+            ByocAwsIacComponent(
+                name="data_plane_agent",
+                source_contract=_path_string(source_paths["dataplane_manifest"]),
+                scaffold_status="placeholder",
+            ),
+        ),
+    )
+
+
+def render_terraform_scaffold(
+    package: ByocAwsIacPackage,
+    *,
+    iam_template: ByocAwsIamTemplateSkeleton,
+) -> dict[str, str]:
+    by_role = {file.role: file.path for file in package.terraform.files}
+    return {
+        by_role["provider_versions"]: _render_versions_tf(package),
+        by_role["input_variables"]: _render_variables_tf(package),
+        by_role["deployment_contract"]: _render_locals_tf(
+            package,
+            iam_template=iam_template,
+        ),
+        by_role["operator_outputs"]: _render_outputs_tf(),
+    }
+
+
 def byoc_aws_iac_package_json_schema() -> dict[str, Any]:
     return ByocAwsIacPackage.model_json_schema()
 
@@ -482,6 +637,112 @@ def _declared_variables(terraform_text: str) -> set[str]:
     return {match.group("name") for match in _TERRAFORM_VARIABLE_RE.finditer(terraform_text)}
 
 
+def _render_versions_tf(package: ByocAwsIacPackage) -> str:
+    return f"""terraform {{
+  required_version = "{package.terraform.required_version}"
+
+  required_providers {{
+    aws = {{
+      source  = "{package.terraform.provider_source}"
+      version = ">= 5.0, < 6.0"
+    }}
+  }}
+}}
+
+provider "aws" {{
+  region = var.{package.terraform.provider_region_variable}
+
+  default_tags {{
+    tags = local.required_tags
+  }}
+}}
+"""
+
+
+def _render_variables_tf(package: ByocAwsIacPackage) -> str:
+    blocks: list[str] = []
+    for name in package.safety.required_variables:
+        description = _VARIABLE_DESCRIPTIONS.get(name, f"Required BYOC value {name}.")
+        blocks.append(
+            f"""variable "{name}" {{
+  description = "{description}"
+  type        = string
+}}"""
+        )
+    return "\n\n".join(blocks) + "\n"
+
+
+def _render_locals_tf(
+    package: ByocAwsIacPackage,
+    *,
+    iam_template: ByocAwsIamTemplateSkeleton,
+) -> str:
+    tag_keys = package.safety.required_resource_tag_keys
+    max_key_len = max(len(f'"{key}"') for key in tag_keys)
+    tag_lines = []
+    for key in tag_keys:
+        expression = _TAG_VALUE_EXPRESSION.get(key)
+        if expression is None:
+            expression = f'"<set-{key.replace(":", "-")}>"'
+        rendered_key = f'"{key}"'
+        tag_lines.append(
+            f"    {rendered_key}{' ' * (max_key_len - len(rendered_key))} = {expression}"
+        )
+    role_lines = "\n".join(f'    "{role.name}",' for role in iam_template.roles)
+    return f"""locals {{
+  required_tags = {{
+{chr(10).join(tag_lines)}
+  }}
+
+  scaffold_contract = {{
+    package_status                         = "{package.package_status}"
+    customer_side_bootstrap_required       = {str(package.safety.customer_side_bootstrap_required).lower()}
+    terraform_apply_allowed                = {str(package.execution.terraform_apply_allowed).lower()}
+    control_plane_mutating_access_allowed  = {str(package.execution.control_plane_mutating_access_allowed).lower()}
+    stores_remote_state_in_control_plane   = {str(package.execution.stores_remote_state_in_control_plane).lower()}
+    no_inbound_control_plane_ports         = {str(package.execution.no_inbound_control_plane_ports).lower()}
+    outbound_control_plane_port            = {package.safety.outbound_control_plane_port}
+  }}
+
+  expected_role_names = [
+{role_lines}
+  ]
+}}
+"""
+
+
+def _render_outputs_tf() -> str:
+    return """output "deployment_id" {
+  description = "Deployment identifier accepted by this AWS BYOC scaffold."
+  value       = var.deployment_id
+}
+
+output "customer_id" {
+  description = "Customer identifier accepted by this AWS BYOC scaffold."
+  value       = var.customer_id
+}
+
+output "required_tags" {
+  description = "Tags every future customer-owned Fyralis resource must carry."
+  value       = local.required_tags
+}
+
+output "scaffold_contract" {
+  description = "Non-mutating safety contract enforced by the package validator."
+  value       = local.scaffold_contract
+}
+
+output "expected_role_names" {
+  description = "Runtime/IAM role names expected by the permissions manifest."
+  value       = local.expected_role_names
+}
+"""
+
+
+def _path_string(path: Path) -> str:
+    return path.as_posix()
+
+
 def _relative_path(value: str) -> str:
     value = value.strip()
     if not value:
@@ -519,7 +780,9 @@ __all__ = [
     "ByocAwsIacPackage",
     "ByocAwsIacPackageViolation",
     "byoc_aws_iac_package_json_schema",
+    "generate_aws_iac_package",
     "load_byoc_aws_iac_package",
+    "render_terraform_scaffold",
     "render_validation_errors",
     "validate_aws_iac_package_contract",
 ]

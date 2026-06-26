@@ -69,7 +69,8 @@ def test_byoc_aws_iac_package_gate_passes_for_checked_in_scaffold() -> None:
 
     assert result.status == PASS
     assert result.command is not None
-    assert "scripts/validate_byoc_aws_iac_package.py" in result.command
+    assert "scripts/generate_byoc_aws_iac_package.py" in result.command
+    assert "--check-package" in result.command
     assert result.artifacts == {
         "package": "deploy/byoc/aws/iac-package.example.yaml",
         "terraform_root": "deploy/byoc/aws/terraform",

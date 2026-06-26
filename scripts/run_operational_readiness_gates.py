@@ -523,7 +523,8 @@ def _byoc_aws_iac_package_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_aws_iac_package",
         _python_command(
-            "scripts/validate_byoc_aws_iac_package.py",
+            "scripts/generate_byoc_aws_iac_package.py",
+            "--check-package",
             "deploy/byoc/aws/iac-package.example.yaml",
             "--dataplane-manifest",
             "deploy/byoc/dataplane.example.yaml",
