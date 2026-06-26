@@ -91,6 +91,9 @@ Every checklist item is done only when:
 - [x] BYOC customer-side bootstrap has a checked-in generated dry-run plan,
   generator/checker CLI, non-mutating step contract, source-manifest digest
   checks, and readiness gate before live bootstrap-runner work begins.
+- [x] BYOC bootstrap-runner dry-run has a local evidence report command,
+  sanitized JSON/YAML output, contract/hash/offline-validation execution, and
+  readiness gate before real customer-cloud apply work begins.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

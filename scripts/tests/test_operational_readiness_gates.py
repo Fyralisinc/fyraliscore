@@ -10,6 +10,7 @@ from scripts.run_operational_readiness_gates import (
     PASS,
     _byoc_bootstrap_bundle_gate,
     _byoc_bootstrap_plan_gate,
+    _byoc_bootstrap_runner_gate,
     _byoc_dataplane_contract_gate,
     _byoc_permissions_contract_gate,
     _byoc_post_deploy_validation_gate,
@@ -85,6 +86,24 @@ def test_byoc_bootstrap_plan_gate_passes_for_checked_in_plan() -> None:
         "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+    }
+
+
+def test_byoc_bootstrap_runner_gate_passes_for_checked_in_plan() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_bootstrap_runner_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_bootstrap_runner.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {
+        "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+        "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "env_template": ".env.production.example",
     }
 
 

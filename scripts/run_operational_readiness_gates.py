@@ -568,6 +568,31 @@ def _byoc_bootstrap_plan_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_bootstrap_runner_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_bootstrap_runner_report",
+        _python_command(
+            "scripts/run_byoc_bootstrap_runner.py",
+            "--json",
+            "--env-file",
+            ".env.production.example",
+        ),
+        details=(
+            "BYOC bootstrap runner dry-run emits sanitized local evidence "
+            "without executing cloud, live, or mutating commands."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+            "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "env_template": ".env.production.example",
+        },
+    )
+
+
 def _byoc_post_deploy_validation_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_post_deploy_validation",
@@ -626,6 +651,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_permissions_contract_gate(args),
         _byoc_bootstrap_bundle_gate(args),
         _byoc_bootstrap_plan_gate(args),
+        _byoc_bootstrap_runner_gate(args),
         _byoc_post_deploy_validation_gate(args),
         _github_required_checks_gate(args),
         _feedback_gap_gate(args),

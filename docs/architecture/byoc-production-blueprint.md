@@ -108,6 +108,11 @@ Repo-owned artifacts for this first slice:
   plan for the example manifests, and
   `scripts/generate_byoc_bootstrap_plan.py --check-plan` proves it still
   matches the current contracts.
+- `services/platform/runtime/byoc_bootstrap_runner.py` and
+  `scripts/run_byoc_bootstrap_runner.py` consume that plan and emit sanitized
+  local evidence for CI or customer handoff. The runner replays only local
+  contract/hash/offline-validation checks, prepares signature-command evidence
+  as counts, and never executes cloud apply, live probes, or mutating commands.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -823,6 +828,7 @@ Validation sequence:
    - Verify the checked-in bootstrap dry-run plan matches current manifests.
    - Confirm the plan contains no mutating cloud commands or credential
      requirements.
+   - Emit the sanitized bootstrap-runner dry-run evidence report.
    - Verify the signed bootstrap bundle manifest and all local artifact hashes.
    - Verify bootstrap runner cosign checks completed before any apply step.
    - `/healthz`, `/readyz`, `/metrics` for gateway and workers.
@@ -1281,6 +1287,8 @@ Minimum gates before first enterprise customer:
   IaC templates, SBOMs, and signatures are verified before cloud apply.
 - Keep the generated dry-run bootstrap plan contract-backed so the
   customer-side runner has an ordered non-mutating plan before live apply.
+- Keep the bootstrap-runner evidence report sanitized and local-only until the
+  first customer cloud profile supplies real staging credentials.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment and heartbeat schema contract-backed;
