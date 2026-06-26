@@ -477,6 +477,23 @@ def _production_env_contract_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_dataplane_contract_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_dataplane_contract",
+        _python_command(
+            "scripts/validate_byoc_dataplane_manifest.py",
+            "deploy/byoc/dataplane.example.yaml",
+        ),
+        details=(
+            "Checked-in BYOC data-plane manifest preserves egress-only "
+            "control-plane connectivity and privacy-safe telemetry defaults."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={"manifest": "deploy/byoc/dataplane.example.yaml"},
+    )
+
+
 def _github_required_checks_gate(args: argparse.Namespace) -> GateResult:
     token_present = bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
     repo_present = bool(os.environ.get("GITHUB_REPOSITORY"))
@@ -508,6 +525,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
     gates: list[GateResult] = [
         _artifact_gate(),
         _production_env_contract_gate(args),
+        _byoc_dataplane_contract_gate(args),
         _github_required_checks_gate(args),
         _feedback_gap_gate(args),
         _storyline_report_gate(args),

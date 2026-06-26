@@ -265,6 +265,30 @@ PRODUCT_DEFAULT_TENANT_FALLBACK_RE = re.compile(
     r"(?:\breturn\s+default_tenant_id\b|\btenant_id\s*=\s*default_tenant_id\b)",
     re.IGNORECASE,
 )
+BYOC_MANIFEST_PRIVACY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"^\s*exposure\s*:\s*public\b", re.IGNORECASE),
+        "BYOC manifests must not require public endpoint exposure",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:raw_logs_allowed|raw_payloads_allowed|raw_prompts_allowed|"
+            r"pii_allowed|control_plane_inbound_allowed|"
+            r"raw_payloads_leave_boundary|prompts_leave_boundary|"
+            r"embeddings_leave_boundary|logs_leave_boundary|pii_leaves_boundary|"
+            r"provider_secrets_leave_boundary)\s*:\s*true\b",
+            re.IGNORECASE,
+        ),
+        (
+            "BYOC manifests must not allow customer data, logs, prompts, PII, "
+            "or inbound control-plane access to leave the data plane"
+        ),
+    ),
+)
+BYOC_MANIFEST_DIRECTION_RE = re.compile(
+    r"^\s*direction\s*:\s*(?P<value>\S+)",
+    re.IGNORECASE,
+)
 
 RAW_THINK_TRIGGER_INSERT_ALLOWED_FILES = {
     Path("services/domain/triggers.py"),
@@ -729,6 +753,58 @@ def find_product_default_tenant_without_production_guard_violations(
                 ),
             )
         )
+    return violations
+
+
+def find_byoc_manifest_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    manifest_dir: Path = Path("deploy/byoc"),
+) -> list[Violation]:
+    """Return BYOC manifest examples that loosen egress/privacy defaults."""
+
+    root = repo_root / manifest_dir
+    if not root.exists():
+        return []
+
+    violations: list[Violation] = []
+    manifest_paths = sorted(root.glob("*.yml"))
+    manifest_paths.extend(sorted(root.glob("*.yaml")))
+    manifest_paths.extend(sorted(root.glob("*.json")))
+    for path in manifest_paths:
+        rel = path.relative_to(repo_root)
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8", errors="ignore").splitlines(),
+            start=1,
+        ):
+            direction_match = BYOC_MANIFEST_DIRECTION_RE.search(line)
+            if (
+                direction_match is not None
+                and direction_match.group("value").lower() != "egress_only"
+            ):
+                violations.append(
+                    Violation(
+                        check="byoc-manifest-privacy",
+                        path=rel,
+                        line_number=line_number,
+                        message=(
+                            "BYOC control-plane connectivity must remain "
+                            "egress_only"
+                        ),
+                    )
+                )
+                continue
+            for pattern, message in BYOC_MANIFEST_PRIVACY_PATTERNS:
+                if pattern.search(line):
+                    violations.append(
+                        Violation(
+                            check="byoc-manifest-privacy",
+                            path=rel,
+                            line_number=line_number,
+                            message=message,
+                        )
+                    )
+                    break
     return violations
 
 
@@ -1264,6 +1340,7 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
             repo_root=repo_root
         )
     )
+    violations.extend(find_byoc_manifest_privacy_violations(repo_root=repo_root))
     violations.extend(find_import_linter_allowlist_violations(repo_root=repo_root))
     violations.extend(find_rollback_data_deletion_violations(repo_root=repo_root))
     return violations

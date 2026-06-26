@@ -39,6 +39,41 @@ corrections:
   should run in a customer-owned execution context with signed IaC artifacts,
   explicit external IDs, short-lived credentials, and auditable state changes.
 
+## Implementation Path Update - 2026-06-26
+
+After comparing this blueprint against the current gateway/runtime/deployment
+code, the architecture remains correct. The most efficient first backend slice
+is contract-first, not control-panel-first and not cloud-credential-first:
+
+1. Define the data-plane deployment manifest that every later bootstrap runner,
+   agent, IaC package, and hosted control-plane workflow must satisfy.
+2. Validate that manifest locally with no cloud credentials.
+3. Add runtime/env guards for BYOC mode so production startup fails closed on
+   unsafe control-plane connectivity, raw telemetry, or raw bootstrap secrets.
+4. Add static/readiness gates so future changes cannot silently weaken
+   egress-only or customer-data-locality assumptions.
+
+Repo-owned artifacts for this first slice:
+
+- `services/platform/runtime/byoc_contract.py` is the typed BYOC data-plane
+  contract and semantic validator.
+- `deploy/byoc/dataplane.example.yaml` is the credential-free deployment
+  manifest example used by tests and readiness gates.
+- `scripts/validate_byoc_dataplane_manifest.py` validates JSON/YAML manifests
+  and can print the JSON schema for control-plane or IaC consumers.
+- `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
+  settings, egress-only control-plane flags, data-plane agent auth shape, and
+  privacy-safe telemetry flags.
+- `scripts/check_production_env_contract.py`,
+  `scripts/check_architecture_ratchets.py`, and
+  `scripts/run_operational_readiness_gates.py` include the first automation
+  hooks for BYOC contract drift.
+
+This intentionally defers cloud apply, agent reconciliation, customer IAM
+bootstrap templates, hosted onboarding UI, and fleet dashboard work until a
+first-customer cloud/profile is selected. Those systems should consume this
+manifest instead of inventing new deployment shape.
+
 ## Current Fyralis Baseline
 
 Verified strengths already present in the repo:
@@ -1304,6 +1339,9 @@ Minimum gates before first enterprise customer:
 
 ### Milestone 2 - BYOC Bootstrap
 
+- Keep the data-plane manifest/schema as the source of truth for bootstrap,
+  agent, and IaC package compatibility.
+- Validate the checked-in BYOC manifest in operational readiness gates.
 - Build data-plane agent.
 - Publish signed Terraform/Helm artifacts.
 - Build AWS first profile.

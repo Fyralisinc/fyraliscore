@@ -8,6 +8,13 @@ pausing, resuming, and uninstalling data sources. It covers Fyralis core
 behavior; source-specific OAuth screens and customer-facing UI are owned by the
 overlay product.
 
+In BYOC deployments, every source validation call, provider credential exchange,
+secret write/read probe, raw payload write, and queue/object-store health check
+runs inside the customer data plane. The Fyralis control plane may track only
+bounded onboarding state, source-family enablement, aggregate health, and
+sanitized failure codes; it must not receive source credentials, raw payloads,
+prompts, logs, or PII.
+
 ## Source Coverage
 
 | Source | Production source doc | Credential style | Production launch note |

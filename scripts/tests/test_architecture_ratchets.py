@@ -5,6 +5,7 @@ from pathlib import Path
 from scripts.check_architecture_ratchets import (
     find_access_read_without_override_audit_violations,
     find_browser_token_storage_violations,
+    find_byoc_manifest_privacy_violations,
     find_destructive_migration_without_approval_violations,
     find_forbidden_metric_label_violations,
     find_import_linter_allowlist_violations,
@@ -930,6 +931,42 @@ def test_rollback_data_deletion_check_allows_code_only_rollback(
     violations = find_rollback_data_deletion_violations(repo_root=tmp_path)
 
     assert violations == []
+
+
+def test_byoc_manifest_privacy_check_flags_public_or_raw_egress(
+    tmp_path: Path,
+) -> None:
+    manifests = tmp_path / "deploy" / "byoc"
+    manifests.mkdir(parents=True)
+    (manifests / "bad.yaml").write_text(
+        """
+connectivity:
+  direction: inbound
+network:
+  endpoint_exposure:
+    - component: postgres
+      exposure: public
+telemetry:
+  raw_payloads_allowed: true
+data_residency:
+  prompts_leave_boundary: true
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_manifest_privacy_violations(repo_root=tmp_path)
+
+    assert [violation.check for violation in violations] == [
+        "byoc-manifest-privacy",
+        "byoc-manifest-privacy",
+        "byoc-manifest-privacy",
+        "byoc-manifest-privacy",
+    ]
+    assert {violation.line_number for violation in violations} == {2, 6, 8, 10}
+
+
+def test_byoc_manifest_privacy_check_allows_checked_in_manifest() -> None:
+    assert find_byoc_manifest_privacy_violations() == []
 
 
 def test_production_rollback_automation_does_not_delete_data() -> None:

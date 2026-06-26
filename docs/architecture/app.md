@@ -45,6 +45,11 @@ owns:
   `services/app/gateway/ceo_view_wiring.py`, and when
   `KAFKA_BOOTSTRAP_SERVERS` is set wires the ingestion data-plane producer via
   `services/app/gateway/state_wiring.py`.
+- **Production/BYOC settings** (`services/app/gateway/settings.py`): production
+  startup requires an explicit `FYRALIS_DEPLOYMENT_MODE`. In `byoc` mode the
+  gateway settings fail closed unless the deployment/customer/cloud identity,
+  egress-only control-plane URL, mTLS data-plane agent contract, disabled raw
+  telemetry flags, and disabled control-plane inbound flag are present.
 - **Webhook ingress** (`services/app/webhooks/router.py`): captures raw bytes,
   verifies the per-provider signature, resolves the tenant
   (`provider_installations` via the IN-08 tenant resolver + envelope-encrypted
@@ -108,6 +113,7 @@ graph TD
 | Module | Path | What it does |
 |--------|------|--------------|
 | Gateway app factory | `services/app/gateway/main.py` | `build_app()`, lifespan, middleware registration, exception handlers, route mounting call. |
+| Gateway settings | `services/app/gateway/settings.py` | Fail-closed production settings, including BYOC deployment identity, egress-only control-plane connectivity, agent auth mode, and raw telemetry controls. |
 | Gateway middleware | `services/app/gateway/middleware.py` | Request context, bearer-session auth, public path allowlist, rate limiting. |
 | Gateway route mounts | `services/app/gateway/route_mounts.py` | Mounts focused gateway/product/ingest routers in one ordered place. |
 | Gateway extension seam | `services/app/gateway/extensions.py` | Discovers installed `company_os.gateway_extensions` entry points; each contributes routers (e.g. overlay `/v1/demo/*`), startup hooks (Pelago seed, simulation mount), and public path prefixes. |
