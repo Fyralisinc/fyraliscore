@@ -77,6 +77,9 @@ def test_static_gateway_route_inventory_classifies_security_boundaries() -> None
     )
     assert by_path["/ext/oauth/token"].policy.access is RouteAccess.EXTENSION_AUTH
     assert by_path["/ext/v1/observations"].policy.access is RouteAccess.EXTENSION_AUTH
+    byoc_intake = by_path["/byoc/control-plane/evidence-packages"].policy
+    assert byoc_intake.access is RouteAccess.SELF_AUTHENTICATED
+    assert byoc_intake.gateway_bearer_required is False
     assert by_path["/api/admin/dead-letters"].policy.access is RouteAccess.ADMIN
     assert by_path["/api/admin/dead-letters"].policy.gateway_bearer_required is True
 

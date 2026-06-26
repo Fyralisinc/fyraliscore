@@ -11,6 +11,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_bootstrap_bundle_gate,
     _byoc_bootstrap_plan_gate,
     _byoc_bootstrap_runner_gate,
+    _byoc_control_plane_intake_gate,
     _byoc_dataplane_contract_gate,
     _byoc_evidence_package_gate,
     _byoc_evidence_ledger_gate,
@@ -145,6 +146,21 @@ def test_byoc_evidence_package_gate_passes_for_checked_in_package() -> None:
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
     }
+
+
+def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:
+    args = argparse.Namespace(command_timeout_s=30, skip_pytest=False)
+
+    result = _byoc_control_plane_intake_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "services/platform/runtime/tests/test_byoc_control_plane_intake.py" in (
+        result.command
+    )
+    assert "services/app/gateway/tests/test_byoc_control_plane_router.py" in (
+        result.command
+    )
 
 
 def test_byoc_post_deploy_validation_gate_passes_offline_contract() -> None:

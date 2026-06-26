@@ -48,7 +48,11 @@ scripts/generate_byoc_evidence_package.py \
 Run `scripts/generate_byoc_evidence_package.py --check-package <package>` before
 sharing the package. The package contains the sanitized ledger, source manifest
 digests, and signed-envelope metadata only; do not include the raw validator
-report. Source onboarding
+report. Where the hosted control-plane intake is enabled, submit only a signed
+`fyralis.byoc.evidence_package_submission.v1` payload to
+`POST /byoc/control-plane/evidence-packages`; the current backend stores only a
+sanitized receipt record until durable control-plane persistence is wired.
+Source onboarding
 should remain paused until required checks pass and the data-plane agent has
 successfully completed the `fyralis.byoc.agent.enrollment.v1` registration
 contract and submitted a privacy-safe `fyralis.byoc.agent.heartbeat.v1`

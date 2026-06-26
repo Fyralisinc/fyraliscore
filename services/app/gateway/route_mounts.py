@@ -24,6 +24,9 @@ def register_gateway_routes(
     from services.app.gateway.contest_router import build_contest_router
     from services.app.gateway.core_router import build_core_router
     from services.app.gateway.dashboard_router import build_dashboard_router
+    from services.app.gateway.byoc_control_plane_router import (
+        build_byoc_control_plane_router,
+    )
     from services.app.gateway.dead_letter_router import build_dead_letter_admin_router
     from services.app.gateway.extension_router import build_extension_router
     from services.app.gateway.map_routes import register_map_routes
@@ -41,6 +44,7 @@ def register_gateway_routes(
     app.include_router(build_substrate_router())
     app.include_router(build_contest_router())
     app.include_router(build_dashboard_router())
+    app.include_router(build_byoc_control_plane_router())
     app.include_router(build_dead_letter_admin_router())
     if settings.debug_endpoints_enabled:
         from services.app.gateway.document_ingest_router import build_document_ingest_router

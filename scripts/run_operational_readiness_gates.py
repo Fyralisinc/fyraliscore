@@ -645,6 +645,23 @@ def _byoc_evidence_package_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
+    return _pytest_gate(
+        "byoc_control_plane_intake",
+        [
+            "services/platform/runtime/tests/test_byoc_control_plane_intake.py",
+            "services/app/gateway/tests/test_byoc_control_plane_router.py",
+            "services/app/gateway/tests/test_route_access_policy.py",
+        ],
+        details=(
+            "BYOC control-plane intake accepts only signed sanitized evidence "
+            "packages and stores receipt metadata only."
+        ),
+        args=args,
+        timeout_s=min(args.command_timeout_s, 60),
+    )
+
+
 def _byoc_post_deploy_validation_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_post_deploy_validation",
@@ -706,6 +723,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_bootstrap_runner_gate(args),
         _byoc_evidence_ledger_gate(args),
         _byoc_evidence_package_gate(args),
+        _byoc_control_plane_intake_gate(args),
         _byoc_post_deploy_validation_gate(args),
         _github_required_checks_gate(args),
         _feedback_gap_gate(args),

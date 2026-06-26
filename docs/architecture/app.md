@@ -22,8 +22,10 @@ owns:
   `RateLimitMiddleware` (per-`(tenant, actor)` token bucket; `/ingest/*` gets a
   higher tier). A fixed set of **core** public path prefixes (`/healthz`,
   `/metrics`, `/auth/session`, `/view/ceo/*`, `/rendering/*`, `/webhooks/*`,
-  `/integrations/*/callback`, `/debug/*`, `/finance/*`, `/slack/*`, …) bypass
-  auth. Overlay public prefixes (e.g. `/v1/demo/*`, `/simulation/*`) are **not**
+  `/integrations/*/callback`, `/debug/*`, `/finance/*`, `/slack/*`, and the
+  BYOC control-plane intake prefix `/byoc/control-plane/*`) bypass actor-session
+  auth. BYOC intake routes self-authenticate with signed payload contracts.
+  Overlay public prefixes (e.g. `/v1/demo/*`, `/simulation/*`) are **not**
   hardcoded here — they are contributed at runtime by an installed gateway
   extension (see below).
 - **Route registration + mounted routers** (`services/app/gateway/route_mounts.py`):
@@ -50,6 +52,10 @@ owns:
   gateway settings fail closed unless the deployment/customer/cloud identity,
   egress-only control-plane URL, mTLS data-plane agent contract, disabled raw
   telemetry flags, and disabled control-plane inbound flag are present.
+- **BYOC control-plane intake** (`services/app/gateway/byoc_control_plane_router.py`):
+  receives signed sanitized evidence-package submissions from the data-plane
+  agent and records only bounded receipt metadata through the current in-memory
+  storage stub.
 - **Webhook ingress** (`services/app/webhooks/router.py`): captures raw bytes,
   verifies the per-provider signature, resolves the tenant
   (`provider_installations` via the IN-08 tenant resolver + envelope-encrypted
@@ -116,6 +122,7 @@ graph TD
 | Gateway settings | `services/app/gateway/settings.py` | Fail-closed production settings, including BYOC deployment identity, egress-only control-plane connectivity, agent auth mode, and raw telemetry controls. |
 | Gateway middleware | `services/app/gateway/middleware.py` | Request context, bearer-session auth, public path allowlist, rate limiting. |
 | Gateway route mounts | `services/app/gateway/route_mounts.py` | Mounts focused gateway/product/ingest routers in one ordered place. |
+| BYOC control-plane intake | `services/app/gateway/byoc_control_plane_router.py` | Self-authenticated evidence-package intake route; verifies signed submissions and stores sanitized receipts only. |
 | Gateway extension seam | `services/app/gateway/extensions.py` | Discovers installed `company_os.gateway_extensions` entry points; each contributes routers (e.g. overlay `/v1/demo/*`), startup hooks (Pelago seed, simulation mount), and public path prefixes. |
 | Gateway state wiring | `services/app/gateway/state_wiring.py` | Secret store, tenant resolver, tenant flags, GitHub client/cache, Kafka/S3 data-plane clients. |
 | CEO-view wiring | `services/app/gateway/ceo_view_wiring.py` | Rendering, greeting, query, conversations, Google ingress, and debug mounting. |
@@ -136,6 +143,8 @@ graph TD
 - `WS /stream` — realtime subscription endpoint.
 - `POST /ingest/{channel}` — uniform signal ingestion (→ `ingestion.core.ingest()`).
 - `POST /webhooks/{provider}/*` — provider webhook ingress.
+- `POST /byoc/control-plane/evidence-packages` — signed BYOC evidence-package
+  intake; returns a sanitized receipt without storing raw reports.
 - `GET /metrics` — Prometheus scrape of webhook verification + tenant-resolver counters (public; no Bearer).
 - `GET/POST /view/ceo/*`, etc. — core product surfaces (see [Product](product.md)).
   Overlay surfaces such as `/v1/demo/*` appear only when the demo extension is installed.

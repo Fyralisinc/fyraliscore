@@ -133,6 +133,14 @@ Repo-owned artifacts for this first slice:
   source artifact refs, and optional signed-envelope metadata; it never embeds
   raw post-deploy reports, command output, endpoint URLs, artifact refs,
   credentials, payloads, prompts, logs, embeddings, or PII.
+- `services/platform/runtime/byoc_control_plane_intake.py` and
+  `services/app/gateway/byoc_control_plane_router.py` define the first hosted
+  control-plane intake contract for sanitized evidence packages. The data-plane
+  agent submits a canonical HMAC-signed package submission to
+  `POST /byoc/control-plane/evidence-packages`; the gateway stores only a
+  sanitized receipt record through an in-memory stub and rejects raw reports,
+  URL/credential markers, bad signatures, and package contract violations. This
+  proves the API boundary before durable control-plane persistence exists.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -1323,6 +1331,10 @@ Minimum gates before first enterprise customer:
   `scripts/generate_byoc_evidence_package.py`; the package may leave the data
   plane only after `--check-package` passes and the raw live validator report is
   excluded.
+- Submit evidence packages to the control-plane intake API only as signed
+  `fyralis.byoc.evidence_package_submission.v1` payloads; control-plane storage
+  may retain only the generated sanitized receipt metadata until durable
+  persistence is implemented.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment and heartbeat schema contract-backed;
