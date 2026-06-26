@@ -77,6 +77,17 @@ Repo-owned artifacts for this first slice:
   tests. It is intentionally not the hosted control plane; it lets bootstrap
   and agent work prove the egress-only registration and heartbeat shape before
   cloud credentials, mTLS issuance, persistence, or dashboard workflows exist.
+- `services/platform/runtime/byoc_permissions.py` defines the backend-owned
+  customer-cloud permission contract. It validates role boundaries, explicit
+  AWS actions, scoped resources, `iam:PassRole` service constraints, no
+  admin-style managed policies, no control-plane mutation rights, and no
+  control-plane access to customer data or secret material.
+- `deploy/byoc/permissions.example.yaml` and
+  `deploy/byoc/aws/iam.bootstrap.template.yaml` are credential-free AWS-first
+  examples for customer-side bootstrap and runtime IAM shape.
+- `scripts/validate_byoc_permissions_manifest.py` validates the permission
+  manifest against the data-plane manifest and optional AWS IAM skeleton, and
+  prints JSON schemas for future IaC/control-plane generators.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -85,10 +96,10 @@ Repo-owned artifacts for this first slice:
   `scripts/run_operational_readiness_gates.py` include the first automation
   hooks for BYOC contract drift.
 
-This intentionally defers cloud apply, agent reconciliation, customer IAM
-bootstrap templates, hosted onboarding UI, and fleet dashboard work until a
-first-customer cloud/profile is selected. Those systems should consume this
-manifest instead of inventing new deployment shape.
+This intentionally defers cloud apply, agent reconciliation, production
+Terraform/CloudFormation modules, hosted onboarding UI, and fleet dashboard work
+until a first-customer cloud/profile is selected. Those systems should consume
+these manifests instead of inventing new deployment or permission shape.
 
 ## Current Fyralis Baseline
 
@@ -567,172 +578,46 @@ AWS preferred handshake:
 
 - Portal generates:
   - `deployment_id`
-  - `external_id`
-  - expected Fyralis control-plane principal ARN
   - stack name prefix
   - required region
-  - permissions boundary ARN or inline boundary
-- Customer applies a CloudFormation/Terraform bootstrap template.
-- The template creates:
-  - `FyralisByocProvisionerRole`
-  - optional `FyralisByocCloudFormationServiceRole`
-  - KMS key or references customer KMS key
+  - required tag keys
+  - permissions boundary policy name
+  - signed data-plane and permission manifests
+- Customer applies the bootstrap template from a customer-owned execution
+  context. The default path is a customer-side runner; Fyralis Core does not
+  require the hosted control plane to assume a mutating role in the customer
+  account.
+- The template/runner creates or references:
+  - dedicated bootstrap and CloudFormation/Terraform service roles
+  - customer-owned KMS key or key reference
   - Secrets Manager namespace
-  - S3 artifact/state bucket or references customer bucket
-  - IAM permissions boundary for created roles
-- The portal preflights `sts:AssumeRole` using the external ID.
+  - S3 artifact/state/raw-payload buckets or customer-approved references
+  - permissions boundary for every role created by the Fyralis stack
+- Optional hosted preflight may later use a read-only assume-role handshake with
+  an external ID, but the checked-in production contract forbids control-plane
+  mutation rights and customer-data/secret-material access.
 - The permanent data-plane agent later runs inside the customer account using
   IRSA/EKS Pod Identity, ECS task role, or EC2 instance role.
 
-AWS trust policy:
+Repo-owned AWS contract:
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "AllowFyralisControlPlaneAssumeWithExternalId",
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::<FYRALIS_CONTROL_PLANE_ACCOUNT_ID>:role/fyralis-byoc-provisioner"
-      },
-      "Action": "sts:AssumeRole",
-      "Condition": {
-        "StringEquals": {
-          "sts:ExternalId": "<DEPLOYMENT_EXTERNAL_ID>"
-        }
-      }
-    }
-  ]
-}
-```
-
-AWS narrow control-plane role policy:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "ReadAccountAndRegionPreflight",
-      "Effect": "Allow",
-      "Action": [
-        "sts:GetCallerIdentity",
-        "ec2:DescribeAvailabilityZones",
-        "ec2:DescribeVpcs",
-        "ec2:DescribeSubnets",
-        "ec2:DescribeSecurityGroups",
-        "eks:DescribeCluster",
-        "rds:DescribeDBInstances",
-        "s3:GetBucketLocation"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "ManageFyralisStacksOnly",
-      "Effect": "Allow",
-      "Action": [
-        "cloudformation:CreateChangeSet",
-        "cloudformation:CreateStack",
-        "cloudformation:DeleteChangeSet",
-        "cloudformation:DeleteStack",
-        "cloudformation:DescribeChangeSet",
-        "cloudformation:DescribeStackEvents",
-        "cloudformation:DescribeStacks",
-        "cloudformation:ExecuteChangeSet",
-        "cloudformation:GetTemplate",
-        "cloudformation:UpdateStack"
-      ],
-      "Resource": "arn:aws:cloudformation:<REGION>:<CUSTOMER_ACCOUNT_ID>:stack/fyralis-<DEPLOYMENT_ID>-*/*"
-    },
-    {
-      "Sid": "PassDedicatedCloudFormationServiceRoleOnly",
-      "Effect": "Allow",
-      "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::<CUSTOMER_ACCOUNT_ID>:role/fyralis-<DEPLOYMENT_ID>-cloudformation-service-role",
-      "Condition": {
-        "StringEquals": {
-          "iam:PassedToService": "cloudformation.amazonaws.com"
-        }
-      }
-    },
-    {
-      "Sid": "ReadFyralisTaggedResourcesForDrift",
-      "Effect": "Allow",
-      "Action": [
-        "tag:GetResources",
-        "cloudformation:ListStackResources",
-        "cloudformation:DetectStackDrift",
-        "cloudformation:DescribeStackResourceDrifts"
-      ],
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestedRegion": "<REGION>"
-        }
-      }
-    }
-  ]
-}
-```
-
-AWS CloudFormation service role policy shape:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "CreateOnlyFyralisTaggedResources",
-      "Effect": "Allow",
-      "Action": [
-        "ec2:*",
-        "eks:*",
-        "rds:*",
-        "elasticache:*",
-        "kafka:*",
-        "s3:*",
-        "kms:CreateGrant",
-        "kms:DescribeKey",
-        "kms:Encrypt",
-        "kms:Decrypt",
-        "kms:GenerateDataKey",
-        "secretsmanager:*",
-        "logs:*",
-        "iam:CreateRole",
-        "iam:DeleteRole",
-        "iam:GetRole",
-        "iam:PutRolePolicy",
-        "iam:DeleteRolePolicy",
-        "iam:AttachRolePolicy",
-        "iam:DetachRolePolicy",
-        "iam:TagRole",
-        "iam:PassRole"
-      ],
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestedRegion": "<REGION>"
-        },
-        "StringLikeIfExists": {
-          "aws:RequestTag/fyralis:deployment-id": "<DEPLOYMENT_ID>",
-          "aws:ResourceTag/fyralis:deployment-id": "<DEPLOYMENT_ID>"
-        }
-      }
-    }
-  ]
-}
-```
-
-Notes:
-
-- The narrow control-plane role should be the steady-state default. The broader
-  service role is customer-owned and can be replaced with customer-run Terraform
-  when the customer does not allow SaaS-triggered CloudFormation.
-- For production, replace broad service wildcards with the exact actions used by
-  the selected IaC profile after the Terraform/CloudFormation plan is frozen.
-- Require a permissions boundary on every IAM role created by the Fyralis stack.
-- Require resource tags:
+- `deploy/byoc/permissions.example.yaml` is the source of truth for role
+  actors, trust boundaries, allowed actions, resource scopes, data-access class,
+  and IAM condition requirements.
+- `deploy/byoc/aws/iam.bootstrap.template.yaml` is the first AWS skeleton that
+  future CloudFormation/Terraform generation must satisfy.
+- `scripts/validate_byoc_permissions_manifest.py` rejects wildcard/admin
+  actions, AWS admin managed policies, unbounded `iam:PassRole`, mutating
+  control-plane roles, customer-data/secret-material access by control-plane
+  roles, missing permission boundaries, and data-plane manifest mismatches.
+- Wildcard resources are permitted only for read-only account/region preflight
+  actions such as `sts:GetCallerIdentity` and selected `Describe*` calls.
+- Customer-data access is allowed only for runtime data-plane roles, and only as
+  encrypted customer data inside the customer boundary.
+- Secret-material access is allowed only inside the data plane; bootstrap
+  service roles may create secret containers but must not receive raw secret
+  values.
+- Every BYOC-managed resource must require:
   - `fyralis:deployment-id`
   - `fyralis:customer-id`
   - `fyralis:managed=true`
@@ -1365,6 +1250,8 @@ Minimum gates before first enterprise customer:
 - Keep the data-plane manifest/schema as the source of truth for bootstrap,
   agent, and IaC package compatibility.
 - Validate the checked-in BYOC manifest in operational readiness gates.
+- Keep the customer-cloud permission manifest and AWS IAM skeleton
+  contract-backed before generating production Terraform/CloudFormation.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment and heartbeat schema contract-backed;

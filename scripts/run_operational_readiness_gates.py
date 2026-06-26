@@ -494,6 +494,31 @@ def _byoc_dataplane_contract_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_permissions_contract_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_permissions_contract",
+        _python_command(
+            "scripts/validate_byoc_permissions_manifest.py",
+            "deploy/byoc/permissions.example.yaml",
+            "--dataplane-manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--aws-template",
+            "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        ),
+        details=(
+            "Checked-in BYOC permissions manifest and AWS IAM skeleton preserve "
+            "customer-side bootstrap, boundaries, and least-privilege role shape."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "manifest": "deploy/byoc/permissions.example.yaml",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "aws_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        },
+    )
+
+
 def _byoc_post_deploy_validation_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_post_deploy_validation",
@@ -549,6 +574,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _artifact_gate(),
         _production_env_contract_gate(args),
         _byoc_dataplane_contract_gate(args),
+        _byoc_permissions_contract_gate(args),
         _byoc_post_deploy_validation_gate(args),
         _github_required_checks_gate(args),
         _feedback_gap_gate(args),

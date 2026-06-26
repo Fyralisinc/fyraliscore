@@ -16,6 +16,8 @@ sanitized failure codes; it must not receive source credentials, raw payloads,
 prompts, logs, or PII.
 
 Before enabling the first source in a BYOC deployment, run
+`scripts/validate_byoc_permissions_manifest.py` against the customer permission
+manifest and AWS/IAM skeleton used for the deployment, then run
 `scripts/run_byoc_post_deploy_validation.py --require-live` from inside the
 customer data plane with the local gateway URL, worker health URLs, production
 database DSN, broker endpoint, and object-store endpoint. Source onboarding

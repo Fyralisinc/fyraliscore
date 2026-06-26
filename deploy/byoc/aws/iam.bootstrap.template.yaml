@@ -1,0 +1,68 @@
+schema_version: fyralis.byoc.aws.iam_skeleton.v1
+deployment_id: dep_example01
+customer_id: cus_example01
+cloud_provider: aws
+region: us-east-1
+consumes_permissions_manifest: deploy/byoc/permissions.example.yaml
+stack_name: fyralis-dep-example01-iam-bootstrap
+
+roles:
+  - name: bootstrap_provisioner
+    actor: customer_bootstrap_runner
+    trust_boundary: customer_owned
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    policy_grant_sids:
+      - ReadAccountAndRegionPreflight
+      - ManageDeploymentStacksOnly
+      - PassCloudFormationServiceRoleOnly
+      - ReadTaggedResourcesForDrift
+
+  - name: cloudformation_service
+    actor: customer_cloudformation
+    trust_boundary: aws_service
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    policy_grant_sids:
+      - ManageDeploymentNetwork
+      - ManageRuntimeRoles
+      - ManageSecretNamespace
+      - ManageDeploymentKmsKey
+      - ManageObjectBuckets
+
+  - name: data_plane_agent
+    actor: data_plane_agent
+    trust_boundary: workload_identity
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    policy_grant_sids:
+      - ReadAgentBootstrapSecrets
+      - PublishAggregateHealthMetrics
+
+  - name: gateway_runtime
+    actor: gateway_runtime
+    trust_boundary: workload_identity
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    policy_grant_sids:
+      - ReadGatewayRuntimeSecrets
+      - AccessRawPayloadBucketInsideDataPlane
+
+  - name: worker_runtime
+    actor: worker_runtime
+    trust_boundary: workload_identity
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    policy_grant_sids:
+      - ReadWorkerRuntimeSecrets
+      - AccessRawPayloadBucketInsideDataPlane
+
+  - name: migration_runner
+    actor: migration_runner
+    trust_boundary: workload_identity
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    policy_grant_sids:
+      - ReadMigrationSecrets
+      - ReadMigrationArtifacts
+
+  - name: observability_runtime
+    actor: observability_runtime
+    trust_boundary: workload_identity
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    policy_grant_sids:
+      - PublishAggregateTelemetryOnly

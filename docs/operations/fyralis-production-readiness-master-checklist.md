@@ -81,6 +81,10 @@ Every checklist item is done only when:
   HMAC install-token proof over canonical metadata, raw-token-free requests,
   privacy-safe heartbeat telemetry, and a local mock control-plane contract
   harness.
+- [x] BYOC customer-cloud permissions have a checked-in manifest, AWS IAM
+  skeleton, validator, and readiness gate that reject broad admin policies,
+  unbounded `iam:PassRole`, mutating control-plane roles, missing boundaries,
+  and control-plane access to customer data or secret material.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and
