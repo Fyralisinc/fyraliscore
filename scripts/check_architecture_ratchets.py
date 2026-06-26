@@ -290,11 +290,31 @@ BYOC_MANIFEST_DIRECTION_RE = re.compile(
     re.IGNORECASE,
 )
 BYOC_AGENT_CONTRACT_PATH = Path("services/platform/runtime/byoc_agent_contract.py")
+BYOC_EVIDENCE_RECEIPT_MIGRATION_PATH = Path(
+    "db/migrations/0180_byoc_evidence_package_receipts.sql"
+)
 BYOC_AGENT_FALSE_TELEMETRY_FLAGS = (
     "raw_logs_allowed",
     "raw_payloads_allowed",
     "raw_prompts_allowed",
     "pii_allowed",
+)
+BYOC_EVIDENCE_RECEIPT_FORBIDDEN_STORAGE_PATTERNS: tuple[
+    tuple[re.Pattern[str], str],
+    ...,
+] = (
+    (
+        re.compile(r"\b(?:JSONB|JSON|BYTEA)\b", re.IGNORECASE),
+        "BYOC evidence receipt storage must not store JSON or byte payload bodies",
+    ),
+    (
+        re.compile(
+            r"\b(?:raw_report|report_body|report_json|package_body|package_json|"
+            r"ledger_body|ledger_json|source_artifacts|prompt|payload)\b",
+            re.IGNORECASE,
+        ),
+        "BYOC evidence receipt storage must not include package/report body columns",
+    ),
 )
 BYOC_AGENT_NO_RAW_TOKEN_MODELS = (
     "ByocAgentEnrollmentPayload",
@@ -899,6 +919,62 @@ def find_byoc_agent_contract_privacy_violations(
     return violations
 
 
+def find_byoc_evidence_receipt_storage_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    migration_path: Path = BYOC_EVIDENCE_RECEIPT_MIGRATION_PATH,
+) -> list[Violation]:
+    """Return BYOC receipt storage drift that could persist raw evidence bodies."""
+
+    path = repo_root / migration_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-evidence-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC evidence receipt migration is missing",
+            )
+        ]
+
+    text = _strip_sql_comments_preserving_lines(
+        path.read_text(encoding="utf-8", errors="ignore")
+    )
+    violations: list[Violation] = []
+    if "CREATE TABLE IF NOT EXISTS byoc_evidence_package_receipts" not in text:
+        violations.append(
+            Violation(
+                check="byoc-evidence-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC evidence receipt table must be created explicitly",
+            )
+        )
+    if "stored_scope = 'sanitized_metadata_only'" not in text:
+        violations.append(
+            Violation(
+                check="byoc-evidence-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC evidence receipts must pin sanitized metadata scope",
+            )
+        )
+
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        for pattern, message in BYOC_EVIDENCE_RECEIPT_FORBIDDEN_STORAGE_PATTERNS:
+            if pattern.search(line):
+                violations.append(
+                    Violation(
+                        check="byoc-evidence-receipt-storage",
+                        path=migration_path,
+                        line_number=line_number,
+                        message=message,
+                    )
+                )
+                break
+    return violations
+
+
 def _class_field_assignments(
     node: ast.ClassDef | None,
 ) -> dict[str, ast.AnnAssign]:
@@ -1446,6 +1522,9 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     violations.extend(find_byoc_manifest_privacy_violations(repo_root=repo_root))
     violations.extend(
         find_byoc_agent_contract_privacy_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_evidence_receipt_storage_violations(repo_root=repo_root)
     )
     violations.extend(find_import_linter_allowlist_violations(repo_root=repo_root))
     violations.extend(find_rollback_data_deletion_violations(repo_root=repo_root))

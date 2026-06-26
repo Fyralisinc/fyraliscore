@@ -9,6 +9,7 @@ from services.platform.runtime.byoc_control_plane_intake import (
     ByocEvidencePackageReceipt,
     ByocEvidencePackageSubmissionRequest,
     InMemoryByocEvidencePackageIntakeStore,
+    PostgresByocEvidencePackageIntakeStore,
     validate_evidence_package_submission,
 )
 
@@ -85,6 +86,12 @@ def _store_from_state(request: Request) -> ByocEvidencePackageIntakeStore:
     existing = getattr(request.app.state, "byoc_evidence_intake_store", None)
     if existing is not None:
         return existing
+    deps = getattr(request.app.state, "deps", None)
+    pool = getattr(deps, "pool", None)
+    if pool is not None:
+        created = PostgresByocEvidencePackageIntakeStore(pool)
+        request.app.state.byoc_evidence_intake_store = created
+        return created
     created = InMemoryByocEvidencePackageIntakeStore()
     request.app.state.byoc_evidence_intake_store = created
     return created

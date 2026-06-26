@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -42,7 +43,41 @@ def _submission(*, signing_secret: str = SIGNING_SECRET):
     )
 
 
-def _app(*, configured: bool = True) -> tuple[FastAPI, InMemoryByocEvidencePackageIntakeStore]:
+class _FakeReceiptPool:
+    def __init__(self) -> None:
+        self.rows: dict[str, dict] = {}
+        self.calls: list[tuple[str, tuple]] = []
+
+    async def fetchrow(self, query: str, *args):
+        self.calls.append((query, args))
+        if query.lstrip().upper().startswith("INSERT"):
+            row = {
+                "receipt_id": args[0],
+                "deployment_id": args[1],
+                "customer_id": args[2],
+                "agent_id": args[3],
+                "agent_version": args[4],
+                "artifact_revision": args[5],
+                "cloud_provider": args[6],
+                "region": args[7],
+                "package_digest": args[8],
+                "package_generated_at": args[9],
+                "ledger_overall_status": args[10],
+                "required_evidence_passed": args[11],
+                "live_report_envelope_digest": args[12],
+                "submitted_at": args[13],
+                "accepted_at": args[14],
+                "stored_scope": args[15],
+            }
+            self.rows[row["receipt_id"]] = row
+            return row
+        return self.rows.get(args[0])
+
+
+def _app(
+    *,
+    configured: bool = True,
+) -> tuple[FastAPI, InMemoryByocEvidencePackageIntakeStore]:
     store = InMemoryByocEvidencePackageIntakeStore()
     app = FastAPI()
     app.state.byoc_evidence_intake_store = store
@@ -78,6 +113,28 @@ async def test_byoc_control_plane_accepts_signed_evidence_package() -> None:
     assert '"evidence":' not in lookup.text
     assert "gateway.customer.internal" not in lookup.text
     assert "postgresql://" not in lookup.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_uses_postgres_store_from_gateway_deps() -> None:
+    pool = _FakeReceiptPool()
+    app = FastAPI()
+    app.state.deps = SimpleNamespace(pool=pool)
+    app.state.byoc_evidence_intake_secret = SIGNING_SECRET
+    app.state.byoc_evidence_intake_key_ref = SIGNING_KEY_REF
+    app.include_router(build_byoc_control_plane_router())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/evidence-packages",
+            json=_submission().model_dump(mode="json"),
+        )
+
+    assert response.status_code == 202
+    assert pool.calls
+    flattened_args = " ".join(str(arg) for _, args in pool.calls for arg in args)
+    assert "source_artifacts" not in flattened_args
+    assert "fyralis.byoc.evidence_package.v1" not in flattened_args
 
 
 @pytest.mark.asyncio

@@ -138,9 +138,13 @@ Repo-owned artifacts for this first slice:
   control-plane intake contract for sanitized evidence packages. The data-plane
   agent submits a canonical HMAC-signed package submission to
   `POST /byoc/control-plane/evidence-packages`; the gateway stores only a
-  sanitized receipt record through an in-memory stub and rejects raw reports,
-  URL/credential markers, bad signatures, and package contract violations. This
-  proves the API boundary before durable control-plane persistence exists.
+  sanitized receipt record and rejects raw reports, URL/credential markers, bad
+  signatures, and package contract violations. When gateway database
+  dependencies are present, receipts persist in
+  `byoc_evidence_package_receipts` as scalar metadata only; the in-memory store
+  remains for standalone contract tests. Architecture ratchets forbid receipt
+  JSON/blob/body columns so raw evidence packages and live report details cannot
+  become control-plane storage.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -1333,8 +1337,8 @@ Minimum gates before first enterprise customer:
   excluded.
 - Submit evidence packages to the control-plane intake API only as signed
   `fyralis.byoc.evidence_package_submission.v1` payloads; control-plane storage
-  may retain only the generated sanitized receipt metadata until durable
-  persistence is implemented.
+  may retain only the generated sanitized receipt metadata in
+  `byoc_evidence_package_receipts`.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment and heartbeat schema contract-backed;

@@ -11,6 +11,7 @@ from services.platform.runtime.byoc_control_plane_intake import (
     ByocEvidencePackageSubmissionPayload,
     ByocEvidencePackageSubmissionRequest,
     InMemoryByocEvidencePackageIntakeStore,
+    PostgresByocEvidencePackageIntakeStore,
     canonical_evidence_package_submission_payload,
     digest_evidence_package,
     evidence_package_submission_payload,
@@ -46,6 +47,37 @@ def _request() -> ByocEvidencePackageSubmissionRequest:
         signing_secret=SIGNING_SECRET,
         key_ref=SIGNING_KEY_REF,
     )
+
+
+class _FakeReceiptPool:
+    def __init__(self) -> None:
+        self.rows: dict[str, dict] = {}
+        self.calls: list[tuple[str, tuple]] = []
+
+    async def fetchrow(self, query: str, *args):
+        self.calls.append((query, args))
+        if query.lstrip().upper().startswith("INSERT"):
+            row = {
+                "receipt_id": args[0],
+                "deployment_id": args[1],
+                "customer_id": args[2],
+                "agent_id": args[3],
+                "agent_version": args[4],
+                "artifact_revision": args[5],
+                "cloud_provider": args[6],
+                "region": args[7],
+                "package_digest": args[8],
+                "package_generated_at": args[9],
+                "ledger_overall_status": args[10],
+                "required_evidence_passed": args[11],
+                "live_report_envelope_digest": args[12],
+                "submitted_at": args[13],
+                "accepted_at": args[14],
+                "stored_scope": args[15],
+            }
+            self.rows[row["receipt_id"]] = row
+            return row
+        return self.rows.get(args[0])
 
 
 def test_signed_submission_verifies_without_serializing_secret() -> None:
@@ -124,6 +156,28 @@ async def test_intake_store_records_only_sanitized_receipt_metadata() -> None:
     assert "gateway.customer.internal" not in rendered
     assert "postgresql://" not in rendered
     assert "checks" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_postgres_intake_store_writes_only_scalar_receipt_metadata() -> None:
+    pool = _FakeReceiptPool()
+    store = PostgresByocEvidencePackageIntakeStore(pool)
+    request = _request()
+
+    receipt = await store.put(request, accepted_at=SUBMITTED_AT)
+    record = await store.get(receipt.receipt_id)
+
+    assert record is not None
+    assert record.receipt == receipt
+    assert record.cloud_provider == PACKAGE.cloud_provider
+    assert record.region == PACKAGE.region
+    flattened_args = json.dumps([str(arg) for _, args in pool.calls for arg in args])
+    assert "fyralis.byoc.evidence_package.v1" not in flattened_args
+    assert "source_artifacts" not in flattened_args
+    assert "evidence_ledger" not in flattened_args
+    assert "gateway.customer.internal" not in flattened_args
+    assert "postgresql://" not in flattened_args
+    assert "raw_report" not in flattened_args
 
 
 def test_intake_schema_bundle_is_exportable() -> None:

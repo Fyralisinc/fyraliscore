@@ -107,8 +107,9 @@ Every checklist item is done only when:
   contract, generator/checker CLI, source artifact digest ratchet, optional
   signed-envelope metadata, and readiness gate.
 - [x] BYOC control-plane evidence intake has a signed submission contract,
-  gateway route, self-auth route classification, sanitized receipt storage
-  stub, and tests rejecting raw reports or customer-data markers.
+  gateway route, self-auth route classification, DB-backed sanitized scalar
+  receipt storage, storage-shape ratchet, and tests rejecting raw reports or
+  customer-data markers.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

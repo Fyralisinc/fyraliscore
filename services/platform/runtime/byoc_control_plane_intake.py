@@ -201,8 +201,10 @@ class ByocEvidencePackageIntakeRecord(_StrictModel):
     submitted_at: datetime
     agent_version: str
     artifact_revision: str
+    cloud_provider: CloudProvider
+    region: str
 
-    @field_validator("agent_version", "artifact_revision")
+    @field_validator("agent_version", "artifact_revision", "region")
     @classmethod
     def _strings_must_be_bounded(cls, value: str) -> str:
         value = value.strip()
@@ -235,7 +237,7 @@ class ByocEvidencePackageIntakeStore(Protocol):
 
 
 class InMemoryByocEvidencePackageIntakeStore:
-    """Local sanitized intake store used until hosted persistence exists."""
+    """Local sanitized intake store used by standalone contract tests."""
 
     def __init__(self) -> None:
         self._records: dict[str, ByocEvidencePackageIntakeRecord] = {}
@@ -257,11 +259,124 @@ class InMemoryByocEvidencePackageIntakeStore:
             submitted_at=payload.submitted_at,
             agent_version=payload.agent_version,
             artifact_revision=payload.artifact_revision,
+            cloud_provider=payload.cloud_provider,
+            region=payload.region,
         )
         return receipt
 
     async def get(self, receipt_id: str) -> ByocEvidencePackageIntakeRecord | None:
         return self._records.get(receipt_id)
+
+
+class PostgresByocEvidencePackageIntakeStore:
+    """Postgres-backed sanitized receipt store.
+
+    The store persists only scalar receipt metadata. It intentionally does not
+    persist the evidence package body, ledger JSON, source artifacts, raw report
+    JSON, or endpoint strings.
+    """
+
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+
+    async def put(
+        self,
+        request: ByocEvidencePackageSubmissionRequest,
+        *,
+        accepted_at: datetime | None = None,
+    ) -> ByocEvidencePackageReceipt:
+        payload = _payload_from_request(request)
+        receipt = evidence_package_receipt(payload, accepted_at=accepted_at)
+        row = await self._pool.fetchrow(
+            """
+            INSERT INTO byoc_evidence_package_receipts (
+                receipt_id,
+                deployment_id,
+                customer_id,
+                agent_id,
+                agent_version,
+                artifact_revision,
+                cloud_provider,
+                region,
+                package_digest,
+                package_generated_at,
+                ledger_overall_status,
+                required_evidence_passed,
+                live_report_envelope_digest,
+                submitted_at,
+                accepted_at,
+                stored_scope
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8,
+                $9, $10, $11, $12, $13, $14, $15, $16
+            )
+            ON CONFLICT (receipt_id) DO UPDATE
+              SET receipt_id = byoc_evidence_package_receipts.receipt_id
+            RETURNING
+                receipt_id,
+                deployment_id,
+                customer_id,
+                agent_id,
+                agent_version,
+                artifact_revision,
+                cloud_provider,
+                region,
+                package_digest,
+                package_generated_at,
+                ledger_overall_status,
+                required_evidence_passed,
+                live_report_envelope_digest,
+                submitted_at,
+                accepted_at,
+                stored_scope
+            """,
+            receipt.receipt_id,
+            receipt.deployment_id,
+            receipt.customer_id,
+            receipt.agent_id,
+            payload.agent_version,
+            payload.artifact_revision,
+            payload.cloud_provider,
+            payload.region,
+            receipt.package_digest,
+            receipt.package_generated_at,
+            receipt.ledger_overall_status,
+            receipt.required_evidence_passed,
+            receipt.live_report_envelope_digest,
+            payload.submitted_at,
+            receipt.accepted_at,
+            receipt.stored_scope,
+        )
+        return _record_from_row(row).receipt
+
+    async def get(self, receipt_id: str) -> ByocEvidencePackageIntakeRecord | None:
+        row = await self._pool.fetchrow(
+            """
+            SELECT
+                receipt_id,
+                deployment_id,
+                customer_id,
+                agent_id,
+                agent_version,
+                artifact_revision,
+                cloud_provider,
+                region,
+                package_digest,
+                package_generated_at,
+                ledger_overall_status,
+                required_evidence_passed,
+                live_report_envelope_digest,
+                submitted_at,
+                accepted_at,
+                stored_scope
+            FROM byoc_evidence_package_receipts
+            WHERE receipt_id = $1
+            """,
+            receipt_id,
+        )
+        if row is None:
+            return None
+        return _record_from_row(row)
 
 
 def evidence_package_submission_payload(
@@ -408,6 +523,33 @@ def _payload_from_request(
     return ByocEvidencePackageSubmissionPayload.model_validate(data)
 
 
+def _record_from_row(row: Any) -> ByocEvidencePackageIntakeRecord:
+    data = dict(row)
+    receipt = ByocEvidencePackageReceipt(
+        schema_version="fyralis.byoc.evidence_package_receipt.v1",
+        status="accepted",
+        receipt_id=data["receipt_id"],
+        deployment_id=data["deployment_id"],
+        customer_id=data["customer_id"],
+        agent_id=data["agent_id"],
+        package_digest=data["package_digest"],
+        package_generated_at=data["package_generated_at"],
+        ledger_overall_status=data["ledger_overall_status"],
+        required_evidence_passed=data["required_evidence_passed"],
+        live_report_envelope_digest=data["live_report_envelope_digest"],
+        accepted_at=data["accepted_at"],
+        stored_scope=data["stored_scope"],
+    )
+    return ByocEvidencePackageIntakeRecord(
+        receipt=receipt,
+        submitted_at=data["submitted_at"],
+        agent_version=data["agent_version"],
+        artifact_revision=data["artifact_revision"],
+        cloud_provider=data["cloud_provider"],
+        region=data["region"],
+    )
+
+
 def _privacy_boundary_violations(
     payload: ByocEvidencePackageSubmissionPayload,
 ) -> list[ByocEvidencePackageIntakeViolation]:
@@ -464,6 +606,7 @@ __all__ = [
     "ByocEvidencePackageSubmissionPayload",
     "ByocEvidencePackageSubmissionRequest",
     "InMemoryByocEvidencePackageIntakeStore",
+    "PostgresByocEvidencePackageIntakeStore",
     "canonical_evidence_package_submission_payload",
     "digest_evidence_package",
     "evidence_package_receipt",
