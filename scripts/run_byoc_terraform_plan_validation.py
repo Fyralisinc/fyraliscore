@@ -53,6 +53,25 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Emit JSON instead of YAML.",
     )
     parser.add_argument(
+        "--run-terraform-validate",
+        action="store_true",
+        help=(
+            "Run terraform validate in the customer-side scaffold root. "
+            "Command stdout/stderr are discarded and never included in the report."
+        ),
+    )
+    parser.add_argument(
+        "--terraform-bin",
+        default="terraform",
+        help="Terraform executable to use with --run-terraform-validate.",
+    )
+    parser.add_argument(
+        "--terraform-validate-timeout-seconds",
+        type=int,
+        default=30,
+        help="Timeout for --run-terraform-validate; accepted range is 1-300.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         help="Optional path to write the sanitized validation report.",
@@ -69,6 +88,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             permissions_manifest_path=args.permissions_manifest,
             iam_template_path=args.iam_template,
             repo_root=args.repo_root,
+            run_terraform_validate=args.run_terraform_validate,
+            terraform_bin=args.terraform_bin,
+            terraform_validate_timeout_seconds=(
+                args.terraform_validate_timeout_seconds
+            ),
         )
     )
     rendered = (

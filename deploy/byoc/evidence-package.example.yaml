@@ -36,7 +36,7 @@ source_artifacts:
   digest: sha256:148ea4b590419817e3d1d90727708e2858c99127d3bebe11ad4bcfca080ca661
 - kind: evidence_ledger
   ref: deploy/byoc/evidence-ledger.example.yaml
-  digest: sha256:8fc0fb1d7b7872d90b85abbf05a9ba276a0058c20024f2bed8d31d3efb3991aa
+  digest: sha256:5bbbc9c8dea0d5eb2b838b4c3aacd55e6b3d091ffac328de0643c8126158b1ab
 ledger:
   schema_version: fyralis.byoc.evidence_ledger.v1
   deployment_id: dep_example01
@@ -96,18 +96,19 @@ ledger:
     source:
       type: local_terraform_validator
       ref: generated:byoc_terraform_plan_validation
-      digest: sha256:5bef7cab247eded8aa1e0bc18a2cf49787fcb8f531cac971beac1065067f7c94
+      digest: sha256:e82ac9c101c3a3a51e2bf7ecb5f3012d7b4719e12a903935ac7c5ed5fb9ed4ee
     check_summary:
-      total: 10
+      total: 11
       required: 10
       passed: 10
       failed: 0
-      skipped: 0
+      skipped: 1
       failed_required: 0
     failed_check_codes: []
     step_count: 5
     operation_counts:
       contract_only_validation: 1
+      terraform_validate_executions: 0
       terraform_modules: 5
       terraform_files: 10
   - kind: bootstrap_runner

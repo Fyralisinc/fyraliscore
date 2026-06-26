@@ -21,6 +21,8 @@ def test_run_byoc_terraform_plan_validation_json_output(capsys) -> None:
     assert code == 0
     assert payload["schema_version"] == "fyralis.byoc.terraform_plan_validation.v1"
     assert payload["execution_mode"] == "contract_only"
+    assert payload["terraform_validate_executed"] is False
+    assert payload["terraform_plan_executed"] is False
     assert payload["terraform_plan_json_included"] is False
     assert payload["terraform_command_output_included"] is False
 
@@ -73,6 +75,67 @@ def test_run_byoc_terraform_plan_validation_reports_failure(
     }
 
 
+def test_run_byoc_terraform_plan_validation_can_run_validate(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    fake_terraform = _fake_terraform(
+        tmp_path,
+        stdout="raw customer data should not appear",
+        stderr="stderr customer data should not appear",
+        exit_code=0,
+    )
+
+    code = main([
+        "--json",
+        "--run-terraform-validate",
+        "--terraform-bin",
+        str(fake_terraform),
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    rendered = json.dumps(payload)
+    assert code == 0
+    assert payload["terraform_validate_executed"] is True
+    assert payload["terraform_plan_executed"] is False
+    validate = _check(payload, "terraform_validate_execution")
+    assert validate["status"] == "pass"
+    assert validate["metrics"]["exit_code"] == 0
+    assert "raw customer data should not appear" not in rendered
+    assert "stderr customer data should not appear" not in rendered
+
+
+def test_run_byoc_terraform_plan_validation_sanitizes_validate_failure(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    fake_terraform = _fake_terraform(
+        tmp_path,
+        stdout="raw payload should not appear",
+        stderr="token should not appear",
+        exit_code=7,
+    )
+
+    code = main([
+        "--json",
+        "--run-terraform-validate",
+        "--terraform-bin",
+        str(fake_terraform),
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    rendered = json.dumps(payload)
+    assert code == 1
+    assert payload["terraform_validate_executed"] is True
+    validate = _check(payload, "terraform_validate_execution")
+    assert validate["status"] == "fail"
+    assert validate["metrics"]["exit_code"] == 7
+    assert "raw payload should not appear" not in rendered
+    assert "token should not appear" not in rendered
+
+
 def _copy_package_tree(tmp_path: Path) -> None:
     for source in (ROOT / "deploy/byoc/aws").rglob("*"):
         if not source.is_file():
@@ -81,3 +144,32 @@ def _copy_package_tree(tmp_path: Path) -> None:
         target = tmp_path / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def _check(payload: dict[str, object], name: str) -> dict[str, object]:
+    checks = payload["checks"]
+    assert isinstance(checks, list)
+    for check in checks:
+        assert isinstance(check, dict)
+        if check["name"] == name:
+            return check
+    raise AssertionError(f"missing check {name}")
+
+
+def _fake_terraform(
+    tmp_path: Path,
+    *,
+    stdout: str,
+    stderr: str,
+    exit_code: int,
+) -> Path:
+    path = tmp_path / "terraform"
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' {stdout!r}\n"
+        f"printf '%s\\n' {stderr!r} >&2\n"
+        f"exit {exit_code}\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return path

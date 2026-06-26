@@ -1018,6 +1018,7 @@ def _terraform_validation_evidence_entry(
         step_count=report.module_count,
         operation_counts={
             "contract_only_validation": 1,
+            "terraform_validate_executions": int(report.terraform_validate_executed),
             "terraform_modules": report.module_count,
             "terraform_files": report.terraform_file_count,
         },
@@ -1081,6 +1082,8 @@ def _terraform_validation_summary_digest(
             ),
             "terraform_file_count": report.terraform_file_count,
             "terraform_plan_json_included": report.terraform_plan_json_included,
+            "terraform_plan_executed": report.terraform_plan_executed,
+            "terraform_validate_executed": report.terraform_validate_executed,
         }
     )
 
