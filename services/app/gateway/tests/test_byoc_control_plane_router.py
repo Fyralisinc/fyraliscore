@@ -24,6 +24,15 @@ from services.platform.runtime.byoc_control_plane_intake import (
     signed_evidence_package_submission,
 )
 from services.platform.runtime.byoc_evidence_package import load_byoc_evidence_package
+from services.platform.runtime.byoc_preflight_bundle import (
+    ByocPreflightBundleInputs,
+    run_byoc_preflight_bundle,
+)
+from services.platform.runtime.byoc_preflight_intake import (
+    InMemoryByocPreflightReportIntakeStore,
+    preflight_report_submission_payload,
+    signed_preflight_report_submission,
+)
 from services.platform.runtime.byoc_runner_evidence_intake import (
     InMemoryByocRunnerEvidenceIntakeStore,
     runner_evidence_submission_payload,
@@ -36,6 +45,12 @@ ROOT = Path(__file__).resolve().parents[4]
 PACKAGE = load_byoc_evidence_package(ROOT / "deploy/byoc/evidence-package.example.yaml")
 MANIFEST_PATH = ROOT / "deploy/byoc/dataplane.example.yaml"
 BUNDLE_NEXT_PATH = ROOT / "deploy/byoc/bootstrap-bundle.next.example.yaml"
+PERMISSIONS_PATH = ROOT / "deploy/byoc/permissions.example.yaml"
+IAM_TEMPLATE_PATH = ROOT / "deploy/byoc/aws/iam.bootstrap.template.yaml"
+IAC_PACKAGE_PATH = ROOT / "deploy/byoc/aws/iac-package.example.yaml"
+BUNDLE_PATH = ROOT / "deploy/byoc/bootstrap-bundle.example.yaml"
+PLAN_PATH = ROOT / "deploy/byoc/bootstrap-plan.example.yaml"
+ENV_TEMPLATE = ROOT / ".env.production.example"
 SIGNING_SECRET = "local-control-plane-intake-secret"
 SIGNING_KEY_REF = "control-plane/byoc/evidence-intake-key"
 AGENT_ID = "agt_intake01"
@@ -83,6 +98,33 @@ async def _runner_submission(*, signing_secret: str = SIGNING_SECRET):
         submitted_at=SUBMITTED_AT,
     )
     return signed_runner_evidence_submission(
+        payload,
+        signing_secret=signing_secret,
+        key_ref=SIGNING_KEY_REF,
+    )
+
+
+def _preflight_submission(*, signing_secret: str = SIGNING_SECRET):
+    report = run_byoc_preflight_bundle(
+        ByocPreflightBundleInputs(
+            dataplane_manifest_path=MANIFEST_PATH,
+            permissions_manifest_path=PERMISSIONS_PATH,
+            iam_template_path=IAM_TEMPLATE_PATH,
+            iac_package_path=IAC_PACKAGE_PATH,
+            bootstrap_bundle_path=BUNDLE_PATH,
+            bootstrap_plan_path=PLAN_PATH,
+            env_path=ENV_TEMPLATE,
+            repo_root=ROOT,
+        )
+    )
+    payload = preflight_report_submission_payload(
+        preflight_report=report,
+        agent_id="agt_preflightrouter01",
+        agent_version="2026.06.26-preflight-router",
+        nonce="nonce-preflight-router-001",
+        submitted_at=SUBMITTED_AT,
+    )
+    return signed_preflight_report_submission(
         payload,
         signing_secret=signing_secret,
         key_ref=SIGNING_KEY_REF,
@@ -138,6 +180,31 @@ class _FakeReceiptPool:
                 "submitted_at": args[18],
                 "accepted_at": args[19],
                 "stored_scope": args[20],
+            }
+            self.rows[row["receipt_id"]] = row
+            return row
+        if (
+            query.lstrip().upper().startswith("INSERT")
+            and "byoc_preflight_report_receipts" in query
+        ):
+            row = {
+                "receipt_id": args[0],
+                "deployment_id": args[1],
+                "customer_id": args[2],
+                "agent_id": args[3],
+                "agent_version": args[4],
+                "artifact_revision": args[5],
+                "cloud_provider": args[6],
+                "region": args[7],
+                "report_digest": args[8],
+                "preflight_status": args[9],
+                "required_sections_passed": args[10],
+                "section_count": args[11],
+                "failed_section_count": args[12],
+                "terraform_validate_executed": args[13],
+                "submitted_at": args[14],
+                "accepted_at": args[15],
+                "stored_scope": args[16],
             }
             self.rows[row["receipt_id"]] = row
             return row
@@ -269,6 +336,31 @@ async def test_byoc_control_plane_accepts_signed_runner_evidence() -> None:
     assert "iterations" not in response.text
     assert "gateway_image" not in response.text
     assert INSTALL_TOKEN not in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_accepts_signed_preflight_report() -> None:
+    preflight_store = InMemoryByocPreflightReportIntakeStore()
+    app, _ = _app()
+    app.state.byoc_preflight_report_intake_store = preflight_store
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/preflight-reports",
+            json=_preflight_submission().model_dump(mode="json"),
+        )
+
+    assert response.status_code == 202
+    receipt = response.json()
+    assert receipt["status"] == "accepted"
+    assert receipt["stored_scope"] == "sanitized_metadata_only"
+    assert receipt["preflight_status"] == "pass"
+    assert receipt["section_count"] == 7
+    assert len(preflight_store.records) == 1
+    assert '"sections":' not in response.text
+    assert '"preflight_report":' not in response.text
+    assert "ghcr.io" not in response.text
+    assert "postgresql://" not in response.text
 
 
 @pytest.mark.asyncio
@@ -449,6 +541,30 @@ async def test_byoc_control_plane_uses_postgres_store_for_runner_evidence() -> N
     assert "artifact_verification_ids" not in flattened_args
     assert "gateway_image" not in flattened_args
     assert INSTALL_TOKEN not in flattened_args
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_uses_postgres_store_for_preflight_reports() -> None:
+    pool = _FakeReceiptPool()
+    app = FastAPI()
+    app.state.deps = SimpleNamespace(pool=pool)
+    app.state.byoc_evidence_intake_secret = SIGNING_SECRET
+    app.state.byoc_evidence_intake_key_ref = SIGNING_KEY_REF
+    app.include_router(build_byoc_control_plane_router())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/preflight-reports",
+            json=_preflight_submission().model_dump(mode="json"),
+        )
+
+    assert response.status_code == 202
+    assert pool.calls
+    flattened_args = " ".join(str(arg) for _, args in pool.calls for arg in args)
+    assert "fyralis.byoc.preflight_bundle.v1" not in flattened_args
+    assert '"preflight_report":' not in flattened_args
+    assert "sections" not in flattened_args
+    assert "ghcr.io" not in flattened_args
 
 
 @pytest.mark.asyncio

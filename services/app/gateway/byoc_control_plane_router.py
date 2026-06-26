@@ -23,6 +23,14 @@ from services.platform.runtime.byoc_control_plane_intake import (
     validate_evidence_receipt_read_auth_headers,
     validate_evidence_package_submission,
 )
+from services.platform.runtime.byoc_preflight_intake import (
+    ByocPreflightReportIntakeStore,
+    ByocPreflightReportReceipt,
+    ByocPreflightReportSubmissionRequest,
+    InMemoryByocPreflightReportIntakeStore,
+    PostgresByocPreflightReportIntakeStore,
+    validate_preflight_report_submission,
+)
 from services.platform.runtime.byoc_runner_evidence_intake import (
     ByocRunnerEvidenceIntakeStore,
     ByocRunnerEvidenceReceipt,
@@ -37,6 +45,7 @@ def build_byoc_control_plane_router(
     *,
     store: ByocEvidencePackageIntakeStore | None = None,
     runner_evidence_store: ByocRunnerEvidenceIntakeStore | None = None,
+    preflight_report_store: ByocPreflightReportIntakeStore | None = None,
     signing_secret: str | None = None,
     signing_key_ref: str | None = None,
 ) -> APIRouter:
@@ -76,6 +85,41 @@ def build_byoc_control_plane_router(
                 detail={"errors": [violation.render() for violation in violations]},
             )
         intake_store = store or _store_from_state(request)
+        return await intake_store.put(submission)
+
+    @router.post(
+        "/preflight-reports",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def submit_preflight_report(
+        request: Request,
+        submission: ByocPreflightReportSubmissionRequest,
+    ) -> ByocPreflightReportReceipt:
+        resolved_key = await _resolve_control_plane_key(
+            request,
+            purpose="evidence_package_submission",
+            key_ref=submission.signature.key_ref,
+            signing_secret=signing_secret,
+            signing_key_ref=signing_key_ref,
+        )
+        violations = validate_preflight_report_submission(
+            submission,
+            signing_secret=resolved_key.secret,
+            expected_key_ref=resolved_key.key_ref,
+        )
+        if violations:
+            status_code = (
+                status.HTTP_403_FORBIDDEN
+                if any("signature" in violation.code for violation in violations)
+                else status.HTTP_400_BAD_REQUEST
+            )
+            raise HTTPException(
+                status_code=status_code,
+                detail={"errors": [violation.render() for violation in violations]},
+            )
+        intake_store = preflight_report_store or _preflight_report_store_from_state(
+            request
+        )
         return await intake_store.put(submission)
 
     @router.post(
@@ -276,6 +320,23 @@ def _runner_evidence_store_from_state(
         return created
     created = InMemoryByocRunnerEvidenceIntakeStore()
     request.app.state.byoc_runner_evidence_intake_store = created
+    return created
+
+
+def _preflight_report_store_from_state(
+    request: Request,
+) -> ByocPreflightReportIntakeStore:
+    existing = getattr(request.app.state, "byoc_preflight_report_intake_store", None)
+    if existing is not None:
+        return existing
+    deps = getattr(request.app.state, "deps", None)
+    pool = getattr(deps, "pool", None)
+    if pool is not None:
+        created = PostgresByocPreflightReportIntakeStore(pool)
+        request.app.state.byoc_preflight_report_intake_store = created
+        return created
+    created = InMemoryByocPreflightReportIntakeStore()
+    request.app.state.byoc_preflight_report_intake_store = created
     return created
 
 

@@ -199,6 +199,17 @@ Repo-owned artifacts for this first slice:
   failure codes, and safe execution flags. It never embeds child report
   details, command output, artifact refs, endpoint URLs, credentials, raw
   payloads, prompts, logs, embeddings, or PII.
+- `services/platform/runtime/byoc_preflight_intake.py` and
+  `scripts/submit_byoc_preflight_report.py` provide the signed handoff path
+  for those aggregate reports. Customer-side automation signs a canonical
+  `fyralis.byoc.preflight_report_submission.v1` payload and may submit it to
+  `POST /byoc/control-plane/preflight-reports`. The hosted route stores only a
+  scalar `fyralis.byoc.preflight_report_receipt.v1` in
+  `byoc_preflight_report_receipts`, including report digest, status, section
+  counts, and safe execution flags. It never stores the report body, child
+  reports, section details, command output, artifact refs, URLs, credentials,
+  payloads, prompts, logs, embeddings, or PII; architecture ratchets forbid
+  JSON/blob/body columns for this table.
 - `services/platform/runtime/byoc_evidence_ledger.py`,
   `scripts/generate_byoc_evidence_ledger.py`, and
   `deploy/byoc/evidence-ledger.example.yaml` define the sanitized deployment
@@ -223,9 +234,10 @@ Repo-owned artifacts for this first slice:
   embeddings, or PII.
 - `services/platform/runtime/byoc_control_plane_intake.py` and
   `services/app/gateway/byoc_control_plane_router.py` define the first hosted
-  control-plane intake contract for sanitized evidence packages. The data-plane
-  agent submits a canonical HMAC-signed package submission to
-  `POST /byoc/control-plane/evidence-packages`; the gateway stores only a
+  control-plane intake contract for sanitized evidence packages and other
+  BYOC evidence receipts. The data-plane agent submits a canonical HMAC-signed
+  package submission to `POST /byoc/control-plane/evidence-packages`; the
+  gateway stores only a
   sanitized receipt record and rejects raw reports, URL/credential markers, bad
   signatures, and package contract violations. When gateway database
   dependencies are present, receipts persist in

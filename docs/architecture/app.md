@@ -53,13 +53,14 @@ owns:
   egress-only control-plane URL, mTLS data-plane agent contract, disabled raw
   telemetry flags, and disabled control-plane inbound flag are present.
 - **BYOC control-plane intake** (`services/app/gateway/byoc_control_plane_router.py`):
-  receives signed sanitized evidence-package submissions from the data-plane
-  agent and records only bounded receipt metadata. Gateway deployments with
-  database dependencies use the Postgres receipt store; the in-memory store is
-  kept for standalone contract tests. Receipt reads and bounded list queries
-  require signed read headers and return sanitized scalar metadata only. In
-  BYOC production, submission/read signing material is resolved by `key_ref`
-  through managed app-secret refs; raw app-state secrets are local/test only.
+  receives signed sanitized evidence-package, preflight-report, and
+  runner-evidence submissions from the data-plane agent and records only
+  bounded receipt metadata. Gateway deployments with database dependencies use
+  Postgres receipt stores; in-memory stores are kept for standalone contract
+  tests. Evidence-package receipt reads and bounded list queries require signed
+  read headers and return sanitized scalar metadata only. In BYOC production,
+  submission/read signing material is resolved by `key_ref` through managed
+  app-secret refs; raw app-state secrets are local/test only.
 - **Webhook ingress** (`services/app/webhooks/router.py`): captures raw bytes,
   verifies the per-provider signature, resolves the tenant
   (`provider_installations` via the IN-08 tenant resolver + envelope-encrypted
@@ -126,7 +127,7 @@ graph TD
 | Gateway settings | `services/app/gateway/settings.py` | Fail-closed production settings, including BYOC deployment identity, egress-only control-plane connectivity, agent auth mode, and raw telemetry controls. |
 | Gateway middleware | `services/app/gateway/middleware.py` | Request context, bearer-session auth, public path allowlist, rate limiting. |
 | Gateway route mounts | `services/app/gateway/route_mounts.py` | Mounts focused gateway/product/ingest routers in one ordered place. |
-| BYOC control-plane intake | `services/app/gateway/byoc_control_plane_router.py` | Self-authenticated evidence-package intake route; verifies signed submissions and signed receipt reads, and stores sanitized scalar receipts only. |
+| BYOC control-plane intake | `services/app/gateway/byoc_control_plane_router.py` | Self-authenticated evidence-package, preflight-report, and runner-evidence intake routes; verifies signed submissions and signed receipt reads, and stores sanitized scalar receipts only. |
 | BYOC control-plane keys | `services/app/gateway/byoc_control_plane_keys.py` | Resolves evidence submission/read HMAC keys by `key_ref` from managed app-secret refs, with static app-state fallback only outside production. |
 | BYOC agent control plane | `services/app/gateway/byoc_agent_router.py` | Self-authenticated agent enrollment, heartbeat, and desired-state polling route; verifies install-token HMAC proof by managed secret ref, accepts enrolled-agent heartbeats, and returns sanitized revision/config-intent metadata only. |
 | BYOC agent keys | `services/app/gateway/byoc_agent_keys.py` | Resolves data-plane install-token material by `key_ref` from managed secret refs, with static app-state fallback only outside production. |
@@ -154,6 +155,13 @@ graph TD
 - `POST /byoc/control-plane/evidence-packages` — signed BYOC evidence-package
   intake; returns a sanitized receipt without storing raw reports or package
   bodies.
+- `POST /byoc/control-plane/preflight-reports` — signed BYOC aggregate
+  preflight report intake; returns a sanitized receipt without storing the
+  report body, section details, child reports, URLs, command output, or
+  credentials.
+- `POST /byoc/control-plane/runner-evidence` — signed BYOC runner-evidence
+  intake; returns a sanitized receipt without storing runner checks, iterations,
+  apply-plan bodies, artifact inventories, URLs, or credentials.
 - `GET /byoc/control-plane/evidence-packages` and
   `GET /byoc/control-plane/evidence-packages/{receipt_id}` — signed BYOC
   receipt automation reads; list queries require `deployment_id` or
@@ -180,7 +188,8 @@ by the gateway directly.
 
 **Data stores touched:** `observations`, `actor_sessions`, `view_ceo_cache`,
 `view_render_costs`, `provider_installations`, `oauth_install_states`,
-`realtime_replay_cursors`, `byoc_evidence_package_receipts`, plus the substrate
+`realtime_replay_cursors`, `byoc_evidence_package_receipts`,
+`byoc_preflight_report_receipts`, `byoc_runner_evidence_receipts`, plus the substrate
 tables read by mounted routers.
 
 ## Design rationale

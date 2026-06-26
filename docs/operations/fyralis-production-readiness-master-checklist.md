@@ -115,6 +115,11 @@ Every checklist item is done only when:
   bootstrap-bundle, bootstrap-runner, and offline post-deploy checks without
   child report details, command output, artifact refs, URLs, credentials, or
   customer data.
+- [x] BYOC preflight reports have a signed submission contract, gateway route,
+  self-auth route classification, DB-backed sanitized scalar receipt storage,
+  existing evidence-intake key-ref resolution, customer-side/local submit CLI,
+  storage-shape ratchet, and tests rejecting raw child reports or customer-data
+  markers.
 - [x] BYOC deployment evidence has a checked-in sanitized ledger contract,
   generator/checker CLI, aggregate-only evidence summaries, and readiness gate
   covering plan, Terraform scaffold validation, bootstrap-runner, and offline

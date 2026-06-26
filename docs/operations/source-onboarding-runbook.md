@@ -44,6 +44,23 @@ scripts/run_byoc_preflight_bundle.py --json \
 The preflight bundle is a summary only. Keep using the individual commands when
 operators need to diagnose a specific failing section.
 
+Where the hosted control-plane intake is enabled, sign and submit the preflight
+summary with the evidence intake key:
+
+```bash
+FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY="<local-signing-material>" \
+scripts/submit_byoc_preflight_report.py \
+  --preflight-report <byoc-preflight-report.json> \
+  --agent-id <agent-id> \
+  --agent-version <agent-version> \
+  --key-ref <evidence-intake-key-ref> \
+  --submit-url https://<control-plane>/byoc/control-plane/preflight-reports
+```
+
+The backend stores only a scalar preflight receipt with report digest, status,
+section counts, and safe execution flags; it does not store the preflight report
+body or child reports.
+
 ```bash
 scripts/run_byoc_terraform_plan_validation.py --json \
   --output <terraform-validation-report.json>
