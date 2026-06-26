@@ -145,9 +145,12 @@ Repo-owned artifacts for this first slice:
   remains for standalone contract tests. Receipt lookup and list APIs are
   backend automation surfaces only: reads require short-lived HMAC-signed
   headers, and list queries must be bounded by deployment or customer. The
-  response contract returns sanitized scalar receipt metadata only. Architecture
-  ratchets forbid receipt JSON/blob/body columns so raw evidence packages and
-  live report details cannot become control-plane storage.
+  response contract returns sanitized scalar receipt metadata only. In BYOC
+  production, submission and receipt-read HMAC keys are selected by `key_ref`
+  and resolved through managed app-secret refs; raw process-env signing keys are
+  allowed only for local/test app-state wiring. Architecture ratchets forbid
+  receipt JSON/blob/body columns so raw evidence packages and live report
+  details cannot become control-plane storage.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -1342,7 +1345,9 @@ Minimum gates before first enterprise customer:
   `fyralis.byoc.evidence_package_submission.v1` payloads; control-plane storage
   may retain only the generated sanitized receipt metadata in
   `byoc_evidence_package_receipts`. Query receipt metadata only with signed
-  read headers and deployment/customer bounds.
+  read headers and deployment/customer bounds. Configure
+  `FYRALIS_BYOC_EVIDENCE_INTAKE_*` and `FYRALIS_BYOC_EVIDENCE_READ_*` key refs
+  through the managed secret provider; do not ship raw signing-key env values.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment and heartbeat schema contract-backed;

@@ -255,6 +255,10 @@ class GatewaySettings:
     data_plane_agent_auth: str | None = None
     data_plane_agent_install_token_secret_ref: str | None = None
     data_plane_agent_client_cert_secret_ref: str | None = None
+    byoc_evidence_intake_key_ref: str | None = None
+    byoc_evidence_intake_signing_key_secret_ref: str | None = None
+    byoc_evidence_read_key_ref: str | None = None
+    byoc_evidence_read_signing_key_secret_ref: str | None = None
     telemetry_mode: str = "local-only"
     telemetry_raw_logs_allowed: bool = False
     telemetry_raw_payloads_allowed: bool = False
@@ -328,6 +332,20 @@ class GatewaySettings:
             default=False,
         )
         data_plane_agent_auth = source.get("FYRALIS_DATA_PLANE_AGENT_AUTH") or None
+        byoc_evidence_intake_key_ref = (
+            source.get("FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF") or None
+        )
+        byoc_evidence_intake_signing_key_secret_ref = (
+            source.get("FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF")
+            or None
+        )
+        byoc_evidence_read_key_ref = (
+            source.get("FYRALIS_BYOC_EVIDENCE_READ_KEY_REF") or None
+        )
+        byoc_evidence_read_signing_key_secret_ref = (
+            source.get("FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF")
+            or None
+        )
         telemetry_mode = _env_choice(
             source,
             "FYRALIS_TELEMETRY_MODE",
@@ -361,6 +379,18 @@ class GatewaySettings:
                     "FYRALIS_DATA_PLANE_AGENT_PRIVATE_KEY must not be set in "
                     "BYOC production; use "
                     "FYRALIS_DATA_PLANE_AGENT_CLIENT_CERT_SECRET_REF",
+                )
+            if source.get("FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY"):
+                raise ValueError(
+                    "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY must not be set "
+                    "in BYOC production; use "
+                    "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF",
+                )
+            if source.get("FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY"):
+                raise ValueError(
+                    "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY must not be set "
+                    "in BYOC production; use "
+                    "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF",
                 )
             byoc_deployment_id = _required_nonempty(
                 source,
@@ -414,6 +444,26 @@ class GatewaySettings:
             data_plane_agent_client_cert_secret_ref = _required_nonempty(
                 source,
                 "FYRALIS_DATA_PLANE_AGENT_CLIENT_CERT_SECRET_REF",
+                context=context,
+            )
+            byoc_evidence_intake_key_ref = _required_nonempty(
+                source,
+                "FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF",
+                context=context,
+            )
+            byoc_evidence_intake_signing_key_secret_ref = _required_nonempty(
+                source,
+                "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF",
+                context=context,
+            )
+            byoc_evidence_read_key_ref = _required_nonempty(
+                source,
+                "FYRALIS_BYOC_EVIDENCE_READ_KEY_REF",
+                context=context,
+            )
+            byoc_evidence_read_signing_key_secret_ref = _required_nonempty(
+                source,
+                "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF",
                 context=context,
             )
             if telemetry_mode not in {"aggregate-only", "disabled"}:
@@ -470,6 +520,14 @@ class GatewaySettings:
             ),
             data_plane_agent_client_cert_secret_ref=(
                 data_plane_agent_client_cert_secret_ref
+            ),
+            byoc_evidence_intake_key_ref=byoc_evidence_intake_key_ref,
+            byoc_evidence_intake_signing_key_secret_ref=(
+                byoc_evidence_intake_signing_key_secret_ref
+            ),
+            byoc_evidence_read_key_ref=byoc_evidence_read_key_ref,
+            byoc_evidence_read_signing_key_secret_ref=(
+                byoc_evidence_read_signing_key_secret_ref
             ),
             telemetry_mode=telemetry_mode,
             telemetry_raw_logs_allowed=telemetry_raw_logs_allowed,

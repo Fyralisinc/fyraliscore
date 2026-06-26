@@ -283,6 +283,18 @@ def test_gateway_byoc_mode_requires_egress_only_privacy_contract() -> None:
         FYRALIS_DATA_PLANE_AGENT_CLIENT_CERT_SECRET_REF=(
             "prod/fyralis/dep-test001/agent-client-cert"
         ),
+        FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF=(
+            "prod/fyralis/dep-test001/evidence-intake-signing-key"
+        ),
+        FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF=(
+            "prod/fyralis/dep-test001/evidence-intake-signing-key"
+        ),
+        FYRALIS_BYOC_EVIDENCE_READ_KEY_REF=(
+            "prod/fyralis/dep-test001/evidence-read-signing-key"
+        ),
+        FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF=(
+            "prod/fyralis/dep-test001/evidence-read-signing-key"
+        ),
         FYRALIS_TELEMETRY_MODE="aggregate-only",
         FYRALIS_TELEMETRY_RAW_LOGS_ALLOWED="0",
         FYRALIS_TELEMETRY_RAW_PAYLOADS_ALLOWED="0",
@@ -305,6 +317,18 @@ def test_gateway_byoc_mode_requires_egress_only_privacy_contract() -> None:
     )
     assert settings.data_plane_agent_client_cert_secret_ref == (
         "prod/fyralis/dep-test001/agent-client-cert"
+    )
+    assert settings.byoc_evidence_intake_key_ref == (
+        "prod/fyralis/dep-test001/evidence-intake-signing-key"
+    )
+    assert settings.byoc_evidence_intake_signing_key_secret_ref == (
+        "prod/fyralis/dep-test001/evidence-intake-signing-key"
+    )
+    assert settings.byoc_evidence_read_key_ref == (
+        "prod/fyralis/dep-test001/evidence-read-signing-key"
+    )
+    assert settings.byoc_evidence_read_signing_key_secret_ref == (
+        "prod/fyralis/dep-test001/evidence-read-signing-key"
     )
     assert settings.telemetry_mode == "aggregate-only"
     assert settings.telemetry_raw_logs_allowed is False
@@ -340,6 +364,30 @@ def test_gateway_byoc_mode_requires_egress_only_privacy_contract() -> None:
         GatewaySettings.from_env(
             {**byoc_env, "FYRALIS_DATA_PLANE_AGENT_PRIVATE_KEY": "raw-key"}
         )
+
+    with pytest.raises(
+        ValueError,
+        match="FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY",
+    ):
+        GatewaySettings.from_env(
+            {**byoc_env, "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY": "raw-key"}
+        )
+
+    with pytest.raises(ValueError, match="FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY"):
+        GatewaySettings.from_env(
+            {**byoc_env, "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY": "raw-key"}
+        )
+
+    for key in (
+        "FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF",
+        "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF",
+        "FYRALIS_BYOC_EVIDENCE_READ_KEY_REF",
+        "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF",
+    ):
+        missing = dict(byoc_env)
+        missing.pop(key)
+        with pytest.raises(ValueError, match=key):
+            GatewaySettings.from_env(missing)
 
 
 @pytest.mark.asyncio

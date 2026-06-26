@@ -278,9 +278,15 @@ def _write_byoc_template(path: Path, *, overrides: dict[str, str] | None = None)
             **overrides,
         }
     )
-    _write_template(path, overrides={"FYRALIS_DEPLOYMENT_MODE": "byoc"})
+    _write_template(
+        path,
+        overrides={
+            "FYRALIS_DEPLOYMENT_MODE": "byoc",
+            **byoc_values,
+        },
+    )
     with path.open("a", encoding="utf-8") as fh:
-        for key in sorted(BYOC_REQUIRED_KEYS):
+        for key in sorted(BYOC_REQUIRED_KEYS - REQUIRED_KEYS):
             fh.write(f"{key}={byoc_values[key]}\n")
 
 
@@ -349,3 +355,19 @@ def test_env_contract_reports_forbidden_byoc_raw_agent_secrets(
         "FYRALIS_DATA_PLANE_AGENT_PRIVATE_KEY",
     ]
     assert all("must not be present" in violation.message for violation in violations)
+
+
+def test_env_contract_reports_nonempty_byoc_evidence_signing_key(
+    tmp_path: Path,
+) -> None:
+    template = tmp_path / ".env.production.example"
+    _write_byoc_template(
+        template,
+        overrides={"FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY": "raw-key"},
+    )
+
+    violations = check_env_contract(template)
+
+    assert len(violations) == 1
+    assert violations[0].key == "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY"
+    assert "must stay blank" in violations[0].message

@@ -8,9 +8,11 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+import services.app.gateway.byoc_control_plane_keys as key_resolvers
 from services.app.gateway.byoc_control_plane_router import (
     build_byoc_control_plane_router,
 )
+from services.app.gateway.settings import GatewaySettings
 from services.platform.runtime.byoc_control_plane_intake import (
     InMemoryByocEvidencePackageIntakeStore,
     evidence_package_submission_payload,
@@ -199,6 +201,98 @@ async def test_byoc_control_plane_receipt_list_requires_query_bound() -> None:
 
     assert response.status_code == 400
     assert "deployment_id or customer_id" in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_rejects_unknown_key_ref() -> None:
+    app, _ = _app()
+    submission = _submission().model_dump(mode="json")
+    submission["signature"]["key_ref"] = "control-plane/byoc/unknown-key"
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/evidence-packages",
+            json=submission,
+        )
+
+    assert response.status_code == 403
+    assert "unknown_key_ref" in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_rejects_legacy_static_secret_in_production() -> None:
+    app, _ = _app()
+    app.state.gateway_settings = GatewaySettings(environment="production")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/evidence-packages",
+            json=_submission().model_dump(mode="json"),
+        )
+
+    assert response.status_code == 503
+    assert "not configured" in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_uses_managed_key_resolver_from_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, bool | None]] = []
+
+    def _fake_load_app_secret_text_from_env(
+        name: str,
+        *,
+        production: bool | None = None,
+        **_,
+    ) -> str:
+        calls.append((name, production))
+        return SIGNING_SECRET
+
+    monkeypatch.setattr(
+        key_resolvers,
+        "load_app_secret_text_from_env",
+        _fake_load_app_secret_text_from_env,
+    )
+    store = InMemoryByocEvidencePackageIntakeStore()
+    app = FastAPI()
+    app.state.byoc_evidence_intake_store = store
+    app.state.gateway_settings = GatewaySettings(
+        environment="production",
+        byoc_evidence_intake_key_ref=SIGNING_KEY_REF,
+        byoc_evidence_intake_signing_key_secret_ref=(
+            "prod/fyralis/dep-test/evidence-intake-signing-key"
+        ),
+        byoc_evidence_read_key_ref=SIGNING_KEY_REF,
+        byoc_evidence_read_signing_key_secret_ref=(
+            "prod/fyralis/dep-test/evidence-read-signing-key"
+        ),
+    )
+    app.include_router(build_byoc_control_plane_router())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/evidence-packages",
+            json=_submission().model_dump(mode="json"),
+        )
+        receipt = response.json()
+        lookup_path = (
+            f"/byoc/control-plane/evidence-packages/{receipt['receipt_id']}"
+        )
+        lookup = await client.get(
+            lookup_path,
+            headers=_read_headers(
+                lookup_path,
+                nonce="nonce-intake-managed-read-lookup",
+            ),
+        )
+
+    assert response.status_code == 202
+    assert lookup.status_code == 200
+    assert calls == [
+        ("FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY", True),
+        ("FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY", True),
+    ]
 
 
 @pytest.mark.asyncio

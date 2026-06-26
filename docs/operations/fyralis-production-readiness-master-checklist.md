@@ -109,7 +109,8 @@ Every checklist item is done only when:
 - [x] BYOC control-plane evidence intake has a signed submission contract,
   gateway route, self-auth route classification, DB-backed sanitized scalar
   receipt storage, signed receipt lookup/list automation reads, bounded query
-  contract, storage-shape ratchet, and tests rejecting raw reports or
+  contract, managed key-ref resolver, raw production signing-key guard, env
+  contract coverage, storage-shape ratchet, and tests rejecting raw reports or
   customer-data markers.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.

@@ -57,7 +57,9 @@ owns:
   agent and records only bounded receipt metadata. Gateway deployments with
   database dependencies use the Postgres receipt store; the in-memory store is
   kept for standalone contract tests. Receipt reads and bounded list queries
-  require signed read headers and return sanitized scalar metadata only.
+  require signed read headers and return sanitized scalar metadata only. In
+  BYOC production, submission/read signing material is resolved by `key_ref`
+  through managed app-secret refs; raw app-state secrets are local/test only.
 - **Webhook ingress** (`services/app/webhooks/router.py`): captures raw bytes,
   verifies the per-provider signature, resolves the tenant
   (`provider_installations` via the IN-08 tenant resolver + envelope-encrypted
@@ -125,6 +127,7 @@ graph TD
 | Gateway middleware | `services/app/gateway/middleware.py` | Request context, bearer-session auth, public path allowlist, rate limiting. |
 | Gateway route mounts | `services/app/gateway/route_mounts.py` | Mounts focused gateway/product/ingest routers in one ordered place. |
 | BYOC control-plane intake | `services/app/gateway/byoc_control_plane_router.py` | Self-authenticated evidence-package intake route; verifies signed submissions and signed receipt reads, and stores sanitized scalar receipts only. |
+| BYOC control-plane keys | `services/app/gateway/byoc_control_plane_keys.py` | Resolves evidence submission/read HMAC keys by `key_ref` from managed app-secret refs, with static app-state fallback only outside production. |
 | Gateway extension seam | `services/app/gateway/extensions.py` | Discovers installed `company_os.gateway_extensions` entry points; each contributes routers (e.g. overlay `/v1/demo/*`), startup hooks (Pelago seed, simulation mount), and public path prefixes. |
 | Gateway state wiring | `services/app/gateway/state_wiring.py` | Secret store, tenant resolver, tenant flags, GitHub client/cache, Kafka/S3 data-plane clients. |
 | CEO-view wiring | `services/app/gateway/ceo_view_wiring.py` | Rendering, greeting, query, conversations, Google ingress, and debug mounting. |

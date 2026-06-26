@@ -53,8 +53,10 @@ report. Where the hosted control-plane intake is enabled, submit only a signed
 `POST /byoc/control-plane/evidence-packages`; the backend stores only durable
 sanitized scalar receipt metadata and must not store the package body or raw
 validator report. Receipt lookup and list automation must use signed read
-headers, and list queries must include `deployment_id` or `customer_id`. Source
-onboarding
+headers, and list queries must include `deployment_id` or `customer_id`. The
+submission/read signing `key_ref` values must resolve through
+`FYRALIS_BYOC_EVIDENCE_*_SIGNING_KEY_SECRET_REF` managed secrets in production;
+raw signing-key env values are local/test only. Source onboarding
 should remain paused until required checks pass and the data-plane agent has
 successfully completed the `fyralis.byoc.agent.enrollment.v1` registration
 contract and submitted a privacy-safe `fyralis.byoc.agent.heartbeat.v1`

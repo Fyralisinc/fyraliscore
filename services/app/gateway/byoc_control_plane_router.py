@@ -4,7 +4,14 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import ValidationError
 
+from lib.shared.errors import SecretStoreError
+from services.app.gateway.byoc_control_plane_keys import (
+    ByocControlPlaneKeyPurpose,
+    ResolvedByocControlPlaneKey,
+    resolver_from_app_state,
+)
 from services.platform.runtime.byoc_control_plane_intake import (
+    READ_AUTH_KEY_REF_HEADER,
     ByocEvidencePackageIntakeRecord,
     ByocEvidencePackageIntakeStore,
     ByocEvidencePackageReceiptList,
@@ -37,25 +44,17 @@ def build_byoc_control_plane_router(
         request: Request,
         submission: ByocEvidencePackageSubmissionRequest,
     ) -> ByocEvidencePackageReceipt:
-        secret = signing_secret or getattr(
-            request.app.state,
-            "byoc_evidence_intake_secret",
-            None,
+        resolved_key = await _resolve_control_plane_key(
+            request,
+            purpose="evidence_package_submission",
+            key_ref=submission.signature.key_ref,
+            signing_secret=signing_secret,
+            signing_key_ref=signing_key_ref,
         )
-        expected_key_ref = signing_key_ref or getattr(
-            request.app.state,
-            "byoc_evidence_intake_key_ref",
-            None,
-        )
-        if not secret:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={"errors": ["BYOC evidence intake is not configured"]},
-            )
         violations = validate_evidence_package_submission(
             submission,
-            signing_secret=secret,
-            expected_key_ref=expected_key_ref,
+            signing_secret=resolved_key.secret,
+            expected_key_ref=resolved_key.key_ref,
         )
         if violations:
             status_code = (
@@ -77,7 +76,7 @@ def build_byoc_control_plane_router(
         customer_id: str | None = None,
         limit: int = 50,
     ) -> ByocEvidencePackageReceiptList:
-        _require_receipt_read_auth(
+        await _require_receipt_read_auth(
             request,
             signing_secret=signing_secret,
             signing_key_ref=signing_key_ref,
@@ -100,7 +99,7 @@ def build_byoc_control_plane_router(
         request: Request,
         receipt_id: str,
     ) -> ByocEvidencePackageIntakeRecord:
-        _require_receipt_read_auth(
+        await _require_receipt_read_auth(
             request,
             signing_secret=signing_secret,
             signing_key_ref=signing_key_ref,
@@ -116,40 +115,92 @@ def build_byoc_control_plane_router(
     return router
 
 
-def _require_receipt_read_auth(
+async def _require_receipt_read_auth(
     request: Request,
     *,
     signing_secret: str | None,
     signing_key_ref: str | None,
 ) -> None:
-    secret = signing_secret or getattr(
-        request.app.state,
-        "byoc_evidence_intake_secret",
-        None,
-    )
-    expected_key_ref = signing_key_ref or getattr(
-        request.app.state,
-        "byoc_evidence_intake_key_ref",
-        None,
-    )
-    if not secret:
+    key_ref = request.headers.get(READ_AUTH_KEY_REF_HEADER)
+    if not key_ref:
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"errors": ["BYOC evidence intake is not configured"]},
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "errors": [
+                    "read_auth.headers: missing_read_auth_headers: "
+                    "signed receipt read headers are required"
+                ]
+            },
         )
+    resolved_key = await _resolve_control_plane_key(
+        request,
+        purpose="receipt_read",
+        key_ref=key_ref,
+        signing_secret=signing_secret,
+        signing_key_ref=signing_key_ref,
+    )
     violations = validate_evidence_receipt_read_auth_headers(
         request.headers,
         method=request.method,
         path=request.url.path,
         query=request.url.query,
-        signing_secret=secret,
-        expected_key_ref=expected_key_ref,
+        signing_secret=resolved_key.secret,
+        expected_key_ref=resolved_key.key_ref,
     )
     if violations:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"errors": [violation.render() for violation in violations]},
         )
+
+
+async def _resolve_control_plane_key(
+    request: Request,
+    *,
+    purpose: ByocControlPlaneKeyPurpose,
+    key_ref: str,
+    signing_secret: str | None,
+    signing_key_ref: str | None,
+) -> ResolvedByocControlPlaneKey:
+    if signing_secret:
+        expected_key_ref = signing_key_ref or key_ref
+        if key_ref != expected_key_ref:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"errors": ["signature.key_ref: unknown_key_ref"]},
+            )
+        return ResolvedByocControlPlaneKey(
+            key_ref=expected_key_ref,
+            secret=signing_secret,
+            source="static_test_secret",
+        )
+
+    resolver = resolver_from_app_state(request.app.state)
+    if resolver is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"errors": ["BYOC evidence intake is not configured"]},
+        )
+    try:
+        resolved = await resolver.resolve(
+            purpose=purpose,
+            key_ref=key_ref,
+        )
+    except SecretStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "errors": [
+                    "BYOC evidence signing key could not be resolved",
+                ]
+            },
+        ) from exc
+    if resolved is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"errors": ["signature.key_ref: unknown_key_ref"]},
+        )
+    return resolved
 
 
 def _store_from_state(request: Request) -> ByocEvidencePackageIntakeStore:
