@@ -53,6 +53,14 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Emit JSON instead of YAML.",
     )
     parser.add_argument(
+        "--run-terraform-init",
+        action="store_true",
+        help=(
+            "Run terraform init -backend=false before validation. Command "
+            "stdout/stderr are discarded and never included in the report."
+        ),
+    )
+    parser.add_argument(
         "--run-terraform-validate",
         action="store_true",
         help=(
@@ -64,6 +72,12 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--terraform-bin",
         default="terraform",
         help="Terraform executable to use with --run-terraform-validate.",
+    )
+    parser.add_argument(
+        "--terraform-init-timeout-seconds",
+        type=int,
+        default=60,
+        help="Timeout for --run-terraform-init; accepted range is 1-300.",
     )
     parser.add_argument(
         "--terraform-validate-timeout-seconds",
@@ -88,6 +102,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             permissions_manifest_path=args.permissions_manifest,
             iam_template_path=args.iam_template,
             repo_root=args.repo_root,
+            run_terraform_init=args.run_terraform_init,
+            terraform_init_timeout_seconds=args.terraform_init_timeout_seconds,
             run_terraform_validate=args.run_terraform_validate,
             terraform_bin=args.terraform_bin,
             terraform_validate_timeout_seconds=(

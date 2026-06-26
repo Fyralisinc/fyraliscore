@@ -70,6 +70,14 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Skip local hash checks for checked-in bootstrap bundle artifacts.",
     )
     parser.add_argument(
+        "--run-terraform-init",
+        action="store_true",
+        help=(
+            "Run terraform init -backend=false in the customer-side scaffold "
+            "root. Command stdout/stderr are discarded."
+        ),
+    )
+    parser.add_argument(
         "--run-terraform-validate",
         action="store_true",
         help=(
@@ -81,6 +89,12 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--terraform-bin",
         default="terraform",
         help="Terraform executable to use with --run-terraform-validate.",
+    )
+    parser.add_argument(
+        "--terraform-init-timeout-seconds",
+        type=int,
+        default=60,
+        help="Timeout for --run-terraform-init; accepted range is 1-300.",
     )
     parser.add_argument(
         "--terraform-validate-timeout-seconds",
@@ -167,6 +181,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             env_path=args.env_file,
             repo_root=args.repo_root,
             verify_local_bundle_files=not args.skip_local_bundle_file_verification,
+            run_terraform_init=args.run_terraform_init,
+            terraform_init_timeout_seconds=args.terraform_init_timeout_seconds,
             run_terraform_validate=args.run_terraform_validate,
             terraform_bin=args.terraform_bin,
             terraform_validate_timeout_seconds=(

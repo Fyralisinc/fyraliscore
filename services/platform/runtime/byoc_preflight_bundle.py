@@ -172,6 +172,7 @@ class ByocPreflightBundleReport(_StrictModel):
     cloud_provider: str | None = None
     region: str | None = None
     artifact_revision: str | None = None
+    terraform_init_executed: bool = False
     terraform_validate_executed: bool = False
     aws_live_preflight_requested: bool = False
     aws_live_preflight_executed: bool = False
@@ -213,6 +214,8 @@ class ByocPreflightBundleInputs:
     env_path: Path | None = None
     repo_root: Path = field(default_factory=Path.cwd)
     verify_local_bundle_files: bool = True
+    run_terraform_init: bool = False
+    terraform_init_timeout_seconds: int = 60
     run_terraform_validate: bool = False
     terraform_bin: str = "terraform"
     terraform_validate_timeout_seconds: int = 30
@@ -267,6 +270,9 @@ def run_byoc_preflight_bundle(
         cloud_provider=identity.get("cloud_provider"),
         region=identity.get("region"),
         artifact_revision=identity.get("artifact_revision"),
+        terraform_init_executed=bool(
+            terraform_section.metrics.get("terraform_init_executed", False)
+        ),
         terraform_validate_executed=bool(
             terraform_section.metrics.get("terraform_validate_executed", False)
         ),
@@ -412,6 +418,8 @@ def _terraform_validation_section(
                 permissions_manifest_path=inputs.permissions_manifest_path,
                 iam_template_path=inputs.iam_template_path,
                 repo_root=repo_root,
+                run_terraform_init=inputs.run_terraform_init,
+                terraform_init_timeout_seconds=inputs.terraform_init_timeout_seconds,
                 run_terraform_validate=inputs.run_terraform_validate,
                 terraform_bin=inputs.terraform_bin,
                 terraform_validate_timeout_seconds=(
@@ -433,6 +441,7 @@ def _terraform_validation_section(
         metrics={
             "module_count": report.module_count,
             "terraform_file_count": report.terraform_file_count,
+            "terraform_init_executed": report.terraform_init_executed,
             "terraform_validate_executed": report.terraform_validate_executed,
             "terraform_plan_executed": report.terraform_plan_executed,
         },

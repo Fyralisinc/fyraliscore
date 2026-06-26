@@ -21,6 +21,7 @@ def test_run_byoc_terraform_plan_validation_json_output(capsys) -> None:
     assert code == 0
     assert payload["schema_version"] == "fyralis.byoc.terraform_plan_validation.v1"
     assert payload["execution_mode"] == "contract_only"
+    assert payload["terraform_init_executed"] is False
     assert payload["terraform_validate_executed"] is False
     assert payload["terraform_plan_executed"] is False
     assert payload["terraform_plan_json_included"] is False
@@ -97,6 +98,7 @@ def test_run_byoc_terraform_plan_validation_can_run_validate(
     payload = json.loads(captured.out)
     rendered = json.dumps(payload)
     assert code == 0
+    assert payload["terraform_init_executed"] is False
     assert payload["terraform_validate_executed"] is True
     assert payload["terraform_plan_executed"] is False
     validate = _check(payload, "terraform_validate_execution")
@@ -104,6 +106,74 @@ def test_run_byoc_terraform_plan_validation_can_run_validate(
     assert validate["metrics"]["exit_code"] == 0
     assert "raw customer data should not appear" not in rendered
     assert "stderr customer data should not appear" not in rendered
+
+
+def test_run_byoc_terraform_plan_validation_can_run_init(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    fake_terraform = _fake_terraform(
+        tmp_path,
+        stdout="raw init output should not appear",
+        stderr="init stderr should not appear",
+        exit_code=0,
+    )
+
+    code = main([
+        "--json",
+        "--run-terraform-init",
+        "--terraform-bin",
+        str(fake_terraform),
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    rendered = json.dumps(payload)
+    init = _check(payload, "terraform_init_execution")
+    assert code == 0
+    assert payload["terraform_init_executed"] is True
+    assert payload["terraform_validate_executed"] is False
+    assert payload["terraform_plan_executed"] is False
+    assert init["status"] == "pass"
+    assert init["metrics"]["exit_code"] == 0
+    assert "raw init output should not appear" not in rendered
+    assert "init stderr should not appear" not in rendered
+
+
+def test_run_byoc_terraform_plan_validation_init_failure_blocks_validate(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    fake_terraform = _fake_terraform(
+        tmp_path,
+        stdout="raw init failure should not appear",
+        stderr="secret init failure should not appear",
+        exit_code=7,
+    )
+
+    code = main([
+        "--json",
+        "--run-terraform-init",
+        "--run-terraform-validate",
+        "--terraform-bin",
+        str(fake_terraform),
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    rendered = json.dumps(payload)
+    init = _check(payload, "terraform_init_execution")
+    validate = _check(payload, "terraform_validate_execution")
+    assert code == 1
+    assert payload["terraform_init_executed"] is True
+    assert payload["terraform_validate_executed"] is False
+    assert init["status"] == "fail"
+    assert init["metrics"]["exit_code"] == 7
+    assert validate["status"] == "fail"
+    assert validate["metrics"]["executed"] is False
+    assert validate["metrics"]["terraform_init_passed"] is False
+    assert "raw init failure should not appear" not in rendered
+    assert "secret init failure should not appear" not in rendered
 
 
 def test_run_byoc_terraform_plan_validation_sanitizes_validate_failure(

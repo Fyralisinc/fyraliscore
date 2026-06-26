@@ -170,9 +170,11 @@ Repo-owned artifacts for this first slice:
   placeholder module coverage, and non-mutating flags without running
   `terraform plan`, copying plan JSON, storing Terraform command output, or
   requiring cloud credentials. Customer-side operators may opt into
-  `terraform validate` with `--run-terraform-validate`; the adapter discards
-  stdout/stderr at the process boundary and records only bounded execution
-  facts such as requested/executed status, timeout, and exit code.
+  `terraform init -backend=false` with `--run-terraform-init` and
+  `terraform validate` with `--run-terraform-validate`; the adapters discard
+  stdout/stderr at the process boundary and record only bounded execution
+  facts such as requested/executed status, timeout, and exit code. If init is
+  requested and fails, validate is not run.
 - `services/platform/runtime/byoc_bootstrap_bundle.py` defines the signed
   bootstrap bundle contract. It requires digest-pinned image/chart/IaC/SBOM
   artifacts, Sigstore bundle metadata, matching signing identity, deployment

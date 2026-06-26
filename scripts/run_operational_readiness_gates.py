@@ -598,7 +598,8 @@ def _byoc_terraform_plan_validation_gate(args: argparse.Namespace) -> GateResult
         details=(
             "BYOC Terraform scaffold validation emits contract-only, "
             "raw-output-free evidence for the AWS module layout; optional "
-            "terraform validate execution remains customer-side and sanitized."
+            "terraform init/validate execution remains customer-side and "
+            "sanitized."
         ),
         timeout_s=min(args.command_timeout_s, 30),
         env=_base_env(),

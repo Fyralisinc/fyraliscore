@@ -56,13 +56,13 @@ evidence:
   source:
     type: local_terraform_validator
     ref: generated:byoc_terraform_plan_validation
-    digest: sha256:e82ac9c101c3a3a51e2bf7ecb5f3012d7b4719e12a903935ac7c5ed5fb9ed4ee
+    digest: sha256:9b0285d2cc8290320e3413905319d4a0390785cdd0ca86900a63e302775ed20a
   check_summary:
-    total: 11
+    total: 12
     required: 10
     passed: 10
     failed: 0
-    skipped: 1
+    skipped: 2
     failed_required: 0
   failed_check_codes: []
   step_count: 5

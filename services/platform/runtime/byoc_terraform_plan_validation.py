@@ -110,6 +110,7 @@ class ByocTerraformPlanValidationReport(_StrictModel):
     cloud_provider: str | None = None
     region: str | None = None
     artifact_revision: str | None = None
+    terraform_init_executed: bool = False
     terraform_validate_executed: bool = False
     terraform_plan_executed: Literal[False] = False
     terraform_plan_json_included: Literal[False] = False
@@ -158,6 +159,8 @@ class ByocTerraformPlanValidationInputs:
     permissions_manifest_path: Path
     iam_template_path: Path
     repo_root: Path = field(default_factory=Path.cwd)
+    run_terraform_init: bool = False
+    terraform_init_timeout_seconds: int = 60
     run_terraform_validate: bool = False
     terraform_bin: str = "terraform"
     terraform_validate_timeout_seconds: int = 30
@@ -204,6 +207,11 @@ def run_byoc_terraform_plan_validation(
         and check.metrics.get("executed") is True
         for check in checks
     )
+    terraform_init_executed = any(
+        check.name == "terraform_init_execution"
+        and check.metrics.get("executed") is True
+        for check in checks
+    )
     identity = _report_identity(package, dataplane, permissions, iam_template)
     status: TerraformValidationStatus = _PASS if required_checks_passed else _FAIL
     return ByocTerraformPlanValidationReport(
@@ -232,6 +240,7 @@ def run_byoc_terraform_plan_validation(
         cloud_provider=identity.get("cloud_provider"),
         region=identity.get("region"),
         artifact_revision=identity.get("artifact_revision"),
+        terraform_init_executed=terraform_init_executed,
         terraform_validate_executed=terraform_validate_executed,
         terraform_plan_executed=False,
         terraform_plan_json_included=False,
@@ -410,8 +419,49 @@ def _evaluate_scaffold(
             },
         )
     )
-    checks.append(_terraform_validate_check(package, inputs=inputs, repo_root=repo_root))
+    terraform_init_check = _terraform_init_check(
+        package,
+        inputs=inputs,
+        repo_root=repo_root,
+    )
+    checks.append(terraform_init_check)
+    checks.append(
+        _terraform_validate_check(
+            package,
+            inputs=inputs,
+            repo_root=repo_root,
+            terraform_init_check=terraform_init_check,
+        )
+    )
     return checks
+
+
+def _terraform_init_check(
+    package: ByocAwsIacPackage,
+    *,
+    inputs: ByocTerraformPlanValidationInputs,
+    repo_root: Path,
+) -> ByocTerraformPlanValidationCheck:
+    if not inputs.run_terraform_init:
+        return _check(
+            "terraform_init_execution",
+            _SKIPPED,
+            required=False,
+            details="Terraform init execution was not requested.",
+            metrics={"requested": False, "executed": False},
+        )
+
+    return _run_terraform_command_check(
+        "terraform_init_execution",
+        package,
+        inputs=inputs,
+        repo_root=repo_root,
+        command_args=["init", "-backend=false", "-input=false", "-no-color"],
+        timeout_seconds=inputs.terraform_init_timeout_seconds,
+        timeout_label="Terraform init timeout must be between 1 and 300 seconds.",
+        success_details="Terraform init completed without command output capture.",
+        failure_details="Terraform init failed without command output capture.",
+    )
 
 
 def _terraform_validate_check(
@@ -419,6 +469,7 @@ def _terraform_validate_check(
     *,
     inputs: ByocTerraformPlanValidationInputs,
     repo_root: Path,
+    terraform_init_check: ByocTerraformPlanValidationCheck,
 ) -> ByocTerraformPlanValidationCheck:
     if not inputs.run_terraform_validate:
         return _check(
@@ -429,23 +480,63 @@ def _terraform_validate_check(
             metrics={"requested": False, "executed": False},
         )
 
+    if (
+        inputs.run_terraform_init
+        and terraform_init_check.status != _PASS
+    ):
+        return _check(
+            "terraform_validate_execution",
+            _FAIL,
+            required=True,
+            details="Terraform validate was not run because terraform init failed.",
+            metrics={
+                "requested": True,
+                "executed": False,
+                "terraform_init_passed": False,
+            },
+        )
+
+    return _run_terraform_command_check(
+        "terraform_validate_execution",
+        package,
+        inputs=inputs,
+        repo_root=repo_root,
+        command_args=["validate", "-no-color"],
+        timeout_seconds=inputs.terraform_validate_timeout_seconds,
+        timeout_label="Terraform validate timeout must be between 1 and 300 seconds.",
+        success_details="Terraform validate completed without command output capture.",
+        failure_details="Terraform validate failed without command output capture.",
+    )
+
+
+def _run_terraform_command_check(
+    name: str,
+    package: ByocAwsIacPackage,
+    *,
+    inputs: ByocTerraformPlanValidationInputs,
+    repo_root: Path,
+    command_args: list[str],
+    timeout_seconds: int,
+    timeout_label: str,
+    success_details: str,
+    failure_details: str,
+) -> ByocTerraformPlanValidationCheck:
     terraform_bin = inputs.terraform_bin.strip()
     if not terraform_bin:
         return _check(
-            "terraform_validate_execution",
+            name,
             _FAIL,
             required=True,
-            details="Terraform validate executable path is empty.",
+            details="Terraform executable path is empty.",
             metrics={"requested": True, "executed": False},
         )
 
-    timeout_seconds = inputs.terraform_validate_timeout_seconds
     if timeout_seconds < 1 or timeout_seconds > 300:
         return _check(
-            "terraform_validate_execution",
+            name,
             _FAIL,
             required=True,
-            details="Terraform validate timeout must be between 1 and 300 seconds.",
+            details=timeout_label,
             metrics={
                 "requested": True,
                 "executed": False,
@@ -456,7 +547,7 @@ def _terraform_validate_check(
     terraform_root = repo_root / package.terraform.root_module_path
     if not terraform_root.is_dir():
         return _check(
-            "terraform_validate_execution",
+            name,
             _FAIL,
             required=True,
             details="Terraform root module path is missing.",
@@ -465,7 +556,7 @@ def _terraform_validate_check(
 
     try:
         completed = subprocess.run(
-            [terraform_bin, "validate", "-no-color"],
+            [terraform_bin, *command_args],
             cwd=terraform_root,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -475,10 +566,10 @@ def _terraform_validate_check(
         )
     except FileNotFoundError:
         return _check(
-            "terraform_validate_execution",
+            name,
             _FAIL,
             required=True,
-            details="Terraform validate executable was not found.",
+            details="Terraform executable was not found.",
             metrics={
                 "requested": True,
                 "executed": False,
@@ -487,10 +578,10 @@ def _terraform_validate_check(
         )
     except OSError as exc:
         return _check(
-            "terraform_validate_execution",
+            name,
             _FAIL,
             required=True,
-            details="Terraform validate executable could not be started.",
+            details="Terraform executable could not be started.",
             metrics={
                 "requested": True,
                 "executed": False,
@@ -499,10 +590,10 @@ def _terraform_validate_check(
         )
     except subprocess.TimeoutExpired:
         return _check(
-            "terraform_validate_execution",
+            name,
             _FAIL,
             required=True,
-            details="Terraform validate execution timed out.",
+            details="Terraform execution timed out.",
             metrics={
                 "requested": True,
                 "executed": True,
@@ -513,14 +604,10 @@ def _terraform_validate_check(
 
     passed = completed.returncode == 0
     return _check(
-        "terraform_validate_execution",
+        name,
         _PASS if passed else _FAIL,
         required=True,
-        details=(
-            "Terraform validate completed without command output capture."
-            if passed
-            else "Terraform validate failed without command output capture."
-        ),
+        details=success_details if passed else failure_details,
         metrics={
             "requested": True,
             "executed": True,

@@ -105,11 +105,12 @@ scripts/run_byoc_terraform_plan_validation.py --json \
 ```
 
 When Terraform is installed inside the customer data-plane execution
-environment, operators may add `--run-terraform-validate` and
-`--terraform-bin <terraform>` to run `terraform validate` against the scaffold
-root. The report still excludes stdout, stderr, plan JSON, provider
+environment, operators may add `--run-terraform-init`,
+`--run-terraform-validate`, and `--terraform-bin <terraform>` to run
+`terraform init -backend=false` followed by `terraform validate` against the
+scaffold root. The report still excludes stdout, stderr, plan JSON, provider
 credentials, and raw Terraform output; it records only bounded status metadata
-and exit code.
+and exit code. If init is requested and fails, validate is not run.
 
 If the live validator writes a JSON report, set
 `FYRALIS_BYOC_EVIDENCE_SIGNING_SECRET` locally and summarize it with:
