@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from pydantic import model_validator
 
+from services.platform.runtime.byoc_aws_iac_package import ByocAwsIacPackage
 from services.platform.runtime.byoc_bootstrap_bundle import (
     ByocBootstrapBundleManifest,
 )
@@ -36,6 +37,7 @@ from services.platform.runtime.byoc_permissions import ByocPermissionsManifest
 EvidencePackageArtifactKind = Literal[
     "dataplane_manifest",
     "permissions_manifest",
+    "aws_iac_package",
     "bootstrap_bundle",
     "bootstrap_plan",
     "evidence_ledger",
@@ -51,6 +53,7 @@ _REQUIRED_ARTIFACT_KINDS: frozenset[EvidencePackageArtifactKind] = frozenset(
     {
         "dataplane_manifest",
         "permissions_manifest",
+        "aws_iac_package",
         "bootstrap_bundle",
         "bootstrap_plan",
         "evidence_ledger",
@@ -240,6 +243,7 @@ def generate_evidence_package(
     ledger_path: Path,
     dataplane_manifest_path: Path,
     permissions_manifest_path: Path,
+    aws_iac_package_path: Path,
     bootstrap_bundle_path: Path,
     plan_path: Path,
     post_deploy_envelope_path: Path | None = None,
@@ -295,6 +299,12 @@ def generate_evidence_package(
                 external_ref="generated:external_permissions_manifest",
             ),
             _artifact(
+                "aws_iac_package",
+                aws_iac_package_path,
+                repo_root=repo_root,
+                external_ref="generated:external_aws_iac_package",
+            ),
+            _artifact(
                 "bootstrap_bundle",
                 bootstrap_bundle_path,
                 repo_root=repo_root,
@@ -325,6 +335,7 @@ def generate_evidence_package(
         source_digests=package_source_digests(
             dataplane_manifest_path=dataplane_manifest_path,
             permissions_manifest_path=permissions_manifest_path,
+            aws_iac_package_path=aws_iac_package_path,
             bootstrap_bundle_path=bootstrap_bundle_path,
             plan_path=plan_path,
             ledger_path=ledger_path,
@@ -342,6 +353,7 @@ def validate_evidence_package_contract(
     *,
     dataplane_manifest: ByocDataPlaneManifest | None = None,
     permissions_manifest: ByocPermissionsManifest | None = None,
+    aws_iac_package: ByocAwsIacPackage | None = None,
     bootstrap_bundle: ByocBootstrapBundleManifest | None = None,
     plan: ByocBootstrapPlanManifest | None = None,
     source_digests: Mapping[EvidencePackageArtifactKind, str] | None = None,
@@ -358,6 +370,7 @@ def validate_evidence_package_contract(
     for source, name in (
         (dataplane_manifest, "dataplane_manifest"),
         (permissions_manifest, "permissions_manifest"),
+        (aws_iac_package, "aws_iac_package"),
         (bootstrap_bundle, "bootstrap_bundle"),
         (plan, "bootstrap_plan"),
     ):
@@ -412,6 +425,7 @@ def package_source_digests(
     *,
     dataplane_manifest_path: Path,
     permissions_manifest_path: Path,
+    aws_iac_package_path: Path,
     bootstrap_bundle_path: Path,
     plan_path: Path,
     ledger_path: Path,
@@ -424,6 +438,9 @@ def package_source_digests(
         ),
         "permissions_manifest": _file_digest(
             _resolve_repo_path(permissions_manifest_path, repo_root=repo_root)
+        ),
+        "aws_iac_package": _file_digest(
+            _resolve_repo_path(aws_iac_package_path, repo_root=repo_root)
         ),
         "bootstrap_bundle": _file_digest(
             _resolve_repo_path(bootstrap_bundle_path, repo_root=repo_root)

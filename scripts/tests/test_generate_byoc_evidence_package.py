@@ -119,6 +119,9 @@ def test_generate_byoc_evidence_package_yaml_output(capsys) -> None:
     assert code == 0
     assert payload["schema_version"] == "fyralis.byoc.evidence_package.v1"
     assert payload["export_scope"] == "sanitized_customer_handoff_metadata_only"
+    assert "aws_iac_package" in {
+        artifact["kind"] for artifact in payload["source_artifacts"]
+    }
 
 
 def test_generate_byoc_evidence_package_json_output(capsys) -> None:
@@ -131,6 +134,9 @@ def test_generate_byoc_evidence_package_json_output(capsys) -> None:
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert code == 0
+    assert "aws_iac_package" in {
+        artifact["kind"] for artifact in payload["source_artifacts"]
+    }
     assert payload["source_artifacts"][-1]["kind"] == "evidence_ledger"
     assert payload["ledger"]["schema_version"] == "fyralis.byoc.evidence_ledger.v1"
 

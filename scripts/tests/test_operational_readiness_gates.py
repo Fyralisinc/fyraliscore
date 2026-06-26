@@ -200,6 +200,7 @@ def test_byoc_evidence_package_gate_passes_for_checked_in_package() -> None:
         "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "aws_iac_package": "deploy/byoc/aws/iac-package.example.yaml",
     }
 
 

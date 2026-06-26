@@ -11,6 +11,7 @@ from typing import Sequence
 
 from pydantic import ValidationError
 
+from services.platform.runtime.byoc_aws_iac_package import load_byoc_aws_iac_package
 from services.platform.runtime.byoc_bootstrap_bundle import load_byoc_bootstrap_bundle
 from services.platform.runtime.byoc_bootstrap_plan import load_byoc_bootstrap_plan
 from services.platform.runtime.byoc_contract import load_byoc_manifest
@@ -47,6 +48,12 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         type=Path,
         default=Path("deploy/byoc/permissions.example.yaml"),
         help="BYOC permissions manifest referenced by the evidence package.",
+    )
+    parser.add_argument(
+        "--aws-iac-package",
+        type=Path,
+        default=Path("deploy/byoc/aws/iac-package.example.yaml"),
+        help="AWS BYOC IaC package manifest referenced by the evidence package.",
     )
     parser.add_argument(
         "--bootstrap-bundle",
@@ -105,6 +112,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ledger = load_byoc_evidence_ledger(args.ledger)
         dataplane = load_byoc_manifest(args.dataplane_manifest)
         permissions = load_byoc_permissions_manifest(args.permissions_manifest)
+        aws_iac_package = load_byoc_aws_iac_package(args.aws_iac_package)
         bundle = load_byoc_bootstrap_bundle(args.bootstrap_bundle)
         plan = load_byoc_bootstrap_plan(args.plan)
         generated_at = _parse_generated_at(args.generated_at)
@@ -120,6 +128,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ledger_path=args.ledger,
             dataplane_manifest_path=args.dataplane_manifest,
             permissions_manifest_path=args.permissions_manifest,
+            aws_iac_package_path=args.aws_iac_package,
             bootstrap_bundle_path=args.bootstrap_bundle,
             plan_path=args.plan,
             post_deploy_envelope_path=args.post_deploy_envelope,
@@ -145,6 +154,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             generated=generated,
             dataplane=dataplane,
             permissions=permissions,
+            aws_iac_package=aws_iac_package,
             bundle=bundle,
             plan=plan,
             args=args,
@@ -159,7 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except ImportError as exc:  # pragma: no cover - dev/test installs PyYAML.
             _print_errors("Failed to render YAML", [str(exc)])
             return 1
-        print(yaml.safe_dump(payload, sort_keys=False, width=1_000_000))
+        sys.stdout.write(yaml.safe_dump(payload, sort_keys=False, width=1_000_000))
     return 0
 
 
@@ -169,6 +179,7 @@ def _check_existing_package(
     generated: ByocEvidencePackage,
     dataplane,
     permissions,
+    aws_iac_package,
     bundle,
     plan,
     args: argparse.Namespace,
@@ -176,6 +187,7 @@ def _check_existing_package(
     source_digests = package_source_digests(
         dataplane_manifest_path=args.dataplane_manifest,
         permissions_manifest_path=args.permissions_manifest,
+        aws_iac_package_path=args.aws_iac_package,
         bootstrap_bundle_path=args.bootstrap_bundle,
         plan_path=args.plan,
         ledger_path=args.ledger,
@@ -185,6 +197,7 @@ def _check_existing_package(
         existing,
         dataplane_manifest=dataplane,
         permissions_manifest=permissions,
+        aws_iac_package=aws_iac_package,
         bootstrap_bundle=bundle,
         plan=plan,
         source_digests=source_digests,

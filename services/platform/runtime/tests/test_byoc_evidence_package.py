@@ -8,6 +8,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from services.platform.runtime.byoc_aws_iac_package import load_byoc_aws_iac_package
 from services.platform.runtime.byoc_bootstrap_bundle import load_byoc_bootstrap_bundle
 from services.platform.runtime.byoc_bootstrap_plan import load_byoc_bootstrap_plan
 from services.platform.runtime.byoc_contract import load_byoc_manifest
@@ -32,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[4]
 PLAN = ROOT / "deploy/byoc/bootstrap-plan.example.yaml"
 DATAPLANE = ROOT / "deploy/byoc/dataplane.example.yaml"
 PERMISSIONS = ROOT / "deploy/byoc/permissions.example.yaml"
+AWS_IAC_PACKAGE = ROOT / "deploy/byoc/aws/iac-package.example.yaml"
 BUNDLE = ROOT / "deploy/byoc/bootstrap-bundle.example.yaml"
 LEDGER = ROOT / "deploy/byoc/evidence-ledger.example.yaml"
 PACKAGE = ROOT / "deploy/byoc/evidence-package.example.yaml"
@@ -44,12 +46,13 @@ def _inputs():
         load_byoc_bootstrap_plan(PLAN),
         load_byoc_manifest(DATAPLANE),
         load_byoc_permissions_manifest(PERMISSIONS),
+        load_byoc_aws_iac_package(AWS_IAC_PACKAGE),
         load_byoc_bootstrap_bundle(BUNDLE),
     )
 
 
 def _generate() -> ByocEvidencePackage:
-    plan, dataplane, permissions, bundle = _inputs()
+    plan, dataplane, permissions, _, bundle = _inputs()
     return generate_evidence_package(
         ledger=load_byoc_evidence_ledger(LEDGER),
         dataplane_manifest=dataplane,
@@ -59,6 +62,7 @@ def _generate() -> ByocEvidencePackage:
         ledger_path=LEDGER,
         dataplane_manifest_path=DATAPLANE,
         permissions_manifest_path=PERMISSIONS,
+        aws_iac_package_path=AWS_IAC_PACKAGE,
         bootstrap_bundle_path=BUNDLE,
         plan_path=PLAN,
         generated_at=GENERATED_AT,
@@ -92,7 +96,7 @@ def _live_report(path: Path) -> Path:
 
 
 def _envelope(path: Path, report_path: Path) -> Path:
-    _, dataplane, _, _ = _inputs()
+    _, dataplane, _, _, _ = _inputs()
     payload = evidence_envelope_payload(
         manifest=dataplane,
         report_path=report_path,
@@ -110,7 +114,7 @@ def _envelope(path: Path, report_path: Path) -> Path:
 
 
 def _signed_ledger(tmp_path: Path) -> tuple[Path, Path]:
-    plan, dataplane, permissions, bundle = _inputs()
+    plan, dataplane, permissions, _, bundle = _inputs()
     report_path = _live_report(tmp_path / "post-deploy-report.json")
     envelope_path = _envelope(tmp_path / "post-deploy-envelope.json", report_path)
     ledger = generate_evidence_ledger(
@@ -146,7 +150,7 @@ def _package_data() -> dict:
 
 
 def test_checked_in_evidence_package_matches_generated_contract() -> None:
-    plan, dataplane, permissions, bundle = _inputs()
+    plan, dataplane, permissions, aws_iac_package, bundle = _inputs()
     checked_in = load_byoc_evidence_package(PACKAGE)
     generated = _generate()
 
@@ -155,11 +159,13 @@ def test_checked_in_evidence_package_matches_generated_contract() -> None:
         checked_in,
         dataplane_manifest=dataplane,
         permissions_manifest=permissions,
+        aws_iac_package=aws_iac_package,
         bootstrap_bundle=bundle,
         plan=plan,
         source_digests=package_source_digests(
             dataplane_manifest_path=DATAPLANE,
             permissions_manifest_path=PERMISSIONS,
+            aws_iac_package_path=AWS_IAC_PACKAGE,
             bootstrap_bundle_path=BUNDLE,
             plan_path=PLAN,
             ledger_path=LEDGER,
@@ -197,7 +203,7 @@ def test_evidence_package_rejects_unsafe_artifact_ref() -> None:
 
 
 def test_evidence_package_reports_source_digest_drift() -> None:
-    plan, dataplane, permissions, bundle = _inputs()
+    plan, dataplane, permissions, aws_iac_package, bundle = _inputs()
     data = _package_data()
     data["source_artifacts"][0]["digest"] = (
         "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -208,11 +214,13 @@ def test_evidence_package_reports_source_digest_drift() -> None:
         package,
         dataplane_manifest=dataplane,
         permissions_manifest=permissions,
+        aws_iac_package=aws_iac_package,
         bootstrap_bundle=bundle,
         plan=plan,
         source_digests=package_source_digests(
             dataplane_manifest_path=DATAPLANE,
             permissions_manifest_path=PERMISSIONS,
+            aws_iac_package_path=AWS_IAC_PACKAGE,
             bootstrap_bundle_path=BUNDLE,
             plan_path=PLAN,
             ledger_path=LEDGER,
@@ -228,7 +236,7 @@ def test_evidence_package_reports_source_digest_drift() -> None:
 def test_evidence_package_summarizes_signed_live_report_envelope(
     tmp_path: Path,
 ) -> None:
-    plan, dataplane, permissions, bundle = _inputs()
+    plan, dataplane, permissions, _, bundle = _inputs()
     ledger_path, envelope_path = _signed_ledger(tmp_path)
     package = generate_evidence_package(
         ledger=load_byoc_evidence_ledger(ledger_path),
@@ -239,6 +247,7 @@ def test_evidence_package_summarizes_signed_live_report_envelope(
         ledger_path=ledger_path,
         dataplane_manifest_path=DATAPLANE,
         permissions_manifest_path=PERMISSIONS,
+        aws_iac_package_path=AWS_IAC_PACKAGE,
         bootstrap_bundle_path=BUNDLE,
         plan_path=PLAN,
         post_deploy_envelope_path=envelope_path,
@@ -256,7 +265,7 @@ def test_evidence_package_summarizes_signed_live_report_envelope(
 
 
 def test_signed_evidence_package_requires_envelope(tmp_path: Path) -> None:
-    plan, dataplane, permissions, bundle = _inputs()
+    plan, dataplane, permissions, _, bundle = _inputs()
     ledger_path, _ = _signed_ledger(tmp_path)
 
     with pytest.raises(ValueError, match="requires --post-deploy-envelope"):
@@ -269,6 +278,7 @@ def test_signed_evidence_package_requires_envelope(tmp_path: Path) -> None:
             ledger_path=ledger_path,
             dataplane_manifest_path=DATAPLANE,
             permissions_manifest_path=PERMISSIONS,
+            aws_iac_package_path=AWS_IAC_PACKAGE,
             bootstrap_bundle_path=BUNDLE,
             plan_path=PLAN,
             generated_at=GENERATED_AT,

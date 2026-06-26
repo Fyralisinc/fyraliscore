@@ -733,6 +733,7 @@ def _byoc_evidence_package_gate(args: argparse.Namespace) -> GateResult:
             "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
             "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
             "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "aws_iac_package": "deploy/byoc/aws/iac-package.example.yaml",
         },
     )
 

@@ -49,8 +49,9 @@ scripts/generate_byoc_evidence_package.py \
 
 Run `scripts/generate_byoc_evidence_package.py --check-package <package>` before
 sharing the package. The package contains the sanitized ledger, source manifest
-digests, and signed-envelope metadata only; do not include the raw validator
-report. Where the hosted control-plane intake is enabled, submit only a signed
+digests, AWS IaC package digest, and signed-envelope metadata only; do not
+include the raw validator report. Where the hosted control-plane intake is
+enabled, submit only a signed
 `fyralis.byoc.evidence_package_submission.v1` payload to
 `POST /byoc/control-plane/evidence-packages`; the backend stores only durable
 sanitized scalar receipt metadata and must not store the package body or raw

@@ -192,9 +192,10 @@ Repo-owned artifacts for this first slice:
   `scripts/generate_byoc_evidence_package.py`, and
   `deploy/byoc/evidence-package.example.yaml` define the sanitized customer
   handoff package. It embeds only the sanitized evidence ledger, digest-pinned
-  source artifact refs, and optional signed-envelope metadata; it never embeds
-  raw post-deploy reports, command output, endpoint URLs, artifact refs,
-  credentials, payloads, prompts, logs, embeddings, or PII.
+  source artifact refs, AWS IaC package fingerprint, and optional
+  signed-envelope metadata; it never embeds raw post-deploy reports, command
+  output, endpoint URLs, artifact refs, credentials, payloads, prompts, logs,
+  embeddings, or PII.
 - `services/platform/runtime/byoc_control_plane_intake.py` and
   `services/app/gateway/byoc_control_plane_router.py` define the first hosted
   control-plane intake contract for sanitized evidence packages. The data-plane
@@ -1423,8 +1424,8 @@ Minimum gates before first enterprise customer:
   support handoff artifact.
 - Generate customer handoff artifacts through
   `scripts/generate_byoc_evidence_package.py`; the package may leave the data
-  plane only after `--check-package` passes and the raw live validator report is
-  excluded.
+  plane only after `--check-package` passes, the AWS IaC package fingerprint is
+  present, and the raw live validator report is excluded.
 - Submit evidence packages to the control-plane intake API only as signed
   `fyralis.byoc.evidence_package_submission.v1` payloads; control-plane storage
   may retain only the generated sanitized receipt metadata in

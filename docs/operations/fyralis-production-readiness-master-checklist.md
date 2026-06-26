@@ -115,8 +115,8 @@ Every checklist item is done only when:
   verifies deployment identity, report digest, timestamp freshness, signing key
   reference, and HMAC proof before the report is summarized.
 - [x] BYOC customer handoff evidence has a checked-in sanitized package
-  contract, generator/checker CLI, source artifact digest ratchet, optional
-  signed-envelope metadata, and readiness gate.
+  contract, generator/checker CLI, source artifact and AWS IaC package digest
+  ratchets, optional signed-envelope metadata, and readiness gate.
 - [x] BYOC control-plane evidence intake has a signed submission contract,
   gateway route, self-auth route classification, DB-backed sanitized scalar
   receipt storage, signed receipt lookup/list automation reads, bounded query
