@@ -8,6 +8,7 @@ from scripts.run_operational_readiness_gates import (
     GateResult,
     MANUAL_REQUIRED,
     PASS,
+    _byoc_aws_iac_package_gate,
     _byoc_agent_probe_gate,
     _byoc_agent_runner_gate,
     _byoc_bootstrap_bundle_gate,
@@ -58,6 +59,23 @@ def test_byoc_permissions_contract_gate_passes_for_checked_in_manifest() -> None
         "manifest": "deploy/byoc/permissions.example.yaml",
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
         "aws_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+    }
+
+
+def test_byoc_aws_iac_package_gate_passes_for_checked_in_scaffold() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_aws_iac_package_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/validate_byoc_aws_iac_package.py" in result.command
+    assert result.artifacts == {
+        "package": "deploy/byoc/aws/iac-package.example.yaml",
+        "terraform_root": "deploy/byoc/aws/terraform",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
     }
 
 

@@ -519,6 +519,35 @@ def _byoc_permissions_contract_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_aws_iac_package_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_aws_iac_package",
+        _python_command(
+            "scripts/validate_byoc_aws_iac_package.py",
+            "deploy/byoc/aws/iac-package.example.yaml",
+            "--dataplane-manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--permissions-manifest",
+            "deploy/byoc/permissions.example.yaml",
+            "--iam-template",
+            "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        ),
+        details=(
+            "Checked-in BYOC AWS IaC scaffold is customer-side, non-mutating, "
+            "identity-aligned, and declares required tags and variables."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "package": "deploy/byoc/aws/iac-package.example.yaml",
+            "terraform_root": "deploy/byoc/aws/terraform",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        },
+    )
+
+
 def _byoc_bootstrap_bundle_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_bootstrap_bundle",
@@ -786,6 +815,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _production_env_contract_gate(args),
         _byoc_dataplane_contract_gate(args),
         _byoc_permissions_contract_gate(args),
+        _byoc_aws_iac_package_gate(args),
         _byoc_bootstrap_bundle_gate(args),
         _byoc_bootstrap_plan_gate(args),
         _byoc_bootstrap_runner_gate(args),
