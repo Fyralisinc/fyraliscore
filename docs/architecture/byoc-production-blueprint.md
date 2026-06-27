@@ -402,15 +402,19 @@ Repo-owned artifacts for this first slice:
   UI/control-plane consumers. The export is contract-only; it does not include
   signed headers, endpoint URLs, credentials, logs, prompts, or customer data.
 - `services/platform/runtime/byoc_control_panel_access.py` defines the
-  tenant-scoped metadata-only grant and decision contract required before a
-  browser-facing server-side proxy can call live BYOC control-panel reads on
-  behalf of a user. It maps gateway tenants to BYOC customer deployments without
-  read keys, endpoint URLs, credentials, raw payloads, logs, prompts, or PII.
+  tenant-scoped metadata-only grant, decision, and grant-store contract required
+  before a browser-facing server-side proxy can call live BYOC control-panel
+  reads on behalf of a user. `db/migrations/0185_byoc_control_panel_access_grants.sql`
+  persists one grant row per hosted tenant/customer/deployment/role with expiry
+  metadata only. The store maps gateway tenants to BYOC customer deployments
+  without read keys, endpoint URLs, credentials, raw payloads, logs, prompts, or
+  PII, and architecture ratchets scan later migrations that touch the same
+  table.
 - `services/app/gateway/byoc_control_panel_router.py` mounts
   `GET /byoc/control-panel/state`, a bearer-authenticated proxy for browser or
-  backend UI clients. It evaluates the control-panel access grant before
-  reading the same sanitized state from gateway stores, so browser clients never
-  receive or sign with BYOC read HMAC material.
+  backend UI clients. It evaluates the persisted control-panel access grant
+  before reading the same sanitized state from gateway stores, so browser
+  clients never receive or sign with BYOC read HMAC material.
 - `scripts/smoke_byoc_control_plane_reads.py` signs the read-only BYOC
   backend/control-panel surfaces together: agent fleet, deployment overview,
   control-panel state, evidence-package receipts, preflight receipts, and

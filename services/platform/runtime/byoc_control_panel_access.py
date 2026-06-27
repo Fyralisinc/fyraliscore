@@ -1,10 +1,10 @@
-"""Tenant-scoped access contract for future BYOC control-panel proxy reads."""
+"""Tenant-scoped access contract for BYOC control-panel proxy reads."""
 from __future__ import annotations
 
 import json
 import re
 from datetime import UTC, datetime
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -117,6 +117,242 @@ class ByocControlPanelAccessDecision(_StrictModel):
         if not _CUSTOMER_ID_RE.match(value):
             raise ValueError("customer_id must look like cus_<stable-id>")
         return value
+
+
+class ByocControlPanelAccessGrantStore(Protocol):
+    async def put(
+        self,
+        grant: ByocControlPanelAccessGrant,
+    ) -> ByocControlPanelAccessGrant:
+        ...
+
+    async def list_grants(
+        self,
+        *,
+        tenant_id: UUID,
+        customer_id: str | None = None,
+        deployment_id: str | None = None,
+    ) -> tuple[ByocControlPanelAccessGrant, ...]:
+        ...
+
+    async def revoke(
+        self,
+        *,
+        tenant_id: UUID,
+        customer_id: str,
+        deployment_id: str,
+    ) -> ByocControlPanelAccessGrant | None:
+        ...
+
+
+class InMemoryByocControlPanelAccessGrantStore:
+    """Local metadata-only control-panel access grant store."""
+
+    def __init__(
+        self,
+        grants: Iterable[ByocControlPanelAccessGrant] = (),
+    ) -> None:
+        self._records: dict[
+            tuple[UUID, str, str],
+            ByocControlPanelAccessGrant,
+        ] = {}
+        for grant in grants:
+            self._put_sync(grant)
+
+    @property
+    def records(self) -> tuple[ByocControlPanelAccessGrant, ...]:
+        keys = sorted(
+            self._records,
+            key=lambda item: (str(item[0]), item[1], item[2]),
+        )
+        return tuple(self._records[key] for key in keys)
+
+    async def put(
+        self,
+        grant: ByocControlPanelAccessGrant,
+    ) -> ByocControlPanelAccessGrant:
+        self._put_sync(grant)
+        return grant
+
+    async def list_grants(
+        self,
+        *,
+        tenant_id: UUID,
+        customer_id: str | None = None,
+        deployment_id: str | None = None,
+    ) -> tuple[ByocControlPanelAccessGrant, ...]:
+        _validate_customer_id(customer_id)
+        _validate_deployment_id(deployment_id)
+        grants = tuple(
+            grant
+            for grant in self.records
+            if grant.tenant_id == tenant_id
+            and (customer_id is None or grant.customer_id == customer_id)
+            and (
+                deployment_id is None
+                or deployment_id in grant.deployment_ids
+            )
+        )
+        return grants
+
+    async def revoke(
+        self,
+        *,
+        tenant_id: UUID,
+        customer_id: str,
+        deployment_id: str,
+    ) -> ByocControlPanelAccessGrant | None:
+        _validate_customer_id(customer_id)
+        _validate_deployment_id(deployment_id)
+        key = (tenant_id, customer_id, deployment_id)
+        existing = self._records.get(key)
+        if existing is None:
+            return None
+        revoked = existing.model_copy(update={"enabled": False})
+        self._records[key] = revoked
+        return revoked
+
+    def _put_sync(self, grant: ByocControlPanelAccessGrant) -> None:
+        for deployment_id in grant.deployment_ids:
+            row_grant = grant.model_copy(update={"deployment_ids": (deployment_id,)})
+            self._records[
+                (
+                    grant.tenant_id,
+                    grant.customer_id,
+                    deployment_id,
+                )
+            ] = row_grant
+
+
+class PostgresByocControlPanelAccessGrantStore:
+    """Postgres-backed control-panel access grants.
+
+    The table stores only tenant/customer/deployment authorization metadata. It
+    intentionally does not store data-plane URLs, read signing keys, customer
+    data, logs, prompts, evidence bodies, or cloud identifiers.
+    """
+
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+
+    async def put(
+        self,
+        grant: ByocControlPanelAccessGrant,
+    ) -> ByocControlPanelAccessGrant:
+        for deployment_id in grant.deployment_ids:
+            await self._pool.fetchrow(
+                """
+                INSERT INTO byoc_control_panel_access_grants (
+                    tenant_id,
+                    customer_id,
+                    deployment_id,
+                    role,
+                    enabled,
+                    granted_at,
+                    expires_at,
+                    stored_scope
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8
+                )
+                ON CONFLICT (tenant_id, customer_id, deployment_id) DO UPDATE SET
+                    role = EXCLUDED.role,
+                    enabled = EXCLUDED.enabled,
+                    granted_at = EXCLUDED.granted_at,
+                    expires_at = EXCLUDED.expires_at,
+                    stored_scope = EXCLUDED.stored_scope,
+                    updated_at = now()
+                RETURNING
+                    tenant_id,
+                    customer_id,
+                    deployment_id,
+                    role,
+                    enabled,
+                    granted_at,
+                    expires_at,
+                    stored_scope
+                """,
+                grant.tenant_id,
+                grant.customer_id,
+                deployment_id,
+                grant.role,
+                grant.enabled,
+                grant.granted_at,
+                grant.expires_at,
+                grant.stored_scope,
+            )
+        return grant
+
+    async def list_grants(
+        self,
+        *,
+        tenant_id: UUID,
+        customer_id: str | None = None,
+        deployment_id: str | None = None,
+    ) -> tuple[ByocControlPanelAccessGrant, ...]:
+        _validate_customer_id(customer_id)
+        _validate_deployment_id(deployment_id)
+        clauses = ["tenant_id = $1"]
+        args: list[Any] = [tenant_id]
+        if customer_id is not None:
+            args.append(customer_id)
+            clauses.append(f"customer_id = ${len(args)}")
+        if deployment_id is not None:
+            args.append(deployment_id)
+            clauses.append(f"deployment_id = ${len(args)}")
+        rows = await self._pool.fetch(
+            f"""
+            SELECT
+                tenant_id,
+                customer_id,
+                deployment_id,
+                role,
+                enabled,
+                granted_at,
+                expires_at,
+                stored_scope
+            FROM byoc_control_panel_access_grants
+            WHERE {' AND '.join(clauses)}
+            ORDER BY customer_id ASC, deployment_id ASC
+            """,
+            *args,
+        )
+        return tuple(_grant_from_row(row) for row in rows)
+
+    async def revoke(
+        self,
+        *,
+        tenant_id: UUID,
+        customer_id: str,
+        deployment_id: str,
+    ) -> ByocControlPanelAccessGrant | None:
+        _validate_customer_id(customer_id)
+        _validate_deployment_id(deployment_id)
+        row = await self._pool.fetchrow(
+            """
+            UPDATE byoc_control_panel_access_grants
+            SET
+                enabled = false,
+                updated_at = now()
+            WHERE tenant_id = $1
+              AND customer_id = $2
+              AND deployment_id = $3
+            RETURNING
+                tenant_id,
+                customer_id,
+                deployment_id,
+                role,
+                enabled,
+                granted_at,
+                expires_at,
+                stored_scope
+            """,
+            tenant_id,
+            customer_id,
+            deployment_id,
+        )
+        if row is None:
+            return None
+        return _grant_from_row(row)
 
 
 def evaluate_byoc_control_panel_access(
@@ -235,10 +471,41 @@ def _strongest_grant(
     return max(grants, key=lambda grant: priority[grant.role])
 
 
+def _grant_from_row(row: Any) -> ByocControlPanelAccessGrant:
+    return ByocControlPanelAccessGrant(
+        schema_version="fyralis.byoc.control_panel_access_grant.v1",
+        tenant_id=(
+            row["tenant_id"]
+            if isinstance(row["tenant_id"], UUID)
+            else UUID(str(row["tenant_id"]))
+        ),
+        customer_id=row["customer_id"],
+        deployment_ids=(row["deployment_id"],),
+        role=row["role"],
+        enabled=row["enabled"],
+        granted_at=row["granted_at"],
+        expires_at=row["expires_at"],
+        stored_scope=row["stored_scope"],
+    )
+
+
+def _validate_customer_id(value: str | None) -> None:
+    if value is not None and not _CUSTOMER_ID_RE.match(value.strip()):
+        raise ValueError("customer_id must look like cus_<stable-id>")
+
+
+def _validate_deployment_id(value: str | None) -> None:
+    if value is not None and not _DEPLOYMENT_ID_RE.match(value.strip()):
+        raise ValueError("deployment_id must look like dep_<stable-id>")
+
+
 __all__ = [
     "ByocControlPanelAccessDecision",
     "ByocControlPanelAccessGrant",
+    "ByocControlPanelAccessGrantStore",
     "ByocControlPanelAccessQuery",
+    "InMemoryByocControlPanelAccessGrantStore",
+    "PostgresByocControlPanelAccessGrantStore",
     "evaluate_byoc_control_panel_access",
     "model_json_schema_bundle",
     "render_control_panel_access_schema_bundle_json",

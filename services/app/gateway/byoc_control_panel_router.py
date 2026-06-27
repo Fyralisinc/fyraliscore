@@ -11,7 +11,10 @@ from services.app.gateway.byoc_control_plane_router import (
 )
 from services.platform.runtime.byoc_control_panel_access import (
     ByocControlPanelAccessGrant,
+    ByocControlPanelAccessGrantStore,
     ByocControlPanelAccessQuery,
+    InMemoryByocControlPanelAccessGrantStore,
+    PostgresByocControlPanelAccessGrantStore,
     evaluate_byoc_control_panel_access,
 )
 from services.platform.runtime.byoc_control_panel_state import (
@@ -47,7 +50,10 @@ def build_byoc_control_panel_router() -> APIRouter:
             ) from exc
         decision = evaluate_byoc_control_panel_access(
             query=access_query,
-            grants=_access_grants_from_state(request),
+            grants=await _access_grants_from_state(
+                request,
+                query=access_query,
+            ),
         )
         if not decision.allowed:
             raise HTTPException(
@@ -83,13 +89,46 @@ def _require_gateway_auth(request: Request):
     return auth
 
 
-def _access_grants_from_state(
+async def _access_grants_from_state(
     request: Request,
+    *,
+    query: ByocControlPanelAccessQuery,
 ) -> tuple[ByocControlPanelAccessGrant, ...]:
+    store = _access_grant_store_from_state(request)
+    if store is not None:
+        return await store.list_grants(
+            tenant_id=query.tenant_id,
+            customer_id=query.customer_id,
+            deployment_id=query.deployment_id,
+        )
     grants = getattr(request.app.state, "byoc_control_panel_access_grants", ())
     if isinstance(grants, Iterable):
         return tuple(grants)
     return ()
+
+
+def _access_grant_store_from_state(
+    request: Request,
+) -> ByocControlPanelAccessGrantStore | None:
+    existing = getattr(
+        request.app.state,
+        "byoc_control_panel_access_grant_store",
+        None,
+    )
+    if existing is not None:
+        return existing
+    grants = getattr(request.app.state, "byoc_control_panel_access_grants", None)
+    if grants is not None:
+        return None
+    deps = getattr(request.app.state, "deps", None)
+    pool = getattr(deps, "pool", None)
+    if pool is not None:
+        created = PostgresByocControlPanelAccessGrantStore(pool)
+        request.app.state.byoc_control_panel_access_grant_store = created
+        return created
+    created = InMemoryByocControlPanelAccessGrantStore()
+    request.app.state.byoc_control_panel_access_grant_store = created
+    return created
 
 
 __all__ = ["build_byoc_control_panel_router"]

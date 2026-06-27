@@ -305,6 +305,9 @@ BYOC_CONTROL_PANEL_STATE_PATH = Path(
 BYOC_CONTROL_PANEL_ACCESS_PATH = Path(
     "services/platform/runtime/byoc_control_panel_access.py"
 )
+BYOC_CONTROL_PANEL_ACCESS_GRANT_MIGRATION_PATH = Path(
+    "db/migrations/0185_byoc_control_panel_access_grants.sql"
+)
 BYOC_LAUNCH_READINESS_SUMMARY_PATH = Path(
     "services/platform/runtime/byoc_launch_readiness_summary.py"
 )
@@ -630,6 +633,25 @@ BYOC_PREFLIGHT_REPORT_RECEIPT_FORBIDDEN_STORAGE_PATTERNS: tuple[
             re.IGNORECASE,
         ),
         "BYOC preflight report receipt storage must not include raw report body columns",
+    ),
+)
+BYOC_CONTROL_PANEL_ACCESS_GRANT_FORBIDDEN_STORAGE_PATTERNS: tuple[
+    tuple[re.Pattern[str], str],
+    ...,
+] = (
+    (
+        re.compile(r"\b(?:JSONB|JSON|BYTEA)\b", re.IGNORECASE),
+        "BYOC control-panel access grants must not store JSON or byte payload bodies",
+    ),
+    (
+        re.compile(
+            r"\b(?:raw_[a-z0-9_]*|grant_body|request_body|response_body|"
+            r"payload|prompt|log_text|pii|secret_value|token_value|read_key|"
+            r"signature|signed_header|endpoint_url|auth_material|credential|"
+            r"secret_ref|account_id|arn)\b",
+            re.IGNORECASE,
+        ),
+        "BYOC control-panel access grants must not include sensitive columns",
     ),
 )
 BYOC_AGENT_NO_RAW_TOKEN_MODELS = (
@@ -1734,6 +1756,83 @@ def find_byoc_control_panel_access_privacy_violations(
                 )
             )
 
+    return violations
+
+
+def find_byoc_control_panel_access_storage_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    migration_path: Path = BYOC_CONTROL_PANEL_ACCESS_GRANT_MIGRATION_PATH,
+) -> list[Violation]:
+    """Return control-panel access storage drift that could persist raw data."""
+
+    path = repo_root / migration_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-control-panel-access-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC control-panel access grant migration is missing",
+            )
+        ]
+
+    text = _strip_sql_comments_preserving_lines(
+        path.read_text(encoding="utf-8", errors="ignore")
+    )
+    violations: list[Violation] = []
+    if "CREATE TABLE IF NOT EXISTS byoc_control_panel_access_grants" not in text:
+        violations.append(
+            Violation(
+                check="byoc-control-panel-access-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC control-panel access grant table must be created explicitly",
+            )
+        )
+    if "stored_scope = 'sanitized_control_panel_access_metadata_only'" not in text:
+        violations.append(
+            Violation(
+                check="byoc-control-panel-access-storage",
+                path=migration_path,
+                line_number=1,
+                message=(
+                    "BYOC control-panel access grants must pin sanitized metadata scope"
+                ),
+            )
+        )
+
+    migration_paths: set[Path] = {migration_path}
+    migrations_dir = repo_root / "db" / "migrations"
+    if migrations_dir.exists():
+        for candidate in sorted(migrations_dir.glob("*.sql")):
+            candidate_text = _strip_sql_comments_preserving_lines(
+                candidate.read_text(encoding="utf-8", errors="ignore")
+            )
+            if "byoc_control_panel_access_grants" in candidate_text:
+                migration_paths.add(candidate.relative_to(repo_root))
+
+    for scanned_path in sorted(migration_paths):
+        scanned_text = _strip_sql_comments_preserving_lines(
+            (repo_root / scanned_path).read_text(
+                encoding="utf-8",
+                errors="ignore",
+            )
+        )
+        for line_number, line in enumerate(scanned_text.splitlines(), start=1):
+            for pattern, message in (
+                BYOC_CONTROL_PANEL_ACCESS_GRANT_FORBIDDEN_STORAGE_PATTERNS
+            ):
+                if pattern.search(line):
+                    violations.append(
+                        Violation(
+                            check="byoc-control-panel-access-storage",
+                            path=scanned_path,
+                            line_number=line_number,
+                            message=message,
+                        )
+                    )
+                    break
     return violations
 
 
@@ -2857,6 +2956,9 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     )
     violations.extend(
         find_byoc_control_panel_access_privacy_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_control_panel_access_storage_violations(repo_root=repo_root)
     )
     violations.extend(
         find_byoc_launch_readiness_summary_privacy_violations(repo_root=repo_root)

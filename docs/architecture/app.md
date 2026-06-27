@@ -139,7 +139,7 @@ graph TD
 | BYOC deployment overview | `services/platform/runtime/byoc_deployment_overview.py` | Metadata-only read model that aggregates sanitized agent-fleet, evidence-package, preflight-report, and runner-evidence receipt records into deployment status, next action, and bounded health/evidence counts. |
 | BYOC control-panel state | `services/platform/runtime/byoc_control_panel_state.py` | Metadata-only backend contract for a future control panel; composes deployment overview, sanitized agent fleet, recent sanitized receipt lists, section statuses, and bounded action codes without raw reports, signatures, endpoint URLs, secret refs, logs, prompts, or PII. |
 | BYOC control-panel contract export | `services/platform/runtime/byoc_control_panel_contract.py` | Exportable schema bundle and deterministic sanitized example state for UI/control-plane consumers; mirrors the signed state contract without customer data, signed headers, URLs, credentials, logs, prompts, or PII. |
-| BYOC control-panel access | `services/platform/runtime/byoc_control_panel_access.py` | Tenant-scoped metadata-only grant/decision contract for a future server-side browser proxy; maps gateway tenants to allowed BYOC customer deployments without read keys, endpoint URLs, credentials, logs, prompts, or PII. |
+| BYOC control-panel access | `services/platform/runtime/byoc_control_panel_access.py` | Tenant-scoped metadata-only grant/decision/store contract for the bearer-authenticated browser proxy; persists hosted tenant/customer/deployment role grants in `byoc_control_panel_access_grants` without read keys, endpoint URLs, credentials, logs, prompts, or PII. |
 | BYOC agent probe | `services/platform/runtime/byoc_agent_probe.py` | Local executable data-plane agent proof; signs enrollment, submits one bounded heartbeat through the mock/live control-plane contract, and emits sanitized status metadata only. |
 | BYOC agent token rotation plan | `services/platform/runtime/byoc_agent_token_rotation.py` | Plan-only install-token rotation rehearsal; validates current/next secret-ref hygiene and overlap while emitting only salted ref digests and no token material, secret refs, command output, or cloud mutations. |
 | BYOC AWS live preflight | `services/platform/runtime/byoc_aws_live_preflight.py` | Customer-side read-only AWS preflight; verifies STS identity, optional describe/list probes, and optional IAM simulation while emitting only sanitized status/count metadata. |
@@ -209,8 +209,9 @@ graph TD
   authorization, or the exported schema/example during local UI development.
 - `GET /byoc/control-panel/state` — bearer-authenticated browser/backend proxy
   for the same metadata-only state; requires a tenant-to-BYOC-deployment access
-  grant and does not expose read HMAC keys, endpoint URLs, raw reports, logs,
-  prompts, credentials, or PII to browser clients.
+  grant from the metadata-only `byoc_control_panel_access_grants` store and
+  does not expose read HMAC keys, endpoint URLs, raw reports, logs, prompts,
+  credentials, or PII to browser clients.
 - `GET /byoc/control-plane/evidence-packages` and
   `GET /byoc/control-plane/evidence-packages/{receipt_id}` — signed BYOC
   receipt automation reads; list queries require `deployment_id` or

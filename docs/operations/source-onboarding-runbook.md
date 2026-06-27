@@ -335,7 +335,12 @@ scripts/get_byoc_control_panel_state.py \
 Browser or backend UI clients should use `GET /byoc/control-panel/state`
 instead. That route uses ordinary gateway bearer auth plus the
 `ByocControlPanelAccessGrant` metadata contract; it returns the same sanitized
-state shape without exposing BYOC read HMAC material to the client.
+state shape without exposing BYOC read HMAC material to the client. In hosted
+gateway deployments, grants are read from `byoc_control_panel_access_grants`
+and contain only hosted tenant ID, BYOC customer ID, deployment ID, role,
+enabled state, grant timestamp, expiry timestamp, and sanitized stored scope.
+Do not place BYOC read keys, endpoint URLs, cloud identifiers, credentials, raw
+reports, logs, prompts, embeddings, or PII in that table.
 
 For UI or backend consumers that need the contract without live read access,
 export the schema bundle, access-grant schema, or deterministic sanitized

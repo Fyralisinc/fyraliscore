@@ -4,11 +4,14 @@ import json
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+import pytest
 from pydantic import ValidationError
 
 from services.platform.runtime.byoc_control_panel_access import (
     ByocControlPanelAccessGrant,
     ByocControlPanelAccessQuery,
+    InMemoryByocControlPanelAccessGrantStore,
+    PostgresByocControlPanelAccessGrantStore,
     evaluate_byoc_control_panel_access,
     model_json_schema_bundle,
     render_control_panel_access_schema_bundle_json,
@@ -22,6 +25,57 @@ OTHER_DEPLOYMENT_ID = "dep_access02"
 CUSTOMER_ID = "cus_access01"
 OTHER_CUSTOMER_ID = "cus_access02"
 OBSERVED_AT = datetime(2026, 6, 27, 12, 0, tzinfo=UTC)
+
+
+class _FakeAccessGrantPool:
+    def __init__(self) -> None:
+        self.rows: dict[tuple[UUID, str, str], dict] = {}
+        self.calls: list[tuple[str, tuple]] = []
+
+    async def fetchrow(self, query: str, *args):
+        self.calls.append((query, args))
+        normalized = query.lstrip().upper()
+        if normalized.startswith("INSERT"):
+            row = {
+                "tenant_id": args[0],
+                "customer_id": args[1],
+                "deployment_id": args[2],
+                "role": args[3],
+                "enabled": args[4],
+                "granted_at": args[5],
+                "expires_at": args[6],
+                "stored_scope": args[7],
+            }
+            self.rows[(args[0], args[1], args[2])] = row
+            return row
+        if normalized.startswith("UPDATE"):
+            key = (args[0], args[1], args[2])
+            row = self.rows.get(key)
+            if row is None:
+                return None
+            row = {**row, "enabled": False}
+            self.rows[key] = row
+            return row
+        return None
+
+    async def fetch(self, query: str, *args):
+        self.calls.append((query, args))
+        rows = list(self.rows.values())
+        arg_index = 0
+        tenant_id = args[arg_index]
+        arg_index += 1
+        rows = [row for row in rows if row["tenant_id"] == tenant_id]
+        if "customer_id = $" in query:
+            customer_id = args[arg_index]
+            arg_index += 1
+            rows = [row for row in rows if row["customer_id"] == customer_id]
+        if "deployment_id = $" in query:
+            deployment_id = args[arg_index]
+            rows = [row for row in rows if row["deployment_id"] == deployment_id]
+        return sorted(
+            rows,
+            key=lambda row: (row["customer_id"], row["deployment_id"]),
+        )
 
 
 def _grant(
@@ -193,3 +247,62 @@ def test_control_panel_access_ignores_other_tenants() -> None:
 
     assert decision.allowed is False
     assert decision.reason_code == "grant_missing"
+
+
+@pytest.mark.asyncio
+async def test_in_memory_control_panel_access_store_lists_and_revokes_metadata() -> None:
+    store = InMemoryByocControlPanelAccessGrantStore()
+    grant = _grant(deployment_ids=(DEPLOYMENT_ID, OTHER_DEPLOYMENT_ID))
+
+    await store.put(grant)
+    all_grants = await store.list_grants(tenant_id=TENANT_ID)
+    filtered = await store.list_grants(
+        tenant_id=TENANT_ID,
+        customer_id=CUSTOMER_ID,
+        deployment_id=OTHER_DEPLOYMENT_ID,
+    )
+    revoked = await store.revoke(
+        tenant_id=TENANT_ID,
+        customer_id=CUSTOMER_ID,
+        deployment_id=OTHER_DEPLOYMENT_ID,
+    )
+
+    assert {item.deployment_ids[0] for item in all_grants} == {
+        DEPLOYMENT_ID,
+        OTHER_DEPLOYMENT_ID,
+    }
+    assert len(filtered) == 1
+    assert filtered[0].deployment_ids == (OTHER_DEPLOYMENT_ID,)
+    assert revoked is not None
+    assert revoked.enabled is False
+
+
+@pytest.mark.asyncio
+async def test_postgres_control_panel_access_store_round_trips_scalar_metadata() -> None:
+    pool = _FakeAccessGrantPool()
+    store = PostgresByocControlPanelAccessGrantStore(pool)
+    grant = _grant(role="admin")
+
+    await store.put(grant)
+    listed = await store.list_grants(
+        tenant_id=TENANT_ID,
+        customer_id=CUSTOMER_ID,
+        deployment_id=DEPLOYMENT_ID,
+    )
+    revoked = await store.revoke(
+        tenant_id=TENANT_ID,
+        customer_id=CUSTOMER_ID,
+        deployment_id=DEPLOYMENT_ID,
+    )
+
+    assert len(listed) == 1
+    assert listed[0] == grant
+    assert revoked is not None
+    assert revoked.enabled is False
+    flattened_args = json.dumps([str(arg) for _, args in pool.calls for arg in args])
+    query_text = " ".join(query for query, _ in pool.calls)
+    assert "read_key" not in query_text.lower()
+    assert "endpoint_url" not in query_text.lower()
+    assert "signature" not in query_text.lower()
+    assert "payload" not in flattened_args.lower()
+    assert "secret" not in flattened_args.lower()

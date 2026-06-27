@@ -13,6 +13,8 @@ from services.app.gateway.byoc_control_panel_router import (
 )
 from services.platform.runtime.byoc_control_panel_access import (
     ByocControlPanelAccessGrant,
+    InMemoryByocControlPanelAccessGrantStore,
+    PostgresByocControlPanelAccessGrantStore,
 )
 from services.platform.runtime.byoc_control_panel_contract import (
     EXAMPLE_CUSTOMER_ID,
@@ -43,6 +45,26 @@ class _ReceiptStore:
         return getattr(self.state, self.name)
 
 
+class _AccessGrantPool:
+    def __init__(self):
+        self.calls: list[tuple[str, tuple]] = []
+
+    async def fetch(self, query: str, *args):
+        self.calls.append((query, args))
+        return [
+            {
+                "tenant_id": TENANT_ID,
+                "customer_id": EXAMPLE_CUSTOMER_ID,
+                "deployment_id": EXAMPLE_DEPLOYMENT_ID,
+                "role": "viewer",
+                "enabled": True,
+                "granted_at": GENERATED_AT,
+                "expires_at": None,
+                "stored_scope": "sanitized_control_panel_access_metadata_only",
+            }
+        ]
+
+
 def _grant(
     *,
     deployment_id: str = EXAMPLE_DEPLOYMENT_ID,
@@ -65,9 +87,11 @@ def _app(
     *,
     inject_auth: bool = True,
     grants: tuple[ByocControlPanelAccessGrant, ...] = (),
+    install_legacy_grants: bool = True,
 ) -> FastAPI:
     app = FastAPI()
-    app.state.byoc_control_panel_access_grants = grants
+    if install_legacy_grants:
+        app.state.byoc_control_panel_access_grants = grants
     app.state.byoc_agent_registry_store = _AgentStore()
     app.state.byoc_evidence_intake_store = _ReceiptStore("evidence_packages")
     app.state.byoc_preflight_report_intake_store = _ReceiptStore("preflight_reports")
@@ -109,6 +133,40 @@ async def test_byoc_control_panel_proxy_serves_authorized_state() -> None:
     assert "secret_ref" not in response.text.lower()
     assert "install_token" not in response.text.lower()
     assert "payload" not in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_panel_proxy_uses_configured_access_grant_store() -> None:
+    store = InMemoryByocControlPanelAccessGrantStore((_grant(),))
+    app = _app(grants=())
+    app.state.byoc_control_panel_access_grant_store = store
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/byoc/control-panel/state?deployment_id={EXAMPLE_DEPLOYMENT_ID}"
+        )
+
+    assert response.status_code == 200
+    assert response.json()["deployment_id"] == EXAMPLE_DEPLOYMENT_ID
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_panel_proxy_uses_postgres_store_from_gateway_deps() -> None:
+    pool = _AccessGrantPool()
+    app = _app(grants=(), install_legacy_grants=False)
+    app.state.deps = SimpleNamespace(pool=pool)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/byoc/control-panel/state?deployment_id={EXAMPLE_DEPLOYMENT_ID}"
+        )
+
+    assert response.status_code == 200
+    assert isinstance(
+        app.state.byoc_control_panel_access_grant_store,
+        PostgresByocControlPanelAccessGrantStore,
+    )
+    assert pool.calls
 
 
 @pytest.mark.asyncio
