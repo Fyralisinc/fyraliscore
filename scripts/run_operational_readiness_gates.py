@@ -855,6 +855,32 @@ def _byoc_source_onboarding_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_customer_handoff_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_customer_handoff_readiness",
+        _python_command(
+            "scripts/run_byoc_customer_handoff.py",
+            "--json",
+            "--env-file",
+            ".env.production.example",
+        ),
+        details=(
+            "BYOC customer handoff readiness composes the local preflight, "
+            "sanitized evidence-package contract, and first-source onboarding "
+            "gate into one privacy-safe go/no-go report."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "package": "deploy/byoc/evidence-package.example.yaml",
+            "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "env_template": ".env.production.example",
+        },
+    )
+
+
 def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
     return _pytest_gate(
         "byoc_control_plane_intake",
@@ -948,6 +974,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_evidence_ledger_gate(args),
         _byoc_evidence_package_gate(args),
         _byoc_source_onboarding_gate(args),
+        _byoc_customer_handoff_gate(args),
         _byoc_control_plane_intake_gate(args),
         _byoc_post_deploy_validation_gate(args),
         _github_required_checks_gate(args),

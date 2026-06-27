@@ -16,6 +16,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_bootstrap_plan_gate,
     _byoc_bootstrap_runner_gate,
     _byoc_control_plane_intake_gate,
+    _byoc_customer_handoff_gate,
     _byoc_dataplane_contract_gate,
     _byoc_evidence_package_gate,
     _byoc_evidence_ledger_gate,
@@ -276,6 +277,25 @@ def test_byoc_source_onboarding_gate_passes_for_checked_in_package() -> None:
     assert "scripts/check_byoc_source_onboarding_gate.py" in result.command
     assert "--json" in result.command
     assert result.artifacts == {"package": "deploy/byoc/evidence-package.example.yaml"}
+
+
+def test_byoc_customer_handoff_gate_passes_for_checked_in_package() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_customer_handoff_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_customer_handoff.py" in result.command
+    assert "--json" in result.command
+    assert "--env-file" in result.command
+    assert result.artifacts == {
+        "package": "deploy/byoc/evidence-package.example.yaml",
+        "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "env_template": ".env.production.example",
+    }
 
 
 def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:

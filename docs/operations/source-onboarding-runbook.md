@@ -47,6 +47,23 @@ scripts/run_byoc_preflight_bundle.py --json \
 The preflight bundle is a summary only. Keep using the individual commands when
 operators need to diagnose a specific failing section.
 
+For the final backend/core handoff check, compose the local preflight,
+evidence-package contract, and source-onboarding gate into one sanitized
+go/no-go report:
+
+```bash
+scripts/run_byoc_customer_handoff.py --json \
+  --env-file <customer-byoc.env> \
+  --evidence-package <package> \
+  --evidence-ledger <ledger.yaml> \
+  --output <byoc-customer-handoff-report.json>
+```
+
+This report is safe for customer support and release-review handoff. It
+contains only aggregate status, bounded failure codes, and counts; it does not
+embed child reports, package bodies, command output, account IDs, ARNs, URLs,
+artifact refs, credentials, source payloads, prompts, logs, or PII.
+
 For the first real AWS credential test, run the read-only live preflight inside
 the customer boundary. The basic command verifies STS caller identity against
 the account contract in the permissions manifest:
@@ -167,6 +184,8 @@ scripts/check_byoc_source_onboarding_gate.py --json \
 Add `--require-signed-post-deploy` for production cutover packages that must
 prove the live validator report was signed before import. The gate consumes
 only the sanitized package or ledger and emits bounded pass/fail metadata.
+Apply the same strict requirements to the customer handoff report by adding
+`--require-aws-live-preflight --require-live-post-deploy`.
 
 Where the hosted control-plane agent endpoint is enabled, enrollment uses
 `POST /byoc/agent/enroll` with the signed

@@ -143,6 +143,10 @@ Every checklist item is done only when:
   consumes only sanitized evidence package/ledger metadata, supports optional
   AWS live-preflight and live/signed post-deploy requirements, emits bounded
   pass/fail output, and is included in readiness gates.
+- [x] BYOC customer credential handoff has a backend/core readiness report that
+  composes local preflight, evidence-package validation, and first-source gate
+  results into one sanitized go/no-go artifact with no child report bodies,
+  command output, account IDs, ARNs, URLs, credentials, raw data, logs, or PII.
 - [x] BYOC control-plane evidence intake has a signed submission contract,
   gateway route, self-auth route classification, DB-backed sanitized scalar
   receipt storage, signed receipt lookup/list automation reads, bounded query

@@ -259,6 +259,13 @@ Repo-owned artifacts for this first slice:
   evidence before enabling source credentials; no source payloads, provider
   credentials, account IDs, ARNs, endpoint URLs, logs, prompts, or PII are
   inspected or serialized.
+- `services/platform/runtime/byoc_customer_handoff.py` and
+  `scripts/run_byoc_customer_handoff.py` compose the local preflight bundle,
+  evidence-package contract, and first-source gate into one customer-side
+  go/no-go readiness report. It is an orchestration artifact only: it does not
+  create cloud resources, run Terraform plan/apply, submit to the hosted
+  control plane, or embed child reports, package bodies, command output,
+  account IDs, ARNs, URLs, credentials, raw data, logs, prompts, or PII.
 - `services/platform/runtime/byoc_control_plane_intake.py` and
   `services/app/gateway/byoc_control_plane_router.py` define the first hosted
   control-plane intake contract for sanitized evidence packages and other
@@ -1490,6 +1497,11 @@ Minimum gates before first enterprise customer:
   `scripts/generate_byoc_evidence_package.py`; the package may leave the data
   plane only after `--check-package` passes, the AWS IaC package fingerprint is
   present, and the raw live validator report is excluded.
+- Before sharing a customer credential handoff status, run
+  `scripts/run_byoc_customer_handoff.py` with the package, ledger, and customer
+  env file. For real credential readiness, add `--run-aws-live-preflight` and
+  require the corresponding evidence with `--require-aws-live-preflight`; do
+  not use the AWS-skip flag outside CI/report-contract smoke tests.
 - Submit evidence packages to the control-plane intake API only as signed
   `fyralis.byoc.evidence_package_submission.v1` payloads; control-plane storage
   may retain only the generated sanitized receipt metadata in
