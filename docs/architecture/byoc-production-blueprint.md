@@ -410,6 +410,11 @@ Repo-owned artifacts for this first slice:
   without read keys, endpoint URLs, credentials, raw payloads, logs, prompts, or
   PII, and architecture ratchets scan later migrations that touch the same
   table.
+- `scripts/manage_byoc_control_panel_access_grants.py` is the local/admin
+  automation hook for that store. It can print schemas, dry-run sanitized
+  grant/revoke JSON with no database credentials, or use `DATABASE_URL` to
+  upsert, list, and revoke metadata-only grants in the hosted/control-plane
+  database.
 - `services/app/gateway/byoc_control_panel_router.py` mounts
   `GET /byoc/control-panel/state`, a bearer-authenticated proxy for browser or
   backend UI clients. It evaluates the persisted control-panel access grant

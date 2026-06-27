@@ -342,6 +342,41 @@ enabled state, grant timestamp, expiry timestamp, and sanitized stored scope.
 Do not place BYOC read keys, endpoint URLs, cloud identifiers, credentials, raw
 reports, logs, prompts, embeddings, or PII in that table.
 
+Before real hosted database access is available, validate the exact grant JSON
+with a dry run:
+
+```bash
+python scripts/manage_byoc_control_panel_access_grants.py upsert \
+  --tenant-id <hosted-tenant-uuid> \
+  --customer-id <cus_...> \
+  --deployment-id <dep_...> \
+  --role viewer \
+  --dry-run
+```
+
+When connected to the hosted/control-plane database, create, inspect, or revoke
+grants with the same script:
+
+```bash
+DATABASE_URL="postgresql://<hosted-control-plane-db>" \
+python scripts/manage_byoc_control_panel_access_grants.py upsert \
+  --tenant-id <hosted-tenant-uuid> \
+  --customer-id <cus_...> \
+  --deployment-id <dep_...> \
+  --role viewer
+
+DATABASE_URL="postgresql://<hosted-control-plane-db>" \
+python scripts/manage_byoc_control_panel_access_grants.py list \
+  --tenant-id <hosted-tenant-uuid> \
+  --customer-id <cus_...>
+
+DATABASE_URL="postgresql://<hosted-control-plane-db>" \
+python scripts/manage_byoc_control_panel_access_grants.py revoke \
+  --tenant-id <hosted-tenant-uuid> \
+  --customer-id <cus_...> \
+  --deployment-id <dep_...>
+```
+
 For UI or backend consumers that need the contract without live read access,
 export the schema bundle, access-grant schema, or deterministic sanitized
 example:
