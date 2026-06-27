@@ -664,7 +664,93 @@ async def test_byoc_control_plane_serves_signed_deployment_overview_metadata() -
     assert "signature" not in response.text.lower()
     assert "payload" not in response.text.lower()
     assert '"preflight_report":' not in response.text
-    assert '"sections":' not in response.text
+    assert '"checks":' not in response.text
+    assert "iterations" not in response.text
+    assert "source_artifacts" not in response.text
+    assert MANIFEST.connectivity.control_plane_url not in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_serves_signed_control_panel_state() -> None:
+    agent_store = InMemoryByocAgentRegistryStore()
+    preflight_store = InMemoryByocPreflightReportIntakeStore()
+    runner_store = InMemoryByocRunnerEvidenceIntakeStore()
+    await agent_store.enroll(
+        _agent_enrollment(),
+        enrolled_at=datetime(2026, 6, 26, 12, 21, tzinfo=UTC),
+        heartbeat_interval_seconds=MANIFEST.connectivity.heartbeat_interval_seconds,
+        telemetry_contract=MANIFEST.telemetry.contract,
+    )
+    await agent_store.heartbeat(
+        _agent_heartbeat(),
+        accepted_at=datetime(2026, 6, 26, 12, 23, tzinfo=UTC),
+        poll_after_seconds=MANIFEST.connectivity.agent_poll_interval_seconds,
+    )
+    await agent_store.update_desired_state(
+        _desired_state_update(),
+        accepted_at=datetime(2026, 6, 26, 12, 26, tzinfo=UTC),
+    )
+    app, evidence_store = _app()
+    app.state.byoc_agent_registry_store = agent_store
+    app.state.byoc_preflight_report_intake_store = preflight_store
+    app.state.byoc_runner_evidence_intake_store = runner_store
+    await evidence_store.put(
+        _submission(),
+        accepted_at=datetime(2026, 6, 26, 12, 28, tzinfo=UTC),
+    )
+    await preflight_store.put(
+        _preflight_submission(),
+        accepted_at=datetime(2026, 6, 26, 12, 29, tzinfo=UTC),
+    )
+    await runner_store.put(
+        await _runner_submission(),
+        accepted_at=datetime(2026, 6, 26, 12, 30, tzinfo=UTC),
+    )
+    path = "/byoc/control-plane/control-panel-state"
+    query = (
+        f"deployment_id={MANIFEST.deployment_id}"
+        f"&customer_id={MANIFEST.customer_id}"
+        "&recent_limit=5"
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"{path}?{query}",
+            headers=_read_headers(
+                path,
+                query=query,
+                nonce="nonce-control-panel-state-read",
+            ),
+        )
+
+    assert response.status_code == 200
+    state = response.json()
+    assert state["schema_version"] == "fyralis.byoc.control_panel_state.v1"
+    assert state["deployment_id"] == MANIFEST.deployment_id
+    assert state["customer_id"] == MANIFEST.customer_id
+    assert state["stored_scope"] == "sanitized_control_panel_metadata_only"
+    assert state["overview"]["schema_version"] == "fyralis.byoc.deployment_overview.v1"
+    assert state["overview"]["status"] == "ready"
+    assert state["overview"]["next_action"] == "none"
+    assert state["actions"] == []
+    assert {section["key"]: section["status"] for section in state["sections"]} == {
+        "deployment_overview": "ready",
+        "agent_fleet": "ready",
+        "evidence_packages": "ready",
+        "preflight_reports": "ready",
+        "runner_evidence": "ready",
+    }
+    assert state["agent_fleet"]["result_count"] == 1
+    assert state["evidence_packages"]["result_count"] == 1
+    assert state["preflight_reports"]["result_count"] == 1
+    assert state["runner_evidence"]["result_count"] == 1
+    assert AGENT_INSTALL_TOKEN not in response.text
+    assert SIGNING_SECRET not in response.text
+    assert "install_token" not in response.text.lower()
+    assert "secret_ref" not in response.text.lower()
+    assert "signature" not in response.text.lower()
+    assert "payload" not in response.text.lower()
+    assert '"preflight_report":' not in response.text
     assert '"checks":' not in response.text
     assert "iterations" not in response.text
     assert "source_artifacts" not in response.text
@@ -678,6 +764,20 @@ async def test_byoc_control_plane_agent_fleet_reads_require_signed_headers() -> 
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get(
             f"/byoc/control-plane/agents?deployment_id={MANIFEST.deployment_id}"
+        )
+
+    assert response.status_code == 403
+    assert "missing_read_auth_headers" in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_panel_state_requires_signed_headers() -> None:
+    app, _ = _app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/byoc/control-plane/control-panel-state"
+            f"?deployment_id={MANIFEST.deployment_id}"
         )
 
     assert response.status_code == 403

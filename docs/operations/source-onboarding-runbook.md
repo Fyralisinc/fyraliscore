@@ -281,6 +281,15 @@ counts, and latest accepted timestamps only. Use the overview for
 customer-facing health state and the agent fleet endpoint for per-agent
 metadata.
 
+The future control panel should prefer
+`GET /byoc/control-plane/control-panel-state` with the same signed read headers.
+It requires `deployment_id`, may include `customer_id`, and returns the
+deployment overview, sanitized agent fleet, recent sanitized receipt lists,
+section statuses, and bounded action codes in one metadata-only response. This
+route is a backend contract for control-panel consumers; it is not a control
+panel implementation and must not be exposed without the same backend read-auth
+controls.
+
 To print a signed GET request without network access, omit `--list-url`; to
 run the read against the hosted backend, provide the full route URL:
 

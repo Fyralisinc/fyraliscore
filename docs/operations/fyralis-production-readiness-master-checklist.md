@@ -186,6 +186,11 @@ Every checklist item is done only when:
   preflight-report, and runner-evidence receipt state into status, next action,
   health counts, and evidence counts, plus targeted and combined local
   signed-read helpers for future control-panel/backend automation consumers.
+- [x] BYOC control-panel state has a signed metadata-only backend read model and
+  gateway route that composes deployment overview, sanitized agent fleet, recent
+  sanitized receipt lists, section statuses, and bounded action codes into one
+  future-control-panel contract without raw reports, signed headers, endpoint
+  URLs, secret refs, logs, prompts, embeddings, or PII.
 - [x] BYOC control-plane read-smoke output has a shareable summary command that
   strips signed headers, endpoint paths, query strings, endpoint URLs,
   request/response bodies, auth material, credentials, account IDs, ARNs, logs,

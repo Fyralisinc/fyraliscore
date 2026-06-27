@@ -145,9 +145,16 @@ Repo-owned artifacts for this first slice:
   backend automation/control-panel consumers: status, next action, agent health
   counts, evidence-package receipt counts, preflight receipt counts, runner
   receipt counts, latest accepted timestamps, and no raw reports, request
-  bodies, endpoint URLs, secret refs, prompts, logs, or PII. Production mTLS
-  issuance, full fleet reconciliation history, and fleet dashboard workflows
-  remain deferred.
+  bodies, endpoint URLs, secret refs, prompts, logs, or PII. `GET
+  /byoc/control-plane/control-panel-state` is the backend/core control-panel
+  read contract layered on top of the same signed reads. It returns the
+  deployment overview, sanitized agent fleet, recent sanitized evidence
+  receipts, section statuses, and bounded action codes in one response so a
+  UI/control-panel service does not need to invent a second BYOC contract. It
+  still returns no raw reports, request bodies, signatures, signed headers,
+  endpoint URLs, secret refs, prompts, logs, or PII. Production mTLS issuance,
+  full fleet reconciliation history, and fleet dashboard workflows remain
+  deferred.
 - `services/platform/runtime/byoc_permissions.py` defines the backend-owned
   customer-cloud permission contract. It validates role boundaries, explicit
   AWS actions, scoped resources, `iam:PassRole` service constraints, no
@@ -404,6 +411,14 @@ Repo-owned artifacts for this first slice:
   and runner-evidence receipt metadata into a control-panel-ready status,
   next-action, health-count, and evidence-count summary. This is a backend
   contract, not a control panel implementation.
+- `services/platform/runtime/byoc_control_panel_state.py` defines the first
+  backend/core control-panel state contract used by
+  `GET /byoc/control-plane/control-panel-state`. It composes the signed
+  deployment overview, sanitized agent fleet, recent sanitized receipt lists,
+  section statuses, and bounded action codes into one metadata-only response
+  for a future control panel. It does not build a UI and does not expose raw
+  reports, request bodies, endpoint URLs, signatures, signed headers, secret
+  refs, prompts, logs, or PII.
 - `services/platform/runtime/byoc_live_test_readiness.py` and
   `scripts/check_byoc_live_test_readiness.py` provide the final offline gate
   before a real AWS credential window. The report validates BYOC manifests,
