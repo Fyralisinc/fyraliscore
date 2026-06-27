@@ -1031,6 +1031,7 @@ def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
             "scripts/tests/test_export_byoc_control_panel_contract.py",
             "scripts/tests/test_list_byoc_agents.py",
             "scripts/tests/test_smoke_byoc_control_plane_reads.py",
+            "services/platform/runtime/tests/test_byoc_control_panel_access.py",
             "services/platform/runtime/tests/test_byoc_control_panel_contract.py",
             "scripts/tests/test_submit_byoc_preflight_report.py",
             "scripts/tests/test_submit_byoc_runner_evidence.py",

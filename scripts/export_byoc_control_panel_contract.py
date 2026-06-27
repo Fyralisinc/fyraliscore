@@ -7,6 +7,9 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from services.platform.runtime.byoc_control_panel_access import (
+    render_control_panel_access_schema_bundle_json,
+)
 from services.platform.runtime.byoc_control_panel_contract import (
     render_control_panel_schema_bundle_json,
     render_control_panel_state_example_json,
@@ -26,17 +29,23 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         action="store_true",
         help="Export a deterministic sanitized example control-panel response.",
     )
+    mode.add_argument(
+        "--access-schema",
+        action="store_true",
+        help="Export the future browser-proxy access grant schema bundle.",
+    )
     parser.add_argument("--output", type=Path, help="Optional output file.")
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(list(sys.argv[1:] if argv is None else argv))
-    rendered = (
-        render_control_panel_schema_bundle_json()
-        if args.schema
-        else render_control_panel_state_example_json()
-    )
+    if args.access_schema:
+        rendered = render_control_panel_access_schema_bundle_json()
+    elif args.schema:
+        rendered = render_control_panel_schema_bundle_json()
+    else:
+        rendered = render_control_panel_state_example_json()
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(rendered, encoding="utf-8")

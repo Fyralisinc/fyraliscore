@@ -37,6 +37,24 @@ def test_export_byoc_control_panel_contract_prints_schema(capsys) -> None:
     assert payload["query"]["properties"]["recent_limit"]["maximum"] == 20
 
 
+def test_export_byoc_control_panel_contract_prints_access_schema(capsys) -> None:
+    code = main(["--access-schema"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 0
+    assert payload["schema_version"] == (
+        "fyralis.byoc.control_panel_access_bundle.v1"
+    )
+    assert payload["grant"]["properties"]["schema_version"]["const"] == (
+        "fyralis.byoc.control_panel_access_grant.v1"
+    )
+    assert payload["decision"]["properties"]["schema_version"]["const"] == (
+        "fyralis.byoc.control_panel_access_decision.v1"
+    )
+    assert payload["stored_scope"] == "sanitized_control_panel_access_metadata_only"
+
+
 def test_export_byoc_control_panel_contract_writes_output(tmp_path: Path) -> None:
     output = tmp_path / "nested" / "control-panel-state.example.json"
 

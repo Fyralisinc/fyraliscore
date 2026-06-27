@@ -433,6 +433,9 @@ def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:
     )
     assert "scripts/tests/test_list_byoc_agents.py" in result.command
     assert "scripts/tests/test_smoke_byoc_control_plane_reads.py" in result.command
+    assert "services/platform/runtime/tests/test_byoc_control_panel_access.py" in (
+        result.command
+    )
     assert "services/platform/runtime/tests/test_byoc_control_panel_contract.py" in (
         result.command
     )

@@ -333,11 +333,15 @@ scripts/get_byoc_control_panel_state.py \
 ```
 
 For UI or backend consumers that need the contract without live read access,
-export the schema bundle or deterministic sanitized example:
+export the schema bundle, access-grant schema, or deterministic sanitized
+example:
 
 ```bash
 scripts/export_byoc_control_panel_contract.py --schema \
   --output tmp/byoc/control-panel-state.schema.json
+
+scripts/export_byoc_control_panel_contract.py --access-schema \
+  --output tmp/byoc/control-panel-access.schema.json
 
 scripts/export_byoc_control_panel_contract.py --example \
   --output tmp/byoc/control-panel-state.example.json
