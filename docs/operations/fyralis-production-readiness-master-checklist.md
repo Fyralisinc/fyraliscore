@@ -192,8 +192,8 @@ Every checklist item is done only when:
   future-control-panel contract, plus a targeted signed-read helper and
   schema/example exporter, with a persistent tenant-to-BYOC-deployment access
   grant store, admin CLI, and bearer-authenticated deployment discovery route
-  for the browser/backend proxy, without raw reports, signed headers, endpoint
-  URLs, secret refs, logs, prompts, embeddings, or PII.
+  plus smoke helper for the browser/backend proxy, without raw reports, signed
+  headers, endpoint URLs, secret refs, logs, prompts, embeddings, or PII.
 - [x] BYOC control-plane read-smoke output has a shareable summary command that
   covers the signed control-panel state aggregate and strips signed headers,
   endpoint paths, query strings, endpoint URLs, request/response bodies, auth

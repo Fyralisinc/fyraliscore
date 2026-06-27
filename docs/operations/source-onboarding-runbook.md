@@ -379,6 +379,28 @@ python scripts/manage_byoc_control_panel_access_grants.py revoke \
   --deployment-id <dep_...>
 ```
 
+To smoke the browser-facing bearer proxy without exposing BYOC read HMAC
+material, print the request plan first:
+
+```bash
+python scripts/smoke_byoc_control_panel_proxy.py \
+  --customer-id <cus_...> \
+  --deployment-id <dep_...>
+```
+
+After the hosted database has a grant and you have a gateway bearer token, run
+the live smoke. The output is a sanitized summary with counts and selected IDs,
+not the raw control-panel state body:
+
+```bash
+FYRALIS_GATEWAY_BEARER_TOKEN="<gateway-bearer-token>" \
+python scripts/smoke_byoc_control_panel_proxy.py \
+  --base-url https://<gateway-host> \
+  --customer-id <cus_...> \
+  --deployment-id <dep_...> \
+  --recent-limit 10
+```
+
 For UI or backend consumers that need the contract without live read access,
 export the schema bundle, access-grant schema, or deterministic sanitized
 example:

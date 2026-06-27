@@ -415,6 +415,11 @@ Repo-owned artifacts for this first slice:
   grant/revoke JSON with no database credentials, or use `DATABASE_URL` to
   upsert, list, and revoke metadata-only grants in the hosted/control-plane
   database.
+- `scripts/smoke_byoc_control_panel_proxy.py` is the browser-proxy smoke helper.
+  It can print a redacted request plan without credentials, or use a gateway
+  bearer token to call `GET /byoc/control-panel/deployments` and
+  `GET /byoc/control-panel/state`, returning only a sanitized count/status
+  summary rather than the raw state body.
 - `services/app/gateway/byoc_control_panel_router.py` mounts
   `GET /byoc/control-panel/deployments` and `GET /byoc/control-panel/state`,
   bearer-authenticated proxy routes for browser or backend UI clients. The
