@@ -463,6 +463,13 @@ Repo-owned artifacts for this first slice:
   CronJob and systemd timer with egress-only execution, no container ports, no
   raw DSNs/signing keys/control-plane URLs, and secret/config references that
   remain in the customer boundary.
+- `services/platform/runtime/byoc_product_health_install_rehearsal.py`,
+  `deploy/byoc/product-health-install-rehearsal.example.yaml`, and
+  `scripts/run_byoc_product_health_install_rehearsal.py` provide the
+  no-credentials install proof for that schedule package. The rehearsal checks
+  the local automation manifest, rendered Kubernetes/systemd refs, egress-only
+  posture, hardening markers, and privacy flags before the customer applies the
+  CronJob or timer.
 - `GET /byoc/control-plane/product-health` is the signed backend automation
   read for the latest sanitized product-health snapshot for one deployment.
   `GET /byoc/control-panel/state` embeds the same product-health object so UI
@@ -486,10 +493,10 @@ Repo-owned artifacts for this first slice:
   request material.
 - `services/platform/runtime/byoc_handoff_bundle_index.py` and
   `services/platform/runtime/byoc_customer_pilot_package.py` include the
-  product-health automation manifest as a digest-pinned, shareable customer
-  artifact. The rendered Kubernetes/systemd examples remain referenced by that
-  manifest; package manifests do not embed raw DSNs, signing keys, control-plane
-  URL values, or artifact bodies.
+  product-health automation manifest and install rehearsal as digest-pinned,
+  shareable customer artifacts. The rendered Kubernetes/systemd examples remain
+  referenced by those metadata contracts; package manifests do not embed raw
+  DSNs, signing keys, control-plane URL values, or artifact bodies.
 - `services/platform/runtime/byoc_deployment_overview.py` defines the signed
   BYOC deployment overview read model used by
   `GET /byoc/control-plane/deployment-overview`. It aggregates only existing
@@ -556,7 +563,8 @@ Repo-owned artifacts for this first slice:
 - `scripts/check_production_env_contract.py`,
   `scripts/check_architecture_ratchets.py`, and
   `scripts/run_operational_readiness_gates.py` include the first automation
-  hooks for BYOC contract drift.
+  hooks for BYOC contract drift, including the product-health install
+  rehearsal.
 
 This intentionally defers cloud apply, real agent reconciliation actions beyond
 metadata-only desired-state updates and non-mutating apply-plan evidence,

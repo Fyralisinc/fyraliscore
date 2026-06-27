@@ -25,6 +25,7 @@ HandoffBundleArtifactKind = Literal[
     "customer_handoff_readiness_report",
     "preflight_report",
     "product_health_automation",
+    "product_health_install_rehearsal",
     "source_onboarding_gate_report",
     "control_plane_read_smoke_report",
     "control_plane_read_smoke_summary",
@@ -226,6 +227,9 @@ class ByocHandoffBundleIndexInputs:
     product_health_automation_path: Path = Path(
         "deploy/byoc/product-health-automation.example.yaml"
     )
+    product_health_install_rehearsal_path: Path = Path(
+        "deploy/byoc/product-health-install-rehearsal.example.yaml"
+    )
     repo_root: Path = field(default_factory=Path.cwd)
     customer_handoff_report_path: Path | None = None
     preflight_report_path: Path | None = None
@@ -319,6 +323,14 @@ def _artifacts(
             True,
             "fyralis.byoc.product_health_automation.v1",
             "customer_side_product_health_automation_metadata_only",
+        ),
+        (
+            "product_health_install_rehearsal",
+            "product_health_install_rehearsal",
+            inputs.product_health_install_rehearsal_path,
+            True,
+            "fyralis.byoc.product_health_install_rehearsal.v1",
+            "customer_side_product_health_install_rehearsal_metadata_only",
         ),
         (
             "customer_handoff_readiness_report",

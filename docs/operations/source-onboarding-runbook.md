@@ -615,6 +615,16 @@ plane URL value, or source payload material directly into the checked-in
 automation manifest. The examples expose no inbound ports and call only
 `POST /byoc/control-plane/product-health-snapshots` over outbound HTTPS.
 
+Before customer-side apply, run the offline install rehearsal. It requires no
+cloud credentials and validates the local automation manifest, Kubernetes
+CronJob refs, systemd unit refs, hardening markers, egress-only posture, and
+metadata-only privacy contract:
+
+```bash
+scripts/run_byoc_product_health_install_rehearsal.py --json \
+  --install-plan deploy/byoc/product-health-install-rehearsal.example.yaml
+```
+
 Before a real AWS credential window, run the offline readiness check. Without
 `--require-aws-access`, it validates manifests, IAM skeletons, operator
 scripts, and local AWS-access prerequisites without making AWS calls; missing

@@ -27,6 +27,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_permissions_contract_gate,
     _byoc_preflight_bundle_gate,
     _byoc_product_health_automation_gate,
+    _byoc_product_health_install_rehearsal_gate,
     _byoc_source_onboarding_gate,
     _byoc_post_deploy_validation_gate,
     _byoc_live_credential_rehearsal_gate,
@@ -150,6 +151,31 @@ def test_byoc_product_health_automation_gate_passes_for_checked_in_artifacts() -
             "deploy/byoc/systemd/product-health-collector.timer.example"
         ),
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+    }
+
+
+def test_byoc_product_health_install_rehearsal_gate_passes_for_checked_in_artifacts() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_product_health_install_rehearsal_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_product_health_install_rehearsal.py" in result.command
+    assert "--install-plan" in result.command
+    assert result.artifacts == {
+        "install_plan": "deploy/byoc/product-health-install-rehearsal.example.yaml",
+        "automation": "deploy/byoc/product-health-automation.example.yaml",
+        "kubernetes_cronjob": (
+            "deploy/byoc/kubernetes/"
+            "product-health-collector.cronjob.example.yaml"
+        ),
+        "systemd_service": (
+            "deploy/byoc/systemd/product-health-collector.service.example"
+        ),
+        "systemd_timer": (
+            "deploy/byoc/systemd/product-health-collector.timer.example"
+        ),
     }
 
 
@@ -355,6 +381,12 @@ def test_byoc_handoff_bundle_index_gate_passes_for_checked_in_package() -> None:
     assert result.artifacts == {
         "package": "deploy/byoc/evidence-package.example.yaml",
         "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+        "product_health_automation": (
+            "deploy/byoc/product-health-automation.example.yaml"
+        ),
+        "product_health_install_rehearsal": (
+            "deploy/byoc/product-health-install-rehearsal.example.yaml"
+        ),
     }
 
 

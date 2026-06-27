@@ -36,7 +36,7 @@ def test_check_byoc_customer_pilot_package_json_output(capsys) -> None:
         )
         assert payload["status"] == "pass"
         assert payload["package_status"] == "manual_required"
-        assert payload["verified_artifact_count"] == 8
+        assert payload["verified_artifact_count"] == 9
         assert payload["failure_codes"] == []
         assert "https://" not in rendered
         assert "bearer " not in rendered.lower()

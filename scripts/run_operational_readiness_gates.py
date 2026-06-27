@@ -649,6 +649,41 @@ def _byoc_product_health_automation_gate(args: argparse.Namespace) -> GateResult
     )
 
 
+def _byoc_product_health_install_rehearsal_gate(
+    args: argparse.Namespace,
+) -> GateResult:
+    return _run_command_gate(
+        "byoc_product_health_install_rehearsal",
+        _python_command(
+            "scripts/run_byoc_product_health_install_rehearsal.py",
+            "--json",
+            "--install-plan",
+            "deploy/byoc/product-health-install-rehearsal.example.yaml",
+        ),
+        details=(
+            "BYOC product-health install rehearsal validates the checked-in "
+            "Kubernetes/systemd collector install refs, egress-only posture, "
+            "and metadata-only privacy contract without cloud credentials."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "install_plan": "deploy/byoc/product-health-install-rehearsal.example.yaml",
+            "automation": "deploy/byoc/product-health-automation.example.yaml",
+            "kubernetes_cronjob": (
+                "deploy/byoc/kubernetes/"
+                "product-health-collector.cronjob.example.yaml"
+            ),
+            "systemd_service": (
+                "deploy/byoc/systemd/product-health-collector.service.example"
+            ),
+            "systemd_timer": (
+                "deploy/byoc/systemd/product-health-collector.timer.example"
+            ),
+        },
+    )
+
+
 def _byoc_bootstrap_bundle_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_bootstrap_bundle",
@@ -957,6 +992,12 @@ def _byoc_handoff_bundle_index_gate(args: argparse.Namespace) -> GateResult:
         artifacts={
             "package": "deploy/byoc/evidence-package.example.yaml",
             "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+            "product_health_automation": (
+                "deploy/byoc/product-health-automation.example.yaml"
+            ),
+            "product_health_install_rehearsal": (
+                "deploy/byoc/product-health-install-rehearsal.example.yaml"
+            ),
         },
     )
 
@@ -1145,6 +1186,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_aws_iac_package_gate(args),
         _byoc_terraform_plan_validation_gate(args),
         _byoc_product_health_automation_gate(args),
+        _byoc_product_health_install_rehearsal_gate(args),
         _byoc_bootstrap_bundle_gate(args),
         _byoc_bootstrap_plan_gate(args),
         _byoc_bootstrap_runner_gate(args),

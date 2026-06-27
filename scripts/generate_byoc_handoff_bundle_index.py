@@ -36,6 +36,12 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Customer-side product-health automation manifest included in the handoff.",
     )
     parser.add_argument(
+        "--product-health-install-rehearsal",
+        type=Path,
+        default=Path("deploy/byoc/product-health-install-rehearsal.example.yaml"),
+        help="Customer-side product-health install rehearsal plan included in the handoff.",
+    )
+    parser.add_argument(
         "--customer-handoff-report",
         type=Path,
         help="Optional sanitized customer handoff readiness report to index.",
@@ -83,6 +89,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             evidence_package_path=args.evidence_package,
             evidence_ledger_path=args.evidence_ledger,
             product_health_automation_path=args.product_health_automation,
+            product_health_install_rehearsal_path=(
+                args.product_health_install_rehearsal
+            ),
             repo_root=args.repo_root,
             customer_handoff_report_path=args.customer_handoff_report,
             preflight_report_path=args.preflight_report,

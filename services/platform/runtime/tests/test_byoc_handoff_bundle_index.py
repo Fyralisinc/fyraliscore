@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[4]
 PACKAGE = ROOT / "deploy/byoc/evidence-package.example.yaml"
 LEDGER = ROOT / "deploy/byoc/evidence-ledger.example.yaml"
 AUTOMATION = ROOT / "deploy/byoc/product-health-automation.example.yaml"
+INSTALL_REHEARSAL = ROOT / "deploy/byoc/product-health-install-rehearsal.example.yaml"
 GENERATED_AT = datetime(2026, 6, 27, 12, 0, tzinfo=UTC)
 
 
@@ -29,9 +30,11 @@ def test_handoff_bundle_index_lists_only_sanitized_artifact_metadata(
     package = tmp_path / "evidence-package.yaml"
     ledger = tmp_path / "evidence-ledger.yaml"
     automation = tmp_path / "product-health-automation.yaml"
+    install_rehearsal = tmp_path / "product-health-install-rehearsal.yaml"
     shutil.copyfile(PACKAGE, package)
     shutil.copyfile(LEDGER, ledger)
     shutil.copyfile(AUTOMATION, automation)
+    shutil.copyfile(INSTALL_REHEARSAL, install_rehearsal)
     smoke_report = tmp_path / "control-plane-smoke.json"
     smoke_report.write_text(
         json.dumps(
@@ -48,6 +51,7 @@ def test_handoff_bundle_index_lists_only_sanitized_artifact_metadata(
             evidence_package_path=package,
             evidence_ledger_path=ledger,
             product_health_automation_path=automation,
+            product_health_install_rehearsal_path=install_rehearsal,
             repo_root=tmp_path,
             control_plane_read_smoke_report_path=smoke_report,
             generated_at=GENERATED_AT,
@@ -58,7 +62,7 @@ def test_handoff_bundle_index_lists_only_sanitized_artifact_metadata(
     assert index.schema_version == "fyralis.byoc.customer_handoff_bundle_index.v1"
     assert index.deployment_id == "dep_example01"
     assert index.customer_id == "cus_example01"
-    assert index.artifact_count == 4
+    assert index.artifact_count == 5
     assert index.signed_read_endpoint_count == 6
     assert index.privacy.artifact_bodies_included is False
     assert index.privacy.signed_headers_included is False
@@ -66,6 +70,7 @@ def test_handoff_bundle_index_lists_only_sanitized_artifact_metadata(
         "evidence_package",
         "evidence_ledger",
         "product_health_automation",
+        "product_health_install_rehearsal",
         "control_plane_read_smoke_summary",
     }
     assert all(artifact.contents_included is False for artifact in index.artifacts)
