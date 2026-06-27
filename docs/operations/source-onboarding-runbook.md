@@ -317,7 +317,10 @@ scripts/get_byoc_deployment_overview.py \
 
 To read the backend/core control-panel state contract, use the same read
 signing material with the control-panel state helper. Omit
-`--control-panel-state-url` to print only the signed request:
+`--control-panel-state-url` to print only the signed request. Do not put this
+read signing material in browser UI code; browser-facing control-panel work
+needs a server-side proxy with tenant/customer authorization before live reads
+are exposed to users:
 
 ```bash
 FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY="<local-read-signing-material>" \

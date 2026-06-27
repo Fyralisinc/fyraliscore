@@ -202,7 +202,9 @@ graph TD
   read for future control-panel consumers; requires `deployment_id`, may include
   `customer_id`, and returns the deployment overview, sanitized agent fleet,
   recent sanitized receipt lists, section statuses, and bounded action codes in
-  one metadata-only response.
+  one metadata-only response. Browser UI code must not hold the read HMAC key;
+  browser-facing control-panel work should use a server-side proxy with tenant
+  authorization, or the exported schema/example during local UI development.
 - `GET /byoc/control-plane/evidence-packages` and
   `GET /byoc/control-plane/evidence-packages/{receipt_id}` — signed BYOC
   receipt automation reads; list queries require `deployment_id` or

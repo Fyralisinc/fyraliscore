@@ -86,6 +86,11 @@ def test_static_gateway_route_inventory_classifies_security_boundaries() -> None
     byoc_preflight = by_path["/byoc/control-plane/preflight-reports"].policy
     assert byoc_preflight.access is RouteAccess.SELF_AUTHENTICATED
     assert byoc_preflight.gateway_bearer_required is False
+    byoc_control_panel_state = by_path[
+        "/byoc/control-plane/control-panel-state"
+    ].policy
+    assert byoc_control_panel_state.access is RouteAccess.SELF_AUTHENTICATED
+    assert byoc_control_panel_state.gateway_bearer_required is False
     byoc_agent = by_path["/byoc/agent/enroll"].policy
     assert byoc_agent.access is RouteAccess.SELF_AUTHENTICATED
     assert byoc_agent.gateway_bearer_required is False

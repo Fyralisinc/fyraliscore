@@ -430,7 +430,10 @@ Repo-owned artifacts for this first slice:
   section statuses, and bounded action codes into one metadata-only response
   for a future control panel. It does not build a UI and does not expose raw
   reports, request bodies, endpoint URLs, signatures, signed headers, secret
-  refs, prompts, logs, or PII.
+  refs, prompts, logs, or PII. Browser UI code must not hold the read HMAC key;
+  a browser-facing control panel needs a separate server-side proxy with
+  tenant/customer authorization before it can call this live read on behalf of
+  a user.
 - `services/platform/runtime/byoc_live_test_readiness.py` and
   `scripts/check_byoc_live_test_readiness.py` provide the final offline gate
   before a real AWS credential window. The report validates BYOC manifests,
