@@ -62,6 +62,7 @@ PilotPackageArtifactKind = Literal[
 _EXPECTED_SMOKE_SURFACES = (
     "agent_fleet",
     "deployment_overview",
+    "control_panel_state",
     "evidence_packages",
     "preflight_reports",
     "runner_evidence",

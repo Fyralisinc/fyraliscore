@@ -35,12 +35,15 @@ def test_generate_byoc_handoff_bundle_index_json_output(capsys) -> None:
     assert payload["deployment_id"] == "dep_example01"
     assert payload["customer_id"] == "cus_example01"
     assert payload["artifact_count"] == 2
-    assert payload["signed_read_endpoint_count"] == 5
+    assert payload["signed_read_endpoint_count"] == 6
     assert {artifact["name"] for artifact in payload["artifacts"]} == {
         "evidence_package",
         "evidence_ledger",
     }
     assert "deployment_overview" in {
+        endpoint["name"] for endpoint in payload["signed_read_endpoints"]
+    }
+    assert "control_panel_state" in {
         endpoint["name"] for endpoint in payload["signed_read_endpoints"]
     }
     assert payload["privacy"]["artifact_bodies_included"] is False

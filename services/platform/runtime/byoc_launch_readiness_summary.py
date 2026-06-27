@@ -402,6 +402,7 @@ def _control_plane_read_smoke_check(
     expected = {
         "agent_fleet",
         "deployment_overview",
+        "control_panel_state",
         "evidence_packages",
         "preflight_reports",
         "runner_evidence",

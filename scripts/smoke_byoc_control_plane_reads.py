@@ -25,6 +25,10 @@ from services.platform.runtime.byoc_control_plane_intake import (
     ByocEvidencePackageReceiptQuery,
     signed_evidence_receipt_read_headers,
 )
+from services.platform.runtime.byoc_control_panel_state import (
+    ByocControlPanelState,
+    ByocControlPanelStateQuery,
+)
 from services.platform.runtime.byoc_deployment_overview import (
     ByocDeploymentOverview,
     ByocDeploymentOverviewQuery,
@@ -55,6 +59,12 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--deployment-id", help="BYOC deployment id.")
     parser.add_argument("--customer-id", help="Optional BYOC customer id bound.")
     parser.add_argument("--limit", type=int, default=20, help="List limit, 1-100.")
+    parser.add_argument(
+        "--control-panel-recent-limit",
+        type=int,
+        default=10,
+        help="Control-panel aggregate recent receipt limit, 1-20.",
+    )
     parser.add_argument(
         "--signing-secret-env",
         default=DEFAULT_SIGNING_SECRET_ENV,
@@ -113,6 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             deployment_id=args.deployment_id,
             customer_id=args.customer_id,
             limit=args.limit,
+            control_panel_recent_limit=args.control_panel_recent_limit,
         )
         timestamp = _parse_timestamp(args.timestamp)
         nonce_prefix = args.nonce_prefix or _nonce_prefix()
@@ -155,6 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "deployment_id": args.deployment_id,
                     "customer_id": args.customer_id,
                     "limit": args.limit,
+                    "control_panel_recent_limit": args.control_panel_recent_limit,
                     "requests": signed_requests,
                 },
                 indent=2,
@@ -201,6 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "deployment_id": args.deployment_id,
                 "customer_id": args.customer_id,
                 "limit": args.limit,
+                "control_panel_recent_limit": args.control_panel_recent_limit,
                 "responses": responses,
             },
             indent=2,
@@ -215,6 +228,7 @@ def _read_surfaces(
     deployment_id: str | None,
     customer_id: str | None,
     limit: int,
+    control_panel_recent_limit: int,
 ) -> tuple[_ReadSurface, ...]:
     fleet_query = ByocAgentFleetQuery(
         deployment_id=deployment_id,
@@ -224,6 +238,11 @@ def _read_surfaces(
     overview_query = ByocDeploymentOverviewQuery(
         deployment_id=deployment_id,
         customer_id=customer_id,
+    )
+    control_panel_query = ByocControlPanelStateQuery(
+        deployment_id=deployment_id,
+        customer_id=customer_id,
+        recent_limit=control_panel_recent_limit,
     )
     evidence_query = ByocEvidencePackageReceiptQuery(
         deployment_id=deployment_id,
@@ -252,6 +271,11 @@ def _read_surfaces(
             query=_query_string(overview_query),
         ),
         _ReadSurface(
+            name="control_panel_state",
+            path="/byoc/control-plane/control-panel-state",
+            query=_query_string(control_panel_query),
+        ),
+        _ReadSurface(
             name="evidence_packages",
             path="/byoc/control-plane/evidence-packages",
             query=_query_string(evidence_query),
@@ -276,6 +300,8 @@ def _schema_bundle() -> dict[str, Any]:
         "agent_fleet_list": ByocAgentFleetList.model_json_schema(),
         "deployment_overview_query": ByocDeploymentOverviewQuery.model_json_schema(),
         "deployment_overview": ByocDeploymentOverview.model_json_schema(),
+        "control_panel_state_query": ByocControlPanelStateQuery.model_json_schema(),
+        "control_panel_state": ByocControlPanelState.model_json_schema(),
         "evidence_package_receipt_query": (
             ByocEvidencePackageReceiptQuery.model_json_schema()
         ),

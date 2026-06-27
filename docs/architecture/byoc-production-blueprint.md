@@ -392,9 +392,10 @@ Repo-owned artifacts for this first slice:
   next-action, health-count, and evidence-count metadata.
 - `scripts/smoke_byoc_control_plane_reads.py` signs the read-only BYOC
   backend/control-panel surfaces together: agent fleet, deployment overview,
-  evidence-package receipts, preflight receipts, and runner-evidence receipts.
-  It can print the signed request bundle for offline inspection or execute the
-  five GETs against `--base-url`, returning only sanitized endpoint responses.
+  control-panel state, evidence-package receipts, preflight receipts, and
+  runner-evidence receipts. It can print the signed request bundle for offline
+  inspection or execute the six GETs against `--base-url`, returning only
+  sanitized endpoint responses.
 - `services/platform/runtime/byoc_control_plane_read_smoke_summary.py` and
   `scripts/summarize_byoc_control_plane_read_smoke.py` convert raw/signed
   control-plane read-smoke output into a shareable metadata-only summary. The
@@ -1696,7 +1697,8 @@ Minimum gates before first enterprise customer:
   Use `scripts/list_byoc_agents.py` and
   `scripts/get_byoc_deployment_overview.py` for targeted backend automation
   checks, and `scripts/smoke_byoc_control_plane_reads.py` for the combined
-  read-only control-plane smoke instead of hand-building signed read headers.
+  read-only control-plane smoke, including the control-panel state aggregate,
+  instead of hand-building signed read headers.
   Before adding read-smoke evidence to customer handoff or launch-review
   artifacts, summarize the raw smoke output with
   `scripts/summarize_byoc_control_plane_read_smoke.py` and archive only that

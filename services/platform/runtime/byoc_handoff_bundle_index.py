@@ -128,7 +128,9 @@ class ByocHandoffBundleReadEndpoint(_StrictModel):
     path: str
     signed_read_required: Literal[True] = True
     required_query_params: tuple[Literal["deployment_id"], ...] = ("deployment_id",)
-    optional_query_params: tuple[Literal["customer_id", "limit"], ...] = ()
+    optional_query_params: tuple[
+        Literal["customer_id", "limit", "recent_limit"], ...
+    ] = ()
     response_schema_version: str
     response_scope: str
     response_body_included: Literal[False] = False
@@ -377,6 +379,13 @@ def _signed_read_endpoints() -> tuple[ByocHandoffBundleReadEndpoint, ...]:
             optional_query_params=("customer_id",),
             response_schema_version="fyralis.byoc.deployment_overview.v1",
             response_scope="sanitized_deployment_metadata_only",
+        ),
+        ByocHandoffBundleReadEndpoint(
+            name="control_panel_state",
+            path="/byoc/control-plane/control-panel-state",
+            optional_query_params=("customer_id", "recent_limit"),
+            response_schema_version="fyralis.byoc.control_panel_state.v1",
+            response_scope="sanitized_control_panel_metadata_only",
         ),
         ByocHandoffBundleReadEndpoint(
             name="evidence_package_receipts",

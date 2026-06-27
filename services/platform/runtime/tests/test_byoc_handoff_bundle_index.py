@@ -55,7 +55,7 @@ def test_handoff_bundle_index_lists_only_sanitized_artifact_metadata(
     assert index.deployment_id == "dep_example01"
     assert index.customer_id == "cus_example01"
     assert index.artifact_count == 3
-    assert index.signed_read_endpoint_count == 5
+    assert index.signed_read_endpoint_count == 6
     assert index.privacy.artifact_bodies_included is False
     assert index.privacy.signed_headers_included is False
     assert {artifact.name for artifact in index.artifacts} == {
@@ -89,6 +89,13 @@ def test_handoff_bundle_index_declares_signed_read_endpoint_paths_only() -> None
     endpoints = {endpoint.name: endpoint for endpoint in index.signed_read_endpoints}
     assert endpoints["deployment_overview"].path == (
         "/byoc/control-plane/deployment-overview"
+    )
+    assert endpoints["control_panel_state"].path == (
+        "/byoc/control-plane/control-panel-state"
+    )
+    assert endpoints["control_panel_state"].optional_query_params == (
+        "customer_id",
+        "recent_limit",
     )
     assert endpoints["agent_fleet"].signed_read_required is True
     assert endpoints["runner_evidence_receipts"].response_schema_version == (

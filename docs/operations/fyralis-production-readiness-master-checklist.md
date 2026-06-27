@@ -192,10 +192,10 @@ Every checklist item is done only when:
   future-control-panel contract without raw reports, signed headers, endpoint
   URLs, secret refs, logs, prompts, embeddings, or PII.
 - [x] BYOC control-plane read-smoke output has a shareable summary command that
-  strips signed headers, endpoint paths, query strings, endpoint URLs,
-  request/response bodies, auth material, credentials, account IDs, ARNs, logs,
-  prompts, embeddings, and PII before the result is used in launch-review or
-  customer handoff evidence.
+  covers the signed control-panel state aggregate and strips signed headers,
+  endpoint paths, query strings, endpoint URLs, request/response bodies, auth
+  material, credentials, account IDs, ARNs, logs, prompts, embeddings, and PII
+  before the result is used in launch-review or customer handoff evidence.
 - [x] BYOC customer-pilot handoff has a one-command backend/core package
   builder that writes sanitized local readiness artifacts, a handoff index,
   launch summary, and digest-only manifest under the ignored `tmp/` tree,

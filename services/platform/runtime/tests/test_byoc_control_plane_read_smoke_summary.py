@@ -35,7 +35,7 @@ def test_control_plane_read_smoke_summary_passes_for_executed_smoke(
     assert summary.mode == "executed"
     assert summary.hosted_read_executed is True
     assert summary.required_surfaces_present is True
-    assert summary.surface_count == 5
+    assert summary.surface_count == 6
     assert summary.next_actions == ("none",)
     assert summary.privacy.signed_headers_included is False
     assert summary.privacy.response_bodies_included is False
@@ -89,7 +89,7 @@ def test_control_plane_read_smoke_summary_fails_when_surface_missing(
 
     assert summary.status == "fail"
     assert summary.required_surfaces_present is False
-    assert summary.surface_count == 4
+    assert summary.surface_count == 5
     missing = [surface for surface in summary.surfaces if surface.status == "fail"]
     assert [surface.name for surface in missing] == ["runner_evidence"]
 
@@ -110,6 +110,11 @@ def _executed_smoke() -> dict[str, object]:
                 "path": "/byoc/control-plane/deployment-overview",
                 "query": "deployment_id=dep_launch01",
                 "response": {"status": "active"},
+            },
+            "control_panel_state": {
+                "path": "/byoc/control-plane/control-panel-state",
+                "query": "deployment_id=dep_launch01&recent_limit=10",
+                "response": {"status": "ready"},
             },
             "evidence_packages": {
                 "path": "/byoc/control-plane/evidence-packages",
@@ -157,6 +162,7 @@ def _signed_request_smoke() -> dict[str, object]:
             for name in (
                 "agent_fleet",
                 "deployment_overview",
+                "control_panel_state",
                 "evidence_packages",
                 "preflight_reports",
                 "runner_evidence",

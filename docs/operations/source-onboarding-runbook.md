@@ -316,9 +316,10 @@ scripts/get_byoc_deployment_overview.py \
 ```
 
 For a single read-only backend smoke of all signed control-plane metadata
-surfaces, use the combined helper. Omit `--base-url` to print the signed request
-bundle without network access. Treat this raw output as operator-only when it
-contains signed headers, request paths, query strings, or hosted responses:
+surfaces, including the control-panel state aggregate, use the combined helper.
+Omit `--base-url` to print the signed request bundle without network access.
+Treat this raw output as operator-only when it contains signed headers, request
+paths, query strings, or hosted responses:
 
 ```bash
 FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY="<local-read-signing-material>" \
@@ -326,6 +327,7 @@ scripts/smoke_byoc_control_plane_reads.py \
   --deployment-id <dep_...> \
   --customer-id <cus_...> \
   --limit 20 \
+  --control-panel-recent-limit 10 \
   --key-ref <control-plane/byoc/evidence-read-key-ref> \
   --base-url https://<control-plane>
 ```

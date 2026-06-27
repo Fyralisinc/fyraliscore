@@ -63,8 +63,8 @@ owns:
   require signed read headers and return sanitized scalar metadata only. In
   BYOC production, submission/read signing material is resolved by `key_ref`
   through managed app-secret refs; raw app-state secrets are local/test only.
-  The same signed read path exposes a metadata-only deployment overview for
-  backend automation/control-panel consumers.
+  The same signed read path exposes metadata-only deployment overview and
+  control-panel state reads for backend automation/control-panel consumers.
 - **Webhook ingress** (`services/app/webhooks/router.py`): captures raw bytes,
   verifies the per-provider signature, resolves the tenant
   (`provider_installations` via the IN-08 tenant resolver + envelope-encrypted
