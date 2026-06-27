@@ -99,6 +99,25 @@ this section with `--run-aws-live-preflight`; do not use
 `--skip-aws-live-preflight-aws` for customer readiness because that flag is only
 for CI/report-contract smoke tests.
 
+For tomorrow's real credential rehearsal, prefer the artifact-pipeline command
+from inside the customer boundary. It writes sanitized AWS-preflight,
+evidence-ledger, and evidence-package artifacts, then gates the generated
+package:
+
+```bash
+scripts/run_byoc_live_credential_rehearsal.py --json \
+  --output-dir <customer-rehearsal-artifacts-dir> \
+  --env-file <customer-byoc.env> \
+  --require-live-aws-api-calls \
+  --output <live-credential-rehearsal-summary.json>
+```
+
+Add `--run-readonly-api-probes`, `--run-iam-policy-simulation`, and
+`--simulation-principal-arn <customer-bootstrap-role-arn>` when the customer
+wants deeper permission proof. Use `--skip-live-aws` only in CI or local
+contract smoke tests; when `--require-live-aws-api-calls` is set, the command
+fails if no real AWS API call was executed.
+
 Where the hosted control-plane intake is enabled, sign and submit the preflight
 summary with the evidence intake key:
 

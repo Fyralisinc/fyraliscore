@@ -25,6 +25,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_preflight_bundle_gate,
     _byoc_source_onboarding_gate,
     _byoc_post_deploy_validation_gate,
+    _byoc_live_credential_rehearsal_gate,
     _github_required_checks_gate,
     _production_env_contract_gate,
     _schema_drift_gate,
@@ -310,6 +311,21 @@ def test_byoc_customer_handoff_gate_passes_for_checked_in_package() -> None:
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
         "env_template": ".env.production.example",
     }
+
+
+def test_byoc_live_credential_rehearsal_gate_passes_in_ci_smoke_mode() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_live_credential_rehearsal_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_live_credential_rehearsal.py" in result.command
+    assert "--skip-live-aws" in result.command
+    assert "--output-dir" in result.command
+    assert result.artifacts["mode"] == "ci_skip_live_aws"
+    assert "123456789012" not in result.stdout_tail
+    assert "arn:aws" not in result.stdout_tail
 
 
 def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:

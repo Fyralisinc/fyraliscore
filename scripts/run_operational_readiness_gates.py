@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -905,6 +906,33 @@ def _byoc_customer_handoff_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_live_credential_rehearsal_gate(args: argparse.Namespace) -> GateResult:
+    output_dir = Path(tempfile.mkdtemp(prefix="fyralis-byoc-live-rehearsal-"))
+    return _run_command_gate(
+        "byoc_live_credential_rehearsal",
+        _python_command(
+            "scripts/run_byoc_live_credential_rehearsal.py",
+            "--json",
+            "--output-dir",
+            str(output_dir),
+            "--env-file",
+            ".env.production.example",
+            "--skip-live-aws",
+        ),
+        details=(
+            "BYOC live-credential rehearsal builds sanitized AWS-preflight, "
+            "evidence-ledger, evidence-package, and source-gate artifacts in "
+            "CI smoke mode without AWS calls or cloud mutations."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "output_dir": str(output_dir),
+            "mode": "ci_skip_live_aws",
+        },
+    )
+
+
 def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
     return _pytest_gate(
         "byoc_control_plane_intake",
@@ -1000,6 +1028,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_evidence_package_gate(args),
         _byoc_source_onboarding_gate(args),
         _byoc_customer_handoff_gate(args),
+        _byoc_live_credential_rehearsal_gate(args),
         _byoc_control_plane_intake_gate(args),
         _byoc_post_deploy_validation_gate(args),
         _github_required_checks_gate(args),

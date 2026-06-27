@@ -274,6 +274,15 @@ Repo-owned artifacts for this first slice:
   create cloud resources, run Terraform plan/apply, submit to the hosted
   control plane, or embed child reports, package bodies, command output,
   account IDs, ARNs, URLs, credentials, raw data, logs, prompts, or PII.
+- `services/platform/runtime/byoc_live_credential_rehearsal.py` and
+  `scripts/run_byoc_live_credential_rehearsal.py` provide the one-command
+  local artifact pipeline for real AWS credential rehearsal. The command runs
+  the sanitized AWS live preflight, writes sanitized AWS-preflight,
+  evidence-ledger, and evidence-package artifacts under an operator-selected
+  output directory, then evaluates the source-onboarding gate against the
+  generated package. Its summary emits only bounded status/count metadata and
+  can require actual AWS API calls with `--require-live-aws-api-calls`; CI uses
+  `--skip-live-aws` only for report-contract smoke tests.
 - `services/platform/runtime/byoc_control_plane_intake.py` and
   `services/app/gateway/byoc_control_plane_router.py` define the first hosted
   control-plane intake contract for sanitized evidence packages and other

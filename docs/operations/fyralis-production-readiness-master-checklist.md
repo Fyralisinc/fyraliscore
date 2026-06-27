@@ -148,6 +148,10 @@ Every checklist item is done only when:
   composes local preflight, evidence-package validation, and first-source gate
   results into one sanitized go/no-go artifact with no child report bodies,
   command output, account IDs, ARNs, URLs, credentials, raw data, logs, or PII.
+- [x] BYOC live credential rehearsal has a customer-side artifact-pipeline CLI
+  that runs sanitized AWS preflight, writes sanitized ledger/package evidence,
+  gates the generated package, supports a real-AWS-call requirement for
+  customer readiness, and runs in CI smoke mode without AWS credentials.
 - [x] BYOC control-plane evidence intake has a signed submission contract,
   gateway route, self-auth route classification, DB-backed sanitized scalar
   receipt storage, signed receipt lookup/list automation reads, bounded query
