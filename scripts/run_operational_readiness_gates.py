@@ -1026,6 +1026,7 @@ def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
             "services/app/gateway/tests/test_byoc_agent_router.py",
             "services/app/gateway/tests/test_byoc_control_plane_router.py",
             "services/app/gateway/tests/test_route_access_policy.py",
+            "scripts/tests/test_get_byoc_control_panel_state.py",
             "scripts/tests/test_get_byoc_deployment_overview.py",
             "scripts/tests/test_list_byoc_agents.py",
             "scripts/tests/test_smoke_byoc_control_plane_reads.py",

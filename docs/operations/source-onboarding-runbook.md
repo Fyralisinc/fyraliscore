@@ -315,6 +315,20 @@ scripts/get_byoc_deployment_overview.py \
   --overview-url https://<control-plane>/byoc/control-plane/deployment-overview
 ```
 
+To read the backend/core control-panel state contract, use the same read
+signing material with the control-panel state helper. Omit
+`--control-panel-state-url` to print only the signed request:
+
+```bash
+FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY="<local-read-signing-material>" \
+scripts/get_byoc_control_panel_state.py \
+  --deployment-id <dep_...> \
+  --customer-id <cus_...> \
+  --recent-limit 10 \
+  --key-ref <control-plane/byoc/evidence-read-key-ref> \
+  --control-panel-state-url https://<control-plane>/byoc/control-plane/control-panel-state
+```
+
 For a single read-only backend smoke of all signed control-plane metadata
 surfaces, including the control-panel state aggregate, use the combined helper.
 Omit `--base-url` to print the signed request bundle without network access.

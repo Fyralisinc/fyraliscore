@@ -426,6 +426,7 @@ def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:
     assert "services/app/gateway/tests/test_byoc_control_plane_router.py" in (
         result.command
     )
+    assert "scripts/tests/test_get_byoc_control_panel_state.py" in result.command
     assert "scripts/tests/test_get_byoc_deployment_overview.py" in result.command
     assert "scripts/tests/test_list_byoc_agents.py" in result.command
     assert "scripts/tests/test_smoke_byoc_control_plane_reads.py" in result.command

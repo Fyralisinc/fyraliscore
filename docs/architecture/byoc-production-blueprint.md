@@ -390,6 +390,12 @@ Repo-owned artifacts for this first slice:
   print a signed request for offline inspection or execute the GET when
   `--overview-url` is supplied, returning only sanitized deployment status,
   next-action, health-count, and evidence-count metadata.
+- `scripts/get_byoc_control_panel_state.py` is the backend/local automation
+  hook for signed `GET /byoc/control-plane/control-panel-state` reads. It can
+  print a signed request for offline inspection or execute the GET when
+  `--control-panel-state-url` is supplied, returning only the sanitized
+  deployment overview, agent fleet, recent receipt lists, section statuses, and
+  bounded action codes.
 - `scripts/smoke_byoc_control_plane_reads.py` signs the read-only BYOC
   backend/control-panel surfaces together: agent fleet, deployment overview,
   control-panel state, evidence-package receipts, preflight receipts, and
@@ -1694,8 +1700,9 @@ Minimum gates before first enterprise customer:
   read headers and deployment/customer bounds. Configure
   `FYRALIS_BYOC_EVIDENCE_INTAKE_*` and `FYRALIS_BYOC_EVIDENCE_READ_*` key refs
   through the managed secret provider; do not ship raw signing-key env values.
-  Use `scripts/list_byoc_agents.py` and
-  `scripts/get_byoc_deployment_overview.py` for targeted backend automation
+  Use `scripts/list_byoc_agents.py`,
+  `scripts/get_byoc_deployment_overview.py`, and
+  `scripts/get_byoc_control_panel_state.py` for targeted backend automation
   checks, and `scripts/smoke_byoc_control_plane_reads.py` for the combined
   read-only control-plane smoke, including the control-panel state aggregate,
   instead of hand-building signed read headers.
