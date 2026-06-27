@@ -358,6 +358,11 @@ Repo-owned artifacts for this first slice:
   signed `GET /byoc/control-plane/agents` reads. It can print a signed request
   for offline inspection or execute the GET when `--list-url` is supplied,
   returning only sanitized fleet metadata.
+- `scripts/get_byoc_deployment_overview.py` is the backend/local automation
+  hook for signed `GET /byoc/control-plane/deployment-overview` reads. It can
+  print a signed request for offline inspection or execute the GET when
+  `--overview-url` is supplied, returning only sanitized deployment status,
+  next-action, health-count, and evidence-count metadata.
 - `services/platform/runtime/byoc_deployment_overview.py` defines the signed
   BYOC deployment overview read model used by
   `GET /byoc/control-plane/deployment-overview`. It aggregates only existing
@@ -1587,6 +1592,9 @@ Minimum gates before first enterprise customer:
   read headers and deployment/customer bounds. Configure
   `FYRALIS_BYOC_EVIDENCE_INTAKE_*` and `FYRALIS_BYOC_EVIDENCE_READ_*` key refs
   through the managed secret provider; do not ship raw signing-key env values.
+  Use `scripts/list_byoc_agents.py` and
+  `scripts/get_byoc_deployment_overview.py` for backend automation smoke tests
+  instead of hand-building signed read headers.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment, desired-state polling, and heartbeat

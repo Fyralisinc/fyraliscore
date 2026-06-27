@@ -274,6 +274,19 @@ scripts/list_byoc_agents.py \
   --list-url https://<control-plane>/byoc/control-plane/agents
 ```
 
+To read the deployment-level summary for backend/control-panel smoke tests,
+use the same read signing material with the overview helper. Omit
+`--overview-url` to print only the signed request:
+
+```bash
+FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY="<local-read-signing-material>" \
+scripts/get_byoc_deployment_overview.py \
+  --deployment-id <dep_...> \
+  --customer-id <cus_...> \
+  --key-ref <control-plane/byoc/evidence-read-key-ref> \
+  --overview-url https://<control-plane>/byoc/control-plane/deployment-overview
+```
+
 For local contract proof or customer handoff before live agent endpoint wiring,
 run the mock-backed probe from inside the customer data-plane context:
 
