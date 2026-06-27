@@ -341,6 +341,10 @@ Repo-owned artifacts for this first slice:
   `fyralis.byoc.agent.desired_state_update.v1` request from scalar CLI
   arguments, can write the signed JSON for audit, and posts only when
   `--submit-url` is supplied.
+- `scripts/list_byoc_agents.py` is the backend/local automation hook for
+  signed `GET /byoc/control-plane/agents` reads. It can print a signed request
+  for offline inspection or execute the GET when `--list-url` is supplied,
+  returning only sanitized fleet metadata.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.

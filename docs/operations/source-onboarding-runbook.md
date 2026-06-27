@@ -253,6 +253,18 @@ revision/config epoch intent, evidence-required flag, and aggregate heartbeat
 status/counts. They do not include install-token refs, signatures, request
 bodies, endpoint URLs, logs, payloads, prompts, embeddings, or PII.
 
+To print a signed GET request without network access, omit `--list-url`; to
+run the read against the hosted backend, provide the full route URL:
+
+```bash
+FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY="<local-read-signing-material>" \
+scripts/list_byoc_agents.py \
+  --deployment-id <dep_...> \
+  --limit 50 \
+  --key-ref <control-plane/byoc/evidence-read-key-ref> \
+  --list-url https://<control-plane>/byoc/control-plane/agents
+```
+
 For local contract proof or customer handoff before live agent endpoint wiring,
 run the mock-backed probe from inside the customer data-plane context:
 
