@@ -393,59 +393,13 @@ def build_byoc_control_plane_router(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"errors": [error["msg"] for error in exc.errors()]},
             ) from exc
-        registry = agent_registry_store or _agent_registry_store_from_state(request)
-        evidence_store = store or _store_from_state(request)
-        preflight_store = preflight_report_store or _preflight_report_store_from_state(
-            request
-        )
-        runner_store = runner_evidence_store or _runner_evidence_store_from_state(
-            request
-        )
-        agents = await registry.list_agents(
-            ByocAgentFleetQuery(
-                deployment_id=query.deployment_id,
-                customer_id=query.customer_id,
-                limit=100,
-            )
-        )
-        evidence_packages = await evidence_store.list_receipts(
-            ByocEvidencePackageReceiptQuery(
-                deployment_id=query.deployment_id,
-                customer_id=query.customer_id,
-                limit=query.recent_limit,
-            )
-        )
-        preflight_reports = await preflight_store.list_receipts(
-            ByocPreflightReportReceiptQuery(
-                deployment_id=query.deployment_id,
-                customer_id=query.customer_id,
-                limit=query.recent_limit,
-            )
-        )
-        runner_evidence = await runner_store.list_receipts(
-            ByocRunnerEvidenceReceiptQuery(
-                deployment_id=query.deployment_id,
-                customer_id=query.customer_id,
-                limit=query.recent_limit,
-            )
-        )
-        overview = build_byoc_deployment_overview(
-            query=ByocDeploymentOverviewQuery(
-                deployment_id=query.deployment_id,
-                customer_id=query.customer_id,
-            ),
-            agents=agents,
-            evidence_packages=evidence_packages,
-            preflight_reports=preflight_reports,
-            runner_evidence=runner_evidence,
-        )
-        return build_byoc_control_panel_state(
+        return await read_byoc_control_panel_state_from_request(
+            request,
             query=query,
-            overview=overview,
-            agents=agents,
-            evidence_packages=evidence_packages,
-            preflight_reports=preflight_reports,
-            runner_evidence=runner_evidence,
+            agent_registry_store=agent_registry_store,
+            evidence_package_store=store,
+            preflight_report_store=preflight_report_store,
+            runner_evidence_store=runner_evidence_store,
         )
 
     @router.get("/evidence-packages")
@@ -492,6 +446,73 @@ def build_byoc_control_plane_router(
         return record
 
     return router
+
+
+async def read_byoc_control_panel_state_from_request(
+    request: Request,
+    *,
+    query: ByocControlPanelStateQuery,
+    agent_registry_store: ByocAgentRegistryStore | None = None,
+    evidence_package_store: ByocEvidencePackageIntakeStore | None = None,
+    preflight_report_store: ByocPreflightReportIntakeStore | None = None,
+    runner_evidence_store: ByocRunnerEvidenceIntakeStore | None = None,
+) -> ByocControlPanelState:
+    """Build sanitized control-panel state from gateway stores."""
+
+    registry = agent_registry_store or _agent_registry_store_from_state(request)
+    evidence_store = evidence_package_store or _store_from_state(request)
+    preflight_store = preflight_report_store or _preflight_report_store_from_state(
+        request
+    )
+    runner_store = runner_evidence_store or _runner_evidence_store_from_state(
+        request
+    )
+    agents = await registry.list_agents(
+        ByocAgentFleetQuery(
+            deployment_id=query.deployment_id,
+            customer_id=query.customer_id,
+            limit=100,
+        )
+    )
+    evidence_packages = await evidence_store.list_receipts(
+        ByocEvidencePackageReceiptQuery(
+            deployment_id=query.deployment_id,
+            customer_id=query.customer_id,
+            limit=query.recent_limit,
+        )
+    )
+    preflight_reports = await preflight_store.list_receipts(
+        ByocPreflightReportReceiptQuery(
+            deployment_id=query.deployment_id,
+            customer_id=query.customer_id,
+            limit=query.recent_limit,
+        )
+    )
+    runner_evidence = await runner_store.list_receipts(
+        ByocRunnerEvidenceReceiptQuery(
+            deployment_id=query.deployment_id,
+            customer_id=query.customer_id,
+            limit=query.recent_limit,
+        )
+    )
+    overview = build_byoc_deployment_overview(
+        query=ByocDeploymentOverviewQuery(
+            deployment_id=query.deployment_id,
+            customer_id=query.customer_id,
+        ),
+        agents=agents,
+        evidence_packages=evidence_packages,
+        preflight_reports=preflight_reports,
+        runner_evidence=runner_evidence,
+    )
+    return build_byoc_control_panel_state(
+        query=query,
+        overview=overview,
+        agents=agents,
+        evidence_packages=evidence_packages,
+        preflight_reports=preflight_reports,
+        runner_evidence=runner_evidence,
+    )
 
 
 async def _require_receipt_read_auth(

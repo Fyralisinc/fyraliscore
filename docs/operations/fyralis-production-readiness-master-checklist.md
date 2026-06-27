@@ -191,8 +191,8 @@ Every checklist item is done only when:
   sanitized receipt lists, section statuses, and bounded action codes into one
   future-control-panel contract, plus a targeted signed-read helper and
   schema/example exporter, with a tenant-to-BYOC-deployment access contract for
-  future browser proxies, without raw reports, signed headers, endpoint URLs,
-  secret refs, logs, prompts, embeddings, or PII.
+  the bearer-authenticated browser/backend proxy, without raw reports, signed
+  headers, endpoint URLs, secret refs, logs, prompts, embeddings, or PII.
 - [x] BYOC control-plane read-smoke output has a shareable summary command that
   covers the signed control-panel state aggregate and strips signed headers,
   endpoint paths, query strings, endpoint URLs, request/response bodies, auth

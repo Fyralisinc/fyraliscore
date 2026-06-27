@@ -332,6 +332,11 @@ scripts/get_byoc_control_panel_state.py \
   --control-panel-state-url https://<control-plane>/byoc/control-plane/control-panel-state
 ```
 
+Browser or backend UI clients should use `GET /byoc/control-panel/state`
+instead. That route uses ordinary gateway bearer auth plus the
+`ByocControlPanelAccessGrant` metadata contract; it returns the same sanitized
+state shape without exposing BYOC read HMAC material to the client.
+
 For UI or backend consumers that need the contract without live read access,
 export the schema bundle, access-grant schema, or deterministic sanitized
 example:

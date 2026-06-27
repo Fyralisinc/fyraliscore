@@ -406,6 +406,11 @@ Repo-owned artifacts for this first slice:
   browser-facing server-side proxy can call live BYOC control-panel reads on
   behalf of a user. It maps gateway tenants to BYOC customer deployments without
   read keys, endpoint URLs, credentials, raw payloads, logs, prompts, or PII.
+- `services/app/gateway/byoc_control_panel_router.py` mounts
+  `GET /byoc/control-panel/state`, a bearer-authenticated proxy for browser or
+  backend UI clients. It evaluates the control-panel access grant before
+  reading the same sanitized state from gateway stores, so browser clients never
+  receive or sign with BYOC read HMAC material.
 - `scripts/smoke_byoc_control_plane_reads.py` signs the read-only BYOC
   backend/control-panel surfaces together: agent fleet, deployment overview,
   control-panel state, evidence-package receipts, preflight receipts, and
@@ -439,6 +444,12 @@ Repo-owned artifacts for this first slice:
   a browser-facing control panel needs a separate server-side proxy with
   tenant/customer authorization before it can call this live read on behalf of
   a user.
+- `services/app/gateway/byoc_control_panel_router.py` provides that first
+  server-side proxy contract at `GET /byoc/control-panel/state`. It remains
+  behind ordinary gateway bearer auth, evaluates
+  `ByocControlPanelAccessGrant` metadata, and then returns the same
+  sanitized `fyralis.byoc.control_panel_state.v1` response without exposing
+  read signing keys to browser code.
 - `services/platform/runtime/byoc_live_test_readiness.py` and
   `scripts/check_byoc_live_test_readiness.py` provide the final offline gate
   before a real AWS credential window. The report validates BYOC manifests,
