@@ -26,6 +26,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_source_onboarding_gate,
     _byoc_post_deploy_validation_gate,
     _byoc_live_credential_rehearsal_gate,
+    _byoc_live_test_readiness_gate,
     _github_required_checks_gate,
     _production_env_contract_gate,
     _schema_drift_gate,
@@ -324,6 +325,24 @@ def test_byoc_live_credential_rehearsal_gate_passes_in_ci_smoke_mode() -> None:
     assert "--skip-live-aws" in result.command
     assert "--output-dir" in result.command
     assert result.artifacts["mode"] == "ci_skip_live_aws"
+    assert "123456789012" not in result.stdout_tail
+    assert "arn:aws" not in result.stdout_tail
+
+
+def test_byoc_live_test_readiness_gate_passes_without_credentials() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_live_test_readiness_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/check_byoc_live_test_readiness.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+    }
     assert "123456789012" not in result.stdout_tail
     assert "arn:aws" not in result.stdout_tail
 

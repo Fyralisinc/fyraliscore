@@ -933,6 +933,28 @@ def _byoc_live_credential_rehearsal_gate(args: argparse.Namespace) -> GateResult
     )
 
 
+def _byoc_live_test_readiness_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_live_test_readiness",
+        _python_command(
+            "scripts/check_byoc_live_test_readiness.py",
+            "--json",
+        ),
+        details=(
+            "BYOC live AWS test readiness validates contracts, operator "
+            "scripts, and sanitized local AWS-access prerequisites without "
+            "making AWS API calls."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        },
+    )
+
+
 def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
     return _pytest_gate(
         "byoc_control_plane_intake",
@@ -1031,6 +1053,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_evidence_package_gate(args),
         _byoc_source_onboarding_gate(args),
         _byoc_customer_handoff_gate(args),
+        _byoc_live_test_readiness_gate(args),
         _byoc_live_credential_rehearsal_gate(args),
         _byoc_control_plane_intake_gate(args),
         _byoc_post_deploy_validation_gate(args),

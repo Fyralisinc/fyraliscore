@@ -323,6 +323,19 @@ scripts/submit_byoc_runner_evidence.py \
   --submit-url https://<control-plane>/byoc/control-plane/runner-evidence
 ```
 
+Before a real AWS credential window, run the offline readiness check. Without
+`--require-aws-access`, it validates manifests, IAM skeletons, operator
+scripts, and local AWS-access prerequisites without making AWS calls; missing
+AWS access is reported as the next manual action. Add `--require-aws-access`
+when a profile or temporary env credentials should already be configured:
+
+```bash
+scripts/check_byoc_live_test_readiness.py --json \
+  --aws-profile <profile-name> \
+  --aws-region <region> \
+  --require-aws-access
+```
+
 ## Source Coverage
 
 | Source | Production source doc | Credential style | Production launch note |

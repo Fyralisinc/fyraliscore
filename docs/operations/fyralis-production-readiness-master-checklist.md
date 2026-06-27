@@ -155,6 +155,10 @@ Every checklist item is done only when:
   that runs sanitized AWS preflight, writes sanitized ledger/package evidence,
   gates the generated package, supports a real-AWS-call requirement for
   customer readiness, and runs in CI smoke mode without AWS credentials.
+- [x] BYOC live AWS test readiness has an offline preflight report that
+  validates manifest/IAM/operator-script readiness and local AWS access
+  prerequisites without making AWS calls or serializing profile names, account
+  IDs, ARNs, credentials, command output, URLs, or customer data.
 - [x] BYOC control-plane evidence intake has a signed submission contract,
   gateway route, self-auth route classification, DB-backed sanitized scalar
   receipt storage, signed receipt lookup/list automation reads, bounded query

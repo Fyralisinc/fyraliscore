@@ -345,6 +345,14 @@ Repo-owned artifacts for this first slice:
   signed `GET /byoc/control-plane/agents` reads. It can print a signed request
   for offline inspection or execute the GET when `--list-url` is supplied,
   returning only sanitized fleet metadata.
+- `services/platform/runtime/byoc_live_test_readiness.py` and
+  `scripts/check_byoc_live_test_readiness.py` provide the final offline gate
+  before a real AWS credential window. The report validates BYOC manifests,
+  IAM skeleton alignment, operator-script availability, and local AWS
+  CLI/profile/env prerequisites without making AWS API calls or serializing
+  profile names, account IDs, ARNs, credentials, command output, URLs, or
+  customer data. With `--require-aws-access`, missing local AWS access becomes
+  a hard failure for the live-test handoff.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
