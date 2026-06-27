@@ -1076,17 +1076,46 @@ def _byoc_customer_pilot_package_gate(args: argparse.Namespace) -> GateResult:
         "byoc_customer_pilot_package",
         [
             "services/platform/runtime/tests/test_byoc_customer_pilot_package.py",
+            "services/platform/runtime/tests/test_byoc_customer_pilot_rehearsal.py",
             "scripts/tests/test_build_byoc_customer_pilot_package.py",
             "scripts/tests/test_check_byoc_customer_pilot_package.py",
+            "scripts/tests/test_rehearse_byoc_customer_pilot_package.py",
         ],
         details=(
             "BYOC customer-pilot package builder and checker generate and "
             "verify the local sanitized handoff, read-smoke summary, handoff "
-            "index, launch summary, and package manifest without cloud "
-            "credentials or raw data."
+            "index, launch summary, package manifest, and clean package "
+            "rehearsal without cloud credentials or raw data."
         ),
         args=args,
         timeout_s=min(args.command_timeout_s, 60),
+    )
+
+
+def _byoc_customer_pilot_rehearsal_gate(args: argparse.Namespace) -> GateResult:
+    output_dir = REPO_ROOT / "tmp/byoc" / f"{args.run_id}-customer-pilot-rehearsal"
+    return _run_command_gate(
+        "byoc_customer_pilot_rehearsal",
+        _python_command(
+            "scripts/rehearse_byoc_customer_pilot_package.py",
+            "--json",
+            "--output-dir",
+            str(output_dir),
+            "--repo-root",
+            str(REPO_ROOT),
+        ),
+        details=(
+            "BYOC customer-pilot package rehearsal cleans a repo-local tmp "
+            "directory, runs the product-health install rehearsal, builds the "
+            "sanitized package, and validates manifest digests without cloud "
+            "credentials or raw customer data."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "output_dir": _relative(output_dir),
+            "rehearsal_script": "scripts/rehearse_byoc_customer_pilot_package.py",
+        },
     )
 
 
@@ -1202,6 +1231,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_live_test_readiness_gate(args),
         _byoc_launch_readiness_summary_gate(args),
         _byoc_customer_pilot_package_gate(args),
+        _byoc_customer_pilot_rehearsal_gate(args),
         _byoc_live_credential_rehearsal_gate(args),
         _byoc_control_plane_intake_gate(args),
         _byoc_post_deploy_validation_gate(args),

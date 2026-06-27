@@ -215,6 +215,11 @@ Every checklist item is done only when:
   reloads the manifest, re-hashes referenced artifacts, validates top-level
   schemas, detects missing or unsafe artifact paths, and emits only bounded
   status/failure metadata.
+- [x] BYOC customer-pilot package rehearsal has a clean backend/core wrapper
+  that removes only a repo-local `tmp/` output directory, runs the
+  product-health install rehearsal, builds the sanitized package, validates
+  manifest digests, and emits one metadata-only summary without cloud
+  credentials, artifact bodies, command output, endpoint URLs, or customer data.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

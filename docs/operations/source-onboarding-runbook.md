@@ -508,6 +508,16 @@ the check can pass for an integrity-valid package whose launch summary is still
 `manual_required` because real AWS credentials or hosted control-plane read
 smoke are pending.
 
+For a repeatable no-credentials release-review rehearsal, use the combined
+clean wrapper. It removes only the repo-local `tmp/` output directory, runs the
+product-health install rehearsal, builds the package, validates digests, and
+prints one sanitized summary:
+
+```bash
+scripts/rehearse_byoc_customer_pilot_package.py --json \
+  --output-dir tmp/byoc/customer-pilot-rehearsal
+```
+
 For local contract proof or customer handoff before live agent endpoint wiring,
 run the mock-backed probe from inside the customer data-plane context:
 

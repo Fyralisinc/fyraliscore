@@ -19,6 +19,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_control_plane_intake_gate,
     _byoc_customer_handoff_gate,
     _byoc_customer_pilot_package_gate,
+    _byoc_customer_pilot_rehearsal_gate,
     _byoc_dataplane_contract_gate,
     _byoc_evidence_package_gate,
     _byoc_evidence_ledger_gate,
@@ -455,10 +456,39 @@ def test_byoc_customer_pilot_package_gate_passes_for_contract_suite() -> None:
     assert "services/platform/runtime/tests/test_byoc_customer_pilot_package.py" in (
         result.command
     )
+    assert "services/platform/runtime/tests/test_byoc_customer_pilot_rehearsal.py" in (
+        result.command
+    )
     assert "scripts/tests/test_build_byoc_customer_pilot_package.py" in result.command
     assert "scripts/tests/test_check_byoc_customer_pilot_package.py" in result.command
+    assert "scripts/tests/test_rehearse_byoc_customer_pilot_package.py" in (
+        result.command
+    )
     assert "123456789012" not in result.stdout_tail
     assert "arn:aws" not in result.stdout_tail
+
+
+def test_byoc_customer_pilot_rehearsal_gate_passes_without_credentials() -> None:
+    args = argparse.Namespace(
+        command_timeout_s=30,
+        run_id="operational-readiness-test",
+    )
+
+    result = _byoc_customer_pilot_rehearsal_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/rehearse_byoc_customer_pilot_package.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {
+        "output_dir": (
+            "tmp/byoc/operational-readiness-test-customer-pilot-rehearsal"
+        ),
+        "rehearsal_script": "scripts/rehearse_byoc_customer_pilot_package.py",
+    }
+    assert "123456789012" not in result.stdout_tail
+    assert "arn:aws" not in result.stdout_tail
+    assert "token=" not in result.stdout_tail
 
 
 def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:

@@ -557,6 +557,12 @@ Repo-owned artifacts for this first slice:
   present, and emits only bounded validation status/failure codes. The default
   integrity check can pass while the package is `manual_required`; use
   `--require-ready` only for the final customer-pilot go/no-go.
+- `services/platform/runtime/byoc_customer_pilot_rehearsal.py` and
+  `scripts/rehearse_byoc_customer_pilot_package.py` compose the full
+  no-credentials customer-pilot rehearsal. The command cleans a repo-local
+  `tmp/` output directory, runs the product-health install rehearsal, builds
+  the customer-pilot package, validates artifact digests, and emits one
+  sanitized summary with only status/count/path metadata.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
