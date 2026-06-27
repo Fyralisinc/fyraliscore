@@ -572,6 +572,33 @@ scripts/submit_byoc_runner_evidence.py \
   --submit-url https://<control-plane>/byoc/control-plane/runner-evidence
 ```
 
+After the data plane is running, publish product-health snapshots from inside
+the customer boundary. The collector reads only aggregate Fyralis database
+counters, statuses, and timestamps; it does not select raw observations, model
+contents, prompts, logs, vectors, error summaries, credentials, URLs, or PII.
+Use `--tenant-id` for shared databases and omit it only for single-tenant
+customer deployments:
+
+```bash
+DATABASE_URL="<customer-local-fyralis-postgres-dsn>" \
+FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY="<local-signing-material>" \
+scripts/run_byoc_product_health_collector.py \
+  --deployment-id <dep_...> \
+  --customer-id <cus_...> \
+  --agent-id <agt_...> \
+  --agent-version <agent-version> \
+  --artifact-revision <deployed-artifact-revision> \
+  --tenant-id <fyralis-tenant-uuid> \
+  --key-ref <control-plane/byoc/evidence-intake-key-ref> \
+  --submit-url https://<control-plane>/byoc/control-plane/product-health-snapshots
+```
+
+For offline inspection, add `--unsigned` and omit `--key-ref` and
+`FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY`; do not submit unsigned output to
+the hosted control plane. The signed/posted payload remains metadata-only and
+is what the control-panel product-health cards read through the grant-gated
+browser proxy.
+
 Before a real AWS credential window, run the offline readiness check. Without
 `--require-aws-access`, it validates manifests, IAM skeletons, operator
 scripts, and local AWS-access prerequisites without making AWS calls; missing

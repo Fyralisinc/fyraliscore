@@ -141,7 +141,7 @@ graph TD
 | BYOC control-panel state | `services/platform/runtime/byoc_control_panel_state.py` | Metadata-only backend contract for a future control panel; composes deployment overview, sanitized agent fleet, recent sanitized receipt lists, section statuses, and bounded action codes without raw reports, signatures, endpoint URLs, secret refs, logs, prompts, or PII. |
 | BYOC control-panel contract export | `services/platform/runtime/byoc_control_panel_contract.py` | Exportable schema bundle and deterministic sanitized example state for UI/control-plane consumers; mirrors the signed state contract without customer data, signed headers, URLs, credentials, logs, prompts, or PII. |
 | BYOC control-panel access | `services/platform/runtime/byoc_control_panel_access.py` | Tenant-scoped metadata-only grant/decision/store contract for the bearer-authenticated browser proxy; persists hosted tenant/customer/deployment role grants in `byoc_control_panel_access_grants` without read keys, endpoint URLs, credentials, logs, prompts, or PII. |
-| BYOC product health | `services/platform/runtime/byoc_product_health.py` | Metadata-only product-state contract and snapshot store for customer-side Fyralis health: per-source ingestion counts/status, pipeline backlog, Think counters, model graph counters, vector-index counters, and bounded issue codes without raw records, prompts, logs, vector values, model contents, credentials, URLs, signatures, or PII. |
+| BYOC product health | `services/platform/runtime/byoc_product_health.py`, `services/platform/runtime/byoc_product_health_collector.py`, `scripts/run_byoc_product_health_collector.py` | Metadata-only product-state contract, customer-side aggregate collector, and snapshot store for customer-side Fyralis health: per-source ingestion counts/status, pipeline backlog, Think counters, model graph counters, vector-index counters, and bounded issue codes without raw records, prompts, logs, vector values, model contents, credentials, URLs, signatures, or PII. |
 | BYOC agent probe | `services/platform/runtime/byoc_agent_probe.py` | Local executable data-plane agent proof; signs enrollment, submits one bounded heartbeat through the mock/live control-plane contract, and emits sanitized status metadata only. |
 | BYOC agent token rotation plan | `services/platform/runtime/byoc_agent_token_rotation.py` | Plan-only install-token rotation rehearsal; validates current/next secret-ref hygiene and overlap while emitting only salted ref digests and no token material, secret refs, command output, or cloud mutations. |
 | BYOC AWS live preflight | `services/platform/runtime/byoc_aws_live_preflight.py` | Customer-side read-only AWS preflight; verifies STS identity, optional describe/list probes, and optional IAM simulation while emitting only sanitized status/count metadata. |
@@ -213,7 +213,9 @@ graph TD
 - `POST /byoc/control-plane/product-health-snapshots` — signed BYOC data-plane
   product-health snapshot intake; stores only aggregate source ingestion counts,
   pipeline backlog, Think counters, model graph counters, vector-index counters,
-  bounded issue codes, and privacy flags pinned false.
+  bounded issue codes, and privacy flags pinned false. Customer data planes can
+  produce and sign this payload with
+  `scripts/run_byoc_product_health_collector.py`.
 - `GET /byoc/control-plane/product-health` — signed backend automation read for
   the latest metadata-only product-health snapshot for one deployment.
 - `GET /byoc/control-panel/deployments` — bearer-authenticated browser/backend

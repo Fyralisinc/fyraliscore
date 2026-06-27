@@ -309,6 +309,9 @@ BYOC_CONTROL_PANEL_ACCESS_GRANT_MIGRATION_PATH = Path(
     "db/migrations/0185_byoc_control_panel_access_grants.sql"
 )
 BYOC_PRODUCT_HEALTH_PATH = Path("services/platform/runtime/byoc_product_health.py")
+BYOC_PRODUCT_HEALTH_COLLECTOR_PATH = Path(
+    "services/platform/runtime/byoc_product_health_collector.py"
+)
 BYOC_PRODUCT_HEALTH_MIGRATION_PATH = Path(
     "db/migrations/0186_byoc_product_health_snapshots.sql"
 )
@@ -555,6 +558,19 @@ BYOC_PRODUCT_HEALTH_FORBIDDEN_FIELD_FRAGMENTS = (
     "log_text",
     "prompt",
     "pii",
+)
+BYOC_PRODUCT_HEALTH_COLLECTOR_FORBIDDEN_SQL_PATTERNS = (
+    (r"\bselect\s+\*", "collector SQL must not select arbitrary columns"),
+    (r"\bcontent\b", "collector SQL must not select observation payload content"),
+    (r"\bcontent_text\b", "collector SQL must not select observation text"),
+    (r"\berror_summary\b", "collector SQL must not select raw error summaries"),
+    (r"\berror_context\b", "collector SQL must not select raw error context"),
+    (r"\braw_s3_key\b", "collector SQL must not select raw object pointers"),
+    (r"\bproposition\b", "collector SQL must not select model contents"),
+    (r'"natural"', "collector SQL must not select model prose"),
+    (r"\btoken\b", "collector SQL must not select token material"),
+    (r"\bcredential\b", "collector SQL must not select credentials"),
+    (r"\bsecret_ref\b", "collector SQL must not select secret references"),
 )
 BYOC_CUSTOMER_PILOT_PACKAGE_FALSE_PRIVACY_FLAGS = (
     "artifact_bodies_included",
@@ -1897,6 +1913,67 @@ def find_byoc_product_health_storage_violations(
     return violations
 
 
+def find_byoc_product_health_collector_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    collector_path: Path = BYOC_PRODUCT_HEALTH_COLLECTOR_PATH,
+) -> list[Violation]:
+    """Return product-health collector drift that could select raw data."""
+
+    path = repo_root / collector_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-product-health-collector-privacy",
+                path=collector_path,
+                line_number=1,
+                message="BYOC product-health collector module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    violations: list[Violation] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = _full_name(node.func)
+        if call_name is None or call_name.rsplit(".", 1)[-1] not in {
+            "fetch",
+            "fetchrow",
+        }:
+            continue
+        if not node.args:
+            continue
+        sql_text = _static_string_text(node.args[0])
+        if sql_text is None:
+            violations.append(
+                Violation(
+                    check="byoc-product-health-collector-privacy",
+                    path=collector_path,
+                    line_number=node.lineno,
+                    message=(
+                        "BYOC product-health collector DB calls must use "
+                        "literal SQL so privacy ratchets can inspect them"
+                    ),
+                )
+            )
+            continue
+        lowered = sql_text.lower()
+        for pattern, message in BYOC_PRODUCT_HEALTH_COLLECTOR_FORBIDDEN_SQL_PATTERNS:
+            if re.search(pattern, lowered, re.IGNORECASE):
+                violations.append(
+                    Violation(
+                        check="byoc-product-health-collector-privacy",
+                        path=collector_path,
+                        line_number=node.lineno,
+                        message=message,
+                    )
+                )
+                break
+
+    return violations
+
+
 def find_byoc_control_panel_access_privacy_violations(
     *,
     repo_root: Path = REPO_ROOT,
@@ -2631,6 +2708,18 @@ def _class_field_assignments(
     return fields
 
 
+def _static_string_text(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        fragments: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                fragments.append(value.value)
+        return "".join(fragments)
+    return None
+
+
 def find_migration_filename_violations(
     *,
     repo_root: Path = REPO_ROOT,
@@ -3183,6 +3272,9 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     )
     violations.extend(find_byoc_product_health_privacy_violations(repo_root=repo_root))
     violations.extend(find_byoc_product_health_storage_violations(repo_root=repo_root))
+    violations.extend(
+        find_byoc_product_health_collector_privacy_violations(repo_root=repo_root)
+    )
     violations.extend(
         find_byoc_control_panel_access_privacy_violations(repo_root=repo_root)
     )

@@ -445,6 +445,15 @@ Repo-owned artifacts for this first slice:
   `byoc_product_health_snapshots`, `byoc_product_health_sources`, and
   `byoc_product_health_issues`; raw records, prompts, logs, vector values,
   model contents, credentials, URLs, signatures, and PII remain out of contract.
+- `services/platform/runtime/byoc_product_health_collector.py` and
+  `scripts/run_byoc_product_health_collector.py` are the customer-side
+  automation hook for that channel. The collector queries the local Fyralis
+  database for aggregate counts/timestamps only, tolerates optional tables that
+  are absent in older/dev deployments, collapses URL/credential-looking source
+  labels to `unknown`, signs the snapshot with the BYOC evidence intake key, and
+  can POST it egress-only to the product-health snapshot intake. Use
+  `--tenant-id` for shared databases; omit it only for single-tenant customer
+  data planes.
 - `GET /byoc/control-plane/product-health` is the signed backend automation
   read for the latest sanitized product-health snapshot for one deployment.
   `GET /byoc/control-panel/state` embeds the same product-health object so UI
