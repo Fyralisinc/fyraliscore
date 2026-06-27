@@ -427,6 +427,13 @@ Repo-owned artifacts for this first slice:
   tenant. The state route evaluates the persisted control-panel access grant
   before reading the same sanitized state from gateway stores, so browser
   clients never receive or sign with BYOC read HMAC material.
+- `ui/` is the core repo's BYOC control-panel UI integration. It is a
+  Vite/React operations dashboard for deployment discovery, overview status,
+  section health, open action codes, agent fleet metadata, and recent sanitized
+  receipts. It calls only the bearer-authenticated control-panel proxy routes,
+  keeps local test bearer tokens in memory only, and treats the separate
+  `feat/byoc-control-plane-mvp` stack as prototype/reference rather than merge
+  source.
 - `scripts/smoke_byoc_control_plane_reads.py` signs the read-only BYOC
   backend/control-panel surfaces together: agent fleet, deployment overview,
   control-panel state, evidence-package receipts, preflight receipts, and
