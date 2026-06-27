@@ -429,6 +429,13 @@ Repo-owned artifacts for this first slice:
   require AWS credentials; when hosted read smoke is not supplied, the package
   is explicitly `manual_required`. The manifest records only relative paths,
   digests, schema names, statuses, next-action codes, and privacy flags.
+- `scripts/check_byoc_customer_pilot_package.py` validates that customer-pilot
+  package before release review. It reloads the digest-only manifest, verifies
+  every referenced artifact stays under the repo root, recomputes SHA-256
+  digests, checks top-level schema versions, confirms required artifacts are
+  present, and emits only bounded validation status/failure codes. The default
+  integrity check can pass while the package is `manual_required`; use
+  `--require-ready` only for the final customer-pilot go/no-go.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -1657,7 +1664,9 @@ Minimum gates before first enterprise customer:
   only artifact paths, digests, schema names, aggregate statuses, and bounded
   action codes. It is not a substitute for real AWS credential rehearsal or
   hosted control-plane smoke; those remain manual-required until their reports
-  are supplied and `--require-ready` passes.
+  are supplied and `--require-ready` passes. Before sharing the package, run
+  `scripts/check_byoc_customer_pilot_package.py` against the manifest so digest
+  drift, missing artifacts, schema drift, or unsafe path drift are caught.
 - Submit evidence packages to the control-plane intake API only as signed
   `fyralis.byoc.evidence_package_submission.v1` payloads; control-plane storage
   may retain only the generated sanitized receipt metadata in

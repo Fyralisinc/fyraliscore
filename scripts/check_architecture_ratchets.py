@@ -1660,55 +1660,63 @@ def find_byoc_customer_pilot_package_privacy_violations(
     }
     violations: list[Violation] = []
 
-    report_class = classes.get("ByocCustomerPilotPackageManifest")
-    report_fields = _class_field_assignments(report_class)
-    for field_name, assignment in sorted(report_fields.items()):
-        lowered = field_name.lower()
-        if any(
-            fragment in lowered
-            for fragment in BYOC_CUSTOMER_PILOT_PACKAGE_FORBIDDEN_REPORT_FIELD_FRAGMENTS
+    report_scopes = {
+        "ByocCustomerPilotPackageManifest": (
+            "sanitized_customer_pilot_package_manifest_only"
+        ),
+        "ByocCustomerPilotPackageValidationResult": (
+            "sanitized_customer_pilot_package_validation_metadata_only"
+        ),
+    }
+    for class_name, expected_scope in report_scopes.items():
+        report_class = classes.get(class_name)
+        report_fields = _class_field_assignments(report_class)
+        for field_name, assignment in sorted(report_fields.items()):
+            lowered = field_name.lower()
+            if any(
+                fragment in lowered
+                for fragment in (
+                    BYOC_CUSTOMER_PILOT_PACKAGE_FORBIDDEN_REPORT_FIELD_FRAGMENTS
+                )
+            ):
+                violations.append(
+                    Violation(
+                        check="byoc-customer-pilot-package-privacy",
+                        path=contract_path,
+                        line_number=assignment.lineno,
+                        message=(
+                            "BYOC customer-pilot package models must not "
+                            f"serialize sensitive field {field_name!r}"
+                        ),
+                    )
+                )
+
+        stored_scope = report_fields.get("stored_scope")
+        if stored_scope is None:
+            violations.append(
+                Violation(
+                    check="byoc-customer-pilot-package-privacy",
+                    path=contract_path,
+                    line_number=report_class.lineno if report_class else 1,
+                    message=(
+                        f"{class_name} must pin stored_scope to {expected_scope}"
+                    ),
+                )
+            )
+        elif (
+            not isinstance(stored_scope.value, ast.Constant)
+            or stored_scope.value.value != expected_scope
         ):
             violations.append(
                 Violation(
                     check="byoc-customer-pilot-package-privacy",
                     path=contract_path,
-                    line_number=assignment.lineno,
+                    line_number=stored_scope.lineno,
                     message=(
-                        "BYOC customer-pilot package manifests must not "
-                        f"serialize sensitive field {field_name!r}"
+                        f"{class_name} must pin stored_scope to {expected_scope}"
                     ),
                 )
             )
-
-    stored_scope = report_fields.get("stored_scope")
-    if stored_scope is None:
-        violations.append(
-            Violation(
-                check="byoc-customer-pilot-package-privacy",
-                path=contract_path,
-                line_number=report_class.lineno if report_class else 1,
-                message=(
-                    "BYOC customer-pilot package manifest must pin stored_scope "
-                    "to sanitized_customer_pilot_package_manifest_only"
-                ),
-            )
-        )
-    elif (
-        not isinstance(stored_scope.value, ast.Constant)
-        or stored_scope.value.value
-        != "sanitized_customer_pilot_package_manifest_only"
-    ):
-        violations.append(
-            Violation(
-                check="byoc-customer-pilot-package-privacy",
-                path=contract_path,
-                line_number=stored_scope.lineno,
-                message=(
-                    "BYOC customer-pilot package manifest must pin stored_scope "
-                    "to sanitized_customer_pilot_package_manifest_only"
-                ),
-            )
-        )
 
     privacy_class = classes.get("ByocCustomerPilotPackagePrivacyContract")
     privacy_fields = _class_field_assignments(privacy_class)

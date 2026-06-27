@@ -1002,11 +1002,13 @@ def _byoc_customer_pilot_package_gate(args: argparse.Namespace) -> GateResult:
         [
             "services/platform/runtime/tests/test_byoc_customer_pilot_package.py",
             "scripts/tests/test_build_byoc_customer_pilot_package.py",
+            "scripts/tests/test_check_byoc_customer_pilot_package.py",
         ],
         details=(
-            "BYOC customer-pilot package builder generates the local sanitized "
-            "handoff, read-smoke summary, handoff index, launch summary, and "
-            "package manifest without cloud credentials or raw data."
+            "BYOC customer-pilot package builder and checker generate and "
+            "verify the local sanitized handoff, read-smoke summary, handoff "
+            "index, launch summary, and package manifest without cloud "
+            "credentials or raw data."
         ),
         args=args,
         timeout_s=min(args.command_timeout_s, 60),

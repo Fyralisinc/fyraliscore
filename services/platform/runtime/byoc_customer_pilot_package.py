@@ -42,7 +42,11 @@ from services.platform.runtime.byoc_live_test_readiness import (
 
 
 PilotPackageStatus = Literal["pass", "fail", "manual_required"]
+PilotPackageValidationStatus = Literal["pass", "fail"]
 PilotPackageStoredScope = Literal["sanitized_customer_pilot_package_manifest_only"]
+PilotPackageValidationStoredScope = Literal[
+    "sanitized_customer_pilot_package_validation_metadata_only"
+]
 PilotPackageArtifactKind = Literal[
     "evidence_package",
     "evidence_ledger",
@@ -59,6 +63,17 @@ _EXPECTED_SMOKE_SURFACES = (
     "evidence_packages",
     "preflight_reports",
     "runner_evidence",
+)
+_EXPECTED_ARTIFACT_NAMES = frozenset(
+    {
+        "evidence_package",
+        "evidence_ledger",
+        "live_test_readiness",
+        "customer_handoff_readiness",
+        "control_plane_read_smoke_summary",
+        "handoff_bundle_index",
+        "launch_readiness_summary",
+    }
 )
 _SAFE_CODE_RE = re.compile(r"^[A-Za-z0-9_.:/+=,-]{1,240}$")
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -196,6 +211,68 @@ class ByocCustomerPilotPackageManifest(_StrictModel):
         return normalized
 
 
+class ByocCustomerPilotPackageValidationResult(_StrictModel):
+    schema_version: Literal["fyralis.byoc.customer_pilot_package_validation.v1"]
+    generated_at: datetime
+    status: PilotPackageValidationStatus
+    package_status: PilotPackageStatus
+    customer_pilot_ready: bool
+    manual_actions_required: bool
+    required_checks_passed: bool
+    deployment_id: str | None = None
+    customer_id: str | None = None
+    cloud_provider: str | None = None
+    region: str | None = None
+    artifact_revision: str | None = None
+    manifest_path: str
+    output_dir: str
+    artifact_count: int = Field(ge=0)
+    verified_artifact_count: int = Field(ge=0)
+    failure_codes: tuple[str, ...]
+    privacy: ByocCustomerPilotPackagePrivacyContract
+    stored_scope: PilotPackageValidationStoredScope = (
+        "sanitized_customer_pilot_package_validation_metadata_only"
+    )
+
+    @field_validator(
+        "deployment_id",
+        "customer_id",
+        "cloud_provider",
+        "region",
+        "artifact_revision",
+        "manifest_path",
+        "output_dir",
+    )
+    @classmethod
+    def _metadata_must_be_bounded(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if (
+            not value
+            or not _SAFE_CODE_RE.match(value)
+            or any(fragment in value.lower() for fragment in _FORBIDDEN_FRAGMENTS)
+        ):
+            raise ValueError("customer pilot validation metadata must be bounded")
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("customer pilot validation paths must stay under repo root")
+        return value
+
+    @field_validator("failure_codes")
+    @classmethod
+    def _failure_codes_must_be_bounded(
+        cls,
+        value: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if len(value) > 50:
+            raise ValueError("customer pilot validation failures must be bounded")
+        normalized = tuple(code.strip() for code in value)
+        if any(not code or not _SAFE_CODE_RE.match(code) for code in normalized):
+            raise ValueError("customer pilot validation failures must be bounded")
+        return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class ByocCustomerPilotPackageInputs:
     output_dir: Path = Path("tmp/byoc/customer-pilot")
@@ -210,6 +287,15 @@ class ByocCustomerPilotPackageInputs:
     evidence_ledger_path: Path = Path("deploy/byoc/evidence-ledger.example.yaml")
     env_path: Path | None = Path(".env.production.example")
     control_plane_read_smoke_path: Path | None = None
+    generated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ByocCustomerPilotPackageValidationInputs:
+    manifest_path: Path = Path(
+        "tmp/byoc/customer-pilot/byoc-customer-pilot-package-manifest.json"
+    )
+    repo_root: Path = field(default_factory=Path.cwd)
     generated_at: datetime | None = None
 
 
@@ -381,6 +467,51 @@ def build_byoc_customer_pilot_package(
     return manifest
 
 
+def load_byoc_customer_pilot_package_manifest(
+    path: Path,
+) -> ByocCustomerPilotPackageManifest:
+    parsed = _load_mapping(path)
+    return ByocCustomerPilotPackageManifest.model_validate(parsed)
+
+
+def validate_byoc_customer_pilot_package(
+    inputs: ByocCustomerPilotPackageValidationInputs,
+) -> ByocCustomerPilotPackageValidationResult:
+    manifest = load_byoc_customer_pilot_package_manifest(inputs.manifest_path)
+    failures = _package_validation_failures(
+        manifest=manifest,
+        manifest_path=inputs.manifest_path,
+        repo_root=inputs.repo_root,
+    )
+    verified_count = sum(
+        1
+        for artifact in manifest.artifacts
+        if _artifact_path(artifact, inputs.repo_root).exists()
+        and _file_digest(_artifact_path(artifact, inputs.repo_root)) == artifact.digest
+    )
+    return ByocCustomerPilotPackageValidationResult(
+        schema_version="fyralis.byoc.customer_pilot_package_validation.v1",
+        generated_at=inputs.generated_at or datetime.now(tz=UTC),
+        status="pass" if not failures else "fail",
+        package_status=manifest.status,
+        customer_pilot_ready=manifest.customer_pilot_ready,
+        manual_actions_required=manifest.manual_actions_required,
+        required_checks_passed=manifest.required_checks_passed,
+        deployment_id=manifest.deployment_id,
+        customer_id=manifest.customer_id,
+        cloud_provider=manifest.cloud_provider,
+        region=manifest.region,
+        artifact_revision=manifest.artifact_revision,
+        manifest_path=_relative_path(inputs.manifest_path, inputs.repo_root),
+        output_dir=manifest.output_dir,
+        artifact_count=manifest.artifact_count,
+        verified_artifact_count=verified_count,
+        failure_codes=tuple(failures),
+        privacy=ByocCustomerPilotPackagePrivacyContract(),
+        stored_scope="sanitized_customer_pilot_package_validation_metadata_only",
+    )
+
+
 def render_customer_pilot_package_manifest_json(
     manifest: ByocCustomerPilotPackageManifest,
 ) -> str:
@@ -399,6 +530,76 @@ def render_customer_pilot_package_manifest_yaml(
         sort_keys=False,
         width=1_000_000,
     )
+
+
+def render_customer_pilot_package_validation_json(
+    validation: ByocCustomerPilotPackageValidationResult,
+) -> str:
+    return json.dumps(validation.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+
+
+def render_customer_pilot_package_validation_yaml(
+    validation: ByocCustomerPilotPackageValidationResult,
+) -> str:
+    try:
+        import yaml  # type: ignore[import-untyped]
+    except ImportError as exc:  # pragma: no cover - dev/test installs PyYAML.
+        raise RuntimeError("YAML output requires PyYAML") from exc
+    return yaml.safe_dump(
+        validation.model_dump(mode="json"),
+        sort_keys=False,
+        width=1_000_000,
+    )
+
+
+def _package_validation_failures(
+    *,
+    manifest: ByocCustomerPilotPackageManifest,
+    manifest_path: Path,
+    repo_root: Path,
+) -> list[str]:
+    failures: list[str] = []
+    manifest_relative = _relative_path(manifest_path, repo_root)
+    manifest_dir = _relative_path(manifest_path.parent, repo_root)
+    if manifest.output_dir != manifest_dir:
+        failures.append("manifest_output_dir_mismatch")
+    if manifest_relative != f"{manifest.output_dir}/byoc-customer-pilot-package-manifest.json":
+        failures.append("manifest_path_unexpected")
+    if manifest.artifact_count != len(manifest.artifacts):
+        failures.append("artifact_count_mismatch")
+
+    names = [artifact.name for artifact in manifest.artifacts]
+    if set(names) != _EXPECTED_ARTIFACT_NAMES:
+        failures.append("artifact_set_mismatch")
+    if len(names) != len(set(names)):
+        failures.append("duplicate_artifact_name")
+    paths = [artifact.path for artifact in manifest.artifacts]
+    if len(paths) != len(set(paths)):
+        failures.append("duplicate_artifact_path")
+
+    for artifact in manifest.artifacts:
+        artifact_path = _artifact_path(artifact, repo_root)
+        if not artifact.share_with_customer:
+            failures.append(f"{artifact.name}_not_shareable")
+        if artifact.contents_included is not False:
+            failures.append(f"{artifact.name}_contents_included")
+        if artifact.generated_by_builder and not artifact.path.startswith(
+            f"{manifest.output_dir}/"
+        ):
+            failures.append(f"{artifact.name}_outside_output_dir")
+        if not artifact_path.exists():
+            failures.append(f"{artifact.name}_missing")
+            continue
+        if _file_digest(artifact_path) != artifact.digest:
+            failures.append(f"{artifact.name}_digest_mismatch")
+        schema = _artifact_schema_version(artifact_path)
+        if schema != artifact.schema_version:
+            failures.append(f"{artifact.name}_schema_mismatch")
+
+    privacy = manifest.privacy.model_dump(mode="json")
+    if any(value is not False for value in privacy.values()):
+        failures.append("privacy_flags_not_false")
+    return sorted(set(failures))
 
 
 def _manual_control_plane_read_smoke_summary(
@@ -475,12 +676,46 @@ def _file_digest(path: Path) -> str:
     return f"sha256:{digest}"
 
 
+def _artifact_path(
+    artifact: ByocCustomerPilotPackageArtifact,
+    repo_root: Path,
+) -> Path:
+    return repo_root / artifact.path
+
+
+def _artifact_schema_version(path: Path) -> str | None:
+    parsed = _load_mapping(path)
+    schema = parsed.get("schema_version")
+    return str(schema) if schema is not None else None
+
+
+def _load_mapping(path: Path) -> dict[str, object]:
+    text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() == ".json":
+        parsed = json.loads(text)
+    else:
+        try:
+            import yaml  # type: ignore[import-untyped]
+        except ImportError as exc:  # pragma: no cover - dev/test installs PyYAML.
+            raise RuntimeError("YAML input requires PyYAML") from exc
+        parsed = yaml.safe_load(text)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{path} must contain a mapping")
+    return parsed
+
+
 __all__ = [
     "ByocCustomerPilotPackageArtifact",
     "ByocCustomerPilotPackageInputs",
     "ByocCustomerPilotPackageManifest",
     "ByocCustomerPilotPackagePrivacyContract",
+    "ByocCustomerPilotPackageValidationInputs",
+    "ByocCustomerPilotPackageValidationResult",
     "build_byoc_customer_pilot_package",
+    "load_byoc_customer_pilot_package_manifest",
     "render_customer_pilot_package_manifest_json",
     "render_customer_pilot_package_manifest_yaml",
+    "render_customer_pilot_package_validation_json",
+    "render_customer_pilot_package_validation_yaml",
+    "validate_byoc_customer_pilot_package",
 ]

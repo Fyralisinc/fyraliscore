@@ -196,6 +196,10 @@ Every checklist item is done only when:
   launch summary, and digest-only manifest under the ignored `tmp/` tree,
   marking AWS credential and hosted control-plane evidence manual until real
   reports are supplied.
+- [x] BYOC customer-pilot package integrity has a backend/core verifier that
+  reloads the manifest, re-hashes referenced artifacts, validates top-level
+  schemas, detects missing or unsafe artifact paths, and emits only bounded
+  status/failure metadata.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

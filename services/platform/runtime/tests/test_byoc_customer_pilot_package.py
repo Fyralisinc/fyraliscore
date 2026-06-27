@@ -10,8 +10,11 @@ import pytest
 
 from services.platform.runtime.byoc_customer_pilot_package import (
     ByocCustomerPilotPackageInputs,
+    ByocCustomerPilotPackageValidationInputs,
     build_byoc_customer_pilot_package,
     render_customer_pilot_package_manifest_json,
+    render_customer_pilot_package_validation_json,
+    validate_byoc_customer_pilot_package,
 )
 
 
@@ -60,6 +63,20 @@ def test_customer_pilot_package_builds_sanitized_manual_package() -> None:
         assert "bearer " not in rendered.lower()
         assert "token=" not in rendered
         assert "arn:aws" not in rendered
+
+        validation = validate_byoc_customer_pilot_package(
+            ByocCustomerPilotPackageValidationInputs(
+                manifest_path=(
+                    output_dir / "byoc-customer-pilot-package-manifest.json"
+                ),
+                repo_root=ROOT,
+                generated_at=GENERATED_AT,
+            )
+        )
+        assert validation.status == "pass"
+        assert validation.package_status == "manual_required"
+        assert validation.verified_artifact_count == 7
+        assert validation.failure_codes == ()
     finally:
         shutil.rmtree(output_dir, ignore_errors=True)
 
@@ -94,3 +111,42 @@ def test_customer_pilot_package_rejects_output_outside_repo(tmp_path: Path) -> N
                 generated_at=GENERATED_AT,
             )
         )
+
+
+def test_customer_pilot_package_validation_fails_on_digest_drift() -> None:
+    output_dir = ROOT / "tmp/byoc" / f"pilot-package-test-{uuid.uuid4().hex}"
+    try:
+        build_byoc_customer_pilot_package(
+            ByocCustomerPilotPackageInputs(
+                output_dir=output_dir,
+                repo_root=ROOT,
+                generated_at=GENERATED_AT,
+            )
+        )
+        (output_dir / "byoc-launch-readiness-summary.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "fyralis.byoc.launch_readiness_summary.v1",
+                    "details": "https://control-plane.example token=secret",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        validation = validate_byoc_customer_pilot_package(
+            ByocCustomerPilotPackageValidationInputs(
+                manifest_path=(
+                    output_dir / "byoc-customer-pilot-package-manifest.json"
+                ),
+                repo_root=ROOT,
+                generated_at=GENERATED_AT,
+            )
+        )
+        rendered = render_customer_pilot_package_validation_json(validation)
+
+        assert validation.status == "fail"
+        assert "launch_readiness_summary_digest_mismatch" in validation.failure_codes
+        assert "https://control-plane.example" not in rendered
+        assert "token=secret" not in rendered
+    finally:
+        shutil.rmtree(output_dir, ignore_errors=True)

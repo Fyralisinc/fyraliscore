@@ -380,6 +380,18 @@ codes, and privacy flags; it does not include artifact bodies, child report
 bodies, signed headers, endpoint URLs, request/response bodies, credentials,
 account IDs, ARNs, command output, logs, prompts, embeddings, or PII.
 
+Before sharing the package, validate the manifest and artifact digests:
+
+```bash
+scripts/check_byoc_customer_pilot_package.py --json \
+  --manifest tmp/byoc/customer-pilot/byoc-customer-pilot-package-manifest.json
+```
+
+Add `--require-ready` only for the final customer-pilot go/no-go. Without it,
+the check can pass for an integrity-valid package whose launch summary is still
+`manual_required` because real AWS credentials or hosted control-plane read
+smoke are pending.
+
 For local contract proof or customer handoff before live agent endpoint wiring,
 run the mock-backed probe from inside the customer data-plane context:
 

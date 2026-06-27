@@ -398,6 +398,7 @@ def test_byoc_customer_pilot_package_gate_passes_for_contract_suite() -> None:
         result.command
     )
     assert "scripts/tests/test_build_byoc_customer_pilot_package.py" in result.command
+    assert "scripts/tests/test_check_byoc_customer_pilot_package.py" in result.command
     assert "123456789012" not in result.stdout_tail
     assert "arn:aws" not in result.stdout_tail
 
