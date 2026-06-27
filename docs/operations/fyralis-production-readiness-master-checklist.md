@@ -157,9 +157,10 @@ Every checklist item is done only when:
   results into one sanitized go/no-go artifact with no child report bodies,
   command output, account IDs, ARNs, URLs, credentials, raw data, logs, or PII.
 - [x] BYOC customer handoff bundle index has a backend/core generator that
-  lists sanitized handoff artifacts by relative path, digest, schema, and scope,
-  plus signed read endpoint paths, without artifact bodies, signed headers,
-  endpoint URLs, request/response bodies, logs, credentials, or PII.
+  lists sanitized handoff artifacts, including the product-health automation
+  manifest, by relative path, digest, schema, and scope, plus signed read
+  endpoint paths, without artifact bodies, signed headers, endpoint URLs,
+  request/response bodies, logs, credentials, or PII.
 - [x] BYOC customer-pilot launch readiness has a backend/core summary command
   that composes live-test readiness, customer handoff readiness, handoff bundle
   index, and control-plane read-smoke outputs into one metadata-only go/no-go
@@ -205,10 +206,10 @@ Every checklist item is done only when:
   material, credentials, account IDs, ARNs, logs, prompts, embeddings, and PII
   before the result is used in launch-review or customer handoff evidence.
 - [x] BYOC customer-pilot handoff has a one-command backend/core package
-  builder that writes sanitized local readiness artifacts, a handoff index,
-  launch summary, and digest-only manifest under the ignored `tmp/` tree,
-  marking AWS credential and hosted control-plane evidence manual until real
-  reports are supplied.
+  builder that writes sanitized local readiness artifacts, the product-health
+  automation manifest reference, a handoff index, launch summary, and
+  digest-only manifest under the ignored `tmp/` tree, marking AWS credential and
+  hosted control-plane evidence manual until real reports are supplied.
 - [x] BYOC customer-pilot package integrity has a backend/core verifier that
   reloads the manifest, re-hashes referenced artifacts, validates top-level
   schemas, detects missing or unsafe artifact paths, and emits only bounded

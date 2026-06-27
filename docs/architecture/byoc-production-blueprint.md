@@ -484,6 +484,12 @@ Repo-owned artifacts for this first slice:
   account IDs, ARNs, logs, prompts, embeddings, and PII. Use this summary as
   the launch-readiness input whenever the raw smoke output contains signed
   request material.
+- `services/platform/runtime/byoc_handoff_bundle_index.py` and
+  `services/platform/runtime/byoc_customer_pilot_package.py` include the
+  product-health automation manifest as a digest-pinned, shareable customer
+  artifact. The rendered Kubernetes/systemd examples remain referenced by that
+  manifest; package manifests do not embed raw DSNs, signing keys, control-plane
+  URL values, or artifact bodies.
 - `services/platform/runtime/byoc_deployment_overview.py` defines the signed
   BYOC deployment overview read model used by
   `GET /byoc/control-plane/deployment-overview`. It aggregates only existing

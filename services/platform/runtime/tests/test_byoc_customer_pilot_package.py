@@ -41,10 +41,11 @@ def test_customer_pilot_package_builds_sanitized_manual_package() -> None:
         assert manifest.customer_pilot_ready is False
         assert manifest.manual_actions_required is True
         assert "complete_control_plane_read_smoke" in manifest.next_actions
-        assert manifest.artifact_count == 7
+        assert manifest.artifact_count == 8
         assert {artifact.name for artifact in manifest.artifacts} == {
             "evidence_package",
             "evidence_ledger",
+            "product_health_automation",
             "live_test_readiness",
             "customer_handoff_readiness",
             "control_plane_read_smoke_summary",
@@ -75,7 +76,7 @@ def test_customer_pilot_package_builds_sanitized_manual_package() -> None:
         )
         assert validation.status == "pass"
         assert validation.package_status == "manual_required"
-        assert validation.verified_artifact_count == 7
+        assert validation.verified_artifact_count == 8
         assert validation.failure_codes == ()
     finally:
         shutil.rmtree(output_dir, ignore_errors=True)

@@ -24,6 +24,7 @@ HandoffBundleArtifactKind = Literal[
     "evidence_ledger",
     "customer_handoff_readiness_report",
     "preflight_report",
+    "product_health_automation",
     "source_onboarding_gate_report",
     "control_plane_read_smoke_report",
     "control_plane_read_smoke_summary",
@@ -222,6 +223,9 @@ class ByocHandoffBundleIndex(_StrictModel):
 class ByocHandoffBundleIndexInputs:
     evidence_package_path: Path
     evidence_ledger_path: Path
+    product_health_automation_path: Path = Path(
+        "deploy/byoc/product-health-automation.example.yaml"
+    )
     repo_root: Path = field(default_factory=Path.cwd)
     customer_handoff_report_path: Path | None = None
     preflight_report_path: Path | None = None
@@ -307,6 +311,14 @@ def _artifacts(
             True,
             "fyralis.byoc.evidence_ledger.v1",
             ledger_scope,
+        ),
+        (
+            "product_health_automation",
+            "product_health_automation",
+            inputs.product_health_automation_path,
+            True,
+            "fyralis.byoc.product_health_automation.v1",
+            "customer_side_product_health_automation_metadata_only",
         ),
         (
             "customer_handoff_readiness_report",

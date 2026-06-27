@@ -78,6 +78,12 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Sanitized BYOC evidence ledger to include.",
     )
     parser.add_argument(
+        "--product-health-automation",
+        type=Path,
+        default=Path("deploy/byoc/product-health-automation.example.yaml"),
+        help="Customer-side product-health automation manifest to include.",
+    )
+    parser.add_argument(
         "--env-file",
         type=Path,
         default=Path(".env.production.example"),
@@ -137,6 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bootstrap_plan_path=args.bootstrap_plan,
             evidence_package_path=args.evidence_package,
             evidence_ledger_path=args.evidence_ledger,
+            product_health_automation_path=args.product_health_automation,
             env_path=args.env_file,
             live_test_readiness_path=args.live_test_readiness,
             customer_handoff_report_path=args.customer_handoff_report,

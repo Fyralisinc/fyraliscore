@@ -19,6 +19,7 @@ from services.platform.runtime.byoc_handoff_bundle_index import (
 ROOT = Path(__file__).resolve().parents[4]
 PACKAGE = ROOT / "deploy/byoc/evidence-package.example.yaml"
 LEDGER = ROOT / "deploy/byoc/evidence-ledger.example.yaml"
+AUTOMATION = ROOT / "deploy/byoc/product-health-automation.example.yaml"
 GENERATED_AT = datetime(2026, 6, 27, 12, 0, tzinfo=UTC)
 
 
@@ -27,8 +28,10 @@ def test_handoff_bundle_index_lists_only_sanitized_artifact_metadata(
 ) -> None:
     package = tmp_path / "evidence-package.yaml"
     ledger = tmp_path / "evidence-ledger.yaml"
+    automation = tmp_path / "product-health-automation.yaml"
     shutil.copyfile(PACKAGE, package)
     shutil.copyfile(LEDGER, ledger)
+    shutil.copyfile(AUTOMATION, automation)
     smoke_report = tmp_path / "control-plane-smoke.json"
     smoke_report.write_text(
         json.dumps(
@@ -44,6 +47,7 @@ def test_handoff_bundle_index_lists_only_sanitized_artifact_metadata(
         ByocHandoffBundleIndexInputs(
             evidence_package_path=package,
             evidence_ledger_path=ledger,
+            product_health_automation_path=automation,
             repo_root=tmp_path,
             control_plane_read_smoke_report_path=smoke_report,
             generated_at=GENERATED_AT,
@@ -54,13 +58,14 @@ def test_handoff_bundle_index_lists_only_sanitized_artifact_metadata(
     assert index.schema_version == "fyralis.byoc.customer_handoff_bundle_index.v1"
     assert index.deployment_id == "dep_example01"
     assert index.customer_id == "cus_example01"
-    assert index.artifact_count == 3
+    assert index.artifact_count == 4
     assert index.signed_read_endpoint_count == 6
     assert index.privacy.artifact_bodies_included is False
     assert index.privacy.signed_headers_included is False
     assert {artifact.name for artifact in index.artifacts} == {
         "evidence_package",
         "evidence_ledger",
+        "product_health_automation",
         "control_plane_read_smoke_summary",
     }
     assert all(artifact.contents_included is False for artifact in index.artifacts)

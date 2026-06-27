@@ -24,7 +24,7 @@ def test_build_byoc_customer_pilot_package_json_output(capsys) -> None:
         )
         assert payload["status"] == "manual_required"
         assert payload["manual_actions_required"] is True
-        assert payload["artifact_count"] == 7
+        assert payload["artifact_count"] == 8
         assert (output_dir / "byoc-customer-pilot-package-manifest.json").exists()
         assert "https://" not in rendered
         assert "bearer " not in rendered.lower()
