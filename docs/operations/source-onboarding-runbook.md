@@ -287,6 +287,20 @@ scripts/get_byoc_deployment_overview.py \
   --overview-url https://<control-plane>/byoc/control-plane/deployment-overview
 ```
 
+For a single read-only backend smoke of all signed control-plane metadata
+surfaces, use the combined helper. Omit `--base-url` to print the signed request
+bundle without network access:
+
+```bash
+FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY="<local-read-signing-material>" \
+scripts/smoke_byoc_control_plane_reads.py \
+  --deployment-id <dep_...> \
+  --customer-id <cus_...> \
+  --limit 20 \
+  --key-ref <control-plane/byoc/evidence-read-key-ref> \
+  --base-url https://<control-plane>
+```
+
 For local contract proof or customer handoff before live agent endpoint wiring,
 run the mock-backed probe from inside the customer data-plane context:
 

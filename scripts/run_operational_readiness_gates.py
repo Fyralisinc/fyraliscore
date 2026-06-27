@@ -968,6 +968,7 @@ def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
             "services/app/gateway/tests/test_route_access_policy.py",
             "scripts/tests/test_get_byoc_deployment_overview.py",
             "scripts/tests/test_list_byoc_agents.py",
+            "scripts/tests/test_smoke_byoc_control_plane_reads.py",
             "scripts/tests/test_submit_byoc_preflight_report.py",
             "scripts/tests/test_submit_byoc_runner_evidence.py",
             "scripts/tests/test_update_byoc_agent_desired_state.py",
@@ -975,9 +976,9 @@ def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
         details=(
             "BYOC control-plane intake accepts signed agent enrollment, "
             "privacy-safe heartbeat, signed desired-state polling, signed "
-            "desired-state updates, signed fleet/overview reads, and signed "
-            "sanitized evidence packages, preflight reports, and runner "
-            "evidence while storing metadata only."
+            "desired-state updates, signed fleet/overview/smoke reads, and "
+            "signed sanitized evidence packages, preflight reports, and "
+            "runner evidence while storing metadata only."
         ),
         args=args,
         timeout_s=min(args.command_timeout_s, 60),

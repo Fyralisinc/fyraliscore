@@ -174,8 +174,8 @@ Every checklist item is done only when:
 - [x] BYOC deployment overview has a signed metadata-only backend read model and
   gateway route that aggregates sanitized agent-fleet, evidence-package,
   preflight-report, and runner-evidence receipt state into status, next action,
-  health counts, and evidence counts, plus a local signed-read helper for
-  future control-panel/backend automation consumers.
+  health counts, and evidence counts, plus targeted and combined local
+  signed-read helpers for future control-panel/backend automation consumers.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and
