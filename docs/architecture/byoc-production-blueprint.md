@@ -454,6 +454,15 @@ Repo-owned artifacts for this first slice:
   can POST it egress-only to the product-health snapshot intake. Use
   `--tenant-id` for shared databases; omit it only for single-tenant customer
   data planes.
+- `services/platform/runtime/byoc_product_health_automation.py`,
+  `deploy/byoc/product-health-automation.example.yaml`,
+  `deploy/byoc/kubernetes/product-health-collector.cronjob.example.yaml`,
+  `deploy/byoc/systemd/product-health-collector.*.example`, and
+  `scripts/generate_byoc_product_health_automation.py` define the customer-side
+  schedule package for that collector. The package renders a Kubernetes
+  CronJob and systemd timer with egress-only execution, no container ports, no
+  raw DSNs/signing keys/control-plane URLs, and secret/config references that
+  remain in the customer boundary.
 - `GET /byoc/control-plane/product-health` is the signed backend automation
   read for the latest sanitized product-health snapshot for one deployment.
   `GET /byoc/control-panel/state` embeds the same product-health object so UI

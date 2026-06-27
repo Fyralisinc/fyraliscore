@@ -599,6 +599,22 @@ the hosted control plane. The signed/posted payload remains metadata-only and
 is what the control-panel product-health cards read through the grant-gated
 browser proxy.
 
+To install the collector as recurring customer-side automation, start from the
+checked-in schedule package and render/check the generated artifacts:
+
+```bash
+scripts/generate_byoc_product_health_automation.py \
+  --check-automation deploy/byoc/product-health-automation.example.yaml
+```
+
+The generated Kubernetes CronJob and systemd timer examples live under
+`deploy/byoc/kubernetes/` and `deploy/byoc/systemd/`. Before applying either in
+a customer environment, replace only the customer-local ConfigMap/secret
+references and image ref; do not put the Postgres DSN, signing key, control
+plane URL value, or source payload material directly into the checked-in
+automation manifest. The examples expose no inbound ports and call only
+`POST /byoc/control-plane/product-health-snapshots` over outbound HTTPS.
+
 Before a real AWS credential window, run the offline readiness check. Without
 `--require-aws-access`, it validates manifests, IAM skeletons, operator
 scripts, and local AWS-access prerequisites without making AWS calls; missing

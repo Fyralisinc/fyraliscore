@@ -615,6 +615,40 @@ def _byoc_terraform_plan_validation_gate(args: argparse.Namespace) -> GateResult
     )
 
 
+def _byoc_product_health_automation_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_product_health_automation",
+        _python_command(
+            "scripts/generate_byoc_product_health_automation.py",
+            "--check-automation",
+            "deploy/byoc/product-health-automation.example.yaml",
+            "--dataplane-manifest",
+            "deploy/byoc/dataplane.example.yaml",
+        ),
+        details=(
+            "Checked-in BYOC product-health collector automation is "
+            "customer-side, egress-only, schedule-bounded, and renders "
+            "Kubernetes/systemd artifacts without raw data or secret values."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "automation": "deploy/byoc/product-health-automation.example.yaml",
+            "kubernetes_cronjob": (
+                "deploy/byoc/kubernetes/"
+                "product-health-collector.cronjob.example.yaml"
+            ),
+            "systemd_service": (
+                "deploy/byoc/systemd/product-health-collector.service.example"
+            ),
+            "systemd_timer": (
+                "deploy/byoc/systemd/product-health-collector.timer.example"
+            ),
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        },
+    )
+
+
 def _byoc_bootstrap_bundle_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_bootstrap_bundle",
@@ -1110,6 +1144,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_aws_live_preflight_gate(args),
         _byoc_aws_iac_package_gate(args),
         _byoc_terraform_plan_validation_gate(args),
+        _byoc_product_health_automation_gate(args),
         _byoc_bootstrap_bundle_gate(args),
         _byoc_bootstrap_plan_gate(args),
         _byoc_bootstrap_runner_gate(args),

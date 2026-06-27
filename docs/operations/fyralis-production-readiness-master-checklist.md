@@ -111,6 +111,11 @@ Every checklist item is done only when:
   execution adapters that store only bounded status/exit metadata, ledger
   summary import, and readiness gate before live Terraform plan or apply work
   begins.
+- [x] BYOC product-health collection has a checked-in customer-side automation
+  contract, Kubernetes CronJob and systemd timer examples, generator/checker
+  CLI, and readiness gate that prove scheduled snapshot submission remains
+  egress-only, metadata-only, and free of raw DSNs, signing keys, endpoint
+  values, logs, prompts, model contents, vectors, or source records.
 - [x] BYOC bootstrap artifacts have a checked-in signed-bundle manifest,
   verifier CLI, local hash checks for checked-in IaC files, digest-pinned
   image/chart/SBOM refs, and a readiness gate before cloud apply work begins.

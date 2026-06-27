@@ -1,0 +1,21 @@
+[Unit]
+Description=Fyralis BYOC product-health collector
+Documentation=man:systemd.timer(5)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=fyralis
+Group=fyralis
+WorkingDirectory=/opt/fyralis/fyraliscore
+EnvironmentFile=/etc/fyralis/byoc-product-health.env
+ExecStart=/bin/sh -lc 'set -eu; CONTROL_PLANE_BASE="${FYRALIS_CONTROL_PLANE_URL%/}"; exec /opt/fyralis/venv/bin/python scripts/run_byoc_product_health_collector.py --deployment-id "${FYRALIS_BYOC_DEPLOYMENT_ID}" --customer-id "${FYRALIS_BYOC_CUSTOMER_ID}" --agent-id "${FYRALIS_BYOC_AGENT_ID}" --agent-version "${FYRALIS_BYOC_AGENT_VERSION}" --artifact-revision "${FYRALIS_BYOC_ARTIFACT_REVISION}" --tenant-id "${FYRALIS_TENANT_ID}" --database-url-env DATABASE_URL --signing-secret-env FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY --key-ref "${FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF}" --submit-url "${CONTROL_PLANE_BASE}/byoc/control-plane/product-health-snapshots" --timeout-seconds 30'
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true

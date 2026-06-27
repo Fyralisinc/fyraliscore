@@ -26,6 +26,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_launch_readiness_summary_gate,
     _byoc_permissions_contract_gate,
     _byoc_preflight_bundle_gate,
+    _byoc_product_health_automation_gate,
     _byoc_source_onboarding_gate,
     _byoc_post_deploy_validation_gate,
     _byoc_live_credential_rehearsal_gate,
@@ -124,6 +125,31 @@ def test_byoc_terraform_plan_validation_gate_passes_for_checked_in_scaffold() ->
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
         "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+    }
+
+
+def test_byoc_product_health_automation_gate_passes_for_checked_in_artifacts() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_product_health_automation_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/generate_byoc_product_health_automation.py" in result.command
+    assert "--check-automation" in result.command
+    assert result.artifacts == {
+        "automation": "deploy/byoc/product-health-automation.example.yaml",
+        "kubernetes_cronjob": (
+            "deploy/byoc/kubernetes/"
+            "product-health-collector.cronjob.example.yaml"
+        ),
+        "systemd_service": (
+            "deploy/byoc/systemd/product-health-collector.service.example"
+        ),
+        "systemd_timer": (
+            "deploy/byoc/systemd/product-health-collector.timer.example"
+        ),
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
     }
 
 
