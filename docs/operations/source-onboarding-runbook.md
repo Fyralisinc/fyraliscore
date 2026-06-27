@@ -332,15 +332,17 @@ scripts/get_byoc_control_panel_state.py \
   --control-panel-state-url https://<control-plane>/byoc/control-plane/control-panel-state
 ```
 
-Browser or backend UI clients should use `GET /byoc/control-panel/state`
-instead. That route uses ordinary gateway bearer auth plus the
-`ByocControlPanelAccessGrant` metadata contract; it returns the same sanitized
-state shape without exposing BYOC read HMAC material to the client. In hosted
-gateway deployments, grants are read from `byoc_control_panel_access_grants`
-and contain only hosted tenant ID, BYOC customer ID, deployment ID, role,
-enabled state, grant timestamp, expiry timestamp, and sanitized stored scope.
-Do not place BYOC read keys, endpoint URLs, cloud identifiers, credentials, raw
-reports, logs, prompts, embeddings, or PII in that table.
+Browser or backend UI clients should use the bearer-authenticated
+`GET /byoc/control-panel/deployments` discovery route first, then call
+`GET /byoc/control-panel/state` for the selected deployment. Both routes use
+ordinary gateway bearer auth plus the `ByocControlPanelAccessGrant` metadata
+contract; they return the same sanitized state shape without exposing BYOC read
+HMAC material to the client. In hosted gateway deployments, grants are read from
+`byoc_control_panel_access_grants` and contain only hosted tenant ID, BYOC
+customer ID, deployment ID, role, enabled state, grant timestamp, expiry
+timestamp, and sanitized stored scope. Do not place BYOC read keys, endpoint
+URLs, cloud identifiers, credentials, raw reports, logs, prompts, embeddings,
+or PII in that table.
 
 Before real hosted database access is available, validate the exact grant JSON
 with a dry run:

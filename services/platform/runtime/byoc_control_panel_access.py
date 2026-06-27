@@ -119,6 +119,29 @@ class ByocControlPanelAccessDecision(_StrictModel):
         return value
 
 
+class ByocControlPanelAccessGrantList(_StrictModel):
+    schema_version: Literal["fyralis.byoc.control_panel_access_grant_list.v1"]
+    tenant_id: UUID
+    customer_id: str | None = None
+    active_only: bool = True
+    result_count: int = Field(ge=0)
+    generated_at: datetime
+    items: tuple[ByocControlPanelAccessGrant, ...]
+    stored_scope: ControlPanelAccessStoredScope = (
+        "sanitized_control_panel_access_metadata_only"
+    )
+
+    @field_validator("customer_id")
+    @classmethod
+    def _customer_id_shape(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not _CUSTOMER_ID_RE.match(value):
+            raise ValueError("customer_id must look like cus_<stable-id>")
+        return value
+
+
 class ByocControlPanelAccessGrantStore(Protocol):
     async def put(
         self,
@@ -428,10 +451,45 @@ def evaluate_byoc_control_panel_access(
     )
 
 
+def build_byoc_control_panel_access_grant_list(
+    *,
+    tenant_id: UUID,
+    grants: Iterable[ByocControlPanelAccessGrant],
+    customer_id: str | None = None,
+    active_only: bool = True,
+    generated_at: datetime | None = None,
+) -> ByocControlPanelAccessGrantList:
+    observed = generated_at or datetime.now(UTC)
+    visible = tuple(
+        grant
+        for grant in grants
+        if grant.tenant_id == tenant_id
+        and (customer_id is None or grant.customer_id == customer_id)
+        and (
+            not active_only
+            or (
+                grant.enabled
+                and (grant.expires_at is None or grant.expires_at > observed)
+            )
+        )
+    )
+    return ByocControlPanelAccessGrantList(
+        schema_version="fyralis.byoc.control_panel_access_grant_list.v1",
+        tenant_id=tenant_id,
+        customer_id=customer_id,
+        active_only=active_only,
+        result_count=len(visible),
+        generated_at=observed,
+        items=visible,
+        stored_scope="sanitized_control_panel_access_metadata_only",
+    )
+
+
 def model_json_schema_bundle() -> dict[str, Any]:
     return {
         "schema_version": "fyralis.byoc.control_panel_access_bundle.v1",
         "grant": ByocControlPanelAccessGrant.model_json_schema(),
+        "grant_list": ByocControlPanelAccessGrantList.model_json_schema(),
         "query": ByocControlPanelAccessQuery.model_json_schema(),
         "decision": ByocControlPanelAccessDecision.model_json_schema(),
         "stored_scope": "sanitized_control_panel_access_metadata_only",
@@ -502,10 +560,12 @@ def _validate_deployment_id(value: str | None) -> None:
 __all__ = [
     "ByocControlPanelAccessDecision",
     "ByocControlPanelAccessGrant",
+    "ByocControlPanelAccessGrantList",
     "ByocControlPanelAccessGrantStore",
     "ByocControlPanelAccessQuery",
     "InMemoryByocControlPanelAccessGrantStore",
     "PostgresByocControlPanelAccessGrantStore",
+    "build_byoc_control_panel_access_grant_list",
     "evaluate_byoc_control_panel_access",
     "model_json_schema_bundle",
     "render_control_panel_access_schema_bundle_json",

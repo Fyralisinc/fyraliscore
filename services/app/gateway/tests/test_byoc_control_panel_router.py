@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -70,6 +70,7 @@ def _grant(
     deployment_id: str = EXAMPLE_DEPLOYMENT_ID,
     customer_id: str = EXAMPLE_CUSTOMER_ID,
     enabled: bool = True,
+    expires_at: datetime | None = None,
 ) -> ByocControlPanelAccessGrant:
     return ByocControlPanelAccessGrant(
         schema_version="fyralis.byoc.control_panel_access_grant.v1",
@@ -79,6 +80,7 @@ def _grant(
         role="viewer",
         enabled=enabled,
         granted_at=GENERATED_AT,
+        expires_at=expires_at,
         stored_scope="sanitized_control_panel_access_metadata_only",
     )
 
@@ -133,6 +135,49 @@ async def test_byoc_control_panel_proxy_serves_authorized_state() -> None:
     assert "secret_ref" not in response.text.lower()
     assert "install_token" not in response.text.lower()
     assert "payload" not in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_panel_proxy_lists_accessible_deployments() -> None:
+    app = _app(
+        grants=(
+            _grant(),
+            _grant(deployment_id="dep_control02", enabled=False),
+            _grant(
+                deployment_id="dep_control03",
+                expires_at=GENERATED_AT - timedelta(days=1),
+            ),
+        )
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/byoc/control-panel/deployments?customer_id={EXAMPLE_CUSTOMER_ID}"
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    rendered = response.text.lower()
+    assert payload["schema_version"] == (
+        "fyralis.byoc.control_panel_access_grant_list.v1"
+    )
+    assert payload["result_count"] == 1
+    assert payload["items"][0]["deployment_ids"] == [EXAMPLE_DEPLOYMENT_ID]
+    assert "read_key" not in rendered
+    assert "endpoint_url" not in rendered
+    assert "payload" not in rendered
+    assert "secret" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_panel_proxy_deployment_list_requires_gateway_auth() -> None:
+    app = _app(inject_auth=False, grants=(_grant(),))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/byoc/control-panel/deployments")
+
+    assert response.status_code == 401
+    assert response.json()["detail"]["error"] == "missing_gateway_bearer_auth"
 
 
 @pytest.mark.asyncio

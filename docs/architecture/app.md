@@ -132,7 +132,7 @@ graph TD
 | Gateway middleware | `services/app/gateway/middleware.py` | Request context, bearer-session auth, public path allowlist, rate limiting. |
 | Gateway route mounts | `services/app/gateway/route_mounts.py` | Mounts focused gateway/product/ingest routers in one ordered place. |
 | BYOC control-plane intake | `services/app/gateway/byoc_control_plane_router.py` | Self-authenticated evidence-package, preflight-report, runner-evidence, and agent desired-state update routes; verifies signed submissions and signed receipt/overview reads, and stores sanitized scalar receipts/agent rollout metadata only. |
-| BYOC control-panel proxy | `services/app/gateway/byoc_control_panel_router.py` | Bearer-authenticated browser/backend proxy for the metadata-only control-panel state; evaluates tenant-to-BYOC-deployment grants before reading sanitized state and never exposes read HMAC keys to browser clients. |
+| BYOC control-panel proxy | `services/app/gateway/byoc_control_panel_router.py` | Bearer-authenticated browser/backend proxy for metadata-only deployment discovery and control-panel state; evaluates tenant-to-BYOC-deployment grants before reading sanitized state and never exposes read HMAC keys to browser clients. |
 | BYOC control-plane keys | `services/app/gateway/byoc_control_plane_keys.py` | Resolves evidence submission, desired-state update, and receipt-read HMAC keys by `key_ref` from managed app-secret refs, with static app-state fallback only outside production. |
 | BYOC agent control plane | `services/app/gateway/byoc_agent_router.py` | Self-authenticated agent enrollment, heartbeat, and desired-state polling route; verifies install-token HMAC proof by managed secret ref, accepts enrolled-agent heartbeats, and returns sanitized revision/config-intent metadata only. |
 | BYOC agent keys | `services/app/gateway/byoc_agent_keys.py` | Resolves data-plane install-token material by `key_ref` from managed secret refs, with static app-state fallback only outside production. |
@@ -207,6 +207,10 @@ graph TD
   one metadata-only response. Browser UI code must not hold the read HMAC key;
   browser-facing control-panel work should use a server-side proxy with tenant
   authorization, or the exported schema/example during local UI development.
+- `GET /byoc/control-panel/deployments` — bearer-authenticated browser/backend
+  discovery route for active metadata-only BYOC deployment grants visible to
+  the current hosted tenant; returns customer/deployment IDs, role, grant
+  status, and expiry metadata only.
 - `GET /byoc/control-panel/state` — bearer-authenticated browser/backend proxy
   for the same metadata-only state; requires a tenant-to-BYOC-deployment access
   grant from the metadata-only `byoc_control_panel_access_grants` store and

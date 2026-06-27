@@ -94,6 +94,9 @@ def test_static_gateway_route_inventory_classifies_security_boundaries() -> None
     byoc_browser_control_panel = by_path["/byoc/control-panel/state"].policy
     assert byoc_browser_control_panel.access is RouteAccess.BEARER
     assert byoc_browser_control_panel.gateway_bearer_required is True
+    byoc_browser_deployments = by_path["/byoc/control-panel/deployments"].policy
+    assert byoc_browser_deployments.access is RouteAccess.BEARER
+    assert byoc_browser_deployments.gateway_bearer_required is True
     byoc_agent = by_path["/byoc/agent/enroll"].policy
     assert byoc_agent.access is RouteAccess.SELF_AUTHENTICATED
     assert byoc_agent.gateway_bearer_required is False

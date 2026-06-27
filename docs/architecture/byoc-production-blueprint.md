@@ -416,8 +416,10 @@ Repo-owned artifacts for this first slice:
   upsert, list, and revoke metadata-only grants in the hosted/control-plane
   database.
 - `services/app/gateway/byoc_control_panel_router.py` mounts
-  `GET /byoc/control-panel/state`, a bearer-authenticated proxy for browser or
-  backend UI clients. It evaluates the persisted control-panel access grant
+  `GET /byoc/control-panel/deployments` and `GET /byoc/control-panel/state`,
+  bearer-authenticated proxy routes for browser or backend UI clients. The
+  deployment route lists only active metadata-only grants visible to the hosted
+  tenant. The state route evaluates the persisted control-panel access grant
   before reading the same sanitized state from gateway stores, so browser
   clients never receive or sign with BYOC read HMAC material.
 - `scripts/smoke_byoc_control_plane_reads.py` signs the read-only BYOC

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import ValidationError
@@ -11,10 +12,12 @@ from services.app.gateway.byoc_control_plane_router import (
 )
 from services.platform.runtime.byoc_control_panel_access import (
     ByocControlPanelAccessGrant,
+    ByocControlPanelAccessGrantList,
     ByocControlPanelAccessGrantStore,
     ByocControlPanelAccessQuery,
     InMemoryByocControlPanelAccessGrantStore,
     PostgresByocControlPanelAccessGrantStore,
+    build_byoc_control_panel_access_grant_list,
     evaluate_byoc_control_panel_access,
 )
 from services.platform.runtime.byoc_control_panel_state import (
@@ -28,6 +31,34 @@ def build_byoc_control_panel_router() -> APIRouter:
         prefix="/byoc/control-panel",
         tags=["byoc-control-panel"],
     )
+
+    @router.get("/deployments")
+    async def list_browser_control_panel_deployments(
+        request: Request,
+        customer_id: str | None = None,
+    ) -> ByocControlPanelAccessGrantList:
+        auth = _require_gateway_auth(request)
+        try:
+            grants = await _access_grants_for_tenant(
+                request,
+                tenant_id=auth.tenant_id,
+                customer_id=customer_id,
+            )
+            return build_byoc_control_panel_access_grant_list(
+                tenant_id=auth.tenant_id,
+                customer_id=customer_id,
+                grants=grants,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"errors": [str(exc)]},
+            ) from exc
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"errors": [error["msg"] for error in exc.errors()]},
+            ) from exc
 
     @router.get("/state")
     async def get_browser_control_panel_state(
@@ -87,6 +118,24 @@ def _require_gateway_auth(request: Request):
             detail={"error": "missing_gateway_bearer_auth"},
         )
     return auth
+
+
+async def _access_grants_for_tenant(
+    request: Request,
+    *,
+    tenant_id: UUID,
+    customer_id: str | None = None,
+) -> tuple[ByocControlPanelAccessGrant, ...]:
+    store = _access_grant_store_from_state(request)
+    if store is not None:
+        return await store.list_grants(
+            tenant_id=tenant_id,
+            customer_id=customer_id,
+        )
+    grants = getattr(request.app.state, "byoc_control_panel_access_grants", ())
+    if isinstance(grants, Iterable):
+        return tuple(grants)
+    return ()
 
 
 async def _access_grants_from_state(

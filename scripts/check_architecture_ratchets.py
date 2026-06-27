@@ -1698,6 +1698,7 @@ def find_byoc_control_panel_access_privacy_violations(
 
     for class_name in (
         "ByocControlPanelAccessGrant",
+        "ByocControlPanelAccessGrantList",
         "ByocControlPanelAccessQuery",
         "ByocControlPanelAccessDecision",
     ):
@@ -1722,6 +1723,7 @@ def find_byoc_control_panel_access_privacy_violations(
 
     for class_name in (
         "ByocControlPanelAccessGrant",
+        "ByocControlPanelAccessGrantList",
         "ByocControlPanelAccessDecision",
     ):
         model_class = classes.get(class_name)

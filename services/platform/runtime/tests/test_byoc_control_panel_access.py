@@ -12,6 +12,7 @@ from services.platform.runtime.byoc_control_panel_access import (
     ByocControlPanelAccessQuery,
     InMemoryByocControlPanelAccessGrantStore,
     PostgresByocControlPanelAccessGrantStore,
+    build_byoc_control_panel_access_grant_list,
     evaluate_byoc_control_panel_access,
     model_json_schema_bundle,
     render_control_panel_access_schema_bundle_json,
@@ -231,6 +232,9 @@ def test_control_panel_access_schema_bundle_is_exportable() -> None:
     assert bundle["grant"]["properties"]["schema_version"]["const"] == (
         "fyralis.byoc.control_panel_access_grant.v1"
     )
+    assert bundle["grant_list"]["properties"]["schema_version"]["const"] == (
+        "fyralis.byoc.control_panel_access_grant_list.v1"
+    )
     assert bundle["decision"]["properties"]["schema_version"]["const"] == (
         "fyralis.byoc.control_panel_access_decision.v1"
     )
@@ -247,6 +251,37 @@ def test_control_panel_access_ignores_other_tenants() -> None:
 
     assert decision.allowed is False
     assert decision.reason_code == "grant_missing"
+
+
+def test_control_panel_access_grant_list_filters_active_visible_grants() -> None:
+    listing = build_byoc_control_panel_access_grant_list(
+        tenant_id=TENANT_ID,
+        grants=(
+            _grant(role="viewer"),
+            _grant(
+                deployment_ids=(OTHER_DEPLOYMENT_ID,),
+                enabled=False,
+            ),
+            _grant(
+                tenant_id=OTHER_TENANT_ID,
+                deployment_ids=(OTHER_DEPLOYMENT_ID,),
+            ),
+            _grant(
+                deployment_ids=("dep_access03",),
+                expires_at=OBSERVED_AT - timedelta(minutes=1),
+            ),
+        ),
+        generated_at=OBSERVED_AT,
+    )
+    rendered = listing.model_dump_json()
+
+    assert listing.schema_version == "fyralis.byoc.control_panel_access_grant_list.v1"
+    assert listing.result_count == 1
+    assert listing.items[0].deployment_ids == (DEPLOYMENT_ID,)
+    assert listing.stored_scope == "sanitized_control_panel_access_metadata_only"
+    assert "secret" not in rendered.lower()
+    assert "endpoint_url" not in rendered.lower()
+    assert "payload" not in rendered.lower()
 
 
 @pytest.mark.asyncio
