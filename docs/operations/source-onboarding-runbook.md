@@ -229,6 +229,23 @@ evidence-package-required flag, reason code, requester code, and accepted
 timestamp. Do not submit artifact refs, config bodies, endpoint URLs, raw
 tokens, logs, payloads, prompts, embeddings, or PII through this route.
 
+To produce the signed request locally without network access, omit
+`--submit-url`; to send it to the hosted backend, provide the full route URL:
+
+```bash
+FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY="<local-signing-material>" \
+scripts/update_byoc_agent_desired_state.py \
+  --deployment-id <dep_...> \
+  --customer-id <cus_...> \
+  --agent-id <agt_...> \
+  --desired-revision <revision> \
+  --config-epoch <epoch> \
+  --reason-code rollout_rehearsal \
+  --requested-by ops_backend \
+  --key-ref <control-plane/byoc/evidence-intake-key-ref> \
+  --submit-url https://<control-plane>/byoc/control-plane/agent-desired-state
+```
+
 For local contract proof or customer handoff before live agent endpoint wiring,
 run the mock-backed probe from inside the customer data-plane context:
 

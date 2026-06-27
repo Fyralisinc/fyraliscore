@@ -333,6 +333,11 @@ Repo-owned artifacts for this first slice:
   audit if requested, and posts to the hosted route only when `--submit-url` is
   supplied. This keeps local CI and customer handoff flows testable without
   staging credentials.
+- `scripts/update_byoc_agent_desired_state.py` is the backend/local automation
+  hook for `POST /byoc/control-plane/agent-desired-state`. It signs a canonical
+  `fyralis.byoc.agent.desired_state_update.v1` request from scalar CLI
+  arguments, can write the signed JSON for audit, and posts only when
+  `--submit-url` is supplied.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
