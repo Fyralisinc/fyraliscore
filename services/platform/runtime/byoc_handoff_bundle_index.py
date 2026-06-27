@@ -26,6 +26,7 @@ HandoffBundleArtifactKind = Literal[
     "preflight_report",
     "source_onboarding_gate_report",
     "control_plane_read_smoke_report",
+    "control_plane_read_smoke_summary",
 ]
 HandoffBundleStoredScope = Literal["sanitized_customer_handoff_bundle_index_only"]
 
@@ -330,12 +331,12 @@ def _artifacts(
             "sanitized_metadata_only",
         ),
         (
-            "control_plane_read_smoke_report",
-            "control_plane_read_smoke_report",
+            "control_plane_read_smoke_summary",
+            "control_plane_read_smoke_summary",
             inputs.control_plane_read_smoke_report_path,
             False,
-            "fyralis.byoc.control_plane_read_smoke.v1",
-            "sanitized_metadata_only",
+            "fyralis.byoc.control_plane_read_smoke_summary.v1",
+            "sanitized_control_plane_read_smoke_metadata_only",
         ),
     )
     artifacts: list[ByocHandoffBundleArtifact] = []

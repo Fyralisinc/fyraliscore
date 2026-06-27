@@ -45,9 +45,11 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Optional sanitized source-onboarding gate report to index.",
     )
     parser.add_argument(
+        "--control-plane-read-smoke-summary",
         "--control-plane-read-smoke-report",
+        dest="control_plane_read_smoke_report",
         type=Path,
-        help="Optional sanitized control-plane read smoke report to index.",
+        help="Optional sanitized control-plane read smoke summary to index.",
     )
     parser.add_argument(
         "--repo-root",

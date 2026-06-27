@@ -297,7 +297,10 @@ Repo-owned artifacts for this first slice:
   relative path, digest, schema, and scope, plus the signed read endpoint paths
   that backend/control-panel consumers may use. It does not embed artifact
   bodies, raw reports, signed headers, endpoint URLs, credentials, logs,
-  request bodies, payloads, prompts, or PII.
+  request bodies, payloads, prompts, or PII. When read-smoke evidence is
+  included, it must point at the sanitized
+  `fyralis.byoc.control_plane_read_smoke_summary.v1` artifact, not the raw
+  signed smoke output.
 - `services/platform/runtime/byoc_launch_readiness_summary.py` and
   `scripts/summarize_byoc_launch_readiness.py` compose the final
   customer-pilot readiness artifact from the sanitized live-test readiness

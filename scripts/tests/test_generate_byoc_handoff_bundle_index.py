@@ -123,3 +123,58 @@ def test_generate_byoc_handoff_bundle_index_indexes_optional_artifact_by_digest(
     assert optional["digest"].startswith("sha256:")
     assert "https://gateway.customer.internal" not in rendered
     assert "token=secret" not in rendered
+
+
+def test_generate_byoc_handoff_bundle_index_indexes_control_plane_smoke_summary(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    package = tmp_path / "evidence-package.yaml"
+    ledger = tmp_path / "evidence-ledger.yaml"
+    shutil.copyfile(PACKAGE, package)
+    shutil.copyfile(LEDGER, ledger)
+    smoke_summary = tmp_path / "control-plane-read-smoke-summary.json"
+    smoke_summary.write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    "fyralis.byoc.control_plane_read_smoke_summary.v1"
+                ),
+                "status": "manual_required",
+                "details": "https://gateway.customer.internal token=secret",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    code = main(
+        [
+            "--json",
+            "--evidence-package",
+            str(package),
+            "--evidence-ledger",
+            str(ledger),
+            "--repo-root",
+            str(tmp_path),
+            "--control-plane-read-smoke-summary",
+            str(smoke_summary),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    rendered = json.dumps(payload, sort_keys=True)
+    optional = [
+        artifact
+        for artifact in payload["artifacts"]
+        if artifact["name"] == "control_plane_read_smoke_summary"
+    ][0]
+    assert code == 0
+    assert optional["schema_version"] == (
+        "fyralis.byoc.control_plane_read_smoke_summary.v1"
+    )
+    assert optional["export_scope"] == (
+        "sanitized_control_plane_read_smoke_metadata_only"
+    )
+    assert optional["digest"].startswith("sha256:")
+    assert "https://gateway.customer.internal" not in rendered
+    assert "token=secret" not in rendered

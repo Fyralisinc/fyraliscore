@@ -78,6 +78,11 @@ scripts/generate_byoc_handoff_bundle_index.py --json \
   --output <byoc-customer-handoff-bundle-index.json>
 ```
 
+When control-plane read-smoke evidence is available, include the sanitized
+summary with `--control-plane-read-smoke-summary`; do not index or share the
+raw smoke output if it contains signed headers, endpoint paths, query strings,
+or response bodies.
+
 For the first real AWS credential test, run the read-only live preflight inside
 the customer boundary. The basic command verifies STS caller identity against
 the account contract in the permissions manifest:

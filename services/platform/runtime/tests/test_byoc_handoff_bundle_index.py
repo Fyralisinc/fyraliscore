@@ -61,7 +61,7 @@ def test_handoff_bundle_index_lists_only_sanitized_artifact_metadata(
     assert {artifact.name for artifact in index.artifacts} == {
         "evidence_package",
         "evidence_ledger",
-        "control_plane_read_smoke_report",
+        "control_plane_read_smoke_summary",
     }
     assert all(artifact.contents_included is False for artifact in index.artifacts)
     assert all(
