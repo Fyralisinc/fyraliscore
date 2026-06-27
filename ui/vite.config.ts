@@ -6,6 +6,9 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: false,
+    proxy: {
+      "/byoc": "http://localhost:8000"
+    },
     watch: {
       usePolling: true,
       interval: 500
