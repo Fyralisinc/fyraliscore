@@ -102,6 +102,36 @@ def test_customer_pilot_package_manifest_matches_written_file() -> None:
         shutil.rmtree(output_dir, ignore_errors=True)
 
 
+def test_customer_pilot_package_can_use_prebuilt_live_readiness(
+    tmp_path: Path,
+) -> None:
+    output_dir = ROOT / "tmp/byoc" / f"pilot-package-test-{uuid.uuid4().hex}"
+    live_report = tmp_path / "live-ready.json"
+    live_report.write_text(json.dumps(_live_ready_report()), encoding="utf-8")
+    try:
+        manifest = build_byoc_customer_pilot_package(
+            ByocCustomerPilotPackageInputs(
+                output_dir=output_dir,
+                repo_root=ROOT,
+                live_test_readiness_path=live_report,
+                generated_at=GENERATED_AT,
+            )
+        )
+
+        copied_live = json.loads(
+            (output_dir / "byoc-live-test-readiness.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert copied_live["live_aws_ready"] is True
+        assert copied_live["status"] == "pass"
+        assert manifest.status == "manual_required"
+        assert "complete_live_test_readiness" not in manifest.next_actions
+        assert manifest.next_actions == ("complete_control_plane_read_smoke",)
+    finally:
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+
 def test_customer_pilot_package_rejects_output_outside_repo(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="repo_root"):
         build_byoc_customer_pilot_package(
@@ -150,3 +180,41 @@ def test_customer_pilot_package_validation_fails_on_digest_drift() -> None:
         assert "token=secret" not in rendered
     finally:
         shutil.rmtree(output_dir, ignore_errors=True)
+
+
+def _live_ready_report() -> dict[str, object]:
+    return {
+        "schema_version": "fyralis.byoc.live_test_readiness.v1",
+        "status": "pass",
+        "required_checks_passed": True,
+        "live_aws_ready": True,
+        "next_required_action": "run_live_credential_rehearsal",
+        "execution_mode": "local_offline",
+        "elapsed_seconds": 0.1,
+        "deployment_id": "dep_example01",
+        "customer_id": "cus_example01",
+        "cloud_provider": "aws",
+        "region": "us-east-1",
+        "artifact_revision": "2026.06.26-1",
+        "aws_profile_supplied": False,
+        "aws_profile_configured": None,
+        "aws_env_credentials_present": True,
+        "aws_cli_available": True,
+        "expected_aws_account_contract_present": True,
+        "mutating_cloud_commands_executed": False,
+        "privacy": {
+            "aws_api_calls_executed": False,
+            "credentials_included": False,
+            "account_ids_included": False,
+            "arns_included": False,
+            "profile_names_included": False,
+            "endpoint_urls_included": False,
+            "command_output_included": False,
+            "raw_customer_data_included": False,
+            "raw_payloads_included": False,
+            "prompts_included": False,
+            "logs_included": False,
+            "pii_included": False,
+        },
+        "checks": (),
+    }

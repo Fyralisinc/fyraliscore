@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -21,6 +21,7 @@ from services.platform.runtime.byoc_control_plane_read_smoke_summary import (
 )
 from services.platform.runtime.byoc_customer_handoff import (
     ByocCustomerHandoffInputs,
+    ByocCustomerHandoffReport,
     render_customer_handoff_json,
     run_byoc_customer_handoff,
 )
@@ -36,6 +37,7 @@ from services.platform.runtime.byoc_launch_readiness_summary import (
 )
 from services.platform.runtime.byoc_live_test_readiness import (
     ByocLiveTestReadinessInputs,
+    ByocLiveTestReadinessReport,
     render_live_test_readiness_json,
     run_byoc_live_test_readiness,
 )
@@ -86,6 +88,7 @@ _FORBIDDEN_FRAGMENTS = (
     "secret=",
     "token=",
 )
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
 class _StrictModel(BaseModel):
@@ -286,7 +289,10 @@ class ByocCustomerPilotPackageInputs:
     evidence_package_path: Path = Path("deploy/byoc/evidence-package.example.yaml")
     evidence_ledger_path: Path = Path("deploy/byoc/evidence-ledger.example.yaml")
     env_path: Path | None = Path(".env.production.example")
+    live_test_readiness_path: Path | None = None
+    customer_handoff_report_path: Path | None = None
     control_plane_read_smoke_path: Path | None = None
+    control_plane_read_smoke_summary_path: Path | None = None
     generated_at: datetime | None = None
 
 
@@ -305,48 +311,59 @@ def build_byoc_customer_pilot_package(
     generated_at = inputs.generated_at or datetime.now(tz=UTC)
     output_dir = _resolve_output_dir(inputs.output_dir, inputs.repo_root)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if (
+        inputs.control_plane_read_smoke_path is not None
+        and inputs.control_plane_read_smoke_summary_path is not None
+    ):
+        raise ValueError(
+            "provide either control_plane_read_smoke_path or "
+            "control_plane_read_smoke_summary_path"
+        )
 
-    live_readiness = run_byoc_live_test_readiness(
-        ByocLiveTestReadinessInputs(
-            dataplane_manifest_path=inputs.dataplane_manifest_path,
-            permissions_manifest_path=inputs.permissions_manifest_path,
-            iam_template_path=inputs.iam_template_path,
-            repo_root=inputs.repo_root,
+    live_readiness = (
+        _load_model(inputs.live_test_readiness_path, ByocLiveTestReadinessReport)
+        if inputs.live_test_readiness_path is not None
+        else run_byoc_live_test_readiness(
+            ByocLiveTestReadinessInputs(
+                dataplane_manifest_path=inputs.dataplane_manifest_path,
+                permissions_manifest_path=inputs.permissions_manifest_path,
+                iam_template_path=inputs.iam_template_path,
+                repo_root=inputs.repo_root,
+            )
         )
     )
     live_path = output_dir / "byoc-live-test-readiness.json"
     live_path.write_text(render_live_test_readiness_json(live_readiness), "utf-8")
 
-    handoff = run_byoc_customer_handoff(
-        ByocCustomerHandoffInputs(
-            dataplane_manifest_path=inputs.dataplane_manifest_path,
-            permissions_manifest_path=inputs.permissions_manifest_path,
-            iam_template_path=inputs.iam_template_path,
-            iac_package_path=inputs.iac_package_path,
-            bootstrap_bundle_path=inputs.bootstrap_bundle_path,
-            bootstrap_plan_path=inputs.bootstrap_plan_path,
-            evidence_package_path=inputs.evidence_package_path,
-            evidence_ledger_path=inputs.evidence_ledger_path,
-            env_path=inputs.env_path,
-            repo_root=inputs.repo_root,
+    handoff = (
+        _load_model(inputs.customer_handoff_report_path, ByocCustomerHandoffReport)
+        if inputs.customer_handoff_report_path is not None
+        else run_byoc_customer_handoff(
+            ByocCustomerHandoffInputs(
+                dataplane_manifest_path=inputs.dataplane_manifest_path,
+                permissions_manifest_path=inputs.permissions_manifest_path,
+                iam_template_path=inputs.iam_template_path,
+                iac_package_path=inputs.iac_package_path,
+                bootstrap_bundle_path=inputs.bootstrap_bundle_path,
+                bootstrap_plan_path=inputs.bootstrap_plan_path,
+                evidence_package_path=inputs.evidence_package_path,
+                evidence_ledger_path=inputs.evidence_ledger_path,
+                env_path=inputs.env_path,
+                repo_root=inputs.repo_root,
+            )
         )
     )
     handoff_path = output_dir / "byoc-customer-handoff-report.json"
     handoff_path.write_text(render_customer_handoff_json(handoff), "utf-8")
 
-    smoke_summary = (
-        build_byoc_control_plane_read_smoke_summary(
-            ByocControlPlaneReadSmokeSummaryInputs(
-                control_plane_read_smoke_path=inputs.control_plane_read_smoke_path,
-                generated_at=generated_at,
-            )
-        )
-        if inputs.control_plane_read_smoke_path is not None
-        else _manual_control_plane_read_smoke_summary(
+    smoke_summary = _control_plane_smoke_summary_for_package(
+        inputs=inputs,
+        generated_at=generated_at,
+        fallback=_manual_control_plane_read_smoke_summary(
             deployment_id=handoff.deployment_id or live_readiness.deployment_id,
             customer_id=handoff.customer_id or live_readiness.customer_id,
             generated_at=generated_at,
-        )
+        ),
     )
     smoke_summary_path = output_dir / "byoc-control-plane-read-smoke-summary.json"
     smoke_summary_path.write_text(
@@ -635,6 +652,27 @@ def _manual_control_plane_read_smoke_summary(
     )
 
 
+def _control_plane_smoke_summary_for_package(
+    *,
+    inputs: ByocCustomerPilotPackageInputs,
+    generated_at: datetime,
+    fallback: ByocControlPlaneReadSmokeSummary,
+) -> ByocControlPlaneReadSmokeSummary:
+    if inputs.control_plane_read_smoke_summary_path is not None:
+        return _load_model(
+            inputs.control_plane_read_smoke_summary_path,
+            ByocControlPlaneReadSmokeSummary,
+        )
+    if inputs.control_plane_read_smoke_path is not None:
+        return build_byoc_control_plane_read_smoke_summary(
+            ByocControlPlaneReadSmokeSummaryInputs(
+                control_plane_read_smoke_path=inputs.control_plane_read_smoke_path,
+                generated_at=generated_at,
+            )
+        )
+    return fallback
+
+
 def _artifact(
     name: str,
     kind: PilotPackageArtifactKind,
@@ -702,6 +740,10 @@ def _load_mapping(path: Path) -> dict[str, object]:
     if not isinstance(parsed, dict):
         raise ValueError(f"{path} must contain a mapping")
     return parsed
+
+
+def _load_model(path: Path, model: type[_ModelT]) -> _ModelT:
+    return model.model_validate(_load_mapping(path))
 
 
 __all__ = [

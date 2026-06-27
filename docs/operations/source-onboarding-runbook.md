@@ -368,17 +368,21 @@ repo-local ignored `tmp/` tree:
 ```bash
 scripts/build_byoc_customer_pilot_package.py --json \
   --output-dir tmp/byoc/customer-pilot \
+  --live-test-readiness <byoc-live-test-readiness.json> \
   --control-plane-read-smoke <byoc-control-plane-read-smoke-raw.json>
 ```
 
-Omit `--control-plane-read-smoke` when hosted control-plane reads have not run;
-the builder will create a `manual_required` smoke summary and launch summary.
-Use `--require-ready` only when all real AWS credential and hosted
-control-plane smoke evidence is expected to be complete. The package manifest
-contains only relative paths, digests, schema names, statuses, next-action
-codes, and privacy flags; it does not include artifact bodies, child report
-bodies, signed headers, endpoint URLs, request/response bodies, credentials,
-account IDs, ARNs, command output, logs, prompts, embeddings, or PII.
+Pass `--live-test-readiness` after running the real AWS credential readiness
+check. Use `--control-plane-read-smoke-summary` instead of
+`--control-plane-read-smoke` if the raw smoke output was already summarized.
+Omit either input when that step has not run; the builder will create a
+`manual_required` summary for missing hosted evidence. Use `--require-ready`
+only when all real AWS credential and hosted control-plane smoke evidence is
+expected to be complete. The package manifest contains only relative paths,
+digests, schema names, statuses, next-action codes, and privacy flags; it does
+not include artifact bodies, child report bodies, signed headers, endpoint
+URLs, request/response bodies, credentials, account IDs, ARNs, command output,
+logs, prompts, embeddings, or PII.
 
 Before sharing the package, validate the manifest and artifact digests:
 

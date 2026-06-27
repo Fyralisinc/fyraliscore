@@ -84,12 +84,31 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Env contract file used by offline customer handoff checks.",
     )
     parser.add_argument(
+        "--live-test-readiness",
+        type=Path,
+        help=(
+            "Optional pre-generated sanitized live-test readiness report. Use "
+            "this after running real AWS credential readiness."
+        ),
+    )
+    parser.add_argument(
+        "--customer-handoff-report",
+        type=Path,
+        help="Optional pre-generated sanitized customer handoff readiness report.",
+    )
+    smoke_group = parser.add_mutually_exclusive_group()
+    smoke_group.add_argument(
         "--control-plane-read-smoke",
         type=Path,
         help=(
             "Optional raw control-plane read smoke output to summarize. When "
             "omitted, the package marks hosted smoke as manual_required."
         ),
+    )
+    smoke_group.add_argument(
+        "--control-plane-read-smoke-summary",
+        type=Path,
+        help="Optional pre-generated sanitized control-plane read smoke summary.",
     )
     parser.add_argument(
         "--json",
@@ -119,7 +138,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             evidence_package_path=args.evidence_package,
             evidence_ledger_path=args.evidence_ledger,
             env_path=args.env_file,
+            live_test_readiness_path=args.live_test_readiness,
+            customer_handoff_report_path=args.customer_handoff_report,
             control_plane_read_smoke_path=args.control_plane_read_smoke,
+            control_plane_read_smoke_summary_path=args.control_plane_read_smoke_summary,
         )
     )
     rendered = (

@@ -428,7 +428,11 @@ Repo-owned artifacts for this first slice:
   ignored output directory. It does not run cloud apply, open inbound ports, or
   require AWS credentials; when hosted read smoke is not supplied, the package
   is explicitly `manual_required`. The manifest records only relative paths,
-  digests, schema names, statuses, next-action codes, and privacy flags.
+  digests, schema names, statuses, next-action codes, and privacy flags. When
+  real credential or hosted smoke artifacts already exist, pass them in with
+  `--live-test-readiness`, `--customer-handoff-report`, and
+  `--control-plane-read-smoke-summary` so the builder validates and re-renders
+  those sanitized reports instead of regenerating offline/manual placeholders.
 - `scripts/check_byoc_customer_pilot_package.py` validates that customer-pilot
   package before release review. It reloads the digest-only manifest, verifies
   every referenced artifact stays under the repo root, recomputes SHA-256
