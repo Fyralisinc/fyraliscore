@@ -296,6 +296,9 @@ BYOC_AGENT_TOKEN_ROTATION_PATH = Path(
 BYOC_LIVE_CREDENTIAL_REHEARSAL_PATH = Path(
     "services/platform/runtime/byoc_live_credential_rehearsal.py"
 )
+BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_PATH = Path(
+    "services/platform/runtime/byoc_control_plane_read_smoke_summary.py"
+)
 BYOC_LAUNCH_READINESS_SUMMARY_PATH = Path(
     "services/platform/runtime/byoc_launch_readiness_summary.py"
 )
@@ -427,6 +430,40 @@ BYOC_LAUNCH_READINESS_SUMMARY_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
     "response_body",
     "signed_header",
     "endpoint_url",
+    "auth_material",
+    "credential",
+    "account_id",
+    "arn",
+    "command_output",
+    "log_text",
+    "prompt",
+    "embedding",
+    "pii",
+)
+BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_FALSE_PRIVACY_FLAGS = (
+    "request_bodies_included",
+    "response_bodies_included",
+    "signed_headers_included",
+    "endpoint_urls_included",
+    "endpoint_paths_included",
+    "query_strings_included",
+    "raw_auth_material_included",
+    "credentials_included",
+    "account_ids_included",
+    "arns_included",
+    "command_output_included",
+    "logs_included",
+    "prompts_included",
+    "embeddings_included",
+    "pii_included",
+)
+BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
+    "request_body",
+    "response_body",
+    "signed_header",
+    "endpoint_url",
+    "endpoint_path",
+    "query_string",
     "auth_material",
     "credential",
     "account_id",
@@ -1322,6 +1359,121 @@ def find_byoc_live_credential_rehearsal_privacy_violations(
                     line_number=assignment.lineno,
                     message=(
                         f"BYOC live credential rehearsal privacy must keep "
+                        f"{field_name} pinned to Literal[False] = False"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def find_byoc_control_plane_read_smoke_summary_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_PATH,
+) -> list[Violation]:
+    """Return control-plane read smoke summary drift that could leak headers."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-control-plane-read-smoke-summary-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC control-plane read smoke summary module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    violations: list[Violation] = []
+
+    report_class = classes.get("ByocControlPlaneReadSmokeSummary")
+    report_fields = _class_field_assignments(report_class)
+    for field_name, assignment in sorted(report_fields.items()):
+        lowered = field_name.lower()
+        if any(
+            fragment in lowered
+            for fragment in (
+                BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_FORBIDDEN_REPORT_FIELD_FRAGMENTS
+            )
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-control-plane-read-smoke-summary-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC control-plane read smoke summaries must not "
+                        f"serialize sensitive field {field_name!r}"
+                    ),
+                )
+            )
+
+    stored_scope = report_fields.get("stored_scope")
+    if stored_scope is None:
+        violations.append(
+            Violation(
+                check="byoc-control-plane-read-smoke-summary-privacy",
+                path=contract_path,
+                line_number=report_class.lineno if report_class else 1,
+                message=(
+                    "BYOC control-plane read smoke summary must pin stored_scope "
+                    "to sanitized_control_plane_read_smoke_metadata_only"
+                ),
+            )
+        )
+    elif (
+        not isinstance(stored_scope.value, ast.Constant)
+        or stored_scope.value.value
+        != "sanitized_control_plane_read_smoke_metadata_only"
+    ):
+        violations.append(
+            Violation(
+                check="byoc-control-plane-read-smoke-summary-privacy",
+                path=contract_path,
+                line_number=stored_scope.lineno,
+                message=(
+                    "BYOC control-plane read smoke summary must pin stored_scope "
+                    "to sanitized_control_plane_read_smoke_metadata_only"
+                ),
+            )
+        )
+
+    privacy_class = classes.get("ByocControlPlaneReadSmokePrivacyContract")
+    privacy_fields = _class_field_assignments(privacy_class)
+    for field_name in BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_FALSE_PRIVACY_FLAGS:
+        assignment = privacy_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-control-plane-read-smoke-summary-privacy",
+                    path=contract_path,
+                    line_number=privacy_class.lineno if privacy_class else 1,
+                    message=(
+                        "BYOC control-plane read smoke privacy must keep "
+                        f"{field_name} pinned to Literal[False] = False"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[False]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not False
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-control-plane-read-smoke-summary-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC control-plane read smoke privacy must keep "
                         f"{field_name} pinned to Literal[False] = False"
                     ),
                 )
@@ -2318,6 +2470,11 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     )
     violations.extend(
         find_byoc_live_credential_rehearsal_privacy_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_control_plane_read_smoke_summary_privacy_violations(
+            repo_root=repo_root
+        )
     )
     violations.extend(
         find_byoc_launch_readiness_summary_privacy_violations(repo_root=repo_root)

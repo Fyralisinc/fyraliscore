@@ -345,6 +345,43 @@ def _control_plane_read_smoke_check(
     payload: dict[str, Any],
 ) -> ByocLaunchReadinessCheck:
     schema = str(payload.get("schema_version") or "")
+    if schema == "fyralis.byoc.control_plane_read_smoke_summary.v1":
+        if (
+            payload.get("status") == _PASS
+            and payload.get("hosted_read_executed") is True
+            and payload.get("required_surfaces_present") is True
+        ):
+            return _check(
+                "control_plane_read_smoke",
+                _PASS,
+                "Hosted control-plane read smoke summary passed.",
+                schema,
+                metrics={
+                    "mode": str(payload.get("mode") or "unknown"),
+                    "surface_count": int(payload.get("surface_count") or 0),
+                },
+            )
+        if payload.get("status") == _MANUAL:
+            return _check(
+                "control_plane_read_smoke",
+                _MANUAL,
+                "Hosted control-plane read smoke still needs execution.",
+                schema,
+                metrics={
+                    "mode": str(payload.get("mode") or "unknown"),
+                    "surface_count": int(payload.get("surface_count") or 0),
+                },
+            )
+        return _check(
+            "control_plane_read_smoke",
+            _FAIL,
+            "Control-plane read smoke summary is not ready.",
+            schema,
+            metrics={
+                "mode": str(payload.get("mode") or "unknown"),
+                "surface_count": int(payload.get("surface_count") or 0),
+            },
+        )
     if schema != "fyralis.byoc.control_plane_read_smoke.v1":
         return _check(
             "control_plane_read_smoke",

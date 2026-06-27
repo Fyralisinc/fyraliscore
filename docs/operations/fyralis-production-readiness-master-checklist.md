@@ -186,6 +186,11 @@ Every checklist item is done only when:
   preflight-report, and runner-evidence receipt state into status, next action,
   health counts, and evidence counts, plus targeted and combined local
   signed-read helpers for future control-panel/backend automation consumers.
+- [x] BYOC control-plane read-smoke output has a shareable summary command that
+  strips signed headers, endpoint paths, query strings, endpoint URLs,
+  request/response bodies, auth material, credentials, account IDs, ARNs, logs,
+  prompts, embeddings, and PII before the result is used in launch-review or
+  customer handoff evidence.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

@@ -39,7 +39,10 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--control-plane-read-smoke",
         type=Path,
         required=True,
-        help="Sanitized BYOC control-plane read smoke report.",
+        help=(
+            "Sanitized BYOC control-plane read smoke summary, or raw smoke "
+            "output for compatibility."
+        ),
     )
     parser.add_argument(
         "--json",

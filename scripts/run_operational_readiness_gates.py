@@ -980,13 +980,16 @@ def _byoc_launch_readiness_summary_gate(args: argparse.Namespace) -> GateResult:
     return _pytest_gate(
         "byoc_launch_readiness_summary",
         [
+            "services/platform/runtime/tests/test_byoc_control_plane_read_smoke_summary.py",
             "services/platform/runtime/tests/test_byoc_launch_readiness_summary.py",
+            "scripts/tests/test_summarize_byoc_control_plane_read_smoke.py",
             "scripts/tests/test_summarize_byoc_launch_readiness.py",
         ],
         details=(
-            "BYOC launch readiness summary composes sanitized live-test, "
-            "handoff, bundle-index, and control-plane read smoke artifacts "
-            "into a metadata-only customer-pilot go/no-go report."
+            "BYOC launch readiness summary sanitizes control-plane read smoke "
+            "output and composes live-test, handoff, bundle-index, and read "
+            "smoke artifacts into a metadata-only customer-pilot go/no-go "
+            "report."
         ),
         args=args,
         timeout_s=min(args.command_timeout_s, 60),

@@ -385,6 +385,15 @@ Repo-owned artifacts for this first slice:
   evidence-package receipts, preflight receipts, and runner-evidence receipts.
   It can print the signed request bundle for offline inspection or execute the
   five GETs against `--base-url`, returning only sanitized endpoint responses.
+- `services/platform/runtime/byoc_control_plane_read_smoke_summary.py` and
+  `scripts/summarize_byoc_control_plane_read_smoke.py` convert raw/signed
+  control-plane read-smoke output into a shareable metadata-only summary. The
+  summary records mode, hosted-execution state, required surface status, bounded
+  next-action codes, and counts; it drops signed headers, endpoint paths,
+  query strings, endpoint URLs, response bodies, auth material, credentials,
+  account IDs, ARNs, logs, prompts, embeddings, and PII. Use this summary as
+  the launch-readiness input whenever the raw smoke output contains signed
+  request material.
 - `services/platform/runtime/byoc_deployment_overview.py` defines the signed
   BYOC deployment overview read model used by
   `GET /byoc/control-plane/deployment-overview`. It aggregates only existing
@@ -404,10 +413,10 @@ Repo-owned artifacts for this first slice:
   backend/core launch go/no-go before customer handoff. It can pass only after
   the live-test readiness report is fully ready, the customer handoff report is
   ready, the handoff index has required artifacts and signed read paths, the
-  hosted control-plane read smoke has executed, and all identity fields agree.
-  Without `--require-ready`, manual-required output is allowed so local
-  artifact generation remains useful before the credential/control-plane
-  window.
+  sanitized control-plane read-smoke summary proves the hosted smoke has
+  executed, and all identity fields agree. Without `--require-ready`,
+  manual-required output is allowed so local artifact generation remains useful
+  before the credential/control-plane window.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -1640,6 +1649,10 @@ Minimum gates before first enterprise customer:
   `scripts/get_byoc_deployment_overview.py` for targeted backend automation
   checks, and `scripts/smoke_byoc_control_plane_reads.py` for the combined
   read-only control-plane smoke instead of hand-building signed read headers.
+  Before adding read-smoke evidence to customer handoff or launch-review
+  artifacts, summarize the raw smoke output with
+  `scripts/summarize_byoc_control_plane_read_smoke.py` and archive only that
+  sanitized summary outside the operator-only evidence store.
 - Run the post-deploy validator in offline CI mode and live customer-data-plane
   mode before enabling source onboarding.
 - Keep the data-plane agent enrollment, desired-state polling, and heartbeat

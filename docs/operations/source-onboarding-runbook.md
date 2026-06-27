@@ -303,7 +303,8 @@ scripts/get_byoc_deployment_overview.py \
 
 For a single read-only backend smoke of all signed control-plane metadata
 surfaces, use the combined helper. Omit `--base-url` to print the signed request
-bundle without network access:
+bundle without network access. Treat this raw output as operator-only when it
+contains signed headers, request paths, query strings, or hosted responses:
 
 ```bash
 FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY="<local-read-signing-material>" \
@@ -315,8 +316,24 @@ scripts/smoke_byoc_control_plane_reads.py \
   --base-url https://<control-plane>
 ```
 
+Before adding read-smoke evidence to a customer handoff or launch-review
+artifact, summarize the raw smoke output:
+
+```bash
+scripts/summarize_byoc_control_plane_read_smoke.py --json \
+  --control-plane-read-smoke <byoc-control-plane-read-smoke-raw.json> \
+  --output <byoc-control-plane-read-smoke-summary.json>
+```
+
+Use `--require-executed` when the hosted control-plane read must already be
+complete. Without that flag, an offline signed-request bundle becomes a
+`manual_required` summary that is safe to archive while the hosted read remains
+pending. The summary must not include signed headers, endpoint paths, query
+strings, endpoint URLs, request/response bodies, auth material, credentials,
+account IDs, ARNs, logs, prompts, embeddings, or PII.
+
 After the live-test readiness report, customer handoff report, handoff bundle
-index, and control-plane read-smoke output exist, generate the final
+index, and sanitized control-plane read-smoke summary exist, generate the final
 backend/core launch-readiness summary:
 
 ```bash
@@ -324,7 +341,7 @@ scripts/summarize_byoc_launch_readiness.py --json \
   --live-test-readiness <byoc-live-test-readiness.json> \
   --customer-handoff-report <byoc-customer-handoff-report.json> \
   --handoff-bundle-index <byoc-customer-handoff-bundle-index.json> \
-  --control-plane-read-smoke <byoc-control-plane-read-smoke.json> \
+  --control-plane-read-smoke <byoc-control-plane-read-smoke-summary.json> \
   --output <byoc-launch-readiness-summary.json>
 ```
 

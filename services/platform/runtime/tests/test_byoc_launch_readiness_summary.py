@@ -82,6 +82,48 @@ def test_launch_readiness_summary_marks_manual_when_hosted_smoke_is_not_executed
     }
 
 
+def test_launch_readiness_summary_accepts_sanitized_control_plane_smoke_summary(
+    tmp_path: Path,
+) -> None:
+    paths = _write_inputs(tmp_path)
+    paths["smoke"].write_text(
+        json.dumps(
+            {
+                "schema_version": (
+                    "fyralis.byoc.control_plane_read_smoke_summary.v1"
+                ),
+                "status": "pass",
+                "mode": "executed",
+                "hosted_read_executed": True,
+                "required_surfaces_present": True,
+                "surface_count": 5,
+                "deployment_id": "dep_launch01",
+                "customer_id": "cus_launch01",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = build_byoc_launch_readiness_summary(
+        ByocLaunchReadinessSummaryInputs(
+            live_test_readiness_path=paths["live"],
+            customer_handoff_report_path=paths["handoff"],
+            handoff_bundle_index_path=paths["index"],
+            control_plane_read_smoke_path=paths["smoke"],
+            generated_at=GENERATED_AT,
+        )
+    )
+
+    assert summary.status == "pass"
+    smoke_check = [
+        check for check in summary.checks if check.name == "control_plane_read_smoke"
+    ][0]
+    assert smoke_check.status == "pass"
+    assert smoke_check.source_schema_version == (
+        "fyralis.byoc.control_plane_read_smoke_summary.v1"
+    )
+
+
 def test_launch_readiness_summary_fails_for_identity_mismatch(
     tmp_path: Path,
 ) -> None:

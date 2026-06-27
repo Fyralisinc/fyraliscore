@@ -371,7 +371,14 @@ def test_byoc_launch_readiness_summary_gate_passes_for_contract_suite() -> None:
 
     assert result.status == PASS
     assert result.command is not None
+    assert (
+        "services/platform/runtime/tests/test_byoc_control_plane_read_smoke_summary.py"
+        in result.command
+    )
     assert "services/platform/runtime/tests/test_byoc_launch_readiness_summary.py" in (
+        result.command
+    )
+    assert "scripts/tests/test_summarize_byoc_control_plane_read_smoke.py" in (
         result.command
     )
     assert "scripts/tests/test_summarize_byoc_launch_readiness.py" in result.command
