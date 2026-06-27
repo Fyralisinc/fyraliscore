@@ -298,6 +298,16 @@ Repo-owned artifacts for this first slice:
   that backend/control-panel consumers may use. It does not embed artifact
   bodies, raw reports, signed headers, endpoint URLs, credentials, logs,
   request bodies, payloads, prompts, or PII.
+- `services/platform/runtime/byoc_launch_readiness_summary.py` and
+  `scripts/summarize_byoc_launch_readiness.py` compose the final
+  customer-pilot readiness artifact from the sanitized live-test readiness
+  report, customer handoff readiness report, handoff bundle index, and
+  control-plane read-smoke output. The summary is a backend/core contract for
+  release review and automation: it emits only pass/fail/manual-required
+  status, bounded next-action codes, deployment identity, source schema names,
+  counts, and privacy flags. It does not embed child reports, artifact bodies,
+  signed headers, endpoint URLs, request/response bodies, auth material,
+  account IDs, ARNs, command output, logs, prompts, embeddings, or PII.
 - `services/platform/runtime/byoc_live_credential_rehearsal.py` and
   `scripts/run_byoc_live_credential_rehearsal.py` provide the one-command
   local artifact pipeline for real AWS credential rehearsal. The command runs
@@ -390,6 +400,14 @@ Repo-owned artifacts for this first slice:
   profile names, account IDs, ARNs, credentials, command output, URLs, or
   customer data. With `--require-aws-access`, missing local AWS access becomes
   a hard failure for the live-test handoff.
+- `scripts/summarize_byoc_launch_readiness.py --require-ready` is the final
+  backend/core launch go/no-go before customer handoff. It can pass only after
+  the live-test readiness report is fully ready, the customer handoff report is
+  ready, the handoff index has required artifacts and signed read paths, the
+  hosted control-plane read smoke has executed, and all identity fields agree.
+  Without `--require-ready`, manual-required output is allowed so local
+  artifact generation remains useful before the credential/control-plane
+  window.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -1602,6 +1620,15 @@ Minimum gates before first enterprise customer:
   ledger, and handoff report exist. Share the index as a table of contents for
   safe artifacts and signed read endpoints; do not attach raw reports, signed
   headers, endpoint URLs, request/response bodies, logs, credentials, or PII.
+- Generate the launch readiness summary with
+  `scripts/summarize_byoc_launch_readiness.py` after live-test readiness,
+  customer handoff readiness, handoff bundle index, and control-plane read
+  smoke artifacts exist. Use `--require-ready` only for the final customer
+  pilot go/no-go; without it, the command may return manual-required while the
+  hosted read smoke or real AWS credential window is still pending. Share only
+  this summary and the handoff index in release-review channels, not raw child
+  reports, signed headers, endpoint URLs, request/response bodies, credentials,
+  logs, prompts, or PII.
 - Submit evidence packages to the control-plane intake API only as signed
   `fyralis.byoc.evidence_package_submission.v1` payloads; control-plane storage
   may retain only the generated sanitized receipt metadata in

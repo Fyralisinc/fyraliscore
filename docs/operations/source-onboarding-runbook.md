@@ -315,6 +315,28 @@ scripts/smoke_byoc_control_plane_reads.py \
   --base-url https://<control-plane>
 ```
 
+After the live-test readiness report, customer handoff report, handoff bundle
+index, and control-plane read-smoke output exist, generate the final
+backend/core launch-readiness summary:
+
+```bash
+scripts/summarize_byoc_launch_readiness.py --json \
+  --live-test-readiness <byoc-live-test-readiness.json> \
+  --customer-handoff-report <byoc-customer-handoff-report.json> \
+  --handoff-bundle-index <byoc-customer-handoff-bundle-index.json> \
+  --control-plane-read-smoke <byoc-control-plane-read-smoke.json> \
+  --output <byoc-launch-readiness-summary.json>
+```
+
+Use `--require-ready` only for the final customer-pilot go/no-go. Without that
+flag, the command returns success for a `manual_required` summary so operators
+can archive the safe artifact before the hosted control-plane read or real AWS
+credential window is complete. The summary may leave the data plane as
+metadata-only release evidence; it must not include child report bodies, raw
+reports, artifact bodies, signed headers, endpoint URLs, request/response
+bodies, auth material, account IDs, ARNs, command output, logs, prompts,
+embeddings, or PII.
+
 For local contract proof or customer handoff before live agent endpoint wiring,
 run the mock-backed probe from inside the customer data-plane context:
 

@@ -22,6 +22,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_evidence_package_gate,
     _byoc_evidence_ledger_gate,
     _byoc_handoff_bundle_index_gate,
+    _byoc_launch_readiness_summary_gate,
     _byoc_permissions_contract_gate,
     _byoc_preflight_bundle_gate,
     _byoc_source_onboarding_gate,
@@ -359,6 +360,21 @@ def test_byoc_live_test_readiness_gate_passes_without_credentials() -> None:
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
         "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
     }
+    assert "123456789012" not in result.stdout_tail
+    assert "arn:aws" not in result.stdout_tail
+
+
+def test_byoc_launch_readiness_summary_gate_passes_for_contract_suite() -> None:
+    args = argparse.Namespace(command_timeout_s=30, skip_pytest=False)
+
+    result = _byoc_launch_readiness_summary_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "services/platform/runtime/tests/test_byoc_launch_readiness_summary.py" in (
+        result.command
+    )
+    assert "scripts/tests/test_summarize_byoc_launch_readiness.py" in result.command
     assert "123456789012" not in result.stdout_tail
     assert "arn:aws" not in result.stdout_tail
 

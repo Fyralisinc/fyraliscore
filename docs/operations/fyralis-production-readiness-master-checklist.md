@@ -155,6 +155,12 @@ Every checklist item is done only when:
   lists sanitized handoff artifacts by relative path, digest, schema, and scope,
   plus signed read endpoint paths, without artifact bodies, signed headers,
   endpoint URLs, request/response bodies, logs, credentials, or PII.
+- [x] BYOC customer-pilot launch readiness has a backend/core summary command
+  that composes live-test readiness, customer handoff readiness, handoff bundle
+  index, and control-plane read-smoke outputs into one metadata-only go/no-go
+  artifact with no child reports, raw reports, artifact bodies, signed headers,
+  endpoint URLs, request/response bodies, credentials, account IDs, ARNs, logs,
+  prompts, embeddings, or PII.
 - [x] BYOC live credential rehearsal has a customer-side artifact-pipeline CLI
   that runs sanitized AWS preflight, writes sanitized ledger/package evidence,
   gates the generated package, supports a real-AWS-call requirement for
