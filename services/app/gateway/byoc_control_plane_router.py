@@ -23,6 +23,14 @@ from services.platform.runtime.byoc_control_plane_intake import (
     validate_evidence_receipt_read_auth_headers,
     validate_evidence_package_submission,
 )
+from services.platform.runtime.byoc_agent_control_plane import (
+    ByocAgentDesiredStateUpdateReceipt,
+    ByocAgentDesiredStateUpdateRequest,
+    ByocAgentRegistryStore,
+    InMemoryByocAgentRegistryStore,
+    PostgresByocAgentRegistryStore,
+    validate_desired_state_update_request,
+)
 from services.platform.runtime.byoc_preflight_intake import (
     ByocPreflightReportIntakeStore,
     ByocPreflightReportReceipt,
@@ -46,6 +54,7 @@ def build_byoc_control_plane_router(
     store: ByocEvidencePackageIntakeStore | None = None,
     runner_evidence_store: ByocRunnerEvidenceIntakeStore | None = None,
     preflight_report_store: ByocPreflightReportIntakeStore | None = None,
+    agent_registry_store: ByocAgentRegistryStore | None = None,
     signing_secret: str | None = None,
     signing_key_ref: str | None = None,
 ) -> APIRouter:
@@ -156,6 +165,45 @@ def build_byoc_control_plane_router(
             request
         )
         return await intake_store.put(submission)
+
+    @router.post(
+        "/agent-desired-state",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def update_agent_desired_state(
+        request: Request,
+        update: ByocAgentDesiredStateUpdateRequest,
+    ) -> ByocAgentDesiredStateUpdateReceipt:
+        resolved_key = await _resolve_control_plane_key(
+            request,
+            purpose="desired_state_update",
+            key_ref=update.signature.key_ref,
+            signing_secret=signing_secret,
+            signing_key_ref=signing_key_ref,
+        )
+        violations = validate_desired_state_update_request(
+            update,
+            signing_secret=resolved_key.secret,
+            expected_key_ref=resolved_key.key_ref,
+        )
+        if violations:
+            status_code = (
+                status.HTTP_403_FORBIDDEN
+                if any("signature" in violation.path for violation in violations)
+                else status.HTTP_400_BAD_REQUEST
+            )
+            raise HTTPException(
+                status_code=status_code,
+                detail={"errors": [violation.render() for violation in violations]},
+            )
+        registry = agent_registry_store or _agent_registry_store_from_state(request)
+        receipt = await registry.update_desired_state(update)
+        if receipt is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"errors": ["agent_id: agent_not_enrolled"]},
+            )
+        return receipt
 
     @router.get("/evidence-packages")
     async def list_evidence_package_receipts(
@@ -337,6 +385,21 @@ def _preflight_report_store_from_state(
         return created
     created = InMemoryByocPreflightReportIntakeStore()
     request.app.state.byoc_preflight_report_intake_store = created
+    return created
+
+
+def _agent_registry_store_from_state(request: Request) -> ByocAgentRegistryStore:
+    existing = getattr(request.app.state, "byoc_agent_registry_store", None)
+    if existing is not None:
+        return existing
+    deps = getattr(request.app.state, "deps", None)
+    pool = getattr(deps, "pool", None)
+    if pool is not None:
+        created = PostgresByocAgentRegistryStore(pool)
+        request.app.state.byoc_agent_registry_store = created
+        return created
+    created = InMemoryByocAgentRegistryStore()
+    request.app.state.byoc_agent_registry_store = created
     return created
 
 

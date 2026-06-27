@@ -21,6 +21,9 @@ from services.platform.runtime.byoc_agent_contract import (
     canonical_enrollment_payload,
 )
 from services.platform.runtime.byoc_contract import CloudProvider, TelemetryMode
+from services.platform.runtime.byoc_control_plane_intake import (
+    ByocControlPlaneSignature,
+)
 
 
 AgentStoredScope = Literal["sanitized_agent_metadata_only"]
@@ -46,9 +49,14 @@ class ByocAgentEnrollmentRecord(_StrictModel):
     region: str
     install_token_secret_ref: str
     desired_revision: str
+    desired_config_epoch: int = Field(default=0, ge=0)
+    evidence_package_required: bool = False
     heartbeat_interval_seconds: int = Field(ge=5, le=300)
     telemetry_contract: str
     enrolled_at: datetime
+    desired_state_updated_at: datetime | None = None
+    desired_state_update_reason: str | None = None
+    desired_state_updated_by: str | None = None
     stored_scope: AgentStoredScope = "sanitized_agent_metadata_only"
 
     @field_validator("deployment_id")
@@ -81,9 +89,13 @@ class ByocAgentEnrollmentRecord(_StrictModel):
         "desired_revision",
         "region",
         "telemetry_contract",
+        "desired_state_update_reason",
+        "desired_state_updated_by",
     )
     @classmethod
-    def _strings_must_be_bounded(cls, value: str) -> str:
+    def _strings_must_be_bounded(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         value = value.strip()
         if not _SAFE_CODE_RE.match(value):
             raise ValueError("agent metadata fields must be bounded identifiers")
@@ -277,6 +289,102 @@ class ByocAgentDesiredStateResponse(_StrictModel):
         return value
 
 
+class ByocAgentDesiredStateUpdatePayload(_StrictModel):
+    schema_version: Literal["fyralis.byoc.agent.desired_state_update.v1"]
+    deployment_id: str
+    customer_id: str
+    agent_id: str
+    desired_revision: str
+    config_epoch: int = Field(ge=0)
+    evidence_package_required: bool = False
+    requested_at: datetime
+    nonce: str = Field(min_length=16, max_length=128)
+    reason_code: str
+    requested_by: str
+
+    @field_validator("deployment_id")
+    @classmethod
+    def _deployment_id_shape(cls, value: str) -> str:
+        value = value.strip()
+        if not _DEPLOYMENT_ID_RE.match(value):
+            raise ValueError("deployment_id must look like dep_<stable-id>")
+        return value
+
+    @field_validator("customer_id")
+    @classmethod
+    def _customer_id_shape(cls, value: str) -> str:
+        value = value.strip()
+        if not _CUSTOMER_ID_RE.match(value):
+            raise ValueError("customer_id must look like cus_<stable-id>")
+        return value
+
+    @field_validator("agent_id")
+    @classmethod
+    def _agent_id_shape(cls, value: str) -> str:
+        value = value.strip()
+        if not _AGENT_ID_RE.match(value):
+            raise ValueError("agent_id must look like agt_<stable-id>")
+        return value
+
+    @field_validator("desired_revision", "nonce", "reason_code", "requested_by")
+    @classmethod
+    def _strings_must_be_bounded(cls, value: str) -> str:
+        value = value.strip()
+        if not value or not _SAFE_CODE_RE.match(value):
+            raise ValueError("desired-state update fields must be bounded identifiers")
+        return value
+
+
+class ByocAgentDesiredStateUpdateRequest(ByocAgentDesiredStateUpdatePayload):
+    signature: ByocControlPlaneSignature
+
+
+class ByocAgentDesiredStateUpdateReceipt(_StrictModel):
+    schema_version: Literal["fyralis.byoc.agent.desired_state_update_receipt.v1"]
+    status: Literal["accepted"] = "accepted"
+    deployment_id: str
+    customer_id: str
+    agent_id: str
+    previous_desired_revision: str
+    desired_revision: str
+    config_epoch: int = Field(ge=0)
+    evidence_package_required: bool
+    accepted_at: datetime
+    stored_scope: AgentStoredScope = "sanitized_agent_metadata_only"
+
+    @field_validator("deployment_id")
+    @classmethod
+    def _receipt_deployment_id_shape(cls, value: str) -> str:
+        value = value.strip()
+        if not _DEPLOYMENT_ID_RE.match(value):
+            raise ValueError("deployment_id must look like dep_<stable-id>")
+        return value
+
+    @field_validator("customer_id")
+    @classmethod
+    def _receipt_customer_id_shape(cls, value: str) -> str:
+        value = value.strip()
+        if not _CUSTOMER_ID_RE.match(value):
+            raise ValueError("customer_id must look like cus_<stable-id>")
+        return value
+
+    @field_validator("agent_id")
+    @classmethod
+    def _receipt_agent_id_shape(cls, value: str) -> str:
+        value = value.strip()
+        if not _AGENT_ID_RE.match(value):
+            raise ValueError("agent_id must look like agt_<stable-id>")
+        return value
+
+    @field_validator("previous_desired_revision", "desired_revision")
+    @classmethod
+    def _receipt_strings_must_be_bounded(cls, value: str) -> str:
+        value = value.strip()
+        if not _SAFE_CODE_RE.match(value):
+            raise ValueError("desired-state receipt fields must be bounded identifiers")
+        return value
+
+
 @dataclass(frozen=True, slots=True)
 class ByocAgentControlPlaneViolation:
     path: str
@@ -315,9 +423,17 @@ class ByocAgentRegistryStore(Protocol):
         *,
         accepted_at: datetime | None = None,
         poll_after_seconds: int = 30,
-        config_epoch: int = 0,
-        evidence_package_required: bool = False,
+        config_epoch: int | None = None,
+        evidence_package_required: bool | None = None,
     ) -> ByocAgentDesiredStateResponse | None:
+        ...
+
+    async def update_desired_state(
+        self,
+        request: ByocAgentDesiredStateUpdateRequest,
+        *,
+        accepted_at: datetime | None = None,
+    ) -> ByocAgentDesiredStateUpdateReceipt | None:
         ...
 
     async def get(
@@ -365,9 +481,14 @@ class InMemoryByocAgentRegistryStore:
             region=request.region,
             install_token_secret_ref=request.install_token_secret_ref,
             desired_revision=desired,
+            desired_config_epoch=0,
+            evidence_package_required=False,
             heartbeat_interval_seconds=heartbeat_interval_seconds,
             telemetry_contract=telemetry_contract,
             enrolled_at=accepted,
+            desired_state_updated_at=accepted,
+            desired_state_update_reason="agent_enrollment",
+            desired_state_updated_by="agent_control_plane",
             stored_scope="sanitized_agent_metadata_only",
         )
         key = _agent_key(request.deployment_id, request.customer_id, request.agent_id)
@@ -439,8 +560,8 @@ class InMemoryByocAgentRegistryStore:
         *,
         accepted_at: datetime | None = None,
         poll_after_seconds: int = 30,
-        config_epoch: int = 0,
-        evidence_package_required: bool = False,
+        config_epoch: int | None = None,
+        evidence_package_required: bool | None = None,
     ) -> ByocAgentDesiredStateResponse | None:
         existing = self._records.get(
             _agent_key(request.deployment_id, request.customer_id, request.agent_id)
@@ -454,6 +575,48 @@ class InMemoryByocAgentRegistryStore:
             poll_after_seconds=poll_after_seconds,
             config_epoch=config_epoch,
             evidence_package_required=evidence_package_required,
+        )
+
+    async def update_desired_state(
+        self,
+        request: ByocAgentDesiredStateUpdateRequest,
+        *,
+        accepted_at: datetime | None = None,
+    ) -> ByocAgentDesiredStateUpdateReceipt | None:
+        key = _agent_key(request.deployment_id, request.customer_id, request.agent_id)
+        existing = self._records.get(key)
+        if existing is None:
+            return None
+        accepted = accepted_at or datetime.now(UTC)
+        previous = existing.enrollment.desired_revision
+        enrollment = existing.enrollment.model_copy(
+            update={
+                "desired_revision": request.desired_revision,
+                "desired_config_epoch": request.config_epoch,
+                "evidence_package_required": request.evidence_package_required,
+                "desired_state_updated_at": accepted,
+                "desired_state_update_reason": request.reason_code,
+                "desired_state_updated_by": request.requested_by,
+            }
+        )
+        self._records[key] = ByocAgentRegistrationState(
+            schema_version="fyralis.byoc.agent_registration_state.v1",
+            enrollment=enrollment,
+            latest_heartbeat=existing.latest_heartbeat,
+            stored_scope="sanitized_agent_metadata_only",
+        )
+        return ByocAgentDesiredStateUpdateReceipt(
+            schema_version="fyralis.byoc.agent.desired_state_update_receipt.v1",
+            status="accepted",
+            deployment_id=request.deployment_id,
+            customer_id=request.customer_id,
+            agent_id=request.agent_id,
+            previous_desired_revision=previous,
+            desired_revision=request.desired_revision,
+            config_epoch=request.config_epoch,
+            evidence_package_required=request.evidence_package_required,
+            accepted_at=accepted,
+            stored_scope="sanitized_agent_metadata_only",
         )
 
 
@@ -492,14 +655,19 @@ class PostgresByocAgentRegistryStore:
                 region,
                 install_token_secret_ref,
                 desired_revision,
+                desired_config_epoch,
+                evidence_package_required,
                 heartbeat_interval_seconds,
                 telemetry_contract,
                 enrolled_at,
+                desired_state_updated_at,
+                desired_state_update_reason,
+                desired_state_updated_by,
                 stored_scope,
                 updated_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8,
-                $9, $10, $11, $12, $13, now()
+                $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now()
             )
             ON CONFLICT (deployment_id, customer_id, agent_id) DO UPDATE SET
                 agent_version = EXCLUDED.agent_version,
@@ -508,9 +676,14 @@ class PostgresByocAgentRegistryStore:
                 region = EXCLUDED.region,
                 install_token_secret_ref = EXCLUDED.install_token_secret_ref,
                 desired_revision = EXCLUDED.desired_revision,
+                desired_config_epoch = EXCLUDED.desired_config_epoch,
+                evidence_package_required = EXCLUDED.evidence_package_required,
                 heartbeat_interval_seconds = EXCLUDED.heartbeat_interval_seconds,
                 telemetry_contract = EXCLUDED.telemetry_contract,
                 enrolled_at = EXCLUDED.enrolled_at,
+                desired_state_updated_at = EXCLUDED.desired_state_updated_at,
+                desired_state_update_reason = EXCLUDED.desired_state_update_reason,
+                desired_state_updated_by = EXCLUDED.desired_state_updated_by,
                 stored_scope = EXCLUDED.stored_scope,
                 updated_at = now()
             RETURNING
@@ -530,9 +703,14 @@ class PostgresByocAgentRegistryStore:
             request.region,
             request.install_token_secret_ref,
             desired,
+            0,
+            False,
             heartbeat_interval_seconds,
             telemetry_contract,
             accepted,
+            accepted,
+            "agent_enrollment",
+            "agent_control_plane",
             "sanitized_agent_metadata_only",
         )
         return ByocAgentEnrollmentResponse(
@@ -638,9 +816,14 @@ class PostgresByocAgentRegistryStore:
                 region,
                 install_token_secret_ref,
                 desired_revision,
+                desired_config_epoch,
+                evidence_package_required,
                 heartbeat_interval_seconds,
                 telemetry_contract,
                 enrolled_at,
+                desired_state_updated_at,
+                desired_state_update_reason,
+                desired_state_updated_by,
                 stored_scope,
                 latest_heartbeat_sequence,
                 latest_validation_status,
@@ -675,8 +858,8 @@ class PostgresByocAgentRegistryStore:
         *,
         accepted_at: datetime | None = None,
         poll_after_seconds: int = 30,
-        config_epoch: int = 0,
-        evidence_package_required: bool = False,
+        config_epoch: int | None = None,
+        evidence_package_required: bool | None = None,
     ) -> ByocAgentDesiredStateResponse | None:
         state = await self.get(
             deployment_id=request.deployment_id,
@@ -692,6 +875,75 @@ class PostgresByocAgentRegistryStore:
             poll_after_seconds=poll_after_seconds,
             config_epoch=config_epoch,
             evidence_package_required=evidence_package_required,
+        )
+
+    async def update_desired_state(
+        self,
+        request: ByocAgentDesiredStateUpdateRequest,
+        *,
+        accepted_at: datetime | None = None,
+    ) -> ByocAgentDesiredStateUpdateReceipt | None:
+        accepted = accepted_at or datetime.now(UTC)
+        row = await self._pool.fetchrow(
+            """
+            WITH previous AS (
+                SELECT desired_revision
+                FROM byoc_agent_registrations
+                WHERE deployment_id = $1
+                  AND customer_id = $2
+                  AND agent_id = $3
+                FOR UPDATE
+            ),
+            updated AS (
+                UPDATE byoc_agent_registrations AS registration
+                SET
+                    desired_revision = $4,
+                    desired_config_epoch = $5,
+                    evidence_package_required = $6,
+                    desired_state_updated_at = $7,
+                    desired_state_update_reason = $8,
+                    desired_state_updated_by = $9,
+                    updated_at = now()
+                FROM previous
+                WHERE registration.deployment_id = $1
+                  AND registration.customer_id = $2
+                  AND registration.agent_id = $3
+                RETURNING
+                    registration.deployment_id,
+                    registration.customer_id,
+                    registration.agent_id,
+                    previous.desired_revision AS previous_desired_revision,
+                    registration.desired_revision,
+                    registration.desired_config_epoch,
+                    registration.evidence_package_required,
+                    registration.desired_state_updated_at
+            )
+            SELECT * FROM updated
+            """,
+            request.deployment_id,
+            request.customer_id,
+            request.agent_id,
+            request.desired_revision,
+            request.config_epoch,
+            request.evidence_package_required,
+            accepted,
+            request.reason_code,
+            request.requested_by,
+        )
+        if row is None:
+            return None
+        return ByocAgentDesiredStateUpdateReceipt(
+            schema_version="fyralis.byoc.agent.desired_state_update_receipt.v1",
+            status="accepted",
+            deployment_id=row["deployment_id"],
+            customer_id=row["customer_id"],
+            agent_id=row["agent_id"],
+            previous_desired_revision=row["previous_desired_revision"],
+            desired_revision=row["desired_revision"],
+            config_epoch=row["desired_config_epoch"],
+            evidence_package_required=row["evidence_package_required"],
+            accepted_at=row["desired_state_updated_at"],
+            stored_scope="sanitized_agent_metadata_only",
         )
 
 
@@ -919,16 +1171,123 @@ def validate_desired_state_poll_request(
     return violations
 
 
+def desired_state_update_payload(
+    *,
+    deployment_id: str,
+    customer_id: str,
+    agent_id: str,
+    desired_revision: str,
+    config_epoch: int,
+    reason_code: str,
+    requested_by: str,
+    nonce: str,
+    evidence_package_required: bool = False,
+    requested_at: datetime | None = None,
+) -> ByocAgentDesiredStateUpdatePayload:
+    return ByocAgentDesiredStateUpdatePayload(
+        schema_version="fyralis.byoc.agent.desired_state_update.v1",
+        deployment_id=deployment_id,
+        customer_id=customer_id,
+        agent_id=agent_id,
+        desired_revision=desired_revision,
+        config_epoch=config_epoch,
+        evidence_package_required=evidence_package_required,
+        requested_at=requested_at or datetime.now(UTC),
+        nonce=nonce,
+        reason_code=reason_code,
+        requested_by=requested_by,
+    )
+
+
+def signed_desired_state_update_request(
+    payload: ByocAgentDesiredStateUpdatePayload,
+    *,
+    signing_secret: str,
+    key_ref: str,
+) -> ByocAgentDesiredStateUpdateRequest:
+    if not signing_secret:
+        raise ValueError("signing_secret must not be empty")
+    signature = ByocControlPlaneSignature(
+        key_ref=key_ref,
+        value=_hmac_sha256(
+            canonical_desired_state_update_payload(payload),
+            signing_secret,
+        ),
+    )
+    return ByocAgentDesiredStateUpdateRequest(
+        **payload.model_dump(),
+        signature=signature,
+    )
+
+
+def canonical_desired_state_update_payload(
+    payload: ByocAgentDesiredStateUpdatePayload,
+) -> bytes:
+    data = payload.model_dump(mode="json")
+    return json.dumps(data, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def validate_desired_state_update_request(
+    request: ByocAgentDesiredStateUpdateRequest,
+    *,
+    signing_secret: str,
+    expected_key_ref: str,
+    expected_deployment_id: str | None = None,
+    expected_customer_id: str | None = None,
+) -> list[ByocAgentControlPlaneViolation]:
+    violations: list[ByocAgentControlPlaneViolation] = []
+    if not signing_secret:
+        return [
+            _violation("signature", "missing_signing_secret", "signing secret is empty")
+        ]
+    if request.signature.key_ref != expected_key_ref:
+        violations.append(
+            _violation(
+                "signature.key_ref",
+                "signature_key_ref_mismatch",
+                "signature key_ref is not registered for desired-state updates",
+            )
+        )
+    if expected_deployment_id and request.deployment_id != expected_deployment_id:
+        violations.append(
+            _violation("deployment_id", "deployment_mismatch", "deployment mismatch")
+        )
+    if expected_customer_id and request.customer_id != expected_customer_id:
+        violations.append(
+            _violation("customer_id", "customer_mismatch", "customer mismatch")
+        )
+
+    expected_signature = _hmac_sha256(
+        canonical_desired_state_update_payload(
+            _desired_state_update_payload_from_request(request)
+        ),
+        signing_secret,
+    )
+    if not hmac.compare_digest(expected_signature, request.signature.value):
+        violations.append(
+            _violation("signature.value", "invalid_signature", "invalid signature")
+        )
+    return violations
+
+
 def desired_state_response_from_registration(
     request: ByocAgentDesiredStatePollRequest,
     state: ByocAgentRegistrationState,
     *,
     accepted_at: datetime | None = None,
     poll_after_seconds: int = 30,
-    config_epoch: int = 0,
-    evidence_package_required: bool = False,
+    config_epoch: int | None = None,
+    evidence_package_required: bool | None = None,
 ) -> ByocAgentDesiredStateResponse:
     enrollment = state.enrollment
+    resolved_config_epoch = (
+        enrollment.desired_config_epoch if config_epoch is None else config_epoch
+    )
+    resolved_evidence_required = (
+        enrollment.evidence_package_required
+        if evidence_package_required is None
+        else evidence_package_required
+    )
     return ByocAgentDesiredStateResponse(
         schema_version="fyralis.byoc.agent.desired_state.v1",
         status="accepted",
@@ -942,12 +1301,12 @@ def desired_state_response_from_registration(
             if request.artifact_revision == enrollment.desired_revision
             else "apply_revision"
         ),
-        config_epoch=config_epoch,
+        config_epoch=resolved_config_epoch,
         config_scope="metadata_only",
         heartbeat_interval_seconds=enrollment.heartbeat_interval_seconds,
         poll_after_seconds=poll_after_seconds,
         telemetry_contract=enrollment.telemetry_contract,
-        evidence_package_required=evidence_package_required,
+        evidence_package_required=resolved_evidence_required,
         accepted_at=accepted_at or datetime.now(UTC),
         stored_scope="sanitized_agent_metadata_only",
     )
@@ -1000,6 +1359,14 @@ def _poll_payload_from_request(
     )
 
 
+def _desired_state_update_payload_from_request(
+    request: ByocAgentDesiredStateUpdateRequest,
+) -> ByocAgentDesiredStateUpdatePayload:
+    return ByocAgentDesiredStateUpdatePayload.model_validate(
+        request.model_dump(exclude={"signature"})
+    )
+
+
 def _component_status_counts(
     request: ByocAgentHeartbeat,
 ) -> dict[Literal["ok", "degraded", "failed", "unknown"], int]:
@@ -1038,9 +1405,18 @@ def _state_from_row(row: Any) -> ByocAgentRegistrationState:
         region=row["region"],
         install_token_secret_ref=row["install_token_secret_ref"],
         desired_revision=row["desired_revision"],
+        desired_config_epoch=_row_get(row, "desired_config_epoch", 0),
+        evidence_package_required=_row_get(row, "evidence_package_required", False),
         heartbeat_interval_seconds=row["heartbeat_interval_seconds"],
         telemetry_contract=row["telemetry_contract"],
         enrolled_at=row["enrolled_at"],
+        desired_state_updated_at=_row_get(row, "desired_state_updated_at", None),
+        desired_state_update_reason=_row_get(
+            row,
+            "desired_state_update_reason",
+            None,
+        ),
+        desired_state_updated_by=_row_get(row, "desired_state_updated_by", None),
         stored_scope=row["stored_scope"],
     )
     latest_heartbeat = None
@@ -1076,6 +1452,13 @@ def _state_from_row(row: Any) -> ByocAgentRegistrationState:
     )
 
 
+def _row_get(row: Any, key: str, default: Any) -> Any:
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return default
+
+
 def _violation(
     path: str,
     code: str,
@@ -1089,6 +1472,9 @@ __all__ = [
     "ByocAgentDesiredStatePollPayload",
     "ByocAgentDesiredStatePollRequest",
     "ByocAgentDesiredStateResponse",
+    "ByocAgentDesiredStateUpdatePayload",
+    "ByocAgentDesiredStateUpdateReceipt",
+    "ByocAgentDesiredStateUpdateRequest",
     "ByocAgentEnrollmentRecord",
     "ByocAgentHeartbeatRecord",
     "ByocAgentRegistryStore",
@@ -1096,12 +1482,16 @@ __all__ = [
     "InMemoryByocAgentRegistryStore",
     "PostgresByocAgentRegistryStore",
     "canonical_desired_state_poll_payload",
+    "canonical_desired_state_update_payload",
     "desired_state_poll_payload",
     "desired_state_poll_payload_from_registration",
     "desired_state_response_from_registration",
+    "desired_state_update_payload",
     "heartbeat_record_from_request",
     "signed_desired_state_poll_request",
+    "signed_desired_state_update_request",
     "validate_agent_enrollment_request",
     "validate_agent_heartbeat_request",
     "validate_desired_state_poll_request",
+    "validate_desired_state_update_request",
 ]

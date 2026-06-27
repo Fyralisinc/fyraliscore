@@ -130,7 +130,15 @@ Repo-owned artifacts for this first slice:
   rollout action, poll cadence, telemetry contract, and config epoch metadata.
   The route stores no request bodies, signature values, raw tokens, mTLS
   material, logs, payloads, prompts, endpoint URLs, config bodies, or PII.
-  Production mTLS issuance and fleet reconciliation remain deferred.
+  `POST /byoc/control-plane/agent-desired-state` accepts a canonical
+  HMAC-signed `fyralis.byoc.agent.desired_state_update.v1` request from
+  backend automation and updates only scalar rollout intent for an already
+  enrolled agent: desired revision, config epoch, evidence-package-required
+  flag, reason code, requester code, and accepted timestamp. The route returns
+  a sanitized receipt and stores no request body, signature value, artifact ref,
+  config body, raw token, endpoint URL, log, payload, prompt, embedding, or
+  PII. Production mTLS issuance, full fleet reconciliation history, and fleet
+  dashboard workflows remain deferred.
 - `services/platform/runtime/byoc_permissions.py` defines the backend-owned
   customer-cloud permission contract. It validates role boundaries, explicit
   AWS actions, scoped resources, `iam:PassRole` service constraints, no
@@ -286,7 +294,8 @@ Repo-owned artifacts for this first slice:
 - `services/platform/runtime/byoc_control_plane_intake.py` and
   `services/app/gateway/byoc_control_plane_router.py` define the first hosted
   control-plane intake contract for sanitized evidence packages and other
-  BYOC evidence receipts. The data-plane agent submits a canonical HMAC-signed
+  BYOC evidence receipts, plus the signed backend desired-state update surface
+  for enrolled agents. The data-plane agent submits a canonical HMAC-signed
   package submission to `POST /byoc/control-plane/evidence-packages`; the
   gateway stores only a
   sanitized receipt record and rejects raw reports, URL/credential markers, bad
@@ -299,9 +308,11 @@ Repo-owned artifacts for this first slice:
   response contract returns sanitized scalar receipt metadata only. In BYOC
   production, submission and receipt-read HMAC keys are selected by `key_ref`
   and resolved through managed app-secret refs; raw process-env signing keys are
-  allowed only for local/test app-state wiring. Architecture ratchets forbid
-  receipt JSON/blob/body columns so raw evidence packages and live report
-  details cannot become control-plane storage.
+  allowed only for local/test app-state wiring. The same intake signing-key
+  purpose signs `POST /byoc/control-plane/agent-desired-state`; the durable
+  update lands in `byoc_agent_registrations` as scalar metadata only.
+  Architecture ratchets forbid receipt JSON/blob/body columns so raw evidence
+  packages and live report details cannot become control-plane storage.
 - `services/platform/runtime/byoc_runner_evidence_intake.py` extends that
   hosted intake with a signed sanitized runner-evidence envelope. Customer-side
   runner automation derives a `fyralis.byoc.runner_evidence_summary.v1`
@@ -331,11 +342,12 @@ Repo-owned artifacts for this first slice:
   hooks for BYOC contract drift.
 
 This intentionally defers cloud apply, real agent reconciliation actions beyond
-non-mutating apply-plan evidence, production Terraform/CloudFormation modules,
-hosted onboarding UI, mTLS issuance, live token-rotation execution, and fleet
-dashboard work until a first-customer cloud/profile is selected. Those systems
-should consume these manifests and the bounded runner/rotation contracts
-instead of inventing new deployment, permission, or agent protocol shape.
+metadata-only desired-state updates and non-mutating apply-plan evidence,
+production Terraform/CloudFormation modules, hosted onboarding UI, mTLS
+issuance, live token-rotation execution, and fleet dashboard work until a
+first-customer cloud/profile is selected. Those systems should consume these
+manifests and the bounded runner/rotation contracts instead of inventing new
+deployment, permission, or agent protocol shape.
 
 ## Current Fyralis Baseline
 
@@ -935,26 +947,35 @@ Recommended profile for first enterprise customer:
 
 Control-plane trigger model:
 
-- Control plane writes signed desired state:
+- Backend automation writes a signed metadata-only desired-state update for an
+  already enrolled agent:
 
 ```json
 {
+  "schema_version": "fyralis.byoc.agent.desired_state_update.v1",
   "deployment_id": "dep_01j...",
+  "customer_id": "cus_01j...",
+  "agent_id": "agt_01j...",
   "desired_revision": "2026.06.24-3",
-  "artifact_set": {
-    "helm_chart": "oci://registry.fyralis.com/fyralis/dataplane:2026.06.24-3",
-    "terraform_module": "oci://registry.fyralis.com/fyralis/aws-byoc:2026.06.24-3",
-    "image_bundle": "sha256:..."
-  },
-  "policy_pack": "enterprise-default-v1",
-  "telemetry_contract": "telemetry-v1",
-  "signature": "cosign-or-dsse-signature"
+  "config_epoch": 3,
+  "evidence_package_required": true,
+  "reason_code": "rollout_rehearsal",
+  "requested_by": "ops_backend",
+  "requested_at": "2026-06-24T12:00:00Z",
+  "nonce": "nonce-control-plane-update-001",
+  "signature": {
+    "key_ref": "control-plane/byoc/evidence-intake-key-ref",
+    "value": "hmac-sha256"
+  }
 }
 ```
 
-- Data-plane agent pulls desired state.
-- Agent verifies signature, evaluates policy pack, takes state lock, plans,
-  applies, validates, and reports structured progress.
+- The hosted backend stores only revision/config-epoch/evidence-required
+  metadata in `byoc_agent_registrations`.
+- The data-plane agent pulls desired state with its install-token identity.
+- The agent maps `desired_revision` to locally available signed bootstrap
+  bundle/artifact metadata, takes a state lock, plans, applies after future
+  mutating-runner work is enabled, validates, and reports structured progress.
 - Portal displays progress from agent events, not from raw IaC logs.
 
 Helm values baseline:

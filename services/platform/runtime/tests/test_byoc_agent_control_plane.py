@@ -13,10 +13,13 @@ from services.platform.runtime.byoc_agent_contract import (
 from services.platform.runtime.byoc_agent_control_plane import (
     InMemoryByocAgentRegistryStore,
     desired_state_poll_payload,
+    desired_state_update_payload,
     signed_desired_state_poll_request,
+    signed_desired_state_update_request,
     validate_agent_enrollment_request,
     validate_agent_heartbeat_request,
     validate_desired_state_poll_request,
+    validate_desired_state_update_request,
 )
 from services.platform.runtime.byoc_contract import load_byoc_manifest
 
@@ -24,6 +27,8 @@ from services.platform.runtime.byoc_contract import load_byoc_manifest
 ROOT = Path(__file__).resolve().parents[4]
 MANIFEST = load_byoc_manifest(ROOT / "deploy/byoc/dataplane.example.yaml")
 INSTALL_TOKEN = "local-install-token-for-control-plane-agent-tests"
+SIGNING_SECRET = "local-desired-state-update-signing-secret"
+SIGNING_KEY_REF = "control-plane/byoc/evidence-intake-key-ref"
 AGENT_ID = "agt_control01"
 AGENT_VERSION = "0.1.0"
 REQUESTED_AT = datetime(2026, 6, 26, 12, 0, tzinfo=UTC)
@@ -172,6 +177,26 @@ def _desired_state_poll(*, install_token: str = INSTALL_TOKEN):
     return signed_desired_state_poll_request(payload, install_token=install_token)
 
 
+def _desired_state_update(*, signing_secret: str = SIGNING_SECRET):
+    payload = desired_state_update_payload(
+        deployment_id=MANIFEST.deployment_id,
+        customer_id=MANIFEST.customer_id,
+        agent_id=AGENT_ID,
+        desired_revision="2026.06.26-2",
+        config_epoch=3,
+        evidence_package_required=True,
+        reason_code="rollout_rehearsal",
+        requested_by="ops_backend",
+        nonce="nonce-control-plane-desired-update-001",
+        requested_at=datetime(2026, 6, 26, 12, 5, tzinfo=UTC),
+    )
+    return signed_desired_state_update_request(
+        payload,
+        signing_secret=signing_secret,
+        key_ref=SIGNING_KEY_REF,
+    )
+
+
 def test_desired_state_poll_validation_verifies_signature_and_identity() -> None:
     request = _desired_state_poll()
 
@@ -188,6 +213,26 @@ def test_desired_state_poll_validation_verifies_signature_and_identity() -> None
         bad,
         install_token=INSTALL_TOKEN,
         expected_install_token_secret_ref=MANIFEST.secrets.bootstrap_token_secret_ref,
+    )
+    assert [violation.code for violation in violations] == ["invalid_signature"]
+
+
+def test_desired_state_update_validation_verifies_signature_and_identity() -> None:
+    request = _desired_state_update()
+
+    assert validate_desired_state_update_request(
+        request,
+        signing_secret=SIGNING_SECRET,
+        expected_key_ref=SIGNING_KEY_REF,
+        expected_deployment_id=MANIFEST.deployment_id,
+        expected_customer_id=MANIFEST.customer_id,
+    ) == []
+
+    bad = _desired_state_update(signing_secret="wrong-secret")
+    violations = validate_desired_state_update_request(
+        bad,
+        signing_secret=SIGNING_SECRET,
+        expected_key_ref=SIGNING_KEY_REF,
     )
     assert [violation.code for violation in violations] == ["invalid_signature"]
 
@@ -222,6 +267,40 @@ async def test_in_memory_agent_store_returns_sanitized_desired_state() -> None:
     assert "signature" not in serialized.lower()
     assert "payload" not in serialized.lower()
     assert MANIFEST.connectivity.control_plane_url not in serialized
+
+
+async def test_in_memory_agent_store_updates_sanitized_desired_state() -> None:
+    store = InMemoryByocAgentRegistryStore()
+    await store.enroll(
+        _enrollment(),
+        enrolled_at=REQUESTED_AT,
+        heartbeat_interval_seconds=MANIFEST.connectivity.heartbeat_interval_seconds,
+        telemetry_contract=MANIFEST.telemetry.contract,
+    )
+
+    receipt = await store.update_desired_state(
+        _desired_state_update(),
+        accepted_at=datetime(2026, 6, 26, 12, 6, tzinfo=UTC),
+    )
+    response = await store.desired_state(
+        _desired_state_poll(),
+        accepted_at=datetime(2026, 6, 26, 12, 7, tzinfo=UTC),
+        poll_after_seconds=MANIFEST.connectivity.agent_poll_interval_seconds,
+    )
+
+    assert receipt is not None
+    assert receipt.status == "accepted"
+    assert receipt.previous_desired_revision == MANIFEST.artifact_revision
+    assert receipt.desired_revision == "2026.06.26-2"
+    assert response is not None
+    assert response.desired_revision == "2026.06.26-2"
+    assert response.rollout_action == "apply_revision"
+    assert response.config_epoch == 3
+    assert response.evidence_package_required is True
+    serialized = response.model_dump_json() + receipt.model_dump_json()
+    assert SIGNING_SECRET not in serialized
+    assert "signature" not in serialized.lower()
+    assert "payload" not in serialized.lower()
 
 
 async def test_in_memory_agent_store_rejects_unenrolled_desired_state_poll() -> None:

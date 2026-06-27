@@ -11,7 +11,11 @@ from lib.shared.secrets import load_app_secret_text_from_env
 from services.app.gateway.settings import GatewaySettings
 
 
-ByocControlPlaneKeyPurpose = Literal["evidence_package_submission", "receipt_read"]
+ByocControlPlaneKeyPurpose = Literal[
+    "desired_state_update",
+    "evidence_package_submission",
+    "receipt_read",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +52,7 @@ class StaticByocControlPlaneSigningKeyResolver:
         purpose: ByocControlPlaneKeyPurpose,
         key_ref: str,
     ) -> ResolvedByocControlPlaneKey | None:
-        if purpose == "evidence_package_submission":
+        if purpose in {"desired_state_update", "evidence_package_submission"}:
             expected_key_ref = self.intake_key_ref
             secret = self.intake_secret
         else:
@@ -85,7 +89,7 @@ class ManagedEnvByocControlPlaneSigningKeyResolver:
         purpose: ByocControlPlaneKeyPurpose,
         key_ref: str,
     ) -> ResolvedByocControlPlaneKey | None:
-        if purpose == "evidence_package_submission":
+        if purpose in {"desired_state_update", "evidence_package_submission"}:
             expected_key_ref = self.intake_key_ref
             secret_name = "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY"
             secret_ref = self.intake_secret_ref

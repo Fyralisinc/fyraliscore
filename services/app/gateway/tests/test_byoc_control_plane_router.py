@@ -13,6 +13,17 @@ from services.app.gateway.byoc_control_plane_router import (
     build_byoc_control_plane_router,
 )
 from services.app.gateway.settings import GatewaySettings
+from services.platform.runtime.byoc_agent_contract import (
+    enrollment_payload_from_manifest,
+    signed_enrollment_request,
+)
+from services.platform.runtime.byoc_agent_control_plane import (
+    InMemoryByocAgentRegistryStore,
+    desired_state_poll_payload,
+    desired_state_update_payload,
+    signed_desired_state_poll_request,
+    signed_desired_state_update_request,
+)
 from services.platform.runtime.byoc_agent_runner import (
     ByocAgentRunnerInputs,
     run_byoc_agent_runner,
@@ -23,6 +34,7 @@ from services.platform.runtime.byoc_control_plane_intake import (
     signed_evidence_receipt_read_headers,
     signed_evidence_package_submission,
 )
+from services.platform.runtime.byoc_contract import load_byoc_manifest
 from services.platform.runtime.byoc_evidence_package import load_byoc_evidence_package
 from services.platform.runtime.byoc_preflight_bundle import (
     ByocPreflightBundleInputs,
@@ -44,6 +56,7 @@ from services.platform.runtime.byoc_runner_evidence_intake import (
 ROOT = Path(__file__).resolve().parents[4]
 PACKAGE = load_byoc_evidence_package(ROOT / "deploy/byoc/evidence-package.example.yaml")
 MANIFEST_PATH = ROOT / "deploy/byoc/dataplane.example.yaml"
+MANIFEST = load_byoc_manifest(MANIFEST_PATH)
 BUNDLE_NEXT_PATH = ROOT / "deploy/byoc/bootstrap-bundle.next.example.yaml"
 PERMISSIONS_PATH = ROOT / "deploy/byoc/permissions.example.yaml"
 IAM_TEMPLATE_PATH = ROOT / "deploy/byoc/aws/iam.bootstrap.template.yaml"
@@ -54,9 +67,12 @@ ENV_TEMPLATE = ROOT / ".env.production.example"
 SIGNING_SECRET = "local-control-plane-intake-secret"
 SIGNING_KEY_REF = "control-plane/byoc/evidence-intake-key"
 AGENT_ID = "agt_intake01"
+DESIRED_STATE_AGENT_ID = "agt_controlrouter01"
 AGENT_VERSION = "0.1.0"
 SUBMITTED_AT = datetime(2026, 6, 26, 12, 30, tzinfo=UTC)
 INSTALL_TOKEN = "local-control-plane-runner-evidence-token"
+AGENT_INSTALL_TOKEN = "local-control-plane-agent-install-token"
+AGENT_INSTALL_TOKEN_REF = MANIFEST.secrets.bootstrap_token_secret_ref
 
 
 def _submission(*, signing_secret: str = SIGNING_SECRET):
@@ -128,6 +144,55 @@ def _preflight_submission(*, signing_secret: str = SIGNING_SECRET):
         payload,
         signing_secret=signing_secret,
         key_ref=SIGNING_KEY_REF,
+    )
+
+
+def _agent_enrollment():
+    payload = enrollment_payload_from_manifest(
+        MANIFEST,
+        agent_id=DESIRED_STATE_AGENT_ID,
+        agent_version=AGENT_VERSION,
+        nonce="nonce-control-plane-router-agent-001",
+        requested_at=datetime(2026, 6, 26, 12, 20, tzinfo=UTC),
+    )
+    return signed_enrollment_request(payload, install_token=AGENT_INSTALL_TOKEN)
+
+
+def _desired_state_update(*, signing_secret: str = SIGNING_SECRET):
+    payload = desired_state_update_payload(
+        deployment_id=MANIFEST.deployment_id,
+        customer_id=MANIFEST.customer_id,
+        agent_id=DESIRED_STATE_AGENT_ID,
+        desired_revision="2026.06.26-2",
+        config_epoch=3,
+        evidence_package_required=True,
+        reason_code="rollout_rehearsal",
+        requested_by="ops_backend",
+        nonce="nonce-control-plane-router-desired-update-001",
+        requested_at=datetime(2026, 6, 26, 12, 25, tzinfo=UTC),
+    )
+    return signed_desired_state_update_request(
+        payload,
+        signing_secret=signing_secret,
+        key_ref=SIGNING_KEY_REF,
+    )
+
+
+def _desired_state_poll():
+    payload = desired_state_poll_payload(
+        deployment_id=MANIFEST.deployment_id,
+        customer_id=MANIFEST.customer_id,
+        agent_id=DESIRED_STATE_AGENT_ID,
+        agent_version=AGENT_VERSION,
+        artifact_revision=MANIFEST.artifact_revision,
+        install_token_secret_ref=AGENT_INSTALL_TOKEN_REF,
+        nonce="nonce-control-plane-router-desired-poll-001",
+        last_seen_desired_revision=MANIFEST.artifact_revision,
+        requested_at=datetime(2026, 6, 26, 12, 26, tzinfo=UTC),
+    )
+    return signed_desired_state_poll_request(
+        payload,
+        install_token=AGENT_INSTALL_TOKEN,
     )
 
 
@@ -361,6 +426,87 @@ async def test_byoc_control_plane_accepts_signed_preflight_report() -> None:
     assert '"preflight_report":' not in response.text
     assert "ghcr.io" not in response.text
     assert "postgresql://" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_accepts_signed_agent_desired_state_update() -> None:
+    agent_store = InMemoryByocAgentRegistryStore()
+    await agent_store.enroll(
+        _agent_enrollment(),
+        enrolled_at=datetime(2026, 6, 26, 12, 21, tzinfo=UTC),
+        heartbeat_interval_seconds=MANIFEST.connectivity.heartbeat_interval_seconds,
+        telemetry_contract=MANIFEST.telemetry.contract,
+    )
+    app, _ = _app()
+    app.state.byoc_agent_registry_store = agent_store
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/agent-desired-state",
+            json=_desired_state_update().model_dump(mode="json"),
+        )
+
+    assert response.status_code == 202
+    receipt = response.json()
+    assert receipt["status"] == "accepted"
+    assert receipt["stored_scope"] == "sanitized_agent_metadata_only"
+    assert receipt["previous_desired_revision"] == MANIFEST.artifact_revision
+    assert receipt["desired_revision"] == "2026.06.26-2"
+    assert receipt["config_epoch"] == 3
+    assert receipt["evidence_package_required"] is True
+    assert SIGNING_SECRET not in response.text
+    assert "signature" not in response.text.lower()
+    assert "payload" not in response.text.lower()
+
+    desired = await agent_store.desired_state(
+        _desired_state_poll(),
+        accepted_at=datetime(2026, 6, 26, 12, 27, tzinfo=UTC),
+        poll_after_seconds=MANIFEST.connectivity.agent_poll_interval_seconds,
+    )
+
+    assert desired is not None
+    assert desired.desired_revision == "2026.06.26-2"
+    assert desired.rollout_action == "apply_revision"
+    assert desired.config_epoch == 3
+    assert desired.evidence_package_required is True
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_rejects_bad_desired_state_signature() -> None:
+    agent_store = InMemoryByocAgentRegistryStore()
+    await agent_store.enroll(
+        _agent_enrollment(),
+        enrolled_at=datetime(2026, 6, 26, 12, 21, tzinfo=UTC),
+    )
+    app, _ = _app()
+    app.state.byoc_agent_registry_store = agent_store
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/agent-desired-state",
+            json=_desired_state_update(signing_secret="wrong-secret").model_dump(
+                mode="json"
+            ),
+        )
+
+    assert response.status_code == 403
+    assert "invalid_signature" in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_rejects_unenrolled_agent_desired_state_update() -> None:
+    agent_store = InMemoryByocAgentRegistryStore()
+    app, _ = _app()
+    app.state.byoc_agent_registry_store = agent_store
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/agent-desired-state",
+            json=_desired_state_update().model_dump(mode="json"),
+        )
+
+    assert response.status_code == 404
+    assert "agent_not_enrolled" in response.text
 
 
 @pytest.mark.asyncio

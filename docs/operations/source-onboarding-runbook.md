@@ -219,6 +219,16 @@ latest heartbeat aggregate counts. Agents pull revision/config intent through
 desired revision, rollout action, poll cadence, telemetry contract, and config
 epoch metadata.
 
+Backend automation advances an enrolled agent through
+`POST /byoc/control-plane/agent-desired-state` with a signed
+`fyralis.byoc.agent.desired_state_update.v1` request. Use the BYOC evidence
+intake signing key reference for this route until a dedicated desired-state
+key is introduced. The hosted backend persists only scalar rollout intent in
+`byoc_agent_registrations`: desired revision, config epoch,
+evidence-package-required flag, reason code, requester code, and accepted
+timestamp. Do not submit artifact refs, config bodies, endpoint URLs, raw
+tokens, logs, payloads, prompts, embeddings, or PII through this route.
+
 For local contract proof or customer handoff before live agent endpoint wiring,
 run the mock-backed probe from inside the customer data-plane context:
 

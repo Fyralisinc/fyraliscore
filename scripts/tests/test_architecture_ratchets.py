@@ -1342,6 +1342,38 @@ CREATE TABLE IF NOT EXISTS byoc_agent_registrations (
     assert "sanitized metadata scope" in violations[0].message
 
 
+def test_byoc_agent_registration_storage_check_scans_later_migrations(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0181_byoc_agent_registrations.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_agent_registrations (
+  deployment_id TEXT NOT NULL,
+  stored_scope TEXT NOT NULL CHECK (stored_scope = 'sanitized_agent_metadata_only')
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (migrations / "0184_byoc_agent_desired_state_metadata.sql").write_text(
+        """
+ALTER TABLE byoc_agent_registrations
+  ADD COLUMN IF NOT EXISTS desired_state_body JSONB;
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_agent_registration_storage_violations(repo_root=tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-agent-registration-storage"
+    assert violations[0].path == Path(
+        "db/migrations/0184_byoc_agent_desired_state_metadata.sql"
+    )
+    assert violations[0].line_number == 2
+
+
 def test_byoc_agent_registration_storage_check_allows_checked_in_migration() -> None:
     assert find_byoc_agent_registration_storage_violations() == []
 

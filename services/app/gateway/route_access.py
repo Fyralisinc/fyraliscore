@@ -85,7 +85,8 @@ _BYOC_CONTROL_PLANE = RouteAccessPolicy(
     access=RouteAccess.SELF_AUTHENTICATED,
     reason=(
         "BYOC data-plane route authenticated by signed enrollment, "
-        "signed evidence submissions, or mTLS-bound agent identity"
+        "signed evidence submissions, signed desired-state updates, "
+        "or mTLS-bound agent identity"
     ),
     gateway_bearer_required=False,
 )

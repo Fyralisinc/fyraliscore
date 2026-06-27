@@ -1469,18 +1469,32 @@ def find_byoc_agent_registration_storage_violations(
             )
         )
 
-    for line_number, line in enumerate(text.splitlines(), start=1):
-        for pattern, message in BYOC_AGENT_REGISTRATION_FORBIDDEN_STORAGE_PATTERNS:
-            if pattern.search(line):
-                violations.append(
-                    Violation(
-                        check="byoc-agent-registration-storage",
-                        path=migration_path,
-                        line_number=line_number,
-                        message=message,
+    migration_paths: set[Path] = {migration_path}
+    migrations_dir = repo_root / "db" / "migrations"
+    if migrations_dir.exists():
+        for candidate in sorted(migrations_dir.glob("*.sql")):
+            candidate_text = _strip_sql_comments_preserving_lines(
+                candidate.read_text(encoding="utf-8", errors="ignore")
+            )
+            if "byoc_agent_registrations" in candidate_text:
+                migration_paths.add(candidate.relative_to(repo_root))
+
+    for scanned_path in sorted(migration_paths):
+        scanned_text = _strip_sql_comments_preserving_lines(
+            (repo_root / scanned_path).read_text(encoding="utf-8", errors="ignore")
+        )
+        for line_number, line in enumerate(scanned_text.splitlines(), start=1):
+            for pattern, message in BYOC_AGENT_REGISTRATION_FORBIDDEN_STORAGE_PATTERNS:
+                if pattern.search(line):
+                    violations.append(
+                        Violation(
+                            check="byoc-agent-registration-storage",
+                            path=scanned_path,
+                            line_number=line_number,
+                            message=message,
+                        )
                     )
-                )
-                break
+                    break
     return violations
 
 
