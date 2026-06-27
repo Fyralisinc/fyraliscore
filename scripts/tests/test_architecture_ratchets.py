@@ -7,6 +7,7 @@ from scripts.check_architecture_ratchets import (
     find_browser_token_storage_violations,
     find_byoc_agent_contract_privacy_violations,
     find_byoc_agent_registration_storage_violations,
+    find_byoc_agent_token_rotation_privacy_violations,
     find_byoc_aws_live_preflight_privacy_violations,
     find_byoc_evidence_receipt_storage_violations,
     find_byoc_manifest_privacy_violations,
@@ -1013,6 +1014,96 @@ class ByocAgentHeartbeat:
 
 def test_byoc_agent_contract_privacy_check_allows_checked_in_contract() -> None:
     assert find_byoc_agent_contract_privacy_violations() == []
+
+
+def test_byoc_agent_token_rotation_privacy_check_flags_raw_fields(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_agent_token_rotation.py").write_text(
+        """
+from typing import Literal
+
+class ByocAgentTokenRotationPrivacyContract:
+    raw_token_material_included: bool = True
+    secret_refs_included: Literal[False] = False
+    secret_ref_digests_included: Literal[True] = True
+    signatures_included: Literal[False] = False
+    request_bodies_included: Literal[False] = False
+    command_output_included: Literal[False] = False
+    cloud_credentials_included: Literal[False] = False
+    account_ids_included: Literal[False] = False
+    arns_included: Literal[False] = False
+    urls_included: Literal[False] = False
+    raw_payloads_included: Literal[False] = False
+    prompts_included: Literal[False] = False
+    logs_included: Literal[False] = False
+    pii_included: Literal[False] = False
+
+class ByocAgentTokenRotationPlanReport:
+    current_secret_ref: str
+    next_secret_ref_digest: str
+    raw_token_value: str
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_agent_token_rotation_privacy_violations(
+        repo_root=tmp_path,
+    )
+
+    assert [violation.check for violation in violations] == [
+        "byoc-agent-token-rotation-privacy",
+        "byoc-agent-token-rotation-privacy",
+        "byoc-agent-token-rotation-privacy",
+    ]
+    assert {violation.line_number for violation in violations} == {4, 20, 22}
+
+
+def test_byoc_agent_token_rotation_privacy_check_requires_digest_flag(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_agent_token_rotation.py").write_text(
+        """
+from typing import Literal
+
+class ByocAgentTokenRotationPrivacyContract:
+    raw_token_material_included: Literal[False] = False
+    secret_refs_included: Literal[False] = False
+    secret_ref_digests_included: bool = False
+    signatures_included: Literal[False] = False
+    request_bodies_included: Literal[False] = False
+    command_output_included: Literal[False] = False
+    cloud_credentials_included: Literal[False] = False
+    account_ids_included: Literal[False] = False
+    arns_included: Literal[False] = False
+    urls_included: Literal[False] = False
+    raw_payloads_included: Literal[False] = False
+    prompts_included: Literal[False] = False
+    logs_included: Literal[False] = False
+    pii_included: Literal[False] = False
+
+class ByocAgentTokenRotationPlanReport:
+    current_secret_ref_digest: str
+    next_secret_ref_digest: str
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_agent_token_rotation_privacy_violations(
+        repo_root=tmp_path,
+    )
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-agent-token-rotation-privacy"
+    assert violations[0].line_number == 6
+
+
+def test_byoc_agent_token_rotation_privacy_check_allows_checked_in_contract() -> None:
+    assert find_byoc_agent_token_rotation_privacy_violations() == []
 
 
 def test_byoc_aws_live_preflight_privacy_check_flags_serialized_identity(

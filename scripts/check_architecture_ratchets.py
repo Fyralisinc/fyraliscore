@@ -290,6 +290,9 @@ BYOC_MANIFEST_DIRECTION_RE = re.compile(
     re.IGNORECASE,
 )
 BYOC_AGENT_CONTRACT_PATH = Path("services/platform/runtime/byoc_agent_contract.py")
+BYOC_AGENT_TOKEN_ROTATION_PATH = Path(
+    "services/platform/runtime/byoc_agent_token_rotation.py"
+)
 BYOC_AWS_LIVE_PREFLIGHT_PATH = Path(
     "services/platform/runtime/byoc_aws_live_preflight.py"
 )
@@ -331,6 +334,38 @@ BYOC_AWS_LIVE_PREFLIGHT_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
     "principal",
     "secret",
     "token",
+)
+BYOC_AGENT_TOKEN_ROTATION_FALSE_PRIVACY_FLAGS = (
+    "raw_token_material_included",
+    "secret_refs_included",
+    "signatures_included",
+    "request_bodies_included",
+    "command_output_included",
+    "cloud_credentials_included",
+    "account_ids_included",
+    "arns_included",
+    "urls_included",
+    "raw_payloads_included",
+    "prompts_included",
+    "logs_included",
+    "pii_included",
+)
+BYOC_AGENT_TOKEN_ROTATION_TRUE_PRIVACY_FLAGS = (
+    "secret_ref_digests_included",
+)
+BYOC_AGENT_TOKEN_ROTATION_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
+    "raw_token",
+    "token_material",
+    "token_value",
+    "install_token_value",
+    "signature",
+    "request_body",
+    "response_body",
+    "command_output",
+    "account_id",
+    "arn",
+    "url",
+    "credential",
 )
 BYOC_EVIDENCE_RECEIPT_FORBIDDEN_STORAGE_PATTERNS: tuple[
     tuple[re.Pattern[str], str],
@@ -1001,6 +1036,138 @@ def find_byoc_agent_contract_privacy_violations(
                     message=(
                         f"{class_name} must not serialize raw install_token; "
                         "only install_token_secret_ref may leave the data plane"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def find_byoc_agent_token_rotation_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_AGENT_TOKEN_ROTATION_PATH,
+) -> list[Violation]:
+    """Return BYOC token-rotation report drift that could leak secrets."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-agent-token-rotation-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC agent token rotation module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    violations: list[Violation] = []
+
+    report_class = classes.get("ByocAgentTokenRotationPlanReport")
+    report_fields = _class_field_assignments(report_class)
+    for field_name, assignment in sorted(report_fields.items()):
+        lowered = field_name.lower()
+        if "secret_ref" in lowered and not lowered.endswith("secret_ref_digest"):
+            violations.append(
+                Violation(
+                    check="byoc-agent-token-rotation-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC token rotation reports must not serialize raw "
+                        f"secret-ref field {field_name!r}; use salted digests"
+                    ),
+                )
+            )
+            continue
+        if any(
+            fragment in lowered
+            for fragment in (
+                BYOC_AGENT_TOKEN_ROTATION_FORBIDDEN_REPORT_FIELD_FRAGMENTS
+            )
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-agent-token-rotation-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC token rotation reports must not serialize "
+                        f"secret-sensitive field {field_name!r}"
+                    ),
+                )
+            )
+
+    privacy_class = classes.get("ByocAgentTokenRotationPrivacyContract")
+    privacy_fields = _class_field_assignments(privacy_class)
+    for field_name in BYOC_AGENT_TOKEN_ROTATION_FALSE_PRIVACY_FLAGS:
+        assignment = privacy_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-agent-token-rotation-privacy",
+                    path=contract_path,
+                    line_number=privacy_class.lineno if privacy_class else 1,
+                    message=(
+                        f"BYOC token rotation privacy must keep {field_name} "
+                        "pinned to Literal[False] = False"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[False]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not False
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-agent-token-rotation-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        f"BYOC token rotation privacy must keep {field_name} "
+                        "pinned to Literal[False] = False"
+                    ),
+                )
+            )
+
+    for field_name in BYOC_AGENT_TOKEN_ROTATION_TRUE_PRIVACY_FLAGS:
+        assignment = privacy_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-agent-token-rotation-privacy",
+                    path=contract_path,
+                    line_number=privacy_class.lineno if privacy_class else 1,
+                    message=(
+                        f"BYOC token rotation privacy must keep {field_name} "
+                        "pinned to Literal[True] = True"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[True]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not True
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-agent-token-rotation-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        f"BYOC token rotation privacy must keep {field_name} "
+                        "pinned to Literal[True] = True"
                     ),
                 )
             )
@@ -1862,6 +2029,9 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     violations.extend(find_byoc_manifest_privacy_violations(repo_root=repo_root))
     violations.extend(
         find_byoc_agent_contract_privacy_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_agent_token_rotation_privacy_violations(repo_root=repo_root)
     )
     violations.extend(
         find_byoc_aws_live_preflight_privacy_violations(repo_root=repo_root)
