@@ -140,8 +140,13 @@ Repo-owned artifacts for this first slice:
   PII. `GET /byoc/control-plane/agents` provides a signed backend automation
   read for sanitized fleet metadata only; queries must be bounded by deployment
   or customer and return enrollment/revision/config epoch plus latest aggregate
-  heartbeat status. Production mTLS issuance, full fleet reconciliation history,
-  and fleet dashboard workflows remain deferred.
+  heartbeat status. `GET /byoc/control-plane/deployment-overview` composes the
+  same signed read path into one metadata-only deployment status view for
+  backend automation/control-panel consumers: status, next action, agent health
+  counts, evidence-package receipt counts, latest accepted timestamps, and no
+  raw reports, request bodies, endpoint URLs, secret refs, prompts, logs, or
+  PII. Production mTLS issuance, full fleet reconciliation history, and fleet
+  dashboard workflows remain deferred.
 - `services/platform/runtime/byoc_permissions.py` defines the backend-owned
   customer-cloud permission contract. It validates role boundaries, explicit
   AWS actions, scoped resources, `iam:PassRole` service constraints, no
@@ -345,6 +350,13 @@ Repo-owned artifacts for this first slice:
   signed `GET /byoc/control-plane/agents` reads. It can print a signed request
   for offline inspection or execute the GET when `--list-url` is supplied,
   returning only sanitized fleet metadata.
+- `services/platform/runtime/byoc_deployment_overview.py` defines the signed
+  BYOC deployment overview read model used by
+  `GET /byoc/control-plane/deployment-overview`. It aggregates only existing
+  sanitized agent-fleet and evidence-package receipt metadata into a
+  control-panel-ready status/next-action summary. This is a backend contract,
+  not a control panel implementation; preflight/runner receipt summaries can be
+  added later without changing the privacy boundary.
 - `services/platform/runtime/byoc_live_test_readiness.py` and
   `scripts/check_byoc_live_test_readiness.py` provide the final offline gate
   before a real AWS credential window. The report validates BYOC manifests,
@@ -1593,7 +1605,7 @@ Minimum gates before first enterprise customer:
 
 - Implement telemetry allowlist.
 - Add local scrubber and support bundle workflow.
-- Add control-plane fleet dashboard.
+- Wire the control panel to the signed BYOC deployment overview/fleet APIs.
 - Add privacy test suite.
 
 ### Milestone 5 - Enterprise Pilot

@@ -14,14 +14,19 @@ from services.platform.runtime.byoc_control_plane_intake import (
     READ_AUTH_KEY_REF_HEADER,
     ByocEvidencePackageIntakeRecord,
     ByocEvidencePackageIntakeStore,
+    ByocEvidencePackageReceipt,
     ByocEvidencePackageReceiptList,
     ByocEvidencePackageReceiptQuery,
-    ByocEvidencePackageReceipt,
     ByocEvidencePackageSubmissionRequest,
     InMemoryByocEvidencePackageIntakeStore,
     PostgresByocEvidencePackageIntakeStore,
     validate_evidence_receipt_read_auth_headers,
     validate_evidence_package_submission,
+)
+from services.platform.runtime.byoc_deployment_overview import (
+    ByocDeploymentOverview,
+    ByocDeploymentOverviewQuery,
+    build_byoc_deployment_overview,
 )
 from services.platform.runtime.byoc_agent_control_plane import (
     ByocAgentDesiredStateUpdateReceipt,
@@ -234,6 +239,49 @@ def build_byoc_control_plane_router(
             ) from exc
         registry = agent_registry_store or _agent_registry_store_from_state(request)
         return await registry.list_agents(query)
+
+    @router.get("/deployment-overview")
+    async def get_deployment_overview(
+        request: Request,
+        deployment_id: str,
+        customer_id: str | None = None,
+    ) -> ByocDeploymentOverview:
+        await _require_receipt_read_auth(
+            request,
+            signing_secret=signing_secret,
+            signing_key_ref=signing_key_ref,
+        )
+        try:
+            query = ByocDeploymentOverviewQuery(
+                deployment_id=deployment_id,
+                customer_id=customer_id,
+            )
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"errors": [error["msg"] for error in exc.errors()]},
+            ) from exc
+        registry = agent_registry_store or _agent_registry_store_from_state(request)
+        evidence_store = store or _store_from_state(request)
+        agents = await registry.list_agents(
+            ByocAgentFleetQuery(
+                deployment_id=query.deployment_id,
+                customer_id=query.customer_id,
+                limit=100,
+            )
+        )
+        evidence_packages = await evidence_store.list_receipts(
+            ByocEvidencePackageReceiptQuery(
+                deployment_id=query.deployment_id,
+                customer_id=query.customer_id,
+                limit=20,
+            )
+        )
+        return build_byoc_deployment_overview(
+            query=query,
+            agents=agents,
+            evidence_packages=evidence_packages,
+        )
 
     @router.get("/evidence-packages")
     async def list_evidence_package_receipts(

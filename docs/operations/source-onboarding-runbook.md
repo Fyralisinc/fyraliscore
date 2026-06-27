@@ -253,6 +253,14 @@ revision/config epoch intent, evidence-required flag, and aggregate heartbeat
 status/counts. They do not include install-token refs, signatures, request
 bodies, endpoint URLs, logs, payloads, prompts, embeddings, or PII.
 
+Backend automation/control-panel consumers can also read
+`GET /byoc/control-plane/deployment-overview` with the same signed read
+headers. Include `deployment_id` and, where available, `customer_id`; the
+response summarizes deployment status, next action, agent health counts,
+evidence-package receipt counts, and latest accepted timestamps only. Use the
+overview for customer-facing health state and the agent fleet endpoint for
+per-agent metadata.
+
 To print a signed GET request without network access, omit `--list-url`; to
 run the read against the hosted backend, provide the full route URL:
 

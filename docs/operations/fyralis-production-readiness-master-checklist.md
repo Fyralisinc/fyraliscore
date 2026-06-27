@@ -170,6 +170,10 @@ Every checklist item is done only when:
   storage, existing evidence-intake key-ref resolution, readiness-gate coverage,
   customer-side/local submit CLI, storage-shape ratchet, and tests rejecting
   raw runner report fields or customer-data markers.
+- [x] BYOC deployment overview has a signed metadata-only backend read model and
+  gateway route that aggregates sanitized agent-fleet and evidence-package
+  receipt state into status, next action, health counts, and evidence counts for
+  future control-panel/backend automation consumers.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

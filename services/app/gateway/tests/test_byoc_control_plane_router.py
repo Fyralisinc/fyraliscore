@@ -548,6 +548,70 @@ async def test_byoc_control_plane_lists_signed_agent_fleet_metadata() -> None:
 
 
 @pytest.mark.asyncio
+async def test_byoc_control_plane_serves_signed_deployment_overview_metadata() -> None:
+    agent_store = InMemoryByocAgentRegistryStore()
+    await agent_store.enroll(
+        _agent_enrollment(),
+        enrolled_at=datetime(2026, 6, 26, 12, 21, tzinfo=UTC),
+        heartbeat_interval_seconds=MANIFEST.connectivity.heartbeat_interval_seconds,
+        telemetry_contract=MANIFEST.telemetry.contract,
+    )
+    await agent_store.heartbeat(
+        _agent_heartbeat(),
+        accepted_at=datetime(2026, 6, 26, 12, 23, tzinfo=UTC),
+        poll_after_seconds=MANIFEST.connectivity.agent_poll_interval_seconds,
+    )
+    await agent_store.update_desired_state(
+        _desired_state_update(),
+        accepted_at=datetime(2026, 6, 26, 12, 26, tzinfo=UTC),
+    )
+    app, evidence_store = _app()
+    app.state.byoc_agent_registry_store = agent_store
+    await evidence_store.put(
+        _submission(),
+        accepted_at=datetime(2026, 6, 26, 12, 28, tzinfo=UTC),
+    )
+    path = "/byoc/control-plane/deployment-overview"
+    query = f"deployment_id={MANIFEST.deployment_id}&customer_id={MANIFEST.customer_id}"
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"{path}?{query}",
+            headers=_read_headers(
+                path,
+                query=query,
+                nonce="nonce-control-plane-overview-read",
+            ),
+        )
+
+    assert response.status_code == 200
+    overview = response.json()
+    assert overview["schema_version"] == "fyralis.byoc.deployment_overview.v1"
+    assert overview["deployment_id"] == MANIFEST.deployment_id
+    assert overview["customer_id"] == MANIFEST.customer_id
+    assert overview["stored_scope"] == "sanitized_deployment_metadata_only"
+    assert overview["status"] == "ready"
+    assert overview["next_action"] == "none"
+    assert overview["metadata_sources"] == [
+        "agent_fleet",
+        "evidence_package_receipts",
+    ]
+    assert overview["agent_summary"]["enrolled_count"] == 1
+    assert overview["agent_summary"]["passing_count"] == 1
+    assert overview["agent_summary"]["evidence_package_required_count"] == 1
+    assert overview["evidence_summary"]["receipt_count"] == 1
+    assert overview["evidence_summary"]["latest_required_evidence_passed"] is True
+    assert AGENT_INSTALL_TOKEN not in response.text
+    assert SIGNING_SECRET not in response.text
+    assert "install_token" not in response.text.lower()
+    assert "secret_ref" not in response.text.lower()
+    assert "signature" not in response.text.lower()
+    assert "payload" not in response.text.lower()
+    assert "source_artifacts" not in response.text
+    assert MANIFEST.connectivity.control_plane_url not in response.text
+
+
+@pytest.mark.asyncio
 async def test_byoc_control_plane_agent_fleet_reads_require_signed_headers() -> None:
     app, _ = _app()
     transport = httpx.ASGITransport(app=app)

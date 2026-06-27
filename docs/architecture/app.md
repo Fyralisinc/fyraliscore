@@ -63,6 +63,8 @@ owns:
   require signed read headers and return sanitized scalar metadata only. In
   BYOC production, submission/read signing material is resolved by `key_ref`
   through managed app-secret refs; raw app-state secrets are local/test only.
+  The same signed read path exposes a metadata-only deployment overview for
+  backend automation/control-panel consumers.
 - **Webhook ingress** (`services/app/webhooks/router.py`): captures raw bytes,
   verifies the per-provider signature, resolves the tenant
   (`provider_installations` via the IN-08 tenant resolver + envelope-encrypted
@@ -129,10 +131,11 @@ graph TD
 | Gateway settings | `services/app/gateway/settings.py` | Fail-closed production settings, including BYOC deployment identity, egress-only control-plane connectivity, agent auth mode, and raw telemetry controls. |
 | Gateway middleware | `services/app/gateway/middleware.py` | Request context, bearer-session auth, public path allowlist, rate limiting. |
 | Gateway route mounts | `services/app/gateway/route_mounts.py` | Mounts focused gateway/product/ingest routers in one ordered place. |
-| BYOC control-plane intake | `services/app/gateway/byoc_control_plane_router.py` | Self-authenticated evidence-package, preflight-report, runner-evidence, and agent desired-state update routes; verifies signed submissions and signed receipt reads, and stores sanitized scalar receipts/agent rollout metadata only. |
+| BYOC control-plane intake | `services/app/gateway/byoc_control_plane_router.py` | Self-authenticated evidence-package, preflight-report, runner-evidence, and agent desired-state update routes; verifies signed submissions and signed receipt/overview reads, and stores sanitized scalar receipts/agent rollout metadata only. |
 | BYOC control-plane keys | `services/app/gateway/byoc_control_plane_keys.py` | Resolves evidence submission, desired-state update, and receipt-read HMAC keys by `key_ref` from managed app-secret refs, with static app-state fallback only outside production. |
 | BYOC agent control plane | `services/app/gateway/byoc_agent_router.py` | Self-authenticated agent enrollment, heartbeat, and desired-state polling route; verifies install-token HMAC proof by managed secret ref, accepts enrolled-agent heartbeats, and returns sanitized revision/config-intent metadata only. |
 | BYOC agent keys | `services/app/gateway/byoc_agent_keys.py` | Resolves data-plane install-token material by `key_ref` from managed secret refs, with static app-state fallback only outside production. |
+| BYOC deployment overview | `services/platform/runtime/byoc_deployment_overview.py` | Metadata-only read model that aggregates sanitized agent-fleet and evidence-package receipt records into deployment status, next action, and bounded health/evidence counts. |
 | BYOC agent probe | `services/platform/runtime/byoc_agent_probe.py` | Local executable data-plane agent proof; signs enrollment, submits one bounded heartbeat through the mock/live control-plane contract, and emits sanitized status metadata only. |
 | BYOC agent token rotation plan | `services/platform/runtime/byoc_agent_token_rotation.py` | Plan-only install-token rotation rehearsal; validates current/next secret-ref hygiene and overlap while emitting only salted ref digests and no token material, secret refs, command output, or cloud mutations. |
 | BYOC AWS live preflight | `services/platform/runtime/byoc_aws_live_preflight.py` | Customer-side read-only AWS preflight; verifies STS identity, optional describe/list probes, and optional IAM simulation while emitting only sanitized status/count metadata. |
@@ -177,6 +180,10 @@ graph TD
   sanitized enrolled-agent fleet metadata; queries require `deployment_id` or
   `customer_id` and return revision, config epoch, and aggregate heartbeat
   status only.
+- `GET /byoc/control-plane/deployment-overview` — signed backend automation
+  read for a metadata-only deployment summary; requires `deployment_id`, may
+  include `customer_id`, and returns status, next action, agent health counts,
+  evidence-package receipt counts, and latest accepted timestamps only.
 - `GET /byoc/control-plane/evidence-packages` and
   `GET /byoc/control-plane/evidence-packages/{receipt_id}` — signed BYOC
   receipt automation reads; list queries require `deployment_id` or
