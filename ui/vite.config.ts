@@ -5,7 +5,11 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    strictPort: false
+    strictPort: false,
+    watch: {
+      usePolling: true,
+      interval: 500
+    }
   },
   test: {
     environment: "jsdom",
