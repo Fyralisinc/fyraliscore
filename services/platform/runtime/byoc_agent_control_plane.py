@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from services.platform.runtime.byoc_agent_contract import (
     ByocAgentEnrollmentPayload,
@@ -173,6 +173,136 @@ class ByocAgentRegistrationState(_StrictModel):
     enrollment: ByocAgentEnrollmentRecord
     latest_heartbeat: ByocAgentHeartbeatRecord | None = None
     stored_scope: AgentStoredScope = "sanitized_agent_metadata_only"
+
+
+class ByocAgentFleetQuery(_StrictModel):
+    deployment_id: str | None = None
+    customer_id: str | None = None
+    agent_id: str | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+
+    @field_validator("deployment_id")
+    @classmethod
+    def _deployment_id_shape(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not _DEPLOYMENT_ID_RE.match(value):
+            raise ValueError("deployment_id must look like dep_<stable-id>")
+        return value
+
+    @field_validator("customer_id")
+    @classmethod
+    def _customer_id_shape(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not _CUSTOMER_ID_RE.match(value):
+            raise ValueError("customer_id must look like cus_<stable-id>")
+        return value
+
+    @field_validator("agent_id")
+    @classmethod
+    def _agent_id_shape(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not _AGENT_ID_RE.match(value):
+            raise ValueError("agent_id must look like agt_<stable-id>")
+        return value
+
+    @model_validator(mode="after")
+    def _query_must_be_bounded(self) -> "ByocAgentFleetQuery":
+        if self.deployment_id is None and self.customer_id is None:
+            raise ValueError("agent fleet queries must include deployment_id or customer_id")
+        return self
+
+
+class ByocAgentFleetItem(_StrictModel):
+    schema_version: Literal["fyralis.byoc.agent_fleet_item.v1"]
+    deployment_id: str
+    customer_id: str
+    agent_id: str
+    agent_version: str
+    artifact_revision: str
+    cloud_provider: CloudProvider
+    region: str
+    desired_revision: str
+    desired_config_epoch: int = Field(ge=0)
+    evidence_package_required: bool
+    heartbeat_interval_seconds: int = Field(ge=5, le=300)
+    telemetry_contract: str
+    enrolled_at: datetime
+    desired_state_updated_at: datetime | None = None
+    desired_state_update_reason: str | None = None
+    desired_state_updated_by: str | None = None
+    latest_heartbeat_sequence: int | None = Field(default=None, ge=0)
+    latest_validation_status: Literal["unknown", "passing", "degraded", "failing"] | None = None
+    latest_control_plane_connected: bool | None = None
+    latest_telemetry_mode: TelemetryMode | None = None
+    latest_component_count: int | None = Field(default=None, ge=0)
+    latest_ok_component_count: int | None = Field(default=None, ge=0)
+    latest_degraded_component_count: int | None = Field(default=None, ge=0)
+    latest_failed_component_count: int | None = Field(default=None, ge=0)
+    latest_unknown_component_count: int | None = Field(default=None, ge=0)
+    latest_queued_batches: int | None = Field(default=None, ge=0)
+    latest_dropped_batches: int | None = Field(default=None, ge=0)
+    latest_heartbeat_sent_at: datetime | None = None
+    latest_heartbeat_accepted_at: datetime | None = None
+    stored_scope: AgentStoredScope = "sanitized_agent_metadata_only"
+
+    @field_validator("deployment_id")
+    @classmethod
+    def _deployment_id_shape(cls, value: str) -> str:
+        value = value.strip()
+        if not _DEPLOYMENT_ID_RE.match(value):
+            raise ValueError("deployment_id must look like dep_<stable-id>")
+        return value
+
+    @field_validator("customer_id")
+    @classmethod
+    def _customer_id_shape(cls, value: str) -> str:
+        value = value.strip()
+        if not _CUSTOMER_ID_RE.match(value):
+            raise ValueError("customer_id must look like cus_<stable-id>")
+        return value
+
+    @field_validator("agent_id")
+    @classmethod
+    def _agent_id_shape(cls, value: str) -> str:
+        value = value.strip()
+        if not _AGENT_ID_RE.match(value):
+            raise ValueError("agent_id must look like agt_<stable-id>")
+        return value
+
+    @field_validator(
+        "agent_version",
+        "artifact_revision",
+        "desired_revision",
+        "region",
+        "telemetry_contract",
+        "desired_state_update_reason",
+        "desired_state_updated_by",
+    )
+    @classmethod
+    def _strings_must_be_bounded(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not _SAFE_CODE_RE.match(value):
+            raise ValueError("agent fleet metadata fields must be bounded identifiers")
+        return value
+
+
+class ByocAgentFleetList(_StrictModel):
+    schema_version: Literal["fyralis.byoc.agent_fleet_list.v1"]
+    deployment_id: str | None = None
+    customer_id: str | None = None
+    agent_id: str | None = None
+    limit: int
+    result_count: int
+    stored_scope: AgentStoredScope = "sanitized_agent_metadata_only"
+    items: tuple[ByocAgentFleetItem, ...]
 
 
 class ByocAgentDesiredStatePollPayload(_StrictModel):
@@ -436,6 +566,12 @@ class ByocAgentRegistryStore(Protocol):
     ) -> ByocAgentDesiredStateUpdateReceipt | None:
         ...
 
+    async def list_agents(
+        self,
+        query: ByocAgentFleetQuery,
+    ) -> ByocAgentFleetList:
+        ...
+
     async def get(
         self,
         *,
@@ -617,6 +753,36 @@ class InMemoryByocAgentRegistryStore:
             evidence_package_required=request.evidence_package_required,
             accepted_at=accepted,
             stored_scope="sanitized_agent_metadata_only",
+        )
+
+    async def list_agents(
+        self,
+        query: ByocAgentFleetQuery,
+    ) -> ByocAgentFleetList:
+        items = [
+            agent_fleet_item_from_registration(state)
+            for state in self._records.values()
+            if _state_matches_fleet_query(state, query)
+        ]
+        items.sort(
+            key=lambda item: (
+                item.latest_heartbeat_accepted_at
+                or item.desired_state_updated_at
+                or item.enrolled_at,
+                item.agent_id,
+            ),
+            reverse=True,
+        )
+        selected = tuple(items[: query.limit])
+        return ByocAgentFleetList(
+            schema_version="fyralis.byoc.agent_fleet_list.v1",
+            deployment_id=query.deployment_id,
+            customer_id=query.customer_id,
+            agent_id=query.agent_id,
+            limit=query.limit,
+            result_count=len(selected),
+            stored_scope="sanitized_agent_metadata_only",
+            items=selected,
         )
 
 
@@ -944,6 +1110,80 @@ class PostgresByocAgentRegistryStore:
             evidence_package_required=row["evidence_package_required"],
             accepted_at=row["desired_state_updated_at"],
             stored_scope="sanitized_agent_metadata_only",
+        )
+
+    async def list_agents(
+        self,
+        query: ByocAgentFleetQuery,
+    ) -> ByocAgentFleetList:
+        where_clauses: list[str] = []
+        args: list[Any] = []
+        if query.deployment_id is not None:
+            args.append(query.deployment_id)
+            where_clauses.append(f"deployment_id = ${len(args)}")
+        if query.customer_id is not None:
+            args.append(query.customer_id)
+            where_clauses.append(f"customer_id = ${len(args)}")
+        if query.agent_id is not None:
+            args.append(query.agent_id)
+            where_clauses.append(f"agent_id = ${len(args)}")
+        args.append(query.limit)
+        rows = await self._pool.fetch(
+            f"""
+            SELECT
+                deployment_id,
+                customer_id,
+                agent_id,
+                agent_version,
+                artifact_revision,
+                cloud_provider,
+                region,
+                desired_revision,
+                desired_config_epoch,
+                evidence_package_required,
+                heartbeat_interval_seconds,
+                telemetry_contract,
+                enrolled_at,
+                desired_state_updated_at,
+                desired_state_update_reason,
+                desired_state_updated_by,
+                stored_scope,
+                latest_heartbeat_sequence,
+                latest_validation_status,
+                latest_control_plane_connected,
+                latest_telemetry_mode,
+                latest_component_count,
+                latest_ok_component_count,
+                latest_degraded_component_count,
+                latest_failed_component_count,
+                latest_unknown_component_count,
+                latest_queued_batches,
+                latest_dropped_batches,
+                latest_heartbeat_sent_at,
+                latest_heartbeat_accepted_at
+            FROM byoc_agent_registrations
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY
+                COALESCE(
+                    latest_heartbeat_accepted_at,
+                    desired_state_updated_at,
+                    enrolled_at
+                ) DESC,
+                agent_id DESC
+            LIMIT ${len(args)}
+            """,
+            *args,
+        )
+        items = tuple(agent_fleet_item_from_row(row) for row in rows)
+        return ByocAgentFleetList(
+            schema_version="fyralis.byoc.agent_fleet_list.v1",
+            deployment_id=query.deployment_id,
+            customer_id=query.customer_id,
+            agent_id=query.agent_id,
+            limit=query.limit,
+            result_count=len(items),
+            stored_scope="sanitized_agent_metadata_only",
+            items=items,
         )
 
 
@@ -1343,6 +1583,58 @@ def heartbeat_record_from_request(
     )
 
 
+def agent_fleet_item_from_registration(
+    state: ByocAgentRegistrationState,
+) -> ByocAgentFleetItem:
+    enrollment = state.enrollment
+    heartbeat = state.latest_heartbeat
+    return ByocAgentFleetItem(
+        schema_version="fyralis.byoc.agent_fleet_item.v1",
+        deployment_id=enrollment.deployment_id,
+        customer_id=enrollment.customer_id,
+        agent_id=enrollment.agent_id,
+        agent_version=enrollment.agent_version,
+        artifact_revision=enrollment.artifact_revision,
+        cloud_provider=enrollment.cloud_provider,
+        region=enrollment.region,
+        desired_revision=enrollment.desired_revision,
+        desired_config_epoch=enrollment.desired_config_epoch,
+        evidence_package_required=enrollment.evidence_package_required,
+        heartbeat_interval_seconds=enrollment.heartbeat_interval_seconds,
+        telemetry_contract=enrollment.telemetry_contract,
+        enrolled_at=enrollment.enrolled_at,
+        desired_state_updated_at=enrollment.desired_state_updated_at,
+        desired_state_update_reason=enrollment.desired_state_update_reason,
+        desired_state_updated_by=enrollment.desired_state_updated_by,
+        latest_heartbeat_sequence=(
+            heartbeat.sequence if heartbeat is not None else None
+        ),
+        latest_validation_status=(
+            heartbeat.validation_status if heartbeat is not None else None
+        ),
+        latest_control_plane_connected=(
+            heartbeat.control_plane_connected if heartbeat is not None else None
+        ),
+        latest_telemetry_mode=heartbeat.telemetry_mode if heartbeat else None,
+        latest_component_count=heartbeat.component_count if heartbeat else None,
+        latest_ok_component_count=heartbeat.ok_component_count if heartbeat else None,
+        latest_degraded_component_count=(
+            heartbeat.degraded_component_count if heartbeat else None
+        ),
+        latest_failed_component_count=(
+            heartbeat.failed_component_count if heartbeat else None
+        ),
+        latest_unknown_component_count=(
+            heartbeat.unknown_component_count if heartbeat else None
+        ),
+        latest_queued_batches=heartbeat.queued_batches if heartbeat else None,
+        latest_dropped_batches=heartbeat.dropped_batches if heartbeat else None,
+        latest_heartbeat_sent_at=heartbeat.sent_at if heartbeat else None,
+        latest_heartbeat_accepted_at=heartbeat.accepted_at if heartbeat else None,
+        stored_scope="sanitized_agent_metadata_only",
+    )
+
+
 def _payload_from_request(
     request: ByocAgentEnrollmentRequest,
 ) -> ByocAgentEnrollmentPayload:
@@ -1391,6 +1683,23 @@ def _agent_key(
     agent_id: str,
 ) -> tuple[str, str, str]:
     return (deployment_id, customer_id, agent_id)
+
+
+def _state_matches_fleet_query(
+    state: ByocAgentRegistrationState,
+    query: ByocAgentFleetQuery,
+) -> bool:
+    enrollment = state.enrollment
+    if (
+        query.deployment_id is not None
+        and enrollment.deployment_id != query.deployment_id
+    ):
+        return False
+    if query.customer_id is not None and enrollment.customer_id != query.customer_id:
+        return False
+    if query.agent_id is not None and enrollment.agent_id != query.agent_id:
+        return False
+    return True
 
 
 def _state_from_row(row: Any) -> ByocAgentRegistrationState:
@@ -1452,6 +1761,46 @@ def _state_from_row(row: Any) -> ByocAgentRegistrationState:
     )
 
 
+def agent_fleet_item_from_row(row: Any) -> ByocAgentFleetItem:
+    return ByocAgentFleetItem(
+        schema_version="fyralis.byoc.agent_fleet_item.v1",
+        deployment_id=row["deployment_id"],
+        customer_id=row["customer_id"],
+        agent_id=row["agent_id"],
+        agent_version=row["agent_version"],
+        artifact_revision=row["artifact_revision"],
+        cloud_provider=row["cloud_provider"],
+        region=row["region"],
+        desired_revision=row["desired_revision"],
+        desired_config_epoch=_row_get(row, "desired_config_epoch", 0),
+        evidence_package_required=_row_get(row, "evidence_package_required", False),
+        heartbeat_interval_seconds=row["heartbeat_interval_seconds"],
+        telemetry_contract=row["telemetry_contract"],
+        enrolled_at=row["enrolled_at"],
+        desired_state_updated_at=_row_get(row, "desired_state_updated_at", None),
+        desired_state_update_reason=_row_get(
+            row,
+            "desired_state_update_reason",
+            None,
+        ),
+        desired_state_updated_by=_row_get(row, "desired_state_updated_by", None),
+        latest_heartbeat_sequence=row["latest_heartbeat_sequence"],
+        latest_validation_status=row["latest_validation_status"],
+        latest_control_plane_connected=row["latest_control_plane_connected"],
+        latest_telemetry_mode=row["latest_telemetry_mode"],
+        latest_component_count=row["latest_component_count"],
+        latest_ok_component_count=row["latest_ok_component_count"],
+        latest_degraded_component_count=row["latest_degraded_component_count"],
+        latest_failed_component_count=row["latest_failed_component_count"],
+        latest_unknown_component_count=row["latest_unknown_component_count"],
+        latest_queued_batches=row["latest_queued_batches"],
+        latest_dropped_batches=row["latest_dropped_batches"],
+        latest_heartbeat_sent_at=row["latest_heartbeat_sent_at"],
+        latest_heartbeat_accepted_at=row["latest_heartbeat_accepted_at"],
+        stored_scope=row["stored_scope"],
+    )
+
+
 def _row_get(row: Any, key: str, default: Any) -> Any:
     try:
         return row[key]
@@ -1476,11 +1825,16 @@ __all__ = [
     "ByocAgentDesiredStateUpdateReceipt",
     "ByocAgentDesiredStateUpdateRequest",
     "ByocAgentEnrollmentRecord",
+    "ByocAgentFleetItem",
+    "ByocAgentFleetList",
+    "ByocAgentFleetQuery",
     "ByocAgentHeartbeatRecord",
     "ByocAgentRegistryStore",
     "ByocAgentRegistrationState",
     "InMemoryByocAgentRegistryStore",
     "PostgresByocAgentRegistryStore",
+    "agent_fleet_item_from_registration",
+    "agent_fleet_item_from_row",
     "canonical_desired_state_poll_payload",
     "canonical_desired_state_update_payload",
     "desired_state_poll_payload",

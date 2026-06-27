@@ -14,7 +14,9 @@ from services.app.gateway.byoc_control_plane_router import (
 )
 from services.app.gateway.settings import GatewaySettings
 from services.platform.runtime.byoc_agent_contract import (
+    ByocAgentComponentStatus,
     enrollment_payload_from_manifest,
+    heartbeat_from_manifest,
     signed_enrollment_request,
 )
 from services.platform.runtime.byoc_agent_control_plane import (
@@ -156,6 +158,26 @@ def _agent_enrollment():
         requested_at=datetime(2026, 6, 26, 12, 20, tzinfo=UTC),
     )
     return signed_enrollment_request(payload, install_token=AGENT_INSTALL_TOKEN)
+
+
+def _agent_heartbeat():
+    return heartbeat_from_manifest(
+        MANIFEST,
+        agent_id=DESIRED_STATE_AGENT_ID,
+        agent_version=AGENT_VERSION,
+        sequence=1,
+        validation_status="passing",
+        control_plane_connected=True,
+        components=(
+            ByocAgentComponentStatus(
+                name="gateway",
+                kind="gateway",
+                status="ok",
+                detail_code="ready",
+            ),
+        ),
+        sent_at=datetime(2026, 6, 26, 12, 22, tzinfo=UTC),
+    )
 
 
 def _desired_state_update(*, signing_secret: str = SIGNING_SECRET):
@@ -469,6 +491,73 @@ async def test_byoc_control_plane_accepts_signed_agent_desired_state_update() ->
     assert desired.rollout_action == "apply_revision"
     assert desired.config_epoch == 3
     assert desired.evidence_package_required is True
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_lists_signed_agent_fleet_metadata() -> None:
+    agent_store = InMemoryByocAgentRegistryStore()
+    await agent_store.enroll(
+        _agent_enrollment(),
+        enrolled_at=datetime(2026, 6, 26, 12, 21, tzinfo=UTC),
+        heartbeat_interval_seconds=MANIFEST.connectivity.heartbeat_interval_seconds,
+        telemetry_contract=MANIFEST.telemetry.contract,
+    )
+    await agent_store.heartbeat(
+        _agent_heartbeat(),
+        accepted_at=datetime(2026, 6, 26, 12, 23, tzinfo=UTC),
+        poll_after_seconds=MANIFEST.connectivity.agent_poll_interval_seconds,
+    )
+    await agent_store.update_desired_state(
+        _desired_state_update(),
+        accepted_at=datetime(2026, 6, 26, 12, 26, tzinfo=UTC),
+    )
+    app, _ = _app()
+    app.state.byoc_agent_registry_store = agent_store
+    list_path = "/byoc/control-plane/agents"
+    query = f"deployment_id={MANIFEST.deployment_id}&limit=10"
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"{list_path}?{query}",
+            headers=_read_headers(
+                list_path,
+                query=query,
+                nonce="nonce-control-plane-agent-fleet-list",
+            ),
+        )
+
+    assert response.status_code == 200
+    listing = response.json()
+    assert listing["schema_version"] == "fyralis.byoc.agent_fleet_list.v1"
+    assert listing["stored_scope"] == "sanitized_agent_metadata_only"
+    assert listing["result_count"] == 1
+    item = listing["items"][0]
+    assert item["schema_version"] == "fyralis.byoc.agent_fleet_item.v1"
+    assert item["agent_id"] == DESIRED_STATE_AGENT_ID
+    assert item["desired_revision"] == "2026.06.26-2"
+    assert item["desired_config_epoch"] == 3
+    assert item["evidence_package_required"] is True
+    assert item["latest_validation_status"] == "passing"
+    assert item["latest_component_count"] == 1
+    assert AGENT_INSTALL_TOKEN not in response.text
+    assert "install_token" not in response.text.lower()
+    assert "secret_ref" not in response.text.lower()
+    assert "signature" not in response.text.lower()
+    assert "payload" not in response.text.lower()
+    assert MANIFEST.connectivity.control_plane_url not in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_agent_fleet_reads_require_signed_headers() -> None:
+    app, _ = _app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            f"/byoc/control-plane/agents?deployment_id={MANIFEST.deployment_id}"
+        )
+
+    assert response.status_code == 403
+    assert "missing_read_auth_headers" in response.text
 
 
 @pytest.mark.asyncio

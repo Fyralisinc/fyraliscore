@@ -11,7 +11,9 @@ from services.platform.runtime.byoc_agent_contract import (
     signed_enrollment_request,
 )
 from services.platform.runtime.byoc_agent_control_plane import (
+    ByocAgentFleetQuery,
     InMemoryByocAgentRegistryStore,
+    PostgresByocAgentRegistryStore,
     desired_state_poll_payload,
     desired_state_update_payload,
     signed_desired_state_poll_request,
@@ -32,6 +34,71 @@ SIGNING_KEY_REF = "control-plane/byoc/evidence-intake-key-ref"
 AGENT_ID = "agt_control01"
 AGENT_VERSION = "0.1.0"
 REQUESTED_AT = datetime(2026, 6, 26, 12, 0, tzinfo=UTC)
+
+
+class _FakeAgentFleetPool:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple]] = []
+
+    async def fetch(self, query: str, *args):
+        self.calls.append((query, args))
+        return [
+            {
+                "deployment_id": MANIFEST.deployment_id,
+                "customer_id": MANIFEST.customer_id,
+                "agent_id": AGENT_ID,
+                "agent_version": AGENT_VERSION,
+                "artifact_revision": MANIFEST.artifact_revision,
+                "cloud_provider": MANIFEST.cloud_provider,
+                "region": MANIFEST.region,
+                "desired_revision": "2026.06.26-2",
+                "desired_config_epoch": 3,
+                "evidence_package_required": True,
+                "heartbeat_interval_seconds": (
+                    MANIFEST.connectivity.heartbeat_interval_seconds
+                ),
+                "telemetry_contract": MANIFEST.telemetry.contract,
+                "enrolled_at": REQUESTED_AT,
+                "desired_state_updated_at": datetime(
+                    2026,
+                    6,
+                    26,
+                    12,
+                    6,
+                    tzinfo=UTC,
+                ),
+                "desired_state_update_reason": "rollout_rehearsal",
+                "desired_state_updated_by": "ops_backend",
+                "stored_scope": "sanitized_agent_metadata_only",
+                "latest_heartbeat_sequence": 1,
+                "latest_validation_status": "passing",
+                "latest_control_plane_connected": True,
+                "latest_telemetry_mode": MANIFEST.telemetry.mode,
+                "latest_component_count": 2,
+                "latest_ok_component_count": 2,
+                "latest_degraded_component_count": 0,
+                "latest_failed_component_count": 0,
+                "latest_unknown_component_count": 0,
+                "latest_queued_batches": 0,
+                "latest_dropped_batches": 0,
+                "latest_heartbeat_sent_at": datetime(
+                    2026,
+                    6,
+                    26,
+                    12,
+                    1,
+                    tzinfo=UTC,
+                ),
+                "latest_heartbeat_accepted_at": datetime(
+                    2026,
+                    6,
+                    26,
+                    12,
+                    2,
+                    tzinfo=UTC,
+                ),
+            }
+        ]
 
 
 def _enrollment(*, install_token: str = INSTALL_TOKEN):
@@ -301,6 +368,75 @@ async def test_in_memory_agent_store_updates_sanitized_desired_state() -> None:
     assert SIGNING_SECRET not in serialized
     assert "signature" not in serialized.lower()
     assert "payload" not in serialized.lower()
+
+
+async def test_in_memory_agent_store_lists_sanitized_fleet_metadata() -> None:
+    store = InMemoryByocAgentRegistryStore()
+    await store.enroll(
+        _enrollment(),
+        enrolled_at=REQUESTED_AT,
+        heartbeat_interval_seconds=MANIFEST.connectivity.heartbeat_interval_seconds,
+        telemetry_contract=MANIFEST.telemetry.contract,
+    )
+    await store.heartbeat(
+        _heartbeat(),
+        accepted_at=datetime(2026, 6, 26, 12, 2, tzinfo=UTC),
+        poll_after_seconds=MANIFEST.connectivity.agent_poll_interval_seconds,
+    )
+    await store.update_desired_state(
+        _desired_state_update(),
+        accepted_at=datetime(2026, 6, 26, 12, 6, tzinfo=UTC),
+    )
+
+    listing = await store.list_agents(
+        ByocAgentFleetQuery(
+            deployment_id=MANIFEST.deployment_id,
+            limit=10,
+        )
+    )
+
+    assert listing.schema_version == "fyralis.byoc.agent_fleet_list.v1"
+    assert listing.result_count == 1
+    item = listing.items[0]
+    assert item.schema_version == "fyralis.byoc.agent_fleet_item.v1"
+    assert item.agent_id == AGENT_ID
+    assert item.desired_revision == "2026.06.26-2"
+    assert item.desired_config_epoch == 3
+    assert item.evidence_package_required is True
+    assert item.latest_heartbeat_sequence == 1
+    assert item.latest_validation_status == "passing"
+    assert item.latest_component_count == 2
+    serialized = listing.model_dump_json()
+    assert INSTALL_TOKEN not in serialized
+    assert "install_token" not in serialized.lower()
+    assert "secret_ref" not in serialized.lower()
+    assert "signature" not in serialized.lower()
+    assert "payload" not in serialized.lower()
+    assert MANIFEST.connectivity.control_plane_url not in serialized
+
+
+async def test_postgres_agent_store_lists_fleet_without_token_ref() -> None:
+    pool = _FakeAgentFleetPool()
+    store = PostgresByocAgentRegistryStore(pool)
+
+    listing = await store.list_agents(
+        ByocAgentFleetQuery(
+            deployment_id=MANIFEST.deployment_id,
+            limit=10,
+        )
+    )
+
+    assert listing.result_count == 1
+    assert listing.items[0].agent_id == AGENT_ID
+    query_text = " ".join(query for query, _ in pool.calls)
+    serialized_args = " ".join(str(arg) for _, args in pool.calls for arg in args)
+    serialized_listing = listing.model_dump_json()
+    assert "install_token_secret_ref" not in query_text
+    assert INSTALL_TOKEN not in serialized_args
+    assert INSTALL_TOKEN not in serialized_listing
+    assert "secret_ref" not in serialized_listing.lower()
+    assert "signature" not in serialized_listing.lower()
+    assert "payload" not in serialized_listing.lower()
 
 
 async def test_in_memory_agent_store_rejects_unenrolled_desired_state_poll() -> None:

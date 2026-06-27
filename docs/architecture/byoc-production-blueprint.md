@@ -137,8 +137,11 @@ Repo-owned artifacts for this first slice:
   flag, reason code, requester code, and accepted timestamp. The route returns
   a sanitized receipt and stores no request body, signature value, artifact ref,
   config body, raw token, endpoint URL, log, payload, prompt, embedding, or
-  PII. Production mTLS issuance, full fleet reconciliation history, and fleet
-  dashboard workflows remain deferred.
+  PII. `GET /byoc/control-plane/agents` provides a signed backend automation
+  read for sanitized fleet metadata only; queries must be bounded by deployment
+  or customer and return enrollment/revision/config epoch plus latest aggregate
+  heartbeat status. Production mTLS issuance, full fleet reconciliation history,
+  and fleet dashboard workflows remain deferred.
 - `services/platform/runtime/byoc_permissions.py` defines the backend-owned
   customer-cloud permission contract. It validates role boundaries, explicit
   AWS actions, scoped resources, `iam:PassRole` service constraints, no

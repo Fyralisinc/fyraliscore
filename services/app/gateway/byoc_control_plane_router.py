@@ -26,6 +26,8 @@ from services.platform.runtime.byoc_control_plane_intake import (
 from services.platform.runtime.byoc_agent_control_plane import (
     ByocAgentDesiredStateUpdateReceipt,
     ByocAgentDesiredStateUpdateRequest,
+    ByocAgentFleetList,
+    ByocAgentFleetQuery,
     ByocAgentRegistryStore,
     InMemoryByocAgentRegistryStore,
     PostgresByocAgentRegistryStore,
@@ -204,6 +206,34 @@ def build_byoc_control_plane_router(
                 detail={"errors": ["agent_id: agent_not_enrolled"]},
             )
         return receipt
+
+    @router.get("/agents")
+    async def list_agents(
+        request: Request,
+        deployment_id: str | None = None,
+        customer_id: str | None = None,
+        agent_id: str | None = None,
+        limit: int = 50,
+    ) -> ByocAgentFleetList:
+        await _require_receipt_read_auth(
+            request,
+            signing_secret=signing_secret,
+            signing_key_ref=signing_key_ref,
+        )
+        try:
+            query = ByocAgentFleetQuery(
+                deployment_id=deployment_id,
+                customer_id=customer_id,
+                agent_id=agent_id,
+                limit=limit,
+            )
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"errors": [error["msg"] for error in exc.errors()]},
+            ) from exc
+        registry = agent_registry_store or _agent_registry_store_from_state(request)
+        return await registry.list_agents(query)
 
     @router.get("/evidence-packages")
     async def list_evidence_package_receipts(

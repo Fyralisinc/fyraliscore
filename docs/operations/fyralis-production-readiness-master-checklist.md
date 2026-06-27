@@ -86,9 +86,10 @@ Every checklist item is done only when:
   and digest-pinned artifact verification evidence, managed install-token
   key-ref resolution, sanitized scalar registration storage, and a
   storage-shape ratchet, signed backend desired-state update route/CLI for
-  enrolled agents with scalar durable rollout metadata only, plus a plan-only
-  install-token rotation rehearsal that emits only salted secret-ref digests
-  and no raw token material.
+  enrolled agents with scalar durable rollout metadata only, signed bounded
+  fleet metadata reads for backend automation, plus a plan-only install-token
+  rotation rehearsal that emits only salted secret-ref digests and no raw token
+  material.
 - [x] BYOC customer-cloud permissions have a checked-in manifest, AWS IAM
   skeleton, validator, and readiness gate that reject broad admin policies,
   unbounded `iam:PassRole`, mutating control-plane roles, missing boundaries,

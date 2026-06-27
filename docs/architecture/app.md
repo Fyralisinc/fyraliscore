@@ -173,6 +173,10 @@ graph TD
   update for an enrolled BYOC agent; persists only desired revision, config
   epoch, evidence-package-required flag, reason code, and requester code in the
   sanitized agent registry.
+- `GET /byoc/control-plane/agents` — signed backend automation read for
+  sanitized enrolled-agent fleet metadata; queries require `deployment_id` or
+  `customer_id` and return revision, config epoch, and aggregate heartbeat
+  status only.
 - `GET /byoc/control-plane/evidence-packages` and
   `GET /byoc/control-plane/evidence-packages/{receipt_id}` — signed BYOC
   receipt automation reads; list queries require `deployment_id` or

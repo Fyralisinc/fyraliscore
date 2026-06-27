@@ -246,6 +246,13 @@ scripts/update_byoc_agent_desired_state.py \
   --submit-url https://<control-plane>/byoc/control-plane/agent-desired-state
 ```
 
+Backend automation can inspect sanitized enrolled-agent state with signed read
+headers against `GET /byoc/control-plane/agents`. Always include
+`deployment_id` or `customer_id`; responses contain only agent identity,
+revision/config epoch intent, evidence-required flag, and aggregate heartbeat
+status/counts. They do not include install-token refs, signatures, request
+bodies, endpoint URLs, logs, payloads, prompts, embeddings, or PII.
+
 For local contract proof or customer handoff before live agent endpoint wiring,
 run the mock-backed probe from inside the customer data-plane context:
 
