@@ -135,7 +135,7 @@ graph TD
 | BYOC control-plane keys | `services/app/gateway/byoc_control_plane_keys.py` | Resolves evidence submission, desired-state update, and receipt-read HMAC keys by `key_ref` from managed app-secret refs, with static app-state fallback only outside production. |
 | BYOC agent control plane | `services/app/gateway/byoc_agent_router.py` | Self-authenticated agent enrollment, heartbeat, and desired-state polling route; verifies install-token HMAC proof by managed secret ref, accepts enrolled-agent heartbeats, and returns sanitized revision/config-intent metadata only. |
 | BYOC agent keys | `services/app/gateway/byoc_agent_keys.py` | Resolves data-plane install-token material by `key_ref` from managed secret refs, with static app-state fallback only outside production. |
-| BYOC deployment overview | `services/platform/runtime/byoc_deployment_overview.py` | Metadata-only read model that aggregates sanitized agent-fleet and evidence-package receipt records into deployment status, next action, and bounded health/evidence counts. |
+| BYOC deployment overview | `services/platform/runtime/byoc_deployment_overview.py` | Metadata-only read model that aggregates sanitized agent-fleet, evidence-package, preflight-report, and runner-evidence receipt records into deployment status, next action, and bounded health/evidence counts. |
 | BYOC agent probe | `services/platform/runtime/byoc_agent_probe.py` | Local executable data-plane agent proof; signs enrollment, submits one bounded heartbeat through the mock/live control-plane contract, and emits sanitized status metadata only. |
 | BYOC agent token rotation plan | `services/platform/runtime/byoc_agent_token_rotation.py` | Plan-only install-token rotation rehearsal; validates current/next secret-ref hygiene and overlap while emitting only salted ref digests and no token material, secret refs, command output, or cloud mutations. |
 | BYOC AWS live preflight | `services/platform/runtime/byoc_aws_live_preflight.py` | Customer-side read-only AWS preflight; verifies STS identity, optional describe/list probes, and optional IAM simulation while emitting only sanitized status/count metadata. |
@@ -169,9 +169,16 @@ graph TD
   preflight report intake; returns a sanitized receipt without storing the
   report body, section details, child reports, URLs, command output, or
   credentials.
+- `GET /byoc/control-plane/preflight-reports` — signed backend automation read
+  for sanitized preflight receipt metadata; queries require `deployment_id` or
+  `customer_id` and return status/count metadata only.
 - `POST /byoc/control-plane/runner-evidence` — signed BYOC runner-evidence
   intake; returns a sanitized receipt without storing runner checks, iterations,
   apply-plan bodies, artifact inventories, URLs, or credentials.
+- `GET /byoc/control-plane/runner-evidence` — signed backend automation read
+  for sanitized runner-evidence receipt metadata; queries require
+  `deployment_id` or `customer_id` and return rollout/status/count metadata
+  only.
 - `POST /byoc/control-plane/agent-desired-state` — signed backend automation
   update for an enrolled BYOC agent; persists only desired revision, config
   epoch, evidence-package-required flag, reason code, and requester code in the
@@ -183,7 +190,8 @@ graph TD
 - `GET /byoc/control-plane/deployment-overview` — signed backend automation
   read for a metadata-only deployment summary; requires `deployment_id`, may
   include `customer_id`, and returns status, next action, agent health counts,
-  evidence-package receipt counts, and latest accepted timestamps only.
+  evidence-package/preflight/runner receipt counts, and latest accepted
+  timestamps only.
 - `GET /byoc/control-plane/evidence-packages` and
   `GET /byoc/control-plane/evidence-packages/{receipt_id}` — signed BYOC
   receipt automation reads; list queries require `deployment_id` or

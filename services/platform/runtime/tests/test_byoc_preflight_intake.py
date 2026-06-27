@@ -12,6 +12,7 @@ from services.platform.runtime.byoc_preflight_bundle import (
     run_byoc_preflight_bundle,
 )
 from services.platform.runtime.byoc_preflight_intake import (
+    ByocPreflightReportReceiptQuery,
     ByocPreflightReportSubmissionPayload,
     ByocPreflightReportSubmissionRequest,
     InMemoryByocPreflightReportIntakeStore,
@@ -70,6 +71,25 @@ class _FakePreflightPool:
             self.rows[row["receipt_id"]] = row
             return row
         return self.rows.get(args[0])
+
+    async def fetch(self, query: str, *args):
+        self.calls.append((query, args))
+        rows = list(self.rows.values())
+        arg_index = 0
+        if "deployment_id = $" in query:
+            deployment_id = args[arg_index]
+            arg_index += 1
+            rows = [row for row in rows if row["deployment_id"] == deployment_id]
+        if "customer_id = $" in query:
+            customer_id = args[arg_index]
+            arg_index += 1
+            rows = [row for row in rows if row["customer_id"] == customer_id]
+        limit = args[-1]
+        rows.sort(
+            key=lambda row: (row["accepted_at"], row["receipt_id"]),
+            reverse=True,
+        )
+        return rows[:limit]
 
 
 def _report():
@@ -195,6 +215,37 @@ async def test_preflight_intake_store_records_only_sanitized_receipt_metadata() 
 
 
 @pytest.mark.asyncio
+async def test_preflight_intake_store_lists_bounded_sanitized_receipts() -> None:
+    store = InMemoryByocPreflightReportIntakeStore()
+    first = await store.put(
+        _request(nonce="nonce-preflight-intake-list-001"),
+        accepted_at=datetime(2026, 6, 26, 13, 1, tzinfo=UTC),
+    )
+    latest = await store.put(
+        _request(nonce="nonce-preflight-intake-list-002"),
+        accepted_at=datetime(2026, 6, 26, 13, 2, tzinfo=UTC),
+    )
+
+    listing = await store.list_receipts(
+        ByocPreflightReportReceiptQuery(
+            deployment_id=first.deployment_id,
+            limit=10,
+        )
+    )
+
+    assert listing.schema_version == "fyralis.byoc.preflight_report_receipt_list.v1"
+    assert listing.result_count == 2
+    assert [item.receipt.receipt_id for item in listing.items] == [
+        latest.receipt_id,
+        first.receipt_id,
+    ]
+    rendered = listing.model_dump_json()
+    assert '"preflight_report":' not in rendered
+    assert '"sections":' not in rendered
+    assert "ghcr.io" not in rendered
+
+
+@pytest.mark.asyncio
 async def test_postgres_preflight_store_writes_only_scalar_metadata() -> None:
     pool = _FakePreflightPool()
     store = PostgresByocPreflightReportIntakeStore(pool)
@@ -215,6 +266,30 @@ async def test_postgres_preflight_store_writes_only_scalar_metadata() -> None:
     assert "ghcr.io" not in flattened_args
 
 
+@pytest.mark.asyncio
+async def test_postgres_preflight_store_lists_only_scalar_metadata() -> None:
+    pool = _FakePreflightPool()
+    store = PostgresByocPreflightReportIntakeStore(pool)
+    request = _request()
+    receipt = await store.put(request, accepted_at=SUBMITTED_AT)
+
+    listing = await store.list_receipts(
+        ByocPreflightReportReceiptQuery(
+            deployment_id=receipt.deployment_id,
+            customer_id=receipt.customer_id,
+            limit=5,
+        )
+    )
+
+    assert listing.result_count == 1
+    assert listing.items[0].receipt == receipt
+    query_text = "\n".join(query for query, _ in pool.calls)
+    flattened_args = json.dumps([str(arg) for _, args in pool.calls for arg in args])
+    assert "byoc_preflight_report_receipts" in query_text
+    assert "preflight_report" not in flattened_args
+    assert "sections" not in flattened_args
+
+
 def test_preflight_intake_schema_bundle_is_exportable() -> None:
     bundle = model_json_schema_bundle()
 
@@ -223,4 +298,7 @@ def test_preflight_intake_schema_bundle_is_exportable() -> None:
     )
     assert bundle["receipt"]["properties"]["schema_version"]["const"] == (
         "fyralis.byoc.preflight_report_receipt.v1"
+    )
+    assert bundle["receipt_list"]["properties"]["schema_version"]["const"] == (
+        "fyralis.byoc.preflight_report_receipt_list.v1"
     )

@@ -143,10 +143,11 @@ Repo-owned artifacts for this first slice:
   heartbeat status. `GET /byoc/control-plane/deployment-overview` composes the
   same signed read path into one metadata-only deployment status view for
   backend automation/control-panel consumers: status, next action, agent health
-  counts, evidence-package receipt counts, latest accepted timestamps, and no
-  raw reports, request bodies, endpoint URLs, secret refs, prompts, logs, or
-  PII. Production mTLS issuance, full fleet reconciliation history, and fleet
-  dashboard workflows remain deferred.
+  counts, evidence-package receipt counts, preflight receipt counts, runner
+  receipt counts, latest accepted timestamps, and no raw reports, request
+  bodies, endpoint URLs, secret refs, prompts, logs, or PII. Production mTLS
+  issuance, full fleet reconciliation history, and fleet dashboard workflows
+  remain deferred.
 - `services/platform/runtime/byoc_permissions.py` defines the backend-owned
   customer-cloud permission contract. It validates role boundaries, explicit
   AWS actions, scoped resources, `iam:PassRole` service constraints, no
@@ -335,6 +336,13 @@ Repo-owned artifacts for this first slice:
   apply-plan bodies, artifact inventories, raw report JSON, URLs, logs, request
   bodies, prompts, credentials, or PII. Architecture ratchets forbid JSON/blob
   body columns and raw-runner-report shaped columns for this table.
+- `GET /byoc/control-plane/preflight-reports` and
+  `GET /byoc/control-plane/runner-evidence` are signed backend automation reads
+  over those sanitized receipt stores. List queries must be bounded by
+  `deployment_id` or `customer_id`; responses contain scalar receipt metadata
+  only and omit raw preflight sections, child reports, runner checks,
+  iterations, apply-plan bodies, artifact inventories, URLs, logs, request
+  bodies, prompts, credentials, and PII.
 - `scripts/submit_byoc_runner_evidence.py` is the customer-side/local
   automation bridge for that route. It reads the runner report, derives and
   HMAC-signs only the sanitized summary, writes the signed submission JSON for
@@ -353,10 +361,10 @@ Repo-owned artifacts for this first slice:
 - `services/platform/runtime/byoc_deployment_overview.py` defines the signed
   BYOC deployment overview read model used by
   `GET /byoc/control-plane/deployment-overview`. It aggregates only existing
-  sanitized agent-fleet and evidence-package receipt metadata into a
-  control-panel-ready status/next-action summary. This is a backend contract,
-  not a control panel implementation; preflight/runner receipt summaries can be
-  added later without changing the privacy boundary.
+  sanitized agent-fleet, evidence-package receipt, preflight-report receipt,
+  and runner-evidence receipt metadata into a control-panel-ready status,
+  next-action, health-count, and evidence-count summary. This is a backend
+  contract, not a control panel implementation.
 - `services/platform/runtime/byoc_live_test_readiness.py` and
   `scripts/check_byoc_live_test_readiness.py` provide the final offline gate
   before a real AWS credential window. The report validates BYOC manifests,

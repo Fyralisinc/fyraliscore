@@ -15,6 +15,14 @@ from services.platform.runtime.byoc_control_plane_intake import (
     ByocEvidencePackageIntakeRecord,
     ByocEvidencePackageReceiptList,
 )
+from services.platform.runtime.byoc_preflight_intake import (
+    ByocPreflightReportIntakeRecord,
+    ByocPreflightReportReceiptList,
+)
+from services.platform.runtime.byoc_runner_evidence_intake import (
+    ByocRunnerEvidenceIntakeRecord,
+    ByocRunnerEvidenceReceiptList,
+)
 
 
 _CUSTOMER_ID_RE = re.compile(r"^cus_[A-Za-z0-9][A-Za-z0-9_-]{5,79}$")
@@ -29,6 +37,8 @@ DeploymentOverviewNextAction = Literal[
     "restore_agent_health",
     "submit_evidence_package",
     "review_evidence_failures",
+    "review_preflight_failures",
+    "review_runner_failures",
 ]
 
 
@@ -97,6 +107,33 @@ class ByocDeploymentEvidenceSummary(_StrictModel):
     latest_package_accepted_at: datetime | None = None
 
 
+class ByocDeploymentPreflightSummary(_StrictModel):
+    receipt_count: int = Field(ge=0)
+    passed_receipt_count: int = Field(ge=0)
+    failed_receipt_count: int = Field(ge=0)
+    skipped_receipt_count: int = Field(ge=0)
+    latest_receipt_id: str | None = None
+    latest_preflight_status: Literal["pass", "fail", "skipped", "not_submitted"]
+    latest_required_sections_passed: bool | None = None
+    latest_failed_section_count: int | None = Field(default=None, ge=0)
+    latest_report_accepted_at: datetime | None = None
+
+
+class ByocDeploymentRunnerSummary(_StrictModel):
+    receipt_count: int = Field(ge=0)
+    passed_receipt_count: int = Field(ge=0)
+    failed_receipt_count: int = Field(ge=0)
+    latest_receipt_id: str | None = None
+    latest_runner_status: Literal["pass", "fail", "not_submitted"]
+    latest_required_checks_passed: bool | None = None
+    latest_rollout_action: Literal["none", "apply_revision"] | None = None
+    latest_apply_plan_count: int | None = Field(default=None, ge=0)
+    latest_artifact_verification_count: int | None = Field(default=None, ge=0)
+    latest_digest_pinned_artifact_count: int | None = Field(default=None, ge=0)
+    latest_local_digest_checked_count: int | None = Field(default=None, ge=0)
+    latest_evidence_accepted_at: datetime | None = None
+
+
 class ByocDeploymentOverview(_StrictModel):
     schema_version: Literal["fyralis.byoc.deployment_overview.v1"]
     deployment_id: str
@@ -104,9 +141,19 @@ class ByocDeploymentOverview(_StrictModel):
     generated_at: datetime
     status: DeploymentOverviewStatus
     next_action: DeploymentOverviewNextAction
-    metadata_sources: tuple[Literal["agent_fleet", "evidence_package_receipts"], ...]
+    metadata_sources: tuple[
+        Literal[
+            "agent_fleet",
+            "evidence_package_receipts",
+            "preflight_report_receipts",
+            "runner_evidence_receipts",
+        ],
+        ...,
+    ]
     agent_summary: ByocDeploymentAgentSummary
     evidence_summary: ByocDeploymentEvidenceSummary
+    preflight_summary: ByocDeploymentPreflightSummary
+    runner_summary: ByocDeploymentRunnerSummary
     stored_scope: OverviewStoredScope = "sanitized_deployment_metadata_only"
 
     @field_validator("deployment_id")
@@ -133,25 +180,44 @@ def build_byoc_deployment_overview(
     query: ByocDeploymentOverviewQuery,
     agents: ByocAgentFleetList,
     evidence_packages: ByocEvidencePackageReceiptList,
+    preflight_reports: ByocPreflightReportReceiptList,
+    runner_evidence: ByocRunnerEvidenceReceiptList,
     generated_at: datetime | None = None,
 ) -> ByocDeploymentOverview:
     """Build a control-panel-ready summary from sanitized BYOC metadata only."""
     agent_summary = _summarize_agents(agents.items)
     evidence_summary = _summarize_evidence(evidence_packages.items)
+    preflight_summary = _summarize_preflight(preflight_reports.items)
+    runner_summary = _summarize_runner(runner_evidence.items)
     status, next_action = _status_from_summaries(
         agent_summary=agent_summary,
         evidence_summary=evidence_summary,
+        preflight_summary=preflight_summary,
+        runner_summary=runner_summary,
     )
     return ByocDeploymentOverview(
         schema_version="fyralis.byoc.deployment_overview.v1",
         deployment_id=query.deployment_id,
-        customer_id=query.customer_id or _first_customer_id(agents, evidence_packages),
+        customer_id=query.customer_id
+        or _first_customer_id(
+            agents,
+            evidence_packages,
+            preflight_reports,
+            runner_evidence,
+        ),
         generated_at=generated_at or datetime.now(tz=UTC),
         status=status,
         next_action=next_action,
-        metadata_sources=("agent_fleet", "evidence_package_receipts"),
+        metadata_sources=(
+            "agent_fleet",
+            "evidence_package_receipts",
+            "preflight_report_receipts",
+            "runner_evidence_receipts",
+        ),
         agent_summary=agent_summary,
         evidence_summary=evidence_summary,
+        preflight_summary=preflight_summary,
+        runner_summary=runner_summary,
         stored_scope="sanitized_deployment_metadata_only",
     )
 
@@ -245,15 +311,92 @@ def _summarize_evidence(
     )
 
 
+def _summarize_preflight(
+    items: tuple[ByocPreflightReportIntakeRecord, ...],
+) -> ByocDeploymentPreflightSummary:
+    latest = items[0] if items else None
+    return ByocDeploymentPreflightSummary(
+        receipt_count=len(items),
+        passed_receipt_count=sum(
+            1 for item in items if item.receipt.preflight_status == "pass"
+        ),
+        failed_receipt_count=sum(
+            1 for item in items if item.receipt.preflight_status == "fail"
+        ),
+        skipped_receipt_count=sum(
+            1 for item in items if item.receipt.preflight_status == "skipped"
+        ),
+        latest_receipt_id=latest.receipt.receipt_id if latest is not None else None,
+        latest_preflight_status=latest.receipt.preflight_status
+        if latest is not None
+        else "not_submitted",
+        latest_required_sections_passed=latest.receipt.required_sections_passed
+        if latest is not None
+        else None,
+        latest_failed_section_count=latest.receipt.failed_section_count
+        if latest is not None
+        else None,
+        latest_report_accepted_at=latest.receipt.accepted_at
+        if latest is not None
+        else None,
+    )
+
+
+def _summarize_runner(
+    items: tuple[ByocRunnerEvidenceIntakeRecord, ...],
+) -> ByocDeploymentRunnerSummary:
+    latest = items[0] if items else None
+    return ByocDeploymentRunnerSummary(
+        receipt_count=len(items),
+        passed_receipt_count=sum(
+            1 for item in items if item.receipt.runner_status == "pass"
+        ),
+        failed_receipt_count=sum(
+            1 for item in items if item.receipt.runner_status == "fail"
+        ),
+        latest_receipt_id=latest.receipt.receipt_id if latest is not None else None,
+        latest_runner_status=latest.receipt.runner_status
+        if latest is not None
+        else "not_submitted",
+        latest_required_checks_passed=latest.receipt.required_checks_passed
+        if latest is not None
+        else None,
+        latest_rollout_action=latest.receipt.rollout_action
+        if latest is not None
+        else None,
+        latest_apply_plan_count=latest.receipt.apply_plan_count
+        if latest is not None
+        else None,
+        latest_artifact_verification_count=latest.receipt.artifact_verification_count
+        if latest is not None
+        else None,
+        latest_digest_pinned_artifact_count=latest.receipt.digest_pinned_artifact_count
+        if latest is not None
+        else None,
+        latest_local_digest_checked_count=latest.receipt.local_digest_checked_count
+        if latest is not None
+        else None,
+        latest_evidence_accepted_at=latest.receipt.accepted_at
+        if latest is not None
+        else None,
+    )
+
+
 def _status_from_summaries(
     *,
     agent_summary: ByocDeploymentAgentSummary,
     evidence_summary: ByocDeploymentEvidenceSummary,
+    preflight_summary: ByocDeploymentPreflightSummary,
+    runner_summary: ByocDeploymentRunnerSummary,
 ) -> tuple[DeploymentOverviewStatus, DeploymentOverviewNextAction]:
     if agent_summary.enrolled_count == 0:
         return "action_required", "enroll_agent"
     if agent_summary.failing_count > 0 or agent_summary.disconnected_count > 0:
         return "action_required", "restore_agent_health"
+    if preflight_summary.failed_receipt_count > 0:
+        return "action_required", "review_preflight_failures"
+    if runner_summary.failed_receipt_count > 0:
+        return "action_required", "review_runner_failures"
     if evidence_summary.failed_receipt_count > 0:
         return "action_required", "review_evidence_failures"
     if (
@@ -274,10 +417,16 @@ def _status_from_summaries(
 def _first_customer_id(
     agents: ByocAgentFleetList,
     evidence_packages: ByocEvidencePackageReceiptList,
+    preflight_reports: ByocPreflightReportReceiptList,
+    runner_evidence: ByocRunnerEvidenceReceiptList,
 ) -> str | None:
     for item in agents.items:
         return item.customer_id
     for item in evidence_packages.items:
+        return item.receipt.customer_id
+    for item in preflight_reports.items:
+        return item.receipt.customer_id
+    for item in runner_evidence.items:
         return item.receipt.customer_id
     return None
 
@@ -287,6 +436,8 @@ __all__ = [
     "ByocDeploymentEvidenceSummary",
     "ByocDeploymentOverview",
     "ByocDeploymentOverviewQuery",
+    "ByocDeploymentPreflightSummary",
+    "ByocDeploymentRunnerSummary",
     "DeploymentOverviewNextAction",
     "DeploymentOverviewStatus",
     "OverviewStoredScope",

@@ -12,6 +12,7 @@ from services.platform.runtime.byoc_agent_runner import (
     run_byoc_agent_runner,
 )
 from services.platform.runtime.byoc_runner_evidence_intake import (
+    ByocRunnerEvidenceReceiptQuery,
     ByocRunnerEvidenceSubmissionPayload,
     ByocRunnerEvidenceSubmissionRequest,
     InMemoryByocRunnerEvidenceIntakeStore,
@@ -71,6 +72,25 @@ class _FakeRunnerEvidencePool:
             self.rows[row["receipt_id"]] = row
             return row
         return self.rows.get(args[0])
+
+    async def fetch(self, query: str, *args):
+        self.calls.append((query, args))
+        rows = list(self.rows.values())
+        arg_index = 0
+        if "deployment_id = $" in query:
+            deployment_id = args[arg_index]
+            arg_index += 1
+            rows = [row for row in rows if row["deployment_id"] == deployment_id]
+        if "customer_id = $" in query:
+            customer_id = args[arg_index]
+            arg_index += 1
+            rows = [row for row in rows if row["customer_id"] == customer_id]
+        limit = args[-1]
+        rows.sort(
+            key=lambda row: (row["accepted_at"], row["receipt_id"]),
+            reverse=True,
+        )
+        return rows[:limit]
 
 
 async def _runner_payload(
@@ -220,6 +240,39 @@ async def test_runner_evidence_store_records_only_sanitized_receipt_metadata() -
 
 
 @pytest.mark.asyncio
+async def test_runner_evidence_store_lists_bounded_sanitized_receipts() -> None:
+    store = InMemoryByocRunnerEvidenceIntakeStore()
+    first = await store.put(
+        await _runner_request(nonce="nonce-runner-evidence-list-001"),
+        accepted_at=datetime(2026, 6, 26, 12, 46, tzinfo=UTC),
+    )
+    latest = await store.put(
+        await _runner_request(nonce="nonce-runner-evidence-list-002"),
+        accepted_at=datetime(2026, 6, 26, 12, 47, tzinfo=UTC),
+    )
+
+    listing = await store.list_receipts(
+        ByocRunnerEvidenceReceiptQuery(
+            deployment_id=first.deployment_id,
+            limit=10,
+        )
+    )
+
+    assert listing.schema_version == "fyralis.byoc.runner_evidence_receipt_list.v1"
+    assert listing.result_count == 2
+    assert [item.receipt.receipt_id for item in listing.items] == [
+        latest.receipt_id,
+        first.receipt_id,
+    ]
+    rendered = listing.model_dump_json()
+    assert '"checks":' not in rendered
+    assert "apply_plan_ids" not in rendered
+    assert "artifact_verification_ids" not in rendered
+    assert "gateway_image" not in rendered
+    assert INSTALL_TOKEN not in rendered
+
+
+@pytest.mark.asyncio
 async def test_postgres_runner_evidence_store_writes_only_scalar_metadata() -> None:
     pool = _FakeRunnerEvidencePool()
     store = PostgresByocRunnerEvidenceIntakeStore(pool)
@@ -241,6 +294,31 @@ async def test_postgres_runner_evidence_store_writes_only_scalar_metadata() -> N
     assert INSTALL_TOKEN not in flattened_args
 
 
+@pytest.mark.asyncio
+async def test_postgres_runner_evidence_store_lists_only_scalar_metadata() -> None:
+    pool = _FakeRunnerEvidencePool()
+    store = PostgresByocRunnerEvidenceIntakeStore(pool)
+    request = await _runner_request()
+    receipt = await store.put(request, accepted_at=SUBMITTED_AT)
+
+    listing = await store.list_receipts(
+        ByocRunnerEvidenceReceiptQuery(
+            deployment_id=receipt.deployment_id,
+            customer_id=receipt.customer_id,
+            limit=5,
+        )
+    )
+
+    assert listing.result_count == 1
+    assert listing.items[0].receipt == receipt
+    query_text = "\n".join(query for query, _ in pool.calls)
+    flattened_args = json.dumps([str(arg) for _, args in pool.calls for arg in args])
+    assert "byoc_runner_evidence_receipts" in query_text
+    assert "apply_plan_ids" not in flattened_args
+    assert "artifact_verification_ids" not in flattened_args
+    assert "gateway_image" not in flattened_args
+
+
 def test_runner_evidence_schema_bundle_is_exportable() -> None:
     bundle = model_json_schema_bundle()
 
@@ -252,4 +330,7 @@ def test_runner_evidence_schema_bundle_is_exportable() -> None:
     )
     assert bundle["receipt"]["properties"]["schema_version"]["const"] == (
         "fyralis.byoc.runner_evidence_receipt.v1"
+    )
+    assert bundle["receipt_list"]["properties"]["schema_version"]["const"] == (
+        "fyralis.byoc.runner_evidence_receipt_list.v1"
     )

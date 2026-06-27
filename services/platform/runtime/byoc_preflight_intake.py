@@ -188,6 +188,50 @@ class ByocPreflightReportIntakeRecord(_StrictModel):
         return value
 
 
+class ByocPreflightReportReceiptQuery(_StrictModel):
+    deployment_id: str | None = None
+    customer_id: str | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+
+    @field_validator("deployment_id")
+    @classmethod
+    def _deployment_id_shape(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not _DEPLOYMENT_ID_RE.match(value):
+            raise ValueError("deployment_id must look like dep_<stable-id>")
+        return value
+
+    @field_validator("customer_id")
+    @classmethod
+    def _customer_id_shape(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not _CUSTOMER_ID_RE.match(value):
+            raise ValueError("customer_id must look like cus_<stable-id>")
+        return value
+
+    @model_validator(mode="after")
+    def _query_must_be_bounded(self) -> "ByocPreflightReportReceiptQuery":
+        if self.deployment_id is None and self.customer_id is None:
+            raise ValueError(
+                "preflight receipt queries must include deployment_id or customer_id"
+            )
+        return self
+
+
+class ByocPreflightReportReceiptList(_StrictModel):
+    schema_version: Literal["fyralis.byoc.preflight_report_receipt_list.v1"]
+    deployment_id: str | None = None
+    customer_id: str | None = None
+    limit: int
+    result_count: int
+    stored_scope: Literal["sanitized_metadata_only"] = "sanitized_metadata_only"
+    items: tuple[ByocPreflightReportIntakeRecord, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class ByocPreflightReportIntakeViolation:
     path: str
@@ -208,6 +252,12 @@ class ByocPreflightReportIntakeStore(Protocol):
         ...
 
     async def get(self, receipt_id: str) -> ByocPreflightReportIntakeRecord | None:
+        ...
+
+    async def list_receipts(
+        self,
+        query: ByocPreflightReportReceiptQuery,
+    ) -> ByocPreflightReportReceiptList:
         ...
 
 
@@ -240,6 +290,33 @@ class InMemoryByocPreflightReportIntakeStore:
 
     async def get(self, receipt_id: str) -> ByocPreflightReportIntakeRecord | None:
         return self._records.get(receipt_id)
+
+    async def list_receipts(
+        self,
+        query: ByocPreflightReportReceiptQuery,
+    ) -> ByocPreflightReportReceiptList:
+        records = [
+            record
+            for record in self._records.values()
+            if _record_matches_receipt_query(record, query)
+        ]
+        records.sort(
+            key=lambda record: (
+                record.receipt.accepted_at,
+                record.receipt.receipt_id,
+            ),
+            reverse=True,
+        )
+        items = tuple(records[: query.limit])
+        return ByocPreflightReportReceiptList(
+            schema_version="fyralis.byoc.preflight_report_receipt_list.v1",
+            deployment_id=query.deployment_id,
+            customer_id=query.customer_id,
+            limit=query.limit,
+            result_count=len(items),
+            stored_scope="sanitized_metadata_only",
+            items=items,
+        )
 
 
 class PostgresByocPreflightReportIntakeStore:
@@ -355,6 +432,57 @@ class PostgresByocPreflightReportIntakeStore:
         if row is None:
             return None
         return _record_from_row(row)
+
+    async def list_receipts(
+        self,
+        query: ByocPreflightReportReceiptQuery,
+    ) -> ByocPreflightReportReceiptList:
+        where_clauses: list[str] = []
+        args: list[Any] = []
+        if query.deployment_id is not None:
+            args.append(query.deployment_id)
+            where_clauses.append(f"deployment_id = ${len(args)}")
+        if query.customer_id is not None:
+            args.append(query.customer_id)
+            where_clauses.append(f"customer_id = ${len(args)}")
+        args.append(query.limit)
+        rows = await self._pool.fetch(
+            f"""
+            SELECT
+                receipt_id,
+                deployment_id,
+                customer_id,
+                agent_id,
+                agent_version,
+                artifact_revision,
+                cloud_provider,
+                region,
+                report_digest,
+                preflight_status,
+                required_sections_passed,
+                section_count,
+                failed_section_count,
+                terraform_validate_executed,
+                submitted_at,
+                accepted_at,
+                stored_scope
+            FROM byoc_preflight_report_receipts
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY accepted_at DESC, receipt_id DESC
+            LIMIT ${len(args)}
+            """,
+            *args,
+        )
+        items = tuple(_record_from_row(row) for row in rows)
+        return ByocPreflightReportReceiptList(
+            schema_version="fyralis.byoc.preflight_report_receipt_list.v1",
+            deployment_id=query.deployment_id,
+            customer_id=query.customer_id,
+            limit=query.limit,
+            result_count=len(items),
+            stored_scope="sanitized_metadata_only",
+            items=items,
+        )
 
 
 def preflight_report_submission_payload(
@@ -483,6 +611,8 @@ def model_json_schema_bundle() -> dict[str, Any]:
         "submission_payload": ByocPreflightReportSubmissionPayload.model_json_schema(),
         "submission_request": ByocPreflightReportSubmissionRequest.model_json_schema(),
         "receipt": ByocPreflightReportReceipt.model_json_schema(),
+        "receipt_list": ByocPreflightReportReceiptList.model_json_schema(),
+        "receipt_query": ByocPreflightReportReceiptQuery.model_json_schema(),
         "intake_record": ByocPreflightReportIntakeRecord.model_json_schema(),
     }
 
@@ -520,6 +650,20 @@ def _record_from_row(row: Any) -> ByocPreflightReportIntakeRecord:
         cloud_provider=data["cloud_provider"],
         region=data["region"],
     )
+
+
+def _record_matches_receipt_query(
+    record: ByocPreflightReportIntakeRecord,
+    query: ByocPreflightReportReceiptQuery,
+) -> bool:
+    if (
+        query.deployment_id is not None
+        and record.receipt.deployment_id != query.deployment_id
+    ):
+        return False
+    if query.customer_id is not None and record.receipt.customer_id != query.customer_id:
+        return False
+    return True
 
 
 def _report_contract_violations(
@@ -610,6 +754,8 @@ __all__ = [
     "ByocPreflightReportIntakeStore",
     "ByocPreflightReportIntakeViolation",
     "ByocPreflightReportReceipt",
+    "ByocPreflightReportReceiptList",
+    "ByocPreflightReportReceiptQuery",
     "ByocPreflightReportSubmissionPayload",
     "ByocPreflightReportSubmissionRequest",
     "InMemoryByocPreflightReportIntakeStore",

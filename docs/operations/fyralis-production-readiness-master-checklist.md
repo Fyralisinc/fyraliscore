@@ -127,9 +127,9 @@ Every checklist item is done only when:
   customer data.
 - [x] BYOC preflight reports have a signed submission contract, gateway route,
   self-auth route classification, DB-backed sanitized scalar receipt storage,
-  existing evidence-intake key-ref resolution, customer-side/local submit CLI,
-  storage-shape ratchet, and tests rejecting raw child reports or customer-data
-  markers.
+  signed bounded list reads, existing evidence-intake key-ref resolution,
+  customer-side/local submit CLI, storage-shape ratchet, and tests rejecting
+  raw child reports or customer-data markers.
 - [x] BYOC deployment evidence has a checked-in sanitized ledger contract,
   generator/checker CLI, aggregate-only evidence summaries, and readiness gate
   covering plan, Terraform scaffold validation, optional AWS live-preflight
@@ -167,13 +167,15 @@ Every checklist item is done only when:
   customer-data markers.
 - [x] BYOC runner evidence intake has a signed submission contract, gateway
   route, self-auth route classification, DB-backed sanitized scalar receipt
-  storage, existing evidence-intake key-ref resolution, readiness-gate coverage,
-  customer-side/local submit CLI, storage-shape ratchet, and tests rejecting
-  raw runner report fields or customer-data markers.
+  storage, signed bounded list reads, existing evidence-intake key-ref
+  resolution, readiness-gate coverage, customer-side/local submit CLI,
+  storage-shape ratchet, and tests rejecting raw runner report fields or
+  customer-data markers.
 - [x] BYOC deployment overview has a signed metadata-only backend read model and
-  gateway route that aggregates sanitized agent-fleet and evidence-package
-  receipt state into status, next action, health counts, and evidence counts for
-  future control-panel/backend automation consumers.
+  gateway route that aggregates sanitized agent-fleet, evidence-package,
+  preflight-report, and runner-evidence receipt state into status, next action,
+  health counts, and evidence counts for future control-panel/backend
+  automation consumers.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

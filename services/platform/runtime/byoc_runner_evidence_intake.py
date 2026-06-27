@@ -283,6 +283,50 @@ class ByocRunnerEvidenceIntakeRecord(_StrictModel):
         return value
 
 
+class ByocRunnerEvidenceReceiptQuery(_StrictModel):
+    deployment_id: str | None = None
+    customer_id: str | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+
+    @field_validator("deployment_id")
+    @classmethod
+    def _deployment_id_shape(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not _DEPLOYMENT_ID_RE.match(value):
+            raise ValueError("deployment_id must look like dep_<stable-id>")
+        return value
+
+    @field_validator("customer_id")
+    @classmethod
+    def _customer_id_shape(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not _CUSTOMER_ID_RE.match(value):
+            raise ValueError("customer_id must look like cus_<stable-id>")
+        return value
+
+    @model_validator(mode="after")
+    def _query_must_be_bounded(self) -> "ByocRunnerEvidenceReceiptQuery":
+        if self.deployment_id is None and self.customer_id is None:
+            raise ValueError(
+                "runner evidence receipt queries must include deployment_id or customer_id"
+            )
+        return self
+
+
+class ByocRunnerEvidenceReceiptList(_StrictModel):
+    schema_version: Literal["fyralis.byoc.runner_evidence_receipt_list.v1"]
+    deployment_id: str | None = None
+    customer_id: str | None = None
+    limit: int
+    result_count: int
+    stored_scope: Literal["sanitized_metadata_only"] = "sanitized_metadata_only"
+    items: tuple[ByocRunnerEvidenceIntakeRecord, ...]
+
+
 @dataclass(frozen=True, slots=True)
 class ByocRunnerEvidenceIntakeViolation:
     path: str
@@ -303,6 +347,12 @@ class ByocRunnerEvidenceIntakeStore(Protocol):
         ...
 
     async def get(self, receipt_id: str) -> ByocRunnerEvidenceIntakeRecord | None:
+        ...
+
+    async def list_receipts(
+        self,
+        query: ByocRunnerEvidenceReceiptQuery,
+    ) -> ByocRunnerEvidenceReceiptList:
         ...
 
 
@@ -335,6 +385,33 @@ class InMemoryByocRunnerEvidenceIntakeStore:
 
     async def get(self, receipt_id: str) -> ByocRunnerEvidenceIntakeRecord | None:
         return self._records.get(receipt_id)
+
+    async def list_receipts(
+        self,
+        query: ByocRunnerEvidenceReceiptQuery,
+    ) -> ByocRunnerEvidenceReceiptList:
+        records = [
+            record
+            for record in self._records.values()
+            if _record_matches_receipt_query(record, query)
+        ]
+        records.sort(
+            key=lambda record: (
+                record.receipt.accepted_at,
+                record.receipt.receipt_id,
+            ),
+            reverse=True,
+        )
+        items = tuple(records[: query.limit])
+        return ByocRunnerEvidenceReceiptList(
+            schema_version="fyralis.byoc.runner_evidence_receipt_list.v1",
+            deployment_id=query.deployment_id,
+            customer_id=query.customer_id,
+            limit=query.limit,
+            result_count=len(items),
+            stored_scope="sanitized_metadata_only",
+            items=items,
+        )
 
 
 class PostgresByocRunnerEvidenceIntakeStore:
@@ -467,6 +544,61 @@ class PostgresByocRunnerEvidenceIntakeStore:
         if row is None:
             return None
         return _record_from_row(row)
+
+    async def list_receipts(
+        self,
+        query: ByocRunnerEvidenceReceiptQuery,
+    ) -> ByocRunnerEvidenceReceiptList:
+        where_clauses: list[str] = []
+        args: list[Any] = []
+        if query.deployment_id is not None:
+            args.append(query.deployment_id)
+            where_clauses.append(f"deployment_id = ${len(args)}")
+        if query.customer_id is not None:
+            args.append(query.customer_id)
+            where_clauses.append(f"customer_id = ${len(args)}")
+        args.append(query.limit)
+        rows = await self._pool.fetch(
+            f"""
+            SELECT
+                receipt_id,
+                deployment_id,
+                customer_id,
+                agent_id,
+                agent_version,
+                cloud_provider,
+                region,
+                control_plane_mode,
+                evidence_digest,
+                current_artifact_revision,
+                desired_revision,
+                rollout_action,
+                runner_status,
+                required_checks_passed,
+                apply_plan_count,
+                artifact_verification_count,
+                digest_pinned_artifact_count,
+                local_digest_checked_count,
+                submitted_at,
+                accepted_at,
+                stored_scope
+            FROM byoc_runner_evidence_receipts
+            WHERE {' AND '.join(where_clauses)}
+            ORDER BY accepted_at DESC, receipt_id DESC
+            LIMIT ${len(args)}
+            """,
+            *args,
+        )
+        items = tuple(_record_from_row(row) for row in rows)
+        return ByocRunnerEvidenceReceiptList(
+            schema_version="fyralis.byoc.runner_evidence_receipt_list.v1",
+            deployment_id=query.deployment_id,
+            customer_id=query.customer_id,
+            limit=query.limit,
+            result_count=len(items),
+            stored_scope="sanitized_metadata_only",
+            items=items,
+        )
 
 
 def runner_evidence_summary_from_report(
@@ -647,6 +779,8 @@ def model_json_schema_bundle() -> dict[str, Any]:
         "submission_payload": ByocRunnerEvidenceSubmissionPayload.model_json_schema(),
         "submission_request": ByocRunnerEvidenceSubmissionRequest.model_json_schema(),
         "receipt": ByocRunnerEvidenceReceipt.model_json_schema(),
+        "receipt_list": ByocRunnerEvidenceReceiptList.model_json_schema(),
+        "receipt_query": ByocRunnerEvidenceReceiptQuery.model_json_schema(),
         "intake_record": ByocRunnerEvidenceIntakeRecord.model_json_schema(),
     }
 
@@ -688,6 +822,20 @@ def _record_from_row(row: Any) -> ByocRunnerEvidenceIntakeRecord:
         region=data["region"],
         control_plane_mode=data["control_plane_mode"],
     )
+
+
+def _record_matches_receipt_query(
+    record: ByocRunnerEvidenceIntakeRecord,
+    query: ByocRunnerEvidenceReceiptQuery,
+) -> bool:
+    if (
+        query.deployment_id is not None
+        and record.receipt.deployment_id != query.deployment_id
+    ):
+        return False
+    if query.customer_id is not None and record.receipt.customer_id != query.customer_id:
+        return False
+    return True
 
 
 def _summary_contract_violations(
@@ -778,6 +926,8 @@ __all__ = [
     "ByocRunnerEvidenceIntakeStore",
     "ByocRunnerEvidenceIntakeViolation",
     "ByocRunnerEvidenceReceipt",
+    "ByocRunnerEvidenceReceiptList",
+    "ByocRunnerEvidenceReceiptQuery",
     "ByocRunnerEvidenceSubmissionPayload",
     "ByocRunnerEvidenceSubmissionRequest",
     "ByocRunnerEvidenceSummary",

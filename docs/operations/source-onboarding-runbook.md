@@ -257,9 +257,10 @@ Backend automation/control-panel consumers can also read
 `GET /byoc/control-plane/deployment-overview` with the same signed read
 headers. Include `deployment_id` and, where available, `customer_id`; the
 response summarizes deployment status, next action, agent health counts,
-evidence-package receipt counts, and latest accepted timestamps only. Use the
-overview for customer-facing health state and the agent fleet endpoint for
-per-agent metadata.
+evidence-package receipt counts, preflight receipt counts, runner receipt
+counts, and latest accepted timestamps only. Use the overview for
+customer-facing health state and the agent fleet endpoint for per-agent
+metadata.
 
 To print a signed GET request without network access, omit `--list-url`; to
 run the read against the hosted backend, provide the full route URL:
@@ -322,6 +323,12 @@ signing key reference. Submit only the derived runner summary, not the raw
 runner report. The backend stores a scalar
 `fyralis.byoc.runner_evidence_receipt.v1` receipt with deployment/agent
 identity, revision intent, pass/fail status, and aggregate counts only.
+Backend automation can list sanitized preflight and runner receipt metadata
+with signed read headers against `GET /byoc/control-plane/preflight-reports`
+and `GET /byoc/control-plane/runner-evidence`; always include `deployment_id`
+or `customer_id`. These reads do not return preflight sections, child reports,
+runner checks, iterations, apply-plan bodies, artifact inventories, URLs, logs,
+request bodies, credentials, or PII.
 
 ```bash
 FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY="<local-signing-material>" \

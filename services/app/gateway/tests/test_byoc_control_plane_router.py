@@ -405,11 +405,21 @@ async def test_byoc_control_plane_accepts_signed_runner_evidence() -> None:
     runner_store = InMemoryByocRunnerEvidenceIntakeStore()
     app, _ = _app()
     app.state.byoc_runner_evidence_intake_store = runner_store
+    list_path = "/byoc/control-plane/runner-evidence"
+    query = f"deployment_id={MANIFEST.deployment_id}&limit=10"
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/byoc/control-plane/runner-evidence",
             json=(await _runner_submission()).model_dump(mode="json"),
+        )
+        receipt_list = await client.get(
+            f"{list_path}?{query}",
+            headers=_read_headers(
+                list_path,
+                query=query,
+                nonce="nonce-runner-router-list",
+            ),
         )
 
     assert response.status_code == 202
@@ -423,6 +433,15 @@ async def test_byoc_control_plane_accepts_signed_runner_evidence() -> None:
     assert "iterations" not in response.text
     assert "gateway_image" not in response.text
     assert INSTALL_TOKEN not in response.text
+    assert receipt_list.status_code == 200
+    assert receipt_list.json()["schema_version"] == (
+        "fyralis.byoc.runner_evidence_receipt_list.v1"
+    )
+    assert receipt_list.json()["result_count"] == 1
+    assert '"checks":' not in receipt_list.text
+    assert "iterations" not in receipt_list.text
+    assert "gateway_image" not in receipt_list.text
+    assert INSTALL_TOKEN not in receipt_list.text
 
 
 @pytest.mark.asyncio
@@ -430,11 +449,21 @@ async def test_byoc_control_plane_accepts_signed_preflight_report() -> None:
     preflight_store = InMemoryByocPreflightReportIntakeStore()
     app, _ = _app()
     app.state.byoc_preflight_report_intake_store = preflight_store
+    list_path = "/byoc/control-plane/preflight-reports"
+    query = f"deployment_id={MANIFEST.deployment_id}&limit=10"
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/byoc/control-plane/preflight-reports",
             json=_preflight_submission().model_dump(mode="json"),
+        )
+        receipt_list = await client.get(
+            f"{list_path}?{query}",
+            headers=_read_headers(
+                list_path,
+                query=query,
+                nonce="nonce-preflight-router-list",
+            ),
         )
 
     assert response.status_code == 202
@@ -448,6 +477,15 @@ async def test_byoc_control_plane_accepts_signed_preflight_report() -> None:
     assert '"preflight_report":' not in response.text
     assert "ghcr.io" not in response.text
     assert "postgresql://" not in response.text
+    assert receipt_list.status_code == 200
+    assert receipt_list.json()["schema_version"] == (
+        "fyralis.byoc.preflight_report_receipt_list.v1"
+    )
+    assert receipt_list.json()["result_count"] == 1
+    assert '"sections":' not in receipt_list.text
+    assert '"preflight_report":' not in receipt_list.text
+    assert "ghcr.io" not in receipt_list.text
+    assert "postgresql://" not in receipt_list.text
 
 
 @pytest.mark.asyncio
@@ -550,6 +588,8 @@ async def test_byoc_control_plane_lists_signed_agent_fleet_metadata() -> None:
 @pytest.mark.asyncio
 async def test_byoc_control_plane_serves_signed_deployment_overview_metadata() -> None:
     agent_store = InMemoryByocAgentRegistryStore()
+    preflight_store = InMemoryByocPreflightReportIntakeStore()
+    runner_store = InMemoryByocRunnerEvidenceIntakeStore()
     await agent_store.enroll(
         _agent_enrollment(),
         enrolled_at=datetime(2026, 6, 26, 12, 21, tzinfo=UTC),
@@ -567,9 +607,19 @@ async def test_byoc_control_plane_serves_signed_deployment_overview_metadata() -
     )
     app, evidence_store = _app()
     app.state.byoc_agent_registry_store = agent_store
+    app.state.byoc_preflight_report_intake_store = preflight_store
+    app.state.byoc_runner_evidence_intake_store = runner_store
     await evidence_store.put(
         _submission(),
         accepted_at=datetime(2026, 6, 26, 12, 28, tzinfo=UTC),
+    )
+    await preflight_store.put(
+        _preflight_submission(),
+        accepted_at=datetime(2026, 6, 26, 12, 29, tzinfo=UTC),
+    )
+    await runner_store.put(
+        await _runner_submission(),
+        accepted_at=datetime(2026, 6, 26, 12, 30, tzinfo=UTC),
     )
     path = "/byoc/control-plane/deployment-overview"
     query = f"deployment_id={MANIFEST.deployment_id}&customer_id={MANIFEST.customer_id}"
@@ -595,18 +645,28 @@ async def test_byoc_control_plane_serves_signed_deployment_overview_metadata() -
     assert overview["metadata_sources"] == [
         "agent_fleet",
         "evidence_package_receipts",
+        "preflight_report_receipts",
+        "runner_evidence_receipts",
     ]
     assert overview["agent_summary"]["enrolled_count"] == 1
     assert overview["agent_summary"]["passing_count"] == 1
     assert overview["agent_summary"]["evidence_package_required_count"] == 1
     assert overview["evidence_summary"]["receipt_count"] == 1
     assert overview["evidence_summary"]["latest_required_evidence_passed"] is True
+    assert overview["preflight_summary"]["receipt_count"] == 1
+    assert overview["preflight_summary"]["latest_preflight_status"] == "pass"
+    assert overview["runner_summary"]["receipt_count"] == 1
+    assert overview["runner_summary"]["latest_runner_status"] == "pass"
     assert AGENT_INSTALL_TOKEN not in response.text
     assert SIGNING_SECRET not in response.text
     assert "install_token" not in response.text.lower()
     assert "secret_ref" not in response.text.lower()
     assert "signature" not in response.text.lower()
     assert "payload" not in response.text.lower()
+    assert '"preflight_report":' not in response.text
+    assert '"sections":' not in response.text
+    assert '"checks":' not in response.text
+    assert "iterations" not in response.text
     assert "source_artifacts" not in response.text
     assert MANIFEST.connectivity.control_plane_url not in response.text
 

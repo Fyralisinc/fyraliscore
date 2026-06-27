@@ -41,6 +41,8 @@ from services.platform.runtime.byoc_agent_control_plane import (
 from services.platform.runtime.byoc_preflight_intake import (
     ByocPreflightReportIntakeStore,
     ByocPreflightReportReceipt,
+    ByocPreflightReportReceiptList,
+    ByocPreflightReportReceiptQuery,
     ByocPreflightReportSubmissionRequest,
     InMemoryByocPreflightReportIntakeStore,
     PostgresByocPreflightReportIntakeStore,
@@ -49,6 +51,8 @@ from services.platform.runtime.byoc_preflight_intake import (
 from services.platform.runtime.byoc_runner_evidence_intake import (
     ByocRunnerEvidenceIntakeStore,
     ByocRunnerEvidenceReceipt,
+    ByocRunnerEvidenceReceiptList,
+    ByocRunnerEvidenceReceiptQuery,
     ByocRunnerEvidenceSubmissionRequest,
     InMemoryByocRunnerEvidenceIntakeStore,
     PostgresByocRunnerEvidenceIntakeStore,
@@ -138,6 +142,34 @@ def build_byoc_control_plane_router(
         )
         return await intake_store.put(submission)
 
+    @router.get("/preflight-reports")
+    async def list_preflight_report_receipts(
+        request: Request,
+        deployment_id: str | None = None,
+        customer_id: str | None = None,
+        limit: int = 50,
+    ) -> ByocPreflightReportReceiptList:
+        await _require_receipt_read_auth(
+            request,
+            signing_secret=signing_secret,
+            signing_key_ref=signing_key_ref,
+        )
+        try:
+            query = ByocPreflightReportReceiptQuery(
+                deployment_id=deployment_id,
+                customer_id=customer_id,
+                limit=limit,
+            )
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"errors": [error["msg"] for error in exc.errors()]},
+            ) from exc
+        intake_store = preflight_report_store or _preflight_report_store_from_state(
+            request
+        )
+        return await intake_store.list_receipts(query)
+
     @router.post(
         "/runner-evidence",
         status_code=status.HTTP_202_ACCEPTED,
@@ -172,6 +204,34 @@ def build_byoc_control_plane_router(
             request
         )
         return await intake_store.put(submission)
+
+    @router.get("/runner-evidence")
+    async def list_runner_evidence_receipts(
+        request: Request,
+        deployment_id: str | None = None,
+        customer_id: str | None = None,
+        limit: int = 50,
+    ) -> ByocRunnerEvidenceReceiptList:
+        await _require_receipt_read_auth(
+            request,
+            signing_secret=signing_secret,
+            signing_key_ref=signing_key_ref,
+        )
+        try:
+            query = ByocRunnerEvidenceReceiptQuery(
+                deployment_id=deployment_id,
+                customer_id=customer_id,
+                limit=limit,
+            )
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"errors": [error["msg"] for error in exc.errors()]},
+            ) from exc
+        intake_store = runner_evidence_store or _runner_evidence_store_from_state(
+            request
+        )
+        return await intake_store.list_receipts(query)
 
     @router.post(
         "/agent-desired-state",
@@ -263,6 +323,12 @@ def build_byoc_control_plane_router(
             ) from exc
         registry = agent_registry_store or _agent_registry_store_from_state(request)
         evidence_store = store or _store_from_state(request)
+        preflight_store = preflight_report_store or _preflight_report_store_from_state(
+            request
+        )
+        runner_store = runner_evidence_store or _runner_evidence_store_from_state(
+            request
+        )
         agents = await registry.list_agents(
             ByocAgentFleetQuery(
                 deployment_id=query.deployment_id,
@@ -277,10 +343,26 @@ def build_byoc_control_plane_router(
                 limit=20,
             )
         )
+        preflight_reports = await preflight_store.list_receipts(
+            ByocPreflightReportReceiptQuery(
+                deployment_id=query.deployment_id,
+                customer_id=query.customer_id,
+                limit=20,
+            )
+        )
+        runner_evidence = await runner_store.list_receipts(
+            ByocRunnerEvidenceReceiptQuery(
+                deployment_id=query.deployment_id,
+                customer_id=query.customer_id,
+                limit=20,
+            )
+        )
         return build_byoc_deployment_overview(
             query=query,
             agents=agents,
             evidence_packages=evidence_packages,
+            preflight_reports=preflight_reports,
+            runner_evidence=runner_evidence,
         )
 
     @router.get("/evidence-packages")
