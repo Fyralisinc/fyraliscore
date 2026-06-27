@@ -42,11 +42,17 @@ def test_control_panel_contract_example_is_sanitized_metadata_only() -> None:
     assert {section["key"] for section in payload["sections"]} == {
         "deployment_overview",
         "agent_fleet",
+        "product_health",
         "evidence_packages",
         "preflight_reports",
         "runner_evidence",
     }
     assert payload["agent_fleet"]["result_count"] == 1
+    assert payload["product_health"]["stored_scope"] == (
+        "sanitized_product_health_metadata_only"
+    )
+    assert payload["product_health"]["models"]["model_count"] == 37
+    assert payload["product_health"]["sources"][0]["source"] == "slack"
     assert payload["evidence_packages"]["result_count"] == 1
     assert payload["preflight_reports"]["result_count"] == 1
     assert payload["runner_evidence"]["result_count"] == 1

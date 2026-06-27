@@ -55,6 +55,7 @@ def test_smoke_byoc_control_plane_reads_prints_signed_requests(
         "agent_fleet",
         "deployment_overview",
         "control_panel_state",
+        "product_health",
         "evidence_packages",
         "preflight_reports",
         "runner_evidence",
@@ -78,6 +79,9 @@ def test_smoke_byoc_control_plane_reads_prints_signed_requests(
     )
     assert payload["requests"]["control_panel_state"]["query"] == (
         f"deployment_id={DEPLOYMENT_ID}&customer_id={CUSTOMER_ID}&recent_limit=10"
+    )
+    assert payload["requests"]["product_health"]["query"] == (
+        f"deployment_id={DEPLOYMENT_ID}&customer_id={CUSTOMER_ID}"
     )
     assert SIGNING_SECRET not in rendered
     assert "install_token" not in rendered.lower()
@@ -128,6 +132,13 @@ def test_smoke_byoc_control_plane_reads_executes_all_signed_reads(
                 "sections": [],
                 "actions": [],
                 "stored_scope": "sanitized_control_panel_metadata_only",
+            }
+        if path.endswith("/product-health"):
+            return {
+                "schema_version": "fyralis.byoc.product_health.v1",
+                "observed": True,
+                "overall_status": "ready",
+                "stored_scope": "sanitized_product_health_metadata_only",
             }
         if path.endswith("/evidence-packages"):
             return {
@@ -187,11 +198,12 @@ def test_smoke_byoc_control_plane_reads_executes_all_signed_reads(
     assert payload["schema_version"] == SCHEMA_VERSION
     assert payload["mode"] == "executed"
     assert payload["control_panel_recent_limit"] == 10
-    assert len(seen) == 6
+    assert len(seen) == 7
     assert {item["path"] for item in seen} == {
         "/root/byoc/control-plane/agents",
         "/root/byoc/control-plane/deployment-overview",
         "/root/byoc/control-plane/control-panel-state",
+        "/root/byoc/control-plane/product-health",
         "/root/byoc/control-plane/evidence-packages",
         "/root/byoc/control-plane/preflight-reports",
         "/root/byoc/control-plane/runner-evidence",
@@ -201,6 +213,7 @@ def test_smoke_byoc_control_plane_reads_executes_all_signed_reads(
     assert payload["responses"]["control_panel_state"]["response"]["stored_scope"] == (
         "sanitized_control_panel_metadata_only"
     )
+    assert payload["responses"]["product_health"]["response"]["observed"] is True
     assert payload["responses"]["runner_evidence"]["response"]["result_count"] == 1
     assert "headers" not in rendered.lower()
     assert SIGNING_SECRET not in rendered

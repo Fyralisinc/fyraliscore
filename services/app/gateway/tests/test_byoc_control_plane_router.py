@@ -47,6 +47,17 @@ from services.platform.runtime.byoc_preflight_intake import (
     preflight_report_submission_payload,
     signed_preflight_report_submission,
 )
+from services.platform.runtime.byoc_product_health import (
+    ByocProductHealthIssue,
+    ByocProductModelHealth,
+    ByocProductPipelineHealth,
+    ByocProductSourceHealth,
+    ByocProductThinkHealth,
+    ByocProductVectorHealth,
+    InMemoryByocProductHealthIntakeStore,
+    product_health_snapshot_payload,
+    signed_product_health_snapshot,
+)
 from services.platform.runtime.byoc_runner_evidence_intake import (
     InMemoryByocRunnerEvidenceIntakeStore,
     runner_evidence_submission_payload,
@@ -215,6 +226,92 @@ def _desired_state_poll():
     return signed_desired_state_poll_request(
         payload,
         install_token=AGENT_INSTALL_TOKEN,
+    )
+
+
+def _product_health_snapshot(*, signing_secret: str = SIGNING_SECRET):
+    payload = product_health_snapshot_payload(
+        deployment_id=MANIFEST.deployment_id,
+        customer_id=MANIFEST.customer_id,
+        agent_id=DESIRED_STATE_AGENT_ID,
+        agent_version=AGENT_VERSION,
+        artifact_revision=MANIFEST.artifact_revision,
+        overall_status="degraded",
+        collected_at=datetime(2026, 6, 26, 12, 27, tzinfo=UTC),
+        nonce="nonce-product-health-router-001",
+        sources=(
+            ByocProductSourceHealth(
+                source="slack",
+                status="ready",
+                auth_status="ready",
+                backfill_status="idle",
+                items_ingested_count=120,
+                items_failed_count=0,
+                queue_depth_count=0,
+                lag_seconds=10,
+                last_success_at=datetime(2026, 6, 26, 12, 26, tzinfo=UTC),
+            ),
+            ByocProductSourceHealth(
+                source="github",
+                status="degraded",
+                auth_status="ready",
+                backfill_status="running",
+                items_ingested_count=44,
+                items_failed_count=2,
+                queue_depth_count=4,
+                lag_seconds=60,
+                last_success_at=datetime(2026, 6, 26, 12, 25, tzinfo=UTC),
+            ),
+        ),
+        pipeline=ByocProductPipelineHealth(
+            status="ready",
+            queue_lag_count=4,
+            dead_letter_count=0,
+            retry_backlog_count=2,
+            dropped_item_count=0,
+        ),
+        think=ByocProductThinkHealth(
+            status="ready",
+            run_count=18,
+            failed_run_count=1,
+            queued_run_count=0,
+            latest_run_at=datetime(2026, 6, 26, 12, 24, tzinfo=UTC),
+            breaker_status="closed",
+        ),
+        models=ByocProductModelHealth(
+            status="degraded",
+            model_count=8,
+            model_build_count=3,
+            failed_build_count=1,
+            model_relation_count=21,
+            orphan_model_count=1,
+            stale_relation_count=0,
+            latest_build_at=datetime(2026, 6, 26, 12, 23, tzinfo=UTC),
+            graph_status="degraded",
+        ),
+        vector_index=ByocProductVectorHealth(
+            status="ready",
+            vector_count=900,
+            backlog_count=3,
+            failed_job_count=0,
+            latest_job_at=datetime(2026, 6, 26, 12, 22, tzinfo=UTC),
+            retrieval_status="ready",
+        ),
+        issues=(
+            ByocProductHealthIssue(
+                code="model_build_retry",
+                severity="warning",
+                component="models",
+                observed_count=1,
+                first_observed_at=datetime(2026, 6, 26, 12, 20, tzinfo=UTC),
+                latest_observed_at=datetime(2026, 6, 26, 12, 21, tzinfo=UTC),
+            ),
+        ),
+    )
+    return signed_product_health_snapshot(
+        payload,
+        signing_secret=signing_secret,
+        key_ref=SIGNING_KEY_REF,
     )
 
 
@@ -442,6 +539,47 @@ async def test_byoc_control_plane_accepts_signed_runner_evidence() -> None:
     assert "iterations" not in receipt_list.text
     assert "gateway_image" not in receipt_list.text
     assert INSTALL_TOKEN not in receipt_list.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_accepts_signed_product_health_snapshot() -> None:
+    product_store = InMemoryByocProductHealthIntakeStore()
+    app, _ = _app()
+    app.state.byoc_product_health_intake_store = product_store
+    path = "/byoc/control-plane/product-health"
+    query = f"deployment_id={MANIFEST.deployment_id}&customer_id={MANIFEST.customer_id}"
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/product-health-snapshots",
+            json=_product_health_snapshot().model_dump(mode="json"),
+        )
+        product_health = await client.get(
+            f"{path}?{query}",
+            headers=_read_headers(
+                path,
+                query=query,
+                nonce="nonce-product-health-router-read-001",
+            ),
+        )
+
+    assert response.status_code == 202
+    receipt = response.json()
+    assert receipt["stored_scope"] == "sanitized_product_health_metadata_only"
+    assert receipt["source_count"] == 2
+    assert product_health.status_code == 200
+    payload = product_health.json()
+    rendered = product_health.text.lower().replace(" ", "")
+    assert payload["schema_version"] == "fyralis.byoc.product_health.v1"
+    assert payload["stored_scope"] == "sanitized_product_health_metadata_only"
+    assert payload["observed"] is True
+    assert payload["overall_status"] == "degraded"
+    assert payload["models"]["model_count"] == 8
+    assert payload["sources"][1]["source"] == "github"
+    assert '"raw_payloads_included":false' in rendered
+    assert "postgresql://" not in rendered
+    assert "token=" not in rendered
+    assert "signature" not in rendered
 
 
 @pytest.mark.asyncio
@@ -675,6 +813,7 @@ async def test_byoc_control_plane_serves_signed_control_panel_state() -> None:
     agent_store = InMemoryByocAgentRegistryStore()
     preflight_store = InMemoryByocPreflightReportIntakeStore()
     runner_store = InMemoryByocRunnerEvidenceIntakeStore()
+    product_store = InMemoryByocProductHealthIntakeStore()
     await agent_store.enroll(
         _agent_enrollment(),
         enrolled_at=datetime(2026, 6, 26, 12, 21, tzinfo=UTC),
@@ -694,6 +833,7 @@ async def test_byoc_control_plane_serves_signed_control_panel_state() -> None:
     app.state.byoc_agent_registry_store = agent_store
     app.state.byoc_preflight_report_intake_store = preflight_store
     app.state.byoc_runner_evidence_intake_store = runner_store
+    app.state.byoc_product_health_intake_store = product_store
     await evidence_store.put(
         _submission(),
         accepted_at=datetime(2026, 6, 26, 12, 28, tzinfo=UTC),
@@ -705,6 +845,10 @@ async def test_byoc_control_plane_serves_signed_control_panel_state() -> None:
     await runner_store.put(
         await _runner_submission(),
         accepted_at=datetime(2026, 6, 26, 12, 30, tzinfo=UTC),
+    )
+    await product_store.put(
+        _product_health_snapshot(),
+        accepted_at=datetime(2026, 6, 26, 12, 31, tzinfo=UTC),
     )
     path = "/byoc/control-plane/control-panel-state"
     query = (
@@ -732,15 +876,19 @@ async def test_byoc_control_plane_serves_signed_control_panel_state() -> None:
     assert state["overview"]["schema_version"] == "fyralis.byoc.deployment_overview.v1"
     assert state["overview"]["status"] == "ready"
     assert state["overview"]["next_action"] == "none"
-    assert state["actions"] == []
+    assert [action["code"] for action in state["actions"]] == [
+        "review_product_health"
+    ]
     assert {section["key"]: section["status"] for section in state["sections"]} == {
         "deployment_overview": "ready",
         "agent_fleet": "ready",
+        "product_health": "degraded",
         "evidence_packages": "ready",
         "preflight_reports": "ready",
         "runner_evidence": "ready",
     }
     assert state["agent_fleet"]["result_count"] == 1
+    assert state["product_health"]["models"]["model_count"] == 8
     assert state["evidence_packages"]["result_count"] == 1
     assert state["preflight_reports"]["result_count"] == 1
     assert state["runner_evidence"]["result_count"] == 1
@@ -749,7 +897,8 @@ async def test_byoc_control_plane_serves_signed_control_panel_state() -> None:
     assert "install_token" not in response.text.lower()
     assert "secret_ref" not in response.text.lower()
     assert "signature" not in response.text.lower()
-    assert "payload" not in response.text.lower()
+    assert '"raw_payloads_included":false' in response.text.lower().replace(" ", "")
+    assert '"payload":' not in response.text.lower()
     assert '"preflight_report":' not in response.text
     assert '"checks":' not in response.text
     assert "iterations" not in response.text
@@ -1048,6 +1197,22 @@ async def test_byoc_control_plane_rejects_bad_runner_evidence_signature() -> Non
         response = await client.post(
             "/byoc/control-plane/runner-evidence",
             json=(await _runner_submission(signing_secret="wrong-secret")).model_dump(
+                mode="json"
+            ),
+        )
+
+    assert response.status_code == 403
+    assert "invalid_signature" in response.text
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_plane_rejects_bad_product_health_signature() -> None:
+    app, _ = _app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/byoc/control-plane/product-health-snapshots",
+            json=_product_health_snapshot(signing_secret="wrong-secret").model_dump(
                 mode="json"
             ),
         )

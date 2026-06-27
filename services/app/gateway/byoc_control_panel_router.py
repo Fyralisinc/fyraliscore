@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from services.app.gateway.byoc_control_plane_router import (
     read_byoc_control_panel_state_from_request,
+    read_byoc_product_health_from_request,
 )
 from services.platform.runtime.byoc_control_panel_access import (
     ByocControlPanelAccessGrant,
@@ -23,6 +24,10 @@ from services.platform.runtime.byoc_control_panel_access import (
 from services.platform.runtime.byoc_control_panel_state import (
     ByocControlPanelState,
     ByocControlPanelStateQuery,
+)
+from services.platform.runtime.byoc_product_health import (
+    ByocProductHealth,
+    ByocProductHealthQuery,
 )
 
 
@@ -105,6 +110,51 @@ def build_byoc_control_panel_router() -> APIRouter:
         return await read_byoc_control_panel_state_from_request(
             request,
             query=state_query,
+        )
+
+    @router.get("/product-health")
+    async def get_browser_product_health(
+        request: Request,
+        deployment_id: str,
+        customer_id: str | None = None,
+    ) -> ByocProductHealth:
+        auth = _require_gateway_auth(request)
+        try:
+            access_query = ByocControlPanelAccessQuery(
+                tenant_id=auth.tenant_id,
+                deployment_id=deployment_id,
+                customer_id=customer_id,
+            )
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"errors": [error["msg"] for error in exc.errors()]},
+            ) from exc
+        decision = evaluate_byoc_control_panel_access(
+            query=access_query,
+            grants=await _access_grants_from_state(
+                request,
+                query=access_query,
+            ),
+        )
+        if not decision.allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"errors": [f"control_panel_access: {decision.reason_code}"]},
+            )
+        try:
+            health_query = ByocProductHealthQuery(
+                deployment_id=deployment_id,
+                customer_id=decision.customer_id,
+            )
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"errors": [error["msg"] for error in exc.errors()]},
+            ) from exc
+        return await read_byoc_product_health_from_request(
+            request,
+            query=health_query,
         )
 
     return router

@@ -421,24 +421,41 @@ Repo-owned artifacts for this first slice:
   `GET /byoc/control-panel/state`, returning only a sanitized count/status
   summary rather than the raw state body.
 - `services/app/gateway/byoc_control_panel_router.py` mounts
-  `GET /byoc/control-panel/deployments` and `GET /byoc/control-panel/state`,
-  bearer-authenticated proxy routes for browser or backend UI clients. The
-  deployment route lists only active metadata-only grants visible to the hosted
-  tenant. The state route evaluates the persisted control-panel access grant
-  before reading the same sanitized state from gateway stores, so browser
-  clients never receive or sign with BYOC read HMAC material.
+  `GET /byoc/control-panel/deployments`, `GET /byoc/control-panel/state`, and
+  `GET /byoc/control-panel/product-health`, bearer-authenticated proxy routes
+  for browser or backend UI clients. The deployment route lists only active
+  metadata-only grants visible to the hosted tenant. The state/product-health
+  routes evaluate the persisted control-panel access grant before reading the
+  same sanitized state from gateway stores, so browser clients never receive or
+  sign with BYOC read HMAC material.
 - `ui/` is the core repo's BYOC control-panel UI integration. It is a
   Vite/React operations dashboard for deployment discovery, overview status,
-  section health, open action codes, agent fleet metadata, and recent sanitized
-  receipts. It calls only the bearer-authenticated control-panel proxy routes,
-  keeps local test bearer tokens in memory only, and treats the separate
-  `feat/byoc-control-plane-mvp` stack as prototype/reference rather than merge
-  source.
+  section health, product-health counters, open action codes, agent fleet
+  metadata, and recent sanitized receipts. It calls only the
+  bearer-authenticated control-panel proxy routes, keeps local test bearer
+  tokens in memory only, and treats the separate `feat/byoc-control-plane-mvp`
+  stack as prototype/reference rather than merge source.
+- `services/platform/runtime/byoc_product_health.py`,
+  `db/migrations/0186_byoc_product_health_snapshots.sql`, and
+  `POST /byoc/control-plane/product-health-snapshots` define the metadata-only
+  customer-side product-state channel. The data plane submits signed aggregate
+  snapshots for source ingestion counts/status, pipeline backlog, Think runs,
+  model graph counters, vector-index counters, and bounded issue codes. The
+  control plane stores normalized scalar rows only in
+  `byoc_product_health_snapshots`, `byoc_product_health_sources`, and
+  `byoc_product_health_issues`; raw records, prompts, logs, vector values,
+  model contents, credentials, URLs, signatures, and PII remain out of contract.
+- `GET /byoc/control-plane/product-health` is the signed backend automation
+  read for the latest sanitized product-health snapshot for one deployment.
+  `GET /byoc/control-panel/state` embeds the same product-health object so UI
+  clients can render deployment health and product health from one grant-gated
+  response.
 - `scripts/smoke_byoc_control_plane_reads.py` signs the read-only BYOC
   backend/control-panel surfaces together: agent fleet, deployment overview,
-  control-panel state, evidence-package receipts, preflight receipts, and
-  runner-evidence receipts. It can print the signed request bundle for offline
-  inspection or execute the six GETs against `--base-url`, returning only
+  control-panel state, product health, evidence-package receipts, preflight
+  receipts, and runner-evidence receipts. It can print the signed request
+  bundle for offline inspection or execute the seven GETs against `--base-url`,
+  returning only
   sanitized endpoint responses.
 - `services/platform/runtime/byoc_control_plane_read_smoke_summary.py` and
   `scripts/summarize_byoc_control_plane_read_smoke.py` convert raw/signed
@@ -1472,6 +1489,7 @@ Allowed to leave the customer boundary:
 | Reliability | error counts by code, retry counts, circuit breaker state, DLQ counts, failed validation count | bounded error_code, component, source family |
 | Capacity | CPU/memory/storage utilization, DB connections, object storage bytes, topic partitions | component, resource class |
 | Billing/product aggregate | active seat count, enabled source families, event count by source family, token bucket totals, monthly active users | source family, coarse plan/tier |
+| Product health | per-source ingest counts/status, Think run/failure/queue counts, model/relationship/orphan counts, vector-index backlog, bounded issue codes | deployment_id, source family, component, status code |
 | Release state | current version, target version, rollout phase, rollback count | version, phase |
 
 Forbidden to leave:

@@ -29,6 +29,15 @@ from services.platform.runtime.byoc_preflight_intake import (
     ByocPreflightReportReceipt,
     ByocPreflightReportReceiptList,
 )
+from services.platform.runtime.byoc_product_health import (
+    ByocProductHealth,
+    ByocProductHealthIssue,
+    ByocProductModelHealth,
+    ByocProductPipelineHealth,
+    ByocProductSourceHealth,
+    ByocProductThinkHealth,
+    ByocProductVectorHealth,
+)
 from services.platform.runtime.byoc_runner_evidence_intake import (
     ByocRunnerEvidenceIntakeRecord,
     ByocRunnerEvidenceReceipt,
@@ -51,6 +60,7 @@ def model_json_schema_bundle() -> dict[str, Any]:
         "query": ByocControlPanelStateQuery.model_json_schema(),
         "control_panel_state": ByocControlPanelState.model_json_schema(),
         "deployment_overview": ByocDeploymentOverview.model_json_schema(),
+        "product_health": ByocProductHealth.model_json_schema(),
         "stored_scope": "sanitized_control_panel_metadata_only",
     }
 
@@ -65,6 +75,7 @@ def build_example_control_panel_state(
     evidence_packages = _evidence_package_receipts(generated_at=generated_at)
     preflight_reports = _preflight_report_receipts(generated_at=generated_at)
     runner_evidence = _runner_evidence_receipts(generated_at=generated_at)
+    product_health = _product_health(generated_at=generated_at)
     overview = build_byoc_deployment_overview(
         query=ByocDeploymentOverviewQuery(
             deployment_id=EXAMPLE_DEPLOYMENT_ID,
@@ -87,6 +98,7 @@ def build_example_control_panel_state(
         evidence_packages=evidence_packages,
         preflight_reports=preflight_reports,
         runner_evidence=runner_evidence,
+        product_health=product_health,
         generated_at=generated_at,
     )
 
@@ -146,6 +158,88 @@ def _agent_fleet(*, generated_at: datetime) -> ByocAgentFleetList:
                 stored_scope="sanitized_agent_metadata_only",
             ),
         ),
+    )
+
+
+def _product_health(*, generated_at: datetime) -> ByocProductHealth:
+    return ByocProductHealth(
+        schema_version="fyralis.byoc.product_health.v1",
+        deployment_id=EXAMPLE_DEPLOYMENT_ID,
+        customer_id=EXAMPLE_CUSTOMER_ID,
+        generated_at=generated_at,
+        observed=True,
+        latest_snapshot_id="phs_0123456789abcdef0123456789abcdef",
+        latest_collected_at=generated_at.replace(hour=11, minute=59),
+        overall_status="ready",
+        sources=(
+            ByocProductSourceHealth(
+                source="slack",
+                status="ready",
+                auth_status="ready",
+                backfill_status="idle",
+                items_ingested_count=1280,
+                items_failed_count=0,
+                queue_depth_count=0,
+                lag_seconds=12,
+                last_success_at=generated_at.replace(hour=11, minute=58),
+            ),
+            ByocProductSourceHealth(
+                source="github",
+                status="ready",
+                auth_status="ready",
+                backfill_status="idle",
+                items_ingested_count=342,
+                items_failed_count=1,
+                queue_depth_count=2,
+                lag_seconds=45,
+                last_success_at=generated_at.replace(hour=11, minute=57),
+            ),
+        ),
+        pipeline=ByocProductPipelineHealth(
+            status="ready",
+            queue_lag_count=2,
+            dead_letter_count=0,
+            retry_backlog_count=1,
+            dropped_item_count=0,
+        ),
+        think=ByocProductThinkHealth(
+            status="ready",
+            run_count=84,
+            failed_run_count=1,
+            queued_run_count=0,
+            latest_run_at=generated_at.replace(hour=11, minute=54),
+            breaker_status="closed",
+        ),
+        models=ByocProductModelHealth(
+            status="ready",
+            model_count=37,
+            model_build_count=9,
+            failed_build_count=0,
+            model_relation_count=112,
+            orphan_model_count=1,
+            stale_relation_count=0,
+            latest_build_at=generated_at.replace(hour=11, minute=52),
+            graph_status="ready",
+        ),
+        vector_index=ByocProductVectorHealth(
+            status="ready",
+            vector_count=7812,
+            backlog_count=3,
+            failed_job_count=0,
+            latest_job_at=generated_at.replace(hour=11, minute=55),
+            retrieval_status="ready",
+        ),
+        issues=(
+            ByocProductHealthIssue(
+                code="github_minor_ingest_retry",
+                severity="info",
+                component="source_ingestion",
+                observed_count=1,
+                first_observed_at=generated_at.replace(hour=11, minute=47),
+                latest_observed_at=generated_at.replace(hour=11, minute=49),
+            ),
+        ),
+        stored_scope="sanitized_product_health_metadata_only",
     )
 
 

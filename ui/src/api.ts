@@ -48,6 +48,10 @@ export async function fetchControlPanelState(
   );
   assertScope(state.stored_scope, "sanitized_control_panel_metadata_only");
   assertScope(state.overview.stored_scope, "sanitized_deployment_metadata_only");
+  assertScope(
+    state.product_health.stored_scope,
+    "sanitized_product_health_metadata_only"
+  );
   return state;
 }
 

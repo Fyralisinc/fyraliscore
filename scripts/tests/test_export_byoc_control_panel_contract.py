@@ -16,6 +16,10 @@ def test_export_byoc_control_panel_contract_prints_example(capsys) -> None:
     assert payload["schema_version"] == "fyralis.byoc.control_panel_state.v1"
     assert payload["stored_scope"] == "sanitized_control_panel_metadata_only"
     assert payload["deployment_id"] == "dep_control01"
+    assert payload["product_health"]["schema_version"] == (
+        "fyralis.byoc.product_health.v1"
+    )
+    assert payload["product_health"]["models"]["model_count"] == 37
     assert "install_token" not in rendered.lower()
     assert "secret_ref" not in rendered.lower()
     assert "signature" not in rendered.lower()
@@ -34,6 +38,9 @@ def test_export_byoc_control_panel_contract_prints_schema(capsys) -> None:
     assert payload["control_panel_state"]["properties"]["schema_version"][
         "const"
     ] == "fyralis.byoc.control_panel_state.v1"
+    assert payload["product_health"]["properties"]["schema_version"]["const"] == (
+        "fyralis.byoc.product_health.v1"
+    )
     assert payload["query"]["properties"]["recent_limit"]["maximum"] == 20
 
 

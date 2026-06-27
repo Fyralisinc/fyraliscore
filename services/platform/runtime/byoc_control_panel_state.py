@@ -20,6 +20,11 @@ from services.platform.runtime.byoc_deployment_overview import (
 from services.platform.runtime.byoc_preflight_intake import (
     ByocPreflightReportReceiptList,
 )
+from services.platform.runtime.byoc_product_health import (
+    ByocProductHealth,
+    ByocProductHealthQuery,
+    unknown_product_health,
+)
 from services.platform.runtime.byoc_runner_evidence_intake import (
     ByocRunnerEvidenceReceiptList,
 )
@@ -32,6 +37,7 @@ ControlPanelStoredScope = Literal["sanitized_control_panel_metadata_only"]
 ControlPanelSectionKey = Literal[
     "deployment_overview",
     "agent_fleet",
+    "product_health",
     "evidence_packages",
     "preflight_reports",
     "runner_evidence",
@@ -51,6 +57,7 @@ ControlPanelActionCode = Literal[
     "review_preflight_failures",
     "review_runner_failures",
     "review_desired_state_drift",
+    "review_product_health",
 ]
 ControlPanelActionPriority = Literal["critical", "warning", "info"]
 
@@ -108,6 +115,7 @@ class ByocControlPanelState(_StrictModel):
     sections: tuple[ByocControlPanelSection, ...]
     actions: tuple[ByocControlPanelAction, ...]
     agent_fleet: ByocAgentFleetList
+    product_health: ByocProductHealth
     evidence_packages: ByocEvidencePackageReceiptList
     preflight_reports: ByocPreflightReportReceiptList
     runner_evidence: ByocRunnerEvidenceReceiptList
@@ -140,6 +148,7 @@ def build_byoc_control_panel_state(
     evidence_packages: ByocEvidencePackageReceiptList,
     preflight_reports: ByocPreflightReportReceiptList,
     runner_evidence: ByocRunnerEvidenceReceiptList,
+    product_health: ByocProductHealth | None = None,
     generated_at: datetime | None = None,
 ) -> ByocControlPanelState:
     """Build the backend contract a control panel can render from.
@@ -150,9 +159,17 @@ def build_byoc_control_panel_state(
     """
     generated = generated_at or datetime.now(tz=UTC)
     customer_id = query.customer_id or overview.customer_id
+    product_health_state = product_health or unknown_product_health(
+        query=ByocProductHealthQuery(
+            deployment_id=query.deployment_id,
+            customer_id=customer_id,
+        ),
+        generated_at=generated,
+    )
     sections = _sections(
         overview=overview,
         agents=agents,
+        product_health=product_health_state,
         evidence_packages=evidence_packages,
         preflight_reports=preflight_reports,
         runner_evidence=runner_evidence,
@@ -160,6 +177,7 @@ def build_byoc_control_panel_state(
     actions = _actions(
         overview=overview,
         agents=agents,
+        product_health=product_health_state,
         deployment_id=query.deployment_id,
         customer_id=customer_id,
     )
@@ -172,6 +190,7 @@ def build_byoc_control_panel_state(
         sections=sections,
         actions=actions,
         agent_fleet=agents,
+        product_health=product_health_state,
         evidence_packages=evidence_packages,
         preflight_reports=preflight_reports,
         runner_evidence=runner_evidence,
@@ -183,6 +202,7 @@ def _sections(
     *,
     overview: ByocDeploymentOverview,
     agents: ByocAgentFleetList,
+    product_health: ByocProductHealth,
     evidence_packages: ByocEvidencePackageReceiptList,
     preflight_reports: ByocPreflightReportReceiptList,
     runner_evidence: ByocRunnerEvidenceReceiptList,
@@ -201,6 +221,13 @@ def _sections(
             item_count=agents.result_count,
             latest_observed_at=overview.agent_summary.latest_heartbeat_accepted_at,
             source_schema_version=agents.schema_version,
+        ),
+        ByocControlPanelSection(
+            key="product_health",
+            status=_product_health_section_status(product_health),
+            item_count=_product_health_item_count(product_health),
+            latest_observed_at=product_health.latest_collected_at,
+            source_schema_version=product_health.schema_version,
         ),
         ByocControlPanelSection(
             key="evidence_packages",
@@ -249,6 +276,28 @@ def _agent_section_status(
     return "ready"
 
 
+def _product_health_section_status(
+    product_health: ByocProductHealth,
+) -> ControlPanelSectionStatus:
+    if not product_health.observed:
+        return "unknown"
+    if product_health.overall_status == "action_required":
+        return "action_required"
+    if product_health.overall_status == "degraded":
+        return "degraded"
+    if product_health.overall_status == "ready":
+        return "ready"
+    return "unknown"
+
+
+def _product_health_item_count(product_health: ByocProductHealth) -> int:
+    return (
+        len(product_health.sources)
+        + len(product_health.issues)
+        + (1 if product_health.observed else 0)
+    )
+
+
 def _evidence_section_status(
     overview: ByocDeploymentOverview,
 ) -> ControlPanelSectionStatus:
@@ -291,6 +340,7 @@ def _actions(
     *,
     overview: ByocDeploymentOverview,
     agents: ByocAgentFleetList,
+    product_health: ByocProductHealth,
     deployment_id: str,
     customer_id: str | None,
 ) -> tuple[ByocControlPanelAction, ...]:
@@ -302,6 +352,20 @@ def _actions(
                 priority=_priority_for_next_action(overview),
                 source="deployment_overview",
                 target_section=_target_section_for_next_action(overview.next_action),
+                deployment_id=deployment_id,
+                customer_id=customer_id,
+            )
+        )
+    if not product_health.observed or product_health.overall_status in (
+        "action_required",
+        "degraded",
+    ):
+        actions.append(
+            ByocControlPanelAction(
+                code="review_product_health",
+                priority=_priority_for_product_health(product_health),
+                source="product_health",
+                target_section="product_health",
                 deployment_id=deployment_id,
                 customer_id=customer_id,
             )
@@ -318,6 +382,14 @@ def _actions(
             )
         )
     return tuple(actions)
+
+
+def _priority_for_product_health(
+    product_health: ByocProductHealth,
+) -> ControlPanelActionPriority:
+    if product_health.overall_status == "action_required":
+        return "critical"
+    return "warning"
 
 
 def _priority_for_next_action(

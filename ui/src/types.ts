@@ -38,6 +38,7 @@ export type ControlPanelSection = {
   key:
     | "deployment_overview"
     | "agent_fleet"
+    | "product_health"
     | "evidence_packages"
     | "preflight_reports"
     | "runner_evidence";
@@ -55,7 +56,8 @@ export type ControlPanelAction = {
     | "review_evidence_failures"
     | "review_preflight_failures"
     | "review_runner_failures"
-    | "review_desired_state_drift";
+    | "review_desired_state_drift"
+    | "review_product_health";
   priority: "critical" | "warning" | "info";
   source: ControlPanelSection["key"];
   target_section: ControlPanelSection["key"];
@@ -178,6 +180,97 @@ export type ReceiptList = {
   stored_scope: "sanitized_metadata_only";
 };
 
+export type ProductHealthStatus =
+  | "ready"
+  | "action_required"
+  | "degraded"
+  | "unknown";
+
+export type ProductSourceHealth = {
+  source: string;
+  status: "ready" | "degraded" | "failing" | "disabled" | "unknown";
+  auth_status: "ready" | "action_required" | "not_configured" | "unknown";
+  backfill_status: "idle" | "running" | "blocked" | "unknown";
+  items_ingested_count: number;
+  items_failed_count: number;
+  queue_depth_count: number;
+  lag_seconds: number | null;
+  last_success_at: string | null;
+};
+
+export type ProductHealthIssue = {
+  code: string;
+  severity: "critical" | "warning" | "info";
+  component:
+    | "source_ingestion"
+    | "source_auth"
+    | "pipeline"
+    | "think"
+    | "models"
+    | "vector_index"
+    | "runtime";
+  observed_count: number;
+  first_observed_at: string | null;
+  latest_observed_at: string | null;
+};
+
+export type ProductHealth = {
+  schema_version: "fyralis.byoc.product_health.v1";
+  deployment_id: string;
+  customer_id: string | null;
+  generated_at: string;
+  observed: boolean;
+  latest_snapshot_id: string | null;
+  latest_collected_at: string | null;
+  overall_status: ProductHealthStatus;
+  sources: ProductSourceHealth[];
+  pipeline: {
+    status: ProductHealthStatus;
+    queue_lag_count: number;
+    dead_letter_count: number;
+    retry_backlog_count: number;
+    dropped_item_count: number;
+  };
+  think: {
+    status: ProductHealthStatus;
+    run_count: number;
+    failed_run_count: number;
+    queued_run_count: number;
+    latest_run_at: string | null;
+    breaker_status: "closed" | "open" | "unknown";
+  };
+  models: {
+    status: ProductHealthStatus;
+    model_count: number;
+    model_build_count: number;
+    failed_build_count: number;
+    model_relation_count: number;
+    orphan_model_count: number;
+    stale_relation_count: number;
+    latest_build_at: string | null;
+    graph_status: ProductHealthStatus;
+  };
+  vector_index: {
+    status: ProductHealthStatus;
+    vector_count: number;
+    backlog_count: number;
+    failed_job_count: number;
+    latest_job_at: string | null;
+    retrieval_status: ProductHealthStatus;
+  };
+  issues: ProductHealthIssue[];
+  privacy_boundary: {
+    raw_payloads_included: false;
+    raw_prompts_included: false;
+    raw_logs_included: false;
+    pii_included: false;
+    source_records_included: false;
+    model_contents_included: false;
+    vector_values_included: false;
+  };
+  stored_scope: "sanitized_product_health_metadata_only";
+};
+
 export type ControlPanelState = {
   schema_version: "fyralis.byoc.control_panel_state.v1";
   deployment_id: string;
@@ -192,6 +285,7 @@ export type ControlPanelState = {
     items: AgentFleetItem[];
     stored_scope: "sanitized_agent_metadata_only";
   };
+  product_health: ProductHealth;
   evidence_packages: ReceiptList;
   preflight_reports: ReceiptList;
   runner_evidence: ReceiptList;

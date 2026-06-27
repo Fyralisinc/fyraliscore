@@ -45,6 +45,14 @@ class _ReceiptStore:
         return getattr(self.state, self.name)
 
 
+class _ProductHealthStore:
+    def __init__(self):
+        self.state = build_example_control_panel_state(generated_at=GENERATED_AT)
+
+    async def latest(self, query):
+        return self.state.product_health
+
+
 class _AccessGrantPool:
     def __init__(self):
         self.calls: list[tuple[str, tuple]] = []
@@ -98,6 +106,7 @@ def _app(
     app.state.byoc_evidence_intake_store = _ReceiptStore("evidence_packages")
     app.state.byoc_preflight_report_intake_store = _ReceiptStore("preflight_reports")
     app.state.byoc_runner_evidence_intake_store = _ReceiptStore("runner_evidence")
+    app.state.byoc_product_health_intake_store = _ProductHealthStore()
 
     if inject_auth:
 
@@ -131,10 +140,35 @@ async def test_byoc_control_panel_proxy_serves_authorized_state() -> None:
     assert payload["deployment_id"] == EXAMPLE_DEPLOYMENT_ID
     assert payload["customer_id"] == EXAMPLE_CUSTOMER_ID
     assert payload["agent_fleet"]["result_count"] == 1
+    assert payload["product_health"]["observed"] is True
+    assert payload["product_health"]["models"]["model_count"] == 37
     assert "x-fyralis-byoc-read-signature" not in response.text.lower()
     assert "secret_ref" not in response.text.lower()
     assert "install_token" not in response.text.lower()
-    assert "payload" not in response.text.lower()
+    assert '"raw_payloads_included":false' in response.text.lower().replace(" ", "")
+    assert '"payload":' not in response.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_byoc_control_panel_proxy_serves_authorized_product_health() -> None:
+    app = _app(grants=(_grant(),))
+    query = f"deployment_id={EXAMPLE_DEPLOYMENT_ID}&customer_id={EXAMPLE_CUSTOMER_ID}"
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/byoc/control-panel/product-health?{query}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    rendered = response.text.lower().replace(" ", "")
+    assert payload["schema_version"] == "fyralis.byoc.product_health.v1"
+    assert payload["stored_scope"] == "sanitized_product_health_metadata_only"
+    assert payload["deployment_id"] == EXAMPLE_DEPLOYMENT_ID
+    assert payload["observed"] is True
+    assert payload["sources"][0]["source"] == "slack"
+    assert payload["think"]["run_count"] == 84
+    assert '"raw_payloads_included":false' in rendered
+    assert "secret_ref" not in rendered
+    assert "install_token" not in rendered
 
 
 @pytest.mark.asyncio

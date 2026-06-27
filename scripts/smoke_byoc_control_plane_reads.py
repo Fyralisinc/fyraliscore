@@ -37,6 +37,10 @@ from services.platform.runtime.byoc_preflight_intake import (
     ByocPreflightReportReceiptList,
     ByocPreflightReportReceiptQuery,
 )
+from services.platform.runtime.byoc_product_health import (
+    ByocProductHealth,
+    ByocProductHealthQuery,
+)
 from services.platform.runtime.byoc_runner_evidence_intake import (
     ByocRunnerEvidenceReceiptList,
     ByocRunnerEvidenceReceiptQuery,
@@ -244,6 +248,10 @@ def _read_surfaces(
         customer_id=customer_id,
         recent_limit=control_panel_recent_limit,
     )
+    product_health_query = ByocProductHealthQuery(
+        deployment_id=deployment_id,
+        customer_id=customer_id,
+    )
     evidence_query = ByocEvidencePackageReceiptQuery(
         deployment_id=deployment_id,
         customer_id=customer_id,
@@ -276,6 +284,11 @@ def _read_surfaces(
             query=_query_string(control_panel_query),
         ),
         _ReadSurface(
+            name="product_health",
+            path="/byoc/control-plane/product-health",
+            query=_query_string(product_health_query),
+        ),
+        _ReadSurface(
             name="evidence_packages",
             path="/byoc/control-plane/evidence-packages",
             query=_query_string(evidence_query),
@@ -302,6 +315,8 @@ def _schema_bundle() -> dict[str, Any]:
         "deployment_overview": ByocDeploymentOverview.model_json_schema(),
         "control_panel_state_query": ByocControlPanelStateQuery.model_json_schema(),
         "control_panel_state": ByocControlPanelState.model_json_schema(),
+        "product_health_query": ByocProductHealthQuery.model_json_schema(),
+        "product_health": ByocProductHealth.model_json_schema(),
         "evidence_package_receipt_query": (
             ByocEvidencePackageReceiptQuery.model_json_schema()
         ),

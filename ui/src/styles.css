@@ -88,6 +88,13 @@ h3 {
   font-size: 15px;
 }
 
+h4 {
+  margin: 0 0 10px;
+  color: #526167;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
 .connection {
   display: grid;
   grid-template-columns: minmax(160px, 1fr) minmax(180px, 1fr) minmax(140px, 0.8fr) 80px 112px;
@@ -268,7 +275,8 @@ input:focus {
 
 .section-list,
 .action-list,
-.receipt-list {
+.receipt-list,
+.issue-list {
   display: grid;
   gap: 8px;
 }
@@ -290,6 +298,16 @@ input:focus {
   grid-template-columns: auto minmax(0, 1fr) auto;
 }
 
+.issue-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 42px;
+  border-top: 1px solid #eef1ee;
+  padding-top: 8px;
+}
+
 .section-row strong,
 .section-row small,
 .receipt-row strong,
@@ -301,6 +319,64 @@ input:focus {
 .section-row small,
 .receipt-row small {
   color: #69777d;
+}
+
+.product-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.snapshot-note {
+  margin-left: 8px;
+  color: #69777d;
+  font-size: 13px;
+}
+
+.product-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.product-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.product-metric {
+  min-height: 82px;
+  border: 1px solid #eef1ee;
+  border-radius: 6px;
+  background: #fbfcfb;
+  padding: 12px;
+}
+
+.product-metric span,
+.product-metric small {
+  display: block;
+  color: #69777d;
+}
+
+.product-metric strong {
+  display: block;
+  margin: 4px 0;
+  font-size: 22px;
+}
+
+.product-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(260px, 0.8fr);
+  gap: 16px;
+}
+
+.compact-table table {
+  min-width: 620px;
 }
 
 .table-wrap {
@@ -420,6 +496,11 @@ td small {
   .metric-grid {
     grid-template-columns: repeat(2, minmax(140px, 1fr));
   }
+
+  .product-grid,
+  .product-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 640px) {
@@ -437,6 +518,20 @@ td small {
 
   .hero-actions {
     justify-content: space-between;
+  }
+
+  .product-head,
+  .product-grid,
+  .product-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .product-head {
+    display: grid;
+  }
+
+  .product-status-row {
+    justify-content: flex-start;
   }
 
   .hero-actions small,

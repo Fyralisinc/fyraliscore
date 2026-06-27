@@ -108,6 +108,13 @@ const stateResponse: ControlPanelState = {
       item_count: 1,
       latest_observed_at: "2026-06-27T11:59:00Z",
       source_schema_version: "fyralis.byoc.agent_fleet_list.v1"
+    },
+    {
+      key: "product_health",
+      status: "ready",
+      item_count: 3,
+      latest_observed_at: "2026-06-27T11:59:00Z",
+      source_schema_version: "fyralis.byoc.product_health.v1"
     }
   ],
   actions: [],
@@ -139,6 +146,85 @@ const stateResponse: ControlPanelState = {
       }
     ]
   },
+  product_health: {
+    schema_version: "fyralis.byoc.product_health.v1",
+    deployment_id: "dep_control01",
+    customer_id: "cus_control01",
+    generated_at: "2026-06-27T12:00:00Z",
+    observed: true,
+    latest_snapshot_id: "phs_0123456789abcdef0123456789abcdef",
+    latest_collected_at: "2026-06-27T11:59:00Z",
+    overall_status: "ready",
+    stored_scope: "sanitized_product_health_metadata_only",
+    sources: [
+      {
+        source: "slack",
+        status: "ready",
+        auth_status: "ready",
+        backfill_status: "idle",
+        items_ingested_count: 1280,
+        items_failed_count: 0,
+        queue_depth_count: 0,
+        lag_seconds: 12,
+        last_success_at: "2026-06-27T11:58:00Z"
+      },
+      {
+        source: "github",
+        status: "ready",
+        auth_status: "ready",
+        backfill_status: "idle",
+        items_ingested_count: 342,
+        items_failed_count: 1,
+        queue_depth_count: 2,
+        lag_seconds: 45,
+        last_success_at: "2026-06-27T11:57:00Z"
+      }
+    ],
+    pipeline: {
+      status: "ready",
+      queue_lag_count: 2,
+      dead_letter_count: 0,
+      retry_backlog_count: 1,
+      dropped_item_count: 0
+    },
+    think: {
+      status: "ready",
+      run_count: 84,
+      failed_run_count: 1,
+      queued_run_count: 0,
+      latest_run_at: "2026-06-27T11:54:00Z",
+      breaker_status: "closed"
+    },
+    models: {
+      status: "ready",
+      model_count: 37,
+      model_build_count: 9,
+      failed_build_count: 0,
+      model_relation_count: 112,
+      orphan_model_count: 1,
+      stale_relation_count: 0,
+      latest_build_at: "2026-06-27T11:52:00Z",
+      graph_status: "ready"
+    },
+    vector_index: {
+      status: "ready",
+      vector_count: 7812,
+      backlog_count: 3,
+      failed_job_count: 0,
+      latest_job_at: "2026-06-27T11:55:00Z",
+      retrieval_status: "ready"
+    },
+    issues: [],
+    privacy_boundary: {
+      raw_payloads_included: false,
+      raw_prompts_included: false,
+      raw_logs_included: false,
+      pii_included: false,
+      source_records_included: false,
+      model_contents_included: false,
+      vector_values_included: false
+    }
+  },
   evidence_packages: receiptList("fyralis.byoc.evidence_package_receipt_list.v1"),
   preflight_reports: receiptList("fyralis.byoc.preflight_report_receipt_list.v1"),
   runner_evidence: receiptList("fyralis.byoc.runner_evidence_receipt_list.v1")
@@ -163,6 +249,9 @@ describe("BYOC control panel UI", () => {
 
     expect((await screen.findAllByText("dep_control01")).length).toBeGreaterThan(1);
     expect(screen.getByText("agt_control01")).toBeInTheDocument();
+    expect(screen.getAllByText("Product Health").length).toBeGreaterThan(0);
+    expect(screen.getByText("Think Runs")).toBeInTheDocument();
+    expect(screen.getByText("slack")).toBeInTheDocument();
     expect(screen.getByText("Evidence Packages")).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toContain(

@@ -53,6 +53,16 @@ from services.platform.runtime.byoc_preflight_intake import (
     PostgresByocPreflightReportIntakeStore,
     validate_preflight_report_submission,
 )
+from services.platform.runtime.byoc_product_health import (
+    ByocProductHealth,
+    ByocProductHealthIntakeStore,
+    ByocProductHealthQuery,
+    ByocProductHealthReceipt,
+    ByocProductHealthSnapshotRequest,
+    InMemoryByocProductHealthIntakeStore,
+    PostgresByocProductHealthIntakeStore,
+    validate_product_health_snapshot_submission,
+)
 from services.platform.runtime.byoc_runner_evidence_intake import (
     ByocRunnerEvidenceIntakeStore,
     ByocRunnerEvidenceReceipt,
@@ -71,6 +81,7 @@ def build_byoc_control_plane_router(
     runner_evidence_store: ByocRunnerEvidenceIntakeStore | None = None,
     preflight_report_store: ByocPreflightReportIntakeStore | None = None,
     agent_registry_store: ByocAgentRegistryStore | None = None,
+    product_health_store: ByocProductHealthIntakeStore | None = None,
     signing_secret: str | None = None,
     signing_key_ref: str | None = None,
 ) -> APIRouter:
@@ -111,6 +122,41 @@ def build_byoc_control_plane_router(
             )
         intake_store = store or _store_from_state(request)
         return await intake_store.put(submission)
+
+    @router.post(
+        "/product-health-snapshots",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def submit_product_health_snapshot(
+        request: Request,
+        snapshot: ByocProductHealthSnapshotRequest,
+    ) -> ByocProductHealthReceipt:
+        resolved_key = await _resolve_control_plane_key(
+            request,
+            purpose="product_health_submission",
+            key_ref=snapshot.signature.key_ref,
+            signing_secret=signing_secret,
+            signing_key_ref=signing_key_ref,
+        )
+        violations = validate_product_health_snapshot_submission(
+            snapshot,
+            signing_secret=resolved_key.secret,
+            expected_key_ref=resolved_key.key_ref,
+        )
+        if violations:
+            status_code = (
+                status.HTTP_403_FORBIDDEN
+                if any("signature" in violation.path for violation in violations)
+                else status.HTTP_400_BAD_REQUEST
+            )
+            raise HTTPException(
+                status_code=status_code,
+                detail={"errors": [violation.render() for violation in violations]},
+            )
+        intake_store = product_health_store or _product_health_store_from_state(
+            request
+        )
+        return await intake_store.put(snapshot)
 
     @router.post(
         "/preflight-reports",
@@ -400,6 +446,34 @@ def build_byoc_control_plane_router(
             evidence_package_store=store,
             preflight_report_store=preflight_report_store,
             runner_evidence_store=runner_evidence_store,
+            product_health_store=product_health_store,
+        )
+
+    @router.get("/product-health")
+    async def get_product_health(
+        request: Request,
+        deployment_id: str,
+        customer_id: str | None = None,
+    ) -> ByocProductHealth:
+        await _require_receipt_read_auth(
+            request,
+            signing_secret=signing_secret,
+            signing_key_ref=signing_key_ref,
+        )
+        try:
+            query = ByocProductHealthQuery(
+                deployment_id=deployment_id,
+                customer_id=customer_id,
+            )
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"errors": [error["msg"] for error in exc.errors()]},
+            ) from exc
+        return await read_byoc_product_health_from_request(
+            request,
+            query=query,
+            product_health_store=product_health_store,
         )
 
     @router.get("/evidence-packages")
@@ -456,6 +530,7 @@ async def read_byoc_control_panel_state_from_request(
     evidence_package_store: ByocEvidencePackageIntakeStore | None = None,
     preflight_report_store: ByocPreflightReportIntakeStore | None = None,
     runner_evidence_store: ByocRunnerEvidenceIntakeStore | None = None,
+    product_health_store: ByocProductHealthIntakeStore | None = None,
 ) -> ByocControlPanelState:
     """Build sanitized control-panel state from gateway stores."""
 
@@ -467,6 +542,7 @@ async def read_byoc_control_panel_state_from_request(
     runner_store = runner_evidence_store or _runner_evidence_store_from_state(
         request
     )
+    product_store = product_health_store or _product_health_store_from_state(request)
     agents = await registry.list_agents(
         ByocAgentFleetQuery(
             deployment_id=query.deployment_id,
@@ -495,6 +571,12 @@ async def read_byoc_control_panel_state_from_request(
             limit=query.recent_limit,
         )
     )
+    product_health = await product_store.latest(
+        ByocProductHealthQuery(
+            deployment_id=query.deployment_id,
+            customer_id=query.customer_id,
+        )
+    )
     overview = build_byoc_deployment_overview(
         query=ByocDeploymentOverviewQuery(
             deployment_id=query.deployment_id,
@@ -509,10 +591,21 @@ async def read_byoc_control_panel_state_from_request(
         query=query,
         overview=overview,
         agents=agents,
+        product_health=product_health,
         evidence_packages=evidence_packages,
         preflight_reports=preflight_reports,
         runner_evidence=runner_evidence,
     )
+
+
+async def read_byoc_product_health_from_request(
+    request: Request,
+    *,
+    query: ByocProductHealthQuery,
+    product_health_store: ByocProductHealthIntakeStore | None = None,
+) -> ByocProductHealth:
+    store = product_health_store or _product_health_store_from_state(request)
+    return await store.latest(query)
 
 
 async def _require_receipt_read_auth(
@@ -667,4 +760,25 @@ def _agent_registry_store_from_state(request: Request) -> ByocAgentRegistryStore
     return created
 
 
-__all__ = ["build_byoc_control_plane_router"]
+def _product_health_store_from_state(
+    request: Request,
+) -> ByocProductHealthIntakeStore:
+    existing = getattr(request.app.state, "byoc_product_health_intake_store", None)
+    if existing is not None:
+        return existing
+    deps = getattr(request.app.state, "deps", None)
+    pool = getattr(deps, "pool", None)
+    if pool is not None:
+        created = PostgresByocProductHealthIntakeStore(pool)
+        request.app.state.byoc_product_health_intake_store = created
+        return created
+    created = InMemoryByocProductHealthIntakeStore()
+    request.app.state.byoc_product_health_intake_store = created
+    return created
+
+
+__all__ = [
+    "build_byoc_control_plane_router",
+    "read_byoc_control_panel_state_from_request",
+    "read_byoc_product_health_from_request",
+]

@@ -12,6 +12,8 @@ import type {
   ControlPanelSection,
   ControlPanelState,
   DeploymentOption,
+  ProductHealth,
+  ProductSourceHealth,
   ReceiptList,
   ReceiptRecord
 } from "./types";
@@ -21,6 +23,7 @@ const DEFAULT_API_BASE = import.meta.env.VITE_FYRALIS_API_BASE ?? "";
 const SECTION_LABELS: Record<ControlPanelSection["key"], string> = {
   deployment_overview: "Overview",
   agent_fleet: "Agents",
+  product_health: "Product Health",
   evidence_packages: "Evidence",
   preflight_reports: "Preflight",
   runner_evidence: "Runner"
@@ -33,7 +36,8 @@ const ACTION_LABELS: Record<ControlPanelAction["code"], string> = {
   review_evidence_failures: "Review evidence failures",
   review_preflight_failures: "Review preflight failures",
   review_runner_failures: "Review runner failures",
-  review_desired_state_drift: "Review desired state drift"
+  review_desired_state_drift: "Review desired state drift",
+  review_product_health: "Review product health"
 };
 
 export function App() {
@@ -278,6 +282,8 @@ function DeploymentStateView({
         ))}
       </section>
 
+      <ProductHealthPanel health={state.product_health} />
+
       <section className="split-grid">
         <Panel title="Sections">
           <div className="section-list">
@@ -316,6 +322,146 @@ function DeploymentStateView({
         <ReceiptPanel title="Runner Evidence" list={state.runner_evidence} />
       </section>
     </>
+  );
+}
+
+function ProductHealthPanel({ health }: { health: ProductHealth }) {
+  const totalIngested = health.sources.reduce(
+    (total, source) => total + source.items_ingested_count,
+    0
+  );
+  const readySources = health.sources.filter(
+    (source) => source.status === "ready"
+  ).length;
+  const cards = [
+    {
+      label: "Ingested",
+      value: totalIngested,
+      detail: `${readySources}/${health.sources.length} sources ready`
+    },
+    {
+      label: "Think Runs",
+      value: health.think.run_count,
+      detail: `${health.think.failed_run_count} failed`
+    },
+    {
+      label: "Models",
+      value: health.models.model_count,
+      detail: `${health.models.model_relation_count} relations`
+    },
+    {
+      label: "Vector Backlog",
+      value: health.vector_index.backlog_count,
+      detail: `${health.vector_index.vector_count} vectors`
+    }
+  ];
+
+  return (
+    <Panel title="Product Health">
+      <div className="product-head">
+        <div>
+          <Pill tone={statusTone(health.overall_status)}>
+            {health.overall_status}
+          </Pill>
+          <span className="snapshot-note">
+            {health.observed
+              ? `observed ${formatDateTime(health.latest_collected_at)}`
+              : "not observed"}
+          </span>
+        </div>
+        <div className="product-status-row">
+          <Pill tone={statusTone(health.pipeline.status)}>pipeline</Pill>
+          <Pill tone={statusTone(health.think.status)}>think</Pill>
+          <Pill tone={statusTone(health.models.status)}>models</Pill>
+          <Pill tone={statusTone(health.vector_index.status)}>vectors</Pill>
+        </div>
+      </div>
+
+      <div className="product-metrics">
+        {cards.map((card) => (
+          <div className="product-metric" key={card.label}>
+            <span>{card.label}</span>
+            <strong>{card.value.toLocaleString()}</strong>
+            <small>{card.detail}</small>
+          </div>
+        ))}
+      </div>
+
+      <section className="product-grid">
+        <div>
+          <h4>Sources</h4>
+          <SourceHealthTable sources={health.sources} />
+        </div>
+        <div>
+          <h4>Open Issues</h4>
+          {health.issues.length === 0 ? (
+            <div className="empty-state compact">No open product issues</div>
+          ) : (
+            <div className="issue-list">
+              {health.issues.slice(0, 6).map((issue) => (
+                <div
+                  className="issue-row"
+                  key={`${issue.component}:${issue.code}`}
+                >
+                  <Pill tone={priorityTone(issue.severity)}>
+                    {issue.severity}
+                  </Pill>
+                  <span>{formatCode(issue.code)}</span>
+                  <small>{formatCode(issue.component)}</small>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+    </Panel>
+  );
+}
+
+function SourceHealthTable({ sources }: { sources: ProductSourceHealth[] }) {
+  if (sources.length === 0) {
+    return <div className="empty-state compact">No source snapshots</div>;
+  }
+  return (
+    <div className="table-wrap compact-table">
+      <table>
+        <thead>
+          <tr>
+            <th>Source</th>
+            <th>Status</th>
+            <th>Ingested</th>
+            <th>Queue</th>
+            <th>Last Success</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sources.map((source) => (
+            <tr key={source.source}>
+              <td>
+                <strong>{source.source}</strong>
+                <small>{formatCode(source.backfill_status)}</small>
+              </td>
+              <td>
+                <Pill tone={statusTone(source.status)}>{source.status}</Pill>
+              </td>
+              <td>
+                {source.items_ingested_count.toLocaleString()}
+                <small>{source.items_failed_count} failed</small>
+              </td>
+              <td>
+                {source.queue_depth_count.toLocaleString()}
+                <small>
+                  {source.lag_seconds === null
+                    ? "lag unknown"
+                    : `${source.lag_seconds}s lag`}
+                </small>
+              </td>
+              <td>{formatDateTime(source.last_success_at)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -456,6 +602,9 @@ function statusTone(status: string): "good" | "warn" | "bad" | "neutral" | "info
     return "good";
   }
   if (status === "action_required") {
+    return "bad";
+  }
+  if (status === "failing" || status === "open") {
     return "bad";
   }
   if (status === "degraded") {

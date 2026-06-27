@@ -308,6 +308,10 @@ BYOC_CONTROL_PANEL_ACCESS_PATH = Path(
 BYOC_CONTROL_PANEL_ACCESS_GRANT_MIGRATION_PATH = Path(
     "db/migrations/0185_byoc_control_panel_access_grants.sql"
 )
+BYOC_PRODUCT_HEALTH_PATH = Path("services/platform/runtime/byoc_product_health.py")
+BYOC_PRODUCT_HEALTH_MIGRATION_PATH = Path(
+    "db/migrations/0186_byoc_product_health_snapshots.sql"
+)
 BYOC_LAUNCH_READINESS_SUMMARY_PATH = Path(
     "services/platform/runtime/byoc_launch_readiness_summary.py"
 )
@@ -523,6 +527,33 @@ BYOC_CONTROL_PANEL_ACCESS_FORBIDDEN_FIELD_FRAGMENTS = (
     "log_text",
     "prompt",
     "embedding",
+    "pii",
+)
+BYOC_PRODUCT_HEALTH_FALSE_PRIVACY_FLAGS = (
+    "raw_payloads_included",
+    "raw_prompts_included",
+    "raw_logs_included",
+    "pii_included",
+    "source_records_included",
+    "model_contents_included",
+    "vector_values_included",
+)
+BYOC_PRODUCT_HEALTH_FORBIDDEN_FIELD_FRAGMENTS = (
+    "raw_report",
+    "raw_payload",
+    "raw_prompt",
+    "request_body",
+    "response_body",
+    "signed_header",
+    "endpoint_url",
+    "auth_material",
+    "credential",
+    "secret_ref",
+    "account_id",
+    "arn",
+    "command_output",
+    "log_text",
+    "prompt",
     "pii",
 )
 BYOC_CUSTOMER_PILOT_PACKAGE_FALSE_PRIVACY_FLAGS = (
@@ -1668,6 +1699,200 @@ def find_byoc_control_panel_state_privacy_violations(
                 ),
             )
         )
+
+    return violations
+
+
+def find_byoc_product_health_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_PRODUCT_HEALTH_PATH,
+) -> list[Violation]:
+    """Return product-health contract drift that could leak customer material."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-product-health-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC product-health module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    violations: list[Violation] = []
+
+    for class_name in (
+        "ByocProductHealthQuery",
+        "ByocProductSourceHealth",
+        "ByocProductPipelineHealth",
+        "ByocProductThinkHealth",
+        "ByocProductModelHealth",
+        "ByocProductVectorHealth",
+        "ByocProductHealthIssue",
+        "ByocProductHealthSnapshotPayload",
+        "ByocProductHealthReceipt",
+        "ByocProductHealth",
+    ):
+        fields = _class_field_assignments(classes.get(class_name))
+        for field_name, assignment in sorted(fields.items()):
+            lowered = field_name.lower()
+            if any(
+                fragment in lowered
+                for fragment in BYOC_PRODUCT_HEALTH_FORBIDDEN_FIELD_FRAGMENTS
+            ):
+                violations.append(
+                    Violation(
+                        check="byoc-product-health-privacy",
+                        path=contract_path,
+                        line_number=assignment.lineno,
+                        message=(
+                            "BYOC product-health state must not serialize "
+                            f"sensitive field {field_name!r}"
+                        ),
+                    )
+                )
+
+    privacy_fields = _class_field_assignments(
+        classes.get("ByocProductHealthPrivacyBoundary")
+    )
+    for field_name in BYOC_PRODUCT_HEALTH_FALSE_PRIVACY_FLAGS:
+        assignment = privacy_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-product-health-privacy",
+                    path=contract_path,
+                    line_number=classes["ByocProductHealthPrivacyBoundary"].lineno
+                    if "ByocProductHealthPrivacyBoundary" in classes
+                    else 1,
+                    message=(
+                        "BYOC product-health privacy boundary must include "
+                        f"{field_name}"
+                    ),
+                )
+            )
+            continue
+        if (
+            not isinstance(assignment.value, ast.Constant)
+            or assignment.value.value is not False
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-product-health-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC product-health privacy boundary must keep "
+                        f"{field_name} pinned to Literal[False] = False"
+                    ),
+                )
+            )
+
+    for class_name in (
+        "ByocProductHealthSnapshotPayload",
+        "ByocProductHealthReceipt",
+        "ByocProductHealth",
+    ):
+        class_node = classes.get(class_name)
+        stored_scope = _class_field_assignments(class_node).get("stored_scope")
+        if stored_scope is None:
+            violations.append(
+                Violation(
+                    check="byoc-product-health-privacy",
+                    path=contract_path,
+                    line_number=class_node.lineno if class_node else 1,
+                    message=(
+                        f"{class_name} must pin stored_scope to "
+                        "sanitized_product_health_metadata_only"
+                    ),
+                )
+            )
+            continue
+        if (
+            not isinstance(stored_scope.value, ast.Constant)
+            or stored_scope.value.value != "sanitized_product_health_metadata_only"
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-product-health-privacy",
+                    path=contract_path,
+                    line_number=stored_scope.lineno,
+                    message=(
+                        f"{class_name} must pin stored_scope to "
+                        "sanitized_product_health_metadata_only"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def find_byoc_product_health_storage_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    migration_path: Path = BYOC_PRODUCT_HEALTH_MIGRATION_PATH,
+) -> list[Violation]:
+    """Return product-health storage drift that could persist raw data."""
+
+    path = repo_root / migration_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-product-health-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC product-health migration is missing",
+            )
+        ]
+
+    text = path.read_text(encoding="utf-8")
+    violations: list[Violation] = []
+    for table_name in (
+        "byoc_product_health_snapshots",
+        "byoc_product_health_sources",
+        "byoc_product_health_issues",
+    ):
+        if f"CREATE TABLE IF NOT EXISTS {table_name}" not in text:
+            violations.append(
+                Violation(
+                    check="byoc-product-health-storage",
+                    path=migration_path,
+                    line_number=1,
+                    message=f"BYOC product-health table {table_name} is missing",
+                )
+            )
+    if "stored_scope = 'sanitized_product_health_metadata_only'" not in text:
+        violations.append(
+            Violation(
+                check="byoc-product-health-storage",
+                path=migration_path,
+                line_number=1,
+                message=(
+                    "BYOC product-health tables must pin sanitized metadata scope"
+                ),
+            )
+        )
+    for pattern in (r"\bJSONB?\b", r"\bBYTEA\b"):
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            line_number = text[: match.start()].count("\n") + 1
+            violations.append(
+                Violation(
+                    check="byoc-product-health-storage",
+                    path=migration_path,
+                    line_number=line_number,
+                    message=(
+                        "BYOC product-health storage must not persist JSON/blob "
+                        "customer material"
+                    ),
+                )
+            )
 
     return violations
 
@@ -2956,6 +3181,8 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     violations.extend(
         find_byoc_control_panel_state_privacy_violations(repo_root=repo_root)
     )
+    violations.extend(find_byoc_product_health_privacy_violations(repo_root=repo_root))
+    violations.extend(find_byoc_product_health_storage_violations(repo_root=repo_root))
     violations.extend(
         find_byoc_control_panel_access_privacy_violations(repo_root=repo_root)
     )

@@ -14,6 +14,7 @@ from services.app.gateway.settings import GatewaySettings
 ByocControlPlaneKeyPurpose = Literal[
     "desired_state_update",
     "evidence_package_submission",
+    "product_health_submission",
     "receipt_read",
 ]
 
@@ -52,7 +53,11 @@ class StaticByocControlPlaneSigningKeyResolver:
         purpose: ByocControlPlaneKeyPurpose,
         key_ref: str,
     ) -> ResolvedByocControlPlaneKey | None:
-        if purpose in {"desired_state_update", "evidence_package_submission"}:
+        if purpose in {
+            "desired_state_update",
+            "evidence_package_submission",
+            "product_health_submission",
+        }:
             expected_key_ref = self.intake_key_ref
             secret = self.intake_secret
         else:
@@ -89,7 +94,11 @@ class ManagedEnvByocControlPlaneSigningKeyResolver:
         purpose: ByocControlPlaneKeyPurpose,
         key_ref: str,
     ) -> ResolvedByocControlPlaneKey | None:
-        if purpose in {"desired_state_update", "evidence_package_submission"}:
+        if purpose in {
+            "desired_state_update",
+            "evidence_package_submission",
+            "product_health_submission",
+        }:
             expected_key_ref = self.intake_key_ref
             secret_name = "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY"
             secret_ref = self.intake_secret_ref

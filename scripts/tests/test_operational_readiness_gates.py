@@ -423,6 +423,9 @@ def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:
     assert "services/platform/runtime/tests/test_byoc_preflight_intake.py" in (
         result.command
     )
+    assert "services/platform/runtime/tests/test_byoc_product_health.py" in (
+        result.command
+    )
     assert "services/platform/runtime/tests/test_byoc_runner_evidence_intake.py" in (
         result.command
     )
