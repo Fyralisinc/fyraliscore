@@ -906,6 +906,27 @@ def _byoc_customer_handoff_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_handoff_bundle_index_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_handoff_bundle_index",
+        _python_command(
+            "scripts/generate_byoc_handoff_bundle_index.py",
+            "--json",
+        ),
+        details=(
+            "BYOC customer handoff bundle index enumerates sanitized handoff "
+            "artifacts and signed read endpoints without embedding raw reports, "
+            "URLs, signed headers, credentials, logs, or payload bodies."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "package": "deploy/byoc/evidence-package.example.yaml",
+            "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+        },
+    )
+
+
 def _byoc_live_credential_rehearsal_gate(args: argparse.Namespace) -> GateResult:
     output_dir = Path(tempfile.mkdtemp(prefix="fyralis-byoc-live-rehearsal-"))
     return _run_command_gate(
@@ -1055,6 +1076,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_evidence_package_gate(args),
         _byoc_source_onboarding_gate(args),
         _byoc_customer_handoff_gate(args),
+        _byoc_handoff_bundle_index_gate(args),
         _byoc_live_test_readiness_gate(args),
         _byoc_live_credential_rehearsal_gate(args),
         _byoc_control_plane_intake_gate(args),

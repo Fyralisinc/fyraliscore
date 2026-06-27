@@ -21,6 +21,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_dataplane_contract_gate,
     _byoc_evidence_package_gate,
     _byoc_evidence_ledger_gate,
+    _byoc_handoff_bundle_index_gate,
     _byoc_permissions_contract_gate,
     _byoc_preflight_bundle_gate,
     _byoc_source_onboarding_gate,
@@ -311,6 +312,21 @@ def test_byoc_customer_handoff_gate_passes_for_checked_in_package() -> None:
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
         "env_template": ".env.production.example",
+    }
+
+
+def test_byoc_handoff_bundle_index_gate_passes_for_checked_in_package() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_handoff_bundle_index_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/generate_byoc_handoff_bundle_index.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {
+        "package": "deploy/byoc/evidence-package.example.yaml",
+        "ledger": "deploy/byoc/evidence-ledger.example.yaml",
     }
 
 

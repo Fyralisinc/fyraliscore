@@ -291,6 +291,13 @@ Repo-owned artifacts for this first slice:
   create cloud resources, run Terraform plan/apply, submit to the hosted
   control plane, or embed child reports, package bodies, command output,
   account IDs, ARNs, URLs, credentials, raw data, logs, prompts, or PII.
+- `services/platform/runtime/byoc_handoff_bundle_index.py` and
+  `scripts/generate_byoc_handoff_bundle_index.py` generate the metadata-only
+  customer handoff bundle index. The index lists sanitized artifacts by
+  relative path, digest, schema, and scope, plus the signed read endpoint paths
+  that backend/control-panel consumers may use. It does not embed artifact
+  bodies, raw reports, signed headers, endpoint URLs, credentials, logs,
+  request bodies, payloads, prompts, or PII.
 - `services/platform/runtime/byoc_live_credential_rehearsal.py` and
   `scripts/run_byoc_live_credential_rehearsal.py` provide the one-command
   local artifact pipeline for real AWS credential rehearsal. The command runs
@@ -1590,6 +1597,11 @@ Minimum gates before first enterprise customer:
   env file. For real credential readiness, add `--run-aws-live-preflight` and
   require the corresponding evidence with `--require-aws-live-preflight`; do
   not use the AWS-skip flag outside CI/report-contract smoke tests.
+- Generate the customer handoff bundle index with
+  `scripts/generate_byoc_handoff_bundle_index.py` after the sanitized package,
+  ledger, and handoff report exist. Share the index as a table of contents for
+  safe artifacts and signed read endpoints; do not attach raw reports, signed
+  headers, endpoint URLs, request/response bodies, logs, credentials, or PII.
 - Submit evidence packages to the control-plane intake API only as signed
   `fyralis.byoc.evidence_package_submission.v1` payloads; control-plane storage
   may retain only the generated sanitized receipt metadata in

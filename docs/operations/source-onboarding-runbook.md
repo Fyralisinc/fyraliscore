@@ -64,6 +64,20 @@ contains only aggregate status, bounded failure codes, and counts; it does not
 embed child reports, package bodies, command output, account IDs, ARNs, URLs,
 artifact refs, credentials, source payloads, prompts, logs, or PII.
 
+After the sanitized package, ledger, and handoff report are ready, generate the
+handoff bundle index. This is the table of contents for safe customer handoff
+artifacts and signed read endpoint paths; it records relative paths and
+SHA-256 digests only, never artifact bodies, signed headers, endpoint URLs,
+request/response bodies, logs, credentials, or PII:
+
+```bash
+scripts/generate_byoc_handoff_bundle_index.py --json \
+  --evidence-package <package> \
+  --evidence-ledger <ledger.yaml> \
+  --customer-handoff-report <byoc-customer-handoff-report.json> \
+  --output <byoc-customer-handoff-bundle-index.json>
+```
+
 For the first real AWS credential test, run the read-only live preflight inside
 the customer boundary. The basic command verifies STS caller identity against
 the account contract in the permissions manifest:

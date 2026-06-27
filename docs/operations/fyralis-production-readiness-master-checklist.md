@@ -151,6 +151,10 @@ Every checklist item is done only when:
   composes local preflight, evidence-package validation, and first-source gate
   results into one sanitized go/no-go artifact with no child report bodies,
   command output, account IDs, ARNs, URLs, credentials, raw data, logs, or PII.
+- [x] BYOC customer handoff bundle index has a backend/core generator that
+  lists sanitized handoff artifacts by relative path, digest, schema, and scope,
+  plus signed read endpoint paths, without artifact bodies, signed headers,
+  endpoint URLs, request/response bodies, logs, credentials, or PII.
 - [x] BYOC live credential rehearsal has a customer-side artifact-pipeline CLI
   that runs sanitized AWS preflight, writes sanitized ledger/package evidence,
   gates the generated package, supports a real-AWS-call requirement for
