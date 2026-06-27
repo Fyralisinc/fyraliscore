@@ -299,6 +299,9 @@ BYOC_LIVE_CREDENTIAL_REHEARSAL_PATH = Path(
 BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_PATH = Path(
     "services/platform/runtime/byoc_control_plane_read_smoke_summary.py"
 )
+BYOC_CONTROL_PANEL_STATE_PATH = Path(
+    "services/platform/runtime/byoc_control_panel_state.py"
+)
 BYOC_LAUNCH_READINESS_SUMMARY_PATH = Path(
     "services/platform/runtime/byoc_launch_readiness_summary.py"
 )
@@ -469,6 +472,25 @@ BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
     "query_string",
     "auth_material",
     "credential",
+    "account_id",
+    "arn",
+    "command_output",
+    "log_text",
+    "prompt",
+    "embedding",
+    "pii",
+)
+BYOC_CONTROL_PANEL_STATE_FORBIDDEN_FIELD_FRAGMENTS = (
+    "raw_report",
+    "raw_payload",
+    "raw_prompt",
+    "request_body",
+    "response_body",
+    "signed_header",
+    "endpoint_url",
+    "auth_material",
+    "credential",
+    "secret_ref",
     "account_id",
     "arn",
     "command_output",
@@ -1518,6 +1540,89 @@ def find_byoc_control_plane_read_smoke_summary_privacy_violations(
                     ),
                 )
             )
+
+    return violations
+
+
+def find_byoc_control_panel_state_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_CONTROL_PANEL_STATE_PATH,
+) -> list[Violation]:
+    """Return control-panel state drift that could leak raw customer material."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-control-panel-state-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC control-panel state module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    violations: list[Violation] = []
+
+    for class_name in (
+        "ByocControlPanelStateQuery",
+        "ByocControlPanelState",
+        "ByocControlPanelSection",
+        "ByocControlPanelAction",
+    ):
+        fields = _class_field_assignments(classes.get(class_name))
+        for field_name, assignment in sorted(fields.items()):
+            lowered = field_name.lower()
+            if any(
+                fragment in lowered
+                for fragment in BYOC_CONTROL_PANEL_STATE_FORBIDDEN_FIELD_FRAGMENTS
+            ):
+                violations.append(
+                    Violation(
+                        check="byoc-control-panel-state-privacy",
+                        path=contract_path,
+                        line_number=assignment.lineno,
+                        message=(
+                            "BYOC control-panel state must not serialize "
+                            f"sensitive field {field_name!r}"
+                        ),
+                    )
+                )
+
+    state_class = classes.get("ByocControlPanelState")
+    state_fields = _class_field_assignments(state_class)
+    stored_scope = state_fields.get("stored_scope")
+    if stored_scope is None:
+        violations.append(
+            Violation(
+                check="byoc-control-panel-state-privacy",
+                path=contract_path,
+                line_number=state_class.lineno if state_class else 1,
+                message=(
+                    "BYOC control-panel state must pin stored_scope to "
+                    "sanitized_control_panel_metadata_only"
+                ),
+            )
+        )
+    elif (
+        not isinstance(stored_scope.value, ast.Constant)
+        or stored_scope.value.value != "sanitized_control_panel_metadata_only"
+    ):
+        violations.append(
+            Violation(
+                check="byoc-control-panel-state-privacy",
+                path=contract_path,
+                line_number=stored_scope.lineno,
+                message=(
+                    "BYOC control-panel state must pin stored_scope to "
+                    "sanitized_control_panel_metadata_only"
+                ),
+            )
+        )
 
     return violations
 
@@ -2636,6 +2741,9 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
         find_byoc_control_plane_read_smoke_summary_privacy_violations(
             repo_root=repo_root
         )
+    )
+    violations.extend(
+        find_byoc_control_panel_state_privacy_violations(repo_root=repo_root)
     )
     violations.extend(
         find_byoc_launch_readiness_summary_privacy_violations(repo_root=repo_root)

@@ -9,6 +9,7 @@ from scripts.check_architecture_ratchets import (
     find_byoc_agent_registration_storage_violations,
     find_byoc_agent_token_rotation_privacy_violations,
     find_byoc_aws_live_preflight_privacy_violations,
+    find_byoc_control_panel_state_privacy_violations,
     find_byoc_evidence_receipt_storage_violations,
     find_byoc_live_credential_rehearsal_privacy_violations,
     find_byoc_manifest_privacy_violations,
@@ -1227,6 +1228,46 @@ class ByocAwsLivePreflightReport:
 
 def test_byoc_aws_live_preflight_privacy_check_allows_checked_in_contract() -> None:
     assert find_byoc_aws_live_preflight_privacy_violations() == []
+
+
+def test_byoc_control_panel_state_privacy_check_flags_sensitive_fields(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_control_panel_state.py").write_text(
+        """
+class ByocControlPanelState:
+    raw_payload: dict
+    signed_headers: dict
+    stored_scope: str = "unsafe"
+
+class ByocControlPanelSection:
+    endpoint_url: str
+
+class ByocControlPanelAction:
+    secret_ref: str
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_control_panel_state_privacy_violations(
+        repo_root=tmp_path
+    )
+
+    assert {violation.check for violation in violations} == {
+        "byoc-control-panel-state-privacy"
+    }
+    messages = "\n".join(violation.message for violation in violations)
+    assert "raw_payload" in messages
+    assert "signed_headers" in messages
+    assert "endpoint_url" in messages
+    assert "secret_ref" in messages
+    assert "stored_scope" in messages
+
+
+def test_byoc_control_panel_state_privacy_check_allows_checked_in_contract() -> None:
+    assert find_byoc_control_panel_state_privacy_violations() == []
 
 
 def test_byoc_evidence_receipt_storage_check_flags_json_body_columns(
