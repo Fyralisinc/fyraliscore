@@ -10,6 +10,7 @@ from scripts.check_architecture_ratchets import (
     find_byoc_agent_token_rotation_privacy_violations,
     find_byoc_aws_live_preflight_privacy_violations,
     find_byoc_evidence_receipt_storage_violations,
+    find_byoc_live_credential_rehearsal_privacy_violations,
     find_byoc_manifest_privacy_violations,
     find_byoc_preflight_report_receipt_storage_violations,
     find_byoc_runner_evidence_receipt_storage_violations,
@@ -1104,6 +1105,54 @@ class ByocAgentTokenRotationPlanReport:
 
 def test_byoc_agent_token_rotation_privacy_check_allows_checked_in_contract() -> None:
     assert find_byoc_agent_token_rotation_privacy_violations() == []
+
+
+def test_byoc_live_credential_rehearsal_privacy_check_flags_raw_fields(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_live_credential_rehearsal.py").write_text(
+        """
+from typing import Literal
+
+class ByocLiveCredentialRehearsalPrivacyContract:
+    raw_payloads_included: Literal[False] = False
+    prompts_included: Literal[False] = False
+    embeddings_included: Literal[False] = False
+    raw_logs_included: Literal[False] = False
+    pii_included: Literal[False] = False
+    credentials_included: Literal[False] = False
+    account_ids_included: bool = True
+    arns_included: Literal[False] = False
+    urls_included: Literal[False] = False
+    policy_documents_included: Literal[False] = False
+    command_output_included: Literal[False] = False
+    child_report_details_included: Literal[False] = False
+    artifact_paths_included: Literal[False] = False
+
+class ByocLiveCredentialRehearsalReport:
+    account_id: str
+    caller_arn: str
+    artifacts_written: tuple[str, ...]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_live_credential_rehearsal_privacy_violations(
+        repo_root=tmp_path,
+    )
+
+    assert [violation.check for violation in violations] == [
+        "byoc-live-credential-rehearsal-privacy",
+        "byoc-live-credential-rehearsal-privacy",
+        "byoc-live-credential-rehearsal-privacy",
+    ]
+    assert {violation.line_number for violation in violations} == {10, 19, 20}
+
+
+def test_byoc_live_credential_rehearsal_privacy_check_allows_checked_in_contract() -> None:
+    assert find_byoc_live_credential_rehearsal_privacy_violations() == []
 
 
 def test_byoc_aws_live_preflight_privacy_check_flags_serialized_identity(

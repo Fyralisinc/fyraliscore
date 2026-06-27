@@ -293,6 +293,9 @@ BYOC_AGENT_CONTRACT_PATH = Path("services/platform/runtime/byoc_agent_contract.p
 BYOC_AGENT_TOKEN_ROTATION_PATH = Path(
     "services/platform/runtime/byoc_agent_token_rotation.py"
 )
+BYOC_LIVE_CREDENTIAL_REHEARSAL_PATH = Path(
+    "services/platform/runtime/byoc_live_credential_rehearsal.py"
+)
 BYOC_AWS_LIVE_PREFLIGHT_PATH = Path(
     "services/platform/runtime/byoc_aws_live_preflight.py"
 )
@@ -366,6 +369,32 @@ BYOC_AGENT_TOKEN_ROTATION_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
     "arn",
     "url",
     "credential",
+)
+BYOC_LIVE_CREDENTIAL_REHEARSAL_FALSE_PRIVACY_FLAGS = (
+    "raw_payloads_included",
+    "prompts_included",
+    "embeddings_included",
+    "raw_logs_included",
+    "pii_included",
+    "credentials_included",
+    "account_ids_included",
+    "arns_included",
+    "urls_included",
+    "policy_documents_included",
+    "command_output_included",
+    "child_report_details_included",
+    "artifact_paths_included",
+)
+BYOC_LIVE_CREDENTIAL_REHEARSAL_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
+    "account_id",
+    "arn",
+    "aws_profile",
+    "principal_arn",
+    "policy_document",
+    "command_output",
+    "child_report",
+    "artifact_path",
+    "url",
 )
 BYOC_EVIDENCE_RECEIPT_FORBIDDEN_STORAGE_PATTERNS: tuple[
     tuple[re.Pattern[str], str],
@@ -1168,6 +1197,91 @@ def find_byoc_agent_token_rotation_privacy_violations(
                     message=(
                         f"BYOC token rotation privacy must keep {field_name} "
                         "pinned to Literal[True] = True"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def find_byoc_live_credential_rehearsal_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_LIVE_CREDENTIAL_REHEARSAL_PATH,
+) -> list[Violation]:
+    """Return live-credential rehearsal drift that could leak cloud metadata."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-live-credential-rehearsal-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC live credential rehearsal module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    violations: list[Violation] = []
+
+    report_class = classes.get("ByocLiveCredentialRehearsalReport")
+    report_fields = _class_field_assignments(report_class)
+    for field_name, assignment in sorted(report_fields.items()):
+        lowered = field_name.lower()
+        if any(
+            fragment in lowered
+            for fragment in (
+                BYOC_LIVE_CREDENTIAL_REHEARSAL_FORBIDDEN_REPORT_FIELD_FRAGMENTS
+            )
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-live-credential-rehearsal-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC live credential rehearsal reports must not "
+                        f"serialize sensitive field {field_name!r}"
+                    ),
+                )
+            )
+
+    privacy_class = classes.get("ByocLiveCredentialRehearsalPrivacyContract")
+    privacy_fields = _class_field_assignments(privacy_class)
+    for field_name in BYOC_LIVE_CREDENTIAL_REHEARSAL_FALSE_PRIVACY_FLAGS:
+        assignment = privacy_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-live-credential-rehearsal-privacy",
+                    path=contract_path,
+                    line_number=privacy_class.lineno if privacy_class else 1,
+                    message=(
+                        f"BYOC live credential rehearsal privacy must keep "
+                        f"{field_name} pinned to Literal[False] = False"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[False]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not False
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-live-credential-rehearsal-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        f"BYOC live credential rehearsal privacy must keep "
+                        f"{field_name} pinned to Literal[False] = False"
                     ),
                 )
             )
@@ -2032,6 +2146,9 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     )
     violations.extend(
         find_byoc_agent_token_rotation_privacy_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_live_credential_rehearsal_privacy_violations(repo_root=repo_root)
     )
     violations.extend(
         find_byoc_aws_live_preflight_privacy_violations(repo_root=repo_root)
