@@ -996,6 +996,23 @@ def _byoc_launch_readiness_summary_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_customer_pilot_package_gate(args: argparse.Namespace) -> GateResult:
+    return _pytest_gate(
+        "byoc_customer_pilot_package",
+        [
+            "services/platform/runtime/tests/test_byoc_customer_pilot_package.py",
+            "scripts/tests/test_build_byoc_customer_pilot_package.py",
+        ],
+        details=(
+            "BYOC customer-pilot package builder generates the local sanitized "
+            "handoff, read-smoke summary, handoff index, launch summary, and "
+            "package manifest without cloud credentials or raw data."
+        ),
+        args=args,
+        timeout_s=min(args.command_timeout_s, 60),
+    )
+
+
 def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
     return _pytest_gate(
         "byoc_control_plane_intake",
@@ -1099,6 +1116,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_handoff_bundle_index_gate(args),
         _byoc_live_test_readiness_gate(args),
         _byoc_launch_readiness_summary_gate(args),
+        _byoc_customer_pilot_package_gate(args),
         _byoc_live_credential_rehearsal_gate(args),
         _byoc_control_plane_intake_gate(args),
         _byoc_post_deploy_validation_gate(args),

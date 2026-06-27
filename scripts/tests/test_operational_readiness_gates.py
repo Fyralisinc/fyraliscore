@@ -18,6 +18,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_bootstrap_runner_gate,
     _byoc_control_plane_intake_gate,
     _byoc_customer_handoff_gate,
+    _byoc_customer_pilot_package_gate,
     _byoc_dataplane_contract_gate,
     _byoc_evidence_package_gate,
     _byoc_evidence_ledger_gate,
@@ -382,6 +383,21 @@ def test_byoc_launch_readiness_summary_gate_passes_for_contract_suite() -> None:
         result.command
     )
     assert "scripts/tests/test_summarize_byoc_launch_readiness.py" in result.command
+    assert "123456789012" not in result.stdout_tail
+    assert "arn:aws" not in result.stdout_tail
+
+
+def test_byoc_customer_pilot_package_gate_passes_for_contract_suite() -> None:
+    args = argparse.Namespace(command_timeout_s=30, skip_pytest=False)
+
+    result = _byoc_customer_pilot_package_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "services/platform/runtime/tests/test_byoc_customer_pilot_package.py" in (
+        result.command
+    )
+    assert "scripts/tests/test_build_byoc_customer_pilot_package.py" in result.command
     assert "123456789012" not in result.stdout_tail
     assert "arn:aws" not in result.stdout_tail
 

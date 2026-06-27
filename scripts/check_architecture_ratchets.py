@@ -302,6 +302,9 @@ BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_PATH = Path(
 BYOC_LAUNCH_READINESS_SUMMARY_PATH = Path(
     "services/platform/runtime/byoc_launch_readiness_summary.py"
 )
+BYOC_CUSTOMER_PILOT_PACKAGE_PATH = Path(
+    "services/platform/runtime/byoc_customer_pilot_package.py"
+)
 BYOC_AWS_LIVE_PREFLIGHT_PATH = Path(
     "services/platform/runtime/byoc_aws_live_preflight.py"
 )
@@ -464,6 +467,43 @@ BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
     "endpoint_url",
     "endpoint_path",
     "query_string",
+    "auth_material",
+    "credential",
+    "account_id",
+    "arn",
+    "command_output",
+    "log_text",
+    "prompt",
+    "embedding",
+    "pii",
+)
+BYOC_CUSTOMER_PILOT_PACKAGE_FALSE_PRIVACY_FLAGS = (
+    "artifact_bodies_included",
+    "child_report_bodies_included",
+    "raw_reports_included",
+    "raw_payloads_included",
+    "request_bodies_included",
+    "response_bodies_included",
+    "signed_headers_included",
+    "endpoint_urls_included",
+    "raw_auth_material_included",
+    "credentials_included",
+    "account_ids_included",
+    "arns_included",
+    "command_output_included",
+    "logs_included",
+    "prompts_included",
+    "embeddings_included",
+    "pii_included",
+)
+BYOC_CUSTOMER_PILOT_PACKAGE_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
+    "child_report",
+    "raw_report",
+    "artifact_body",
+    "request_body",
+    "response_body",
+    "signed_header",
+    "endpoint_url",
     "auth_material",
     "credential",
     "account_id",
@@ -1596,6 +1636,119 @@ def find_byoc_launch_readiness_summary_privacy_violations(
     return violations
 
 
+def find_byoc_customer_pilot_package_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_CUSTOMER_PILOT_PACKAGE_PATH,
+) -> list[Violation]:
+    """Return customer-pilot package manifest drift that could leak artifacts."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-customer-pilot-package-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC customer pilot package module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    violations: list[Violation] = []
+
+    report_class = classes.get("ByocCustomerPilotPackageManifest")
+    report_fields = _class_field_assignments(report_class)
+    for field_name, assignment in sorted(report_fields.items()):
+        lowered = field_name.lower()
+        if any(
+            fragment in lowered
+            for fragment in BYOC_CUSTOMER_PILOT_PACKAGE_FORBIDDEN_REPORT_FIELD_FRAGMENTS
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-customer-pilot-package-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC customer-pilot package manifests must not "
+                        f"serialize sensitive field {field_name!r}"
+                    ),
+                )
+            )
+
+    stored_scope = report_fields.get("stored_scope")
+    if stored_scope is None:
+        violations.append(
+            Violation(
+                check="byoc-customer-pilot-package-privacy",
+                path=contract_path,
+                line_number=report_class.lineno if report_class else 1,
+                message=(
+                    "BYOC customer-pilot package manifest must pin stored_scope "
+                    "to sanitized_customer_pilot_package_manifest_only"
+                ),
+            )
+        )
+    elif (
+        not isinstance(stored_scope.value, ast.Constant)
+        or stored_scope.value.value
+        != "sanitized_customer_pilot_package_manifest_only"
+    ):
+        violations.append(
+            Violation(
+                check="byoc-customer-pilot-package-privacy",
+                path=contract_path,
+                line_number=stored_scope.lineno,
+                message=(
+                    "BYOC customer-pilot package manifest must pin stored_scope "
+                    "to sanitized_customer_pilot_package_manifest_only"
+                ),
+            )
+        )
+
+    privacy_class = classes.get("ByocCustomerPilotPackagePrivacyContract")
+    privacy_fields = _class_field_assignments(privacy_class)
+    for field_name in BYOC_CUSTOMER_PILOT_PACKAGE_FALSE_PRIVACY_FLAGS:
+        assignment = privacy_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-customer-pilot-package-privacy",
+                    path=contract_path,
+                    line_number=privacy_class.lineno if privacy_class else 1,
+                    message=(
+                        "BYOC customer-pilot package privacy must keep "
+                        f"{field_name} pinned to Literal[False] = False"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[False]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not False
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-customer-pilot-package-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC customer-pilot package privacy must keep "
+                        f"{field_name} pinned to Literal[False] = False"
+                    ),
+                )
+            )
+
+    return violations
+
+
 def find_byoc_aws_live_preflight_privacy_violations(
     *,
     repo_root: Path = REPO_ROOT,
@@ -2478,6 +2631,9 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
     )
     violations.extend(
         find_byoc_launch_readiness_summary_privacy_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_customer_pilot_package_privacy_violations(repo_root=repo_root)
     )
     violations.extend(
         find_byoc_aws_live_preflight_privacy_violations(repo_root=repo_root)

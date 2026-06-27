@@ -359,6 +359,27 @@ reports, artifact bodies, signed headers, endpoint URLs, request/response
 bodies, auth material, account IDs, ARNs, command output, logs, prompts,
 embeddings, or PII.
 
+For offline release-review preparation, build the local backend/core
+customer-pilot package. This writes the sanitized live-test readiness report,
+customer handoff report, control-plane read-smoke summary, handoff bundle
+index, launch readiness summary, and digest-only package manifest under the
+repo-local ignored `tmp/` tree:
+
+```bash
+scripts/build_byoc_customer_pilot_package.py --json \
+  --output-dir tmp/byoc/customer-pilot \
+  --control-plane-read-smoke <byoc-control-plane-read-smoke-raw.json>
+```
+
+Omit `--control-plane-read-smoke` when hosted control-plane reads have not run;
+the builder will create a `manual_required` smoke summary and launch summary.
+Use `--require-ready` only when all real AWS credential and hosted
+control-plane smoke evidence is expected to be complete. The package manifest
+contains only relative paths, digests, schema names, statuses, next-action
+codes, and privacy flags; it does not include artifact bodies, child report
+bodies, signed headers, endpoint URLs, request/response bodies, credentials,
+account IDs, ARNs, command output, logs, prompts, embeddings, or PII.
+
 For local contract proof or customer handoff before live agent endpoint wiring,
 run the mock-backed probe from inside the customer data-plane context:
 

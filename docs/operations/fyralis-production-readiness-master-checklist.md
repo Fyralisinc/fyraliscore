@@ -191,6 +191,11 @@ Every checklist item is done only when:
   request/response bodies, auth material, credentials, account IDs, ARNs, logs,
   prompts, embeddings, and PII before the result is used in launch-review or
   customer handoff evidence.
+- [x] BYOC customer-pilot handoff has a one-command backend/core package
+  builder that writes sanitized local readiness artifacts, a handoff index,
+  launch summary, and digest-only manifest under the ignored `tmp/` tree,
+  marking AWS credential and hosted control-plane evidence manual until real
+  reports are supplied.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

@@ -420,6 +420,15 @@ Repo-owned artifacts for this first slice:
   executed, and all identity fields agree. Without `--require-ready`,
   manual-required output is allowed so local artifact generation remains useful
   before the credential/control-plane window.
+- `services/platform/runtime/byoc_customer_pilot_package.py` and
+  `scripts/build_byoc_customer_pilot_package.py` provide the offline
+  backend/core handoff builder. The command writes live-test readiness,
+  customer handoff readiness, control-plane read-smoke summary, handoff bundle
+  index, launch readiness summary, and a package manifest under a repo-local
+  ignored output directory. It does not run cloud apply, open inbound ports, or
+  require AWS credentials; when hosted read smoke is not supplied, the package
+  is explicitly `manual_required`. The manifest records only relative paths,
+  digests, schema names, statuses, next-action codes, and privacy flags.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
@@ -1641,6 +1650,14 @@ Minimum gates before first enterprise customer:
   this summary and the handoff index in release-review channels, not raw child
   reports, signed headers, endpoint URLs, request/response bodies, credentials,
   logs, prompts, or PII.
+- For offline release-review preparation, use
+  `scripts/build_byoc_customer_pilot_package.py` to create all local
+  backend/core handoff artifacts under `tmp/byoc/customer-pilot`. The command
+  produces a manifest that remains safe to archive or share because it contains
+  only artifact paths, digests, schema names, aggregate statuses, and bounded
+  action codes. It is not a substitute for real AWS credential rehearsal or
+  hosted control-plane smoke; those remain manual-required until their reports
+  are supplied and `--require-ready` passes.
 - Submit evidence packages to the control-plane intake API only as signed
   `fyralis.byoc.evidence_package_submission.v1` payloads; control-plane storage
   may retain only the generated sanitized receipt metadata in
