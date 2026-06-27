@@ -221,12 +221,27 @@ scripts/run_byoc_agent_runner.py --json --iterations 2 \
   --output <agent-runner-report.json>
 ```
 
+Before rehearsing live token rotation, generate the plan-only install-token
+rotation report. This validates dual-ref overlap without writing customer cloud
+secrets, mutating the hosted control plane, serializing secret refs, or
+including raw token material:
+
+```bash
+scripts/run_byoc_agent_token_rotation_plan.py --json \
+  --next-install-token-secret-ref <customer-next-install-token-secret-ref> \
+  --overlap-seconds 3600 \
+  --activation-epoch <next-agent-config-epoch> \
+  --output <agent-token-rotation-plan.json>
+```
+
 Archive only the generated report. Do not archive shell history, raw install
 tokens, live control-plane URLs, desired-state bodies, or request/response
 bodies. The runner report may include apply-plan evidence, but that evidence is
 `plan_only` and must have a zero mutating-step count. Artifact verification
 evidence may include artifact roles, kinds, SHA-256 digests, and counts only;
-do not archive artifact refs, Sigstore bundle refs, or raw verification output.
+do not archive artifact refs, Sigstore bundle refs, raw verification output, or
+secret-ref paths. The token-rotation plan may include salted secret-ref
+digests only.
 Where hosted control-plane intake is enabled, derive a signed
 `fyralis.byoc.runner_evidence_submission.v1` payload from the report and submit
 it to `POST /byoc/control-plane/runner-evidence` using the evidence intake

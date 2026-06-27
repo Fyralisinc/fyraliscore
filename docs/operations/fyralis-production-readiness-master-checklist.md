@@ -85,7 +85,8 @@ Every checklist item is done only when:
   readiness-gated bounded agent runner skeleton with non-mutating apply-plan
   and digest-pinned artifact verification evidence, managed install-token
   key-ref resolution, sanitized scalar registration storage, and a
-  storage-shape ratchet.
+  storage-shape ratchet, plus a plan-only install-token rotation rehearsal
+  that emits only salted secret-ref digests and no raw token material.
 - [x] BYOC customer-cloud permissions have a checked-in manifest, AWS IAM
   skeleton, validator, and readiness gate that reject broad admin policies,
   unbounded `iam:PassRole`, mutating control-plane roles, missing boundaries,

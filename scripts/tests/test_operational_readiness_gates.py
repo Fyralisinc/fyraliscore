@@ -11,6 +11,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_aws_iac_package_gate,
     _byoc_agent_probe_gate,
     _byoc_agent_runner_gate,
+    _byoc_agent_token_rotation_gate,
     _byoc_aws_live_preflight_gate,
     _byoc_bootstrap_bundle_gate,
     _byoc_bootstrap_plan_gate,
@@ -224,6 +225,19 @@ def test_byoc_agent_runner_gate_passes_for_checked_in_manifest() -> None:
         "bundle": "deploy/byoc/bootstrap-bundle.next.example.yaml",
     }
     assert "local-byoc-agent-runner-token" not in result.stdout_tail
+
+
+def test_byoc_agent_token_rotation_gate_passes_for_checked_in_manifest() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_agent_token_rotation_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_agent_token_rotation_plan.py" in result.command
+    assert "--next-install-token-secret-ref" in result.command
+    assert result.artifacts == {"manifest": "deploy/byoc/dataplane.example.yaml"}
+    assert "agent-bootstrap-token-v2" not in result.stdout_tail
 
 
 def test_byoc_evidence_ledger_gate_passes_for_checked_in_ledger() -> None:

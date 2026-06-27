@@ -95,6 +95,14 @@ Repo-owned artifacts for this first slice:
   bootstrap bundle, verifies that the desired revision maps to digest-pinned
   artifact metadata; it intentionally does not apply revisions, rotate tokens,
   issue mTLS credentials, or daemonize.
+- `services/platform/runtime/byoc_agent_token_rotation.py` and
+  `scripts/run_byoc_agent_token_rotation_plan.py` define the first plan-only
+  install-token rotation rehearsal. The report validates current/next
+  secret-ref presence, safe ref shape, distinct refs, dual-key overlap, and
+  positive activation epoch, then emits only salted ref digests and aggregate
+  check results. It does not write customer cloud secrets, mutate the hosted
+  control plane, serialize secret refs, include token material, or restart
+  agents.
 - `services/platform/runtime/byoc_agent_apply_plan.py` defines the sanitized
   non-mutating apply-plan contract. The plan records only current/desired
   revision metadata, config epoch, bounded step names, and mutation counts; it
@@ -315,10 +323,10 @@ Repo-owned artifacts for this first slice:
 
 This intentionally defers cloud apply, real agent reconciliation actions beyond
 non-mutating apply-plan evidence, production Terraform/CloudFormation modules,
-hosted onboarding UI, mTLS/token rotation, and fleet dashboard work until a
-first-customer cloud/profile is selected. Those systems should consume these
-manifests and the bounded runner contract instead of inventing new deployment,
-permission, or agent protocol shape.
+hosted onboarding UI, mTLS issuance, live token-rotation execution, and fleet
+dashboard work until a first-customer cloud/profile is selected. Those systems
+should consume these manifests and the bounded runner/rotation contracts
+instead of inventing new deployment, permission, or agent protocol shape.
 
 ## Current Fyralis Baseline
 

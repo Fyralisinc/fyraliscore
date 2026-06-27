@@ -779,6 +779,30 @@ def _byoc_agent_runner_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_agent_token_rotation_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_agent_token_rotation_plan",
+        _python_command(
+            "scripts/run_byoc_agent_token_rotation_plan.py",
+            "--json",
+            "--manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--next-install-token-secret-ref",
+            "prod/fyralis/dep-example01/agent-bootstrap-token-v2",
+            "--activation-epoch",
+            "2",
+        ),
+        details=(
+            "BYOC agent install-token rotation plan validates dual-ref "
+            "overlap and emits only salted ref digests, with no raw token "
+            "material, secret refs, command output, or cloud mutation."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={"manifest": "deploy/byoc/dataplane.example.yaml"},
+    )
+
+
 def _byoc_evidence_ledger_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_evidence_ledger",
@@ -971,6 +995,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_preflight_bundle_gate(args),
         _byoc_agent_probe_gate(args),
         _byoc_agent_runner_gate(args),
+        _byoc_agent_token_rotation_gate(args),
         _byoc_evidence_ledger_gate(args),
         _byoc_evidence_package_gate(args),
         _byoc_source_onboarding_gate(args),
