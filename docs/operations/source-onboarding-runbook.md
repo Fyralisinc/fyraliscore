@@ -329,6 +329,17 @@ scripts/get_byoc_control_panel_state.py \
   --control-panel-state-url https://<control-plane>/byoc/control-plane/control-panel-state
 ```
 
+For UI or backend consumers that need the contract without live read access,
+export the schema bundle or deterministic sanitized example:
+
+```bash
+scripts/export_byoc_control_panel_contract.py --schema \
+  --output tmp/byoc/control-panel-state.schema.json
+
+scripts/export_byoc_control_panel_contract.py --example \
+  --output tmp/byoc/control-panel-state.example.json
+```
+
 For a single read-only backend smoke of all signed control-plane metadata
 surfaces, including the control-panel state aggregate, use the combined helper.
 Omit `--base-url` to print the signed request bundle without network access.

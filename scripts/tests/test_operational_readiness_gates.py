@@ -428,8 +428,14 @@ def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:
     )
     assert "scripts/tests/test_get_byoc_control_panel_state.py" in result.command
     assert "scripts/tests/test_get_byoc_deployment_overview.py" in result.command
+    assert "scripts/tests/test_export_byoc_control_panel_contract.py" in (
+        result.command
+    )
     assert "scripts/tests/test_list_byoc_agents.py" in result.command
     assert "scripts/tests/test_smoke_byoc_control_plane_reads.py" in result.command
+    assert "services/platform/runtime/tests/test_byoc_control_panel_contract.py" in (
+        result.command
+    )
     assert "scripts/tests/test_submit_byoc_preflight_report.py" in result.command
     assert "scripts/tests/test_submit_byoc_runner_evidence.py" in result.command
     assert "scripts/tests/test_update_byoc_agent_desired_state.py" in result.command

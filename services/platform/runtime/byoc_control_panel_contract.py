@@ -1,0 +1,278 @@
+"""Exportable BYOC control-panel state schema and sanitized example."""
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime
+from typing import Any
+
+from services.platform.runtime.byoc_agent_control_plane import (
+    ByocAgentFleetItem,
+    ByocAgentFleetList,
+)
+from services.platform.runtime.byoc_control_panel_state import (
+    ByocControlPanelState,
+    ByocControlPanelStateQuery,
+    build_byoc_control_panel_state,
+)
+from services.platform.runtime.byoc_control_plane_intake import (
+    ByocEvidencePackageIntakeRecord,
+    ByocEvidencePackageReceipt,
+    ByocEvidencePackageReceiptList,
+)
+from services.platform.runtime.byoc_deployment_overview import (
+    ByocDeploymentOverview,
+    ByocDeploymentOverviewQuery,
+    build_byoc_deployment_overview,
+)
+from services.platform.runtime.byoc_preflight_intake import (
+    ByocPreflightReportIntakeRecord,
+    ByocPreflightReportReceipt,
+    ByocPreflightReportReceiptList,
+)
+from services.platform.runtime.byoc_runner_evidence_intake import (
+    ByocRunnerEvidenceIntakeRecord,
+    ByocRunnerEvidenceReceipt,
+    ByocRunnerEvidenceReceiptList,
+)
+
+
+EXAMPLE_DEPLOYMENT_ID = "dep_control01"
+EXAMPLE_CUSTOMER_ID = "cus_control01"
+EXAMPLE_AGENT_ID = "agt_control01"
+EXAMPLE_GENERATED_AT = datetime(2026, 6, 27, 12, 0, tzinfo=UTC)
+SCHEMA_BUNDLE_VERSION = "fyralis.byoc.control_panel_contract_bundle.v1"
+
+
+def model_json_schema_bundle() -> dict[str, Any]:
+    """Return the schema bundle a control-panel consumer can code against."""
+
+    return {
+        "schema_version": SCHEMA_BUNDLE_VERSION,
+        "query": ByocControlPanelStateQuery.model_json_schema(),
+        "control_panel_state": ByocControlPanelState.model_json_schema(),
+        "deployment_overview": ByocDeploymentOverview.model_json_schema(),
+        "stored_scope": "sanitized_control_panel_metadata_only",
+    }
+
+
+def build_example_control_panel_state(
+    *,
+    generated_at: datetime = EXAMPLE_GENERATED_AT,
+) -> ByocControlPanelState:
+    """Build a deterministic metadata-only example for UI and API consumers."""
+
+    agents = _agent_fleet(generated_at=generated_at)
+    evidence_packages = _evidence_package_receipts(generated_at=generated_at)
+    preflight_reports = _preflight_report_receipts(generated_at=generated_at)
+    runner_evidence = _runner_evidence_receipts(generated_at=generated_at)
+    overview = build_byoc_deployment_overview(
+        query=ByocDeploymentOverviewQuery(
+            deployment_id=EXAMPLE_DEPLOYMENT_ID,
+            customer_id=EXAMPLE_CUSTOMER_ID,
+        ),
+        agents=agents,
+        evidence_packages=evidence_packages,
+        preflight_reports=preflight_reports,
+        runner_evidence=runner_evidence,
+        generated_at=generated_at,
+    )
+    return build_byoc_control_panel_state(
+        query=ByocControlPanelStateQuery(
+            deployment_id=EXAMPLE_DEPLOYMENT_ID,
+            customer_id=EXAMPLE_CUSTOMER_ID,
+            recent_limit=10,
+        ),
+        overview=overview,
+        agents=agents,
+        evidence_packages=evidence_packages,
+        preflight_reports=preflight_reports,
+        runner_evidence=runner_evidence,
+        generated_at=generated_at,
+    )
+
+
+def render_control_panel_schema_bundle_json() -> str:
+    return json.dumps(model_json_schema_bundle(), indent=2, sort_keys=True) + "\n"
+
+
+def render_control_panel_state_example_json(
+    state: ByocControlPanelState | None = None,
+) -> str:
+    example = state or build_example_control_panel_state()
+    return json.dumps(example.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+
+
+def _agent_fleet(*, generated_at: datetime) -> ByocAgentFleetList:
+    return ByocAgentFleetList(
+        schema_version="fyralis.byoc.agent_fleet_list.v1",
+        deployment_id=EXAMPLE_DEPLOYMENT_ID,
+        customer_id=EXAMPLE_CUSTOMER_ID,
+        limit=100,
+        result_count=1,
+        stored_scope="sanitized_agent_metadata_only",
+        items=(
+            ByocAgentFleetItem(
+                schema_version="fyralis.byoc.agent_fleet_item.v1",
+                deployment_id=EXAMPLE_DEPLOYMENT_ID,
+                customer_id=EXAMPLE_CUSTOMER_ID,
+                agent_id=EXAMPLE_AGENT_ID,
+                agent_version="2026.06.27",
+                artifact_revision="2026.06.27-1",
+                cloud_provider="aws",
+                region="us-east-1",
+                desired_revision="2026.06.27-2",
+                desired_config_epoch=2,
+                evidence_package_required=True,
+                heartbeat_interval_seconds=30,
+                telemetry_contract="fyralis.byoc.agent.telemetry.v1",
+                enrolled_at=generated_at.replace(hour=11, minute=45),
+                desired_state_updated_at=generated_at.replace(hour=11, minute=55),
+                latest_heartbeat_sequence=3,
+                latest_validation_status="passing",
+                latest_control_plane_connected=True,
+                latest_telemetry_mode="aggregate-only",
+                latest_component_count=3,
+                latest_ok_component_count=3,
+                latest_degraded_component_count=0,
+                latest_failed_component_count=0,
+                latest_unknown_component_count=0,
+                latest_queued_batches=0,
+                latest_dropped_batches=0,
+                latest_heartbeat_sent_at=generated_at.replace(hour=11, minute=59),
+                latest_heartbeat_accepted_at=generated_at.replace(
+                    hour=11,
+                    minute=59,
+                ),
+                stored_scope="sanitized_agent_metadata_only",
+            ),
+        ),
+    )
+
+
+def _evidence_package_receipts(
+    *,
+    generated_at: datetime,
+) -> ByocEvidencePackageReceiptList:
+    return ByocEvidencePackageReceiptList(
+        schema_version="fyralis.byoc.evidence_package_receipt_list.v1",
+        deployment_id=EXAMPLE_DEPLOYMENT_ID,
+        customer_id=EXAMPLE_CUSTOMER_ID,
+        limit=10,
+        result_count=1,
+        stored_scope="sanitized_metadata_only",
+        items=(
+            ByocEvidencePackageIntakeRecord(
+                receipt=ByocEvidencePackageReceipt(
+                    schema_version="fyralis.byoc.evidence_package_receipt.v1",
+                    status="accepted",
+                    receipt_id="evpkg_0123456789abcdef0123456789abcdef",
+                    deployment_id=EXAMPLE_DEPLOYMENT_ID,
+                    customer_id=EXAMPLE_CUSTOMER_ID,
+                    agent_id=EXAMPLE_AGENT_ID,
+                    package_digest=f"sha256:{'a' * 64}",
+                    package_generated_at=generated_at.replace(hour=11, minute=58),
+                    ledger_overall_status="pass",
+                    required_evidence_passed=True,
+                    live_report_envelope_digest=None,
+                    accepted_at=generated_at.replace(hour=11, minute=59),
+                    stored_scope="sanitized_metadata_only",
+                ),
+                submitted_at=generated_at.replace(hour=11, minute=58),
+                agent_version="2026.06.27",
+                artifact_revision="2026.06.27-1",
+                cloud_provider="aws",
+                region="us-east-1",
+            ),
+        ),
+    )
+
+
+def _preflight_report_receipts(
+    *,
+    generated_at: datetime,
+) -> ByocPreflightReportReceiptList:
+    return ByocPreflightReportReceiptList(
+        schema_version="fyralis.byoc.preflight_report_receipt_list.v1",
+        deployment_id=EXAMPLE_DEPLOYMENT_ID,
+        customer_id=EXAMPLE_CUSTOMER_ID,
+        limit=10,
+        result_count=1,
+        stored_scope="sanitized_metadata_only",
+        items=(
+            ByocPreflightReportIntakeRecord(
+                receipt=ByocPreflightReportReceipt(
+                    schema_version="fyralis.byoc.preflight_report_receipt.v1",
+                    status="accepted",
+                    receipt_id="pfrep_0123456789abcdef0123456789abcdef",
+                    deployment_id=EXAMPLE_DEPLOYMENT_ID,
+                    customer_id=EXAMPLE_CUSTOMER_ID,
+                    agent_id=EXAMPLE_AGENT_ID,
+                    report_digest=f"sha256:{'b' * 64}",
+                    preflight_status="pass",
+                    required_sections_passed=True,
+                    section_count=7,
+                    failed_section_count=0,
+                    terraform_validate_executed=True,
+                    submitted_at=generated_at.replace(hour=11, minute=56),
+                    accepted_at=generated_at.replace(hour=11, minute=57),
+                    stored_scope="sanitized_metadata_only",
+                ),
+                agent_version="2026.06.27",
+                artifact_revision="2026.06.27-1",
+                cloud_provider="aws",
+                region="us-east-1",
+            ),
+        ),
+    )
+
+
+def _runner_evidence_receipts(
+    *,
+    generated_at: datetime,
+) -> ByocRunnerEvidenceReceiptList:
+    return ByocRunnerEvidenceReceiptList(
+        schema_version="fyralis.byoc.runner_evidence_receipt_list.v1",
+        deployment_id=EXAMPLE_DEPLOYMENT_ID,
+        customer_id=EXAMPLE_CUSTOMER_ID,
+        limit=10,
+        result_count=1,
+        stored_scope="sanitized_metadata_only",
+        items=(
+            ByocRunnerEvidenceIntakeRecord(
+                receipt=ByocRunnerEvidenceReceipt(
+                    schema_version="fyralis.byoc.runner_evidence_receipt.v1",
+                    status="accepted",
+                    receipt_id="runev_0123456789abcdef0123456789abcdef",
+                    deployment_id=EXAMPLE_DEPLOYMENT_ID,
+                    customer_id=EXAMPLE_CUSTOMER_ID,
+                    agent_id=EXAMPLE_AGENT_ID,
+                    evidence_digest=f"sha256:{'c' * 64}",
+                    current_artifact_revision="2026.06.27-1",
+                    desired_revision="2026.06.27-2",
+                    rollout_action="apply_revision",
+                    runner_status="pass",
+                    required_checks_passed=True,
+                    apply_plan_count=1,
+                    artifact_verification_count=1,
+                    digest_pinned_artifact_count=7,
+                    local_digest_checked_count=1,
+                    submitted_at=generated_at.replace(hour=11, minute=57),
+                    accepted_at=generated_at.replace(hour=11, minute=58),
+                    stored_scope="sanitized_metadata_only",
+                ),
+                agent_version="2026.06.27",
+                cloud_provider="aws",
+                region="us-east-1",
+                control_plane_mode="mock",
+            ),
+        ),
+    )
+
+
+__all__ = [
+    "SCHEMA_BUNDLE_VERSION",
+    "build_example_control_panel_state",
+    "model_json_schema_bundle",
+    "render_control_panel_schema_bundle_json",
+    "render_control_panel_state_example_json",
+]

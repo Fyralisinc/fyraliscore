@@ -396,6 +396,11 @@ Repo-owned artifacts for this first slice:
   `--control-panel-state-url` is supplied, returning only the sanitized
   deployment overview, agent fleet, recent receipt lists, section statuses, and
   bounded action codes.
+- `services/platform/runtime/byoc_control_panel_contract.py` and
+  `scripts/export_byoc_control_panel_contract.py` export the same
+  control-panel state schema and a deterministic sanitized example response for
+  UI/control-plane consumers. The export is contract-only; it does not include
+  signed headers, endpoint URLs, credentials, logs, prompts, or customer data.
 - `scripts/smoke_byoc_control_plane_reads.py` signs the read-only BYOC
   backend/control-panel surfaces together: agent fleet, deployment overview,
   control-panel state, evidence-package receipts, preflight receipts, and
@@ -1703,9 +1708,10 @@ Minimum gates before first enterprise customer:
   Use `scripts/list_byoc_agents.py`,
   `scripts/get_byoc_deployment_overview.py`, and
   `scripts/get_byoc_control_panel_state.py` for targeted backend automation
-  checks, and `scripts/smoke_byoc_control_plane_reads.py` for the combined
-  read-only control-plane smoke, including the control-panel state aggregate,
-  instead of hand-building signed read headers.
+  checks, `scripts/export_byoc_control_panel_contract.py` for UI/backend
+  contract schemas and examples, and `scripts/smoke_byoc_control_plane_reads.py`
+  for the combined read-only control-plane smoke, including the control-panel
+  state aggregate, instead of hand-building signed read headers.
   Before adding read-smoke evidence to customer handoff or launch-review
   artifacts, summarize the raw smoke output with
   `scripts/summarize_byoc_control_plane_read_smoke.py` and archive only that

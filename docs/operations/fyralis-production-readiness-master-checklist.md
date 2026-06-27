@@ -189,9 +189,9 @@ Every checklist item is done only when:
 - [x] BYOC control-panel state has a signed metadata-only backend read model and
   gateway route that composes deployment overview, sanitized agent fleet, recent
   sanitized receipt lists, section statuses, and bounded action codes into one
-  future-control-panel contract, plus a targeted signed-read helper, without
-  raw reports, signed headers, endpoint URLs, secret refs, logs, prompts,
-  embeddings, or PII.
+  future-control-panel contract, plus a targeted signed-read helper and
+  schema/example exporter, without raw reports, signed headers, endpoint URLs,
+  secret refs, logs, prompts, embeddings, or PII.
 - [x] BYOC control-plane read-smoke output has a shareable summary command that
   covers the signed control-panel state aggregate and strips signed headers,
   endpoint paths, query strings, endpoint URLs, request/response bodies, auth
