@@ -265,6 +265,333 @@ PRODUCT_DEFAULT_TENANT_FALLBACK_RE = re.compile(
     r"(?:\breturn\s+default_tenant_id\b|\btenant_id\s*=\s*default_tenant_id\b)",
     re.IGNORECASE,
 )
+BYOC_MANIFEST_PRIVACY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"^\s*exposure\s*:\s*public\b", re.IGNORECASE),
+        "BYOC manifests must not require public endpoint exposure",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:raw_logs_allowed|raw_payloads_allowed|raw_prompts_allowed|"
+            r"pii_allowed|control_plane_inbound_allowed|"
+            r"raw_payloads_leave_boundary|prompts_leave_boundary|"
+            r"embeddings_leave_boundary|logs_leave_boundary|pii_leaves_boundary|"
+            r"provider_secrets_leave_boundary)\s*:\s*true\b",
+            re.IGNORECASE,
+        ),
+        (
+            "BYOC manifests must not allow customer data, logs, prompts, PII, "
+            "or inbound control-plane access to leave the data plane"
+        ),
+    ),
+)
+BYOC_MANIFEST_DIRECTION_RE = re.compile(
+    r"^\s*direction\s*:\s*(?P<value>\S+)",
+    re.IGNORECASE,
+)
+BYOC_AGENT_CONTRACT_PATH = Path("services/platform/runtime/byoc_agent_contract.py")
+BYOC_AGENT_TOKEN_ROTATION_PATH = Path(
+    "services/platform/runtime/byoc_agent_token_rotation.py"
+)
+BYOC_LIVE_CREDENTIAL_REHEARSAL_PATH = Path(
+    "services/platform/runtime/byoc_live_credential_rehearsal.py"
+)
+BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_PATH = Path(
+    "services/platform/runtime/byoc_control_plane_read_smoke_summary.py"
+)
+BYOC_LAUNCH_READINESS_SUMMARY_PATH = Path(
+    "services/platform/runtime/byoc_launch_readiness_summary.py"
+)
+BYOC_CUSTOMER_PILOT_PACKAGE_PATH = Path(
+    "services/platform/runtime/byoc_customer_pilot_package.py"
+)
+BYOC_AWS_LIVE_PREFLIGHT_PATH = Path(
+    "services/platform/runtime/byoc_aws_live_preflight.py"
+)
+BYOC_EVIDENCE_RECEIPT_MIGRATION_PATH = Path(
+    "db/migrations/0180_byoc_evidence_package_receipts.sql"
+)
+BYOC_AGENT_REGISTRATION_MIGRATION_PATH = Path(
+    "db/migrations/0181_byoc_agent_registrations.sql"
+)
+BYOC_RUNNER_EVIDENCE_RECEIPT_MIGRATION_PATH = Path(
+    "db/migrations/0182_byoc_runner_evidence_receipts.sql"
+)
+BYOC_PREFLIGHT_REPORT_RECEIPT_MIGRATION_PATH = Path(
+    "db/migrations/0183_byoc_preflight_report_receipts.sql"
+)
+BYOC_AGENT_FALSE_TELEMETRY_FLAGS = (
+    "raw_logs_allowed",
+    "raw_payloads_allowed",
+    "raw_prompts_allowed",
+    "pii_allowed",
+)
+BYOC_AWS_LIVE_PREFLIGHT_FALSE_PRIVACY_FLAGS = (
+    "account_id_included",
+    "caller_arn_included",
+    "role_arn_included",
+    "aws_profile_included",
+    "aws_endpoint_urls_included",
+    "credentials_included",
+    "command_output_included",
+    "policy_documents_included",
+    "raw_customer_data_included",
+)
+BYOC_AWS_LIVE_PREFLIGHT_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
+    "account_id",
+    "arn",
+    "aws_profile",
+    "endpoint_url",
+    "policy_document",
+    "principal",
+    "secret",
+    "token",
+)
+BYOC_AGENT_TOKEN_ROTATION_FALSE_PRIVACY_FLAGS = (
+    "raw_token_material_included",
+    "secret_refs_included",
+    "signatures_included",
+    "request_bodies_included",
+    "command_output_included",
+    "cloud_credentials_included",
+    "account_ids_included",
+    "arns_included",
+    "urls_included",
+    "raw_payloads_included",
+    "prompts_included",
+    "logs_included",
+    "pii_included",
+)
+BYOC_AGENT_TOKEN_ROTATION_TRUE_PRIVACY_FLAGS = (
+    "secret_ref_digests_included",
+)
+BYOC_AGENT_TOKEN_ROTATION_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
+    "raw_token",
+    "token_material",
+    "token_value",
+    "install_token_value",
+    "signature",
+    "request_body",
+    "response_body",
+    "command_output",
+    "account_id",
+    "arn",
+    "url",
+    "credential",
+)
+BYOC_LIVE_CREDENTIAL_REHEARSAL_FALSE_PRIVACY_FLAGS = (
+    "raw_payloads_included",
+    "prompts_included",
+    "embeddings_included",
+    "raw_logs_included",
+    "pii_included",
+    "credentials_included",
+    "account_ids_included",
+    "arns_included",
+    "urls_included",
+    "policy_documents_included",
+    "command_output_included",
+    "child_report_details_included",
+    "artifact_paths_included",
+)
+BYOC_LIVE_CREDENTIAL_REHEARSAL_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
+    "account_id",
+    "arn",
+    "aws_profile",
+    "principal_arn",
+    "policy_document",
+    "command_output",
+    "child_report",
+    "artifact_path",
+    "url",
+)
+BYOC_LAUNCH_READINESS_SUMMARY_FALSE_PRIVACY_FLAGS = (
+    "child_report_bodies_included",
+    "artifact_bodies_included",
+    "raw_reports_included",
+    "raw_payloads_included",
+    "request_bodies_included",
+    "response_bodies_included",
+    "signed_headers_included",
+    "endpoint_urls_included",
+    "raw_auth_material_included",
+    "credentials_included",
+    "account_ids_included",
+    "arns_included",
+    "command_output_included",
+    "logs_included",
+    "prompts_included",
+    "embeddings_included",
+    "pii_included",
+)
+BYOC_LAUNCH_READINESS_SUMMARY_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
+    "child_report",
+    "raw_report",
+    "artifact_body",
+    "artifact_ref",
+    "request_body",
+    "response_body",
+    "signed_header",
+    "endpoint_url",
+    "auth_material",
+    "credential",
+    "account_id",
+    "arn",
+    "command_output",
+    "log_text",
+    "prompt",
+    "embedding",
+    "pii",
+)
+BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_FALSE_PRIVACY_FLAGS = (
+    "request_bodies_included",
+    "response_bodies_included",
+    "signed_headers_included",
+    "endpoint_urls_included",
+    "endpoint_paths_included",
+    "query_strings_included",
+    "raw_auth_material_included",
+    "credentials_included",
+    "account_ids_included",
+    "arns_included",
+    "command_output_included",
+    "logs_included",
+    "prompts_included",
+    "embeddings_included",
+    "pii_included",
+)
+BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
+    "request_body",
+    "response_body",
+    "signed_header",
+    "endpoint_url",
+    "endpoint_path",
+    "query_string",
+    "auth_material",
+    "credential",
+    "account_id",
+    "arn",
+    "command_output",
+    "log_text",
+    "prompt",
+    "embedding",
+    "pii",
+)
+BYOC_CUSTOMER_PILOT_PACKAGE_FALSE_PRIVACY_FLAGS = (
+    "artifact_bodies_included",
+    "child_report_bodies_included",
+    "raw_reports_included",
+    "raw_payloads_included",
+    "request_bodies_included",
+    "response_bodies_included",
+    "signed_headers_included",
+    "endpoint_urls_included",
+    "raw_auth_material_included",
+    "credentials_included",
+    "account_ids_included",
+    "arns_included",
+    "command_output_included",
+    "logs_included",
+    "prompts_included",
+    "embeddings_included",
+    "pii_included",
+)
+BYOC_CUSTOMER_PILOT_PACKAGE_FORBIDDEN_REPORT_FIELD_FRAGMENTS = (
+    "child_report",
+    "raw_report",
+    "artifact_body",
+    "request_body",
+    "response_body",
+    "signed_header",
+    "endpoint_url",
+    "auth_material",
+    "credential",
+    "account_id",
+    "arn",
+    "command_output",
+    "log_text",
+    "prompt",
+    "embedding",
+    "pii",
+)
+BYOC_EVIDENCE_RECEIPT_FORBIDDEN_STORAGE_PATTERNS: tuple[
+    tuple[re.Pattern[str], str],
+    ...,
+] = (
+    (
+        re.compile(r"\b(?:JSONB|JSON|BYTEA)\b", re.IGNORECASE),
+        "BYOC evidence receipt storage must not store JSON or byte payload bodies",
+    ),
+    (
+        re.compile(
+            r"\b(?:raw_report|report_body|report_json|package_body|package_json|"
+            r"ledger_body|ledger_json|source_artifacts|prompt|payload)\b",
+            re.IGNORECASE,
+        ),
+        "BYOC evidence receipt storage must not include package/report body columns",
+    ),
+)
+BYOC_AGENT_REGISTRATION_FORBIDDEN_STORAGE_PATTERNS: tuple[
+    tuple[re.Pattern[str], str],
+    ...,
+] = (
+    (
+        re.compile(r"\b(?:JSONB|JSON|BYTEA)\b", re.IGNORECASE),
+        "BYOC agent registration storage must not store JSON or byte payload bodies",
+    ),
+    (
+        re.compile(
+            r"\b(?:raw_[a-z0-9_]*|enrollment_body|heartbeat_body|request_body|"
+            r"response_body|payload|prompt|log_text|pii|secret_value|"
+            r"token_value|install_token_value|private_key|client_cert_body)\b",
+            re.IGNORECASE,
+        ),
+        "BYOC agent registration storage must not include raw agent body columns",
+    ),
+)
+BYOC_RUNNER_EVIDENCE_RECEIPT_FORBIDDEN_STORAGE_PATTERNS: tuple[
+    tuple[re.Pattern[str], str],
+    ...,
+] = (
+    (
+        re.compile(r"\b(?:JSONB|JSON|BYTEA)\b", re.IGNORECASE),
+        "BYOC runner evidence receipt storage must not store JSON or byte payload bodies",
+    ),
+    (
+        re.compile(
+            r"\b(?:raw_[a-z0-9_]*|runner_report|report_body|report_json|"
+            r"checks|iterations|apply_plan_ids|artifact_verification_ids|"
+            r"artifact_inventory|artifact_digest|request_body|response_body|"
+            r"payload|prompt|log_text|pii|secret_value|token_value)\b",
+            re.IGNORECASE,
+        ),
+        "BYOC runner evidence receipt storage must not include raw runner body columns",
+    ),
+)
+BYOC_PREFLIGHT_REPORT_RECEIPT_FORBIDDEN_STORAGE_PATTERNS: tuple[
+    tuple[re.Pattern[str], str],
+    ...,
+] = (
+    (
+        re.compile(r"\b(?:JSONB|JSON|BYTEA)\b", re.IGNORECASE),
+        "BYOC preflight report receipt storage must not store JSON or byte payload bodies",
+    ),
+    (
+        re.compile(
+            r"\b(?:raw_[a-z0-9_]*|preflight_report|report_body|report_json|"
+            r"child_report|section_details|checks|command_output|artifact_refs|"
+            r"request_body|response_body|payload|prompt|log_text|pii|"
+            r"secret_value|token_value)\b",
+            re.IGNORECASE,
+        ),
+        "BYOC preflight report receipt storage must not include raw report body columns",
+    ),
+)
+BYOC_AGENT_NO_RAW_TOKEN_MODELS = (
+    "ByocAgentEnrollmentPayload",
+    "ByocAgentEnrollmentRequest",
+    "ByocAgentHeartbeat",
+)
 
 RAW_THINK_TRIGGER_INSERT_ALLOWED_FILES = {
     Path("services/domain/triggers.py"),
@@ -730,6 +1057,1037 @@ def find_product_default_tenant_without_production_guard_violations(
             )
         )
     return violations
+
+
+def find_byoc_manifest_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    manifest_dir: Path = Path("deploy/byoc"),
+) -> list[Violation]:
+    """Return BYOC manifest examples that loosen egress/privacy defaults."""
+
+    root = repo_root / manifest_dir
+    if not root.exists():
+        return []
+
+    violations: list[Violation] = []
+    manifest_paths = sorted(root.glob("*.yml"))
+    manifest_paths.extend(sorted(root.glob("*.yaml")))
+    manifest_paths.extend(sorted(root.glob("*.json")))
+    for path in manifest_paths:
+        rel = path.relative_to(repo_root)
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8", errors="ignore").splitlines(),
+            start=1,
+        ):
+            direction_match = BYOC_MANIFEST_DIRECTION_RE.search(line)
+            if (
+                direction_match is not None
+                and direction_match.group("value").lower() != "egress_only"
+            ):
+                violations.append(
+                    Violation(
+                        check="byoc-manifest-privacy",
+                        path=rel,
+                        line_number=line_number,
+                        message=(
+                            "BYOC control-plane connectivity must remain "
+                            "egress_only"
+                        ),
+                    )
+                )
+                continue
+            for pattern, message in BYOC_MANIFEST_PRIVACY_PATTERNS:
+                if pattern.search(line):
+                    violations.append(
+                        Violation(
+                            check="byoc-manifest-privacy",
+                            path=rel,
+                            line_number=line_number,
+                            message=message,
+                        )
+                    )
+                    break
+    return violations
+
+
+def find_byoc_agent_contract_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_AGENT_CONTRACT_PATH,
+) -> list[Violation]:
+    """Return BYOC agent contract drift that could expose raw customer data."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-agent-contract-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC agent contract module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    telemetry_class = classes.get("ByocAgentTelemetryState")
+    telemetry_fields = _class_field_assignments(telemetry_class)
+    violations: list[Violation] = []
+
+    for field_name in BYOC_AGENT_FALSE_TELEMETRY_FLAGS:
+        assignment = telemetry_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-agent-contract-privacy",
+                    path=contract_path,
+                    line_number=telemetry_class.lineno if telemetry_class else 1,
+                    message=(
+                        f"BYOC agent telemetry must keep {field_name} pinned "
+                        "to Literal[False] = False"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[False]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not False
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-agent-contract-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        f"BYOC agent telemetry must keep {field_name} pinned "
+                        "to Literal[False] = False"
+                    ),
+                )
+            )
+
+    for class_name in BYOC_AGENT_NO_RAW_TOKEN_MODELS:
+        fields = _class_field_assignments(classes.get(class_name))
+        assignment = fields.get("install_token")
+        if assignment is not None:
+            violations.append(
+                Violation(
+                    check="byoc-agent-contract-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        f"{class_name} must not serialize raw install_token; "
+                        "only install_token_secret_ref may leave the data plane"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def find_byoc_agent_token_rotation_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_AGENT_TOKEN_ROTATION_PATH,
+) -> list[Violation]:
+    """Return BYOC token-rotation report drift that could leak secrets."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-agent-token-rotation-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC agent token rotation module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    violations: list[Violation] = []
+
+    report_class = classes.get("ByocAgentTokenRotationPlanReport")
+    report_fields = _class_field_assignments(report_class)
+    for field_name, assignment in sorted(report_fields.items()):
+        lowered = field_name.lower()
+        if "secret_ref" in lowered and not lowered.endswith("secret_ref_digest"):
+            violations.append(
+                Violation(
+                    check="byoc-agent-token-rotation-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC token rotation reports must not serialize raw "
+                        f"secret-ref field {field_name!r}; use salted digests"
+                    ),
+                )
+            )
+            continue
+        if any(
+            fragment in lowered
+            for fragment in (
+                BYOC_AGENT_TOKEN_ROTATION_FORBIDDEN_REPORT_FIELD_FRAGMENTS
+            )
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-agent-token-rotation-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC token rotation reports must not serialize "
+                        f"secret-sensitive field {field_name!r}"
+                    ),
+                )
+            )
+
+    privacy_class = classes.get("ByocAgentTokenRotationPrivacyContract")
+    privacy_fields = _class_field_assignments(privacy_class)
+    for field_name in BYOC_AGENT_TOKEN_ROTATION_FALSE_PRIVACY_FLAGS:
+        assignment = privacy_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-agent-token-rotation-privacy",
+                    path=contract_path,
+                    line_number=privacy_class.lineno if privacy_class else 1,
+                    message=(
+                        f"BYOC token rotation privacy must keep {field_name} "
+                        "pinned to Literal[False] = False"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[False]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not False
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-agent-token-rotation-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        f"BYOC token rotation privacy must keep {field_name} "
+                        "pinned to Literal[False] = False"
+                    ),
+                )
+            )
+
+    for field_name in BYOC_AGENT_TOKEN_ROTATION_TRUE_PRIVACY_FLAGS:
+        assignment = privacy_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-agent-token-rotation-privacy",
+                    path=contract_path,
+                    line_number=privacy_class.lineno if privacy_class else 1,
+                    message=(
+                        f"BYOC token rotation privacy must keep {field_name} "
+                        "pinned to Literal[True] = True"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[True]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not True
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-agent-token-rotation-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        f"BYOC token rotation privacy must keep {field_name} "
+                        "pinned to Literal[True] = True"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def find_byoc_live_credential_rehearsal_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_LIVE_CREDENTIAL_REHEARSAL_PATH,
+) -> list[Violation]:
+    """Return live-credential rehearsal drift that could leak cloud metadata."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-live-credential-rehearsal-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC live credential rehearsal module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    violations: list[Violation] = []
+
+    report_class = classes.get("ByocLiveCredentialRehearsalReport")
+    report_fields = _class_field_assignments(report_class)
+    for field_name, assignment in sorted(report_fields.items()):
+        lowered = field_name.lower()
+        if any(
+            fragment in lowered
+            for fragment in (
+                BYOC_LIVE_CREDENTIAL_REHEARSAL_FORBIDDEN_REPORT_FIELD_FRAGMENTS
+            )
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-live-credential-rehearsal-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC live credential rehearsal reports must not "
+                        f"serialize sensitive field {field_name!r}"
+                    ),
+                )
+            )
+
+    privacy_class = classes.get("ByocLiveCredentialRehearsalPrivacyContract")
+    privacy_fields = _class_field_assignments(privacy_class)
+    for field_name in BYOC_LIVE_CREDENTIAL_REHEARSAL_FALSE_PRIVACY_FLAGS:
+        assignment = privacy_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-live-credential-rehearsal-privacy",
+                    path=contract_path,
+                    line_number=privacy_class.lineno if privacy_class else 1,
+                    message=(
+                        f"BYOC live credential rehearsal privacy must keep "
+                        f"{field_name} pinned to Literal[False] = False"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[False]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not False
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-live-credential-rehearsal-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        f"BYOC live credential rehearsal privacy must keep "
+                        f"{field_name} pinned to Literal[False] = False"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def find_byoc_control_plane_read_smoke_summary_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_PATH,
+) -> list[Violation]:
+    """Return control-plane read smoke summary drift that could leak headers."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-control-plane-read-smoke-summary-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC control-plane read smoke summary module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    violations: list[Violation] = []
+
+    report_class = classes.get("ByocControlPlaneReadSmokeSummary")
+    report_fields = _class_field_assignments(report_class)
+    for field_name, assignment in sorted(report_fields.items()):
+        lowered = field_name.lower()
+        if any(
+            fragment in lowered
+            for fragment in (
+                BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_FORBIDDEN_REPORT_FIELD_FRAGMENTS
+            )
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-control-plane-read-smoke-summary-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC control-plane read smoke summaries must not "
+                        f"serialize sensitive field {field_name!r}"
+                    ),
+                )
+            )
+
+    stored_scope = report_fields.get("stored_scope")
+    if stored_scope is None:
+        violations.append(
+            Violation(
+                check="byoc-control-plane-read-smoke-summary-privacy",
+                path=contract_path,
+                line_number=report_class.lineno if report_class else 1,
+                message=(
+                    "BYOC control-plane read smoke summary must pin stored_scope "
+                    "to sanitized_control_plane_read_smoke_metadata_only"
+                ),
+            )
+        )
+    elif (
+        not isinstance(stored_scope.value, ast.Constant)
+        or stored_scope.value.value
+        != "sanitized_control_plane_read_smoke_metadata_only"
+    ):
+        violations.append(
+            Violation(
+                check="byoc-control-plane-read-smoke-summary-privacy",
+                path=contract_path,
+                line_number=stored_scope.lineno,
+                message=(
+                    "BYOC control-plane read smoke summary must pin stored_scope "
+                    "to sanitized_control_plane_read_smoke_metadata_only"
+                ),
+            )
+        )
+
+    privacy_class = classes.get("ByocControlPlaneReadSmokePrivacyContract")
+    privacy_fields = _class_field_assignments(privacy_class)
+    for field_name in BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_FALSE_PRIVACY_FLAGS:
+        assignment = privacy_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-control-plane-read-smoke-summary-privacy",
+                    path=contract_path,
+                    line_number=privacy_class.lineno if privacy_class else 1,
+                    message=(
+                        "BYOC control-plane read smoke privacy must keep "
+                        f"{field_name} pinned to Literal[False] = False"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[False]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not False
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-control-plane-read-smoke-summary-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC control-plane read smoke privacy must keep "
+                        f"{field_name} pinned to Literal[False] = False"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def find_byoc_launch_readiness_summary_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_LAUNCH_READINESS_SUMMARY_PATH,
+) -> list[Violation]:
+    """Return launch-readiness summary drift that could leak child reports."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-launch-readiness-summary-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC launch readiness summary module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    violations: list[Violation] = []
+
+    report_class = classes.get("ByocLaunchReadinessSummary")
+    report_fields = _class_field_assignments(report_class)
+    for field_name, assignment in sorted(report_fields.items()):
+        lowered = field_name.lower()
+        if any(
+            fragment in lowered
+            for fragment in (
+                BYOC_LAUNCH_READINESS_SUMMARY_FORBIDDEN_REPORT_FIELD_FRAGMENTS
+            )
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-launch-readiness-summary-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC launch readiness summaries must not serialize "
+                        f"sensitive field {field_name!r}"
+                    ),
+                )
+            )
+
+    stored_scope = report_fields.get("stored_scope")
+    if stored_scope is None:
+        violations.append(
+            Violation(
+                check="byoc-launch-readiness-summary-privacy",
+                path=contract_path,
+                line_number=report_class.lineno if report_class else 1,
+                message=(
+                    "BYOC launch readiness summary must pin stored_scope to "
+                    "sanitized_launch_readiness_metadata_only"
+                ),
+            )
+        )
+    elif (
+        not isinstance(stored_scope.value, ast.Constant)
+        or stored_scope.value.value != "sanitized_launch_readiness_metadata_only"
+    ):
+        violations.append(
+            Violation(
+                check="byoc-launch-readiness-summary-privacy",
+                path=contract_path,
+                line_number=stored_scope.lineno,
+                message=(
+                    "BYOC launch readiness summary must pin stored_scope to "
+                    "sanitized_launch_readiness_metadata_only"
+                ),
+            )
+        )
+
+    privacy_class = classes.get("ByocLaunchReadinessPrivacyContract")
+    privacy_fields = _class_field_assignments(privacy_class)
+    for field_name in BYOC_LAUNCH_READINESS_SUMMARY_FALSE_PRIVACY_FLAGS:
+        assignment = privacy_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-launch-readiness-summary-privacy",
+                    path=contract_path,
+                    line_number=privacy_class.lineno if privacy_class else 1,
+                    message=(
+                        f"BYOC launch readiness privacy must keep {field_name} "
+                        "pinned to Literal[False] = False"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[False]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not False
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-launch-readiness-summary-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        f"BYOC launch readiness privacy must keep {field_name} "
+                        "pinned to Literal[False] = False"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def find_byoc_customer_pilot_package_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_CUSTOMER_PILOT_PACKAGE_PATH,
+) -> list[Violation]:
+    """Return customer-pilot package manifest drift that could leak artifacts."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-customer-pilot-package-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC customer pilot package module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    violations: list[Violation] = []
+
+    report_scopes = {
+        "ByocCustomerPilotPackageManifest": (
+            "sanitized_customer_pilot_package_manifest_only"
+        ),
+        "ByocCustomerPilotPackageValidationResult": (
+            "sanitized_customer_pilot_package_validation_metadata_only"
+        ),
+    }
+    for class_name, expected_scope in report_scopes.items():
+        report_class = classes.get(class_name)
+        report_fields = _class_field_assignments(report_class)
+        for field_name, assignment in sorted(report_fields.items()):
+            lowered = field_name.lower()
+            if any(
+                fragment in lowered
+                for fragment in (
+                    BYOC_CUSTOMER_PILOT_PACKAGE_FORBIDDEN_REPORT_FIELD_FRAGMENTS
+                )
+            ):
+                violations.append(
+                    Violation(
+                        check="byoc-customer-pilot-package-privacy",
+                        path=contract_path,
+                        line_number=assignment.lineno,
+                        message=(
+                            "BYOC customer-pilot package models must not "
+                            f"serialize sensitive field {field_name!r}"
+                        ),
+                    )
+                )
+
+        stored_scope = report_fields.get("stored_scope")
+        if stored_scope is None:
+            violations.append(
+                Violation(
+                    check="byoc-customer-pilot-package-privacy",
+                    path=contract_path,
+                    line_number=report_class.lineno if report_class else 1,
+                    message=(
+                        f"{class_name} must pin stored_scope to {expected_scope}"
+                    ),
+                )
+            )
+        elif (
+            not isinstance(stored_scope.value, ast.Constant)
+            or stored_scope.value.value != expected_scope
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-customer-pilot-package-privacy",
+                    path=contract_path,
+                    line_number=stored_scope.lineno,
+                    message=(
+                        f"{class_name} must pin stored_scope to {expected_scope}"
+                    ),
+                )
+            )
+
+    privacy_class = classes.get("ByocCustomerPilotPackagePrivacyContract")
+    privacy_fields = _class_field_assignments(privacy_class)
+    for field_name in BYOC_CUSTOMER_PILOT_PACKAGE_FALSE_PRIVACY_FLAGS:
+        assignment = privacy_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-customer-pilot-package-privacy",
+                    path=contract_path,
+                    line_number=privacy_class.lineno if privacy_class else 1,
+                    message=(
+                        "BYOC customer-pilot package privacy must keep "
+                        f"{field_name} pinned to Literal[False] = False"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[False]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not False
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-customer-pilot-package-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC customer-pilot package privacy must keep "
+                        f"{field_name} pinned to Literal[False] = False"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def find_byoc_aws_live_preflight_privacy_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    contract_path: Path = BYOC_AWS_LIVE_PREFLIGHT_PATH,
+) -> list[Violation]:
+    """Return AWS live preflight report drift that could leak AWS metadata."""
+
+    path = repo_root / contract_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-aws-live-preflight-privacy",
+                path=contract_path,
+                line_number=1,
+                message="BYOC AWS live preflight module is missing",
+            )
+        ]
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    classes = {
+        node.name: node for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    violations: list[Violation] = []
+
+    report_class = classes.get("ByocAwsLivePreflightReport")
+    report_fields = _class_field_assignments(report_class)
+    for field_name, assignment in sorted(report_fields.items()):
+        lowered = field_name.lower()
+        if any(
+            fragment in lowered
+            for fragment in BYOC_AWS_LIVE_PREFLIGHT_FORBIDDEN_REPORT_FIELD_FRAGMENTS
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-aws-live-preflight-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        "BYOC AWS live preflight reports must not serialize "
+                        f"AWS-sensitive field {field_name!r}"
+                    ),
+                )
+            )
+
+    privacy_class = classes.get("ByocAwsLivePreflightPrivacyContract")
+    privacy_fields = _class_field_assignments(privacy_class)
+    for field_name in BYOC_AWS_LIVE_PREFLIGHT_FALSE_PRIVACY_FLAGS:
+        assignment = privacy_fields.get(field_name)
+        if assignment is None:
+            violations.append(
+                Violation(
+                    check="byoc-aws-live-preflight-privacy",
+                    path=contract_path,
+                    line_number=privacy_class.lineno if privacy_class else 1,
+                    message=(
+                        f"BYOC AWS live preflight privacy must keep {field_name} "
+                        "pinned to Literal[False] = False"
+                    ),
+                )
+            )
+            continue
+        annotation = ast.unparse(assignment.annotation)
+        value = assignment.value
+        if (
+            annotation != "Literal[False]"
+            or not isinstance(value, ast.Constant)
+            or value.value is not False
+        ):
+            violations.append(
+                Violation(
+                    check="byoc-aws-live-preflight-privacy",
+                    path=contract_path,
+                    line_number=assignment.lineno,
+                    message=(
+                        f"BYOC AWS live preflight privacy must keep {field_name} "
+                        "pinned to Literal[False] = False"
+                    ),
+                )
+            )
+
+    return violations
+
+
+def find_byoc_evidence_receipt_storage_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    migration_path: Path = BYOC_EVIDENCE_RECEIPT_MIGRATION_PATH,
+) -> list[Violation]:
+    """Return BYOC receipt storage drift that could persist raw evidence bodies."""
+
+    path = repo_root / migration_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-evidence-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC evidence receipt migration is missing",
+            )
+        ]
+
+    text = _strip_sql_comments_preserving_lines(
+        path.read_text(encoding="utf-8", errors="ignore")
+    )
+    violations: list[Violation] = []
+    if "CREATE TABLE IF NOT EXISTS byoc_evidence_package_receipts" not in text:
+        violations.append(
+            Violation(
+                check="byoc-evidence-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC evidence receipt table must be created explicitly",
+            )
+        )
+    if "stored_scope = 'sanitized_metadata_only'" not in text:
+        violations.append(
+            Violation(
+                check="byoc-evidence-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC evidence receipts must pin sanitized metadata scope",
+            )
+        )
+
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        for pattern, message in BYOC_EVIDENCE_RECEIPT_FORBIDDEN_STORAGE_PATTERNS:
+            if pattern.search(line):
+                violations.append(
+                    Violation(
+                        check="byoc-evidence-receipt-storage",
+                        path=migration_path,
+                        line_number=line_number,
+                        message=message,
+                    )
+                )
+                break
+    return violations
+
+
+def find_byoc_agent_registration_storage_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    migration_path: Path = BYOC_AGENT_REGISTRATION_MIGRATION_PATH,
+) -> list[Violation]:
+    """Return BYOC agent registry drift that could persist raw agent data."""
+
+    path = repo_root / migration_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-agent-registration-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC agent registration migration is missing",
+            )
+        ]
+
+    text = _strip_sql_comments_preserving_lines(
+        path.read_text(encoding="utf-8", errors="ignore")
+    )
+    violations: list[Violation] = []
+    if "CREATE TABLE IF NOT EXISTS byoc_agent_registrations" not in text:
+        violations.append(
+            Violation(
+                check="byoc-agent-registration-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC agent registration table must be created explicitly",
+            )
+        )
+    if "stored_scope = 'sanitized_agent_metadata_only'" not in text:
+        violations.append(
+            Violation(
+                check="byoc-agent-registration-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC agent registrations must pin sanitized metadata scope",
+            )
+        )
+
+    migration_paths: set[Path] = {migration_path}
+    migrations_dir = repo_root / "db" / "migrations"
+    if migrations_dir.exists():
+        for candidate in sorted(migrations_dir.glob("*.sql")):
+            candidate_text = _strip_sql_comments_preserving_lines(
+                candidate.read_text(encoding="utf-8", errors="ignore")
+            )
+            if "byoc_agent_registrations" in candidate_text:
+                migration_paths.add(candidate.relative_to(repo_root))
+
+    for scanned_path in sorted(migration_paths):
+        scanned_text = _strip_sql_comments_preserving_lines(
+            (repo_root / scanned_path).read_text(encoding="utf-8", errors="ignore")
+        )
+        for line_number, line in enumerate(scanned_text.splitlines(), start=1):
+            for pattern, message in BYOC_AGENT_REGISTRATION_FORBIDDEN_STORAGE_PATTERNS:
+                if pattern.search(line):
+                    violations.append(
+                        Violation(
+                            check="byoc-agent-registration-storage",
+                            path=scanned_path,
+                            line_number=line_number,
+                            message=message,
+                        )
+                    )
+                    break
+    return violations
+
+
+def find_byoc_runner_evidence_receipt_storage_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    migration_path: Path = BYOC_RUNNER_EVIDENCE_RECEIPT_MIGRATION_PATH,
+) -> list[Violation]:
+    """Return BYOC runner receipt drift that could persist raw runner reports."""
+
+    path = repo_root / migration_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-runner-evidence-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC runner evidence receipt migration is missing",
+            )
+        ]
+
+    text = _strip_sql_comments_preserving_lines(
+        path.read_text(encoding="utf-8", errors="ignore")
+    )
+    violations: list[Violation] = []
+    if "CREATE TABLE IF NOT EXISTS byoc_runner_evidence_receipts" not in text:
+        violations.append(
+            Violation(
+                check="byoc-runner-evidence-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC runner evidence receipt table must be created explicitly",
+            )
+        )
+    if "stored_scope = 'sanitized_metadata_only'" not in text:
+        violations.append(
+            Violation(
+                check="byoc-runner-evidence-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC runner evidence receipts must pin sanitized metadata scope",
+            )
+        )
+
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        for pattern, message in BYOC_RUNNER_EVIDENCE_RECEIPT_FORBIDDEN_STORAGE_PATTERNS:
+            if pattern.search(line):
+                violations.append(
+                    Violation(
+                        check="byoc-runner-evidence-receipt-storage",
+                        path=migration_path,
+                        line_number=line_number,
+                        message=message,
+                    )
+                )
+                break
+    return violations
+
+
+def find_byoc_preflight_report_receipt_storage_violations(
+    *,
+    repo_root: Path = REPO_ROOT,
+    migration_path: Path = BYOC_PREFLIGHT_REPORT_RECEIPT_MIGRATION_PATH,
+) -> list[Violation]:
+    """Return BYOC preflight receipt drift that could persist raw reports."""
+
+    path = repo_root / migration_path
+    if not path.exists():
+        return [
+            Violation(
+                check="byoc-preflight-report-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC preflight report receipt migration is missing",
+            )
+        ]
+
+    text = _strip_sql_comments_preserving_lines(
+        path.read_text(encoding="utf-8", errors="ignore")
+    )
+    violations: list[Violation] = []
+    if "CREATE TABLE IF NOT EXISTS byoc_preflight_report_receipts" not in text:
+        violations.append(
+            Violation(
+                check="byoc-preflight-report-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC preflight report receipt table must be created explicitly",
+            )
+        )
+    if "stored_scope = 'sanitized_metadata_only'" not in text:
+        violations.append(
+            Violation(
+                check="byoc-preflight-report-receipt-storage",
+                path=migration_path,
+                line_number=1,
+                message="BYOC preflight report receipts must pin sanitized metadata scope",
+            )
+        )
+
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        for pattern, message in BYOC_PREFLIGHT_REPORT_RECEIPT_FORBIDDEN_STORAGE_PATTERNS:
+            if pattern.search(line):
+                violations.append(
+                    Violation(
+                        check="byoc-preflight-report-receipt-storage",
+                        path=migration_path,
+                        line_number=line_number,
+                        message=message,
+                    )
+                )
+                break
+    return violations
+
+
+def _class_field_assignments(
+    node: ast.ClassDef | None,
+) -> dict[str, ast.AnnAssign]:
+    if node is None:
+        return {}
+    fields: dict[str, ast.AnnAssign] = {}
+    for child in node.body:
+        if isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+            fields[child.target.id] = child
+    return fields
 
 
 def find_migration_filename_violations(
@@ -1263,6 +2621,42 @@ def run_checks(repo_root: Path = REPO_ROOT) -> list[Violation]:
         find_product_default_tenant_without_production_guard_violations(
             repo_root=repo_root
         )
+    )
+    violations.extend(find_byoc_manifest_privacy_violations(repo_root=repo_root))
+    violations.extend(
+        find_byoc_agent_contract_privacy_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_agent_token_rotation_privacy_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_live_credential_rehearsal_privacy_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_control_plane_read_smoke_summary_privacy_violations(
+            repo_root=repo_root
+        )
+    )
+    violations.extend(
+        find_byoc_launch_readiness_summary_privacy_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_customer_pilot_package_privacy_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_aws_live_preflight_privacy_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_evidence_receipt_storage_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_agent_registration_storage_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_runner_evidence_receipt_storage_violations(repo_root=repo_root)
+    )
+    violations.extend(
+        find_byoc_preflight_report_receipt_storage_violations(repo_root=repo_root)
     )
     violations.extend(find_import_linter_allowlist_violations(repo_root=repo_root))
     violations.extend(find_rollback_data_deletion_violations(repo_root=repo_root))

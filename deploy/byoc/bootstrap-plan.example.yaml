@@ -1,0 +1,240 @@
+schema_version: fyralis.byoc.bootstrap_plan.v1
+deployment_id: dep_example01
+customer_id: cus_example01
+environment: prod
+cloud_provider: aws
+region: us-east-1
+artifact_revision: 2026.06.26-1
+execution_mode: dry-run
+generated_at: '2026-06-26T12:00:00Z'
+generated_by: fyralis-core
+source_manifests:
+- kind: dataplane
+  path: deploy/byoc/dataplane.example.yaml
+  digest: sha256:67c52b822e58a77cbf9a7395b822b93545259b8d6083d76e8ce44e8df57c6a61
+- kind: permissions
+  path: deploy/byoc/permissions.example.yaml
+  digest: sha256:44008f607c71db0e4fd9f3c85b58c73223cc56c8d2cdf887b56fbf93a6c7b664
+- kind: bootstrap_bundle
+  path: deploy/byoc/bootstrap-bundle.example.yaml
+  digest: sha256:dae0c21c403ad1c9d50c708a7fa4fcc97aa638da0c6744db8bce6df7604bbf44
+steps:
+- order: 1
+  id: 01_validate_contracts
+  phase: preflight
+  operation: validate_contracts
+  title: Validate BYOC manifests locally
+  actor: customer_bootstrap_runner
+  mutates_cloud: false
+  requires_cloud_credentials: false
+  requires_inbound_connectivity: false
+  artifact_roles: []
+  role_names: []
+  component_names: []
+  checks:
+  - dataplane_contract
+  - permissions_contract
+  - bootstrap_bundle_contract
+  dry_run_commands:
+  - python scripts/validate_byoc_dataplane_manifest.py deploy/byoc/dataplane.example.yaml
+  - python scripts/validate_byoc_permissions_manifest.py deploy/byoc/permissions.example.yaml --dataplane-manifest deploy/byoc/dataplane.example.yaml
+  - python scripts/verify_byoc_bootstrap_bundle.py deploy/byoc/bootstrap-bundle.example.yaml --dataplane-manifest deploy/byoc/dataplane.example.yaml --permissions-manifest deploy/byoc/permissions.example.yaml --verify-local-files
+- order: 2
+  id: 02_verify_artifact_signatures
+  phase: verify_artifacts
+  operation: verify_artifact_signatures
+  title: Verify signed bootstrap artifacts
+  actor: customer_bootstrap_runner
+  mutates_cloud: false
+  requires_cloud_credentials: false
+  requires_inbound_connectivity: false
+  artifact_roles:
+  - gateway_image
+  - worker_image
+  - data_plane_agent_image
+  - helm_chart
+  - iam_bootstrap_template
+  - source_sbom
+  - image_sbom
+  role_names: []
+  component_names: []
+  checks:
+  - sigstore_identity
+  - oidc_issuer
+  - digest_pinning
+  dry_run_commands:
+  - cosign verify --certificate-identity 'https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' --bundle 'ghcr.io/fyralisinc/fyraliscore-gateway.sigstore' 'ghcr.io/fyralisinc/fyraliscore-gateway@sha256:1111111111111111111111111111111111111111111111111111111111111111'
+  - cosign verify --certificate-identity 'https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' --bundle 'ghcr.io/fyralisinc/fyraliscore-worker.sigstore' 'ghcr.io/fyralisinc/fyraliscore-worker@sha256:2222222222222222222222222222222222222222222222222222222222222222'
+  - cosign verify --certificate-identity 'https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' --bundle 'ghcr.io/fyralisinc/fyralis-byoc-agent.sigstore' 'ghcr.io/fyralisinc/fyralis-byoc-agent@sha256:3333333333333333333333333333333333333333333333333333333333333333'
+  - cosign verify --certificate-identity 'https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' --bundle 'oci://ghcr.io/fyralisinc/charts/fyralis-byoc.sigstore' 'oci://ghcr.io/fyralisinc/charts/fyralis-byoc@sha256:4444444444444444444444444444444444444444444444444444444444444444'
+  - cosign verify-blob --certificate-identity 'https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' --bundle 'deploy/byoc/aws/iam.bootstrap.template.yaml.sigstore' 'deploy/byoc/aws/iam.bootstrap.template.yaml'
+  - cosign verify --certificate-identity 'https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' --bundle 'ghcr.io/fyralisinc/fyraliscore-source-sbom.sigstore' 'ghcr.io/fyralisinc/fyraliscore-source-sbom@sha256:5555555555555555555555555555555555555555555555555555555555555555'
+  - cosign verify --certificate-identity 'https://github.com/fyralisinc/fyraliscore/.github/workflows/ci.yml@refs/heads/production' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' --bundle 'ghcr.io/fyralisinc/fyraliscore-image-sbom.sigstore' 'ghcr.io/fyralisinc/fyraliscore-image-sbom@sha256:6666666666666666666666666666666666666666666666666666666666666666'
+- order: 3
+  id: 03_verify_local_artifact_hashes
+  phase: verify_artifacts
+  operation: verify_local_artifact_hashes
+  title: Verify local IaC artifact hashes
+  actor: customer_bootstrap_runner
+  mutates_cloud: false
+  requires_cloud_credentials: false
+  requires_inbound_connectivity: false
+  artifact_roles:
+  - iam_bootstrap_template
+  role_names: []
+  component_names: []
+  checks:
+  - local_sha256_digest
+  dry_run_commands:
+  - python scripts/verify_byoc_bootstrap_bundle.py deploy/byoc/bootstrap-bundle.example.yaml --verify-local-files
+- order: 4
+  id: 04_inspect_permission_boundaries
+  phase: prepare_identity
+  operation: inspect_permission_boundaries
+  title: Inspect customer-cloud role boundaries
+  actor: customer_bootstrap_runner
+  mutates_cloud: false
+  requires_cloud_credentials: false
+  requires_inbound_connectivity: false
+  artifact_roles: []
+  role_names:
+  - bootstrap_provisioner
+  - cloudformation_service
+  - data_plane_agent
+  - gateway_runtime
+  - worker_runtime
+  - migration_runner
+  - observability_runtime
+  component_names: []
+  checks:
+  - permissions_boundary_required
+  - no_admin_managed_policy
+  - control_plane_readonly
+  - pass_role_service_scoped
+  dry_run_commands: []
+- order: 5
+  id: 05_plan_private_network
+  phase: prepare_network
+  operation: plan_private_network
+  title: Plan private networking and egress-only control plane
+  actor: customer_bootstrap_runner
+  mutates_cloud: false
+  requires_cloud_credentials: false
+  requires_inbound_connectivity: false
+  artifact_roles: []
+  role_names: []
+  component_names:
+  - postgres
+  - broker
+  - object_storage
+  - redis
+  - embedding
+  - observability
+  - metrics
+  - data_plane_agent
+  checks:
+  - control_plane_egress_only
+  - private_service_endpoints
+  - no_public_data_services
+  dry_run_commands: []
+- order: 6
+  id: 06_plan_stateful_services
+  phase: prepare_stateful_services
+  operation: plan_stateful_services
+  title: Plan stateful data-plane services
+  actor: customer_bootstrap_runner
+  mutates_cloud: false
+  requires_cloud_credentials: false
+  requires_inbound_connectivity: false
+  artifact_roles: []
+  role_names: []
+  component_names:
+  - postgres
+  - broker
+  - object_storage
+  - redis
+  checks:
+  - customer_kms_refs
+  - secret_refs_only
+  - data_residency_local
+  dry_run_commands: []
+- order: 7
+  id: 07_render_runtime_release
+  phase: install_runtime
+  operation: render_runtime_release
+  title: Render runtime release without applying it
+  actor: customer_bootstrap_runner
+  mutates_cloud: false
+  requires_cloud_credentials: false
+  requires_inbound_connectivity: false
+  artifact_roles:
+  - gateway_image
+  - worker_image
+  - data_plane_agent_image
+  - helm_chart
+  role_names:
+  - gateway_runtime
+  - worker_runtime
+  - observability_runtime
+  component_names: []
+  checks:
+  - helm_template_only
+  - digest_pinned_images
+  - runtime_identities
+  dry_run_commands:
+  - helm template fyralis-byoc <signed-chart-ref>
+- order: 8
+  id: 08_prepare_agent_enrollment
+  phase: enroll_agent
+  operation: prepare_agent_enrollment
+  title: Prepare egress-only data-plane agent enrollment
+  actor: data_plane_agent
+  mutates_cloud: false
+  requires_cloud_credentials: false
+  requires_inbound_connectivity: false
+  artifact_roles:
+  - data_plane_agent_image
+  role_names:
+  - data_plane_agent
+  component_names: []
+  checks:
+  - install_token_secret_ref_only
+  - mtls_required
+  - heartbeat_contract
+  dry_run_commands: []
+- order: 9
+  id: 09_run_post_deploy_validation
+  phase: post_deploy_validation
+  operation: run_post_deploy_validation
+  title: Prepare live post-deploy validation
+  actor: data_plane_agent
+  mutates_cloud: false
+  requires_cloud_credentials: false
+  requires_inbound_connectivity: false
+  artifact_roles: []
+  role_names: []
+  component_names: []
+  checks:
+  - gateway_health
+  - worker_health
+  - db_rls_probe
+  - telemetry_privacy
+  dry_run_commands:
+  - python scripts/run_byoc_post_deploy_validation.py --manifest deploy/byoc/dataplane.example.yaml --require-live
+- order: 10
+  id: 10_emit_handoff_summary
+  phase: handoff
+  operation: emit_handoff_summary
+  title: Emit source-onboarding handoff summary
+  actor: customer_bootstrap_runner
+  mutates_cloud: false
+  requires_cloud_credentials: false
+  requires_inbound_connectivity: false
+  artifact_roles: []
+  role_names: []
+  component_names: []
+  checks:
+  - source_onboarding_paused_until_validation
+  - local_dashboard_links_only
+  - no_raw_logs_to_control_plane
+  dry_run_commands: []

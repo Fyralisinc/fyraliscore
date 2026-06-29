@@ -1,0 +1,345 @@
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import yaml
+
+from scripts.generate_byoc_evidence_ledger import main
+from services.platform.runtime.byoc_aws_live_preflight import (
+    ByocAwsLivePreflightInputs,
+    run_byoc_aws_live_preflight,
+)
+from services.platform.runtime.byoc_contract import load_byoc_manifest
+from services.platform.runtime.byoc_evidence_ledger import (
+    evidence_envelope_payload,
+    signed_evidence_envelope,
+)
+
+
+ROOT = Path(__file__).resolve().parents[2]
+LEDGER = ROOT / "deploy/byoc/evidence-ledger.example.yaml"
+DATAPLANE = ROOT / "deploy/byoc/dataplane.example.yaml"
+PERMISSIONS = ROOT / "deploy/byoc/permissions.example.yaml"
+IAM_TEMPLATE = ROOT / "deploy/byoc/aws/iam.bootstrap.template.yaml"
+GENERATED_AT = datetime(2026, 6, 26, 12, 0, tzinfo=UTC)
+SIGNING_SECRET = "local-evidence-signing-secret"
+
+
+def _live_report(path: Path, *, failed: bool = False) -> Path:
+    payload = {
+        "status": "fail" if failed else "pass",
+        "required_checks_passed": not failed,
+        "checks": [
+            {
+                "name": "gateway_health",
+                "status": "fail" if failed else "pass",
+                "required": True,
+                "details": "https://gateway.customer.internal token=secret",
+            },
+            {
+                "name": "database_rls_safety",
+                "status": "pass",
+                "required": True,
+                "details": "postgresql://user:password@db.internal/fyralis",
+            },
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _envelope(path: Path, report_path: Path) -> Path:
+    manifest = load_byoc_manifest(DATAPLANE)
+    payload = evidence_envelope_payload(
+        manifest=manifest,
+        report_path=report_path,
+        agent_id="agt_example01",
+        nonce="nonce-for-evidence-envelope-001",
+        issued_at=GENERATED_AT,
+        expires_at=GENERATED_AT + timedelta(hours=1),
+    )
+    envelope = signed_evidence_envelope(payload, signing_secret=SIGNING_SECRET)
+    path.write_text(
+        json.dumps(envelope.model_dump(mode="json"), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _aws_live_preflight_report(path: Path, *, region: str | None = None) -> Path:
+    report = run_byoc_aws_live_preflight(
+        ByocAwsLivePreflightInputs(
+            dataplane_manifest_path=DATAPLANE,
+            permissions_manifest_path=PERMISSIONS,
+            iam_template_path=IAM_TEMPLATE,
+            skip_live_aws=True,
+        )
+    )
+    data = report.model_dump(mode="json")
+    if region is not None:
+        data["region"] = region
+    path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def test_generate_byoc_evidence_ledger_yaml_output(capsys) -> None:
+    code = main([
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--env-file",
+        ".env.production.example",
+    ])
+
+    captured = capsys.readouterr()
+    payload = yaml.safe_load(captured.out)
+    assert code == 0
+    assert payload["schema_version"] == "fyralis.byoc.evidence_ledger.v1"
+    assert payload["overall_status"] == "pass"
+
+
+def test_generate_byoc_evidence_ledger_json_output(capsys) -> None:
+    code = main([
+        "--json",
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--env-file",
+        ".env.production.example",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 0
+    assert payload["export_scope"] == "sanitized_metadata_only"
+    assert _evidence(payload, "terraform_plan_validation")["source"]["type"] == (
+        "local_terraform_validator"
+    )
+    assert _evidence(payload, "bootstrap_runner")["source"]["type"] == "local_runner"
+
+
+def test_generate_byoc_evidence_ledger_imports_live_report_safely(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    report = _live_report(tmp_path / "post-deploy-report.json")
+
+    code = main([
+        "--json",
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--post-deploy-report",
+        str(report),
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    rendered = json.dumps(payload)
+    validation = _evidence(payload, "post_deploy_validation")
+    assert code == 0
+    assert validation["source"]["type"] == "post_deploy_report_file"
+    assert validation["check_summary"]["total"] == 2
+    assert "gateway.customer.internal" not in rendered
+    assert "postgresql://user:password" not in rendered
+
+
+def test_generate_byoc_evidence_ledger_reports_live_failure(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    report = _live_report(tmp_path / "post-deploy-report.json", failed=True)
+
+    code = main([
+        "--json",
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--post-deploy-report",
+        str(report),
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 0
+    assert payload["overall_status"] == "fail"
+    assert _evidence(payload, "post_deploy_validation")["failed_check_codes"] == [
+        "gateway_health"
+    ]
+
+
+def test_generate_byoc_evidence_ledger_verifies_signed_live_report(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    report = _live_report(tmp_path / "post-deploy-report.json")
+    envelope = _envelope(tmp_path / "post-deploy-envelope.json", report)
+    monkeypatch.setenv("FYRALIS_BYOC_EVIDENCE_SIGNING_SECRET", SIGNING_SECRET)
+
+    code = main([
+        "--json",
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--post-deploy-report",
+        str(report),
+        "--post-deploy-envelope",
+        str(envelope),
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    validation = _evidence(payload, "post_deploy_validation")
+    assert code == 0
+    assert validation["source"]["type"] == "signed_post_deploy_report_file"
+    assert validation["signature_verified"] is True
+    assert validation["envelope_digest"].startswith("sha256:")
+
+
+def test_generate_byoc_evidence_ledger_imports_aws_live_preflight_safely(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    report = _aws_live_preflight_report(tmp_path / "aws-live-preflight.json")
+
+    code = main([
+        "--json",
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--env-file",
+        ".env.production.example",
+        "--aws-live-preflight-report",
+        str(report),
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    rendered = json.dumps(payload)
+    evidence = _evidence(payload, "aws_live_preflight")
+    assert code == 0
+    assert evidence["source"]["type"] == "aws_live_preflight_report_file"
+    assert evidence["check_summary"]["total"] > 0
+    assert evidence["operation_counts"]["live_aws_api_call_executions"] == 0
+    assert "123456789012" not in rendered
+    assert "arn:aws" not in rendered
+    assert "simulation_principal" not in rendered
+
+
+def test_generate_byoc_evidence_ledger_rejects_aws_live_identity_mismatch(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    report = _aws_live_preflight_report(
+        tmp_path / "aws-live-preflight.json",
+        region="us-west-2",
+    )
+
+    code = main([
+        "--json",
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--aws-live-preflight-report",
+        str(report),
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "AWS live preflight report identity failed" in captured.err
+
+
+def test_generate_byoc_evidence_ledger_rejects_missing_envelope_secret(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    report = _live_report(tmp_path / "post-deploy-report.json")
+    envelope = _envelope(tmp_path / "post-deploy-envelope.json", report)
+    monkeypatch.delenv("FYRALIS_BYOC_EVIDENCE_SIGNING_SECRET", raising=False)
+
+    code = main([
+        "--json",
+        "--generated-at",
+        "2026-06-26T12:00:00+00:00",
+        "--post-deploy-report",
+        str(report),
+        "--post-deploy-envelope",
+        str(envelope),
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "evidence signing secret is required" in captured.err
+
+
+def test_generate_byoc_evidence_ledger_prints_schema(capsys) -> None:
+    code = main(["--schema"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 0
+    assert payload["properties"]["schema_version"]["const"] == (
+        "fyralis.byoc.evidence_ledger.v1"
+    )
+
+
+def test_generate_byoc_evidence_ledger_check_passes_checked_in_ledger(
+    capsys,
+) -> None:
+    code = main([
+        "--check-ledger",
+        str(LEDGER),
+        "--env-file",
+        ".env.production.example",
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out == "BYOC evidence ledger passed.\n"
+
+
+def test_generate_byoc_evidence_ledger_check_reports_drift(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    path = tmp_path / "evidence-ledger.yaml"
+    path.write_text(
+        LEDGER.read_text(encoding="utf-8").replace(
+            "sha256:148ea4b590419817e3d1d90727708e2858c99127d3bebe11ad4bcfca080ca661",
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+        encoding="utf-8",
+    )
+
+    code = main([
+        "--check-ledger",
+        str(path),
+        "--env-file",
+        ".env.production.example",
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "generated_ledger_drift" in captured.err
+
+
+def test_generate_byoc_evidence_ledger_check_rejects_extra_details(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    path = tmp_path / "evidence-ledger.yaml"
+    path.write_text(
+        LEDGER.read_text(encoding="utf-8").replace(
+            "  source:",
+            "  details: raw report details are not allowed\n  source:",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    code = main(["--check-ledger", str(path)])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "Extra inputs are not permitted" in captured.err
+
+
+def _evidence(payload: dict, kind: str) -> dict:
+    return next(entry for entry in payload["evidence"] if entry["kind"] == kind)

@@ -39,6 +39,423 @@ corrections:
   should run in a customer-owned execution context with signed IaC artifacts,
   explicit external IDs, short-lived credentials, and auditable state changes.
 
+## Implementation Path Update - 2026-06-26
+
+After comparing this blueprint against the current gateway/runtime/deployment
+code, the architecture remains correct. The most efficient first backend slice
+is contract-first, not control-panel-first and not cloud-credential-first:
+
+1. Define the data-plane deployment manifest that every later bootstrap runner,
+   agent, IaC package, and hosted control-plane workflow must satisfy.
+2. Validate that manifest locally with no cloud credentials.
+3. Add runtime/env guards for BYOC mode so production startup fails closed on
+   unsafe control-plane connectivity, raw telemetry, or raw bootstrap secrets.
+4. Add static/readiness gates so future changes cannot silently weaken
+   egress-only or customer-data-locality assumptions.
+
+Repo-owned artifacts for this first slice:
+
+- `services/platform/runtime/byoc_contract.py` is the typed BYOC data-plane
+  contract and semantic validator.
+- `deploy/byoc/dataplane.example.yaml` is the credential-free deployment
+  manifest example used by tests and readiness gates.
+- `scripts/validate_byoc_dataplane_manifest.py` validates JSON/YAML manifests
+  and can print the JSON schema for control-plane or IaC consumers.
+- `scripts/run_byoc_post_deploy_validation.py` runs the local post-deploy
+  validator. In CI/offline mode it validates the manifest, production env
+  contract, enabled runtime processes, secret refs, and telemetry privacy
+  settings. In live mode it can additionally require gateway/worker health
+  URLs, the production DB role/RLS probe, broker TCP reachability, and
+  object-store endpoint reachability.
+- `services/platform/runtime/byoc_agent_contract.py` defines the backend-owned
+  data-plane agent enrollment and heartbeat contract. Enrollment proves a
+  customer-side install-token secret by HMAC over a canonical request while
+  serializing only the secret reference; heartbeat payloads are bounded status
+  codes plus aggregate telemetry flags and reject raw logs, payloads, prompts,
+  PII, and free-form customer text.
+- The same module exposes a local mock control-plane FastAPI app for contract
+  tests. It is intentionally not the hosted control plane; it lets bootstrap
+  and agent work prove the egress-only registration and heartbeat shape before
+  cloud credentials, mTLS issuance, persistence, or dashboard workflows exist.
+- `services/platform/runtime/byoc_agent_probe.py` and
+  `scripts/run_byoc_agent_probe.py` provide the local executable data-plane
+  agent proof. The probe reads install-token material only from process memory,
+  signs the enrollment request, pulls metadata-only desired state from the
+  local mock control-plane contract, submits one bounded heartbeat, and emits a
+  sanitized JSON/YAML report with no token, URL, raw payload, prompt, log,
+  embedding, or PII fields.
+- `services/platform/runtime/byoc_agent_runner.py` and
+  `scripts/run_byoc_agent_runner.py` provide the first bounded data-plane agent
+  loop skeleton. The runner enrolls once, polls metadata-only desired state for
+  a caller-bounded number of iterations, sends one privacy-safe heartbeat per
+  iteration, and emits a sanitized report that contains only scalar status,
+  cadence, revision, apply-plan, artifact-verification, and aggregate count
+  fields. For `apply_revision` desired state it builds a `plan_only`,
+  zero-mutation-count apply plan with bounded step codes and, when supplied a
+  bootstrap bundle, verifies that the desired revision maps to digest-pinned
+  artifact metadata; it intentionally does not apply revisions, rotate tokens,
+  issue mTLS credentials, or daemonize.
+- `services/platform/runtime/byoc_agent_token_rotation.py` and
+  `scripts/run_byoc_agent_token_rotation_plan.py` define the first plan-only
+  install-token rotation rehearsal. The report validates current/next
+  secret-ref presence, safe ref shape, distinct refs, dual-key overlap, and
+  positive activation epoch, then emits only salted ref digests and aggregate
+  check results. It does not write customer cloud secrets, mutate the hosted
+  control plane, serialize secret refs, include token material, or restart
+  agents.
+- `services/platform/runtime/byoc_agent_apply_plan.py` defines the sanitized
+  non-mutating apply-plan contract. The plan records only current/desired
+  revision metadata, config epoch, bounded step names, and mutation counts; it
+  rejects unchanged revisions, mutating execution modes, mutating step counts,
+  raw URL markers, signatures, payloads, prompts, embeddings, and secret-like
+  material.
+- `services/platform/runtime/byoc_agent_artifact_verification.py` defines the
+  sanitized artifact verification evidence contract. It validates the apply
+  plan against a bootstrap bundle whose `artifact_revision` matches the desired
+  revision, checks bundle digest pinning and optional local file digests, and
+  emits only roles, kinds, SHA-256 digests, counts, and bounded IDs. It never
+  emits artifact refs, URLs, Sigstore bundle refs, signatures, payloads,
+  prompts, embeddings, or secret-like material.
+- `services/platform/runtime/byoc_agent_control_plane.py`,
+  `services/app/gateway/byoc_agent_keys.py`, and
+  `services/app/gateway/byoc_agent_router.py` provide the first hosted agent
+  enrollment, heartbeat, and desired-state polling API. `POST
+  /byoc/agent/enroll` verifies the HMAC install-token proof after resolving
+  the request `key_ref` through
+  `FYRALIS_DATA_PLANE_AGENT_INSTALL_TOKEN_SECRET_REF`; `POST
+  /byoc/agent/heartbeat` accepts only enrolled agents and persists latest
+  heartbeat aggregate counts plus bounded status codes in
+  `byoc_agent_registrations`; `POST /byoc/agent/desired-state` requires a
+  signed poll request from an enrolled agent and returns only desired revision,
+  rollout action, poll cadence, telemetry contract, and config epoch metadata.
+  The route stores no request bodies, signature values, raw tokens, mTLS
+  material, logs, payloads, prompts, endpoint URLs, config bodies, or PII.
+  `POST /byoc/control-plane/agent-desired-state` accepts a canonical
+  HMAC-signed `fyralis.byoc.agent.desired_state_update.v1` request from
+  backend automation and updates only scalar rollout intent for an already
+  enrolled agent: desired revision, config epoch, evidence-package-required
+  flag, reason code, requester code, and accepted timestamp. The route returns
+  a sanitized receipt and stores no request body, signature value, artifact ref,
+  config body, raw token, endpoint URL, log, payload, prompt, embedding, or
+  PII. `GET /byoc/control-plane/agents` provides a signed backend automation
+  read for sanitized fleet metadata only; queries must be bounded by deployment
+  or customer and return enrollment/revision/config epoch plus latest aggregate
+  heartbeat status. `GET /byoc/control-plane/deployment-overview` composes the
+  same signed read path into one metadata-only deployment status view for
+  backend automation/control-panel consumers: status, next action, agent health
+  counts, evidence-package receipt counts, preflight receipt counts, runner
+  receipt counts, latest accepted timestamps, and no raw reports, request
+  bodies, endpoint URLs, secret refs, prompts, logs, or PII. Production mTLS
+  issuance, full fleet reconciliation history, and fleet dashboard workflows
+  remain deferred.
+- `services/platform/runtime/byoc_permissions.py` defines the backend-owned
+  customer-cloud permission contract. It validates role boundaries, explicit
+  AWS actions, scoped resources, `iam:PassRole` service constraints, no
+  admin-style managed policies, no control-plane mutation rights, and no
+  control-plane access to customer data or secret material.
+- `deploy/byoc/permissions.example.yaml` and
+  `deploy/byoc/aws/iam.bootstrap.template.yaml` are credential-free AWS-first
+  examples for customer-side bootstrap and runtime IAM shape.
+- `scripts/validate_byoc_permissions_manifest.py` validates the permission
+  manifest against the data-plane manifest and optional AWS IAM skeleton, and
+  prints JSON schemas for future IaC/control-plane generators.
+- `services/platform/runtime/byoc_aws_live_preflight.py` and
+  `scripts/run_byoc_aws_live_preflight.py` provide the customer-side
+  read-only AWS credential/profile preflight for the first live account test.
+  The default live run verifies STS caller identity against the permissions
+  manifest account contract; operators may add harmless describe/list probes
+  and IAM `SimulatePrincipalPolicy` for a selected manifest role. The report
+  stores only bounded status, counts, and booleans: no account IDs, ARNs, AWS
+  profile names, endpoint URLs, policy documents, credentials, command output,
+  customer payloads, prompts, logs, embeddings, or PII. CI uses
+  `--skip-live-aws` to prove the report shape without cloud credentials, and
+  architecture ratchets prevent serialized AWS identity fields from being added
+  to the report model.
+- `deploy/byoc/aws/iac-package.example.yaml`,
+  `deploy/byoc/aws/terraform/*`, and
+  `scripts/generate_byoc_aws_iac_package.py` define the first AWS BYOC IaC
+  package scaffold. This slice is intentionally non-mutating: the Terraform
+  root declares provider constraints, input variables, required tags, safety
+  locals, component module calls, metadata-only module contract outputs, and
+  operator outputs only. The generated component modules (`iam`, `network`,
+  `data_services`, `runtime`, and `data_plane_agent`) are placeholders with no
+  Terraform resources; they reserve the production module layout and expose
+  contract metadata for plan-only validation. The generator/checker re-renders
+  the package from the data-plane, permissions, and IAM skeleton manifests,
+  verifies deployment identity, rejects Terraform `resource`, backend,
+  external-data, provisioner, and raw secret/customer-data value fragments, and
+  fails if the checked-in manifest or Terraform scaffold drifts from generated
+  output.
+  `scripts/validate_byoc_aws_iac_package.py` remains available for direct
+  package validation when generation is not needed.
+- `services/platform/runtime/byoc_terraform_plan_validation.py` and
+  `scripts/run_byoc_terraform_plan_validation.py` emit the customer-side
+  Terraform scaffold validation report. The report is contract-only: it proves
+  the package schema, identity alignment, generated-output drift status,
+  placeholder module coverage, and non-mutating flags without running
+  `terraform plan`, copying plan JSON, storing Terraform command output, or
+  requiring cloud credentials. Customer-side operators may opt into
+  `terraform init -backend=false` with `--run-terraform-init` and
+  `terraform validate` with `--run-terraform-validate`; the adapters discard
+  stdout/stderr at the process boundary and record only bounded execution
+  facts such as requested/executed status, timeout, and exit code. If init is
+  requested and fails, validate is not run.
+- `services/platform/runtime/byoc_bootstrap_bundle.py` defines the signed
+  bootstrap bundle contract. It requires digest-pinned image/chart/IaC/SBOM
+  artifacts, Sigstore bundle metadata, matching signing identity, deployment
+  manifest alignment, and optional local SHA-256 verification for checked-in
+  IaC files.
+- `deploy/byoc/bootstrap-bundle.example.yaml` is the credential-free example
+  bundle tying the data-plane manifest, permission manifest, agent image,
+  runtime images, Helm chart, AWS IAM skeleton, and SBOM artifacts together.
+- `deploy/byoc/bootstrap-bundle.next.example.yaml` is the credential-free
+  next-revision bundle fixture used by the local agent runner to prove
+  `apply_revision` desired state can be tied to digest-pinned artifact
+  metadata without mutating customer infrastructure.
+- `scripts/verify_byoc_bootstrap_bundle.py` verifies the bundle locally and can
+  print the cosign verification commands a customer-side bootstrap runner must
+  execute before applying cloud resources.
+- `services/platform/runtime/byoc_bootstrap_plan.py` defines the non-mutating
+  bootstrap dry-run plan contract. It orders prerequisite validation, artifact
+  verification, identity review, private network planning, stateful service
+  planning, runtime rendering, agent enrollment preparation, post-deploy
+  validation, and handoff without requiring cloud credentials.
+- `deploy/byoc/bootstrap-plan.example.yaml` is the generated checked-in dry-run
+  plan for the example manifests, and
+  `scripts/generate_byoc_bootstrap_plan.py --check-plan` proves it still
+  matches the current contracts.
+- `services/platform/runtime/byoc_bootstrap_runner.py` and
+  `scripts/run_byoc_bootstrap_runner.py` consume that plan and emit sanitized
+  local evidence for CI or customer handoff. The runner replays only local
+  contract/hash/offline-validation checks, prepares signature-command evidence
+  as counts, and never executes cloud apply, live probes, or mutating commands.
+- `services/platform/runtime/byoc_preflight_bundle.py` and
+  `scripts/run_byoc_preflight_bundle.py` aggregate the customer-side local
+  preflight flow into one sanitized report. The command runs the data-plane,
+  permissions/IAM, AWS IaC package, Terraform scaffold validation, bootstrap
+  bundle, bootstrap dry-run runner, and offline post-deploy checks through
+  in-process APIs, then emits only section status, aggregate counts, bounded
+  failure codes, and safe execution flags. It never embeds child report
+  details, command output, artifact refs, endpoint URLs, credentials, raw
+  payloads, prompts, logs, embeddings, or PII. Operators may opt into the
+  sanitized AWS live-preflight section with `--run-aws-live-preflight`; in that
+  mode the aggregate bundle records only whether cloud credentials were
+  required, whether live AWS calls executed, and aggregate check counts.
+- `services/platform/runtime/byoc_preflight_intake.py` and
+  `scripts/submit_byoc_preflight_report.py` provide the signed handoff path
+  for those aggregate reports. Customer-side automation signs a canonical
+  `fyralis.byoc.preflight_report_submission.v1` payload and may submit it to
+  `POST /byoc/control-plane/preflight-reports`. The hosted route stores only a
+  scalar `fyralis.byoc.preflight_report_receipt.v1` in
+  `byoc_preflight_report_receipts`, including report digest, status, section
+  counts, and safe execution flags. It never stores the report body, child
+  reports, section details, command output, artifact refs, URLs, credentials,
+  payloads, prompts, logs, embeddings, or PII; architecture ratchets forbid
+  JSON/blob/body columns for this table.
+- `services/platform/runtime/byoc_evidence_ledger.py`,
+  `scripts/generate_byoc_evidence_ledger.py`, and
+  `deploy/byoc/evidence-ledger.example.yaml` define the sanitized deployment
+  evidence ledger. It records only deployment identity, pass/fail status,
+  aggregate check counts, bounded failure codes, operation counts, and
+  sanitized digests from the plan, Terraform scaffold validation report,
+  bootstrap-runner report, optional AWS live-preflight report, and offline
+  post-deploy validator. When a customer-side AWS live-preflight report is
+  available, pass it with `--aws-live-preflight-report`; the ledger verifies
+  deployment identity and imports only status, required flags, bounded check
+  names, and counts. When a customer-side live post-deploy report is available,
+  pass it with `--post-deploy-report`. If a signed envelope is supplied with
+  `--post-deploy-envelope`, the ledger verifies deployment identity, report
+  digest, timestamp freshness, and HMAC signature before import. The ledger
+  discards report details, account IDs, ARNs, endpoint strings, URLs, policy
+  documents, command output, credentials, and metrics.
+- `services/platform/runtime/byoc_evidence_package.py`,
+  `scripts/generate_byoc_evidence_package.py`, and
+  `deploy/byoc/evidence-package.example.yaml` define the sanitized customer
+  handoff package. It embeds only the sanitized evidence ledger, digest-pinned
+  source artifact refs, AWS IaC package fingerprint, and optional
+  signed-envelope metadata; it never embeds raw post-deploy reports, command
+  output, endpoint URLs, artifact refs, credentials, payloads, prompts, logs,
+  embeddings, or PII.
+- `services/platform/runtime/byoc_source_onboarding_gate.py` and
+  `scripts/check_byoc_source_onboarding_gate.py` provide the backend-owned
+  first-source enablement gate. The gate reads only sanitized evidence packages
+  or ledgers and returns a bounded pass/fail report. Operators may require AWS
+  live-preflight evidence, live post-deploy evidence, or signed post-deploy
+  evidence before enabling source credentials; no source payloads, provider
+  credentials, account IDs, ARNs, endpoint URLs, logs, prompts, or PII are
+  inspected or serialized.
+- `services/platform/runtime/byoc_customer_handoff.py` and
+  `scripts/run_byoc_customer_handoff.py` compose the local preflight bundle,
+  evidence-package contract, and first-source gate into one customer-side
+  go/no-go readiness report. It is an orchestration artifact only: it does not
+  create cloud resources, run Terraform plan/apply, submit to the hosted
+  control plane, or embed child reports, package bodies, command output,
+  account IDs, ARNs, URLs, credentials, raw data, logs, prompts, or PII.
+- `services/platform/runtime/byoc_handoff_bundle_index.py` and
+  `scripts/generate_byoc_handoff_bundle_index.py` generate the metadata-only
+  customer handoff bundle index. The index lists sanitized artifacts by
+  relative path, digest, schema, and scope, plus the signed read endpoint paths
+  that backend/control-panel consumers may use. It does not embed artifact
+  bodies, raw reports, signed headers, endpoint URLs, credentials, logs,
+  request bodies, payloads, prompts, or PII. When read-smoke evidence is
+  included, it must point at the sanitized
+  `fyralis.byoc.control_plane_read_smoke_summary.v1` artifact, not the raw
+  signed smoke output.
+- `services/platform/runtime/byoc_launch_readiness_summary.py` and
+  `scripts/summarize_byoc_launch_readiness.py` compose the final
+  customer-pilot readiness artifact from the sanitized live-test readiness
+  report, customer handoff readiness report, handoff bundle index, and
+  control-plane read-smoke output. The summary is a backend/core contract for
+  release review and automation: it emits only pass/fail/manual-required
+  status, bounded next-action codes, deployment identity, source schema names,
+  counts, and privacy flags. It does not embed child reports, artifact bodies,
+  signed headers, endpoint URLs, request/response bodies, auth material,
+  account IDs, ARNs, command output, logs, prompts, embeddings, or PII.
+- `services/platform/runtime/byoc_live_credential_rehearsal.py` and
+  `scripts/run_byoc_live_credential_rehearsal.py` provide the one-command
+  local artifact pipeline for real AWS credential rehearsal. The command runs
+  the sanitized AWS live preflight, writes sanitized AWS-preflight,
+  evidence-ledger, and evidence-package artifacts under an operator-selected
+  output directory, then evaluates the source-onboarding gate against the
+  generated package. Its summary emits only bounded status/count metadata and
+  can require actual AWS API calls with `--require-live-aws-api-calls`; CI uses
+  `--skip-live-aws` only for report-contract smoke tests.
+- `services/platform/runtime/byoc_control_plane_intake.py` and
+  `services/app/gateway/byoc_control_plane_router.py` define the first hosted
+  control-plane intake contract for sanitized evidence packages and other
+  BYOC evidence receipts, plus the signed backend desired-state update surface
+  for enrolled agents. The data-plane agent submits a canonical HMAC-signed
+  package submission to `POST /byoc/control-plane/evidence-packages`; the
+  gateway stores only a
+  sanitized receipt record and rejects raw reports, URL/credential markers, bad
+  signatures, and package contract violations. When gateway database
+  dependencies are present, receipts persist in
+  `byoc_evidence_package_receipts` as scalar metadata only; the in-memory store
+  remains for standalone contract tests. Receipt lookup and list APIs are
+  backend automation surfaces only: reads require short-lived HMAC-signed
+  headers, and list queries must be bounded by deployment or customer. The
+  response contract returns sanitized scalar receipt metadata only. In BYOC
+  production, submission and receipt-read HMAC keys are selected by `key_ref`
+  and resolved through managed app-secret refs; raw process-env signing keys are
+  allowed only for local/test app-state wiring. The same intake signing-key
+  purpose signs `POST /byoc/control-plane/agent-desired-state`; the durable
+  update lands in `byoc_agent_registrations` as scalar metadata only.
+  Architecture ratchets forbid receipt JSON/blob/body columns so raw evidence
+  packages and live report details cannot become control-plane storage.
+- `services/platform/runtime/byoc_runner_evidence_intake.py` extends that
+  hosted intake with a signed sanitized runner-evidence envelope. Customer-side
+  runner automation derives a `fyralis.byoc.runner_evidence_summary.v1`
+  payload from the local bounded agent runner report, preserving only
+  deployment/agent identity, revision intent, pass/fail status, apply-plan and
+  artifact-verification IDs, and aggregate counts. It submits the canonical
+  HMAC-signed `fyralis.byoc.runner_evidence_submission.v1` payload to `POST
+  /byoc/control-plane/runner-evidence` using the existing evidence intake
+  signing-key purpose. The gateway stores only a
+  `fyralis.byoc.runner_evidence_receipt.v1` scalar receipt in
+  `byoc_runner_evidence_receipts`; it does not store runner checks, iterations,
+  apply-plan bodies, artifact inventories, raw report JSON, URLs, logs, request
+  bodies, prompts, credentials, or PII. Architecture ratchets forbid JSON/blob
+  body columns and raw-runner-report shaped columns for this table.
+- `GET /byoc/control-plane/preflight-reports` and
+  `GET /byoc/control-plane/runner-evidence` are signed backend automation reads
+  over those sanitized receipt stores. List queries must be bounded by
+  `deployment_id` or `customer_id`; responses contain scalar receipt metadata
+  only and omit raw preflight sections, child reports, runner checks,
+  iterations, apply-plan bodies, artifact inventories, URLs, logs, request
+  bodies, prompts, credentials, and PII.
+- `scripts/submit_byoc_runner_evidence.py` is the customer-side/local
+  automation bridge for that route. It reads the runner report, derives and
+  HMAC-signs only the sanitized summary, writes the signed submission JSON for
+  audit if requested, and posts to the hosted route only when `--submit-url` is
+  supplied. This keeps local CI and customer handoff flows testable without
+  staging credentials.
+- `scripts/update_byoc_agent_desired_state.py` is the backend/local automation
+  hook for `POST /byoc/control-plane/agent-desired-state`. It signs a canonical
+  `fyralis.byoc.agent.desired_state_update.v1` request from scalar CLI
+  arguments, can write the signed JSON for audit, and posts only when
+  `--submit-url` is supplied.
+- `scripts/list_byoc_agents.py` is the backend/local automation hook for
+  signed `GET /byoc/control-plane/agents` reads. It can print a signed request
+  for offline inspection or execute the GET when `--list-url` is supplied,
+  returning only sanitized fleet metadata.
+- `scripts/get_byoc_deployment_overview.py` is the backend/local automation
+  hook for signed `GET /byoc/control-plane/deployment-overview` reads. It can
+  print a signed request for offline inspection or execute the GET when
+  `--overview-url` is supplied, returning only sanitized deployment status,
+  next-action, health-count, and evidence-count metadata.
+- `scripts/smoke_byoc_control_plane_reads.py` signs the read-only BYOC
+  backend/control-panel surfaces together: agent fleet, deployment overview,
+  evidence-package receipts, preflight receipts, and runner-evidence receipts.
+  It can print the signed request bundle for offline inspection or execute the
+  five GETs against `--base-url`, returning only sanitized endpoint responses.
+- `services/platform/runtime/byoc_control_plane_read_smoke_summary.py` and
+  `scripts/summarize_byoc_control_plane_read_smoke.py` convert raw/signed
+  control-plane read-smoke output into a shareable metadata-only summary. The
+  summary records mode, hosted-execution state, required surface status, bounded
+  next-action codes, and counts; it drops signed headers, endpoint paths,
+  query strings, endpoint URLs, response bodies, auth material, credentials,
+  account IDs, ARNs, logs, prompts, embeddings, and PII. Use this summary as
+  the launch-readiness input whenever the raw smoke output contains signed
+  request material.
+- `services/platform/runtime/byoc_deployment_overview.py` defines the signed
+  BYOC deployment overview read model used by
+  `GET /byoc/control-plane/deployment-overview`. It aggregates only existing
+  sanitized agent-fleet, evidence-package receipt, preflight-report receipt,
+  and runner-evidence receipt metadata into a control-panel-ready status,
+  next-action, health-count, and evidence-count summary. This is a backend
+  contract, not a control panel implementation.
+- `services/platform/runtime/byoc_live_test_readiness.py` and
+  `scripts/check_byoc_live_test_readiness.py` provide the final offline gate
+  before a real AWS credential window. The report validates BYOC manifests,
+  IAM skeleton alignment, operator-script availability, and local AWS
+  CLI/profile/env prerequisites without making AWS API calls or serializing
+  profile names, account IDs, ARNs, credentials, command output, URLs, or
+  customer data. With `--require-aws-access`, missing local AWS access becomes
+  a hard failure for the live-test handoff.
+- `scripts/summarize_byoc_launch_readiness.py --require-ready` is the final
+  backend/core launch go/no-go before customer handoff. It can pass only after
+  the live-test readiness report is fully ready, the customer handoff report is
+  ready, the handoff index has required artifacts and signed read paths, the
+  sanitized control-plane read-smoke summary proves the hosted smoke has
+  executed, and all identity fields agree. Without `--require-ready`,
+  manual-required output is allowed so local artifact generation remains useful
+  before the credential/control-plane window.
+- `services/platform/runtime/byoc_customer_pilot_package.py` and
+  `scripts/build_byoc_customer_pilot_package.py` provide the offline
+  backend/core handoff builder. The command writes live-test readiness,
+  customer handoff readiness, control-plane read-smoke summary, handoff bundle
+  index, launch readiness summary, and a package manifest under a repo-local
+  ignored output directory. It does not run cloud apply, open inbound ports, or
+  require AWS credentials; when hosted read smoke is not supplied, the package
+  is explicitly `manual_required`. The manifest records only relative paths,
+  digests, schema names, statuses, next-action codes, and privacy flags. When
+  real credential or hosted smoke artifacts already exist, pass them in with
+  `--live-test-readiness`, `--customer-handoff-report`, and
+  `--control-plane-read-smoke-summary` so the builder validates and re-renders
+  those sanitized reports instead of regenerating offline/manual placeholders.
+- `scripts/check_byoc_customer_pilot_package.py` validates that customer-pilot
+  package before release review. It reloads the digest-only manifest, verifies
+  every referenced artifact stays under the repo root, recomputes SHA-256
+  digests, checks top-level schema versions, confirms required artifacts are
+  present, and emits only bounded validation status/failure codes. The default
+  integrity check can pass while the package is `manual_required`; use
+  `--require-ready` only for the final customer-pilot go/no-go.
+- `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
+  settings, egress-only control-plane flags, data-plane agent auth shape, and
+  privacy-safe telemetry flags.
+- `scripts/check_production_env_contract.py`,
+  `scripts/check_architecture_ratchets.py`, and
+  `scripts/run_operational_readiness_gates.py` include the first automation
+  hooks for BYOC contract drift.
+
+This intentionally defers cloud apply, real agent reconciliation actions beyond
+metadata-only desired-state updates and non-mutating apply-plan evidence,
+production Terraform/CloudFormation modules, hosted onboarding UI, mTLS
+issuance, live token-rotation execution, and fleet dashboard work until a
+first-customer cloud/profile is selected. Those systems should consume these
+manifests and the bounded runner/rotation contracts instead of inventing new
+deployment, permission, or agent protocol shape.
+
 ## Current Fyralis Baseline
 
 Verified strengths already present in the repo:
@@ -419,8 +836,15 @@ Preferred model: data-plane agent pull.
 - The agent initiates mTLS to the Fyralis control plane over outbound 443.
 - The agent authenticates with a deployment certificate bound to deployment ID,
   customer ID, cloud account/project, and allowed region.
+- Initial enrollment uses the backend-owned
+  `fyralis.byoc.agent.enrollment.v1` request shape: the agent signs canonical
+  deployment metadata with the locally resolved install token and sends only
+  the token's secret reference plus HMAC proof to the control plane.
 - The agent polls desired state, verifies signatures, applies changes locally,
   and reports status.
+- Heartbeats use the backend-owned `fyralis.byoc.agent.heartbeat.v1` shape and
+  carry only bounded component status codes, validation state, desired revision
+  alignment, and aggregate telemetry-contract flags.
 - The control plane never opens an inbound socket into the customer network.
 
 Optional private connectivity:
@@ -509,172 +933,46 @@ AWS preferred handshake:
 
 - Portal generates:
   - `deployment_id`
-  - `external_id`
-  - expected Fyralis control-plane principal ARN
   - stack name prefix
   - required region
-  - permissions boundary ARN or inline boundary
-- Customer applies a CloudFormation/Terraform bootstrap template.
-- The template creates:
-  - `FyralisByocProvisionerRole`
-  - optional `FyralisByocCloudFormationServiceRole`
-  - KMS key or references customer KMS key
+  - required tag keys
+  - permissions boundary policy name
+  - signed data-plane and permission manifests
+- Customer applies the bootstrap template from a customer-owned execution
+  context. The default path is a customer-side runner; Fyralis Core does not
+  require the hosted control plane to assume a mutating role in the customer
+  account.
+- The template/runner creates or references:
+  - dedicated bootstrap and CloudFormation/Terraform service roles
+  - customer-owned KMS key or key reference
   - Secrets Manager namespace
-  - S3 artifact/state bucket or references customer bucket
-  - IAM permissions boundary for created roles
-- The portal preflights `sts:AssumeRole` using the external ID.
+  - S3 artifact/state/raw-payload buckets or customer-approved references
+  - permissions boundary for every role created by the Fyralis stack
+- Optional hosted preflight may later use a read-only assume-role handshake with
+  an external ID, but the checked-in production contract forbids control-plane
+  mutation rights and customer-data/secret-material access.
 - The permanent data-plane agent later runs inside the customer account using
   IRSA/EKS Pod Identity, ECS task role, or EC2 instance role.
 
-AWS trust policy:
+Repo-owned AWS contract:
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "AllowFyralisControlPlaneAssumeWithExternalId",
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::<FYRALIS_CONTROL_PLANE_ACCOUNT_ID>:role/fyralis-byoc-provisioner"
-      },
-      "Action": "sts:AssumeRole",
-      "Condition": {
-        "StringEquals": {
-          "sts:ExternalId": "<DEPLOYMENT_EXTERNAL_ID>"
-        }
-      }
-    }
-  ]
-}
-```
-
-AWS narrow control-plane role policy:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "ReadAccountAndRegionPreflight",
-      "Effect": "Allow",
-      "Action": [
-        "sts:GetCallerIdentity",
-        "ec2:DescribeAvailabilityZones",
-        "ec2:DescribeVpcs",
-        "ec2:DescribeSubnets",
-        "ec2:DescribeSecurityGroups",
-        "eks:DescribeCluster",
-        "rds:DescribeDBInstances",
-        "s3:GetBucketLocation"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "ManageFyralisStacksOnly",
-      "Effect": "Allow",
-      "Action": [
-        "cloudformation:CreateChangeSet",
-        "cloudformation:CreateStack",
-        "cloudformation:DeleteChangeSet",
-        "cloudformation:DeleteStack",
-        "cloudformation:DescribeChangeSet",
-        "cloudformation:DescribeStackEvents",
-        "cloudformation:DescribeStacks",
-        "cloudformation:ExecuteChangeSet",
-        "cloudformation:GetTemplate",
-        "cloudformation:UpdateStack"
-      ],
-      "Resource": "arn:aws:cloudformation:<REGION>:<CUSTOMER_ACCOUNT_ID>:stack/fyralis-<DEPLOYMENT_ID>-*/*"
-    },
-    {
-      "Sid": "PassDedicatedCloudFormationServiceRoleOnly",
-      "Effect": "Allow",
-      "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::<CUSTOMER_ACCOUNT_ID>:role/fyralis-<DEPLOYMENT_ID>-cloudformation-service-role",
-      "Condition": {
-        "StringEquals": {
-          "iam:PassedToService": "cloudformation.amazonaws.com"
-        }
-      }
-    },
-    {
-      "Sid": "ReadFyralisTaggedResourcesForDrift",
-      "Effect": "Allow",
-      "Action": [
-        "tag:GetResources",
-        "cloudformation:ListStackResources",
-        "cloudformation:DetectStackDrift",
-        "cloudformation:DescribeStackResourceDrifts"
-      ],
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestedRegion": "<REGION>"
-        }
-      }
-    }
-  ]
-}
-```
-
-AWS CloudFormation service role policy shape:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "CreateOnlyFyralisTaggedResources",
-      "Effect": "Allow",
-      "Action": [
-        "ec2:*",
-        "eks:*",
-        "rds:*",
-        "elasticache:*",
-        "kafka:*",
-        "s3:*",
-        "kms:CreateGrant",
-        "kms:DescribeKey",
-        "kms:Encrypt",
-        "kms:Decrypt",
-        "kms:GenerateDataKey",
-        "secretsmanager:*",
-        "logs:*",
-        "iam:CreateRole",
-        "iam:DeleteRole",
-        "iam:GetRole",
-        "iam:PutRolePolicy",
-        "iam:DeleteRolePolicy",
-        "iam:AttachRolePolicy",
-        "iam:DetachRolePolicy",
-        "iam:TagRole",
-        "iam:PassRole"
-      ],
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestedRegion": "<REGION>"
-        },
-        "StringLikeIfExists": {
-          "aws:RequestTag/fyralis:deployment-id": "<DEPLOYMENT_ID>",
-          "aws:ResourceTag/fyralis:deployment-id": "<DEPLOYMENT_ID>"
-        }
-      }
-    }
-  ]
-}
-```
-
-Notes:
-
-- The narrow control-plane role should be the steady-state default. The broader
-  service role is customer-owned and can be replaced with customer-run Terraform
-  when the customer does not allow SaaS-triggered CloudFormation.
-- For production, replace broad service wildcards with the exact actions used by
-  the selected IaC profile after the Terraform/CloudFormation plan is frozen.
-- Require a permissions boundary on every IAM role created by the Fyralis stack.
-- Require resource tags:
+- `deploy/byoc/permissions.example.yaml` is the source of truth for role
+  actors, trust boundaries, allowed actions, resource scopes, data-access class,
+  and IAM condition requirements.
+- `deploy/byoc/aws/iam.bootstrap.template.yaml` is the first AWS skeleton that
+  future CloudFormation/Terraform generation must satisfy.
+- `scripts/validate_byoc_permissions_manifest.py` rejects wildcard/admin
+  actions, AWS admin managed policies, unbounded `iam:PassRole`, mutating
+  control-plane roles, customer-data/secret-material access by control-plane
+  roles, missing permission boundaries, and data-plane manifest mismatches.
+- Wildcard resources are permitted only for read-only account/region preflight
+  actions such as `sts:GetCallerIdentity` and selected `Describe*` calls.
+- Customer-data access is allowed only for runtime data-plane roles, and only as
+  encrypted customer data inside the customer boundary.
+- Secret-material access is allowed only inside the data plane; bootstrap
+  service roles may create secret containers but must not receive raw secret
+  values.
+- Every BYOC-managed resource must require:
   - `fyralis:deployment-id`
   - `fyralis:customer-id`
   - `fyralis:managed=true`
@@ -756,26 +1054,35 @@ Recommended profile for first enterprise customer:
 
 Control-plane trigger model:
 
-- Control plane writes signed desired state:
+- Backend automation writes a signed metadata-only desired-state update for an
+  already enrolled agent:
 
 ```json
 {
+  "schema_version": "fyralis.byoc.agent.desired_state_update.v1",
   "deployment_id": "dep_01j...",
+  "customer_id": "cus_01j...",
+  "agent_id": "agt_01j...",
   "desired_revision": "2026.06.24-3",
-  "artifact_set": {
-    "helm_chart": "oci://registry.fyralis.com/fyralis/dataplane:2026.06.24-3",
-    "terraform_module": "oci://registry.fyralis.com/fyralis/aws-byoc:2026.06.24-3",
-    "image_bundle": "sha256:..."
-  },
-  "policy_pack": "enterprise-default-v1",
-  "telemetry_contract": "telemetry-v1",
-  "signature": "cosign-or-dsse-signature"
+  "config_epoch": 3,
+  "evidence_package_required": true,
+  "reason_code": "rollout_rehearsal",
+  "requested_by": "ops_backend",
+  "requested_at": "2026-06-24T12:00:00Z",
+  "nonce": "nonce-control-plane-update-001",
+  "signature": {
+    "key_ref": "control-plane/byoc/evidence-intake-key-ref",
+    "value": "hmac-sha256"
+  }
 }
 ```
 
-- Data-plane agent pulls desired state.
-- Agent verifies signature, evaluates policy pack, takes state lock, plans,
-  applies, validates, and reports structured progress.
+- The hosted backend stores only revision/config-epoch/evidence-required
+  metadata in `byoc_agent_registrations`.
+- The data-plane agent pulls desired state with its install-token identity.
+- The agent maps `desired_revision` to locally available signed bootstrap
+  bundle/artifact metadata, takes a state lock, plans, applies after future
+  mutating-runner work is enabled, validates, and reports structured progress.
 - Portal displays progress from agent events, not from raw IaC logs.
 
 Helm values baseline:
@@ -857,6 +1164,13 @@ Validation sequence:
    - Produce/consume test event on every per-source topic.
    - Verify DLQ topic and DLQ writer.
 6. Application checks
+   - Verify the checked-in bootstrap dry-run plan matches current manifests.
+   - Confirm the plan contains no mutating cloud commands or credential
+     requirements.
+   - Emit the sanitized bootstrap-runner dry-run evidence report.
+   - Emit the sanitized BYOC deployment evidence ledger.
+   - Verify the signed bootstrap bundle manifest and all local artifact hashes.
+   - Verify bootstrap runner cosign checks completed before any apply step.
    - `/healthz`, `/readyz`, `/metrics` for gateway and workers.
    - Auth session minting disabled without bootstrap secret.
    - Debug panels disabled.
@@ -1304,7 +1618,82 @@ Minimum gates before first enterprise customer:
 
 ### Milestone 2 - BYOC Bootstrap
 
-- Build data-plane agent.
+- Keep the data-plane manifest/schema as the source of truth for bootstrap,
+  agent, and IaC package compatibility.
+- Validate the checked-in BYOC manifest in operational readiness gates.
+- Keep the customer-cloud permission manifest and AWS IAM skeleton
+  contract-backed before generating production Terraform/CloudFormation.
+- Keep the bootstrap bundle manifest contract-backed so images, Helm charts,
+  IaC templates, SBOMs, and signatures are verified before cloud apply.
+- Keep the generated dry-run bootstrap plan contract-backed so the
+  customer-side runner has an ordered non-mutating plan before live apply.
+- Keep the bootstrap-runner evidence report sanitized and local-only until the
+  first customer cloud profile supplies real staging credentials.
+- Keep the evidence ledger contract-backed and sanitized; it may leave the data
+  plane as deployment metadata, but raw report details, commands, artifact refs,
+  credentials, payloads, prompts, logs, embeddings, and PII must not.
+- Summarize customer-side live post-deploy reports through
+  `scripts/generate_byoc_evidence_ledger.py --post-deploy-report`. For customer
+  handoff, require a matching `--post-deploy-envelope` and signing secret so
+  report digest, timestamp, and agent/runtime proof are verified before
+  summarization. Never attach the raw validator JSON to a control-plane or
+  support handoff artifact.
+- Generate customer handoff artifacts through
+  `scripts/generate_byoc_evidence_package.py`; the package may leave the data
+  plane only after `--check-package` passes, the AWS IaC package fingerprint is
+  present, and the raw live validator report is excluded.
+- Before sharing a customer credential handoff status, run
+  `scripts/run_byoc_customer_handoff.py` with the package, ledger, and customer
+  env file. For real credential readiness, add `--run-aws-live-preflight` and
+  require the corresponding evidence with `--require-aws-live-preflight`; do
+  not use the AWS-skip flag outside CI/report-contract smoke tests.
+- Generate the customer handoff bundle index with
+  `scripts/generate_byoc_handoff_bundle_index.py` after the sanitized package,
+  ledger, and handoff report exist. Share the index as a table of contents for
+  safe artifacts and signed read endpoints; do not attach raw reports, signed
+  headers, endpoint URLs, request/response bodies, logs, credentials, or PII.
+- Generate the launch readiness summary with
+  `scripts/summarize_byoc_launch_readiness.py` after live-test readiness,
+  customer handoff readiness, handoff bundle index, and control-plane read
+  smoke artifacts exist. Use `--require-ready` only for the final customer
+  pilot go/no-go; without it, the command may return manual-required while the
+  hosted read smoke or real AWS credential window is still pending. Share only
+  this summary and the handoff index in release-review channels, not raw child
+  reports, signed headers, endpoint URLs, request/response bodies, credentials,
+  logs, prompts, or PII.
+- For offline release-review preparation, use
+  `scripts/build_byoc_customer_pilot_package.py` to create all local
+  backend/core handoff artifacts under `tmp/byoc/customer-pilot`. The command
+  produces a manifest that remains safe to archive or share because it contains
+  only artifact paths, digests, schema names, aggregate statuses, and bounded
+  action codes. It is not a substitute for real AWS credential rehearsal or
+  hosted control-plane smoke; those remain manual-required until their reports
+  are supplied and `--require-ready` passes. Before sharing the package, run
+  `scripts/check_byoc_customer_pilot_package.py` against the manifest so digest
+  drift, missing artifacts, schema drift, or unsafe path drift are caught.
+- Submit evidence packages to the control-plane intake API only as signed
+  `fyralis.byoc.evidence_package_submission.v1` payloads; control-plane storage
+  may retain only the generated sanitized receipt metadata in
+  `byoc_evidence_package_receipts`. Query receipt metadata only with signed
+  read headers and deployment/customer bounds. Configure
+  `FYRALIS_BYOC_EVIDENCE_INTAKE_*` and `FYRALIS_BYOC_EVIDENCE_READ_*` key refs
+  through the managed secret provider; do not ship raw signing-key env values.
+  Use `scripts/list_byoc_agents.py` and
+  `scripts/get_byoc_deployment_overview.py` for targeted backend automation
+  checks, and `scripts/smoke_byoc_control_plane_reads.py` for the combined
+  read-only control-plane smoke instead of hand-building signed read headers.
+  Before adding read-smoke evidence to customer handoff or launch-review
+  artifacts, summarize the raw smoke output with
+  `scripts/summarize_byoc_control_plane_read_smoke.py` and archive only that
+  sanitized summary outside the operator-only evidence store.
+- Run the post-deploy validator in offline CI mode and live customer-data-plane
+  mode before enabling source onboarding.
+- Keep the data-plane agent enrollment, desired-state polling, and heartbeat
+  schema contract-backed; use the local mock control-plane harness for
+  offline proof while hosted deployments continue toward real mTLS, durable
+  fleet reconciliation, and token rotation.
+- Extend the bounded data-plane agent runner into a packaged daemon once mTLS,
+  token rotation, and customer-cloud process supervision are selected.
 - Publish signed Terraform/Helm artifacts.
 - Build AWS first profile.
 - Implement onboarding portal state machine.
@@ -1323,7 +1712,7 @@ Minimum gates before first enterprise customer:
 
 - Implement telemetry allowlist.
 - Add local scrubber and support bundle workflow.
-- Add control-plane fleet dashboard.
+- Wire the control panel to the signed BYOC deployment overview/fleet APIs.
 - Add privacy test suite.
 
 ### Milestone 5 - Enterprise Pilot

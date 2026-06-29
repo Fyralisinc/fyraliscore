@@ -12,6 +12,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
+from urllib.parse import urlparse
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,7 @@ REQUIRED_KEYS = frozenset(
     {
         "COMPANY_OS_ENV",
         "FYRALIS_ENV",
+        "FYRALIS_DEPLOYMENT_MODE",
         "DATABASE_URL",
         "REDIS_URL",
         "POSTGRES_PGBOUNCER_COMPATIBLE",
@@ -39,6 +41,12 @@ REQUIRED_KEYS = frozenset(
         "CODEX_TRANSPORT",
         "CODEX_MODEL",
         "CODEX_REASONING_EFFORT",
+        "FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF",
+        "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF",
+        "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY",
+        "FYRALIS_BYOC_EVIDENCE_READ_KEY_REF",
+        "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF",
+        "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY",
         "INQUIRY_CODEX_QUESTION_MODEL",
         "THINK_NARROW_INFERENTIAL_TX",
         "SECRET_STORE_BACKEND",
@@ -147,6 +155,7 @@ REQUIRED_EXACT_VALUES = {
     "HOUSEKEEPER_ENABLE_EXPENSIVE_JOBS": "0",
 }
 REQUIRED_ALLOWED_VALUES = {
+    "FYRALIS_DEPLOYMENT_MODE": {"single-tenant", "byoc"},
     "SECRET_STORE_BACKEND": {"fernet"},
     "MASTER_KEK_PROVIDER": {
         "aws-secrets-manager",
@@ -169,6 +178,8 @@ REQUIRED_BLANK_SECRET_PLACEHOLDER_KEYS = frozenset(
         "CODEX_API_KEY",
         "DISCORD_BOT_TOKEN",
         "DISCORD_CLIENT_SECRET",
+        "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY",
+        "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY",
         "GITHUB_APP_PRIVATE_KEY",
         "OAUTH_STATE_HMAC_KEY",
         "SLACK_CLIENT_SECRET",
@@ -183,6 +194,8 @@ REQUIRED_NONEMPTY_SECRET_REF_KEYS = frozenset(
         "CODEX_API_KEY_SECRET_REF",
         "DISCORD_BOT_TOKEN_SECRET_REF",
         "DISCORD_CLIENT_SECRET_SECRET_REF",
+        "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF",
+        "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF",
         "GITHUB_APP_PRIVATE_KEY_SECRET_REF",
         "OAUTH_STATE_HMAC_KEY_SECRET_REF",
         "SLACK_CLIENT_SECRET_SECRET_REF",
@@ -196,6 +209,8 @@ FORBIDDEN_KEYS = frozenset(
         "DEFAULT_ACTOR_ID",
         "DEFAULT_TENANT_ID",
         "COMPANY_OS_TENANT_ID",
+        "FYRALIS_BYOC_INSTALL_TOKEN",
+        "FYRALIS_DATA_PLANE_AGENT_PRIVATE_KEY",
         "GMAIL_SERVICE_ACCOUNT_JSON",
         "MASTER_KEK",
         "WHATSAPP_APP_SECRET",
@@ -229,6 +244,58 @@ REQUIRED_POSITIVE_INTEGER_KEYS = frozenset(
 REQUIRED_POSITIVE_NUMBER_KEYS = frozenset(
     {
         "SHARD_FETCH_RATE_LIMIT_MAX_WAIT_SEC",
+    }
+)
+BYOC_REQUIRED_KEYS = frozenset(
+    {
+        "FYRALIS_BYOC_DEPLOYMENT_ID",
+        "FYRALIS_BYOC_CUSTOMER_ID",
+        "FYRALIS_BYOC_CLOUD_PROVIDER",
+        "FYRALIS_BYOC_REGION",
+        "FYRALIS_CONTROL_PLANE_URL",
+        "FYRALIS_CONTROL_PLANE_CONNECTIVITY",
+        "FYRALIS_DATA_PLANE_AGENT_ENABLED",
+        "FYRALIS_DATA_PLANE_AGENT_AUTH",
+        "FYRALIS_DATA_PLANE_AGENT_INSTALL_TOKEN_SECRET_REF",
+        "FYRALIS_DATA_PLANE_AGENT_CLIENT_CERT_SECRET_REF",
+        "FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF",
+        "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF",
+        "FYRALIS_BYOC_EVIDENCE_READ_KEY_REF",
+        "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF",
+        "FYRALIS_TELEMETRY_MODE",
+        "FYRALIS_TELEMETRY_RAW_LOGS_ALLOWED",
+        "FYRALIS_TELEMETRY_RAW_PAYLOADS_ALLOWED",
+        "FYRALIS_CONTROL_PLANE_INBOUND_ALLOWED",
+    }
+)
+BYOC_REQUIRED_EXACT_VALUES = {
+    "FYRALIS_CONTROL_PLANE_CONNECTIVITY": "egress_only",
+    "FYRALIS_DATA_PLANE_AGENT_ENABLED": "1",
+    "FYRALIS_DATA_PLANE_AGENT_AUTH": "mtls",
+    "FYRALIS_TELEMETRY_RAW_LOGS_ALLOWED": "0",
+    "FYRALIS_TELEMETRY_RAW_PAYLOADS_ALLOWED": "0",
+    "FYRALIS_CONTROL_PLANE_INBOUND_ALLOWED": "0",
+}
+BYOC_REQUIRED_ALLOWED_VALUES = {
+    "FYRALIS_BYOC_CLOUD_PROVIDER": {
+        "aws",
+        "gcp",
+        "azure",
+        "customer-managed-kubernetes",
+    },
+    "FYRALIS_TELEMETRY_MODE": {"aggregate-only", "disabled"},
+}
+BYOC_REQUIRED_NONEMPTY_KEYS = frozenset(
+    {
+        "FYRALIS_BYOC_DEPLOYMENT_ID",
+        "FYRALIS_BYOC_CUSTOMER_ID",
+        "FYRALIS_BYOC_REGION",
+        "FYRALIS_DATA_PLANE_AGENT_INSTALL_TOKEN_SECRET_REF",
+        "FYRALIS_DATA_PLANE_AGENT_CLIENT_CERT_SECRET_REF",
+        "FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF",
+        "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF",
+        "FYRALIS_BYOC_EVIDENCE_READ_KEY_REF",
+        "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF",
     }
 )
 
@@ -473,6 +540,86 @@ def check_env_contract(path: Path = DEFAULT_ENV_TEMPLATE) -> list[EnvContractVio
                     message=f"must be a positive number; found {number_entry.value!r}",
                 )
             )
+
+    deployment_mode = values_by_key.get("FYRALIS_DEPLOYMENT_MODE")
+    if deployment_mode is not None and deployment_mode.value == "byoc":
+        for key in sorted(BYOC_REQUIRED_KEYS - values_by_key.keys()):
+            violations.append(
+                EnvContractViolation(
+                    path=path,
+                    key=key,
+                    message=(
+                        "required BYOC production key is missing from the template"
+                    ),
+                )
+            )
+
+        for key, expected in sorted(BYOC_REQUIRED_EXACT_VALUES.items()):
+            entry = values_by_key.get(key)
+            if entry is None:
+                continue
+            if entry.value != expected:
+                violations.append(
+                    EnvContractViolation(
+                        path=path,
+                        key=key,
+                        line_number=entry.line_number,
+                        message=f"expected {expected!r}, found {entry.value!r}",
+                    )
+                )
+
+        for key, allowed_values in sorted(BYOC_REQUIRED_ALLOWED_VALUES.items()):
+            entry = values_by_key.get(key)
+            if entry is None:
+                continue
+            if entry.value not in allowed_values:
+                allowed = ", ".join(repr(value) for value in sorted(allowed_values))
+                violations.append(
+                    EnvContractViolation(
+                        path=path,
+                        key=key,
+                        line_number=entry.line_number,
+                        message=(
+                            f"expected one of {allowed}; found {entry.value!r}"
+                        ),
+                    )
+                )
+
+        for key in sorted(BYOC_REQUIRED_NONEMPTY_KEYS):
+            entry = values_by_key.get(key)
+            if entry is None:
+                continue
+            if not entry.value:
+                violations.append(
+                    EnvContractViolation(
+                        path=path,
+                        key=key,
+                        line_number=entry.line_number,
+                        message="must not be blank for BYOC production",
+                    )
+                )
+
+        control_plane_url = values_by_key.get("FYRALIS_CONTROL_PLANE_URL")
+        if control_plane_url is not None:
+            parsed = urlparse(control_plane_url.value)
+            if parsed.scheme != "https" or not parsed.netloc:
+                violations.append(
+                    EnvContractViolation(
+                        path=path,
+                        key="FYRALIS_CONTROL_PLANE_URL",
+                        line_number=control_plane_url.line_number,
+                        message="must be an https URL for BYOC production",
+                    )
+                )
+            elif parsed.username or parsed.password:
+                violations.append(
+                    EnvContractViolation(
+                        path=path,
+                        key="FYRALIS_CONTROL_PLANE_URL",
+                        line_number=control_plane_url.line_number,
+                        message="must not contain credentials",
+                    )
+                )
 
     return violations
 

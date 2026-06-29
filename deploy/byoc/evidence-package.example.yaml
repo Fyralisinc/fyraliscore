@@ -1,0 +1,158 @@
+schema_version: fyralis.byoc.evidence_package.v1
+deployment_id: dep_example01
+customer_id: cus_example01
+environment: prod
+cloud_provider: aws
+region: us-east-1
+artifact_revision: 2026.06.26-1
+generated_at: '2026-06-26T12:00:00Z'
+generated_by: fyralis-core
+export_scope: sanitized_customer_handoff_metadata_only
+privacy:
+  raw_payloads_included: false
+  prompts_included: false
+  embeddings_included: false
+  raw_logs_included: false
+  pii_included: false
+  credentials_included: false
+  artifact_refs_included: false
+  command_output_included: false
+  report_details_included: false
+source_artifacts:
+- kind: dataplane_manifest
+  ref: deploy/byoc/dataplane.example.yaml
+  digest: sha256:67c52b822e58a77cbf9a7395b822b93545259b8d6083d76e8ce44e8df57c6a61
+- kind: permissions_manifest
+  ref: deploy/byoc/permissions.example.yaml
+  digest: sha256:44008f607c71db0e4fd9f3c85b58c73223cc56c8d2cdf887b56fbf93a6c7b664
+- kind: aws_iac_package
+  ref: deploy/byoc/aws/iac-package.example.yaml
+  digest: sha256:9a85e0802c2ca1bc09ff541357176d7644f227e3e003365cbb08f94fd4499e7f
+- kind: bootstrap_bundle
+  ref: deploy/byoc/bootstrap-bundle.example.yaml
+  digest: sha256:dae0c21c403ad1c9d50c708a7fa4fcc97aa638da0c6744db8bce6df7604bbf44
+- kind: bootstrap_plan
+  ref: deploy/byoc/bootstrap-plan.example.yaml
+  digest: sha256:148ea4b590419817e3d1d90727708e2858c99127d3bebe11ad4bcfca080ca661
+- kind: evidence_ledger
+  ref: deploy/byoc/evidence-ledger.example.yaml
+  digest: sha256:f10243716834ae7987815b20835366c78d62e51731f0b3ca19da27b7628746a2
+ledger:
+  schema_version: fyralis.byoc.evidence_ledger.v1
+  deployment_id: dep_example01
+  customer_id: cus_example01
+  environment: prod
+  cloud_provider: aws
+  region: us-east-1
+  artifact_revision: 2026.06.26-1
+  generated_at: '2026-06-26T12:00:00Z'
+  generated_by: fyralis-core
+  export_scope: sanitized_metadata_only
+  overall_status: pass
+  required_evidence_passed: true
+  privacy:
+    raw_payloads_included: false
+    prompts_included: false
+    embeddings_included: false
+    raw_logs_included: false
+    pii_included: false
+    credentials_included: false
+    artifact_refs_included: false
+    command_output_included: false
+    report_details_included: false
+  evidence:
+  - kind: bootstrap_plan
+    status: pass
+    required_checks_passed: true
+    observed_at: '2026-06-26T12:00:00Z'
+    source:
+      type: file
+      ref: deploy/byoc/bootstrap-plan.example.yaml
+      digest: sha256:148ea4b590419817e3d1d90727708e2858c99127d3bebe11ad4bcfca080ca661
+    check_summary:
+      total: 2
+      required: 2
+      passed: 2
+      failed: 0
+      skipped: 0
+      failed_required: 0
+    failed_check_codes: []
+    step_count: 10
+    operation_counts:
+      validate_contracts: 1
+      verify_artifact_signatures: 1
+      verify_local_artifact_hashes: 1
+      inspect_permission_boundaries: 1
+      plan_private_network: 1
+      plan_stateful_services: 1
+      render_runtime_release: 1
+      prepare_agent_enrollment: 1
+      run_post_deploy_validation: 1
+      emit_handoff_summary: 1
+  - kind: terraform_plan_validation
+    status: pass
+    required_checks_passed: true
+    observed_at: '2026-06-26T12:00:00Z'
+    source:
+      type: local_terraform_validator
+      ref: generated:byoc_terraform_plan_validation
+      digest: sha256:9b0285d2cc8290320e3413905319d4a0390785cdd0ca86900a63e302775ed20a
+    check_summary:
+      total: 12
+      required: 10
+      passed: 10
+      failed: 0
+      skipped: 2
+      failed_required: 0
+    failed_check_codes: []
+    step_count: 5
+    operation_counts:
+      contract_only_validation: 1
+      terraform_validate_executions: 0
+      terraform_modules: 5
+      terraform_files: 10
+  - kind: bootstrap_runner
+    status: pass
+    required_checks_passed: true
+    observed_at: '2026-06-26T12:00:00Z'
+    source:
+      type: local_runner
+      ref: generated:byoc_bootstrap_runner
+      digest: sha256:892a2d1fbd86ddc654a8b5a1c2c645099bef79d4cd4e0b159d88f06e045e6deb
+    check_summary:
+      total: 16
+      required: 16
+      passed: 16
+      failed: 0
+      skipped: 0
+      failed_required: 0
+    failed_check_codes: []
+    step_count: 10
+    operation_counts:
+      validate_contracts: 1
+      verify_artifact_signatures: 1
+      verify_local_artifact_hashes: 1
+      inspect_permission_boundaries: 1
+      plan_private_network: 1
+      plan_stateful_services: 1
+      render_runtime_release: 1
+      prepare_agent_enrollment: 1
+      run_post_deploy_validation: 1
+      emit_handoff_summary: 1
+  - kind: post_deploy_validation
+    status: pass
+    required_checks_passed: true
+    observed_at: '2026-06-26T12:00:00Z'
+    source:
+      type: offline_validator
+      ref: generated:byoc_post_deploy_validation
+      digest: sha256:f7a496534aa066395afa9330205ff3e7321a2a884c0f314c147a8293564cead0
+    check_summary:
+      total: 9
+      required: 8
+      passed: 4
+      failed: 0
+      skipped: 5
+      failed_required: 0
+    failed_check_codes: []
+    operation_counts: {}

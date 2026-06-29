@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from scripts.check_production_env_contract import (
+    BYOC_REQUIRED_KEYS,
     DEFAULT_ENV_TEMPLATE,
     REQUIRED_ALLOWED_VALUES,
     REQUIRED_BLANK_SECRET_PLACEHOLDER_KEYS,
@@ -30,6 +31,8 @@ def _write_template(path: Path, *, overrides: dict[str, str] | None = None) -> N
             default = "placeholder"
         if key == "SECRET_STORE_BACKEND":
             default = "fernet"
+        elif key == "FYRALIS_DEPLOYMENT_MODE":
+            default = "single-tenant"
         elif key == "MASTER_KEK_PROVIDER":
             default = "aws-secrets-manager"
         elif key in REQUIRED_BLANK_SECRET_PLACEHOLDER_KEYS:
@@ -251,3 +254,120 @@ def test_env_contract_reports_forbidden_inline_gmail_service_account_json(
     assert len(violations) == 1
     assert violations[0].key == "GMAIL_SERVICE_ACCOUNT_JSON"
     assert "must not be present" in violations[0].message
+
+
+def _write_byoc_template(path: Path, *, overrides: dict[str, str] | None = None) -> None:
+    overrides = overrides or {}
+    byoc_values = {
+        key: f"prod/fyralis/{key.lower()}" for key in BYOC_REQUIRED_KEYS
+    }
+    byoc_values.update(
+        {
+            "FYRALIS_BYOC_DEPLOYMENT_ID": "dep_example01",
+            "FYRALIS_BYOC_CUSTOMER_ID": "cus_example01",
+            "FYRALIS_BYOC_CLOUD_PROVIDER": "aws",
+            "FYRALIS_BYOC_REGION": "us-east-1",
+            "FYRALIS_CONTROL_PLANE_URL": "https://control.fyralis.com",
+            "FYRALIS_CONTROL_PLANE_CONNECTIVITY": "egress_only",
+            "FYRALIS_DATA_PLANE_AGENT_ENABLED": "1",
+            "FYRALIS_DATA_PLANE_AGENT_AUTH": "mtls",
+            "FYRALIS_TELEMETRY_MODE": "aggregate-only",
+            "FYRALIS_TELEMETRY_RAW_LOGS_ALLOWED": "0",
+            "FYRALIS_TELEMETRY_RAW_PAYLOADS_ALLOWED": "0",
+            "FYRALIS_CONTROL_PLANE_INBOUND_ALLOWED": "0",
+            **overrides,
+        }
+    )
+    _write_template(
+        path,
+        overrides={
+            "FYRALIS_DEPLOYMENT_MODE": "byoc",
+            **byoc_values,
+        },
+    )
+    with path.open("a", encoding="utf-8") as fh:
+        for key in sorted(BYOC_REQUIRED_KEYS - REQUIRED_KEYS):
+            fh.write(f"{key}={byoc_values[key]}\n")
+
+
+def test_env_contract_accepts_byoc_required_keys(tmp_path: Path) -> None:
+    template = tmp_path / ".env.production.example"
+    _write_byoc_template(template)
+
+    assert check_env_contract(template) == []
+
+
+def test_env_contract_reports_missing_byoc_required_key(tmp_path: Path) -> None:
+    template = tmp_path / ".env.production.example"
+    _write_byoc_template(template)
+    lines = [
+        line
+        for line in template.read_text(encoding="utf-8").splitlines()
+        if not line.startswith("FYRALIS_CONTROL_PLANE_URL=")
+    ]
+    template.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    violations = check_env_contract(template)
+
+    assert [violation.key for violation in violations] == ["FYRALIS_CONTROL_PLANE_URL"]
+    assert "required BYOC production key" in violations[0].message
+
+
+def test_env_contract_reports_unsafe_byoc_control_plane_shape(
+    tmp_path: Path,
+) -> None:
+    template = tmp_path / ".env.production.example"
+    _write_byoc_template(
+        template,
+        overrides={
+            "FYRALIS_CONTROL_PLANE_URL": "http://control.fyralis.com",
+            "FYRALIS_TELEMETRY_RAW_LOGS_ALLOWED": "1",
+        },
+    )
+
+    violations = check_env_contract(template)
+
+    assert [(violation.key, violation.message) for violation in violations] == [
+        (
+            "FYRALIS_TELEMETRY_RAW_LOGS_ALLOWED",
+            "expected '0', found '1'",
+        ),
+        (
+            "FYRALIS_CONTROL_PLANE_URL",
+            "must be an https URL for BYOC production",
+        ),
+    ]
+
+
+def test_env_contract_reports_forbidden_byoc_raw_agent_secrets(
+    tmp_path: Path,
+) -> None:
+    template = tmp_path / ".env.production.example"
+    _write_template(template)
+    with template.open("a", encoding="utf-8") as fh:
+        fh.write("FYRALIS_BYOC_INSTALL_TOKEN=raw-token\n")
+        fh.write("FYRALIS_DATA_PLANE_AGENT_PRIVATE_KEY=raw-key\n")
+
+    violations = check_env_contract(template)
+
+    assert [violation.key for violation in violations] == [
+        "FYRALIS_BYOC_INSTALL_TOKEN",
+        "FYRALIS_DATA_PLANE_AGENT_PRIVATE_KEY",
+    ]
+    assert all("must not be present" in violation.message for violation in violations)
+
+
+def test_env_contract_reports_nonempty_byoc_evidence_signing_key(
+    tmp_path: Path,
+) -> None:
+    template = tmp_path / ".env.production.example"
+    _write_byoc_template(
+        template,
+        overrides={"FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY": "raw-key"},
+    )
+
+    violations = check_env_contract(template)
+
+    assert len(violations) == 1
+    assert violations[0].key == "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY"
+    assert "must stay blank" in violations[0].message

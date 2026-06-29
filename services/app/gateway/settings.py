@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from lib.shared.errors import SecretStoreError
 from lib.shared.secrets import load_app_secret_text_from_env
@@ -52,6 +53,48 @@ def _env_name(source: Mapping[str, str]) -> str:
 
 def _is_production(env_name: str) -> bool:
     return env_name in {"prod", "production"}
+
+
+def _env_choice(
+    env: Mapping[str, str],
+    name: str,
+    *,
+    choices: set[str],
+    default: str,
+) -> str:
+    raw = env.get(name)
+    value = default if raw is None or raw == "" else raw.strip().lower()
+    if value not in choices:
+        expected = ", ".join(sorted(choices))
+        raise ValueError(f"{name} must be one of {expected}; found {value!r}")
+    return value
+
+
+def _required_nonempty(
+    env: Mapping[str, str],
+    name: str,
+    *,
+    context: str,
+) -> str:
+    value = (env.get(name) or "").strip()
+    if not value:
+        raise ValueError(f"{name} must be set for {context}")
+    return value
+
+
+def _required_https_url(
+    env: Mapping[str, str],
+    name: str,
+    *,
+    context: str,
+) -> str:
+    value = _required_nonempty(env, name, context=context).rstrip("/")
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError(f"{name} must be an https URL for {context}")
+    if parsed.username or parsed.password:
+        raise ValueError(f"{name} must not contain credentials")
+    return value
 
 
 def _required_disabled_in_production(
@@ -201,6 +244,25 @@ class GatewaySettings:
 
     log_level: str = "INFO"
     environment: str = "development"
+    deployment_mode: str = "local"
+    byoc_deployment_id: str | None = None
+    byoc_customer_id: str | None = None
+    byoc_cloud_provider: str | None = None
+    byoc_region: str | None = None
+    control_plane_url: str | None = None
+    control_plane_connectivity: str | None = None
+    data_plane_agent_enabled: bool = False
+    data_plane_agent_auth: str | None = None
+    data_plane_agent_install_token_secret_ref: str | None = None
+    data_plane_agent_client_cert_secret_ref: str | None = None
+    byoc_evidence_intake_key_ref: str | None = None
+    byoc_evidence_intake_signing_key_secret_ref: str | None = None
+    byoc_evidence_read_key_ref: str | None = None
+    byoc_evidence_read_signing_key_secret_ref: str | None = None
+    telemetry_mode: str = "local-only"
+    telemetry_raw_logs_allowed: bool = False
+    telemetry_raw_payloads_allowed: bool = False
+    control_plane_inbound_allowed: bool = False
     ollama_url: str | None = None
     auth_bootstrap_secret: str | None = None
     ceo_view_enabled: bool = True
@@ -242,10 +304,188 @@ class GatewaySettings:
         source = env if env is not None else os.environ
         environment = _env_name(source)
         production = _is_production(environment)
+        deployment_mode = _env_choice(
+            source,
+            "FYRALIS_DEPLOYMENT_MODE",
+            choices={"local", "single-tenant", "byoc"},
+            default="single-tenant" if production else "local",
+        )
+        if production and "FYRALIS_DEPLOYMENT_MODE" not in source:
+            raise ValueError(
+                "FYRALIS_DEPLOYMENT_MODE must be set explicitly in production",
+            )
         auth_bootstrap_secret = _auth_bootstrap_secret(
             source,
             production=production,
         )
+        byoc_deployment_id: str | None = None
+        byoc_customer_id: str | None = None
+        byoc_cloud_provider: str | None = None
+        byoc_region: str | None = None
+        control_plane_url: str | None = None
+        control_plane_connectivity: str | None = None
+        data_plane_agent_install_token_secret_ref: str | None = None
+        data_plane_agent_client_cert_secret_ref: str | None = None
+        data_plane_agent_enabled = _env_bool(
+            source,
+            "FYRALIS_DATA_PLANE_AGENT_ENABLED",
+            default=False,
+        )
+        data_plane_agent_auth = source.get("FYRALIS_DATA_PLANE_AGENT_AUTH") or None
+        byoc_evidence_intake_key_ref = (
+            source.get("FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF") or None
+        )
+        byoc_evidence_intake_signing_key_secret_ref = (
+            source.get("FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF")
+            or None
+        )
+        byoc_evidence_read_key_ref = (
+            source.get("FYRALIS_BYOC_EVIDENCE_READ_KEY_REF") or None
+        )
+        byoc_evidence_read_signing_key_secret_ref = (
+            source.get("FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF")
+            or None
+        )
+        telemetry_mode = _env_choice(
+            source,
+            "FYRALIS_TELEMETRY_MODE",
+            choices={"local-only", "aggregate-only", "disabled"},
+            default="local-only",
+        )
+        telemetry_raw_logs_allowed = _env_bool(
+            source,
+            "FYRALIS_TELEMETRY_RAW_LOGS_ALLOWED",
+            default=False,
+        )
+        telemetry_raw_payloads_allowed = _env_bool(
+            source,
+            "FYRALIS_TELEMETRY_RAW_PAYLOADS_ALLOWED",
+            default=False,
+        )
+        control_plane_inbound_allowed = _env_bool(
+            source,
+            "FYRALIS_CONTROL_PLANE_INBOUND_ALLOWED",
+            default=False,
+        )
+        if production and deployment_mode == "byoc":
+            context = "BYOC production"
+            if source.get("FYRALIS_BYOC_INSTALL_TOKEN"):
+                raise ValueError(
+                    "FYRALIS_BYOC_INSTALL_TOKEN must not be set in BYOC "
+                    "production; use FYRALIS_DATA_PLANE_AGENT_INSTALL_TOKEN_SECRET_REF",
+                )
+            if source.get("FYRALIS_DATA_PLANE_AGENT_PRIVATE_KEY"):
+                raise ValueError(
+                    "FYRALIS_DATA_PLANE_AGENT_PRIVATE_KEY must not be set in "
+                    "BYOC production; use "
+                    "FYRALIS_DATA_PLANE_AGENT_CLIENT_CERT_SECRET_REF",
+                )
+            if source.get("FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY"):
+                raise ValueError(
+                    "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY must not be set "
+                    "in BYOC production; use "
+                    "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF",
+                )
+            if source.get("FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY"):
+                raise ValueError(
+                    "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY must not be set "
+                    "in BYOC production; use "
+                    "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF",
+                )
+            byoc_deployment_id = _required_nonempty(
+                source,
+                "FYRALIS_BYOC_DEPLOYMENT_ID",
+                context=context,
+            )
+            byoc_customer_id = _required_nonempty(
+                source,
+                "FYRALIS_BYOC_CUSTOMER_ID",
+                context=context,
+            )
+            byoc_cloud_provider = _env_choice(
+                source,
+                "FYRALIS_BYOC_CLOUD_PROVIDER",
+                choices={"aws", "gcp", "azure", "customer-managed-kubernetes"},
+                default="aws",
+            )
+            byoc_region = _required_nonempty(
+                source,
+                "FYRALIS_BYOC_REGION",
+                context=context,
+            )
+            control_plane_url = _required_https_url(
+                source,
+                "FYRALIS_CONTROL_PLANE_URL",
+                context=context,
+            )
+            control_plane_connectivity = _env_choice(
+                source,
+                "FYRALIS_CONTROL_PLANE_CONNECTIVITY",
+                choices={"egress_only"},
+                default="egress_only",
+            )
+            data_plane_agent_enabled = _required_enabled_in_production(
+                source,
+                "FYRALIS_DATA_PLANE_AGENT_ENABLED",
+                production=True,
+                default=False,
+            )
+            data_plane_agent_auth = _env_choice(
+                source,
+                "FYRALIS_DATA_PLANE_AGENT_AUTH",
+                choices={"mtls"},
+                default="mtls",
+            )
+            data_plane_agent_install_token_secret_ref = _required_nonempty(
+                source,
+                "FYRALIS_DATA_PLANE_AGENT_INSTALL_TOKEN_SECRET_REF",
+                context=context,
+            )
+            data_plane_agent_client_cert_secret_ref = _required_nonempty(
+                source,
+                "FYRALIS_DATA_PLANE_AGENT_CLIENT_CERT_SECRET_REF",
+                context=context,
+            )
+            byoc_evidence_intake_key_ref = _required_nonempty(
+                source,
+                "FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF",
+                context=context,
+            )
+            byoc_evidence_intake_signing_key_secret_ref = _required_nonempty(
+                source,
+                "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF",
+                context=context,
+            )
+            byoc_evidence_read_key_ref = _required_nonempty(
+                source,
+                "FYRALIS_BYOC_EVIDENCE_READ_KEY_REF",
+                context=context,
+            )
+            byoc_evidence_read_signing_key_secret_ref = _required_nonempty(
+                source,
+                "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF",
+                context=context,
+            )
+            if telemetry_mode not in {"aggregate-only", "disabled"}:
+                raise ValueError(
+                    "FYRALIS_TELEMETRY_MODE must be aggregate-only or "
+                    "disabled for BYOC production",
+                )
+            if telemetry_raw_logs_allowed:
+                raise ValueError(
+                    "FYRALIS_TELEMETRY_RAW_LOGS_ALLOWED must be disabled "
+                    "for BYOC production",
+                )
+            if telemetry_raw_payloads_allowed:
+                raise ValueError(
+                    "FYRALIS_TELEMETRY_RAW_PAYLOADS_ALLOWED must be disabled "
+                    "for BYOC production",
+                )
+            if control_plane_inbound_allowed:
+                raise ValueError(
+                    "FYRALIS_CONTROL_PLANE_INBOUND_ALLOWED must be disabled "
+                    "for BYOC production",
+                )
         default_tenant_id = source.get("DEFAULT_TENANT_ID") or None
         company_os_tenant_id = source.get("COMPANY_OS_TENANT_ID") or None
         if production and (default_tenant_id or company_os_tenant_id):
@@ -266,6 +506,33 @@ class GatewaySettings:
         return cls(
             log_level=source.get("LOG_LEVEL", "INFO"),
             environment=environment,
+            deployment_mode=deployment_mode,
+            byoc_deployment_id=byoc_deployment_id,
+            byoc_customer_id=byoc_customer_id,
+            byoc_cloud_provider=byoc_cloud_provider,
+            byoc_region=byoc_region,
+            control_plane_url=control_plane_url,
+            control_plane_connectivity=control_plane_connectivity,
+            data_plane_agent_enabled=data_plane_agent_enabled,
+            data_plane_agent_auth=data_plane_agent_auth,
+            data_plane_agent_install_token_secret_ref=(
+                data_plane_agent_install_token_secret_ref
+            ),
+            data_plane_agent_client_cert_secret_ref=(
+                data_plane_agent_client_cert_secret_ref
+            ),
+            byoc_evidence_intake_key_ref=byoc_evidence_intake_key_ref,
+            byoc_evidence_intake_signing_key_secret_ref=(
+                byoc_evidence_intake_signing_key_secret_ref
+            ),
+            byoc_evidence_read_key_ref=byoc_evidence_read_key_ref,
+            byoc_evidence_read_signing_key_secret_ref=(
+                byoc_evidence_read_signing_key_secret_ref
+            ),
+            telemetry_mode=telemetry_mode,
+            telemetry_raw_logs_allowed=telemetry_raw_logs_allowed,
+            telemetry_raw_payloads_allowed=telemetry_raw_payloads_allowed,
+            control_plane_inbound_allowed=control_plane_inbound_allowed,
             ollama_url=source.get("OLLAMA_URL") or None,
             auth_bootstrap_secret=auth_bootstrap_secret,
             ceo_view_enabled=_env_bool(

@@ -77,6 +77,22 @@ def test_static_gateway_route_inventory_classifies_security_boundaries() -> None
     )
     assert by_path["/ext/oauth/token"].policy.access is RouteAccess.EXTENSION_AUTH
     assert by_path["/ext/v1/observations"].policy.access is RouteAccess.EXTENSION_AUTH
+    byoc_intake = by_path["/byoc/control-plane/evidence-packages"].policy
+    assert byoc_intake.access is RouteAccess.SELF_AUTHENTICATED
+    assert byoc_intake.gateway_bearer_required is False
+    byoc_runner_evidence = by_path["/byoc/control-plane/runner-evidence"].policy
+    assert byoc_runner_evidence.access is RouteAccess.SELF_AUTHENTICATED
+    assert byoc_runner_evidence.gateway_bearer_required is False
+    byoc_preflight = by_path["/byoc/control-plane/preflight-reports"].policy
+    assert byoc_preflight.access is RouteAccess.SELF_AUTHENTICATED
+    assert byoc_preflight.gateway_bearer_required is False
+    byoc_agent = by_path["/byoc/agent/enroll"].policy
+    assert byoc_agent.access is RouteAccess.SELF_AUTHENTICATED
+    assert byoc_agent.gateway_bearer_required is False
+    assert (
+        by_path["/byoc/agent/desired-state"].policy.access
+        is RouteAccess.SELF_AUTHENTICATED
+    )
     assert by_path["/api/admin/dead-letters"].policy.access is RouteAccess.ADMIN
     assert by_path["/api/admin/dead-letters"].policy.gateway_bearer_required is True
 

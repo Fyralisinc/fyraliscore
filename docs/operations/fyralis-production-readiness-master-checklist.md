@@ -71,6 +71,135 @@ Every checklist item is done only when:
   delivery.
 - [x] CI blocks merges on tests, architecture ratchets, env contracts, schema
   drift checks, and privacy probes.
+- [x] BYOC deployment shape has a checked-in data-plane manifest contract,
+  validator, production env guard, and readiness/architecture ratchets for
+  egress-only control-plane connectivity and privacy-safe telemetry defaults.
+- [x] BYOC post-deploy validation has an offline CI mode plus live-probe hooks
+  for gateway/worker health, production DB role/RLS safety, broker reachability,
+  and object-store endpoint reachability.
+- [x] BYOC agent enrollment, desired-state polling, and heartbeat have strict
+  backend-owned schemas, HMAC install-token proof over canonical metadata,
+  raw-token-free requests, privacy-safe heartbeat telemetry, a local mock
+  control-plane contract harness, a readiness-gated local agent probe, hosted
+  gateway enrollment, heartbeat, and signed desired-state polling routes, a
+  readiness-gated bounded agent runner skeleton with non-mutating apply-plan
+  and digest-pinned artifact verification evidence, managed install-token
+  key-ref resolution, sanitized scalar registration storage, and a
+  storage-shape ratchet, signed backend desired-state update route/CLI for
+  enrolled agents with scalar durable rollout metadata only, signed bounded
+  fleet metadata reads for backend automation, plus a plan-only install-token
+  rotation rehearsal that emits only salted secret-ref digests and no raw token
+  material.
+- [x] BYOC customer-cloud permissions have a checked-in manifest, AWS IAM
+  skeleton, validator, and readiness gate that reject broad admin policies,
+  unbounded `iam:PassRole`, mutating control-plane roles, missing boundaries,
+  and control-plane access to customer data or secret material.
+- [x] BYOC AWS live preflight has a customer-side read-only report CLI,
+  optional STS/read-only API/IAM simulation checks, a no-credential CI smoke
+  gate, sanitized JSON/YAML output, and an architecture ratchet preventing
+  account IDs, ARNs, profile names, endpoint URLs, policy documents,
+  credentials, command output, or customer data from being serialized.
+- [x] BYOC AWS IaC package has a checked-in scaffold manifest, Terraform root,
+  placeholder component modules, generator/checker, validator, and readiness
+  gate that prove customer-side execution, scaffold-only/non-mutating Terraform
+  files, required tags/variables, identity alignment with the
+  data-plane/permissions/IAM contracts, generated-output drift detection, and
+  no raw secret/customer-data values before live module work begins.
+- [x] BYOC Terraform scaffold validation has a customer-side contract-only
+  report CLI, sanitized JSON/YAML output, no Terraform plan JSON or command
+  output, opt-in `terraform init -backend=false` and `terraform validate`
+  execution adapters that store only bounded status/exit metadata, ledger
+  summary import, and readiness gate before live Terraform plan or apply work
+  begins.
+- [x] BYOC bootstrap artifacts have a checked-in signed-bundle manifest,
+  verifier CLI, local hash checks for checked-in IaC files, digest-pinned
+  image/chart/SBOM refs, and a readiness gate before cloud apply work begins.
+- [x] BYOC customer-side bootstrap has a checked-in generated dry-run plan,
+  generator/checker CLI, non-mutating step contract, source-manifest digest
+  checks, and readiness gate before live bootstrap-runner work begins.
+- [x] BYOC bootstrap-runner dry-run has a local evidence report command,
+  sanitized JSON/YAML output, contract/hash/offline-validation execution, and
+  readiness gate before real customer-cloud apply work begins.
+- [x] BYOC customer-side preflight has a sanitized aggregate command that
+  summarizes data-plane, permissions/IAM, AWS IaC, Terraform scaffold,
+  bootstrap-bundle, bootstrap-runner, and offline post-deploy checks without
+  child report details, command output, artifact refs, URLs, credentials, or
+  customer data.
+- [x] BYOC preflight reports have a signed submission contract, gateway route,
+  self-auth route classification, DB-backed sanitized scalar receipt storage,
+  signed bounded list reads, existing evidence-intake key-ref resolution,
+  customer-side/local submit CLI, storage-shape ratchet, and tests rejecting
+  raw child reports or customer-data markers.
+- [x] BYOC deployment evidence has a checked-in sanitized ledger contract,
+  generator/checker CLI, aggregate-only evidence summaries, and readiness gate
+  covering plan, Terraform scaffold validation, optional AWS live-preflight
+  import, bootstrap-runner, and offline post-deploy validation results.
+- [x] BYOC live post-deploy reports can be imported into the evidence ledger
+  through a sanitized summary path that drops report details, URLs, endpoint
+  strings, metrics, credentials, payloads, prompts, logs, embeddings, and PII.
+- [x] BYOC live report imports can require a signed evidence envelope that
+  verifies deployment identity, report digest, timestamp freshness, signing key
+  reference, and HMAC proof before the report is summarized.
+- [x] BYOC customer handoff evidence has a checked-in sanitized package
+  contract, generator/checker CLI, source artifact and AWS IaC package digest
+  ratchets, optional signed-envelope metadata, and readiness gate.
+- [x] BYOC first-source enablement has a backend source-onboarding gate that
+  consumes only sanitized evidence package/ledger metadata, supports optional
+  AWS live-preflight and live/signed post-deploy requirements, emits bounded
+  pass/fail output, and is included in readiness gates.
+- [x] BYOC customer credential handoff has a backend/core readiness report that
+  composes local preflight, evidence-package validation, and first-source gate
+  results into one sanitized go/no-go artifact with no child report bodies,
+  command output, account IDs, ARNs, URLs, credentials, raw data, logs, or PII.
+- [x] BYOC customer handoff bundle index has a backend/core generator that
+  lists sanitized handoff artifacts by relative path, digest, schema, and scope,
+  plus signed read endpoint paths, without artifact bodies, signed headers,
+  endpoint URLs, request/response bodies, logs, credentials, or PII.
+- [x] BYOC customer-pilot launch readiness has a backend/core summary command
+  that composes live-test readiness, customer handoff readiness, handoff bundle
+  index, and control-plane read-smoke outputs into one metadata-only go/no-go
+  artifact with no child reports, raw reports, artifact bodies, signed headers,
+  endpoint URLs, request/response bodies, credentials, account IDs, ARNs, logs,
+  prompts, embeddings, or PII.
+- [x] BYOC live credential rehearsal has a customer-side artifact-pipeline CLI
+  that runs sanitized AWS preflight, writes sanitized ledger/package evidence,
+  gates the generated package, supports a real-AWS-call requirement for
+  customer readiness, and runs in CI smoke mode without AWS credentials.
+- [x] BYOC live AWS test readiness has an offline preflight report that
+  validates manifest/IAM/operator-script readiness and local AWS access
+  prerequisites without making AWS calls or serializing profile names, account
+  IDs, ARNs, credentials, command output, URLs, or customer data.
+- [x] BYOC control-plane evidence intake has a signed submission contract,
+  gateway route, self-auth route classification, DB-backed sanitized scalar
+  receipt storage, signed receipt lookup/list automation reads, bounded query
+  contract, managed key-ref resolver, raw production signing-key guard, env
+  contract coverage, storage-shape ratchet, and tests rejecting raw reports or
+  customer-data markers.
+- [x] BYOC runner evidence intake has a signed submission contract, gateway
+  route, self-auth route classification, DB-backed sanitized scalar receipt
+  storage, signed bounded list reads, existing evidence-intake key-ref
+  resolution, readiness-gate coverage, customer-side/local submit CLI,
+  storage-shape ratchet, and tests rejecting raw runner report fields or
+  customer-data markers.
+- [x] BYOC deployment overview has a signed metadata-only backend read model and
+  gateway route that aggregates sanitized agent-fleet, evidence-package,
+  preflight-report, and runner-evidence receipt state into status, next action,
+  health counts, and evidence counts, plus targeted and combined local
+  signed-read helpers for future control-panel/backend automation consumers.
+- [x] BYOC control-plane read-smoke output has a shareable summary command that
+  strips signed headers, endpoint paths, query strings, endpoint URLs,
+  request/response bodies, auth material, credentials, account IDs, ARNs, logs,
+  prompts, embeddings, and PII before the result is used in launch-review or
+  customer handoff evidence.
+- [x] BYOC customer-pilot handoff has a one-command backend/core package
+  builder that writes sanitized local readiness artifacts, a handoff index,
+  launch summary, and digest-only manifest under the ignored `tmp/` tree,
+  marking AWS credential and hosted control-plane evidence manual until real
+  reports are supplied.
+- [x] BYOC customer-pilot package integrity has a backend/core verifier that
+  reloads the manifest, re-hashes referenced artifacts, validates top-level
+  schemas, detects missing or unsafe artifact paths, and emits only bounded
+  status/failure metadata.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

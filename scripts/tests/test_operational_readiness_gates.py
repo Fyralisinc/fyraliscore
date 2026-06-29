@@ -8,9 +8,32 @@ from scripts.run_operational_readiness_gates import (
     GateResult,
     MANUAL_REQUIRED,
     PASS,
+    _byoc_aws_iac_package_gate,
+    _byoc_agent_probe_gate,
+    _byoc_agent_runner_gate,
+    _byoc_agent_token_rotation_gate,
+    _byoc_aws_live_preflight_gate,
+    _byoc_bootstrap_bundle_gate,
+    _byoc_bootstrap_plan_gate,
+    _byoc_bootstrap_runner_gate,
+    _byoc_control_plane_intake_gate,
+    _byoc_customer_handoff_gate,
+    _byoc_customer_pilot_package_gate,
+    _byoc_dataplane_contract_gate,
+    _byoc_evidence_package_gate,
+    _byoc_evidence_ledger_gate,
+    _byoc_handoff_bundle_index_gate,
+    _byoc_launch_readiness_summary_gate,
+    _byoc_permissions_contract_gate,
+    _byoc_preflight_bundle_gate,
+    _byoc_source_onboarding_gate,
+    _byoc_post_deploy_validation_gate,
+    _byoc_live_credential_rehearsal_gate,
+    _byoc_live_test_readiness_gate,
     _github_required_checks_gate,
     _production_env_contract_gate,
     _schema_drift_gate,
+    _byoc_terraform_plan_validation_gate,
 )
 
 
@@ -22,6 +45,407 @@ def test_production_env_contract_gate_passes_for_checked_in_template() -> None:
     assert result.status == PASS
     assert result.command is not None
     assert result.command[-1] == "scripts/check_production_env_contract.py"
+
+
+def test_byoc_dataplane_contract_gate_passes_for_checked_in_manifest() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_dataplane_contract_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert result.command[-1] == "deploy/byoc/dataplane.example.yaml"
+    assert result.artifacts["manifest"] == "deploy/byoc/dataplane.example.yaml"
+
+
+def test_byoc_permissions_contract_gate_passes_for_checked_in_manifest() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_permissions_contract_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/validate_byoc_permissions_manifest.py" in result.command
+    assert result.artifacts == {
+        "manifest": "deploy/byoc/permissions.example.yaml",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "aws_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+    }
+
+
+def test_byoc_aws_live_preflight_gate_passes_for_contract_smoke() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_aws_live_preflight_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_aws_live_preflight.py" in result.command
+    assert "--skip-live-aws" in result.command
+    assert result.artifacts == {
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+    }
+
+
+def test_byoc_aws_iac_package_gate_passes_for_checked_in_scaffold() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_aws_iac_package_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/generate_byoc_aws_iac_package.py" in result.command
+    assert "--check-package" in result.command
+    assert result.artifacts == {
+        "package": "deploy/byoc/aws/iac-package.example.yaml",
+        "terraform_root": "deploy/byoc/aws/terraform",
+        "terraform_modules": "deploy/byoc/aws/terraform/modules",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+    }
+
+
+def test_byoc_terraform_plan_validation_gate_passes_for_checked_in_scaffold() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_terraform_plan_validation_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_terraform_plan_validation.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {
+        "iac_package": "deploy/byoc/aws/iac-package.example.yaml",
+        "terraform_root": "deploy/byoc/aws/terraform",
+        "terraform_modules": "deploy/byoc/aws/terraform/modules",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+    }
+
+
+def test_byoc_bootstrap_bundle_gate_passes_for_checked_in_bundle() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_bootstrap_bundle_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/verify_byoc_bootstrap_bundle.py" in result.command
+    assert "--verify-local-files" in result.command
+    assert result.artifacts == {
+        "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+    }
+
+
+def test_byoc_bootstrap_plan_gate_passes_for_checked_in_plan() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_bootstrap_plan_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/generate_byoc_bootstrap_plan.py" in result.command
+    assert "--check-plan" in result.command
+    assert result.artifacts == {
+        "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+        "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+    }
+
+
+def test_byoc_bootstrap_runner_gate_passes_for_checked_in_plan() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_bootstrap_runner_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_bootstrap_runner.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {
+        "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+        "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "env_template": ".env.production.example",
+    }
+
+
+def test_byoc_preflight_bundle_gate_passes_for_checked_in_contracts() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_preflight_bundle_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_preflight_bundle.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        "iac_package": "deploy/byoc/aws/iac-package.example.yaml",
+        "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+        "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+        "env_template": ".env.production.example",
+    }
+
+
+def test_byoc_agent_probe_gate_passes_for_checked_in_manifest() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_agent_probe_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_agent_probe.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {"manifest": "deploy/byoc/dataplane.example.yaml"}
+    assert "local-byoc-agent-probe-token" not in result.stdout_tail
+
+
+def test_byoc_agent_runner_gate_passes_for_checked_in_manifest() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_agent_runner_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_agent_runner.py" in result.command
+    assert "--json" in result.command
+    assert "--iterations" in result.command
+    assert "--mock-desired-revision" in result.command
+    assert "--mock-config-epoch" in result.command
+    assert "--bootstrap-bundle" in result.command
+    assert "--verify-local-bundle-files" in result.command
+    assert result.artifacts == {
+        "manifest": "deploy/byoc/dataplane.example.yaml",
+        "bundle": "deploy/byoc/bootstrap-bundle.next.example.yaml",
+    }
+    assert "local-byoc-agent-runner-token" not in result.stdout_tail
+
+
+def test_byoc_agent_token_rotation_gate_passes_for_checked_in_manifest() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_agent_token_rotation_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_agent_token_rotation_plan.py" in result.command
+    assert "--next-install-token-secret-ref" in result.command
+    assert result.artifacts == {"manifest": "deploy/byoc/dataplane.example.yaml"}
+    assert "agent-bootstrap-token-v2" not in result.stdout_tail
+
+
+def test_byoc_evidence_ledger_gate_passes_for_checked_in_ledger() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_evidence_ledger_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/generate_byoc_evidence_ledger.py" in result.command
+    assert "--check-ledger" in result.command
+    assert result.artifacts == {
+        "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+        "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+        "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+        "iac_package": "deploy/byoc/aws/iac-package.example.yaml",
+        "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "env_template": ".env.production.example",
+    }
+
+
+def test_byoc_evidence_package_gate_passes_for_checked_in_package() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_evidence_package_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/generate_byoc_evidence_package.py" in result.command
+    assert "--check-package" in result.command
+    assert result.artifacts == {
+        "package": "deploy/byoc/evidence-package.example.yaml",
+        "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+        "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+        "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "aws_iac_package": "deploy/byoc/aws/iac-package.example.yaml",
+    }
+
+
+def test_byoc_source_onboarding_gate_passes_for_checked_in_package() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_source_onboarding_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/check_byoc_source_onboarding_gate.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {"package": "deploy/byoc/evidence-package.example.yaml"}
+
+
+def test_byoc_customer_handoff_gate_passes_for_checked_in_package() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_customer_handoff_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_customer_handoff.py" in result.command
+    assert "--json" in result.command
+    assert "--env-file" in result.command
+    assert result.artifacts == {
+        "package": "deploy/byoc/evidence-package.example.yaml",
+        "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "env_template": ".env.production.example",
+    }
+
+
+def test_byoc_handoff_bundle_index_gate_passes_for_checked_in_package() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_handoff_bundle_index_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/generate_byoc_handoff_bundle_index.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {
+        "package": "deploy/byoc/evidence-package.example.yaml",
+        "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+    }
+
+
+def test_byoc_live_credential_rehearsal_gate_passes_in_ci_smoke_mode() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_live_credential_rehearsal_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_live_credential_rehearsal.py" in result.command
+    assert "--skip-live-aws" in result.command
+    assert "--output-dir" in result.command
+    assert result.artifacts["mode"] == "ci_skip_live_aws"
+    assert "123456789012" not in result.stdout_tail
+    assert "arn:aws" not in result.stdout_tail
+
+
+def test_byoc_live_test_readiness_gate_passes_without_credentials() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_live_test_readiness_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/check_byoc_live_test_readiness.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+    }
+    assert "123456789012" not in result.stdout_tail
+    assert "arn:aws" not in result.stdout_tail
+
+
+def test_byoc_launch_readiness_summary_gate_passes_for_contract_suite() -> None:
+    args = argparse.Namespace(command_timeout_s=30, skip_pytest=False)
+
+    result = _byoc_launch_readiness_summary_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert (
+        "services/platform/runtime/tests/test_byoc_control_plane_read_smoke_summary.py"
+        in result.command
+    )
+    assert "services/platform/runtime/tests/test_byoc_launch_readiness_summary.py" in (
+        result.command
+    )
+    assert "scripts/tests/test_summarize_byoc_control_plane_read_smoke.py" in (
+        result.command
+    )
+    assert "scripts/tests/test_summarize_byoc_launch_readiness.py" in result.command
+    assert "123456789012" not in result.stdout_tail
+    assert "arn:aws" not in result.stdout_tail
+
+
+def test_byoc_customer_pilot_package_gate_passes_for_contract_suite() -> None:
+    args = argparse.Namespace(command_timeout_s=30, skip_pytest=False)
+
+    result = _byoc_customer_pilot_package_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "services/platform/runtime/tests/test_byoc_customer_pilot_package.py" in (
+        result.command
+    )
+    assert "scripts/tests/test_build_byoc_customer_pilot_package.py" in result.command
+    assert "scripts/tests/test_check_byoc_customer_pilot_package.py" in result.command
+    assert "123456789012" not in result.stdout_tail
+    assert "arn:aws" not in result.stdout_tail
+
+
+def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:
+    args = argparse.Namespace(command_timeout_s=30, skip_pytest=False)
+
+    result = _byoc_control_plane_intake_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "services/platform/runtime/tests/test_byoc_agent_control_plane.py" in (
+        result.command
+    )
+    assert "services/app/gateway/tests/test_byoc_agent_router.py" in result.command
+    assert "services/platform/runtime/tests/test_byoc_control_plane_intake.py" in (
+        result.command
+    )
+    assert "services/platform/runtime/tests/test_byoc_preflight_intake.py" in (
+        result.command
+    )
+    assert "services/platform/runtime/tests/test_byoc_runner_evidence_intake.py" in (
+        result.command
+    )
+    assert "services/app/gateway/tests/test_byoc_control_plane_router.py" in (
+        result.command
+    )
+    assert "scripts/tests/test_get_byoc_deployment_overview.py" in result.command
+    assert "scripts/tests/test_list_byoc_agents.py" in result.command
+    assert "scripts/tests/test_smoke_byoc_control_plane_reads.py" in result.command
+    assert "scripts/tests/test_submit_byoc_preflight_report.py" in result.command
+    assert "scripts/tests/test_submit_byoc_runner_evidence.py" in result.command
+    assert "scripts/tests/test_update_byoc_agent_desired_state.py" in result.command
+
+
+def test_byoc_post_deploy_validation_gate_passes_offline_contract() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_post_deploy_validation_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_post_deploy_validation.py" in result.command
+    assert result.artifacts == {
+        "manifest": "deploy/byoc/dataplane.example.yaml",
+        "env_template": ".env.production.example",
+    }
 
 
 def test_schema_drift_gate_requires_staging_database_url(monkeypatch) -> None:

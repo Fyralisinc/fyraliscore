@@ -81,6 +81,15 @@ _EXTENSION = RouteAccessPolicy(
     reason="extension API uses extension OAuth bearer plus tenant grant checks",
     gateway_bearer_required=False,
 )
+_BYOC_CONTROL_PLANE = RouteAccessPolicy(
+    access=RouteAccess.SELF_AUTHENTICATED,
+    reason=(
+        "BYOC data-plane route authenticated by signed enrollment, "
+        "signed evidence submissions, signed desired-state updates, "
+        "or mTLS-bound agent identity"
+    ),
+    gateway_bearer_required=False,
+)
 _INTERNAL_BEARER = RouteAccessPolicy(
     access=RouteAccess.INTERNAL,
     reason="internal API currently protected by gateway bearer auth; deployment boundary still required",
@@ -130,6 +139,8 @@ GATEWAY_BEARER_BYPASS_PREFIX_POLICIES: tuple[
     ("/api/debug/", _DEBUG),
     ("/webhooks/", _PROVIDER_SIGNED),
     ("/ext/", _EXTENSION),
+    ("/byoc/agent/", _BYOC_CONTROL_PLANE),
+    ("/byoc/control-plane/", _BYOC_CONTROL_PLANE),
 )
 
 GATEWAY_BEARER_BYPASS_PREFIXES = tuple(

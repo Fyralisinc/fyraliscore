@@ -5,6 +5,15 @@ from pathlib import Path
 from scripts.check_architecture_ratchets import (
     find_access_read_without_override_audit_violations,
     find_browser_token_storage_violations,
+    find_byoc_agent_contract_privacy_violations,
+    find_byoc_agent_registration_storage_violations,
+    find_byoc_agent_token_rotation_privacy_violations,
+    find_byoc_aws_live_preflight_privacy_violations,
+    find_byoc_evidence_receipt_storage_violations,
+    find_byoc_live_credential_rehearsal_privacy_violations,
+    find_byoc_manifest_privacy_violations,
+    find_byoc_preflight_report_receipt_storage_violations,
+    find_byoc_runner_evidence_receipt_storage_violations,
     find_destructive_migration_without_approval_violations,
     find_forbidden_metric_label_violations,
     find_import_linter_allowlist_violations,
@@ -930,6 +939,549 @@ def test_rollback_data_deletion_check_allows_code_only_rollback(
     violations = find_rollback_data_deletion_violations(repo_root=tmp_path)
 
     assert violations == []
+
+
+def test_byoc_manifest_privacy_check_flags_public_or_raw_egress(
+    tmp_path: Path,
+) -> None:
+    manifests = tmp_path / "deploy" / "byoc"
+    manifests.mkdir(parents=True)
+    (manifests / "bad.yaml").write_text(
+        """
+connectivity:
+  direction: inbound
+network:
+  endpoint_exposure:
+    - component: postgres
+      exposure: public
+telemetry:
+  raw_payloads_allowed: true
+data_residency:
+  prompts_leave_boundary: true
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_manifest_privacy_violations(repo_root=tmp_path)
+
+    assert [violation.check for violation in violations] == [
+        "byoc-manifest-privacy",
+        "byoc-manifest-privacy",
+        "byoc-manifest-privacy",
+        "byoc-manifest-privacy",
+    ]
+    assert {violation.line_number for violation in violations} == {2, 6, 8, 10}
+
+
+def test_byoc_manifest_privacy_check_allows_checked_in_manifest() -> None:
+    assert find_byoc_manifest_privacy_violations() == []
+
+
+def test_byoc_agent_contract_privacy_check_flags_raw_token_or_telemetry(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_agent_contract.py").write_text(
+        """
+from typing import Literal
+
+class ByocAgentTelemetryState:
+    raw_logs_allowed: bool = True
+    raw_payloads_allowed: Literal[False] = False
+    raw_prompts_allowed: Literal[False] = False
+    pii_allowed: Literal[False] = False
+
+class ByocAgentEnrollmentPayload:
+    install_token: str
+
+class ByocAgentEnrollmentRequest:
+    pass
+
+class ByocAgentHeartbeat:
+    pass
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_agent_contract_privacy_violations(repo_root=tmp_path)
+
+    assert [violation.check for violation in violations] == [
+        "byoc-agent-contract-privacy",
+        "byoc-agent-contract-privacy",
+    ]
+    assert {violation.line_number for violation in violations} == {4, 10}
+
+
+def test_byoc_agent_contract_privacy_check_allows_checked_in_contract() -> None:
+    assert find_byoc_agent_contract_privacy_violations() == []
+
+
+def test_byoc_agent_token_rotation_privacy_check_flags_raw_fields(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_agent_token_rotation.py").write_text(
+        """
+from typing import Literal
+
+class ByocAgentTokenRotationPrivacyContract:
+    raw_token_material_included: bool = True
+    secret_refs_included: Literal[False] = False
+    secret_ref_digests_included: Literal[True] = True
+    signatures_included: Literal[False] = False
+    request_bodies_included: Literal[False] = False
+    command_output_included: Literal[False] = False
+    cloud_credentials_included: Literal[False] = False
+    account_ids_included: Literal[False] = False
+    arns_included: Literal[False] = False
+    urls_included: Literal[False] = False
+    raw_payloads_included: Literal[False] = False
+    prompts_included: Literal[False] = False
+    logs_included: Literal[False] = False
+    pii_included: Literal[False] = False
+
+class ByocAgentTokenRotationPlanReport:
+    current_secret_ref: str
+    next_secret_ref_digest: str
+    raw_token_value: str
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_agent_token_rotation_privacy_violations(
+        repo_root=tmp_path,
+    )
+
+    assert [violation.check for violation in violations] == [
+        "byoc-agent-token-rotation-privacy",
+        "byoc-agent-token-rotation-privacy",
+        "byoc-agent-token-rotation-privacy",
+    ]
+    assert {violation.line_number for violation in violations} == {4, 20, 22}
+
+
+def test_byoc_agent_token_rotation_privacy_check_requires_digest_flag(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_agent_token_rotation.py").write_text(
+        """
+from typing import Literal
+
+class ByocAgentTokenRotationPrivacyContract:
+    raw_token_material_included: Literal[False] = False
+    secret_refs_included: Literal[False] = False
+    secret_ref_digests_included: bool = False
+    signatures_included: Literal[False] = False
+    request_bodies_included: Literal[False] = False
+    command_output_included: Literal[False] = False
+    cloud_credentials_included: Literal[False] = False
+    account_ids_included: Literal[False] = False
+    arns_included: Literal[False] = False
+    urls_included: Literal[False] = False
+    raw_payloads_included: Literal[False] = False
+    prompts_included: Literal[False] = False
+    logs_included: Literal[False] = False
+    pii_included: Literal[False] = False
+
+class ByocAgentTokenRotationPlanReport:
+    current_secret_ref_digest: str
+    next_secret_ref_digest: str
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_agent_token_rotation_privacy_violations(
+        repo_root=tmp_path,
+    )
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-agent-token-rotation-privacy"
+    assert violations[0].line_number == 6
+
+
+def test_byoc_agent_token_rotation_privacy_check_allows_checked_in_contract() -> None:
+    assert find_byoc_agent_token_rotation_privacy_violations() == []
+
+
+def test_byoc_live_credential_rehearsal_privacy_check_flags_raw_fields(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_live_credential_rehearsal.py").write_text(
+        """
+from typing import Literal
+
+class ByocLiveCredentialRehearsalPrivacyContract:
+    raw_payloads_included: Literal[False] = False
+    prompts_included: Literal[False] = False
+    embeddings_included: Literal[False] = False
+    raw_logs_included: Literal[False] = False
+    pii_included: Literal[False] = False
+    credentials_included: Literal[False] = False
+    account_ids_included: bool = True
+    arns_included: Literal[False] = False
+    urls_included: Literal[False] = False
+    policy_documents_included: Literal[False] = False
+    command_output_included: Literal[False] = False
+    child_report_details_included: Literal[False] = False
+    artifact_paths_included: Literal[False] = False
+
+class ByocLiveCredentialRehearsalReport:
+    account_id: str
+    caller_arn: str
+    artifacts_written: tuple[str, ...]
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_live_credential_rehearsal_privacy_violations(
+        repo_root=tmp_path,
+    )
+
+    assert [violation.check for violation in violations] == [
+        "byoc-live-credential-rehearsal-privacy",
+        "byoc-live-credential-rehearsal-privacy",
+        "byoc-live-credential-rehearsal-privacy",
+    ]
+    assert {violation.line_number for violation in violations} == {10, 19, 20}
+
+
+def test_byoc_live_credential_rehearsal_privacy_check_allows_checked_in_contract() -> None:
+    assert find_byoc_live_credential_rehearsal_privacy_violations() == []
+
+
+def test_byoc_aws_live_preflight_privacy_check_flags_serialized_identity(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_aws_live_preflight.py").write_text(
+        """
+from typing import Literal
+
+class ByocAwsLivePreflightPrivacyContract:
+    account_id_included: Literal[False] = False
+    caller_arn_included: Literal[False] = False
+    role_arn_included: Literal[False] = False
+    aws_profile_included: Literal[False] = False
+    aws_endpoint_urls_included: Literal[False] = False
+    credentials_included: Literal[False] = False
+    command_output_included: Literal[False] = False
+    policy_documents_included: Literal[False] = False
+    raw_customer_data_included: Literal[False] = False
+
+class ByocAwsLivePreflightReport:
+    account_id: str
+    caller_arn: str
+    cloud_credentials_required: bool
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_aws_live_preflight_privacy_violations(repo_root=tmp_path)
+
+    assert [violation.check for violation in violations] == [
+        "byoc-aws-live-preflight-privacy",
+        "byoc-aws-live-preflight-privacy",
+    ]
+    assert {violation.line_number for violation in violations} == {15, 16}
+
+
+def test_byoc_aws_live_preflight_privacy_check_requires_false_flags(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_aws_live_preflight.py").write_text(
+        """
+from typing import Literal
+
+class ByocAwsLivePreflightPrivacyContract:
+    account_id_included: bool = True
+    caller_arn_included: Literal[False] = False
+    role_arn_included: Literal[False] = False
+    aws_profile_included: Literal[False] = False
+    aws_endpoint_urls_included: Literal[False] = False
+    credentials_included: Literal[False] = False
+    command_output_included: Literal[False] = False
+    policy_documents_included: Literal[False] = False
+    raw_customer_data_included: Literal[False] = False
+
+class ByocAwsLivePreflightReport:
+    cloud_credentials_required: bool
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_aws_live_preflight_privacy_violations(repo_root=tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-aws-live-preflight-privacy"
+    assert violations[0].line_number == 4
+
+
+def test_byoc_aws_live_preflight_privacy_check_allows_checked_in_contract() -> None:
+    assert find_byoc_aws_live_preflight_privacy_violations() == []
+
+
+def test_byoc_evidence_receipt_storage_check_flags_json_body_columns(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0180_byoc_evidence_package_receipts.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_evidence_package_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  package_body JSONB,
+  stored_scope TEXT NOT NULL CHECK (stored_scope = 'sanitized_metadata_only')
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_evidence_receipt_storage_violations(repo_root=tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-evidence-receipt-storage"
+    assert "JSON" in violations[0].message
+
+
+def test_byoc_evidence_receipt_storage_check_requires_sanitized_scope(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0180_byoc_evidence_package_receipts.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_evidence_package_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  package_digest TEXT NOT NULL
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_evidence_receipt_storage_violations(repo_root=tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-evidence-receipt-storage"
+    assert "sanitized metadata scope" in violations[0].message
+
+
+def test_byoc_evidence_receipt_storage_check_allows_scalar_receipts(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0180_byoc_evidence_package_receipts.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_evidence_package_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  package_digest TEXT NOT NULL,
+  ledger_overall_status TEXT NOT NULL,
+  required_evidence_passed BOOLEAN NOT NULL,
+  stored_scope TEXT NOT NULL CHECK (stored_scope = 'sanitized_metadata_only')
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_evidence_receipt_storage_violations(repo_root=tmp_path)
+
+    assert violations == []
+
+
+def test_byoc_agent_registration_storage_check_flags_raw_body_columns(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0181_byoc_agent_registrations.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_agent_registrations (
+  deployment_id TEXT NOT NULL,
+  heartbeat_body JSONB,
+  stored_scope TEXT NOT NULL CHECK (stored_scope = 'sanitized_agent_metadata_only')
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_agent_registration_storage_violations(repo_root=tmp_path)
+
+    assert [violation.check for violation in violations] == [
+        "byoc-agent-registration-storage",
+    ]
+    assert {violation.line_number for violation in violations} == {3}
+
+
+def test_byoc_agent_registration_storage_check_requires_sanitized_scope(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0181_byoc_agent_registrations.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_agent_registrations (
+  deployment_id TEXT NOT NULL
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_agent_registration_storage_violations(repo_root=tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-agent-registration-storage"
+    assert "sanitized metadata scope" in violations[0].message
+
+
+def test_byoc_agent_registration_storage_check_scans_later_migrations(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0181_byoc_agent_registrations.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_agent_registrations (
+  deployment_id TEXT NOT NULL,
+  stored_scope TEXT NOT NULL CHECK (stored_scope = 'sanitized_agent_metadata_only')
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (migrations / "0184_byoc_agent_desired_state_metadata.sql").write_text(
+        """
+ALTER TABLE byoc_agent_registrations
+  ADD COLUMN IF NOT EXISTS desired_state_body JSONB;
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_agent_registration_storage_violations(repo_root=tmp_path)
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-agent-registration-storage"
+    assert violations[0].path == Path(
+        "db/migrations/0184_byoc_agent_desired_state_metadata.sql"
+    )
+    assert violations[0].line_number == 2
+
+
+def test_byoc_agent_registration_storage_check_allows_checked_in_migration() -> None:
+    assert find_byoc_agent_registration_storage_violations() == []
+
+
+def test_byoc_runner_evidence_receipt_storage_check_flags_json_body_columns(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0182_byoc_runner_evidence_receipts.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_runner_evidence_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  runner_report JSONB,
+  stored_scope TEXT NOT NULL CHECK (stored_scope = 'sanitized_metadata_only')
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_runner_evidence_receipt_storage_violations(
+        repo_root=tmp_path
+    )
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-runner-evidence-receipt-storage"
+    assert "JSON" in violations[0].message
+
+
+def test_byoc_runner_evidence_receipt_storage_check_requires_sanitized_scope(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0182_byoc_runner_evidence_receipts.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_runner_evidence_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  evidence_digest TEXT NOT NULL
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_runner_evidence_receipt_storage_violations(
+        repo_root=tmp_path
+    )
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-runner-evidence-receipt-storage"
+    assert "sanitized metadata scope" in violations[0].message
+
+
+def test_byoc_runner_evidence_receipt_storage_check_allows_checked_in_migration() -> None:
+    assert find_byoc_runner_evidence_receipt_storage_violations() == []
+
+
+def test_byoc_preflight_report_receipt_storage_check_flags_json_body_columns(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0183_byoc_preflight_report_receipts.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_preflight_report_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  preflight_report JSONB,
+  stored_scope TEXT NOT NULL CHECK (stored_scope = 'sanitized_metadata_only')
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_preflight_report_receipt_storage_violations(
+        repo_root=tmp_path
+    )
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-preflight-report-receipt-storage"
+    assert "JSON" in violations[0].message
+
+
+def test_byoc_preflight_report_receipt_storage_check_requires_sanitized_scope(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0183_byoc_preflight_report_receipts.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_preflight_report_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  report_digest TEXT NOT NULL
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_preflight_report_receipt_storage_violations(
+        repo_root=tmp_path
+    )
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-preflight-report-receipt-storage"
+    assert "sanitized metadata scope" in violations[0].message
+
+
+def test_byoc_preflight_report_receipt_storage_check_allows_checked_in_migration() -> None:
+    assert find_byoc_preflight_report_receipt_storage_violations() == []
 
 
 def test_production_rollback_automation_does_not_delete_data() -> None:

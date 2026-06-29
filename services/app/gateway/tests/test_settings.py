@@ -33,6 +33,7 @@ def _stub_managed_auth_secret(monkeypatch: pytest.MonkeyPatch) -> None:
 def _prod_env(**overrides: str) -> dict[str, str]:
     values = {
         "FYRALIS_ENV": "production",
+        "FYRALIS_DEPLOYMENT_MODE": "single-tenant",
         "SECRET_STORE_BACKEND": "fernet",
         "MASTER_KEK_PROVIDER": "aws-secrets-manager",
         "MASTER_KEK_SECRET_REF": "prod/fyralis/master-kek",
@@ -140,13 +141,14 @@ def test_gateway_production_detection_uses_all_runtime_env_labels() -> None:
 
 
 def test_gateway_production_requires_bootstrap_secret_and_disabled_panels() -> None:
-    with pytest.raises(ValueError, match="AUTH_BOOTSTRAP_SECRET"):
+    with pytest.raises(ValueError, match="FYRALIS_DEPLOYMENT_MODE"):
         GatewaySettings.from_env({"FYRALIS_ENV": "production"})
 
     with pytest.raises(ValueError, match="AUTH_BOOTSTRAP_SECRET.*32"):
         GatewaySettings.from_env(
             {
                 "FYRALIS_ENV": "production",
+                "FYRALIS_DEPLOYMENT_MODE": "single-tenant",
                 "SECRET_STORE_BACKEND": "fernet",
                 "MASTER_KEK_PROVIDER": "aws-secrets-manager",
                 "MASTER_KEK_SECRET_REF": "prod/fyralis/master-kek",
@@ -254,6 +256,138 @@ def test_gateway_production_requires_explicit_runtime_intent_flags() -> None:
     assert settings.require_realtime is True
     assert settings.require_github_integration is True
     assert settings.start_grt_scheduler is False
+
+
+def test_gateway_production_requires_explicit_deployment_mode() -> None:
+    values = _prod_env()
+    values.pop("FYRALIS_DEPLOYMENT_MODE")
+
+    with pytest.raises(ValueError, match="FYRALIS_DEPLOYMENT_MODE"):
+        GatewaySettings.from_env(values)
+
+
+def test_gateway_byoc_mode_requires_egress_only_privacy_contract() -> None:
+    byoc_env = _prod_env(
+        FYRALIS_DEPLOYMENT_MODE="byoc",
+        FYRALIS_BYOC_DEPLOYMENT_ID="dep_test001",
+        FYRALIS_BYOC_CUSTOMER_ID="cus_test001",
+        FYRALIS_BYOC_CLOUD_PROVIDER="aws",
+        FYRALIS_BYOC_REGION="us-east-1",
+        FYRALIS_CONTROL_PLANE_URL="https://control.fyralis.com",
+        FYRALIS_CONTROL_PLANE_CONNECTIVITY="egress_only",
+        FYRALIS_DATA_PLANE_AGENT_ENABLED="1",
+        FYRALIS_DATA_PLANE_AGENT_AUTH="mtls",
+        FYRALIS_DATA_PLANE_AGENT_INSTALL_TOKEN_SECRET_REF=(
+            "prod/fyralis/dep-test001/agent-bootstrap-token"
+        ),
+        FYRALIS_DATA_PLANE_AGENT_CLIENT_CERT_SECRET_REF=(
+            "prod/fyralis/dep-test001/agent-client-cert"
+        ),
+        FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF=(
+            "prod/fyralis/dep-test001/evidence-intake-signing-key"
+        ),
+        FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF=(
+            "prod/fyralis/dep-test001/evidence-intake-signing-key"
+        ),
+        FYRALIS_BYOC_EVIDENCE_READ_KEY_REF=(
+            "prod/fyralis/dep-test001/evidence-read-signing-key"
+        ),
+        FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF=(
+            "prod/fyralis/dep-test001/evidence-read-signing-key"
+        ),
+        FYRALIS_TELEMETRY_MODE="aggregate-only",
+        FYRALIS_TELEMETRY_RAW_LOGS_ALLOWED="0",
+        FYRALIS_TELEMETRY_RAW_PAYLOADS_ALLOWED="0",
+        FYRALIS_CONTROL_PLANE_INBOUND_ALLOWED="0",
+    )
+
+    settings = GatewaySettings.from_env(byoc_env)
+
+    assert settings.deployment_mode == "byoc"
+    assert settings.byoc_deployment_id == "dep_test001"
+    assert settings.byoc_customer_id == "cus_test001"
+    assert settings.byoc_cloud_provider == "aws"
+    assert settings.byoc_region == "us-east-1"
+    assert settings.control_plane_url == "https://control.fyralis.com"
+    assert settings.control_plane_connectivity == "egress_only"
+    assert settings.data_plane_agent_enabled is True
+    assert settings.data_plane_agent_auth == "mtls"
+    assert settings.data_plane_agent_install_token_secret_ref == (
+        "prod/fyralis/dep-test001/agent-bootstrap-token"
+    )
+    assert settings.data_plane_agent_client_cert_secret_ref == (
+        "prod/fyralis/dep-test001/agent-client-cert"
+    )
+    assert settings.byoc_evidence_intake_key_ref == (
+        "prod/fyralis/dep-test001/evidence-intake-signing-key"
+    )
+    assert settings.byoc_evidence_intake_signing_key_secret_ref == (
+        "prod/fyralis/dep-test001/evidence-intake-signing-key"
+    )
+    assert settings.byoc_evidence_read_key_ref == (
+        "prod/fyralis/dep-test001/evidence-read-signing-key"
+    )
+    assert settings.byoc_evidence_read_signing_key_secret_ref == (
+        "prod/fyralis/dep-test001/evidence-read-signing-key"
+    )
+    assert settings.telemetry_mode == "aggregate-only"
+    assert settings.telemetry_raw_logs_allowed is False
+    assert settings.telemetry_raw_payloads_allowed is False
+    assert settings.control_plane_inbound_allowed is False
+
+    with pytest.raises(ValueError, match="FYRALIS_CONTROL_PLANE_URL"):
+        GatewaySettings.from_env(
+            {**byoc_env, "FYRALIS_CONTROL_PLANE_URL": "http://control.example"}
+        )
+
+    with pytest.raises(ValueError, match="FYRALIS_DATA_PLANE_AGENT_ENABLED=1"):
+        GatewaySettings.from_env(
+            {**byoc_env, "FYRALIS_DATA_PLANE_AGENT_ENABLED": "0"}
+        )
+
+    with pytest.raises(ValueError, match="FYRALIS_TELEMETRY_RAW_LOGS_ALLOWED"):
+        GatewaySettings.from_env(
+            {**byoc_env, "FYRALIS_TELEMETRY_RAW_LOGS_ALLOWED": "1"}
+        )
+
+    with pytest.raises(ValueError, match="FYRALIS_CONTROL_PLANE_INBOUND_ALLOWED"):
+        GatewaySettings.from_env(
+            {**byoc_env, "FYRALIS_CONTROL_PLANE_INBOUND_ALLOWED": "1"}
+        )
+
+    with pytest.raises(ValueError, match="FYRALIS_BYOC_INSTALL_TOKEN"):
+        GatewaySettings.from_env(
+            {**byoc_env, "FYRALIS_BYOC_INSTALL_TOKEN": "raw-bootstrap-token"}
+        )
+
+    with pytest.raises(ValueError, match="FYRALIS_DATA_PLANE_AGENT_PRIVATE_KEY"):
+        GatewaySettings.from_env(
+            {**byoc_env, "FYRALIS_DATA_PLANE_AGENT_PRIVATE_KEY": "raw-key"}
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY",
+    ):
+        GatewaySettings.from_env(
+            {**byoc_env, "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY": "raw-key"}
+        )
+
+    with pytest.raises(ValueError, match="FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY"):
+        GatewaySettings.from_env(
+            {**byoc_env, "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY": "raw-key"}
+        )
+
+    for key in (
+        "FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF",
+        "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF",
+        "FYRALIS_BYOC_EVIDENCE_READ_KEY_REF",
+        "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF",
+    ):
+        missing = dict(byoc_env)
+        missing.pop(key)
+        with pytest.raises(ValueError, match=key):
+            GatewaySettings.from_env(missing)
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,348 @@
+schema_version: fyralis.byoc.permissions.v1
+deployment_id: dep_example01
+customer_id: cus_example01
+environment: prod
+cloud_provider: aws
+region: us-east-1
+artifact_revision: 2026.06.26-1
+
+principles:
+  customer_side_bootstrap_required: true
+  control_plane_mutating_access_allowed: false
+  raw_customer_data_access_from_control_plane: false
+  permissions_boundary_required: true
+  wildcard_admin_actions_allowed: false
+  long_lived_static_keys_allowed: false
+
+aws:
+  account_id: "123456789012"
+  partition: aws
+  region: us-east-1
+  cloudformation_stack_prefix: fyralis-dep-example01
+  permissions_boundary_policy_name: fyralis-dep-example01-boundary
+  required_resource_tag_keys:
+    - fyralis:deployment-id
+    - fyralis:customer-id
+    - fyralis:managed
+    - fyralis:environment
+  skeleton_template_path: deploy/byoc/aws/iam.bootstrap.template.yaml
+
+roles:
+  - name: bootstrap_provisioner
+    actor: customer_bootstrap_runner
+    trust_boundary: customer_owned
+    trusted_principal_ref: customer://bootstrap-runner
+    permissions_boundary_required: true
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    max_session_duration_seconds: 3600
+    managed_policy_arns: []
+    grants:
+      - sid: ReadAccountAndRegionPreflight
+        effect: Allow
+        actions:
+          - sts:GetCallerIdentity
+          - ec2:DescribeAvailabilityZones
+          - ec2:DescribeVpcs
+          - ec2:DescribeSubnets
+          - ec2:DescribeSecurityGroups
+          - ec2:DescribeRouteTables
+          - ec2:DescribeVpcEndpoints
+          - eks:DescribeCluster
+          - rds:DescribeDBInstances
+          - elasticache:DescribeCacheClusters
+          - kafka:ListClustersV2
+        resource_refs:
+          - "*"
+        resource_scope: account_metadata
+        customer_data_access: none
+        conditions:
+          - operator: StringEquals
+            key: aws:RequestedRegion
+            values:
+              - us-east-1
+      - sid: ManageDeploymentStacksOnly
+        effect: Allow
+        actions:
+          - cloudformation:CreateChangeSet
+          - cloudformation:CreateStack
+          - cloudformation:DeleteChangeSet
+          - cloudformation:DeleteStack
+          - cloudformation:DescribeChangeSet
+          - cloudformation:DescribeStackEvents
+          - cloudformation:DescribeStacks
+          - cloudformation:ExecuteChangeSet
+          - cloudformation:GetTemplate
+          - cloudformation:UpdateStack
+        resource_refs:
+          - arn:aws:cloudformation:us-east-1:123456789012:stack/fyralis-dep-example01-*/*
+        resource_scope: deployment_stack
+        customer_data_access: none
+        conditions:
+          - operator: StringEquals
+            key: aws:RequestedRegion
+            values:
+              - us-east-1
+      - sid: PassCloudFormationServiceRoleOnly
+        effect: Allow
+        actions:
+          - iam:PassRole
+        resource_refs:
+          - arn:aws:iam::123456789012:role/fyralis-dep-example01-cloudformation-service-role
+        resource_scope: deployment_role
+        customer_data_access: none
+        conditions:
+          - operator: StringEquals
+            key: iam:PassedToService
+            values:
+              - cloudformation.amazonaws.com
+      - sid: ReadTaggedResourcesForDrift
+        effect: Allow
+        actions:
+          - tag:GetResources
+        resource_refs:
+          - "*"
+        resource_scope: account_metadata
+        customer_data_access: none
+        conditions:
+          - operator: StringEquals
+            key: aws:RequestedRegion
+            values:
+              - us-east-1
+
+  - name: cloudformation_service
+    actor: customer_cloudformation
+    trust_boundary: aws_service
+    trusted_principal_ref: cloudformation.amazonaws.com
+    permissions_boundary_required: true
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    max_session_duration_seconds: 3600
+    managed_policy_arns: []
+    grants:
+      - sid: ManageDeploymentNetwork
+        effect: Allow
+        actions:
+          - ec2:CreateVpc
+          - ec2:CreateSubnet
+          - ec2:CreateSecurityGroup
+          - ec2:AuthorizeSecurityGroupIngress
+          - ec2:AuthorizeSecurityGroupEgress
+          - ec2:CreateVpcEndpoint
+          - ec2:CreateTags
+          - ec2:DeleteVpcEndpoint
+          - ec2:DeleteSecurityGroup
+          - ec2:DeleteSubnet
+          - ec2:DeleteVpc
+        resource_refs:
+          - arn:aws:ec2:us-east-1:123456789012:vpc/fyralis-dep-example01-*
+          - arn:aws:ec2:us-east-1:123456789012:subnet/fyralis-dep-example01-*
+          - arn:aws:ec2:us-east-1:123456789012:security-group/fyralis-dep-example01-*
+          - arn:aws:ec2:us-east-1:123456789012:vpc-endpoint/fyralis-dep-example01-*
+        resource_scope: deployment_network
+        customer_data_access: none
+        conditions:
+          - operator: StringEquals
+            key: aws:RequestTag/fyralis:deployment-id
+            values:
+              - dep_example01
+          - operator: StringEquals
+            key: aws:ResourceTag/fyralis:deployment-id
+            values:
+              - dep_example01
+      - sid: ManageRuntimeRoles
+        effect: Allow
+        actions:
+          - iam:CreateRole
+          - iam:DeleteRole
+          - iam:GetRole
+          - iam:PutRolePolicy
+          - iam:DeleteRolePolicy
+          - iam:TagRole
+          - iam:PassRole
+        resource_refs:
+          - arn:aws:iam::123456789012:role/fyralis-dep-example01-*
+        resource_scope: deployment_role
+        customer_data_access: none
+        conditions:
+          - operator: StringEquals
+            key: iam:PassedToService
+            values:
+              - eks.amazonaws.com
+              - ecs-tasks.amazonaws.com
+              - cloudformation.amazonaws.com
+      - sid: ManageSecretNamespace
+        effect: Allow
+        actions:
+          - secretsmanager:CreateSecret
+          - secretsmanager:DescribeSecret
+          - secretsmanager:TagResource
+          - secretsmanager:DeleteSecret
+        resource_refs:
+          - arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/fyralis/dep-example01/*
+        resource_scope: deployment_secret_namespace
+        customer_data_access: none
+      - sid: ManageDeploymentKmsKey
+        effect: Allow
+        actions:
+          - kms:CreateGrant
+          - kms:DescribeKey
+        resource_refs:
+          - arn:aws:kms:us-east-1:123456789012:alias/fyralis-dep-example01-*
+        resource_scope: deployment_kms_key
+        customer_data_access: none
+      - sid: ManageObjectBuckets
+        effect: Allow
+        actions:
+          - s3:CreateBucket
+          - s3:GetBucketLocation
+          - s3:PutBucketEncryption
+          - s3:PutBucketVersioning
+          - s3:PutBucketTagging
+          - s3:PutLifecycleConfiguration
+          - s3:DeleteBucket
+        resource_refs:
+          - arn:aws:s3:::fyralis-dep-example01-*
+        resource_scope: deployment_object_bucket
+        customer_data_access: none
+
+  - name: data_plane_agent
+    actor: data_plane_agent
+    trust_boundary: workload_identity
+    trusted_principal_ref: arn:aws:iam::123456789012:oidc-provider/eks.example/id/fyralis
+    permissions_boundary_required: true
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    max_session_duration_seconds: 3600
+    managed_policy_arns: []
+    grants:
+      - sid: ReadAgentBootstrapSecrets
+        effect: Allow
+        actions:
+          - secretsmanager:GetSecretValue
+          - secretsmanager:DescribeSecret
+          - kms:Decrypt
+        resource_refs:
+          - arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/fyralis/dep-example01/agent-*
+          - arn:aws:kms:us-east-1:123456789012:alias/fyralis-dep-example01-*
+        resource_scope: deployment_secret_namespace
+        customer_data_access: secret_material
+      - sid: PublishAggregateHealthMetrics
+        effect: Allow
+        actions:
+          - cloudwatch:PutMetricData
+        resource_refs:
+          - arn:aws:cloudwatch:us-east-1:123456789012:namespace/Fyralis/dep-example01
+        resource_scope: deployment_metrics_namespace
+        customer_data_access: aggregate_metadata
+
+  - name: gateway_runtime
+    actor: gateway_runtime
+    trust_boundary: workload_identity
+    trusted_principal_ref: arn:aws:iam::123456789012:oidc-provider/eks.example/id/fyralis
+    permissions_boundary_required: true
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    max_session_duration_seconds: 3600
+    managed_policy_arns: []
+    grants:
+      - sid: ReadGatewayRuntimeSecrets
+        effect: Allow
+        actions:
+          - secretsmanager:GetSecretValue
+          - secretsmanager:DescribeSecret
+          - kms:Decrypt
+        resource_refs:
+          - arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/fyralis/dep-example01/gateway-*
+          - arn:aws:kms:us-east-1:123456789012:alias/fyralis-dep-example01-*
+        resource_scope: deployment_secret_namespace
+        customer_data_access: secret_material
+      - sid: AccessRawPayloadBucketInsideDataPlane
+        effect: Allow
+        actions:
+          - s3:GetObject
+          - s3:PutObject
+          - s3:ListBucket
+        resource_refs:
+          - arn:aws:s3:::fyralis-dep-example01-raw
+          - arn:aws:s3:::fyralis-dep-example01-raw/*
+        resource_scope: deployment_object_bucket
+        customer_data_access: encrypted_customer_data
+
+  - name: worker_runtime
+    actor: worker_runtime
+    trust_boundary: workload_identity
+    trusted_principal_ref: arn:aws:iam::123456789012:oidc-provider/eks.example/id/fyralis
+    permissions_boundary_required: true
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    max_session_duration_seconds: 3600
+    managed_policy_arns: []
+    grants:
+      - sid: ReadWorkerRuntimeSecrets
+        effect: Allow
+        actions:
+          - secretsmanager:GetSecretValue
+          - secretsmanager:DescribeSecret
+          - kms:Decrypt
+        resource_refs:
+          - arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/fyralis/dep-example01/worker-*
+          - arn:aws:kms:us-east-1:123456789012:alias/fyralis-dep-example01-*
+        resource_scope: deployment_secret_namespace
+        customer_data_access: secret_material
+      - sid: AccessRawPayloadBucketInsideDataPlane
+        effect: Allow
+        actions:
+          - s3:GetObject
+          - s3:PutObject
+          - s3:ListBucket
+        resource_refs:
+          - arn:aws:s3:::fyralis-dep-example01-raw
+          - arn:aws:s3:::fyralis-dep-example01-raw/*
+        resource_scope: deployment_object_bucket
+        customer_data_access: encrypted_customer_data
+
+  - name: migration_runner
+    actor: migration_runner
+    trust_boundary: workload_identity
+    trusted_principal_ref: arn:aws:iam::123456789012:oidc-provider/eks.example/id/fyralis
+    permissions_boundary_required: true
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    max_session_duration_seconds: 1800
+    managed_policy_arns: []
+    grants:
+      - sid: ReadMigrationSecrets
+        effect: Allow
+        actions:
+          - secretsmanager:GetSecretValue
+          - secretsmanager:DescribeSecret
+          - kms:Decrypt
+        resource_refs:
+          - arn:aws:secretsmanager:us-east-1:123456789012:secret:prod/fyralis/dep-example01/migration-*
+          - arn:aws:kms:us-east-1:123456789012:alias/fyralis-dep-example01-*
+        resource_scope: deployment_secret_namespace
+        customer_data_access: secret_material
+      - sid: ReadMigrationArtifacts
+        effect: Allow
+        actions:
+          - s3:GetObject
+        resource_refs:
+          - arn:aws:s3:::fyralis-dep-example01-artifacts/migrations/*
+        resource_scope: deployment_object_bucket
+        customer_data_access: none
+
+  - name: observability_runtime
+    actor: observability_runtime
+    trust_boundary: workload_identity
+    trusted_principal_ref: arn:aws:iam::123456789012:oidc-provider/eks.example/id/fyralis
+    permissions_boundary_required: true
+    permissions_boundary_ref: arn:aws:iam::123456789012:policy/fyralis-dep-example01-boundary
+    max_session_duration_seconds: 3600
+    managed_policy_arns: []
+    grants:
+      - sid: PublishAggregateTelemetryOnly
+        effect: Allow
+        actions:
+          - cloudwatch:PutMetricData
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+        resource_refs:
+          - arn:aws:cloudwatch:us-east-1:123456789012:namespace/Fyralis/dep-example01
+          - arn:aws:logs:us-east-1:123456789012:log-group:/aws/fyralis/dep-example01/*
+        resource_scope: deployment_metrics_namespace
+        customer_data_access: aggregate_metadata

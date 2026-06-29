@@ -1,0 +1,111 @@
+schema_version: fyralis.byoc.dataplane.v1
+deployment_id: dep_example01
+customer_id: cus_example01
+environment: prod
+cloud_provider: aws
+region: us-east-1
+artifact_revision: 2026.06.26-1
+
+connectivity:
+  direction: egress_only
+  protocol: https
+  port: 443
+  auth: mtls
+  control_plane_url: https://control.fyralis.com
+  agent_poll_interval_seconds: 30
+  heartbeat_interval_seconds: 15
+  fail_closed_for_new_config_after: 24h
+  continue_serving_local_traffic_when_disconnected: true
+
+network:
+  customer_ingress_components:
+    - gateway
+  endpoint_exposure:
+    - component: gateway
+      exposure: customer_ingress
+      notes: Customer-owned ingress; not used by the Fyralis control plane.
+    - component: postgres
+      exposure: private
+    - component: broker
+      exposure: private
+    - component: object_storage
+      exposure: private
+    - component: redis
+      exposure: private
+    - component: embedding
+      exposure: private
+    - component: observability
+      exposure: private
+    - component: metrics
+      exposure: private
+    - component: data_plane_agent
+      exposure: private
+  private_service_endpoints:
+    - postgres
+    - broker
+    - object_storage
+    - redis
+    - embedding
+    - observability
+    - metrics
+    - data_plane_agent
+  control_plane_inbound_allowed: false
+
+identity:
+  runtime_identity: workload_identity
+  provisioner_identity_ref: arn:aws:iam::123456789012:role/fyralis-dep-example01-provisioner
+  agent_identity_ref: arn:aws:iam::123456789012:role/fyralis-dep-example01-agent
+
+secrets:
+  provider: aws-secrets-manager
+  region: us-east-1
+  master_kek_secret_ref: prod/fyralis/dep-example01/master-kek
+  bootstrap_token_secret_ref: prod/fyralis/dep-example01/agent-bootstrap-token
+  agent_client_certificate_secret_ref: prod/fyralis/dep-example01/agent-client-cert
+  raw_env_secrets_allowed: false
+
+telemetry:
+  mode: aggregate-only
+  contract: aggregate-only-v1
+  max_batch_bytes: 262144
+  raw_logs_allowed: false
+  raw_payloads_allowed: false
+  raw_prompts_allowed: false
+  pii_allowed: false
+  allowlisted_label_keys:
+    - deployment_id
+    - region
+    - component
+    - version
+    - route_template
+    - source_family
+    - status_class
+    - error_code
+    - resource_class
+    - phase
+
+data_residency:
+  raw_payloads_leave_boundary: false
+  prompts_leave_boundary: false
+  embeddings_leave_boundary: false
+  logs_leave_boundary: false
+  pii_leaves_boundary: false
+  provider_secrets_leave_boundary: false
+
+runtime:
+  process_manifest: production
+  per_source_isolation: true
+  allowed_source_families:
+    - slack
+    - github
+    - gmail
+    - google_calendar
+    - google_drive
+    - jira
+  disabled_processes:
+    - name: discord_gateway_worker
+      reason: First customer profile does not enable Discord.
+    - name: telegram_gateway_worker
+      reason: First customer profile does not enable Telegram.
+    - name: signal_gateway_worker
+      reason: First customer profile does not enable Signal.

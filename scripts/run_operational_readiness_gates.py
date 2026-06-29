@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -477,6 +478,596 @@ def _production_env_contract_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _byoc_dataplane_contract_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_dataplane_contract",
+        _python_command(
+            "scripts/validate_byoc_dataplane_manifest.py",
+            "deploy/byoc/dataplane.example.yaml",
+        ),
+        details=(
+            "Checked-in BYOC data-plane manifest preserves egress-only "
+            "control-plane connectivity and privacy-safe telemetry defaults."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={"manifest": "deploy/byoc/dataplane.example.yaml"},
+    )
+
+
+def _byoc_permissions_contract_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_permissions_contract",
+        _python_command(
+            "scripts/validate_byoc_permissions_manifest.py",
+            "deploy/byoc/permissions.example.yaml",
+            "--dataplane-manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--aws-template",
+            "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        ),
+        details=(
+            "Checked-in BYOC permissions manifest and AWS IAM skeleton preserve "
+            "customer-side bootstrap, boundaries, and least-privilege role shape."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "manifest": "deploy/byoc/permissions.example.yaml",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "aws_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        },
+    )
+
+
+def _byoc_aws_live_preflight_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_aws_live_preflight_contract",
+        _python_command(
+            "scripts/run_byoc_aws_live_preflight.py",
+            "--json",
+            "--skip-live-aws",
+            "--dataplane-manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--permissions-manifest",
+            "deploy/byoc/permissions.example.yaml",
+            "--iam-template",
+            "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        ),
+        details=(
+            "BYOC AWS live preflight emits a sanitized report contract for "
+            "customer-side STS, read-only API probes, and optional IAM "
+            "simulation without requiring cloud credentials in CI."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        },
+    )
+
+
+def _byoc_aws_iac_package_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_aws_iac_package",
+        _python_command(
+            "scripts/generate_byoc_aws_iac_package.py",
+            "--check-package",
+            "deploy/byoc/aws/iac-package.example.yaml",
+            "--dataplane-manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--permissions-manifest",
+            "deploy/byoc/permissions.example.yaml",
+            "--iam-template",
+            "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        ),
+        details=(
+            "Checked-in BYOC AWS IaC scaffold is customer-side, non-mutating, "
+            "identity-aligned, and declares required module, tag, and variable "
+            "contracts."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "package": "deploy/byoc/aws/iac-package.example.yaml",
+            "terraform_root": "deploy/byoc/aws/terraform",
+            "terraform_modules": "deploy/byoc/aws/terraform/modules",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        },
+    )
+
+
+def _byoc_terraform_plan_validation_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_terraform_plan_validation",
+        _python_command(
+            "scripts/run_byoc_terraform_plan_validation.py",
+            "--json",
+            "--iac-package",
+            "deploy/byoc/aws/iac-package.example.yaml",
+            "--dataplane-manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--permissions-manifest",
+            "deploy/byoc/permissions.example.yaml",
+            "--iam-template",
+            "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        ),
+        details=(
+            "BYOC Terraform scaffold validation emits contract-only, "
+            "raw-output-free evidence for the AWS module layout; optional "
+            "terraform init/validate execution remains customer-side and "
+            "sanitized."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "iac_package": "deploy/byoc/aws/iac-package.example.yaml",
+            "terraform_root": "deploy/byoc/aws/terraform",
+            "terraform_modules": "deploy/byoc/aws/terraform/modules",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        },
+    )
+
+
+def _byoc_bootstrap_bundle_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_bootstrap_bundle",
+        _python_command(
+            "scripts/verify_byoc_bootstrap_bundle.py",
+            "deploy/byoc/bootstrap-bundle.example.yaml",
+            "--dataplane-manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--permissions-manifest",
+            "deploy/byoc/permissions.example.yaml",
+            "--verify-local-files",
+        ),
+        details=(
+            "Checked-in BYOC bootstrap bundle pins signed image/chart/IaC "
+            "artifacts, matches deployment contracts, and verifies local hashes."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        },
+    )
+
+
+def _byoc_bootstrap_plan_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_bootstrap_plan",
+        _python_command(
+            "scripts/generate_byoc_bootstrap_plan.py",
+            "--check-plan",
+            "deploy/byoc/bootstrap-plan.example.yaml",
+        ),
+        details=(
+            "Checked-in BYOC bootstrap dry-run plan matches current manifests "
+            "and contains no mutating cloud commands."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+            "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+        },
+    )
+
+
+def _byoc_bootstrap_runner_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_bootstrap_runner_report",
+        _python_command(
+            "scripts/run_byoc_bootstrap_runner.py",
+            "--json",
+            "--env-file",
+            ".env.production.example",
+        ),
+        details=(
+            "BYOC bootstrap runner dry-run emits sanitized local evidence "
+            "without executing cloud, live, or mutating commands."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+            "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "env_template": ".env.production.example",
+        },
+    )
+
+
+def _byoc_preflight_bundle_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_preflight_bundle",
+        _python_command(
+            "scripts/run_byoc_preflight_bundle.py",
+            "--json",
+            "--env-file",
+            ".env.production.example",
+        ),
+        details=(
+            "BYOC preflight bundle aggregates customer-side local contract, "
+            "Terraform scaffold, bootstrap bundle, dry-run runner, and offline "
+            "post-deploy validation evidence without child report details or "
+            "command output."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+            "iac_package": "deploy/byoc/aws/iac-package.example.yaml",
+            "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+            "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+            "env_template": ".env.production.example",
+        },
+    )
+
+
+def _byoc_agent_probe_gate(args: argparse.Namespace) -> GateResult:
+    env = _base_env()
+    env.setdefault(
+        "FYRALIS_BYOC_INSTALL_TOKEN",
+        "local-byoc-agent-probe-token-for-readiness-gate",
+    )
+    return _run_command_gate(
+        "byoc_agent_probe",
+        _python_command(
+            "scripts/run_byoc_agent_probe.py",
+            "--json",
+        ),
+        details=(
+            "BYOC data-plane agent probe completes enrollment, metadata-only "
+            "desired-state polling, and a privacy-safe heartbeat through the "
+            "local control-plane contract."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=env,
+        artifacts={"manifest": "deploy/byoc/dataplane.example.yaml"},
+    )
+
+
+def _byoc_agent_runner_gate(args: argparse.Namespace) -> GateResult:
+    env = _base_env()
+    env.setdefault(
+        "FYRALIS_BYOC_INSTALL_TOKEN",
+        "local-byoc-agent-runner-token-for-readiness-gate",
+    )
+    return _run_command_gate(
+        "byoc_agent_runner",
+        _python_command(
+            "scripts/run_byoc_agent_runner.py",
+            "--json",
+            "--iterations",
+            "2",
+            "--mock-desired-revision",
+            "2026.06.26-2",
+            "--mock-config-epoch",
+            "1",
+            "--bootstrap-bundle",
+            "deploy/byoc/bootstrap-bundle.next.example.yaml",
+            "--verify-local-bundle-files",
+            "--repo-root",
+            str(REPO_ROOT),
+        ),
+        details=(
+            "BYOC data-plane agent runner enrolls once, polls metadata-only "
+            "desired state, builds sanitized non-mutating apply-plan evidence, "
+            "maps the desired revision to digest-pinned bundle metadata, and "
+            "submits privacy-safe heartbeats through the bounded local "
+            "control-plane loop."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=env,
+        artifacts={
+            "manifest": "deploy/byoc/dataplane.example.yaml",
+            "bundle": "deploy/byoc/bootstrap-bundle.next.example.yaml",
+        },
+    )
+
+
+def _byoc_agent_token_rotation_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_agent_token_rotation_plan",
+        _python_command(
+            "scripts/run_byoc_agent_token_rotation_plan.py",
+            "--json",
+            "--manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--next-install-token-secret-ref",
+            "prod/fyralis/dep-example01/agent-bootstrap-token-v2",
+            "--activation-epoch",
+            "2",
+        ),
+        details=(
+            "BYOC agent install-token rotation plan validates dual-ref "
+            "overlap and emits only salted ref digests, with no raw token "
+            "material, secret refs, command output, or cloud mutation."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={"manifest": "deploy/byoc/dataplane.example.yaml"},
+    )
+
+
+def _byoc_evidence_ledger_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_evidence_ledger",
+        _python_command(
+            "scripts/generate_byoc_evidence_ledger.py",
+            "--check-ledger",
+            "deploy/byoc/evidence-ledger.example.yaml",
+            "--env-file",
+            ".env.production.example",
+        ),
+        details=(
+            "Checked-in BYOC evidence ledger records only sanitized "
+            "deployment metadata, aggregate counts, bounded failure codes, and "
+            "contract-only Terraform validation evidence."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+            "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+            "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+            "iac_package": "deploy/byoc/aws/iac-package.example.yaml",
+            "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "env_template": ".env.production.example",
+        },
+    )
+
+
+def _byoc_evidence_package_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_evidence_package",
+        _python_command(
+            "scripts/generate_byoc_evidence_package.py",
+            "--check-package",
+            "deploy/byoc/evidence-package.example.yaml",
+        ),
+        details=(
+            "Checked-in BYOC evidence package embeds only the sanitized ledger "
+            "and digest-pinned handoff metadata."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "package": "deploy/byoc/evidence-package.example.yaml",
+            "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+            "plan": "deploy/byoc/bootstrap-plan.example.yaml",
+            "bundle": "deploy/byoc/bootstrap-bundle.example.yaml",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "aws_iac_package": "deploy/byoc/aws/iac-package.example.yaml",
+        },
+    )
+
+
+def _byoc_source_onboarding_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_source_onboarding_gate",
+        _python_command(
+            "scripts/check_byoc_source_onboarding_gate.py",
+            "--json",
+            "--evidence-package",
+            "deploy/byoc/evidence-package.example.yaml",
+        ),
+        details=(
+            "BYOC source-onboarding gate allows first-source enablement only "
+            "after sanitized deployment evidence has passed; stricter live "
+            "AWS/post-deploy requirements remain operator opt-ins."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={"package": "deploy/byoc/evidence-package.example.yaml"},
+    )
+
+
+def _byoc_customer_handoff_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_customer_handoff_readiness",
+        _python_command(
+            "scripts/run_byoc_customer_handoff.py",
+            "--json",
+            "--env-file",
+            ".env.production.example",
+        ),
+        details=(
+            "BYOC customer handoff readiness composes the local preflight, "
+            "sanitized evidence-package contract, and first-source onboarding "
+            "gate into one privacy-safe go/no-go report."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "package": "deploy/byoc/evidence-package.example.yaml",
+            "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "env_template": ".env.production.example",
+        },
+    )
+
+
+def _byoc_handoff_bundle_index_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_handoff_bundle_index",
+        _python_command(
+            "scripts/generate_byoc_handoff_bundle_index.py",
+            "--json",
+        ),
+        details=(
+            "BYOC customer handoff bundle index enumerates sanitized handoff "
+            "artifacts and signed read endpoints without embedding raw reports, "
+            "URLs, signed headers, credentials, logs, or payload bodies."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "package": "deploy/byoc/evidence-package.example.yaml",
+            "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+        },
+    )
+
+
+def _byoc_live_credential_rehearsal_gate(args: argparse.Namespace) -> GateResult:
+    output_dir = Path(tempfile.mkdtemp(prefix="fyralis-byoc-live-rehearsal-"))
+    return _run_command_gate(
+        "byoc_live_credential_rehearsal",
+        _python_command(
+            "scripts/run_byoc_live_credential_rehearsal.py",
+            "--json",
+            "--output-dir",
+            str(output_dir),
+            "--env-file",
+            ".env.production.example",
+            "--skip-live-aws",
+        ),
+        details=(
+            "BYOC live-credential rehearsal builds sanitized AWS-preflight, "
+            "evidence-ledger, evidence-package, and source-gate artifacts in "
+            "CI smoke mode without AWS calls or cloud mutations."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "output_dir": str(output_dir),
+            "mode": "ci_skip_live_aws",
+        },
+    )
+
+
+def _byoc_live_test_readiness_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_live_test_readiness",
+        _python_command(
+            "scripts/check_byoc_live_test_readiness.py",
+            "--json",
+        ),
+        details=(
+            "BYOC live AWS test readiness validates contracts, operator "
+            "scripts, and sanitized local AWS-access prerequisites without "
+            "making AWS API calls."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+            "permissions_manifest": "deploy/byoc/permissions.example.yaml",
+            "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+        },
+    )
+
+
+def _byoc_launch_readiness_summary_gate(args: argparse.Namespace) -> GateResult:
+    return _pytest_gate(
+        "byoc_launch_readiness_summary",
+        [
+            "services/platform/runtime/tests/test_byoc_control_plane_read_smoke_summary.py",
+            "services/platform/runtime/tests/test_byoc_launch_readiness_summary.py",
+            "scripts/tests/test_summarize_byoc_control_plane_read_smoke.py",
+            "scripts/tests/test_summarize_byoc_launch_readiness.py",
+        ],
+        details=(
+            "BYOC launch readiness summary sanitizes control-plane read smoke "
+            "output and composes live-test, handoff, bundle-index, and read "
+            "smoke artifacts into a metadata-only customer-pilot go/no-go "
+            "report."
+        ),
+        args=args,
+        timeout_s=min(args.command_timeout_s, 60),
+    )
+
+
+def _byoc_customer_pilot_package_gate(args: argparse.Namespace) -> GateResult:
+    return _pytest_gate(
+        "byoc_customer_pilot_package",
+        [
+            "services/platform/runtime/tests/test_byoc_customer_pilot_package.py",
+            "scripts/tests/test_build_byoc_customer_pilot_package.py",
+            "scripts/tests/test_check_byoc_customer_pilot_package.py",
+        ],
+        details=(
+            "BYOC customer-pilot package builder and checker generate and "
+            "verify the local sanitized handoff, read-smoke summary, handoff "
+            "index, launch summary, and package manifest without cloud "
+            "credentials or raw data."
+        ),
+        args=args,
+        timeout_s=min(args.command_timeout_s, 60),
+    )
+
+
+def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
+    return _pytest_gate(
+        "byoc_control_plane_intake",
+        [
+            "services/platform/runtime/tests/test_byoc_agent_control_plane.py",
+            "services/platform/runtime/tests/test_byoc_control_plane_intake.py",
+            "services/platform/runtime/tests/test_byoc_preflight_intake.py",
+            "services/platform/runtime/tests/test_byoc_runner_evidence_intake.py",
+            "services/app/gateway/tests/test_byoc_agent_router.py",
+            "services/app/gateway/tests/test_byoc_control_plane_router.py",
+            "services/app/gateway/tests/test_route_access_policy.py",
+            "scripts/tests/test_get_byoc_deployment_overview.py",
+            "scripts/tests/test_list_byoc_agents.py",
+            "scripts/tests/test_smoke_byoc_control_plane_reads.py",
+            "scripts/tests/test_submit_byoc_preflight_report.py",
+            "scripts/tests/test_submit_byoc_runner_evidence.py",
+            "scripts/tests/test_update_byoc_agent_desired_state.py",
+        ],
+        details=(
+            "BYOC control-plane intake accepts signed agent enrollment, "
+            "privacy-safe heartbeat, signed desired-state polling, signed "
+            "desired-state updates, signed fleet/overview/smoke reads, and "
+            "signed sanitized evidence packages, preflight reports, and "
+            "runner evidence while storing metadata only."
+        ),
+        args=args,
+        timeout_s=min(args.command_timeout_s, 60),
+    )
+
+
+def _byoc_post_deploy_validation_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_post_deploy_validation",
+        _python_command(
+            "scripts/run_byoc_post_deploy_validation.py",
+            "--manifest",
+            "deploy/byoc/dataplane.example.yaml",
+            "--env-file",
+            ".env.production.example",
+        ),
+        details=(
+            "BYOC post-deploy validator passes its offline manifest, env, "
+            "runtime, secret-ref, and telemetry privacy checks."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "manifest": "deploy/byoc/dataplane.example.yaml",
+            "env_template": ".env.production.example",
+        },
+    )
+
+
 def _github_required_checks_gate(args: argparse.Namespace) -> GateResult:
     token_present = bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
     repo_present = bool(os.environ.get("GITHUB_REPOSITORY"))
@@ -508,6 +1099,29 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
     gates: list[GateResult] = [
         _artifact_gate(),
         _production_env_contract_gate(args),
+        _byoc_dataplane_contract_gate(args),
+        _byoc_permissions_contract_gate(args),
+        _byoc_aws_live_preflight_gate(args),
+        _byoc_aws_iac_package_gate(args),
+        _byoc_terraform_plan_validation_gate(args),
+        _byoc_bootstrap_bundle_gate(args),
+        _byoc_bootstrap_plan_gate(args),
+        _byoc_bootstrap_runner_gate(args),
+        _byoc_preflight_bundle_gate(args),
+        _byoc_agent_probe_gate(args),
+        _byoc_agent_runner_gate(args),
+        _byoc_agent_token_rotation_gate(args),
+        _byoc_evidence_ledger_gate(args),
+        _byoc_evidence_package_gate(args),
+        _byoc_source_onboarding_gate(args),
+        _byoc_customer_handoff_gate(args),
+        _byoc_handoff_bundle_index_gate(args),
+        _byoc_live_test_readiness_gate(args),
+        _byoc_launch_readiness_summary_gate(args),
+        _byoc_customer_pilot_package_gate(args),
+        _byoc_live_credential_rehearsal_gate(args),
+        _byoc_control_plane_intake_gate(args),
+        _byoc_post_deploy_validation_gate(args),
         _github_required_checks_gate(args),
         _feedback_gap_gate(args),
         _storyline_report_gate(args),
