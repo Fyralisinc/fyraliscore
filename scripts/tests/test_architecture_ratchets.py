@@ -9,10 +9,15 @@ from scripts.check_architecture_ratchets import (
     find_byoc_agent_registration_storage_violations,
     find_byoc_agent_token_rotation_privacy_violations,
     find_byoc_aws_live_preflight_privacy_violations,
+    find_byoc_control_panel_access_privacy_violations,
+    find_byoc_control_panel_access_storage_violations,
+    find_byoc_control_panel_state_privacy_violations,
+    find_byoc_customer_pilot_rehearsal_privacy_violations,
     find_byoc_evidence_receipt_storage_violations,
     find_byoc_live_credential_rehearsal_privacy_violations,
     find_byoc_manifest_privacy_violations,
     find_byoc_preflight_report_receipt_storage_violations,
+    find_byoc_product_health_collector_privacy_violations,
     find_byoc_runner_evidence_receipt_storage_violations,
     find_destructive_migration_without_approval_violations,
     find_forbidden_metric_label_violations,
@@ -1155,6 +1160,62 @@ def test_byoc_live_credential_rehearsal_privacy_check_allows_checked_in_contract
     assert find_byoc_live_credential_rehearsal_privacy_violations() == []
 
 
+def test_byoc_customer_pilot_rehearsal_privacy_check_flags_raw_fields(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_customer_pilot_rehearsal.py").write_text(
+        """
+from typing import Literal
+
+class ByocCustomerPilotRehearsalPrivacyContract:
+    artifact_bodies_included: Literal[False] = False
+    child_report_bodies_included: Literal[False] = False
+    raw_reports_included: Literal[False] = False
+    raw_payloads_included: Literal[False] = False
+    request_bodies_included: Literal[False] = False
+    response_bodies_included: Literal[False] = False
+    signed_headers_included: Literal[False] = False
+    endpoint_urls_included: Literal[False] = False
+    raw_auth_material_included: Literal[False] = False
+    credentials_included: bool = True
+    account_ids_included: Literal[False] = False
+    arns_included: Literal[False] = False
+    command_output_included: Literal[False] = False
+    logs_included: Literal[False] = False
+    prompts_included: Literal[False] = False
+    embeddings_included: Literal[False] = False
+    pii_included: Literal[False] = False
+    cloud_credentials_required: Literal[False] = False
+    mutating_cloud_commands_executed: Literal[False] = False
+
+class ByocCustomerPilotRehearsalReport:
+    stored_scope: str = "unsafe_scope"
+    endpoint_url: str
+    command_output: str
+    package_manifest_path: str
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_customer_pilot_rehearsal_privacy_violations(
+        repo_root=tmp_path,
+    )
+
+    assert [violation.check for violation in violations] == [
+        "byoc-customer-pilot-rehearsal-privacy",
+        "byoc-customer-pilot-rehearsal-privacy",
+        "byoc-customer-pilot-rehearsal-privacy",
+        "byoc-customer-pilot-rehearsal-privacy",
+    ]
+    assert {violation.line_number for violation in violations} == {13, 25, 26, 27}
+
+
+def test_byoc_customer_pilot_rehearsal_privacy_check_allows_checked_in_contract() -> None:
+    assert find_byoc_customer_pilot_rehearsal_privacy_violations() == []
+
+
 def test_byoc_aws_live_preflight_privacy_check_flags_serialized_identity(
     tmp_path: Path,
 ) -> None:
@@ -1227,6 +1288,214 @@ class ByocAwsLivePreflightReport:
 
 def test_byoc_aws_live_preflight_privacy_check_allows_checked_in_contract() -> None:
     assert find_byoc_aws_live_preflight_privacy_violations() == []
+
+
+def test_byoc_control_panel_state_privacy_check_flags_sensitive_fields(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_control_panel_state.py").write_text(
+        """
+class ByocControlPanelState:
+    raw_payload: dict
+    signed_headers: dict
+    stored_scope: str = "unsafe"
+
+class ByocControlPanelSection:
+    endpoint_url: str
+
+class ByocControlPanelAction:
+    secret_ref: str
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_control_panel_state_privacy_violations(
+        repo_root=tmp_path
+    )
+
+    assert {violation.check for violation in violations} == {
+        "byoc-control-panel-state-privacy"
+    }
+    messages = "\n".join(violation.message for violation in violations)
+    assert "raw_payload" in messages
+    assert "signed_headers" in messages
+    assert "endpoint_url" in messages
+    assert "secret_ref" in messages
+    assert "stored_scope" in messages
+
+
+def test_byoc_control_panel_state_privacy_check_allows_checked_in_contract() -> None:
+    assert find_byoc_control_panel_state_privacy_violations() == []
+
+
+def test_byoc_product_health_collector_privacy_check_flags_raw_sql(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_product_health_collector.py").write_text(
+        """
+async def collect(db, query):
+    await db.fetch("SELECT content_text FROM observations")
+    await db.fetchrow("SELECT error_summary FROM ingestion_failures")
+    await db.fetch(query)
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_product_health_collector_privacy_violations(
+        repo_root=tmp_path
+    )
+
+    assert {violation.check for violation in violations} == {
+        "byoc-product-health-collector-privacy"
+    }
+    messages = "\n".join(violation.message for violation in violations)
+    assert "observation text" in messages
+    assert "raw error summaries" in messages
+    assert "literal SQL" in messages
+
+
+def test_byoc_product_health_collector_privacy_check_allows_checked_in_contract() -> None:
+    assert find_byoc_product_health_collector_privacy_violations() == []
+
+
+def test_byoc_control_panel_access_privacy_check_flags_sensitive_fields(
+    tmp_path: Path,
+) -> None:
+    contract = tmp_path / "services" / "platform" / "runtime"
+    contract.mkdir(parents=True)
+    (contract / "byoc_control_panel_access.py").write_text(
+        """
+class ByocControlPanelAccessGrant:
+    read_key: str
+    endpoint_url: str
+    stored_scope: str = "unsafe"
+
+class ByocControlPanelAccessQuery:
+    raw_payload: dict
+
+class ByocControlPanelAccessDecision:
+    signed_headers: dict
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_control_panel_access_privacy_violations(
+        repo_root=tmp_path
+    )
+
+    assert {violation.check for violation in violations} == {
+        "byoc-control-panel-access-privacy"
+    }
+    messages = "\n".join(violation.message for violation in violations)
+    assert "read_key" in messages
+    assert "endpoint_url" in messages
+    assert "raw_payload" in messages
+    assert "signed_headers" in messages
+    assert "stored_scope" in messages
+
+
+def test_byoc_control_panel_access_privacy_check_allows_checked_in_contract() -> None:
+    assert find_byoc_control_panel_access_privacy_violations() == []
+
+
+def test_byoc_control_panel_access_storage_check_flags_raw_body_columns(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0185_byoc_control_panel_access_grants.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_control_panel_access_grants (
+  tenant_id UUID NOT NULL,
+  customer_id TEXT NOT NULL,
+  deployment_id TEXT NOT NULL,
+  request_body JSONB,
+  stored_scope TEXT NOT NULL CHECK (
+    stored_scope = 'sanitized_control_panel_access_metadata_only'
+  )
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_control_panel_access_storage_violations(
+        repo_root=tmp_path
+    )
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-control-panel-access-storage"
+    assert "JSON" in violations[0].message
+
+
+def test_byoc_control_panel_access_storage_check_requires_sanitized_scope(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0185_byoc_control_panel_access_grants.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_control_panel_access_grants (
+  tenant_id UUID NOT NULL,
+  customer_id TEXT NOT NULL,
+  deployment_id TEXT NOT NULL
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_control_panel_access_storage_violations(
+        repo_root=tmp_path
+    )
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-control-panel-access-storage"
+    assert "sanitized metadata scope" in violations[0].message
+
+
+def test_byoc_control_panel_access_storage_check_scans_later_migrations(
+    tmp_path: Path,
+) -> None:
+    migrations = tmp_path / "db" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "0185_byoc_control_panel_access_grants.sql").write_text(
+        """
+CREATE TABLE IF NOT EXISTS byoc_control_panel_access_grants (
+  tenant_id UUID NOT NULL,
+  customer_id TEXT NOT NULL,
+  deployment_id TEXT NOT NULL,
+  stored_scope TEXT NOT NULL CHECK (
+    stored_scope = 'sanitized_control_panel_access_metadata_only'
+  )
+);
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (migrations / "0186_byoc_control_panel_access_bad_column.sql").write_text(
+        """
+ALTER TABLE byoc_control_panel_access_grants
+  ADD COLUMN IF NOT EXISTS endpoint_url TEXT;
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_byoc_control_panel_access_storage_violations(
+        repo_root=tmp_path
+    )
+
+    assert len(violations) == 1
+    assert violations[0].check == "byoc-control-panel-access-storage"
+    assert violations[0].path == Path(
+        "db/migrations/0186_byoc_control_panel_access_bad_column.sql"
+    )
+    assert violations[0].line_number == 2
+
+
+def test_byoc_control_panel_access_storage_check_allows_checked_in_migration() -> None:
+    assert find_byoc_control_panel_access_storage_violations() == []
 
 
 def test_byoc_evidence_receipt_storage_check_flags_json_body_columns(

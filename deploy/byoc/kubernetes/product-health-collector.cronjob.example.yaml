@@ -1,0 +1,96 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: fyralis-byoc-product-health
+  namespace: fyralis-byoc
+  labels:
+    app.kubernetes.io/name: fyralis-byoc-product-health
+    app.kubernetes.io/component: product-health-collector
+    fyralis.com/deployment-id: dep_example01
+    fyralis.com/customer-id: cus_example01
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: fyralis-byoc-product-health
+            app.kubernetes.io/component: product-health-collector
+            fyralis.com/deployment-id: dep_example01
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          serviceAccountName: fyralis-byoc-product-health
+          containers:
+            - name: product-health-collector
+              image: "<customer-approved-fyralis-image-ref>"
+              imagePullPolicy: IfNotPresent
+              workingDir: "/opt/fyralis/fyraliscore"
+              command:
+                - /bin/sh
+                - -lc
+              args:
+                - |-
+                  set -eu
+                  CONTROL_PLANE_BASE="${FYRALIS_CONTROL_PLANE_URL%/}"
+                  exec /opt/fyralis/venv/bin/python scripts/run_byoc_product_health_collector.py \
+                    --deployment-id "${FYRALIS_BYOC_DEPLOYMENT_ID}" \
+                    --customer-id "${FYRALIS_BYOC_CUSTOMER_ID}" \
+                    --agent-id "${FYRALIS_BYOC_AGENT_ID}" \
+                    --agent-version "${FYRALIS_BYOC_AGENT_VERSION}" \
+                    --artifact-revision "${FYRALIS_BYOC_ARTIFACT_REVISION}" \
+                    --tenant-id "${FYRALIS_TENANT_ID}" \
+                    --database-url-env DATABASE_URL \
+                    --signing-secret-env FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY \
+                    --key-ref "${FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF}" \
+                    --submit-url "${CONTROL_PLANE_BASE}/byoc/control-plane/product-health-snapshots" \
+                    --timeout-seconds 30
+              env:
+                - name: FYRALIS_BYOC_DEPLOYMENT_ID
+                  value: "dep_example01"
+                - name: FYRALIS_BYOC_CUSTOMER_ID
+                  value: "cus_example01"
+                - name: FYRALIS_BYOC_AGENT_ID
+                  value: "agt_producthealth01"
+                - name: FYRALIS_BYOC_AGENT_VERSION
+                  value: "2026.06.26-1.product-health"
+                - name: FYRALIS_BYOC_ARTIFACT_REVISION
+                  value: "2026.06.26-1"
+                - name: FYRALIS_TENANT_ID
+                  valueFrom:
+                    configMapKeyRef:
+                      name: fyralis-byoc-product-health
+                      key: tenant-id
+                - name: FYRALIS_CONTROL_PLANE_URL
+                  valueFrom:
+                    configMapKeyRef:
+                      name: fyralis-byoc-product-health
+                      key: control-plane-url
+                - name: FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF
+                  valueFrom:
+                    configMapKeyRef:
+                      name: fyralis-byoc-product-health
+                      key: evidence-intake-key-ref
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: fyralis-byoc-product-health
+                      key: database-url
+                - name: FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: fyralis-byoc-product-health
+                      key: evidence-intake-signing-key
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true

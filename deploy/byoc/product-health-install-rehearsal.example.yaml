@@ -1,0 +1,61 @@
+schema_version: fyralis.byoc.product_health_install_rehearsal.v1
+deployment_id: dep_example01
+customer_id: cus_example01
+artifact_revision: 2026.06.26-1
+automation_manifest_path: deploy/byoc/product-health-automation.example.yaml
+target_modes:
+  - kubernetes
+  - systemd
+kubernetes:
+  enabled: true
+  cronjob_manifest_path: deploy/byoc/kubernetes/product-health-collector.cronjob.example.yaml
+  namespace: fyralis-byoc
+  cronjob_name: fyralis-byoc-product-health
+  config_map_name: fyralis-byoc-product-health
+  secret_name: fyralis-byoc-product-health
+  service_account_name: fyralis-byoc-product-health
+  config_map_keys:
+    tenant_id_key: tenant-id
+    control_plane_url_key: control-plane-url
+    evidence_intake_key_ref_key: evidence-intake-key-ref
+  secret_keys:
+    database_url_key: database-url
+    evidence_intake_signing_key_key: evidence-intake-signing-key
+  raw_values_included: false
+  inbound_ports_allowed: false
+systemd:
+  enabled: true
+  service_unit_path: deploy/byoc/systemd/product-health-collector.service.example
+  timer_unit_path: deploy/byoc/systemd/product-health-collector.timer.example
+  service_unit: fyralis-byoc-product-health.service
+  timer_unit: fyralis-byoc-product-health.timer
+  environment_file: /etc/fyralis/byoc-product-health.env
+  required_environment_names:
+    - FYRALIS_BYOC_DEPLOYMENT_ID
+    - FYRALIS_BYOC_CUSTOMER_ID
+    - FYRALIS_TENANT_ID
+    - FYRALIS_BYOC_AGENT_ID
+    - FYRALIS_BYOC_AGENT_VERSION
+    - FYRALIS_BYOC_ARTIFACT_REVISION
+    - FYRALIS_CONTROL_PLANE_URL
+    - FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF
+    - DATABASE_URL
+    - FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY
+  secret_environment_names:
+    - DATABASE_URL
+    - FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY
+  raw_values_included: false
+  inbound_ports_allowed: false
+privacy:
+  raw_secret_values_included: false
+  endpoint_values_included: false
+  raw_payloads_included: false
+  raw_prompts_included: false
+  raw_logs_included: false
+  pii_included: false
+  source_records_included: false
+  model_contents_included: false
+  vector_values_included: false
+  cloud_credentials_required: false
+  inbound_ports_required: false
+stored_scope: customer_side_product_health_install_rehearsal_metadata_only

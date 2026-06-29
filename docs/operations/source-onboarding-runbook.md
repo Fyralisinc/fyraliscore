@@ -281,6 +281,15 @@ counts, and latest accepted timestamps only. Use the overview for
 customer-facing health state and the agent fleet endpoint for per-agent
 metadata.
 
+The future control panel should prefer
+`GET /byoc/control-plane/control-panel-state` with the same signed read headers.
+It requires `deployment_id`, may include `customer_id`, and returns the
+deployment overview, sanitized agent fleet, recent sanitized receipt lists,
+section statuses, and bounded action codes in one metadata-only response. This
+route is a backend contract for control-panel consumers; it is not a control
+panel implementation and must not be exposed without the same backend read-auth
+controls.
+
 To print a signed GET request without network access, omit `--list-url`; to
 run the read against the hosted backend, provide the full route URL:
 
@@ -306,10 +315,112 @@ scripts/get_byoc_deployment_overview.py \
   --overview-url https://<control-plane>/byoc/control-plane/deployment-overview
 ```
 
+To read the backend/core control-panel state contract, use the same read
+signing material with the control-panel state helper. Omit
+`--control-panel-state-url` to print only the signed request. Do not put this
+read signing material in browser UI code; browser-facing control-panel work
+needs a server-side proxy with tenant/customer authorization before live reads
+are exposed to users:
+
+```bash
+FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY="<local-read-signing-material>" \
+scripts/get_byoc_control_panel_state.py \
+  --deployment-id <dep_...> \
+  --customer-id <cus_...> \
+  --recent-limit 10 \
+  --key-ref <control-plane/byoc/evidence-read-key-ref> \
+  --control-panel-state-url https://<control-plane>/byoc/control-plane/control-panel-state
+```
+
+Browser or backend UI clients should use the bearer-authenticated
+`GET /byoc/control-panel/deployments` discovery route first, then call
+`GET /byoc/control-panel/state` for the selected deployment. Both routes use
+ordinary gateway bearer auth plus the `ByocControlPanelAccessGrant` metadata
+contract; they return the same sanitized state shape without exposing BYOC read
+HMAC material to the client. In hosted gateway deployments, grants are read from
+`byoc_control_panel_access_grants` and contain only hosted tenant ID, BYOC
+customer ID, deployment ID, role, enabled state, grant timestamp, expiry
+timestamp, and sanitized stored scope. Do not place BYOC read keys, endpoint
+URLs, cloud identifiers, credentials, raw reports, logs, prompts, embeddings,
+or PII in that table.
+
+Before real hosted database access is available, validate the exact grant JSON
+with a dry run:
+
+```bash
+python scripts/manage_byoc_control_panel_access_grants.py upsert \
+  --tenant-id <hosted-tenant-uuid> \
+  --customer-id <cus_...> \
+  --deployment-id <dep_...> \
+  --role viewer \
+  --dry-run
+```
+
+When connected to the hosted/control-plane database, create, inspect, or revoke
+grants with the same script:
+
+```bash
+DATABASE_URL="postgresql://<hosted-control-plane-db>" \
+python scripts/manage_byoc_control_panel_access_grants.py upsert \
+  --tenant-id <hosted-tenant-uuid> \
+  --customer-id <cus_...> \
+  --deployment-id <dep_...> \
+  --role viewer
+
+DATABASE_URL="postgresql://<hosted-control-plane-db>" \
+python scripts/manage_byoc_control_panel_access_grants.py list \
+  --tenant-id <hosted-tenant-uuid> \
+  --customer-id <cus_...>
+
+DATABASE_URL="postgresql://<hosted-control-plane-db>" \
+python scripts/manage_byoc_control_panel_access_grants.py revoke \
+  --tenant-id <hosted-tenant-uuid> \
+  --customer-id <cus_...> \
+  --deployment-id <dep_...>
+```
+
+To smoke the browser-facing bearer proxy without exposing BYOC read HMAC
+material, print the request plan first:
+
+```bash
+python scripts/smoke_byoc_control_panel_proxy.py \
+  --customer-id <cus_...> \
+  --deployment-id <dep_...>
+```
+
+After the hosted database has a grant and you have a gateway bearer token, run
+the live smoke. The output is a sanitized summary with counts and selected IDs,
+not the raw control-panel state body:
+
+```bash
+FYRALIS_GATEWAY_BEARER_TOKEN="<gateway-bearer-token>" \
+python scripts/smoke_byoc_control_panel_proxy.py \
+  --base-url https://<gateway-host> \
+  --customer-id <cus_...> \
+  --deployment-id <dep_...> \
+  --recent-limit 10
+```
+
+For UI or backend consumers that need the contract without live read access,
+export the schema bundle, access-grant schema, or deterministic sanitized
+example:
+
+```bash
+scripts/export_byoc_control_panel_contract.py --schema \
+  --output tmp/byoc/control-panel-state.schema.json
+
+scripts/export_byoc_control_panel_contract.py --access-schema \
+  --output tmp/byoc/control-panel-access.schema.json
+
+scripts/export_byoc_control_panel_contract.py --example \
+  --output tmp/byoc/control-panel-state.example.json
+```
+
 For a single read-only backend smoke of all signed control-plane metadata
-surfaces, use the combined helper. Omit `--base-url` to print the signed request
-bundle without network access. Treat this raw output as operator-only when it
-contains signed headers, request paths, query strings, or hosted responses:
+surfaces, including the control-panel state aggregate, use the combined helper.
+Omit `--base-url` to print the signed request bundle without network access.
+Treat this raw output as operator-only when it contains signed headers, request
+paths, query strings, or hosted responses:
 
 ```bash
 FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY="<local-read-signing-material>" \
@@ -317,6 +428,7 @@ scripts/smoke_byoc_control_plane_reads.py \
   --deployment-id <dep_...> \
   --customer-id <cus_...> \
   --limit 20 \
+  --control-panel-recent-limit 10 \
   --key-ref <control-plane/byoc/evidence-read-key-ref> \
   --base-url https://<control-plane>
 ```
@@ -396,6 +508,16 @@ the check can pass for an integrity-valid package whose launch summary is still
 `manual_required` because real AWS credentials or hosted control-plane read
 smoke are pending.
 
+For a repeatable no-credentials release-review rehearsal, use the combined
+clean wrapper. It removes only the repo-local `tmp/` output directory, runs the
+product-health install rehearsal, builds the package, validates digests, and
+prints one sanitized summary:
+
+```bash
+scripts/rehearse_byoc_customer_pilot_package.py --json \
+  --output-dir tmp/byoc/customer-pilot-rehearsal
+```
+
 For local contract proof or customer handoff before live agent endpoint wiring,
 run the mock-backed probe from inside the customer data-plane context:
 
@@ -458,6 +580,59 @@ scripts/submit_byoc_runner_evidence.py \
   --runner-report <agent-runner-report.json> \
   --key-ref <control-plane/byoc/evidence-intake-key-ref> \
   --submit-url https://<control-plane>/byoc/control-plane/runner-evidence
+```
+
+After the data plane is running, publish product-health snapshots from inside
+the customer boundary. The collector reads only aggregate Fyralis database
+counters, statuses, and timestamps; it does not select raw observations, model
+contents, prompts, logs, vectors, error summaries, credentials, URLs, or PII.
+Use `--tenant-id` for shared databases and omit it only for single-tenant
+customer deployments:
+
+```bash
+DATABASE_URL="<customer-local-fyralis-postgres-dsn>" \
+FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY="<local-signing-material>" \
+scripts/run_byoc_product_health_collector.py \
+  --deployment-id <dep_...> \
+  --customer-id <cus_...> \
+  --agent-id <agt_...> \
+  --agent-version <agent-version> \
+  --artifact-revision <deployed-artifact-revision> \
+  --tenant-id <fyralis-tenant-uuid> \
+  --key-ref <control-plane/byoc/evidence-intake-key-ref> \
+  --submit-url https://<control-plane>/byoc/control-plane/product-health-snapshots
+```
+
+For offline inspection, add `--unsigned` and omit `--key-ref` and
+`FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY`; do not submit unsigned output to
+the hosted control plane. The signed/posted payload remains metadata-only and
+is what the control-panel product-health cards read through the grant-gated
+browser proxy.
+
+To install the collector as recurring customer-side automation, start from the
+checked-in schedule package and render/check the generated artifacts:
+
+```bash
+scripts/generate_byoc_product_health_automation.py \
+  --check-automation deploy/byoc/product-health-automation.example.yaml
+```
+
+The generated Kubernetes CronJob and systemd timer examples live under
+`deploy/byoc/kubernetes/` and `deploy/byoc/systemd/`. Before applying either in
+a customer environment, replace only the customer-local ConfigMap/secret
+references and image ref; do not put the Postgres DSN, signing key, control
+plane URL value, or source payload material directly into the checked-in
+automation manifest. The examples expose no inbound ports and call only
+`POST /byoc/control-plane/product-health-snapshots` over outbound HTTPS.
+
+Before customer-side apply, run the offline install rehearsal. It requires no
+cloud credentials and validates the local automation manifest, Kubernetes
+CronJob refs, systemd unit refs, hardening markers, egress-only posture, and
+metadata-only privacy contract:
+
+```bash
+scripts/run_byoc_product_health_install_rehearsal.py --json \
+  --install-plan deploy/byoc/product-health-install-rehearsal.example.yaml
 ```
 
 Before a real AWS credential window, run the offline readiness check. Without

@@ -52,6 +52,8 @@ PilotPackageValidationStoredScope = Literal[
 PilotPackageArtifactKind = Literal[
     "evidence_package",
     "evidence_ledger",
+    "product_health_automation",
+    "product_health_install_rehearsal",
     "live_test_readiness",
     "customer_handoff_readiness",
     "control_plane_read_smoke_summary",
@@ -62,6 +64,7 @@ PilotPackageArtifactKind = Literal[
 _EXPECTED_SMOKE_SURFACES = (
     "agent_fleet",
     "deployment_overview",
+    "control_panel_state",
     "evidence_packages",
     "preflight_reports",
     "runner_evidence",
@@ -70,6 +73,8 @@ _EXPECTED_ARTIFACT_NAMES = frozenset(
     {
         "evidence_package",
         "evidence_ledger",
+        "product_health_automation",
+        "product_health_install_rehearsal",
         "live_test_readiness",
         "customer_handoff_readiness",
         "control_plane_read_smoke_summary",
@@ -288,6 +293,12 @@ class ByocCustomerPilotPackageInputs:
     bootstrap_plan_path: Path = Path("deploy/byoc/bootstrap-plan.example.yaml")
     evidence_package_path: Path = Path("deploy/byoc/evidence-package.example.yaml")
     evidence_ledger_path: Path = Path("deploy/byoc/evidence-ledger.example.yaml")
+    product_health_automation_path: Path = Path(
+        "deploy/byoc/product-health-automation.example.yaml"
+    )
+    product_health_install_rehearsal_path: Path = Path(
+        "deploy/byoc/product-health-install-rehearsal.example.yaml"
+    )
     env_path: Path | None = Path(".env.production.example")
     live_test_readiness_path: Path | None = None
     customer_handoff_report_path: Path | None = None
@@ -375,6 +386,10 @@ def build_byoc_customer_pilot_package(
         ByocHandoffBundleIndexInputs(
             evidence_package_path=inputs.evidence_package_path,
             evidence_ledger_path=inputs.evidence_ledger_path,
+            product_health_automation_path=inputs.product_health_automation_path,
+            product_health_install_rehearsal_path=(
+                inputs.product_health_install_rehearsal_path
+            ),
             repo_root=inputs.repo_root,
             customer_handoff_report_path=handoff_path,
             control_plane_read_smoke_report_path=smoke_summary_path,
@@ -417,6 +432,22 @@ def build_byoc_customer_pilot_package(
             inputs.evidence_ledger_path,
             inputs.repo_root,
             "fyralis.byoc.evidence_ledger.v1",
+            False,
+        ),
+        _artifact(
+            "product_health_automation",
+            "product_health_automation",
+            inputs.product_health_automation_path,
+            inputs.repo_root,
+            "fyralis.byoc.product_health_automation.v1",
+            False,
+        ),
+        _artifact(
+            "product_health_install_rehearsal",
+            "product_health_install_rehearsal",
+            inputs.product_health_install_rehearsal_path,
+            inputs.repo_root,
+            "fyralis.byoc.product_health_install_rehearsal.v1",
             False,
         ),
         _artifact(

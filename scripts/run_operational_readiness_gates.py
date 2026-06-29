@@ -615,6 +615,75 @@ def _byoc_terraform_plan_validation_gate(args: argparse.Namespace) -> GateResult
     )
 
 
+def _byoc_product_health_automation_gate(args: argparse.Namespace) -> GateResult:
+    return _run_command_gate(
+        "byoc_product_health_automation",
+        _python_command(
+            "scripts/generate_byoc_product_health_automation.py",
+            "--check-automation",
+            "deploy/byoc/product-health-automation.example.yaml",
+            "--dataplane-manifest",
+            "deploy/byoc/dataplane.example.yaml",
+        ),
+        details=(
+            "Checked-in BYOC product-health collector automation is "
+            "customer-side, egress-only, schedule-bounded, and renders "
+            "Kubernetes/systemd artifacts without raw data or secret values."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "automation": "deploy/byoc/product-health-automation.example.yaml",
+            "kubernetes_cronjob": (
+                "deploy/byoc/kubernetes/"
+                "product-health-collector.cronjob.example.yaml"
+            ),
+            "systemd_service": (
+                "deploy/byoc/systemd/product-health-collector.service.example"
+            ),
+            "systemd_timer": (
+                "deploy/byoc/systemd/product-health-collector.timer.example"
+            ),
+            "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+        },
+    )
+
+
+def _byoc_product_health_install_rehearsal_gate(
+    args: argparse.Namespace,
+) -> GateResult:
+    return _run_command_gate(
+        "byoc_product_health_install_rehearsal",
+        _python_command(
+            "scripts/run_byoc_product_health_install_rehearsal.py",
+            "--json",
+            "--install-plan",
+            "deploy/byoc/product-health-install-rehearsal.example.yaml",
+        ),
+        details=(
+            "BYOC product-health install rehearsal validates the checked-in "
+            "Kubernetes/systemd collector install refs, egress-only posture, "
+            "and metadata-only privacy contract without cloud credentials."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "install_plan": "deploy/byoc/product-health-install-rehearsal.example.yaml",
+            "automation": "deploy/byoc/product-health-automation.example.yaml",
+            "kubernetes_cronjob": (
+                "deploy/byoc/kubernetes/"
+                "product-health-collector.cronjob.example.yaml"
+            ),
+            "systemd_service": (
+                "deploy/byoc/systemd/product-health-collector.service.example"
+            ),
+            "systemd_timer": (
+                "deploy/byoc/systemd/product-health-collector.timer.example"
+            ),
+        },
+    )
+
+
 def _byoc_bootstrap_bundle_gate(args: argparse.Namespace) -> GateResult:
     return _run_command_gate(
         "byoc_bootstrap_bundle",
@@ -923,6 +992,12 @@ def _byoc_handoff_bundle_index_gate(args: argparse.Namespace) -> GateResult:
         artifacts={
             "package": "deploy/byoc/evidence-package.example.yaml",
             "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+            "product_health_automation": (
+                "deploy/byoc/product-health-automation.example.yaml"
+            ),
+            "product_health_install_rehearsal": (
+                "deploy/byoc/product-health-install-rehearsal.example.yaml"
+            ),
         },
     )
 
@@ -1001,17 +1076,46 @@ def _byoc_customer_pilot_package_gate(args: argparse.Namespace) -> GateResult:
         "byoc_customer_pilot_package",
         [
             "services/platform/runtime/tests/test_byoc_customer_pilot_package.py",
+            "services/platform/runtime/tests/test_byoc_customer_pilot_rehearsal.py",
             "scripts/tests/test_build_byoc_customer_pilot_package.py",
             "scripts/tests/test_check_byoc_customer_pilot_package.py",
+            "scripts/tests/test_rehearse_byoc_customer_pilot_package.py",
         ],
         details=(
             "BYOC customer-pilot package builder and checker generate and "
             "verify the local sanitized handoff, read-smoke summary, handoff "
-            "index, launch summary, and package manifest without cloud "
-            "credentials or raw data."
+            "index, launch summary, package manifest, and clean package "
+            "rehearsal without cloud credentials or raw data."
         ),
         args=args,
         timeout_s=min(args.command_timeout_s, 60),
+    )
+
+
+def _byoc_customer_pilot_rehearsal_gate(args: argparse.Namespace) -> GateResult:
+    output_dir = REPO_ROOT / "tmp/byoc" / f"{args.run_id}-customer-pilot-rehearsal"
+    return _run_command_gate(
+        "byoc_customer_pilot_rehearsal",
+        _python_command(
+            "scripts/rehearse_byoc_customer_pilot_package.py",
+            "--json",
+            "--output-dir",
+            str(output_dir),
+            "--repo-root",
+            str(REPO_ROOT),
+        ),
+        details=(
+            "BYOC customer-pilot package rehearsal cleans a repo-local tmp "
+            "directory, runs the product-health install rehearsal, builds the "
+            "sanitized package, and validates manifest digests without cloud "
+            "credentials or raw customer data."
+        ),
+        timeout_s=min(args.command_timeout_s, 30),
+        env=_base_env(),
+        artifacts={
+            "output_dir": _relative(output_dir),
+            "rehearsal_script": "scripts/rehearse_byoc_customer_pilot_package.py",
+        },
     )
 
 
@@ -1022,13 +1126,19 @@ def _byoc_control_plane_intake_gate(args: argparse.Namespace) -> GateResult:
             "services/platform/runtime/tests/test_byoc_agent_control_plane.py",
             "services/platform/runtime/tests/test_byoc_control_plane_intake.py",
             "services/platform/runtime/tests/test_byoc_preflight_intake.py",
+            "services/platform/runtime/tests/test_byoc_product_health.py",
             "services/platform/runtime/tests/test_byoc_runner_evidence_intake.py",
             "services/app/gateway/tests/test_byoc_agent_router.py",
+            "services/app/gateway/tests/test_byoc_control_panel_router.py",
             "services/app/gateway/tests/test_byoc_control_plane_router.py",
             "services/app/gateway/tests/test_route_access_policy.py",
+            "scripts/tests/test_get_byoc_control_panel_state.py",
             "scripts/tests/test_get_byoc_deployment_overview.py",
+            "scripts/tests/test_export_byoc_control_panel_contract.py",
             "scripts/tests/test_list_byoc_agents.py",
             "scripts/tests/test_smoke_byoc_control_plane_reads.py",
+            "services/platform/runtime/tests/test_byoc_control_panel_access.py",
+            "services/platform/runtime/tests/test_byoc_control_panel_contract.py",
             "scripts/tests/test_submit_byoc_preflight_report.py",
             "scripts/tests/test_submit_byoc_runner_evidence.py",
             "scripts/tests/test_update_byoc_agent_desired_state.py",
@@ -1104,6 +1214,8 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_aws_live_preflight_gate(args),
         _byoc_aws_iac_package_gate(args),
         _byoc_terraform_plan_validation_gate(args),
+        _byoc_product_health_automation_gate(args),
+        _byoc_product_health_install_rehearsal_gate(args),
         _byoc_bootstrap_bundle_gate(args),
         _byoc_bootstrap_plan_gate(args),
         _byoc_bootstrap_runner_gate(args),
@@ -1119,6 +1231,7 @@ def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
         _byoc_live_test_readiness_gate(args),
         _byoc_launch_readiness_summary_gate(args),
         _byoc_customer_pilot_package_gate(args),
+        _byoc_customer_pilot_rehearsal_gate(args),
         _byoc_live_credential_rehearsal_gate(args),
         _byoc_control_plane_intake_gate(args),
         _byoc_post_deploy_validation_gate(args),

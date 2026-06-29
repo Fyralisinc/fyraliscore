@@ -63,8 +63,8 @@ owns:
   require signed read headers and return sanitized scalar metadata only. In
   BYOC production, submission/read signing material is resolved by `key_ref`
   through managed app-secret refs; raw app-state secrets are local/test only.
-  The same signed read path exposes a metadata-only deployment overview for
-  backend automation/control-panel consumers.
+  The same signed read path exposes metadata-only deployment overview and
+  control-panel state reads for backend automation/control-panel consumers.
 - **Webhook ingress** (`services/app/webhooks/router.py`): captures raw bytes,
   verifies the per-provider signature, resolves the tenant
   (`provider_installations` via the IN-08 tenant resolver + envelope-encrypted
@@ -131,11 +131,17 @@ graph TD
 | Gateway settings | `services/app/gateway/settings.py` | Fail-closed production settings, including BYOC deployment identity, egress-only control-plane connectivity, agent auth mode, and raw telemetry controls. |
 | Gateway middleware | `services/app/gateway/middleware.py` | Request context, bearer-session auth, public path allowlist, rate limiting. |
 | Gateway route mounts | `services/app/gateway/route_mounts.py` | Mounts focused gateway/product/ingest routers in one ordered place. |
-| BYOC control-plane intake | `services/app/gateway/byoc_control_plane_router.py` | Self-authenticated evidence-package, preflight-report, runner-evidence, and agent desired-state update routes; verifies signed submissions and signed receipt/overview reads, and stores sanitized scalar receipts/agent rollout metadata only. |
+| BYOC control-plane intake | `services/app/gateway/byoc_control_plane_router.py` | Self-authenticated evidence-package, preflight-report, runner-evidence, product-health snapshot, and agent desired-state update routes; verifies signed submissions and signed receipt/overview/product-health reads, and stores sanitized scalar receipts/agent rollout/product-health metadata only. |
+| BYOC control-panel proxy | `services/app/gateway/byoc_control_panel_router.py` | Bearer-authenticated browser/backend proxy for metadata-only deployment discovery, control-panel state, and product health; evaluates tenant-to-BYOC-deployment grants before reading sanitized state and never exposes read HMAC keys to browser clients. |
+| BYOC control-panel UI | `ui/` | Vite/React operations UI for BYOC deployment discovery, sanitized state, and product-health counters; calls only bearer-authenticated control-panel proxy routes, keeps local test bearer tokens in memory only, and does not handle BYOC HMAC material. |
 | BYOC control-plane keys | `services/app/gateway/byoc_control_plane_keys.py` | Resolves evidence submission, desired-state update, and receipt-read HMAC keys by `key_ref` from managed app-secret refs, with static app-state fallback only outside production. |
 | BYOC agent control plane | `services/app/gateway/byoc_agent_router.py` | Self-authenticated agent enrollment, heartbeat, and desired-state polling route; verifies install-token HMAC proof by managed secret ref, accepts enrolled-agent heartbeats, and returns sanitized revision/config-intent metadata only. |
 | BYOC agent keys | `services/app/gateway/byoc_agent_keys.py` | Resolves data-plane install-token material by `key_ref` from managed secret refs, with static app-state fallback only outside production. |
 | BYOC deployment overview | `services/platform/runtime/byoc_deployment_overview.py` | Metadata-only read model that aggregates sanitized agent-fleet, evidence-package, preflight-report, and runner-evidence receipt records into deployment status, next action, and bounded health/evidence counts. |
+| BYOC control-panel state | `services/platform/runtime/byoc_control_panel_state.py` | Metadata-only backend contract for a future control panel; composes deployment overview, sanitized agent fleet, recent sanitized receipt lists, section statuses, and bounded action codes without raw reports, signatures, endpoint URLs, secret refs, logs, prompts, or PII. |
+| BYOC control-panel contract export | `services/platform/runtime/byoc_control_panel_contract.py` | Exportable schema bundle and deterministic sanitized example state for UI/control-plane consumers; mirrors the signed state contract without customer data, signed headers, URLs, credentials, logs, prompts, or PII. |
+| BYOC control-panel access | `services/platform/runtime/byoc_control_panel_access.py` | Tenant-scoped metadata-only grant/decision/store contract for the bearer-authenticated browser proxy; persists hosted tenant/customer/deployment role grants in `byoc_control_panel_access_grants` without read keys, endpoint URLs, credentials, logs, prompts, or PII. |
+| BYOC product health | `services/platform/runtime/byoc_product_health.py`, `services/platform/runtime/byoc_product_health_collector.py`, `services/platform/runtime/byoc_product_health_automation.py`, `services/platform/runtime/byoc_product_health_install_rehearsal.py`, `scripts/run_byoc_product_health_collector.py`, `scripts/generate_byoc_product_health_automation.py`, `scripts/run_byoc_product_health_install_rehearsal.py` | Metadata-only product-state contract, customer-side aggregate collector, deployable schedule package, no-credentials install rehearsal, and snapshot store for customer-side Fyralis health: per-source ingestion counts/status, pipeline backlog, Think counters, model graph counters, vector-index counters, and bounded issue codes without raw records, prompts, logs, vector values, model contents, credentials, URLs, signatures, or PII. |
 | BYOC agent probe | `services/platform/runtime/byoc_agent_probe.py` | Local executable data-plane agent proof; signs enrollment, submits one bounded heartbeat through the mock/live control-plane contract, and emits sanitized status metadata only. |
 | BYOC agent token rotation plan | `services/platform/runtime/byoc_agent_token_rotation.py` | Plan-only install-token rotation rehearsal; validates current/next secret-ref hygiene and overlap while emitting only salted ref digests and no token material, secret refs, command output, or cloud mutations. |
 | BYOC AWS live preflight | `services/platform/runtime/byoc_aws_live_preflight.py` | Customer-side read-only AWS preflight; verifies STS identity, optional describe/list probes, and optional IAM simulation while emitting only sanitized status/count metadata. |
@@ -144,7 +150,7 @@ graph TD
 | BYOC handoff bundle index | `services/platform/runtime/byoc_handoff_bundle_index.py` | Metadata-only table of contents for customer handoff; lists sanitized artifact paths/digests and signed read endpoint paths without artifact bodies, signed headers, URLs, logs, credentials, or PII. |
 | BYOC control-plane read smoke summary | `services/platform/runtime/byoc_control_plane_read_smoke_summary.py` | Sanitized receipt of the signed read-smoke helper; records mode, hosted execution, required surface status, and counts without signed headers, endpoint paths, queries, URLs, response bodies, auth material, or PII. |
 | BYOC launch readiness summary | `services/platform/runtime/byoc_launch_readiness_summary.py` | Final metadata-only customer-pilot go/no-go model; composes live-test readiness, customer handoff, handoff index, and control-plane read smoke outputs without embedding child reports, signed headers, URLs, request/response bodies, credentials, logs, or PII. |
-| BYOC customer-pilot package | `services/platform/runtime/byoc_customer_pilot_package.py` | Offline backend/core package builder and verifier; writes sanitized handoff artifacts and a digest-only manifest under a repo-local output directory, then re-hashes artifacts and checks schemas without embedding artifact bodies. |
+| BYOC customer-pilot package | `services/platform/runtime/byoc_customer_pilot_package.py`, `services/platform/runtime/byoc_customer_pilot_rehearsal.py`, `scripts/rehearse_byoc_customer_pilot_package.py` | Offline backend/core package builder, verifier, and clean rehearsal; writes sanitized handoff artifacts and a digest-only manifest under a repo-local output directory, then re-hashes artifacts and checks schemas without embedding artifact bodies. |
 | BYOC live credential rehearsal | `services/platform/runtime/byoc_live_credential_rehearsal.py` | Customer-side artifact pipeline; runs sanitized AWS preflight, builds ledger/package evidence, and evaluates source-onboarding gate while emitting only bounded summary metadata. |
 | Gateway extension seam | `services/app/gateway/extensions.py` | Discovers installed `company_os.gateway_extensions` entry points; each contributes routers (e.g. overlay `/v1/demo/*`), startup hooks (Pelago seed, simulation mount), and public path prefixes. |
 | Gateway state wiring | `services/app/gateway/state_wiring.py` | Secret store, tenant resolver, tenant flags, GitHub client/cache, Kafka/S3 data-plane clients. |
@@ -196,6 +202,34 @@ graph TD
   include `customer_id`, and returns status, next action, agent health counts,
   evidence-package/preflight/runner receipt counts, and latest accepted
   timestamps only.
+- `GET /byoc/control-plane/control-panel-state` — signed backend automation
+  read for future control-panel consumers; requires `deployment_id`, may include
+  `customer_id`, and returns the deployment overview, sanitized agent fleet,
+  product-health counters, recent sanitized receipt lists, section statuses, and
+  bounded action codes in one metadata-only response. Browser UI code must not
+  hold the read HMAC key; browser-facing control-panel work should use a
+  server-side proxy with tenant authorization, or the exported schema/example
+  during local UI development.
+- `POST /byoc/control-plane/product-health-snapshots` — signed BYOC data-plane
+  product-health snapshot intake; stores only aggregate source ingestion counts,
+  pipeline backlog, Think counters, model graph counters, vector-index counters,
+  bounded issue codes, and privacy flags pinned false. Customer data planes can
+  produce and sign this payload with
+  `scripts/run_byoc_product_health_collector.py`.
+- `GET /byoc/control-plane/product-health` — signed backend automation read for
+  the latest metadata-only product-health snapshot for one deployment.
+- `GET /byoc/control-panel/deployments` — bearer-authenticated browser/backend
+  discovery route for active metadata-only BYOC deployment grants visible to
+  the current hosted tenant; returns customer/deployment IDs, role, grant
+  status, and expiry metadata only.
+- `GET /byoc/control-panel/state` — bearer-authenticated browser/backend proxy
+  for the same metadata-only state; requires a tenant-to-BYOC-deployment access
+  grant from the metadata-only `byoc_control_panel_access_grants` store and
+  does not expose read HMAC keys, endpoint URLs, raw reports, logs, prompts,
+  credentials, or PII to browser clients.
+- `GET /byoc/control-panel/product-health` — bearer-authenticated
+  browser/backend proxy for the latest sanitized product-health snapshot under
+  the same metadata-only access grant.
 - `GET /byoc/control-plane/evidence-packages` and
   `GET /byoc/control-plane/evidence-packages/{receipt_id}` — signed BYOC
   receipt automation reads; list queries require `deployment_id` or
@@ -224,7 +258,9 @@ by the gateway directly.
 `view_render_costs`, `provider_installations`, `oauth_install_states`,
 `realtime_replay_cursors`, `byoc_evidence_package_receipts`,
 `byoc_preflight_report_receipts`, `byoc_runner_evidence_receipts`,
-`byoc_agent_registrations`, plus the substrate tables read by mounted routers.
+`byoc_agent_registrations`, `byoc_product_health_snapshots`,
+`byoc_product_health_sources`, `byoc_product_health_issues`, plus the substrate
+tables read by mounted routers.
 
 ## Design rationale
 

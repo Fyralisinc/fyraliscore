@@ -113,6 +113,11 @@ def _executed_smoke() -> dict[str, object]:
         "responses": {
             "agent_fleet": {"response": {"items": []}},
             "deployment_overview": {"response": {"status": "active"}},
+            "control_panel_state": {
+                "path": "/byoc/control-plane/control-panel-state",
+                "query": "deployment_id=dep_launch01&recent_limit=10",
+                "response": {"status": "ready"},
+            },
             "evidence_packages": {"response": {"items": []}},
             "preflight_reports": {"response": {"items": []}},
             "runner_evidence": {
@@ -133,6 +138,7 @@ def _signed_request_smoke() -> dict[str, object]:
     surfaces = (
         "agent_fleet",
         "deployment_overview",
+        "control_panel_state",
         "evidence_packages",
         "preflight_reports",
         "runner_evidence",

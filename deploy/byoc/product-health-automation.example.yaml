@@ -1,0 +1,77 @@
+schema_version: fyralis.byoc.product_health_automation.v1
+deployment_id: dep_example01
+customer_id: cus_example01
+environment: prod
+artifact_revision: 2026.06.26-1
+references:
+  dataplane_manifest_path: deploy/byoc/dataplane.example.yaml
+  collector_script_path: scripts/run_byoc_product_health_collector.py
+identity:
+  agent_id: agt_producthealth01
+  agent_version: 2026.06.26-1.product-health
+schedule:
+  mode: customer_managed_schedule
+  cron: '*/5 * * * *'
+  systemd_on_calendar: '*:0/5'
+  timeout_seconds: 30
+  jitter_seconds: 30
+  concurrency_policy: forbid_overlap
+  failure_retry_limit: 1
+runtime:
+  working_directory: /opt/fyralis/fyraliscore
+  python_executable: /opt/fyralis/venv/bin/python
+  container_image_ref: <customer-approved-fyralis-image-ref>
+  run_as_non_root: true
+  read_only_root_filesystem: true
+  no_inbound_ports: true
+  egress_only_control_plane: true
+  automount_service_account_token: false
+env:
+  deployment_id_env: FYRALIS_BYOC_DEPLOYMENT_ID
+  customer_id_env: FYRALIS_BYOC_CUSTOMER_ID
+  tenant_id_env: FYRALIS_TENANT_ID
+  agent_id_env: FYRALIS_BYOC_AGENT_ID
+  agent_version_env: FYRALIS_BYOC_AGENT_VERSION
+  artifact_revision_env: FYRALIS_BYOC_ARTIFACT_REVISION
+  database_url_env: DATABASE_URL
+  signing_key_env: FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY
+  signing_key_ref_env: FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF
+  control_plane_url_env: FYRALIS_CONTROL_PLANE_URL
+secret_refs:
+  database_url_secret_ref: prod/fyralis/dep_example01/database-url
+  signing_key_secret_ref: prod/fyralis/dep_example01/byoc-evidence-intake-signing-key
+control_plane:
+  submit_path: /byoc/control-plane/product-health-snapshots
+  control_plane_url_env: FYRALIS_CONTROL_PLANE_URL
+  signing_key_ref_env: FYRALIS_BYOC_EVIDENCE_INTAKE_KEY_REF
+  outbound_port: 443
+kubernetes:
+  namespace: fyralis-byoc
+  cronjob_name: fyralis-byoc-product-health
+  config_map_name: fyralis-byoc-product-health
+  secret_name: fyralis-byoc-product-health
+  service_account_name: fyralis-byoc-product-health
+  successful_jobs_history_limit: 3
+  failed_jobs_history_limit: 3
+  active_deadline_seconds: 120
+systemd:
+  service_unit: fyralis-byoc-product-health.service
+  timer_unit: fyralis-byoc-product-health.timer
+  environment_file: /etc/fyralis/byoc-product-health.env
+  user: fyralis
+  group: fyralis
+artifacts:
+  kubernetes_cronjob_path: deploy/byoc/kubernetes/product-health-collector.cronjob.example.yaml
+  systemd_service_path: deploy/byoc/systemd/product-health-collector.service.example
+  systemd_timer_path: deploy/byoc/systemd/product-health-collector.timer.example
+privacy_boundary:
+  raw_payloads_included: false
+  raw_prompts_included: false
+  raw_logs_included: false
+  pii_included: false
+  source_records_included: false
+  model_contents_included: false
+  vector_values_included: false
+  raw_secret_values_included: false
+  endpoint_values_included: false
+stored_scope: customer_side_product_health_automation_metadata_only

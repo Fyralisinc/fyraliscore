@@ -10,6 +10,8 @@ from scripts.generate_byoc_handoff_bundle_index import main
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = ROOT / "deploy/byoc/evidence-package.example.yaml"
 LEDGER = ROOT / "deploy/byoc/evidence-ledger.example.yaml"
+AUTOMATION = ROOT / "deploy/byoc/product-health-automation.example.yaml"
+INSTALL_REHEARSAL = ROOT / "deploy/byoc/product-health-install-rehearsal.example.yaml"
 
 
 def test_generate_byoc_handoff_bundle_index_json_output(capsys) -> None:
@@ -34,13 +36,18 @@ def test_generate_byoc_handoff_bundle_index_json_output(capsys) -> None:
     )
     assert payload["deployment_id"] == "dep_example01"
     assert payload["customer_id"] == "cus_example01"
-    assert payload["artifact_count"] == 2
-    assert payload["signed_read_endpoint_count"] == 5
+    assert payload["artifact_count"] == 4
+    assert payload["signed_read_endpoint_count"] == 6
     assert {artifact["name"] for artifact in payload["artifacts"]} == {
         "evidence_package",
         "evidence_ledger",
+        "product_health_automation",
+        "product_health_install_rehearsal",
     }
     assert "deployment_overview" in {
+        endpoint["name"] for endpoint in payload["signed_read_endpoints"]
+    }
+    assert "control_panel_state" in {
         endpoint["name"] for endpoint in payload["signed_read_endpoints"]
     }
     assert payload["privacy"]["artifact_bodies_included"] is False
@@ -83,8 +90,12 @@ def test_generate_byoc_handoff_bundle_index_indexes_optional_artifact_by_digest(
 ) -> None:
     package = tmp_path / "evidence-package.yaml"
     ledger = tmp_path / "evidence-ledger.yaml"
+    automation = tmp_path / "product-health-automation.yaml"
+    install_rehearsal = tmp_path / "product-health-install-rehearsal.yaml"
     shutil.copyfile(PACKAGE, package)
     shutil.copyfile(LEDGER, ledger)
+    shutil.copyfile(AUTOMATION, automation)
+    shutil.copyfile(INSTALL_REHEARSAL, install_rehearsal)
     handoff_report = tmp_path / "byoc-customer-handoff-report.json"
     handoff_report.write_text(
         json.dumps(
@@ -103,6 +114,10 @@ def test_generate_byoc_handoff_bundle_index_indexes_optional_artifact_by_digest(
             str(package),
             "--evidence-ledger",
             str(ledger),
+            "--product-health-automation",
+            str(automation),
+            "--product-health-install-rehearsal",
+            str(install_rehearsal),
             "--repo-root",
             str(tmp_path),
             "--customer-handoff-report",
@@ -131,8 +146,12 @@ def test_generate_byoc_handoff_bundle_index_indexes_control_plane_smoke_summary(
 ) -> None:
     package = tmp_path / "evidence-package.yaml"
     ledger = tmp_path / "evidence-ledger.yaml"
+    automation = tmp_path / "product-health-automation.yaml"
+    install_rehearsal = tmp_path / "product-health-install-rehearsal.yaml"
     shutil.copyfile(PACKAGE, package)
     shutil.copyfile(LEDGER, ledger)
+    shutil.copyfile(AUTOMATION, automation)
+    shutil.copyfile(INSTALL_REHEARSAL, install_rehearsal)
     smoke_summary = tmp_path / "control-plane-read-smoke-summary.json"
     smoke_summary.write_text(
         json.dumps(
@@ -154,6 +173,10 @@ def test_generate_byoc_handoff_bundle_index_indexes_control_plane_smoke_summary(
             str(package),
             "--evidence-ledger",
             str(ledger),
+            "--product-health-automation",
+            str(automation),
+            "--product-health-install-rehearsal",
+            str(install_rehearsal),
             "--repo-root",
             str(tmp_path),
             "--control-plane-read-smoke-summary",

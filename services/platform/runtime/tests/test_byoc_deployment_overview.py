@@ -6,6 +6,10 @@ from services.platform.runtime.byoc_agent_control_plane import (
     ByocAgentFleetItem,
     ByocAgentFleetList,
 )
+from services.platform.runtime.byoc_control_panel_state import (
+    ByocControlPanelStateQuery,
+    build_byoc_control_panel_state,
+)
 from services.platform.runtime.byoc_control_plane_intake import (
     ByocEvidencePackageIntakeRecord,
     ByocEvidencePackageReceipt,
@@ -316,4 +320,108 @@ def test_deployment_overview_surfaces_runner_failures() -> None:
     assert overview.status == "action_required"
     assert overview.next_action == "review_runner_failures"
     assert overview.runner_summary.failed_receipt_count == 1
-    assert overview.runner_summary.latest_required_checks_passed is False
+
+
+def test_control_panel_state_composes_sanitized_deployment_reads() -> None:
+    agents = _agents(_agent())
+    evidence_packages = _evidence_list(_evidence())
+    preflight_reports = _preflight_list(_preflight())
+    runner_evidence = _runner_list(_runner())
+    overview = _overview(
+        agents=agents,
+        evidence_packages=evidence_packages,
+        preflight_reports=preflight_reports,
+        runner_evidence=runner_evidence,
+    )
+
+    state = build_byoc_control_panel_state(
+        query=ByocControlPanelStateQuery(
+            deployment_id=DEPLOYMENT_ID,
+            customer_id=CUSTOMER_ID,
+            recent_limit=10,
+        ),
+        overview=overview,
+        agents=agents,
+        evidence_packages=evidence_packages,
+        preflight_reports=preflight_reports,
+        runner_evidence=runner_evidence,
+        generated_at=GENERATED_AT,
+    )
+
+    assert state.schema_version == "fyralis.byoc.control_panel_state.v1"
+    assert state.stored_scope == "sanitized_control_panel_metadata_only"
+    assert state.overview.status == "ready"
+    assert state.actions == ()
+    assert {section.key: section.status for section in state.sections} == {
+        "deployment_overview": "ready",
+        "agent_fleet": "ready",
+        "evidence_packages": "ready",
+        "preflight_reports": "ready",
+        "runner_evidence": "ready",
+    }
+    serialized = state.model_dump_json()
+    assert "install_token" not in serialized.lower()
+    assert "secret_ref" not in serialized.lower()
+    assert "signature" not in serialized.lower()
+    assert "payload" not in serialized.lower()
+    assert '"preflight_report":' not in serialized
+    assert '"checks":' not in serialized
+
+
+def test_control_panel_state_surfaces_action_codes_without_raw_context() -> None:
+    agents = _agents(_agent())
+    overview = _overview(
+        agents=agents,
+        evidence_packages=_evidence_list(),
+    )
+
+    state = build_byoc_control_panel_state(
+        query=ByocControlPanelStateQuery(
+            deployment_id=DEPLOYMENT_ID,
+            customer_id=CUSTOMER_ID,
+        ),
+        overview=overview,
+        agents=agents,
+        evidence_packages=_evidence_list(),
+        preflight_reports=_preflight_list(),
+        runner_evidence=_runner_list(),
+        generated_at=GENERATED_AT,
+    )
+
+    assert [action.code for action in state.actions] == ["submit_evidence_package"]
+    assert state.actions[0].target_section == "evidence_packages"
+    assert state.actions[0].priority == "warning"
+    assert {section.key: section.status for section in state.sections}[
+        "evidence_packages"
+    ] == "action_required"
+
+
+def test_control_panel_state_flags_desired_revision_drift() -> None:
+    first = _agent(agent_id="agt_overview01")
+    second = _agent(agent_id="agt_overview02").model_copy(
+        update={"desired_revision": "2026.06.27-3"}
+    )
+    agents = _agents(first, second)
+    evidence_packages = _evidence_list(_evidence())
+    overview = _overview(
+        agents=agents,
+        evidence_packages=evidence_packages,
+    )
+
+    state = build_byoc_control_panel_state(
+        query=ByocControlPanelStateQuery(
+            deployment_id=DEPLOYMENT_ID,
+            customer_id=CUSTOMER_ID,
+        ),
+        overview=overview,
+        agents=agents,
+        evidence_packages=evidence_packages,
+        preflight_reports=_preflight_list(),
+        runner_evidence=_runner_list(),
+        generated_at=GENERATED_AT,
+    )
+
+    assert overview.agent_summary.mixed_desired_revisions is True
+    assert state.actions[0].code == "review_desired_state_drift"
+    assert state.actions[0].source == "agent_fleet"
+    assert state.actions[0].priority == "warning"

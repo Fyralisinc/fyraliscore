@@ -24,6 +24,8 @@ HandoffBundleArtifactKind = Literal[
     "evidence_ledger",
     "customer_handoff_readiness_report",
     "preflight_report",
+    "product_health_automation",
+    "product_health_install_rehearsal",
     "source_onboarding_gate_report",
     "control_plane_read_smoke_report",
     "control_plane_read_smoke_summary",
@@ -128,7 +130,9 @@ class ByocHandoffBundleReadEndpoint(_StrictModel):
     path: str
     signed_read_required: Literal[True] = True
     required_query_params: tuple[Literal["deployment_id"], ...] = ("deployment_id",)
-    optional_query_params: tuple[Literal["customer_id", "limit"], ...] = ()
+    optional_query_params: tuple[
+        Literal["customer_id", "limit", "recent_limit"], ...
+    ] = ()
     response_schema_version: str
     response_scope: str
     response_body_included: Literal[False] = False
@@ -220,6 +224,12 @@ class ByocHandoffBundleIndex(_StrictModel):
 class ByocHandoffBundleIndexInputs:
     evidence_package_path: Path
     evidence_ledger_path: Path
+    product_health_automation_path: Path = Path(
+        "deploy/byoc/product-health-automation.example.yaml"
+    )
+    product_health_install_rehearsal_path: Path = Path(
+        "deploy/byoc/product-health-install-rehearsal.example.yaml"
+    )
     repo_root: Path = field(default_factory=Path.cwd)
     customer_handoff_report_path: Path | None = None
     preflight_report_path: Path | None = None
@@ -307,6 +317,22 @@ def _artifacts(
             ledger_scope,
         ),
         (
+            "product_health_automation",
+            "product_health_automation",
+            inputs.product_health_automation_path,
+            True,
+            "fyralis.byoc.product_health_automation.v1",
+            "customer_side_product_health_automation_metadata_only",
+        ),
+        (
+            "product_health_install_rehearsal",
+            "product_health_install_rehearsal",
+            inputs.product_health_install_rehearsal_path,
+            True,
+            "fyralis.byoc.product_health_install_rehearsal.v1",
+            "customer_side_product_health_install_rehearsal_metadata_only",
+        ),
+        (
             "customer_handoff_readiness_report",
             "customer_handoff_readiness_report",
             inputs.customer_handoff_report_path,
@@ -377,6 +403,13 @@ def _signed_read_endpoints() -> tuple[ByocHandoffBundleReadEndpoint, ...]:
             optional_query_params=("customer_id",),
             response_schema_version="fyralis.byoc.deployment_overview.v1",
             response_scope="sanitized_deployment_metadata_only",
+        ),
+        ByocHandoffBundleReadEndpoint(
+            name="control_panel_state",
+            path="/byoc/control-plane/control-panel-state",
+            optional_query_params=("customer_id", "recent_limit"),
+            response_schema_version="fyralis.byoc.control_panel_state.v1",
+            response_scope="sanitized_control_panel_metadata_only",
         ),
         ByocHandoffBundleReadEndpoint(
             name="evidence_package_receipts",

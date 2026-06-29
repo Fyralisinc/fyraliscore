@@ -145,9 +145,16 @@ Repo-owned artifacts for this first slice:
   backend automation/control-panel consumers: status, next action, agent health
   counts, evidence-package receipt counts, preflight receipt counts, runner
   receipt counts, latest accepted timestamps, and no raw reports, request
-  bodies, endpoint URLs, secret refs, prompts, logs, or PII. Production mTLS
-  issuance, full fleet reconciliation history, and fleet dashboard workflows
-  remain deferred.
+  bodies, endpoint URLs, secret refs, prompts, logs, or PII. `GET
+  /byoc/control-plane/control-panel-state` is the backend/core control-panel
+  read contract layered on top of the same signed reads. It returns the
+  deployment overview, sanitized agent fleet, recent sanitized evidence
+  receipts, section statuses, and bounded action codes in one response so a
+  UI/control-panel service does not need to invent a second BYOC contract. It
+  still returns no raw reports, request bodies, signatures, signed headers,
+  endpoint URLs, secret refs, prompts, logs, or PII. Production mTLS issuance,
+  full fleet reconciliation history, and fleet dashboard workflows remain
+  deferred.
 - `services/platform/runtime/byoc_permissions.py` defines the backend-owned
   customer-cloud permission contract. It validates role boundaries, explicit
   AWS actions, scoped resources, `iam:PassRole` service constraints, no
@@ -383,11 +390,98 @@ Repo-owned artifacts for this first slice:
   print a signed request for offline inspection or execute the GET when
   `--overview-url` is supplied, returning only sanitized deployment status,
   next-action, health-count, and evidence-count metadata.
+- `scripts/get_byoc_control_panel_state.py` is the backend/local automation
+  hook for signed `GET /byoc/control-plane/control-panel-state` reads. It can
+  print a signed request for offline inspection or execute the GET when
+  `--control-panel-state-url` is supplied, returning only the sanitized
+  deployment overview, agent fleet, recent receipt lists, section statuses, and
+  bounded action codes.
+- `services/platform/runtime/byoc_control_panel_contract.py` and
+  `scripts/export_byoc_control_panel_contract.py` export the same
+  control-panel state schema and a deterministic sanitized example response for
+  UI/control-plane consumers. The export is contract-only; it does not include
+  signed headers, endpoint URLs, credentials, logs, prompts, or customer data.
+- `services/platform/runtime/byoc_control_panel_access.py` defines the
+  tenant-scoped metadata-only grant, decision, and grant-store contract required
+  before a browser-facing server-side proxy can call live BYOC control-panel
+  reads on behalf of a user. `db/migrations/0185_byoc_control_panel_access_grants.sql`
+  persists one grant row per hosted tenant/customer/deployment/role with expiry
+  metadata only. The store maps gateway tenants to BYOC customer deployments
+  without read keys, endpoint URLs, credentials, raw payloads, logs, prompts, or
+  PII, and architecture ratchets scan later migrations that touch the same
+  table.
+- `scripts/manage_byoc_control_panel_access_grants.py` is the local/admin
+  automation hook for that store. It can print schemas, dry-run sanitized
+  grant/revoke JSON with no database credentials, or use `DATABASE_URL` to
+  upsert, list, and revoke metadata-only grants in the hosted/control-plane
+  database.
+- `scripts/smoke_byoc_control_panel_proxy.py` is the browser-proxy smoke helper.
+  It can print a redacted request plan without credentials, or use a gateway
+  bearer token to call `GET /byoc/control-panel/deployments` and
+  `GET /byoc/control-panel/state`, returning only a sanitized count/status
+  summary rather than the raw state body.
+- `services/app/gateway/byoc_control_panel_router.py` mounts
+  `GET /byoc/control-panel/deployments`, `GET /byoc/control-panel/state`, and
+  `GET /byoc/control-panel/product-health`, bearer-authenticated proxy routes
+  for browser or backend UI clients. The deployment route lists only active
+  metadata-only grants visible to the hosted tenant. The state/product-health
+  routes evaluate the persisted control-panel access grant before reading the
+  same sanitized state from gateway stores, so browser clients never receive or
+  sign with BYOC read HMAC material.
+- `ui/` is the core repo's BYOC control-panel UI integration. It is a
+  Vite/React operations dashboard for deployment discovery, overview status,
+  section health, product-health counters, open action codes, agent fleet
+  metadata, and recent sanitized receipts. It calls only the
+  bearer-authenticated control-panel proxy routes, keeps local test bearer
+  tokens in memory only, and treats the separate `feat/byoc-control-plane-mvp`
+  stack as prototype/reference rather than merge source.
+- `services/platform/runtime/byoc_product_health.py`,
+  `db/migrations/0186_byoc_product_health_snapshots.sql`, and
+  `POST /byoc/control-plane/product-health-snapshots` define the metadata-only
+  customer-side product-state channel. The data plane submits signed aggregate
+  snapshots for source ingestion counts/status, pipeline backlog, Think runs,
+  model graph counters, vector-index counters, and bounded issue codes. The
+  control plane stores normalized scalar rows only in
+  `byoc_product_health_snapshots`, `byoc_product_health_sources`, and
+  `byoc_product_health_issues`; raw records, prompts, logs, vector values,
+  model contents, credentials, URLs, signatures, and PII remain out of contract.
+- `services/platform/runtime/byoc_product_health_collector.py` and
+  `scripts/run_byoc_product_health_collector.py` are the customer-side
+  automation hook for that channel. The collector queries the local Fyralis
+  database for aggregate counts/timestamps only, tolerates optional tables that
+  are absent in older/dev deployments, collapses URL/credential-looking source
+  labels to `unknown`, signs the snapshot with the BYOC evidence intake key, and
+  can POST it egress-only to the product-health snapshot intake. Use
+  `--tenant-id` for shared databases; omit it only for single-tenant customer
+  data planes.
+- `services/platform/runtime/byoc_product_health_automation.py`,
+  `deploy/byoc/product-health-automation.example.yaml`,
+  `deploy/byoc/kubernetes/product-health-collector.cronjob.example.yaml`,
+  `deploy/byoc/systemd/product-health-collector.*.example`, and
+  `scripts/generate_byoc_product_health_automation.py` define the customer-side
+  schedule package for that collector. The package renders a Kubernetes
+  CronJob and systemd timer with egress-only execution, no container ports, no
+  raw DSNs/signing keys/control-plane URLs, and secret/config references that
+  remain in the customer boundary.
+- `services/platform/runtime/byoc_product_health_install_rehearsal.py`,
+  `deploy/byoc/product-health-install-rehearsal.example.yaml`, and
+  `scripts/run_byoc_product_health_install_rehearsal.py` provide the
+  no-credentials install proof for that schedule package. The rehearsal checks
+  the local automation manifest, rendered Kubernetes/systemd refs, egress-only
+  posture, hardening markers, and privacy flags before the customer applies the
+  CronJob or timer.
+- `GET /byoc/control-plane/product-health` is the signed backend automation
+  read for the latest sanitized product-health snapshot for one deployment.
+  `GET /byoc/control-panel/state` embeds the same product-health object so UI
+  clients can render deployment health and product health from one grant-gated
+  response.
 - `scripts/smoke_byoc_control_plane_reads.py` signs the read-only BYOC
   backend/control-panel surfaces together: agent fleet, deployment overview,
-  evidence-package receipts, preflight receipts, and runner-evidence receipts.
-  It can print the signed request bundle for offline inspection or execute the
-  five GETs against `--base-url`, returning only sanitized endpoint responses.
+  control-panel state, product health, evidence-package receipts, preflight
+  receipts, and runner-evidence receipts. It can print the signed request
+  bundle for offline inspection or execute the seven GETs against `--base-url`,
+  returning only
+  sanitized endpoint responses.
 - `services/platform/runtime/byoc_control_plane_read_smoke_summary.py` and
   `scripts/summarize_byoc_control_plane_read_smoke.py` convert raw/signed
   control-plane read-smoke output into a shareable metadata-only summary. The
@@ -397,6 +491,12 @@ Repo-owned artifacts for this first slice:
   account IDs, ARNs, logs, prompts, embeddings, and PII. Use this summary as
   the launch-readiness input whenever the raw smoke output contains signed
   request material.
+- `services/platform/runtime/byoc_handoff_bundle_index.py` and
+  `services/platform/runtime/byoc_customer_pilot_package.py` include the
+  product-health automation manifest and install rehearsal as digest-pinned,
+  shareable customer artifacts. The rendered Kubernetes/systemd examples remain
+  referenced by those metadata contracts; package manifests do not embed raw
+  DSNs, signing keys, control-plane URL values, or artifact bodies.
 - `services/platform/runtime/byoc_deployment_overview.py` defines the signed
   BYOC deployment overview read model used by
   `GET /byoc/control-plane/deployment-overview`. It aggregates only existing
@@ -404,6 +504,23 @@ Repo-owned artifacts for this first slice:
   and runner-evidence receipt metadata into a control-panel-ready status,
   next-action, health-count, and evidence-count summary. This is a backend
   contract, not a control panel implementation.
+- `services/platform/runtime/byoc_control_panel_state.py` defines the first
+  backend/core control-panel state contract used by
+  `GET /byoc/control-plane/control-panel-state`. It composes the signed
+  deployment overview, sanitized agent fleet, recent sanitized receipt lists,
+  section statuses, and bounded action codes into one metadata-only response
+  for a future control panel. It does not build a UI and does not expose raw
+  reports, request bodies, endpoint URLs, signatures, signed headers, secret
+  refs, prompts, logs, or PII. Browser UI code must not hold the read HMAC key;
+  a browser-facing control panel needs a separate server-side proxy with
+  tenant/customer authorization before it can call this live read on behalf of
+  a user.
+- `services/app/gateway/byoc_control_panel_router.py` provides that first
+  server-side proxy contract at `GET /byoc/control-panel/state`. It remains
+  behind ordinary gateway bearer auth, evaluates
+  `ByocControlPanelAccessGrant` metadata, and then returns the same
+  sanitized `fyralis.byoc.control_panel_state.v1` response without exposing
+  read signing keys to browser code.
 - `services/platform/runtime/byoc_live_test_readiness.py` and
   `scripts/check_byoc_live_test_readiness.py` provide the final offline gate
   before a real AWS credential window. The report validates BYOC manifests,
@@ -440,13 +557,20 @@ Repo-owned artifacts for this first slice:
   present, and emits only bounded validation status/failure codes. The default
   integrity check can pass while the package is `manual_required`; use
   `--require-ready` only for the final customer-pilot go/no-go.
+- `services/platform/runtime/byoc_customer_pilot_rehearsal.py` and
+  `scripts/rehearse_byoc_customer_pilot_package.py` compose the full
+  no-credentials customer-pilot rehearsal. The command cleans a repo-local
+  `tmp/` output directory, runs the product-health install rehearsal, builds
+  the customer-pilot package, validates artifact digests, and emits one
+  sanitized summary with only status/count/path metadata.
 - `.env.production.example` now exposes explicit `FYRALIS_DEPLOYMENT_MODE=byoc`
   settings, egress-only control-plane flags, data-plane agent auth shape, and
   privacy-safe telemetry flags.
 - `scripts/check_production_env_contract.py`,
   `scripts/check_architecture_ratchets.py`, and
   `scripts/run_operational_readiness_gates.py` include the first automation
-  hooks for BYOC contract drift.
+  hooks for BYOC contract drift, including the product-health install
+  rehearsal.
 
 This intentionally defers cloud apply, real agent reconciliation actions beyond
 metadata-only desired-state updates and non-mutating apply-plan evidence,
@@ -1403,6 +1527,7 @@ Allowed to leave the customer boundary:
 | Reliability | error counts by code, retry counts, circuit breaker state, DLQ counts, failed validation count | bounded error_code, component, source family |
 | Capacity | CPU/memory/storage utilization, DB connections, object storage bytes, topic partitions | component, resource class |
 | Billing/product aggregate | active seat count, enabled source families, event count by source family, token bucket totals, monthly active users | source family, coarse plan/tier |
+| Product health | per-source ingest counts/status, Think run/failure/queue counts, model/relationship/orphan counts, vector-index backlog, bounded issue codes | deployment_id, source family, component, status code |
 | Release state | current version, target version, rollout phase, rollback count | version, phase |
 
 Forbidden to leave:
@@ -1678,10 +1803,14 @@ Minimum gates before first enterprise customer:
   read headers and deployment/customer bounds. Configure
   `FYRALIS_BYOC_EVIDENCE_INTAKE_*` and `FYRALIS_BYOC_EVIDENCE_READ_*` key refs
   through the managed secret provider; do not ship raw signing-key env values.
-  Use `scripts/list_byoc_agents.py` and
-  `scripts/get_byoc_deployment_overview.py` for targeted backend automation
-  checks, and `scripts/smoke_byoc_control_plane_reads.py` for the combined
-  read-only control-plane smoke instead of hand-building signed read headers.
+  Use `scripts/list_byoc_agents.py`,
+  `scripts/get_byoc_deployment_overview.py`, and
+  `scripts/get_byoc_control_panel_state.py` for targeted backend automation
+  checks, `scripts/export_byoc_control_panel_contract.py` for UI/backend
+  state and access contract schemas/examples, and
+  `scripts/smoke_byoc_control_plane_reads.py` for the combined read-only
+  control-plane smoke, including the control-panel state aggregate, instead of
+  hand-building signed read headers.
   Before adding read-smoke evidence to customer handoff or launch-review
   artifacts, summarize the raw smoke output with
   `scripts/summarize_byoc_control_plane_read_smoke.py` and archive only that

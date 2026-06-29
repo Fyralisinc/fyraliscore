@@ -19,6 +19,7 @@ from scripts.run_operational_readiness_gates import (
     _byoc_control_plane_intake_gate,
     _byoc_customer_handoff_gate,
     _byoc_customer_pilot_package_gate,
+    _byoc_customer_pilot_rehearsal_gate,
     _byoc_dataplane_contract_gate,
     _byoc_evidence_package_gate,
     _byoc_evidence_ledger_gate,
@@ -26,6 +27,8 @@ from scripts.run_operational_readiness_gates import (
     _byoc_launch_readiness_summary_gate,
     _byoc_permissions_contract_gate,
     _byoc_preflight_bundle_gate,
+    _byoc_product_health_automation_gate,
+    _byoc_product_health_install_rehearsal_gate,
     _byoc_source_onboarding_gate,
     _byoc_post_deploy_validation_gate,
     _byoc_live_credential_rehearsal_gate,
@@ -124,6 +127,56 @@ def test_byoc_terraform_plan_validation_gate_passes_for_checked_in_scaffold() ->
         "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
         "permissions_manifest": "deploy/byoc/permissions.example.yaml",
         "iam_template": "deploy/byoc/aws/iam.bootstrap.template.yaml",
+    }
+
+
+def test_byoc_product_health_automation_gate_passes_for_checked_in_artifacts() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_product_health_automation_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/generate_byoc_product_health_automation.py" in result.command
+    assert "--check-automation" in result.command
+    assert result.artifacts == {
+        "automation": "deploy/byoc/product-health-automation.example.yaml",
+        "kubernetes_cronjob": (
+            "deploy/byoc/kubernetes/"
+            "product-health-collector.cronjob.example.yaml"
+        ),
+        "systemd_service": (
+            "deploy/byoc/systemd/product-health-collector.service.example"
+        ),
+        "systemd_timer": (
+            "deploy/byoc/systemd/product-health-collector.timer.example"
+        ),
+        "dataplane_manifest": "deploy/byoc/dataplane.example.yaml",
+    }
+
+
+def test_byoc_product_health_install_rehearsal_gate_passes_for_checked_in_artifacts() -> None:
+    args = argparse.Namespace(command_timeout_s=30)
+
+    result = _byoc_product_health_install_rehearsal_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/run_byoc_product_health_install_rehearsal.py" in result.command
+    assert "--install-plan" in result.command
+    assert result.artifacts == {
+        "install_plan": "deploy/byoc/product-health-install-rehearsal.example.yaml",
+        "automation": "deploy/byoc/product-health-automation.example.yaml",
+        "kubernetes_cronjob": (
+            "deploy/byoc/kubernetes/"
+            "product-health-collector.cronjob.example.yaml"
+        ),
+        "systemd_service": (
+            "deploy/byoc/systemd/product-health-collector.service.example"
+        ),
+        "systemd_timer": (
+            "deploy/byoc/systemd/product-health-collector.timer.example"
+        ),
     }
 
 
@@ -329,6 +382,12 @@ def test_byoc_handoff_bundle_index_gate_passes_for_checked_in_package() -> None:
     assert result.artifacts == {
         "package": "deploy/byoc/evidence-package.example.yaml",
         "ledger": "deploy/byoc/evidence-ledger.example.yaml",
+        "product_health_automation": (
+            "deploy/byoc/product-health-automation.example.yaml"
+        ),
+        "product_health_install_rehearsal": (
+            "deploy/byoc/product-health-install-rehearsal.example.yaml"
+        ),
     }
 
 
@@ -397,10 +456,39 @@ def test_byoc_customer_pilot_package_gate_passes_for_contract_suite() -> None:
     assert "services/platform/runtime/tests/test_byoc_customer_pilot_package.py" in (
         result.command
     )
+    assert "services/platform/runtime/tests/test_byoc_customer_pilot_rehearsal.py" in (
+        result.command
+    )
     assert "scripts/tests/test_build_byoc_customer_pilot_package.py" in result.command
     assert "scripts/tests/test_check_byoc_customer_pilot_package.py" in result.command
+    assert "scripts/tests/test_rehearse_byoc_customer_pilot_package.py" in (
+        result.command
+    )
     assert "123456789012" not in result.stdout_tail
     assert "arn:aws" not in result.stdout_tail
+
+
+def test_byoc_customer_pilot_rehearsal_gate_passes_without_credentials() -> None:
+    args = argparse.Namespace(
+        command_timeout_s=30,
+        run_id="operational-readiness-test",
+    )
+
+    result = _byoc_customer_pilot_rehearsal_gate(args)
+
+    assert result.status == PASS
+    assert result.command is not None
+    assert "scripts/rehearse_byoc_customer_pilot_package.py" in result.command
+    assert "--json" in result.command
+    assert result.artifacts == {
+        "output_dir": (
+            "tmp/byoc/operational-readiness-test-customer-pilot-rehearsal"
+        ),
+        "rehearsal_script": "scripts/rehearse_byoc_customer_pilot_package.py",
+    }
+    assert "123456789012" not in result.stdout_tail
+    assert "arn:aws" not in result.stdout_tail
+    assert "token=" not in result.stdout_tail
 
 
 def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:
@@ -414,10 +502,16 @@ def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:
         result.command
     )
     assert "services/app/gateway/tests/test_byoc_agent_router.py" in result.command
+    assert "services/app/gateway/tests/test_byoc_control_panel_router.py" in (
+        result.command
+    )
     assert "services/platform/runtime/tests/test_byoc_control_plane_intake.py" in (
         result.command
     )
     assert "services/platform/runtime/tests/test_byoc_preflight_intake.py" in (
+        result.command
+    )
+    assert "services/platform/runtime/tests/test_byoc_product_health.py" in (
         result.command
     )
     assert "services/platform/runtime/tests/test_byoc_runner_evidence_intake.py" in (
@@ -426,9 +520,19 @@ def test_byoc_control_plane_intake_gate_passes_for_api_contract() -> None:
     assert "services/app/gateway/tests/test_byoc_control_plane_router.py" in (
         result.command
     )
+    assert "scripts/tests/test_get_byoc_control_panel_state.py" in result.command
     assert "scripts/tests/test_get_byoc_deployment_overview.py" in result.command
+    assert "scripts/tests/test_export_byoc_control_panel_contract.py" in (
+        result.command
+    )
     assert "scripts/tests/test_list_byoc_agents.py" in result.command
     assert "scripts/tests/test_smoke_byoc_control_plane_reads.py" in result.command
+    assert "services/platform/runtime/tests/test_byoc_control_panel_access.py" in (
+        result.command
+    )
+    assert "services/platform/runtime/tests/test_byoc_control_panel_contract.py" in (
+        result.command
+    )
     assert "scripts/tests/test_submit_byoc_preflight_report.py" in result.command
     assert "scripts/tests/test_submit_byoc_runner_evidence.py" in result.command
     assert "scripts/tests/test_update_byoc_agent_desired_state.py" in result.command

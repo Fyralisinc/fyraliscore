@@ -161,13 +161,13 @@ def _write_inputs(
     index = {
         "schema_version": "fyralis.byoc.customer_handoff_bundle_index.v1",
         "artifact_count": 2,
-        "signed_read_endpoint_count": 5,
+        "signed_read_endpoint_count": 6,
         "artifacts": [
             {"name": "evidence_package", "required": True, "present": True},
             {"name": "evidence_ledger", "required": True, "present": True},
         ],
         "signed_read_endpoints": [
-            {"name": f"surface_{index}"} for index in range(5)
+            {"name": f"surface_{index}"} for index in range(6)
         ],
         "privacy": {
             "artifact_bodies_included": False,
@@ -184,6 +184,7 @@ def _write_inputs(
         "responses": {
             "agent_fleet": {"response": {"items": []}},
             "deployment_overview": {"response": {"status": "active"}},
+            "control_panel_state": {"response": {"status": "ready"}},
             "evidence_packages": {"response": {"items": []}},
             "preflight_reports": {"response": {"items": []}},
             "runner_evidence": {

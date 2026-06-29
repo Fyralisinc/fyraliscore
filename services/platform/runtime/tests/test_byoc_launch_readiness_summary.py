@@ -96,7 +96,7 @@ def test_launch_readiness_summary_accepts_sanitized_control_plane_smoke_summary(
                 "mode": "executed",
                 "hosted_read_executed": True,
                 "required_surfaces_present": True,
-                "surface_count": 5,
+                "surface_count": 6,
                 "deployment_id": "dep_launch01",
                 "customer_id": "cus_launch01",
             }
@@ -185,7 +185,7 @@ def _write_inputs(
     index = {
         "schema_version": "fyralis.byoc.customer_handoff_bundle_index.v1",
         "artifact_count": 2,
-        "signed_read_endpoint_count": 5,
+        "signed_read_endpoint_count": 6,
         "artifacts": [
             {
                 "name": "evidence_package",
@@ -199,7 +199,7 @@ def _write_inputs(
             },
         ],
         "signed_read_endpoints": [
-            {"name": f"surface_{index}"} for index in range(5)
+            {"name": f"surface_{index}"} for index in range(6)
         ],
         "privacy": {
             "artifact_bodies_included": False,
@@ -216,6 +216,7 @@ def _write_inputs(
         "responses": {
             "agent_fleet": {"response": {"items": []}},
             "deployment_overview": {"response": {"status": "active"}},
+            "control_panel_state": {"response": {"status": "ready"}},
             "evidence_packages": {"response": {"items": []}},
             "preflight_reports": {"response": {"items": []}},
             "runner_evidence": {

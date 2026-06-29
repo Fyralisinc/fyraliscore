@@ -111,6 +111,11 @@ Every checklist item is done only when:
   execution adapters that store only bounded status/exit metadata, ledger
   summary import, and readiness gate before live Terraform plan or apply work
   begins.
+- [x] BYOC product-health collection has a checked-in customer-side automation
+  contract, Kubernetes CronJob and systemd timer examples, generator/checker
+  CLI, and readiness gate that prove scheduled snapshot submission remains
+  egress-only, metadata-only, and free of raw DSNs, signing keys, endpoint
+  values, logs, prompts, model contents, vectors, or source records.
 - [x] BYOC bootstrap artifacts have a checked-in signed-bundle manifest,
   verifier CLI, local hash checks for checked-in IaC files, digest-pinned
   image/chart/SBOM refs, and a readiness gate before cloud apply work begins.
@@ -152,7 +157,8 @@ Every checklist item is done only when:
   results into one sanitized go/no-go artifact with no child report bodies,
   command output, account IDs, ARNs, URLs, credentials, raw data, logs, or PII.
 - [x] BYOC customer handoff bundle index has a backend/core generator that
-  lists sanitized handoff artifacts by relative path, digest, schema, and scope,
+  lists sanitized handoff artifacts, including the product-health automation
+  manifest and install rehearsal, by relative path, digest, schema, and scope,
   plus signed read endpoint paths, without artifact bodies, signed headers,
   endpoint URLs, request/response bodies, logs, credentials, or PII.
 - [x] BYOC customer-pilot launch readiness has a backend/core summary command
@@ -186,20 +192,34 @@ Every checklist item is done only when:
   preflight-report, and runner-evidence receipt state into status, next action,
   health counts, and evidence counts, plus targeted and combined local
   signed-read helpers for future control-panel/backend automation consumers.
+- [x] BYOC control-panel state has a signed metadata-only backend read model and
+  gateway route that composes deployment overview, sanitized agent fleet, recent
+  sanitized receipt lists, section statuses, and bounded action codes into one
+  future-control-panel contract, plus a targeted signed-read helper and
+  schema/example exporter, with a persistent tenant-to-BYOC-deployment access
+  grant store, admin CLI, and bearer-authenticated deployment discovery route
+  plus smoke helper for the browser/backend proxy, without raw reports, signed
+  headers, endpoint URLs, secret refs, logs, prompts, embeddings, or PII.
 - [x] BYOC control-plane read-smoke output has a shareable summary command that
-  strips signed headers, endpoint paths, query strings, endpoint URLs,
-  request/response bodies, auth material, credentials, account IDs, ARNs, logs,
-  prompts, embeddings, and PII before the result is used in launch-review or
-  customer handoff evidence.
+  covers the signed control-panel state aggregate and strips signed headers,
+  endpoint paths, query strings, endpoint URLs, request/response bodies, auth
+  material, credentials, account IDs, ARNs, logs, prompts, embeddings, and PII
+  before the result is used in launch-review or customer handoff evidence.
 - [x] BYOC customer-pilot handoff has a one-command backend/core package
-  builder that writes sanitized local readiness artifacts, a handoff index,
-  launch summary, and digest-only manifest under the ignored `tmp/` tree,
-  marking AWS credential and hosted control-plane evidence manual until real
-  reports are supplied.
+  builder that writes sanitized local readiness artifacts, the product-health
+  automation manifest reference, product-health install rehearsal reference,
+  a handoff index, launch summary, and digest-only manifest under the ignored
+  `tmp/` tree, marking AWS credential and hosted control-plane evidence manual
+  until real reports are supplied.
 - [x] BYOC customer-pilot package integrity has a backend/core verifier that
   reloads the manifest, re-hashes referenced artifacts, validates top-level
   schemas, detects missing or unsafe artifact paths, and emits only bounded
   status/failure metadata.
+- [x] BYOC customer-pilot package rehearsal has a clean backend/core wrapper
+  that removes only a repo-local `tmp/` output directory, runs the
+  product-health install rehearsal, builds the sanitized package, validates
+  manifest digests, and emits one metadata-only summary without cloud
+  credentials, artifact bodies, command output, endpoint URLs, or customer data.
 - [x] Observability covers gateway, ingestion, reasoning, workers, database,
   queue depth, DLQs, source lag, LLM cost, and product errors.
 - [ ] Staging can run a full migration rehearsal, load/soak test, release, and

@@ -50,9 +50,12 @@ def test_smoke_byoc_control_plane_reads_prints_signed_requests(
     assert code == 0
     assert payload["schema_version"] == SCHEMA_VERSION
     assert payload["mode"] == "signed_requests"
+    assert payload["control_panel_recent_limit"] == 10
     assert set(payload["requests"]) == {
         "agent_fleet",
         "deployment_overview",
+        "control_panel_state",
+        "product_health",
         "evidence_packages",
         "preflight_reports",
         "runner_evidence",
@@ -72,6 +75,12 @@ def test_smoke_byoc_control_plane_reads_prints_signed_requests(
         f"deployment_id={DEPLOYMENT_ID}&customer_id={CUSTOMER_ID}&limit=5"
     )
     assert payload["requests"]["deployment_overview"]["query"] == (
+        f"deployment_id={DEPLOYMENT_ID}&customer_id={CUSTOMER_ID}"
+    )
+    assert payload["requests"]["control_panel_state"]["query"] == (
+        f"deployment_id={DEPLOYMENT_ID}&customer_id={CUSTOMER_ID}&recent_limit=10"
+    )
+    assert payload["requests"]["product_health"]["query"] == (
         f"deployment_id={DEPLOYMENT_ID}&customer_id={CUSTOMER_ID}"
     )
     assert SIGNING_SECRET not in rendered
@@ -115,6 +124,21 @@ def test_smoke_byoc_control_plane_reads_executes_all_signed_reads(
                 "status": "ready",
                 "next_action": "none",
                 "stored_scope": "sanitized_deployment_metadata_only",
+            }
+        if path.endswith("/control-panel-state"):
+            return {
+                "schema_version": "fyralis.byoc.control_panel_state.v1",
+                "overview": {"status": "ready"},
+                "sections": [],
+                "actions": [],
+                "stored_scope": "sanitized_control_panel_metadata_only",
+            }
+        if path.endswith("/product-health"):
+            return {
+                "schema_version": "fyralis.byoc.product_health.v1",
+                "observed": True,
+                "overall_status": "ready",
+                "stored_scope": "sanitized_product_health_metadata_only",
             }
         if path.endswith("/evidence-packages"):
             return {
@@ -173,16 +197,23 @@ def test_smoke_byoc_control_plane_reads_executes_all_signed_reads(
     assert code == 0
     assert payload["schema_version"] == SCHEMA_VERSION
     assert payload["mode"] == "executed"
-    assert len(seen) == 5
+    assert payload["control_panel_recent_limit"] == 10
+    assert len(seen) == 7
     assert {item["path"] for item in seen} == {
         "/root/byoc/control-plane/agents",
         "/root/byoc/control-plane/deployment-overview",
+        "/root/byoc/control-plane/control-panel-state",
+        "/root/byoc/control-plane/product-health",
         "/root/byoc/control-plane/evidence-packages",
         "/root/byoc/control-plane/preflight-reports",
         "/root/byoc/control-plane/runner-evidence",
     }
     assert all(item["timeout"] == 4.0 for item in seen)
     assert payload["responses"]["deployment_overview"]["response"]["status"] == "ready"
+    assert payload["responses"]["control_panel_state"]["response"]["stored_scope"] == (
+        "sanitized_control_panel_metadata_only"
+    )
+    assert payload["responses"]["product_health"]["response"]["observed"] is True
     assert payload["responses"]["runner_evidence"]["response"]["result_count"] == 1
     assert "headers" not in rendered.lower()
     assert SIGNING_SECRET not in rendered
@@ -259,6 +290,9 @@ def test_smoke_byoc_control_plane_reads_prints_schema(capsys) -> None:
     assert payload["schema_version"] == SCHEMA_VERSION
     assert payload["deployment_overview"]["properties"]["schema_version"]["const"] == (
         "fyralis.byoc.deployment_overview.v1"
+    )
+    assert payload["control_panel_state"]["properties"]["schema_version"]["const"] == (
+        "fyralis.byoc.control_panel_state.v1"
     )
     assert payload["runner_evidence_receipt_list"]["properties"]["schema_version"][
         "const"
