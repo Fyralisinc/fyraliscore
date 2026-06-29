@@ -8,6 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.testclient import TestClient
 
 from services.app.gateway.structure_router import build_structure_router
+from services.platform.access_control.checks import AccessDecision
 
 
 class _Acquire:
@@ -91,12 +92,22 @@ def test_structure_overlay_delegates_to_overlay_fetcher(monkeypatch) -> None:
     conn = object()
     captured = {}
 
-    async def fake_fetch(commitment_uuid, tenant_uuid, acquired_conn):
+    async def fake_can_read(actor_id, kind, entity_id, *, conn, tenant_id):
+        captured["access"] = {
+            "kind": kind,
+            "entity_id": str(entity_id),
+            "tenant_id": str(tenant_id),
+            "conn": conn,
+        }
+        return AccessDecision(True, "commitment_owner")
+
+    async def fake_fetch(commitment_uuid, tenant_uuid, acquired_conn, *, actor_id=None):
         captured.update(
             {
                 "commitment_id": str(commitment_uuid),
                 "tenant_id": str(tenant_uuid),
                 "conn": acquired_conn,
+                "actor_id": str(actor_id) if actor_id else None,
             }
         )
         return {
@@ -112,6 +123,10 @@ def test_structure_overlay_delegates_to_overlay_fetcher(monkeypatch) -> None:
         "services.app.gateway.structure_router.fetch_commitment_overlay",
         fake_fetch,
     )
+    monkeypatch.setattr(
+        "services.app.gateway.structure_router.can_read_by_id",
+        fake_can_read,
+    )
     client = _client(tenant_id=tenant_id, conn=conn)
 
     response = client.get(f"/v1/structure/overlay/{commitment_id}")
@@ -122,4 +137,11 @@ def test_structure_overlay_delegates_to_overlay_fetcher(monkeypatch) -> None:
         "commitment_id": str(commitment_id),
         "tenant_id": str(tenant_id),
         "conn": conn,
+        "actor_id": captured["actor_id"],
+        "access": {
+            "kind": "commitment",
+            "entity_id": str(commitment_id),
+            "tenant_id": str(tenant_id),
+            "conn": conn,
+        },
     }

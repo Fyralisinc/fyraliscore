@@ -130,6 +130,8 @@ class SubstrateSnapshot:
     anomalies: list[AnomalyRef]
     conversation_context: ConversationContext
     time_of_day_bucket: TimeOfDayBucket
+    calibration_pct: int | None = None
+    calibration_sample_count: int = 0
 
     def to_json(self) -> dict[str, Any]:
         """JSON-safe dict for logging / prompt assembly."""
@@ -247,6 +249,9 @@ class SnapshotComposer:
             resources = await self._unhealthy_customer_resources(c, tenant_id)
             changes = await self._recent_state_changes(c, tenant_id, now)
             anomalies = await self._recent_anomalies(c, tenant_id, now)
+            calibration_pct, calibration_sample_count = (
+                await self._tenant_calibration_summary(c, tenant_id, now)
+            )
             return SubstrateSnapshot(
                 tenant_id=tenant_id,
                 captured_at=now,
@@ -257,6 +262,8 @@ class SnapshotComposer:
                 anomalies=anomalies,
                 conversation_context=conversation_context or ConversationContext(),
                 time_of_day_bucket=bucket,
+                calibration_pct=calibration_pct,
+                calibration_sample_count=calibration_sample_count,
             )
 
         if conn is not None:
@@ -301,6 +308,9 @@ class SnapshotComposer:
             resources = await self._unhealthy_customer_resources(c, tenant_id)
             changes = await self._recent_state_changes(c, tenant_id, now)
             anomalies = await self._recent_anomalies(c, tenant_id, now)
+            calibration_pct, calibration_sample_count = (
+                await self._tenant_calibration_summary(c, tenant_id, now)
+            )
 
             candidates: list[dict[str, Any]] = await self._card_candidates(
                 c, tenant_id, card_kind, now,
@@ -327,6 +337,8 @@ class SnapshotComposer:
                             recent_queries=[{"card_candidate": cand}],
                         ),
                         time_of_day_bucket=bucket,
+                        calibration_pct=calibration_pct,
+                        calibration_sample_count=calibration_sample_count,
                     )
                 )
             return out
@@ -639,6 +651,49 @@ class SnapshotComposer:
                 )
             )
         return out
+
+    async def _tenant_calibration_summary(
+        self,
+        c: asyncpg.Connection,
+        tenant_id: UUID,
+        now: datetime,
+    ) -> tuple[int | None, int]:
+        """Tenant-level calibration for the home close line.
+
+        This intentionally uses only aggregate resolved calibration rows.
+        When no resolved sample exists we return ``None`` instead of a
+        placeholder percentage, allowing renderers to show a warm-up state.
+        """
+        cutoff = now - timedelta(days=180)
+        row = await c.fetchrow(
+            """
+            SELECT
+              COUNT(*)::int AS sample_count,
+              CASE
+                WHEN COUNT(*) = 0 THEN NULL
+                ELSE 1.0 - AVG(
+                  ABS(
+                    asserted_confidence
+                    - CASE WHEN outcome THEN 1.0 ELSE 0.0 END
+                  )
+                )
+              END AS calibration_score
+            FROM calibration_stats
+            WHERE tenant_id = $1
+              AND outcome IS NOT NULL
+              AND resolved_at >= $2
+            """,
+            tenant_id,
+            cutoff,
+        )
+        if row is None:
+            return None, 0
+        sample_count = int(row["sample_count"] or 0)
+        score = row["calibration_score"]
+        if sample_count <= 0 or score is None:
+            return None, sample_count
+        score_f = max(0.0, min(1.0, float(score)))
+        return int(round(score_f * 100)), sample_count
 
     # -----------------------------------------------------------------
     # Card candidate selection

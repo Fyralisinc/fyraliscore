@@ -49,7 +49,9 @@ def _resolve_backend(explicit: BackendName | None) -> BackendName:
             "EMBEDDER_BACKEND must be set to 'ollama' or 'openai' in production",
         )
     # Implicit fallback.
-    has_openai_key = bool(os.environ.get("OPENAI_API_KEY"))
+    has_openai_key = bool(
+        os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY_SECRET_REF")
+    )
     has_ollama_url = bool(os.environ.get("OLLAMA_URL"))
     if has_openai_key and not has_ollama_url:
         return "openai"

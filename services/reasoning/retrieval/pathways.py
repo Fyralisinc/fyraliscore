@@ -21,10 +21,11 @@ Invariants:
     this in conftest; production callers do this via the shared pool
     initializer).
 
-Why this module does not own the pool: retrieval must run INSIDE the
-caller's transaction. Think will open one transaction for retrieve +
-reason + apply + state_change emission, and we must be on that same
-connection so pre-commit state is visible.
+Why this module does not own the pool: retrieval composes with the
+caller's connection and transaction boundary. Inferential Think calls it
+before the short mutation transaction; authoritative deterministic Think
+may call it inside the legacy wide transaction so pre-commit state remains
+visible to deterministic handlers.
 """
 
 from __future__ import annotations
@@ -122,12 +123,12 @@ _INNER_DURATION = histogram(
 _PGVECTOR_DURATION = histogram(
     "retrieval_pgvector_query_seconds",
     "pgvector ANN / exact-rank query latency in pathway B.",
-    ("query",),
+    ("strategy",),
 )
 _PGVECTOR_QUERIES = counter(
     "retrieval_pgvector_queries_total",
     "pgvector queries executed in pathway B (ann | exact_fallback).",
-    ("query",),
+    ("strategy",),
 )
 
 
@@ -2006,8 +2007,8 @@ async def _pathway_b_fetch_ann(
         *scope.params,
     )
     ann_elapsed = time.perf_counter() - ann_started
-    _PGVECTOR_DURATION.observe(ann_elapsed, query="ann")
-    _PGVECTOR_QUERIES.inc(query="ann")
+    _PGVECTOR_DURATION.observe(ann_elapsed, strategy="ann")
+    _PGVECTOR_QUERIES.inc(strategy="ann")
     notes["ann_query_ms"] = int(ann_elapsed * 1000)
     return list(rows)
 
@@ -2053,9 +2054,9 @@ async def _pathway_b_fetch_scope_exact_fallback(
         *scope.params,
     )
     _PGVECTOR_DURATION.observe(
-        time.perf_counter() - exact_started, query="exact_fallback"
+        time.perf_counter() - exact_started, strategy="exact_fallback"
     )
-    _PGVECTOR_QUERIES.inc(query="exact_fallback")
+    _PGVECTOR_QUERIES.inc(strategy="exact_fallback")
     exact_models = _hydrate_many(exact_rows, _hydrate_model, notes, "scope_exact_models")
     models = _pathway_b_rank_exact(exact_models, vec=vec, k=k)
     notes["scope_exact_fallback"] = {

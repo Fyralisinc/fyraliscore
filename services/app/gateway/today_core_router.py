@@ -12,6 +12,26 @@ from fastapi.responses import JSONResponse
 from lib.shared.ids import uuid7
 from services.app.gateway.artifact_drawers import fetch_artifact
 from services.app.gateway.auth import AuthContext
+from services.platform.access_control.audit import (
+    record_override_if_needed as record_access_override_if_needed,
+)
+from services.platform.access_control.checks import (
+    AccessDecision,
+    EntityKind,
+    can_read_by_id,
+)
+from services.platform.access_control.roles import has_role
+from services.platform.operator_action_audit import record_operator_action
+
+
+_ARTIFACT_ACCESS_KIND: dict[str, EntityKind] = {
+    "commitment": "commitment",
+    "goal": "goal",
+    "decision": "decision",
+    "resource": "resource",
+    "observation": "observation",
+    "model": "model",
+}
 
 
 def build_today_core_router() -> APIRouter:
@@ -35,11 +55,40 @@ def build_today_core_router() -> APIRouter:
 
         deps = _deps(request)
         async with deps.pool.acquire() as conn:
+            decision = await _can_read_artifact(
+                auth,
+                artifact_type,
+                aid,
+                conn=conn,
+            )
+            if not decision.allowed:
+                if decision.reason == "entity_not_found":
+                    return JSONResponse(
+                        {"error": "not_found", "type": artifact_type},
+                        status_code=404,
+                    )
+                return JSONResponse(
+                    {
+                        "error": "forbidden",
+                        "reason": decision.reason,
+                        "type": artifact_type,
+                    },
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
+            await _record_override_if_needed(
+                decision,
+                actor_id=auth.actor_id,
+                entity_type=artifact_type,
+                entity_id=aid,
+                conn=conn,
+                tenant_id=auth.tenant_id,
+            )
             payload = await fetch_artifact(
                 artifact_type,
                 aid,
                 auth.tenant_id,
                 conn,
+                actor_id=auth.actor_id,
             )
         if payload is None:
             return JSONResponse(
@@ -150,6 +199,14 @@ def build_today_core_router() -> APIRouter:
 
         deps = _deps(request)
         async with deps.pool.acquire() as conn:
+            if not await _can_manage_brand(auth, conn=conn):
+                return JSONResponse(
+                    {
+                        "error": "forbidden",
+                        "reason": "brand_update_requires_admin_or_leadership",
+                    },
+                    status_code=status.HTTP_403_FORBIDDEN,
+                )
             async with conn.transaction():
                 existing = await conn.fetchrow(
                     "SELECT id FROM resources "
@@ -159,6 +216,7 @@ def build_today_core_router() -> APIRouter:
                     auth.tenant_id,
                 )
                 if existing is None:
+                    resource_id = uuid7()
                     await conn.execute(
                         """
                         INSERT INTO resources (
@@ -167,17 +225,29 @@ def build_today_core_router() -> APIRouter:
                         ) VALUES ($1, $2, 'ip', 'fyralis.brand_name',
                                   $3::jsonb, now(), now())
                         """,
-                        uuid7(),
+                        resource_id,
                         auth.tenant_id,
                         json.dumps({"name": new_name}),
                     )
                 else:
+                    resource_id = existing["id"]
                     await conn.execute(
                         "UPDATE resources SET current_value = $2::jsonb, "
-                        "last_updated_at = now() WHERE id = $1",
-                        existing["id"],
+                        "last_updated_at = now() "
+                        "WHERE id = $1 AND tenant_id = $3",
+                        resource_id,
                         json.dumps({"name": new_name}),
+                        auth.tenant_id,
                     )
+                await record_operator_action(
+                    conn,
+                    tenant_id=auth.tenant_id,
+                    actor_id=auth.actor_id,
+                    action="today.brand.update",
+                    resource_type="resource",
+                    resource_id=resource_id,
+                    metadata={"name": new_name},
+                )
         return JSONResponse({"ok": True, "name": new_name}, status_code=200)
 
     return router
@@ -198,4 +268,89 @@ def _unauth(reason: str) -> JSONResponse:
     return JSONResponse(
         {"error": "unauthorized", "reason": reason},
         status_code=status.HTTP_401_UNAUTHORIZED,
+    )
+
+
+async def _can_manage_brand(auth: AuthContext, *, conn: Any) -> bool:
+    return bool(
+        await has_role(
+            auth.actor_id,
+            "admin",
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+        or await has_role(
+            auth.actor_id,
+            "leadership",
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+    )
+
+
+async def _can_read_artifact(
+    auth: AuthContext,
+    artifact_type: str,
+    artifact_id: UUID,
+    *,
+    conn: Any,
+) -> AccessDecision:
+    if artifact_type == "actor":
+        exists = await conn.fetchval(
+            "SELECT 1 FROM actors WHERE id = $1 AND tenant_id = $2",
+            artifact_id,
+            auth.tenant_id,
+        )
+        if not exists:
+            return AccessDecision(False, "entity_not_found")
+        if artifact_id == auth.actor_id:
+            return AccessDecision(True, "actor_self")
+        if await has_role(
+            auth.actor_id,
+            "admin",
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        ):
+            return AccessDecision(True, "admin_override", override_applied=True)
+        if await has_role(
+            auth.actor_id,
+            "leadership",
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        ):
+            return AccessDecision(
+                True,
+                "leadership_override",
+                override_applied=True,
+            )
+        return AccessDecision(False, "actor_out_of_scope")
+
+    access_kind = _ARTIFACT_ACCESS_KIND.get(artifact_type)
+    if access_kind is None:
+        return AccessDecision(False, "entity_not_found")
+    return await can_read_by_id(
+        auth.actor_id,
+        access_kind,
+        artifact_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
+
+
+async def _record_override_if_needed(
+    decision: AccessDecision,
+    *,
+    actor_id: UUID,
+    entity_type: str,
+    entity_id: UUID,
+    conn: Any,
+    tenant_id: UUID,
+) -> None:
+    await record_access_override_if_needed(
+        decision,
+        actor_id=actor_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        conn=conn,
+        tenant_id=tenant_id,
     )

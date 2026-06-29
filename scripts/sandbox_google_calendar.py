@@ -57,9 +57,9 @@ import asyncpg
 
 _DEFAULT_ADMIN_URL = "postgresql://company_os:company_os@localhost:5434/company_os"
 _TENANT_ID = UUID("00000000-0000-0000-0000-0000000015ca")
-_WORKSPACE = "acme.com"
+_WORKSPACE = "acme.example"
 _SA_EMAIL = "fyralis-gcal@fyralis-sandbox.iam.gserviceaccount.com"
-_CALENDARS = ["alice@acme.com", "bob@acme.com"]
+_CALENDARS = ["alice@acme.example", "bob@acme.example"]
 
 
 # ---------------------------------------------------------------------
@@ -134,35 +134,35 @@ def _build_fixtures() -> dict:
         return obj
 
     return {
-        "alice@acme.com": {
+        "alice@acme.example": {
             "events": [
-                ev("a-standup", "alice@acme.com", "Eng standup",
+                ev("a-standup", "alice@acme.example", "Eng standup",
                    now + timedelta(days=1, hours=1),
-                   attendees=[{"email": "alice@acme.com", "responseStatus": "accepted"},
-                              {"email": "bob@acme.com", "responseStatus": "accepted"}]),
-                ev("a-investor", "alice@acme.com", "Investor sync — Series B",
+                   attendees=[{"email": "alice@acme.example", "responseStatus": "accepted"},
+                              {"email": "bob@acme.example", "responseStatus": "accepted"}]),
+                ev("a-investor", "alice@acme.example", "Investor sync — Series B",
                    now + timedelta(days=2),
-                   attendees=[{"email": "alice@acme.com", "responseStatus": "accepted"},
-                              {"email": "partner@sequoia.com", "responseStatus": "tentative"}]),
+                   attendees=[{"email": "alice@acme.example", "responseStatus": "accepted"},
+                              {"email": "partner@investor.example", "responseStatus": "tentative"}]),
             ],
             "delta": [
                 # incremental run surfaces a brand-new meeting ...
-                ev("a-board", "alice@acme.com", "Board meeting",
+                ev("a-board", "alice@acme.example", "Board meeting",
                    now + timedelta(days=5),
-                   attendees=[{"email": "alice@acme.com", "responseStatus": "accepted"},
-                              {"email": "chair@board.org", "responseStatus": "needsAction"}],
+                   attendees=[{"email": "alice@acme.example", "responseStatus": "accepted"},
+                              {"email": "chair@board.example", "responseStatus": "needsAction"}],
                    updated=now + timedelta(minutes=10)),
                 # ... and a cancellation (-> state_change).
                 {"kind": "calendar#event", "id": "a-standup", "status": "cancelled",
                  "updated": _iso(now + timedelta(minutes=11))},
             ],
         },
-        "bob@acme.com": {
+        "bob@acme.example": {
             "events": [
-                ev("b-1on1", "bob@acme.com", "1:1 with Alice",
+                ev("b-1on1", "bob@acme.example", "1:1 with Alice",
                    now + timedelta(days=1, hours=3),
-                   attendees=[{"email": "bob@acme.com", "responseStatus": "accepted"},
-                              {"email": "alice@acme.com", "responseStatus": "accepted"}]),
+                   attendees=[{"email": "bob@acme.example", "responseStatus": "accepted"},
+                              {"email": "alice@acme.example", "responseStatus": "accepted"}]),
             ],
             "delta": [],
         },
@@ -334,16 +334,16 @@ async def run(args) -> int:
         )
         _check("backfill produced 3 observations (2 alice + 1 bob)", backfilled == 3)
         _check("nextSyncToken captured for incremental warm-start",
-               sync_tokens.get("alice@acme.com") == "sync-1")
+               sync_tokens.get("alice@acme.example") == "sync-1")
 
         # 7. Incremental: warm-start alice's calendar from the captured syncToken.
         _hr("INCREMENTAL (syncToken delta: new event + cancellation)")
         incr_shard = {
             "shard_kind": "google_calendar_events",
-            "calendar_id": "alice@acme.com",
-            "owner_email": "alice@acme.com",
+            "calendar_id": "alice@acme.example",
+            "owner_email": "alice@acme.example",
             "installation_id": str(install_id),
-            "sync_token": sync_tokens["alice@acme.com"],
+            "sync_token": sync_tokens["alice@acme.example"],
         }
         incr_ids, _ = await _drain_shard_into_observations(pool, install_row, incr_shard)
         print(f"  incremental ingested: {incr_ids}")
@@ -373,9 +373,9 @@ async def run(args) -> int:
         # 8. Dedup: re-ingest a backfilled event (poll twin) -> deduped, no new row.
         _hr("DEDUP (backfill vs poll twin)")
         from services.ingest.ingestion.core import ingest
-        twin = dict(fixtures["bob@acme.com"]["events"][0])
-        twin["_fyralis_calendar_id"] = "bob@acme.com"
-        twin["_fyralis_owner_email"] = "bob@acme.com"
+        twin = dict(fixtures["bob@acme.example"]["events"][0])
+        twin["_fyralis_calendar_id"] = "bob@acme.example"
+        twin["_fyralis_owner_email"] = "bob@acme.example"
         res = await ingest("google_calendar:event", twin, pool=pool, tenant_id=_TENANT_ID)
         _check("re-ingesting an existing event dedups (external_id parity)", res.deduped is True)
 
@@ -390,7 +390,7 @@ async def run(args) -> int:
             client = GoogleCalendarClient(http)
             old_bound = _iso(datetime.now(timezone.utc) - timedelta(days=365))
             has_updates = await client.has_updates_since(
-                calendar_id="alice@acme.com", user_email="alice@acme.com",
+                calendar_id="alice@acme.example", user_email="alice@acme.example",
                 updated_min=old_bound,
             )
         finally:

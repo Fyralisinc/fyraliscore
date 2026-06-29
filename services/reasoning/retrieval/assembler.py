@@ -721,6 +721,9 @@ async def _filter_models_via_db(
     groups denial reasons for observability (BUILD-PLAN §6 "Count
     redactions per filter kind").
     """
+    from services.platform.access_control.audit import (  # local import
+        record_override_if_needed,
+    )
     from services.platform.access_control.checks import can_read  # local import
 
     if access.requestor_actor_id is None:
@@ -746,6 +749,14 @@ async def _filter_models_via_db(
         decision = await can_read(
             access.requestor_actor_id,
             entity,
+            conn=conn,
+            tenant_id=access.tenant_id,
+        )
+        await record_override_if_needed(
+            decision,
+            actor_id=access.requestor_actor_id,
+            entity_type="model",
+            entity_id=m.id,
             conn=conn,
             tenant_id=access.tenant_id,
         )

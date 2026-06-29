@@ -36,7 +36,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 from uuid import UUID, uuid4
 
 import httpx
@@ -58,6 +58,17 @@ class LoadConfig:
     tenant_count: int
     duplicate_rate: float = 0.05  # 5% duplicate payloads
     providers: tuple[str, ...] = ("slack", "github")
+    provider_weights: tuple[float, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.provider_weights is None:
+            return
+        if len(self.provider_weights) != len(self.providers):
+            raise ValueError("provider_weights length must match providers")
+        if any(weight < 0 for weight in self.provider_weights):
+            raise ValueError("provider_weights must be non-negative")
+        if sum(self.provider_weights) <= 0:
+            raise ValueError("provider_weights must include a positive value")
 
 
 def _build_tenant_pool(n: int) -> list[UUID]:
@@ -74,6 +85,40 @@ def _zipf_pick(rng: random.Random, pool: list[UUID]) -> UUID:
     if rng.random() < 0.8:
         return pool[rng.randrange(top_n)]
     return pool[rng.randrange(n)]
+
+
+def _pick_provider(config: LoadConfig, rng: random.Random) -> str:
+    if config.provider_weights is None:
+        return rng.choice(config.providers)
+    return rng.choices(
+        list(config.providers),
+        weights=list(config.provider_weights),
+        k=1,
+    )[0]
+
+
+def _parse_provider_weights(
+    raw: str | None,
+    *,
+    providers: Sequence[str],
+) -> tuple[float, ...] | None:
+    if raw is None or raw.strip() == "":
+        return None
+    values: dict[str, float] = {}
+    for item in raw.split(","):
+        if "=" not in item:
+            raise ValueError(
+                "provider weights must use provider=weight comma-separated pairs"
+            )
+        provider, value = item.split("=", 1)
+        provider = provider.strip()
+        if provider not in providers:
+            raise ValueError(f"unknown provider weight: {provider}")
+        values[provider] = float(value.strip())
+    missing = [provider for provider in providers if provider not in values]
+    if missing:
+        raise ValueError(f"missing provider weight(s): {', '.join(missing)}")
+    return tuple(values[provider] for provider in providers)
 
 
 # ---------------------------------------------------------------------
@@ -142,7 +187,7 @@ async def run(config: LoadConfig) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=10.0) as client:
         while time.monotonic() < deadline:
             tenant = _zipf_pick(rng, pool)
-            provider = rng.choice(config.providers)
+            provider = _pick_provider(config, rng)
 
             # Duplicate payload? Re-use a recent seed for this provider.
             is_dup = (
@@ -228,7 +273,16 @@ def _parse_args() -> LoadConfig:
     p.add_argument("--qps", type=int, default=100)
     p.add_argument("--duration-s", type=int, default=3600)
     p.add_argument("--tenant-count", type=int, default=500)
+    p.add_argument(
+        "--provider-weights",
+        default=os.environ.get("CUTOVER_DRYRUN_PROVIDER_WEIGHTS"),
+        help=(
+            "Optional provider=weight pairs, for example "
+            "slack=0.75,github=0.25."
+        ),
+    )
     args = p.parse_args()
+    providers = ("slack", "github")
     return LoadConfig(
         target_url=args.target_url,
         slack_signing_secret=args.slack_signing_secret,
@@ -236,6 +290,11 @@ def _parse_args() -> LoadConfig:
         qps=args.qps,
         duration_s=args.duration_s,
         tenant_count=args.tenant_count,
+        providers=providers,
+        provider_weights=_parse_provider_weights(
+            args.provider_weights,
+            providers=providers,
+        ),
     )
 
 

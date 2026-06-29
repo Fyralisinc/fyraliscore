@@ -21,6 +21,7 @@ import httpx
 import structlog
 
 from lib.shared.errors import HibobApiError
+from services.ingest.integrations.secret_cache import SecretValueCache
 
 
 log = structlog.get_logger("integrations.hibob.client")
@@ -76,7 +77,7 @@ class HibobClient:
         self._secret_ref = secret_ref
         self._company_id = company_id
         self._service_user_id = service_user_id
-        self._token: str | None = token
+        self._token_cache = SecretValueCache(preset=token)
         self._token_lock = asyncio.Lock()
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
@@ -94,28 +95,17 @@ class HibobClient:
             self._http = None
 
     async def _token_value(self) -> str:
-        if self._token is not None:
-            return self._token
-        async with self._token_lock:
-            if self._token is not None:
-                return self._token
-            if (
-                self._secret_store is None
-                or self._secret_ref is None
-                or self._tenant_id is None
-            ):
-                raise HibobApiError(
-                    "hibob client has no service-user token and cannot resolve "
-                    "one (missing secret_store / secret_ref / tenant_id)",
-                    code="hibob_api_unauthorized",
-                )
-            raw = await self._secret_store.get(
-                self._secret_ref, tenant_id=self._tenant_id,
+        return await self._token_cache.resolve(
+            lock=self._token_lock,
+            secret_store=self._secret_store,
+            secret_ref=self._secret_ref,
+            tenant_id=self._tenant_id,
+            missing_error=lambda: HibobApiError(
+                "hibob client has no service-user token and cannot resolve "
+                "one (missing secret_store / secret_ref / tenant_id)",
+                code="hibob_api_unauthorized",
             )
-            self._token = (
-                raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            )
-            return self._token
+        )
 
     async def _auth_header(self) -> str:
         token = await self._token_value()

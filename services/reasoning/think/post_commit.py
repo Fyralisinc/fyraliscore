@@ -22,12 +22,13 @@ Fix:
      `scheduled_at` with exponential backoff. After 5 failed attempts
      the row is moved to dead-letter state (`dead_lettered_at` set).
 
-Dedup: the `post_commit_dedup UNIQUE NULLS NOT DISTINCT` constraint in
-migration 0015 collapses two enqueues for the same (tenant, trigger,
-action_kind) where both still have processed_at=NULL. That means the
-same trigger re-processed after idempotency short-circuit doesn't
-double-fire post-commit. A new pending row after the previous one was
-processed is allowed (NULL vs non-NULL don't collide).
+Dedup: enqueue treats `(tenant, trigger, action_kind)` as an immutable
+idempotency key. Once an action has ever been recorded, later enqueue
+attempts for the same key are skipped, even if the prior row has already
+processed. The `post_commit_dedup UNIQUE NULLS NOT DISTINCT` constraint
+still protects concurrent first writers while the application-level
+existence check closes the race between enqueue and `processed_at`
+updates.
 """
 
 from __future__ import annotations
@@ -42,6 +43,11 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from lib.shared.backoff import (
+    QUEUE_RETRY_BACKOFF_BASE_SECONDS,
+    QUEUE_RETRY_BACKOFF_CAP_SECONDS,
+    queue_retry_backoff_seconds,
+)
 from services.reasoning.retrieval.primary import TriggerContext
 
 from .diff_schema import ValidatedDiff
@@ -60,13 +66,12 @@ _DISPATCH_CONN: ContextVar[asyncpg.Connection | None] = ContextVar(
 # ---------------------------------------------------------------------
 
 MAX_ATTEMPTS = 5
-# Exponential backoff base (seconds). Actual backoff = BASE * 2^(attempts-1),
-# capped at 300s (5 min) — mirrors the audit pseudocode.
-BACKOFF_BASE_SECONDS = 2
-BACKOFF_CAP_SECONDS = 300
+BACKOFF_BASE_SECONDS = int(QUEUE_RETRY_BACKOFF_BASE_SECONDS)
+BACKOFF_CAP_SECONDS = int(QUEUE_RETRY_BACKOFF_CAP_SECONDS)
 
 POLL_INTERVAL_SECONDS = 2.0
 BATCH_SIZE = 10
+VIEW_CEO_REFRESH_CHANNEL = "view_ceo_refresh"
 
 ACTION_KINDS = (
     "publish_anomalies",
@@ -91,11 +96,12 @@ run should be a no-op for the already-done side effects.
 """
 
 
-# Most default handlers are no-ops (publish_anomalies is already
-# committed to `think_anomalies_raw` in `anomaly_integration.py`; Wave
-# 4-B's anomaly_processor consumes from there). `discover_model_edges`
-# is the durable post-commit path for topology candidate generation.
-# We keep the registry so the worker can be driven end-to-end in tests.
+# Product-facing default handlers emit the durable CEO-view refresh NOTIFY
+# consumed by services.product.greeting.scheduler. `publish_anomalies` is
+# already committed to `think_anomalies_raw` in `anomaly_integration.py`;
+# Wave 4-B's anomaly_processor consumes from there. `discover_model_edges` is
+# the durable post-commit path for topology candidate generation. We keep the
+# registry so the worker can be driven end-to-end in tests.
 
 
 async def _default_publish_anomalies(
@@ -109,6 +115,11 @@ async def _default_publish_anomalies(
         trigger_id=str(trigger_id),
         anomaly_count=len(payload.get("anomalies", [])),
     )
+    await _notify_view_ceo_refresh(
+        tenant_id,
+        trigger_id,
+        reason="anomaly_flagged",
+    )
 
 
 async def _default_schedule_predictions(
@@ -116,11 +127,26 @@ async def _default_schedule_predictions(
     tenant_id: UUID,
     trigger_id: UUID,
 ) -> None:
+    predictions = payload.get("predictions", [])
+    missing_schedule = [
+        index for index, prediction in enumerate(predictions)
+        if not isinstance(prediction, dict) or not prediction.get("evaluate_at")
+    ]
+    if missing_schedule:
+        raise RuntimeError(
+            "schedule_predictions payload missing evaluate_at for "
+            f"prediction indexes {missing_schedule}"
+        )
     _log.info(
         "post_commit.schedule_predictions.dispatched",
         tenant_id=str(tenant_id),
         trigger_id=str(trigger_id),
-        prediction_count=len(payload.get("predictions", [])),
+        prediction_count=len(predictions),
+    )
+    await _notify_view_ceo_refresh(
+        tenant_id,
+        trigger_id,
+        reason="prediction_scheduled",
     )
 
 
@@ -134,6 +160,11 @@ async def _default_broadcast_realtime(
         tenant_id=str(tenant_id),
         trigger_id=str(trigger_id),
     )
+    await _notify_view_ceo_refresh(
+        tenant_id,
+        trigger_id,
+        reason="substrate_changed",
+    )
 
 
 async def _default_invalidate_metrics(
@@ -146,6 +177,11 @@ async def _default_invalidate_metrics(
         tenant_id=str(tenant_id),
         trigger_id=str(trigger_id),
         affected_count=len(payload.get("affected_entities", [])),
+    )
+    await _notify_view_ceo_refresh(
+        tenant_id,
+        trigger_id,
+        reason="metrics_invalidated",
     )
 
 
@@ -270,6 +306,46 @@ def reset_handlers() -> None:
     _DISPATCHERS["broadcast_realtime"] = _default_broadcast_realtime
     _DISPATCHERS["invalidate_metrics"] = _default_invalidate_metrics
     _DISPATCHERS["discover_model_edges"] = _default_discover_model_edges
+
+
+async def _notify_view_ceo_refresh(
+    tenant_id: UUID,
+    trigger_id: UUID,
+    *,
+    reason: str,
+) -> None:
+    """Ask gateway CEO-view schedulers to refresh cached product state.
+
+    When called by ``process_batch`` this runs on the same transaction that
+    marks the post-commit action processed, so Postgres delivers the NOTIFY
+    only if the queue bookkeeping commits.
+    """
+    payload = json.dumps(
+        {
+            "tenant_id": str(tenant_id),
+            "trigger_id": str(trigger_id),
+            "reason": reason,
+        },
+        default=str,
+    )
+    conn = _DISPATCH_CONN.get()
+    if conn is not None:
+        await conn.execute(
+            "SELECT pg_notify($1, $2)",
+            VIEW_CEO_REFRESH_CHANNEL,
+            payload,
+        )
+        return
+
+    from lib.shared.db import get_pool
+
+    pool = get_pool()
+    async with pool.acquire() as acquired:
+        await acquired.execute(
+            "SELECT pg_notify($1, $2)",
+            VIEW_CEO_REFRESH_CHANNEL,
+            payload,
+        )
 
 
 # ---------------------------------------------------------------------
@@ -473,6 +549,21 @@ async def enqueue_post_commit_actions(
     for kind, payload in actions:
         if not _payload_has_content(kind, payload):
             continue
+        existing = await conn.fetchval(
+            """
+            SELECT 1
+            FROM pending_post_commit_actions
+            WHERE tenant_id = $1
+              AND trigger_id = $2
+              AND action_kind = $3
+            LIMIT 1
+            """,
+            tenant_id,
+            trigger_id,
+            kind,
+        )
+        if existing is not None:
+            continue
         row = await conn.fetchrow(
             """
             INSERT INTO pending_post_commit_actions
@@ -519,13 +610,9 @@ class PendingAction:
 def _compute_backoff(next_attempts: int) -> int:
     """Exponential backoff seconds for `next_attempts` (1-indexed).
 
-    Attempt 1 retry → 2s, attempt 2 → 4s, attempt 3 → 8s, capped at 300s.
+    Attempt 1 retry -> 10s, attempt 2 -> 20s, capped at 300s.
     """
-    if next_attempts <= 0:
-        return 0
-    # 2^(next_attempts - 1) so first retry is base seconds.
-    seconds = BACKOFF_BASE_SECONDS * (2 ** (next_attempts - 1))
-    return min(seconds, BACKOFF_CAP_SECONDS)
+    return int(queue_retry_backoff_seconds(next_attempts))
 
 
 async def fetch_pending_actions(
@@ -805,6 +892,7 @@ __all__ = [
     "BACKOFF_CAP_SECONDS",
     "POLL_INTERVAL_SECONDS",
     "BATCH_SIZE",
+    "VIEW_CEO_REFRESH_CHANNEL",
     "ACTION_KINDS",
     "ActionHandler",
     "PendingAction",

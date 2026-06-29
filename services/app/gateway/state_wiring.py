@@ -187,6 +187,14 @@ def wire_integration_runtime_state(
     pool: asyncpg.Pool,
 ) -> IntegrationRuntimeWiring:
     """Wire shared integration/webhook runtime state."""
+    try:
+        assert_integration_runtime_safety()
+    except Exception as exc:  # noqa: BLE001
+        raise IntegrationRuntimeWiringError(
+            "integration_state.safety",
+            exc,
+        ) from exc
+
     existing_runtime = getattr(app_.state, "integration_runtime", None)
     if existing_runtime is not None:
         runtime = existing_runtime
@@ -209,13 +217,6 @@ def wire_integration_runtime_state(
             tenant_flags_created=False,
         )
 
-    try:
-        assert_integration_runtime_safety()
-    except Exception as exc:  # noqa: BLE001
-        raise IntegrationRuntimeWiringError(
-            "integration_state.safety",
-            exc,
-        ) from exc
     try:
         pool_alias_created = wire_pool_alias(app_, pool)
     except Exception as exc:  # noqa: BLE001
@@ -302,7 +303,7 @@ async def probe_integration_runtime_state(
             return IntegrationRuntimeProbeResult(
                 component=component,
                 ok=False,
-                detail=str(exc),
+                detail="probe_failed",
                 error_type=type(exc).__name__,
             )
         return IntegrationRuntimeProbeResult(component=component, ok=True)

@@ -44,6 +44,7 @@ flowchart LR
         OP[oauth_poller :9300 — NEW]
         LIVE[live source workers :9300 — NEW<br/>discord · telegram · signal · gmail · gcal · gdrive]
         SAGE[SAGE/retrieval-memory workers :9300 — NEW]
+        SDM[schema_drift_monitor :9300 — NEW]
     end
     subgraph exporters[Exporters]
         PGE[postgres-exporter :9187]
@@ -82,6 +83,7 @@ lib/observability/            # NEW — dependency-free, importable everywhere
   metrics.py                  # Registry, Counter, Gauge, Histogram + render_text()
   health.py                   # generic Heartbeat + start_health_server (think/post-commit/…)
   pools.py                    # asyncpg pool registration → scrape-time gauges
+services/platform/schema_drift_monitor.py # continuous schema/RLS drift metrics
 scripts/worker_observability.py # launcher helper for script-based workers
 observability/                # NEW — stack configuration as code
   prometheus/prometheus.yml
@@ -90,7 +92,7 @@ observability/                # NEW — stack configuration as code
   grafana/provisioning/datasources/datasources.yml
   grafana/provisioning/dashboards/dashboards.yml
   grafana/provisioning/alerting/{alert-rules.yml,contact-points.yml,policies.yml}
-  grafana/dashboards/*.json   # six dashboards (see §6)
+  grafana/dashboards/*.json   # dashboards (see §6)
 ```
 
 `services/ingest/ingestion/observability.py` stays the canonical server for
@@ -107,6 +109,9 @@ producer, oauth, integration counters) without per-worker wiring.
 * Subsystem prefixes — `http_` (gateway requests), `webhook_` (existing),
   `ingestion_` (existing worker counters), `think_`, `ollama_`, `db_pool_`,
   `kafka_producer_`, `oauth_refresh_`, `integration_` (per-source modules).
+  Product user journeys additionally emit bounded `product_workflow_` families
+  by workflow enum, status class, and allowlisted event/outcome enums for SLOs
+  and product workflow insight.
 * Default latency buckets:
   `0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60` seconds.
 * **Cardinality controls** (hard rules):
@@ -131,7 +136,7 @@ producer, oauth, integration counters) without per-worker wiring.
   volume `company_os_prometheus` persists across restarts.
 * Recording rules precompute the dashboard-hot expressions: per-source
   ingestion throughput rates, embed failure ratio, gateway error-rate by
-  route class, LLM spend hourly rate.
+  route class, product workflow SLO burn, and LLM spend hourly rate.
 
 ## 6. Dashboards (provisioned, folder "Fyralis")
 
@@ -143,6 +148,7 @@ producer, oauth, integration counters) without per-worker wiring.
 | Embeddings / Ollama | `ollama_embed_request_duration_seconds` p50/p95/p99, success/failure/retry rates, dim mismatches, backlog depth (pg-exporter `embedding_pending`), QPS |
 | Reasoning / LLM Cost | spend/hour + tokens + calls by trigger kind (Prometheus), **per-tenant spend (Postgres datasource on `think_run_costs`)**, run latency, queue depth, validation drops, cascade violations, reconcile decision mix |
 | Data Plane Infrastructure | kafka-exporter (lag, partitions), postgres-exporter (connections, locks, tx rate, custom gauges), redis-exporter, MinIO capacity, Grafana process health, scrape target health, `db_pool_*` saturation |
+| Product Workflow Health | bounded product workflow request rate, 5xx ratio, p95 latency, normalized error/latency SLO burn, workflow/status mix, route-level 5xx, route-level p95 |
 
 ## 7. Alerting
 
@@ -160,6 +166,8 @@ evaluated against Prometheus:
 | EmbedFailureRatio | failures / (successes+failures) > 0.05 | 10m |
 | ThinkQueueBackpressure | `think_queue_depth > 500` | 5m |
 | DBPoolSaturated | `db_pool_in_use / db_pool_max > 0.9` | 5m |
+| SchemaRLSDriftDetected | `schema_drift_check_status{status=~"drift\|error"} or schema_drift_findings > 0` | 2m |
+| ProductSLOBurnHigh | product route 5xx burn > 5x or p95 latency burn > 1.25x | 10m |
 | LLMSpendBurnRate | `sum(rate(think_llm_cost_usd_total[1h])) * 3600 > $/h budget` | 15m |
 | DeadLetterRowsPresent | pg-exporter `fyralis_dead_letter_rows > 0` (P2-2) | 15m |
 

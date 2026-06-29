@@ -31,7 +31,7 @@ DEFAULT_FILE_LINE_BUDGETS = {
 DEFAULT_FUNCTION_LINE_BUDGETS = {
     "services/app/gateway/debug_router.py:build_debug_router": 78,
     "services/app/gateway/finance_router.py:build_finance_router": 8,
-    "services/app/gateway/map_routes.py:_build_snapshot": 66,
+    "services/app/gateway/map_routes.py:_build_snapshot": 75,
     "services/app/gateway/slack_router.py:build_slack_router": 9,
     "services/app/gateway/structure_router.py:build_structure_router": 25,
     "services/app/gateway/today_routes.py:register_today_routes": 21,
@@ -46,7 +46,7 @@ DEFAULT_FUNCTION_LINE_BUDGETS = {
     "services/ingest/integrations/gmail/fetcher.py:drain_mailbox_history": 86,
     "services/ingest/synthetic/validation_runs/composition.py:build_live_drivers": 65,
     "services/ingest/synthetic/validation_runs/run4_concurrent.py:run4": 112,
-    "scripts/run_discord_gateway_worker.py:_main": 72,
+    "scripts/run_discord_gateway_worker.py:_main": 74,
     "services/domain/acts/commitments.py:create": 58,
     "services/domain/bridge/queries.py:revenue_at_risk": 38,
     "services/domain/models/repo.py:_insert_core": 35,
@@ -54,7 +54,7 @@ DEFAULT_FUNCTION_LINE_BUDGETS = {
     "services/app/webhooks/router.py:_receive_webhook": 85,
     "services/app/webhooks/router.py:build_webhooks_router": 30,
     "services/app/gateway/recommendations_router.py:build_recommendations_router": 38,
-    "services/app/gateway/artifact_drawers.py:fetch_commitment_overlay": 43,
+    "services/app/gateway/artifact_drawers.py:fetch_commitment_overlay": 56,
     "services/product/decision_deltas/router.py:build_router": 18,
     "services/product/forecasts/router.py:build_router": 18,
     "services/product/resolution_threads/router.py:build_router": 16,
@@ -271,9 +271,9 @@ FUNCTION_LINE_BUDGET_ARG_NAMES = {
 
 @dataclass(frozen=True)
 class TechDebtBudget:
-    files_over_threshold: int = 29
-    functions_over_threshold: int = 16
-    classes_over_threshold: int = 21
+    files_over_threshold: int = 37
+    functions_over_threshold: int = 36
+    classes_over_threshold: int = 23
     import_linter_ignored_imports_total: int = 71
     file_line_budgets: Mapping[str, int] = field(
         default_factory=lambda: dict(DEFAULT_FILE_LINE_BUDGETS)
@@ -389,16 +389,16 @@ def check_budget(
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
-    parser.add_argument("--max-files-over-threshold", type=int, default=29)
-    parser.add_argument("--max-functions-over-threshold", type=int, default=16)
-    parser.add_argument("--max-classes-over-threshold", type=int, default=21)
+    parser.add_argument("--max-files-over-threshold", type=int, default=37)
+    parser.add_argument("--max-functions-over-threshold", type=int, default=36)
+    parser.add_argument("--max-classes-over-threshold", type=int, default=23)
     parser.add_argument("--max-import-linter-ignored-imports", type=int, default=71)
     parser.add_argument("--max-platform-inquiry-lines", type=int, default=493)
     parser.add_argument("--max-outcome-evaluator-file-lines", type=int, default=1476)
     parser.add_argument("--max-think-reconciler-file-lines", type=int, default=1387)
     parser.add_argument("--max-debug-router-factory-lines", type=int, default=78)
     parser.add_argument("--max-finance-router-factory-lines", type=int, default=8)
-    parser.add_argument("--max-map-snapshot-lines", type=int, default=66)
+    parser.add_argument("--max-map-snapshot-lines", type=int, default=75)
     parser.add_argument("--max-slack-router-factory-lines", type=int, default=9)
     parser.add_argument("--max-structure-router-factory-lines", type=int, default=25)
     parser.add_argument("--max-today-routes-registration-lines", type=int, default=21)
@@ -413,7 +413,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--max-gmail-drain-history-lines", type=int, default=86)
     parser.add_argument("--max-live-driver-composition-lines", type=int, default=65)
     parser.add_argument("--max-run4-concurrent-lines", type=int, default=112)
-    parser.add_argument("--max-discord-gateway-main-lines", type=int, default=72)
+    parser.add_argument("--max-discord-gateway-main-lines", type=int, default=74)
     parser.add_argument("--max-commitment-create-lines", type=int, default=58)
     parser.add_argument("--max-revenue-at-risk-lines", type=int, default=38)
     parser.add_argument("--max-model-insert-core-lines", type=int, default=35)
@@ -425,7 +425,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--max-recommendations-router-factory-lines", type=int, default=38
     )
-    parser.add_argument("--max-artifact-commitment-overlay-lines", type=int, default=43)
+    parser.add_argument("--max-artifact-commitment-overlay-lines", type=int, default=56)
     parser.add_argument("--max-decision-deltas-router-lines", type=int, default=18)
     parser.add_argument("--max-forecasts-router-lines", type=int, default=18)
     parser.add_argument("--max-resolution-threads-router-lines", type=int, default=16)

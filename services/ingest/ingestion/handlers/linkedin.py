@@ -44,6 +44,7 @@ from typing import Any
 
 from lib.shared.errors import ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
@@ -68,20 +69,7 @@ _ENTITY_NORMALISE = {
 _STATE_CHANGE_LIFECYCLES = {"publish_failed"}
 
 
-def linkedin_entity(
-    organization_urn: str, entity_kind: str, entity_id: str,
-) -> str:
-    """`linkedin:{org}:{kind}:{id}` — DISCRIMINATED by entity_kind so streams
-    sharing an id never collide. Posts use the post URN as id; statistics use
-    the `timeRange.start` epoch-millis bucket (snapshot versioning).
-
-    TODO(human): during a wiring phase move this constructor to
-        `services/ingest/ingestion/idempotency/__init__.py` as
-        `linkedin_entity(organization_urn, entity_kind, entity_id)` (the
-        canonical home, mirroring `carta_entity`) and import it here. The
-        format string MUST stay byte-identical across the move.
-    """
-    return f"linkedin:{organization_urn}:{entity_kind}:{entity_id}"
+linkedin_entity = idempotency.linkedin_entity
 
 
 def _utcnow() -> datetime:

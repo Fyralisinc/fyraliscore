@@ -17,6 +17,7 @@ services/app/webhooks/metrics.py).
 from __future__ import annotations
 
 import math
+import re
 import threading
 import time
 from typing import Callable, Mapping, Sequence
@@ -27,6 +28,41 @@ from typing import Callable, Mapping, Sequence
 DEFAULT_BUCKETS: tuple[float, ...] = (
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
     1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
+)
+FORBIDDEN_LABEL_NAMES = frozenset(
+    {
+        "tenant",
+        "tenant_id",
+        "actor_id",
+        "user_id",
+        "installation_id",
+        "account_id",
+        "channel",
+        "channel_name",
+        "external_id",
+        "email",
+        "owner_email",
+        "query",
+        "prompt",
+        "payload",
+        "body",
+        "path",
+        "url",
+        "object_key",
+        "source_payload",
+        "source_channel",
+    }
+)
+FORBIDDEN_LABEL_SUFFIXES = ("_id", "_email", "_url", "_path")
+MAX_LABEL_VALUE_LENGTH = 128
+_UUID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
+_EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+_SECRETISH_RE = re.compile(
+    r"(?i)\b(bearer|password|secret|token|api[_-]?key|authorization|signature)\b"
 )
 
 
@@ -59,15 +95,82 @@ def _label_str(label_names: Sequence[str], label_values: Sequence[str]) -> str:
     return "{" + inner + "}"
 
 
+def validate_label_name(name: str) -> None:
+    normalized = str(name).strip().lower()
+    if normalized in FORBIDDEN_LABEL_NAMES or normalized.endswith(
+        FORBIDDEN_LABEL_SUFFIXES
+    ):
+        raise ValueError(
+            f"metric label {name!r} is forbidden; labels must be bounded, "
+            "privacy-safe enums"
+        )
+
+
+def validate_label_value(name: str, value: str) -> None:
+    text = str(value)
+    if len(text) > MAX_LABEL_VALUE_LENGTH:
+        raise ValueError(f"metric label {name!r} value is too long")
+    if any(ch in text for ch in ("\n", "\r", "\t")):
+        raise ValueError(f"metric label {name!r} value contains control chars")
+    if _UUID_RE.search(text):
+        raise ValueError(f"metric label {name!r} value contains a raw UUID")
+    if _EMAIL_RE.search(text):
+        raise ValueError(f"metric label {name!r} value contains an email")
+    lowered = text.lower()
+    if "?" in text or lowered.startswith(("http://", "https://", "s3://", "gs://")):
+        raise ValueError(f"metric label {name!r} value looks like a raw URL/path")
+    if _SECRETISH_RE.search(text):
+        raise ValueError(f"metric label {name!r} value looks secret-bearing")
+
+
+def _normalize_allowed_label_values(
+    allowed_label_values: Mapping[str, Sequence[str]] | None,
+    *,
+    label_names: Sequence[str],
+) -> dict[str, frozenset[str]]:
+    if not allowed_label_values:
+        return {}
+    declared = set(label_names)
+    normalized: dict[str, frozenset[str]] = {}
+    for label_name, values in allowed_label_values.items():
+        validate_label_name(label_name)
+        if label_name not in declared:
+            raise ValueError(
+                f"allowlist declared for unknown metric label {label_name!r}"
+            )
+        allowed = frozenset(str(value) for value in values)
+        if not allowed:
+            raise ValueError(
+                f"metric label {label_name!r} allowlist must not be empty"
+            )
+        for value in allowed:
+            validate_label_value(label_name, value)
+        normalized[label_name] = allowed
+    return normalized
+
+
 class _Family:
     """Base for one named metric family with a fixed label-name tuple."""
 
     kind = "untyped"
 
-    def __init__(self, name: str, help_text: str, label_names: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        name: str,
+        help_text: str,
+        label_names: Sequence[str] = (),
+        *,
+        allowed_label_values: Mapping[str, Sequence[str]] | None = None,
+    ) -> None:
         self.name = name
         self.help = help_text
         self.label_names = tuple(label_names)
+        for label_name in self.label_names:
+            validate_label_name(label_name)
+        self.allowed_label_values = _normalize_allowed_label_values(
+            allowed_label_values,
+            label_names=self.label_names,
+        )
         self._lock = threading.Lock()
 
     def _key(self, labels: Mapping[str, str]) -> tuple[str, ...]:
@@ -76,7 +179,18 @@ class _Family:
                 f"{self.name}: expected labels {self.label_names}, got "
                 f"{tuple(sorted(labels))}"
             )
-        return tuple(str(labels[n]) for n in self.label_names)
+        values: list[str] = []
+        for n in self.label_names:
+            value = str(labels[n])
+            validate_label_value(n, value)
+            allowed = self.allowed_label_values.get(n)
+            if allowed is not None and value not in allowed:
+                raise ValueError(
+                    f"metric label {n!r} value {value!r} is not in the "
+                    "declared allowlist"
+                )
+            values.append(value)
+        return tuple(values)
 
     def _header(self) -> list[str]:
         return [f"# HELP {self.name} {self.help}", f"# TYPE {self.name} {self.kind}"]
@@ -88,8 +202,20 @@ class _Family:
 class Counter(_Family):
     kind = "counter"
 
-    def __init__(self, name: str, help_text: str, label_names: Sequence[str] = ()) -> None:
-        super().__init__(name, help_text, label_names)
+    def __init__(
+        self,
+        name: str,
+        help_text: str,
+        label_names: Sequence[str] = (),
+        *,
+        allowed_label_values: Mapping[str, Sequence[str]] | None = None,
+    ) -> None:
+        super().__init__(
+            name,
+            help_text,
+            label_names,
+            allowed_label_values=allowed_label_values,
+        )
         self._values: dict[tuple[str, ...], float] = {}
 
     def inc(self, value: float = 1.0, **labels: str) -> None:
@@ -122,8 +248,20 @@ class Counter(_Family):
 class Gauge(_Family):
     kind = "gauge"
 
-    def __init__(self, name: str, help_text: str, label_names: Sequence[str] = ()) -> None:
-        super().__init__(name, help_text, label_names)
+    def __init__(
+        self,
+        name: str,
+        help_text: str,
+        label_names: Sequence[str] = (),
+        *,
+        allowed_label_values: Mapping[str, Sequence[str]] | None = None,
+    ) -> None:
+        super().__init__(
+            name,
+            help_text,
+            label_names,
+            allowed_label_values=allowed_label_values,
+        )
         self._values: dict[tuple[str, ...], float] = {}
 
     def set(self, value: float, **labels: str) -> None:
@@ -167,8 +305,15 @@ class Histogram(_Family):
         help_text: str,
         label_names: Sequence[str] = (),
         buckets: Sequence[float] = DEFAULT_BUCKETS,
+        *,
+        allowed_label_values: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
-        super().__init__(name, help_text, label_names)
+        super().__init__(
+            name,
+            help_text,
+            label_names,
+            allowed_label_values=allowed_label_values,
+        )
         bks = tuple(sorted(float(b) for b in buckets))
         if not bks:
             raise ValueError(f"{self.name}: at least one bucket required")
@@ -245,29 +390,72 @@ class Registry:
         with self._lock:
             existing = self._families.get(name)
             if existing is not None:
-                if not isinstance(existing, cls) or existing.label_names != tuple(label_names):
+                allowed = _normalize_allowed_label_values(
+                    kwargs.get("allowed_label_values"),
+                    label_names=tuple(label_names),
+                )
+                if (
+                    not isinstance(existing, cls)
+                    or existing.label_names != tuple(label_names)
+                    or existing.allowed_label_values != allowed
+                ):
                     raise ValueError(
                         f"metric {name!r} re-registered with a different "
-                        f"type or label set"
+                        f"type, label set, or label allowlist"
                     )
                 return existing
             fam = cls(name, help_text, label_names, **kwargs)
             self._families[name] = fam
             return fam
 
-    def counter(self, name: str, help_text: str,
-                label_names: Sequence[str] = ()) -> Counter:
-        return self._get_or_create(Counter, name, help_text, label_names)  # type: ignore[return-value]
+    def counter(
+        self,
+        name: str,
+        help_text: str,
+        label_names: Sequence[str] = (),
+        *,
+        allowed_label_values: Mapping[str, Sequence[str]] | None = None,
+    ) -> Counter:
+        return self._get_or_create(
+            Counter,
+            name,
+            help_text,
+            label_names,
+            allowed_label_values=allowed_label_values,
+        )  # type: ignore[return-value]
 
-    def gauge(self, name: str, help_text: str,
-              label_names: Sequence[str] = ()) -> Gauge:
-        return self._get_or_create(Gauge, name, help_text, label_names)  # type: ignore[return-value]
+    def gauge(
+        self,
+        name: str,
+        help_text: str,
+        label_names: Sequence[str] = (),
+        *,
+        allowed_label_values: Mapping[str, Sequence[str]] | None = None,
+    ) -> Gauge:
+        return self._get_or_create(
+            Gauge,
+            name,
+            help_text,
+            label_names,
+            allowed_label_values=allowed_label_values,
+        )  # type: ignore[return-value]
 
-    def histogram(self, name: str, help_text: str,
-                  label_names: Sequence[str] = (),
-                  buckets: Sequence[float] = DEFAULT_BUCKETS) -> Histogram:
+    def histogram(
+        self,
+        name: str,
+        help_text: str,
+        label_names: Sequence[str] = (),
+        buckets: Sequence[float] = DEFAULT_BUCKETS,
+        *,
+        allowed_label_values: Mapping[str, Sequence[str]] | None = None,
+    ) -> Histogram:
         return self._get_or_create(  # type: ignore[return-value]
-            Histogram, name, help_text, label_names, buckets=buckets
+            Histogram,
+            name,
+            help_text,
+            label_names,
+            buckets=buckets,
+            allowed_label_values=allowed_label_values,
         )
 
     def add_collector(self, fn: Callable[[], str]) -> None:
@@ -313,17 +501,51 @@ def default_registry() -> Registry:
     return _DEFAULT
 
 
-def counter(name: str, help_text: str, label_names: Sequence[str] = ()) -> Counter:
-    return _DEFAULT.counter(name, help_text, label_names)
+def counter(
+    name: str,
+    help_text: str,
+    label_names: Sequence[str] = (),
+    *,
+    allowed_label_values: Mapping[str, Sequence[str]] | None = None,
+) -> Counter:
+    return _DEFAULT.counter(
+        name,
+        help_text,
+        label_names,
+        allowed_label_values=allowed_label_values,
+    )
 
 
-def gauge(name: str, help_text: str, label_names: Sequence[str] = ()) -> Gauge:
-    return _DEFAULT.gauge(name, help_text, label_names)
+def gauge(
+    name: str,
+    help_text: str,
+    label_names: Sequence[str] = (),
+    *,
+    allowed_label_values: Mapping[str, Sequence[str]] | None = None,
+) -> Gauge:
+    return _DEFAULT.gauge(
+        name,
+        help_text,
+        label_names,
+        allowed_label_values=allowed_label_values,
+    )
 
 
-def histogram(name: str, help_text: str, label_names: Sequence[str] = (),
-              buckets: Sequence[float] = DEFAULT_BUCKETS) -> Histogram:
-    return _DEFAULT.histogram(name, help_text, label_names, buckets)
+def histogram(
+    name: str,
+    help_text: str,
+    label_names: Sequence[str] = (),
+    buckets: Sequence[float] = DEFAULT_BUCKETS,
+    *,
+    allowed_label_values: Mapping[str, Sequence[str]] | None = None,
+) -> Histogram:
+    return _DEFAULT.histogram(
+        name,
+        help_text,
+        label_names,
+        buckets,
+        allowed_label_values=allowed_label_values,
+    )
 
 
 def render_default() -> str:
@@ -341,6 +563,8 @@ PROCESS_STARTED_AT = time.time()
 
 __all__ = [
     "DEFAULT_BUCKETS",
+    "FORBIDDEN_LABEL_NAMES",
+    "MAX_LABEL_VALUE_LENGTH",
     "Counter",
     "Gauge",
     "Histogram",
@@ -352,4 +576,6 @@ __all__ = [
     "render_default",
     "reset_default_for_tests",
     "PROCESS_STARTED_AT",
+    "validate_label_name",
+    "validate_label_value",
 ]

@@ -11,6 +11,39 @@ from __future__ import annotations
 from typing import Any
 
 
+def _coerce_http_status(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _source_api_error_is_recoverable(
+    code: str,
+    context: dict[str, Any],
+) -> bool:
+    """Default recoverability for outbound source API errors.
+
+    Integrations can still override by setting ``_recoverable`` explicitly.
+    The inferred default keeps the repeated source-client error classes from
+    drifting: rate limits, upstream 5xx, and transport failures are retryable;
+    permanent caller/auth/object errors are not.
+    """
+    if code.endswith("_rate_limited"):
+        return True
+    status = _coerce_http_status(
+        context.get("http_status")
+        or context.get("status_code")
+        or context.get("status")
+    )
+    if status == 429 or (status is not None and status >= 500):
+        return True
+    if not code.endswith("_api_error"):
+        return False
+    error_type = context.get("error_type")
+    return isinstance(error_type, str) and bool(error_type)
+
+
 class CompanyOSError(Exception):
     """Root of every domain-level exception. Never raised directly."""
 
@@ -35,7 +68,10 @@ class CompanyOSError(Exception):
         instead of terminal-failing it when the raised error is
         recoverable. Defaults False (fail-fast); subclasses opt in.
         """
-        return getattr(self, "_recoverable", False)
+        explicit = getattr(self, "_recoverable", None)
+        if explicit is not None:
+            return bool(explicit)
+        return _source_api_error_is_recoverable(self.code, self.context)
 
     def to_dict(self) -> dict[str, Any]:
         """
@@ -90,6 +126,33 @@ class SchemaDriftError(CompanyOSError):
     inside a service (e.g. at startup).
     """
     default_code = "schema_drift"
+
+
+# ---------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------
+
+class DependencyUnavailableError(CompanyOSError):
+    """A required upstream dependency was unavailable after retry policy."""
+
+    default_code = "dependency_unavailable"
+    _recoverable = True
+
+    def __init__(
+        self,
+        dependency: str,
+        operation: str,
+        message: str | None = None,
+        **context: Any,
+    ) -> None:
+        super().__init__(
+            message or f"{dependency} unavailable for {operation}",
+            dependency=dependency,
+            operation=operation,
+            **context,
+        )
+        self.dependency = dependency
+        self.operation = operation
 
 
 # ---------------------------------------------------------------------
@@ -416,7 +479,7 @@ class GithubApiError(CompanyOSError):
         *,
         code: str | None = None,
         context: dict[str, Any] | None = None,
-        recoverable: bool = False,
+        recoverable: bool | None = None,
         **extra: Any,
     ) -> None:
         merged = dict(context or {})
@@ -424,9 +487,10 @@ class GithubApiError(CompanyOSError):
         super().__init__(message, **merged)
         if code is not None:
             self._code = code
-        # Rate limits / 5xx are transient; the backfill parks the shard
-        # and retries rather than terminal-failing it (IN-13 hardening).
-        self._recoverable = recoverable
+        if recoverable is not None:
+            # Rate limits / 5xx are transient; the backfill parks the shard
+            # and retries rather than terminal-failing it (IN-13 hardening).
+            self._recoverable = recoverable
 
 
 class NotionOAuthError(CompanyOSError):
@@ -489,7 +553,7 @@ class NotionApiError(CompanyOSError):
         *,
         code: str | None = None,
         context: dict[str, Any] | None = None,
-        recoverable: bool = False,
+        recoverable: bool | None = None,
         **extra: Any,
     ) -> None:
         merged = dict(context or {})
@@ -497,7 +561,8 @@ class NotionApiError(CompanyOSError):
         super().__init__(message, **merged)
         if code is not None:
             self._code = code
-        self._recoverable = recoverable
+        if recoverable is not None:
+            self._recoverable = recoverable
 
 
 class JiraApiError(CompanyOSError):

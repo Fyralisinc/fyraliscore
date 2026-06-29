@@ -49,6 +49,7 @@ from lib.shared.errors import (
     StateTokenInvalidError,
 )
 from lib.shared.ids import uuid7
+from lib.shared.secrets import load_app_secret_text_from_env
 from services.ingest.integrations.slack import metrics
 
 
@@ -113,7 +114,7 @@ def _hmac_key() -> bytes:
     mechanism as `MASTER_KEK`). In dev / tests the caller may set
     this env var to any non-empty string.
     """
-    raw = os.environ.get("OAUTH_STATE_HMAC_KEY", "")
+    raw = load_app_secret_text_from_env("OAUTH_STATE_HMAC_KEY")
     if not raw:
         from lib.shared.env import is_prod
 
@@ -346,7 +347,7 @@ async def _exchange_code_for_tokens(code: str) -> dict[str, Any]:
     those to a `slack_oauth_error` redirect.
     """
     client_id = os.environ.get("SLACK_CLIENT_ID", "")
-    client_secret = os.environ.get("SLACK_CLIENT_SECRET", "")
+    client_secret = load_app_secret_text_from_env("SLACK_CLIENT_SECRET")
     redirect_uri = os.environ.get("SLACK_REDIRECT_URI", "")
     async with httpx.AsyncClient(timeout=15.0) as client:
         r = await client.post(
@@ -421,7 +422,7 @@ async def _persist_secrets(
     # Per-app signing secret — stored once per tenant. We don't try to
     # dedupe; a re-install rewrites the row but the secret store's
     # `put` always allocates a fresh ref (rotation is via `rotate`).
-    signing_secret = os.environ.get("SLACK_SIGNING_SECRET", "")
+    signing_secret = load_app_secret_text_from_env("SLACK_SIGNING_SECRET")
     if not signing_secret:
         raise SecretStoreError(
             "SLACK_SIGNING_SECRET env var not set — cannot persist signing secret",

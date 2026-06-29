@@ -19,6 +19,7 @@ from services.product.greeting.tests.conftest import (
     TENANT_A,
     seed_actor,
     seed_anomaly,
+    seed_calibration_stat,
     seed_commitment,
     seed_goal,
     seed_model,
@@ -40,9 +41,30 @@ async def test_empty_tenant_produces_valid_snapshot(greeting_db):
     assert snap.customer_resources == []
     assert snap.recent_state_changes == []
     assert snap.anomalies == []
+    assert snap.calibration_pct is None
+    assert snap.calibration_sample_count == 0
     assert snap.time_of_day_bucket in (
         "early_morning", "morning", "afternoon", "evening", "late"
     )
+
+
+async def test_greeting_snapshot_reads_real_calibration(greeting_db):
+    await seed_calibration_stat(
+        greeting_db,
+        asserted_confidence=0.8,
+        outcome=True,
+    )
+    await seed_calibration_stat(
+        greeting_db,
+        asserted_confidence=0.2,
+        outcome=False,
+    )
+
+    composer = SnapshotComposer(greeting_db)
+    snap = await composer.compose_greeting_snapshot(TENANT_A)
+
+    assert snap.calibration_pct == 80
+    assert snap.calibration_sample_count == 2
 
 
 async def test_greeting_snapshot_picks_up_seeds(greeting_db):

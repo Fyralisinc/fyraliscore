@@ -8,7 +8,12 @@ import asyncpg
 import httpx
 import pytest
 
-from services.product.decision_deltas.tests.conftest import seed_decision_delta  # type: ignore
+from services.product.decision_deltas.tests.conftest import (  # type: ignore
+    grant_actor_role,
+    seed_decision_delta,
+    seed_resource_for_target,
+)
+from services.product.resolution_threads import repo as resolution_repo
 
 
 pytestmark = pytest.mark.integration
@@ -47,6 +52,25 @@ def _thread_payload() -> dict:
         ],
         "escalation_triggers": ["No buyer alignment meeting scheduled."],
     }
+
+
+async def _seed_resolution_thread(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    created_by: UUID,
+    target_node_kind: str | None = None,
+    target_node_id: UUID | None = None,
+) -> resolution_repo.ResolutionThread:
+    async with pool.acquire() as conn:
+        return await resolution_repo.create_thread(
+            conn,
+            tenant_id=tenant_id,
+            payload=_thread_payload(),
+            target_node_kind=target_node_kind,
+            target_node_id=target_node_id,
+            created_by=created_by,
+        )
 
 
 @pytest.mark.asyncio
@@ -152,3 +176,164 @@ async def test_resolution_thread_evaluate_and_complete_step(
     body = completed.json()
     assert body["thread"]["steps"][0]["status"] == "done"
     assert body["thread"]["status"] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_resolution_threads_filter_hidden_target_resource(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, actor_id = valid_session
+    visible = await _seed_resolution_thread(
+        gateway_pool, tenant_id=tenant_id, created_by=actor_id,
+    )
+    resource_id = await seed_resource_for_target(gateway_pool, tenant=tenant_id)
+    hidden = await _seed_resolution_thread(
+        gateway_pool,
+        tenant_id=tenant_id,
+        created_by=actor_id,
+        target_node_kind="resource",
+        target_node_id=resource_id,
+    )
+
+    resp = await client.get("/v1/resolution_threads/", headers=_auth(token))
+
+    assert resp.status_code == 200, resp.text
+    ids = {item["id"] for item in resp.json()["items"]}
+    assert str(visible.id) in ids
+    assert str(hidden.id) not in ids
+
+
+@pytest.mark.asyncio
+async def test_resolution_thread_get_hidden_target_forbidden(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, actor_id = valid_session
+    resource_id = await seed_resource_for_target(gateway_pool, tenant=tenant_id)
+    hidden = await _seed_resolution_thread(
+        gateway_pool,
+        tenant_id=tenant_id,
+        created_by=actor_id,
+        target_node_kind="resource",
+        target_node_id=resource_id,
+    )
+
+    resp = await client.get(
+        f"/v1/resolution_threads/{hidden.id}",
+        headers=_auth(token),
+    )
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["reason"] == "resource_out_of_scope:financial"
+
+
+@pytest.mark.asyncio
+async def test_resolution_thread_update_hidden_target_forbidden(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, actor_id = valid_session
+    resource_id = await seed_resource_for_target(gateway_pool, tenant=tenant_id)
+    hidden = await _seed_resolution_thread(
+        gateway_pool,
+        tenant_id=tenant_id,
+        created_by=actor_id,
+        target_node_kind="resource",
+        target_node_id=resource_id,
+    )
+
+    resp = await client.patch(
+        f"/v1/resolution_threads/{hidden.id}/status",
+        headers=_auth(token),
+        json={"status": "resolved"},
+    )
+
+    assert resp.status_code == 403
+    stored_status = await gateway_pool.fetchval(
+        "SELECT status FROM resolution_threads WHERE id = $1",
+        hidden.id,
+    )
+    assert stored_status == "active"
+
+
+@pytest.mark.asyncio
+async def test_resolution_thread_create_hidden_target_forbidden(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, _ = valid_session
+    resource_id = await seed_resource_for_target(gateway_pool, tenant=tenant_id)
+    payload = {
+        **_thread_payload(),
+        "targetNodeKind": "resource",
+        "targetNodeId": str(resource_id),
+    }
+
+    resp = await client.post(
+        "/v1/resolution_threads/",
+        headers=_auth(token),
+        json=payload,
+    )
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["reason"] == "resource_out_of_scope:financial"
+
+
+@pytest.mark.asyncio
+async def test_resolution_thread_admin_override_is_audited(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, actor_id = valid_session
+    resource_id = await seed_resource_for_target(gateway_pool, tenant=tenant_id)
+    hidden = await _seed_resolution_thread(
+        gateway_pool,
+        tenant_id=tenant_id,
+        created_by=actor_id,
+        target_node_kind="resource",
+        target_node_id=resource_id,
+    )
+    await grant_actor_role(
+        gateway_pool,
+        tenant=tenant_id,
+        actor_id=actor_id,
+        entity_type="tenant",
+        entity_id=None,
+        role="admin",
+    )
+
+    resp = await client.get(
+        f"/v1/resolution_threads/{hidden.id}",
+        headers=_auth(token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    audit_row = await gateway_pool.fetchrow(
+        """
+        SELECT override_kind, reason
+        FROM access_override_log
+        WHERE tenant_id = $1
+          AND actor_id = $2
+          AND entity_type = 'resource'
+          AND entity_id = $3
+        ORDER BY occurred_at DESC
+        LIMIT 1
+        """,
+        tenant_id,
+        actor_id,
+        resource_id,
+    )
+    assert audit_row is not None
+    assert audit_row["override_kind"] == "admin"
+    assert audit_row["reason"] == "admin_override"

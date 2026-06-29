@@ -28,12 +28,20 @@ Provider matrix (VERIFIED against official docs — see each fixture's
     form field (docs.carta.com/carta/docs/client-credentials-flow). The stored
     `refresh_secret_ref` holds the client-credentials *secret*, not an OAuth
     refresh token. No refresh token is returned.
+  - **LinkedIn** — `grant_type=refresh_token`, client creds in the **body**,
+    programmatic refresh tokens for approved partners only, access tokens
+    refreshed at `POST https://www.linkedin.com/oauth/v2/accessToken`.
+    LinkedIn returns a refresh token in the refresh response; persist the
+    returned value so Fyralis follows the provider payload if the token changes.
 
-Token-endpoint URLs + client credentials are **app-level config** (env), not
-per-install secrets:
+Token-endpoint URLs are app-level config. Most client ids/secrets still have
+app-level env fallbacks, but sources with customer/app-specific credentials
+can resolve install-scoped secret refs:
   - `{PROVIDER}_TOKEN_URL`     — override the doc-default endpoint (staging).
-  - `{PROVIDER}_CLIENT_ID`     — the OAuth app client id.
-  - `{PROVIDER}_CLIENT_SECRET` — the OAuth app client secret.
+  - `{PROVIDER}_CLIENT_ID`     — OAuth app client id fallback.
+  - `{PROVIDER}_CLIENT_SECRET` — OAuth app client secret fallback.
+  - Ramp `refresh_secret_ref`  — optional encrypted JSON
+    `client_id`/`client_secret` payload used before env fallback.
 
 A non-2xx / malformed response raises `OAuthRefreshError`; callers translate that
 into a *degraded* shard (never a crash, never a silent data drop).
@@ -41,6 +49,7 @@ into a *degraded* shard (never a crash, never a silent data drop).
 from __future__ import annotations
 
 import base64
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -56,8 +65,8 @@ from lib.observability import counter, histogram
 log = structlog.get_logger("integrations.oauth_refresh")
 
 
-# Provider is bounded by the refresh-capable source set (QBO/Ramp/Gusto/Carta
-# today); outcome is a closed enum so silent token-rotation failure becomes
+# Provider is bounded by the refresh-capable source set (QBO/Ramp/Gusto/Carta/
+# LinkedIn today); outcome is a closed enum so silent token-rotation failure becomes
 # an alertable rate instead of a slow-burn outage.
 _ATTEMPTS = counter(
     "oauth_refresh_attempts_total",
@@ -104,6 +113,10 @@ class RefreshConfig:
     # SECRET (not an OAuth refresh token), so the client_secret is resolved from
     # the install rather than the app-level env var.
     client_secret_from_install: bool = False
+    # Ramp: the per-install `refresh_secret_ref` can hold a JSON payload with
+    # both client_id and client_secret. This supports customer-owned Ramp apps
+    # without putting app secrets in process env.
+    client_credentials_from_install: bool = False
     # client_credentials grants that REQUIRE a `scope` form field (Ramp —
     # docs.ramp.com; Carta — docs.carta.com client-credentials flow). None →
     # no scope is sent.
@@ -128,6 +141,7 @@ def _cfg(
     provider: str, default_url: str, grant: GrantType, auth: AuthStyle,
     rotates: bool, install_table: str, default_expires_in: int = 3600,
     client_secret_from_install: bool = False, scope: str | None = None,
+    client_credentials_from_install: bool = False,
 ) -> RefreshConfig:
     url = os.environ.get(f"{provider.upper()}_TOKEN_URL", default_url)
     return RefreshConfig(
@@ -135,6 +149,7 @@ def _cfg(
         rotates_refresh_token=rotates, install_table=install_table,
         default_expires_in=default_expires_in,
         client_secret_from_install=client_secret_from_install,
+        client_credentials_from_install=client_credentials_from_install,
         scope=scope,
     )
 
@@ -155,6 +170,7 @@ REFRESH_CONFIGS: dict[str, RefreshConfig] = {
         "ramp", "https://api.ramp.com/developer/v1/token",
         "client_credentials", "basic", rotates=False,
         install_table="ramp_installations", default_expires_in=3600,
+        client_credentials_from_install=True,
         scope=os.environ.get(
             "RAMP_OAUTH_SCOPES",
             "transactions:read reimbursements:read cards:read users:read "
@@ -196,6 +212,16 @@ REFRESH_CONFIGS: dict[str, RefreshConfig] = {
             "read_issuer_shareclasses read_issuer_securities",
         ),
     ),
+    "linkedin": _cfg(
+        # LinkedIn programmatic refresh-token exchange (Microsoft Learn,
+        # programmatic-refresh-tokens): form-encoded grant_type=refresh_token
+        # with refresh_token + client_id + client_secret in the body. The
+        # endpoint returns a refresh_token alongside the new access token; store
+        # it so the install row tracks the provider's current credential.
+        "linkedin", "https://www.linkedin.com/oauth/v2/accessToken",
+        "refresh_token", "body", rotates=True,
+        install_table="linkedin_installations", default_expires_in=86400,
+    ),
 }
 
 
@@ -205,11 +231,36 @@ DEFAULT_REFRESH_SKEW_SECONDS = 120
 
 
 def client_credentials_for(provider: str) -> tuple[str | None, str | None]:
-    """App-level OAuth client id/secret from env (never a per-install secret)."""
+    """App-level OAuth client id/secret fallback from env."""
     return (
         os.environ.get(f"{provider.upper()}_CLIENT_ID"),
         os.environ.get(f"{provider.upper()}_CLIENT_SECRET"),
     )
+
+
+def decode_client_credentials_secret(raw: str | None) -> tuple[str | None, str | None]:
+    """Decode client-credentials material stored under `refresh_secret_ref`.
+
+    New Ramp installs store JSON (`client_id` + `client_secret`) so refresh can
+    re-mint without raw app secrets in env. Existing installs may still store a
+    bare secret string; that legacy shape pairs with the app-level client id.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None, None
+    if text.startswith("{"):
+        try:
+            body = json.loads(text)
+        except json.JSONDecodeError:
+            return None, text
+        if isinstance(body, dict):
+            client_id = body.get("client_id")
+            client_secret = body.get("client_secret") or body.get("secret")
+            return (
+                str(client_id).strip() if client_id else None,
+                str(client_secret).strip() if client_secret else None,
+            )
+    return None, text
 
 
 async def refresh_access_token(
@@ -357,9 +408,8 @@ async def refresh_and_persist(
     Persistence mirrors the env-encrypted secret-store model: `put` a new
     ciphertext row for the access token (and the rotated refresh token, if any),
     then UPDATE the install's `secret_ref` / `refresh_secret_ref` /
-    `token_expires_at` to point at the new refs. All four install tables
-    (quickbooks/ramp/gusto/carta_installations) share these column names + an
-    `id` PK, so this is generic.
+    `token_expires_at` to point at the new refs. The refresh-managed install
+    tables share these column names + an `id` PK, so this is generic.
 
     Raises `OAuthRefreshError` on a failed exchange — the caller marks the shard
     degraded (it never crashes the worker or silently drops data).
@@ -375,7 +425,16 @@ async def refresh_and_persist(
         )
 
     client_secret = env_client_secret
-    if config.client_secret_from_install:
+    if config.client_credentials_from_install:
+        raw_install_secret = await _resolve_secret(
+            secret_store, refresh_secret_ref, tenant_id=tenant_id,
+        )
+        install_client_id, install_client_secret = decode_client_credentials_secret(
+            raw_install_secret,
+        )
+        client_id = install_client_id or client_id
+        client_secret = install_client_secret or env_client_secret
+    elif config.client_secret_from_install:
         # Carta: the client_credentials secret is the per-install material
         # stored under refresh_secret_ref (not an OAuth refresh token).
         client_secret = await _resolve_secret(
@@ -526,6 +585,7 @@ __all__ = [
     "REFRESH_CONFIGS",
     "DEFAULT_REFRESH_SKEW_SECONDS",
     "client_credentials_for",
+    "decode_client_credentials_secret",
     "refresh_access_token",
     "needs_refresh",
     "refresh_and_persist",

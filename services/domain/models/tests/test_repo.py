@@ -307,6 +307,78 @@ async def test_db_check_rejects_out_of_range_confidence_at_assertion(
     await tx_conn.execute("ROLLBACK TO SAVEPOINT sp_high")
 
 
+async def test_db_check_rejects_invalid_model_status(
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    born_from_event: uuid.UUID,
+    embedding: list[float],
+) -> None:
+    """Bypass ModelCreate so the database lifecycle CHECK fires directly."""
+    await tx_conn.execute("SAVEPOINT sp_status")
+    with pytest.raises(asyncpg.exceptions.CheckViolationError):
+        await tx_conn.execute(
+            """
+            INSERT INTO models (
+                id, tenant_id, born_from_event_id,
+                proposition, "natural", embedding,
+                scope_temporal,
+                confidence, activation,
+                confidence_at_assertion,
+                status
+            ) VALUES (
+                $1, $2, $3,
+                $4::jsonb, 'x', $5,
+                '{"type":"now"}'::jsonb,
+                0.5, 1.0,
+                0.5,
+                'zombie'
+            )
+            """,
+            uuid7(),
+            tenant,
+            born_from_event,
+            '{"kind":"state","subject":"a","assertion":"b"}',
+            embedding,
+        )
+    await tx_conn.execute("ROLLBACK TO SAVEPOINT sp_status")
+
+
+async def test_db_check_rejects_invalid_model_archive_reason(
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    born_from_event: uuid.UUID,
+    embedding: list[float],
+) -> None:
+    """Bypass repository archive() so raw SQL cannot invent archive reasons."""
+    await tx_conn.execute("SAVEPOINT sp_archive_reason")
+    with pytest.raises(asyncpg.exceptions.CheckViolationError):
+        await tx_conn.execute(
+            """
+            INSERT INTO models (
+                id, tenant_id, born_from_event_id,
+                proposition, "natural", embedding,
+                scope_temporal,
+                confidence, activation,
+                confidence_at_assertion,
+                status, archived_at, archive_reason
+            ) VALUES (
+                $1, $2, $3,
+                $4::jsonb, 'x', $5,
+                '{"type":"now"}'::jsonb,
+                0.5, 1.0,
+                0.5,
+                'archived', now(), 'made_up_reason'
+            )
+            """,
+            uuid7(),
+            tenant,
+            born_from_event,
+            '{"kind":"state","subject":"a","assertion":"b"}',
+            embedding,
+        )
+    await tx_conn.execute("ROLLBACK TO SAVEPOINT sp_archive_reason")
+
+
 # =====================================================================
 # Proposition kinds
 # =====================================================================

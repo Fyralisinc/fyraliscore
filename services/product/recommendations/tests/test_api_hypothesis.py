@@ -40,6 +40,33 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------
 
 
+async def _latest_product_action(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+    action: str,
+    resource_id: UUID,
+) -> asyncpg.Record | None:
+    return await pool.fetchrow(
+        """
+        SELECT action, resource_type, resource_id, metadata
+        FROM product_action_audit_log
+        WHERE tenant_id = $1
+          AND actor_id = $2
+          AND action = $3
+          AND resource_type = 'recommendation'
+          AND resource_id = $4
+        ORDER BY occurred_at DESC
+        LIMIT 1
+        """,
+        tenant_id,
+        actor_id,
+        action,
+        resource_id,
+    )
+
+
 async def _seed_hypothesis_model(
     pool: asyncpg.Pool,
     *,
@@ -148,7 +175,7 @@ async def test_list_excludes_archived_hypothesis_models(
     )
     await gateway_pool.execute(
         "UPDATE models SET status='archived', archived_at=now(), "
-        "archive_reason='hypothesis_user_dismissed' WHERE id = $1",
+        "archive_reason='hypothesis_dismissed_by_user' WHERE id = $1",
         hyp_id,
     )
     resp = await client.get(
@@ -261,7 +288,7 @@ async def test_ratify_endpoint_dismiss_happy_path(
     tenant_id,
     seeded_actor,
 ):
-    token, _ = valid_session
+    token, actor_id = valid_session
     obs_id = await seed_observation(
         gateway_pool, tenant=tenant_id, actor_id=seeded_actor,
     )
@@ -285,6 +312,18 @@ async def test_ratify_endpoint_dismiss_happy_path(
         "SELECT status FROM models WHERE id = $1", hyp_id,
     )
     assert status == "archived"
+    audit = await _latest_product_action(
+        gateway_pool,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        action="recommendation.ratify",
+        resource_id=hyp_id,
+    )
+    assert audit is not None
+    assert audit["metadata"]["ratify_action"] == "dismiss"
+    assert audit["metadata"]["archived"] is True
+    assert audit["metadata"]["explanation_chars"] == len("noise")
+    assert "noise" not in str(audit["metadata"])
 
 
 @pytest.mark.asyncio

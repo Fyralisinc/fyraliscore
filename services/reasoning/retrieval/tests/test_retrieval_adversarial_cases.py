@@ -210,7 +210,7 @@ async def test_archived_models_are_excluded_even_when_semantically_exact(
         UPDATE models
         SET status = 'archived',
             archived_at = now(),
-            archive_reason = 'adversarial status filter'
+            archive_reason = 'manual'
         WHERE id = $1
         """,
         archived_id,

@@ -99,6 +99,7 @@ async def test_429_retry_within_budget(
             pool=fresh_db, secret_store=secret_store,
             tenant_id=_tenant, installation_row_id=install_id,
             guild_id=_GUILD_ID,
+            base_url="https://discord.com/api/v10",
         )
         start = time.monotonic()
         result = await client.get_guild_member(_USER_ID)
@@ -130,6 +131,7 @@ async def test_budget_exhausted_raises_rate_limited(
             tenant_id=_tenant, installation_row_id=install_id,
             guild_id=_GUILD_ID,
             max_attempts=3,
+            base_url="https://discord.com/api/v10",
         )
         with pytest.raises(DiscordApiError) as exc_info:
             await client.get_guild_member(_USER_ID)
@@ -154,6 +156,7 @@ async def test_missing_bot_token_env_raises_discord_secret_unavailable(
         pool=fresh_db, secret_store=secret_store,
         tenant_id=_tenant, installation_row_id=install_id,
         guild_id=_GUILD_ID,
+        base_url="https://discord.com/api/v10",
     )
     with pytest.raises(DiscordApiError) as exc_info:
         await client.get_guild_member(_USER_ID)
@@ -205,6 +208,7 @@ async def test_env_bot_token_flows_to_authorization_header(
             pool=fresh_db, secret_store=secret_store,
             tenant_id=_tenant, installation_row_id=install_id,
             guild_id=_GUILD_ID,
+            base_url="https://discord.com/api/v10",
         )
         await client.get_guild_member(_USER_ID)
         await client.aclose()
@@ -215,6 +219,29 @@ async def test_env_bot_token_flows_to_authorization_header(
     assert poisoned_oauth_bearer not in captured_auth["value"], (
         "OAuth Bearer from encrypted_secrets leaked into Authorization header"
     )
+
+
+async def test_env_bot_token_is_resolved_each_call(
+    fresh_db: asyncpg.Pool,
+    _tenant: UUID,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
+    client = DiscordClient(
+        pool=fresh_db,
+        secret_store=secret_store,
+        tenant_id=_tenant,
+        installation_row_id=uuid7(),
+        guild_id=_GUILD_ID,
+        base_url="https://discord.com/api/v10",
+    )
+
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "first-bot-token")
+    first = await client._resolve_bot_token()
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "second-bot-token")
+    second = await client._resolve_bot_token()
+
+    assert (first, second) == ("first-bot-token", "second-bot-token")
 
 
 async def test_no_guild_id_in_structured_logs(
@@ -236,6 +263,7 @@ async def test_no_guild_id_in_structured_logs(
             pool=fresh_db, secret_store=secret_store,
             tenant_id=_tenant, installation_row_id=install_id,
             guild_id=_GUILD_ID,
+            base_url="https://discord.com/api/v10",
         )
         # structlog.testing.capture_logs is the canonical capture API.
         with structlog.testing.capture_logs() as captured:

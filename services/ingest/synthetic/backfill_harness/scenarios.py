@@ -36,7 +36,7 @@ class BackfillScenario:
         One of 'gmail', 'slack', 'github', 'discord'.
       fixture_params:
         Kwargs passed to the source's `make_<source>_*` generator.
-        E.g., {"email": "alice@x.com", "messages": 10, "history_events": 0}
+        E.g., {"email": "alice@x.example", "messages": 10, "history_events": 0}
         for Gmail, {"team_id": "T1", "channels": 2,
         "messages_per_channel": 50} for Slack.
       fault_profile:

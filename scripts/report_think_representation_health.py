@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Report Think representation health for a tenant.
 
-This is the large-run scoreboard we wanted after Alpen: not only "how many
+This is the large-run scoreboard for a sandbox corpus: not only "how many
 models?", but also updates, evidence absorption, edge adaptiveness, coverage
 roles, retrieval tags, and source repetition.
 """

@@ -29,9 +29,10 @@ from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 from lib.shared.ids import uuid7
+from services.app.gateway.settings import GatewaySettings
 from services.app.gateway.auth import create_session
 from services.app.realtime.dispatcher import Dispatcher
-from services.app.realtime.main import configure_realtime
+from services.app.realtime.main import configure_realtime, _query_token_auth_enabled
 
 
 pytestmark = pytest.mark.integration
@@ -46,7 +47,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 
 @contextmanager
-def _ws_harness():
+def _ws_harness(*, websocket_query_token_auth_enabled: bool = True):
     """Yield (TestClient, tenant_id, actor_id, bearer_token, pool_for_pg_notify).
 
     TestClient manages a background thread that runs an asyncio loop;
@@ -95,6 +96,9 @@ def _ws_harness():
 
     # Build a FastAPI app with a lifespan that owns the pool + dispatcher.
     app = FastAPI()
+    app.state.gateway_settings = GatewaySettings(
+        websocket_query_token_auth_enabled=websocket_query_token_auth_enabled,
+    )
 
     from contextlib import asynccontextmanager
 
@@ -164,6 +168,62 @@ def _insert_obs_sync(dsn: str, *, tenant_id: UUID, entity_kind: str, entity_id: 
     t.join()
 
 
+def _seed_visible_goal_sync(dsn: str, *, tenant_id: UUID, actor_id: UUID) -> UUID:
+    goal_box: dict[str, UUID] = {}
+
+    async def _run() -> None:
+        pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+        try:
+            async with pool.acquire() as c:
+                event_id = uuid7()
+                await c.execute(
+                    """
+                    INSERT INTO observations (
+                        id, tenant_id, occurred_at, kind, source_channel,
+                        actor_id, content, content_text, trust_tier
+                    ) VALUES (
+                        $1, $2, now(), 'state_change',
+                        'internal:state_change', $3, '{}'::jsonb,
+                        'goal seed', 'authoritative'
+                    )
+                    """,
+                    event_id,
+                    tenant_id,
+                    actor_id,
+                )
+                goal_id = uuid7()
+                await c.execute(
+                    """
+                    INSERT INTO goals (
+                        id, tenant_id, title, state, created_by_event_id
+                    ) VALUES ($1, $2, 'Realtime WS goal', 'active', $3)
+                    """,
+                    goal_id,
+                    tenant_id,
+                    event_id,
+                )
+                await c.execute(
+                    """
+                    INSERT INTO actor_roles (
+                        tenant_id, actor_id, entity_type, entity_id, role,
+                        granted_by, granted_at, revoked_at
+                    ) VALUES ($1, $2, 'goal', $3, 'viewer', $2, now(), NULL)
+                    ON CONFLICT ON CONSTRAINT actor_roles_dedup DO NOTHING
+                    """,
+                    tenant_id,
+                    actor_id,
+                    goal_id,
+                )
+                goal_box["id"] = goal_id
+        finally:
+            await pool.close()
+
+    t = threading.Thread(target=lambda: asyncio.run(_run()))
+    t.start()
+    t.join()
+    return goal_box["id"]
+
+
 # ---------------------------------------------------------------------
 # 1. Unauthenticated WS closes with 1008
 # ---------------------------------------------------------------------
@@ -186,8 +246,12 @@ def test_ws_rejects_missing_token(realtime_pool) -> None:
 
 
 def test_ws_authenticated_subscribe_and_receive(realtime_pool) -> None:
-    with _ws_harness() as (client, tenant_id, _actor, token, dsn):
-        goal_id = uuid7()
+    with _ws_harness() as (client, tenant_id, actor_id, token, dsn):
+        goal_id = _seed_visible_goal_sync(
+            dsn,
+            tenant_id=tenant_id,
+            actor_id=actor_id,
+        )
         with client.websocket_connect(f"/stream?token={token}") as ws:
             ready = json.loads(ws.receive_text())
             assert ready["kind"] == "ready"
@@ -210,14 +274,68 @@ def test_ws_authenticated_subscribe_and_receive(realtime_pool) -> None:
             assert frame["topic"] == f"goal:{goal_id}"
 
 
+def test_ws_rejects_query_token_when_disabled(realtime_pool) -> None:
+    with _ws_harness(websocket_query_token_auth_enabled=False) as (
+        client,
+        _tenant_id,
+        _actor,
+        token,
+        _dsn,
+    ):
+        with client.websocket_connect(f"/stream?token={token}") as ws:
+            msg = ws.receive_text()
+            data = json.loads(msg)
+            assert data.get("kind") == "error"
+            assert data.get("message") == "missing_token"
+            with pytest.raises(Exception):
+                ws.receive_text()
+
+
+def test_ws_accepts_session_cookie_when_query_token_disabled(realtime_pool) -> None:
+    with _ws_harness(websocket_query_token_auth_enabled=False) as (
+        client,
+        _tenant_id,
+        actor_id,
+        token,
+        _dsn,
+    ):
+        with client.websocket_connect(
+            "/stream",
+            headers={"cookie": f"fyralis_session={token}"},
+        ) as ws:
+            ready = json.loads(ws.receive_text())
+            assert ready["kind"] == "ready"
+            assert ready["actor_id"] == str(actor_id)
+
+
+def test_query_token_auth_fails_closed_without_explicit_settings() -> None:
+    class _State:
+        pass
+
+    class _App:
+        state = _State()
+
+    class _WebSocket:
+        app = _App()
+
+    assert _query_token_auth_enabled(_WebSocket()) is False
+
+    _WebSocket.app.state.gateway_settings = object()
+    assert _query_token_auth_enabled(_WebSocket()) is False
+
+
 # ---------------------------------------------------------------------
 # 3. Replay returns replay_complete with count
 # ---------------------------------------------------------------------
 
 
 def test_ws_replay_returns_replay_complete(realtime_pool) -> None:
-    with _ws_harness() as (client, tenant_id, _actor, token, dsn):
-        goal_id = uuid7()
+    with _ws_harness() as (client, tenant_id, actor_id, token, dsn):
+        goal_id = _seed_visible_goal_sync(
+            dsn,
+            tenant_id=tenant_id,
+            actor_id=actor_id,
+        )
         _insert_obs_sync(
             dsn, tenant_id=tenant_id, entity_kind="goal", entity_id=goal_id
         )

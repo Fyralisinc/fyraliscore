@@ -20,10 +20,11 @@ _ACCT = "acc-checking"
 class _FakeClient:
     """Implements the MercuryClient read surface the fetcher uses."""
 
-    def __init__(self, account, full, delta):
+    def __init__(self, account, full, delta, *, incremental_start=None):
         self._account = account
         self._full = full
         self._delta = delta
+        self._incremental_start = incremental_start
         self.calls: list[dict] = []
 
     async def get_account(self, account_id):
@@ -31,7 +32,7 @@ class _FakeClient:
 
     async def list_transactions(self, account_id, *, limit=100, offset=0, start=None):
         self.calls.append({"offset": offset, "start": start})
-        pool = self._delta if start else self._full
+        pool = self._delta if start == self._incremental_start else self._full
         page = pool[offset:offset + limit]
         next_offset = offset + len(page)
         total = len(pool)
@@ -84,7 +85,7 @@ async def test_incremental_warm_start_uses_start_param(monkeypatch):
     account = {"id": _ACCT, "availableBalance": 0.0, "currentBalance": 0.0}
     delta = [{"id": "t1", "amount": -10.0, "status": "failed",
               "counterpartyName": "A", "createdAt": "2026-05-10T00:00:00Z"}]
-    client = _FakeClient(account, [], delta)
+    client = _FakeClient(account, [], delta, incremental_start="2026-05-09")
     _wire(monkeypatch, client)
 
     shard = {"shard_kind": SHARD_KIND_ACCOUNT_TXNS, "account_id": _ACCT,

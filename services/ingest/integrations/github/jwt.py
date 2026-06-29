@@ -7,9 +7,10 @@ access token.
 
 Operator-facing config (FR-020, Clarifications Q3):
   - GITHUB_APP_ID                — numeric App ID (string).
-  - GITHUB_APP_PRIVATE_KEY       — multi-line PEM literal, OR
-  - GITHUB_APP_PRIVATE_KEY_PATH  — filesystem path to a `.pem` file.
-  Exactly one of the two key vars MUST be set under `FYRALIS_ENV=prod`.
+  - GITHUB_APP_PRIVATE_KEY_SECRET_REF — managed-provider secret reference, OR
+  - GITHUB_APP_PRIVATE_KEY            — multi-line PEM literal, OR
+  - GITHUB_APP_PRIVATE_KEY_PATH       — filesystem path to a `.pem` file.
+  Exactly one key source MUST be set under `FYRALIS_ENV=prod`.
 
 The private key is read on EVERY mint (no in-process cache); rotation
 is a no-op deploy. The key material is NEVER logged at any level.
@@ -23,7 +24,8 @@ from typing import Any
 import jwt as pyjwt  # PyJWT — RS256 via [crypto] extra
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
-from lib.shared.errors import GithubJWTError
+from lib.shared.errors import GithubJWTError, SecretStoreError
+from lib.shared.secrets import load_app_secret_text_from_env
 
 
 _DEFAULT_TTL_SECONDS = 600  # GitHub enforces <= 10 minutes
@@ -38,26 +40,39 @@ def _load_private_key_pem() -> bytes:
         GithubJWTError(reason='no_private_key'|'conflicting_keys'|'io_error')
     """
     pem_inline = os.environ.get("GITHUB_APP_PRIVATE_KEY", "")
+    pem_ref = os.environ.get("GITHUB_APP_PRIVATE_KEY_SECRET_REF", "")
     pem_path = os.environ.get("GITHUB_APP_PRIVATE_KEY_PATH", "")
 
     have_inline = bool(pem_inline.strip())
+    have_ref = bool(pem_ref.strip())
     have_path = bool(pem_path.strip())
 
-    if have_inline and have_path:
+    if sum(1 for present in (have_inline, have_ref, have_path) if present) > 1:
         raise GithubJWTError(
             "conflicting_keys",
-            "both GITHUB_APP_PRIVATE_KEY and GITHUB_APP_PRIVATE_KEY_PATH "
-            "are set; exactly one must be configured",
+            "more than one GitHub App private-key source is configured; "
+            "set exactly one of GITHUB_APP_PRIVATE_KEY_SECRET_REF, "
+            "GITHUB_APP_PRIVATE_KEY, or GITHUB_APP_PRIVATE_KEY_PATH",
         )
-    if not have_inline and not have_path:
+    if not have_inline and not have_ref and not have_path:
         raise GithubJWTError(
             "no_private_key",
-            "neither GITHUB_APP_PRIVATE_KEY nor GITHUB_APP_PRIVATE_KEY_PATH "
-            "is configured",
+            "no GitHub App private-key source is configured; set "
+            "GITHUB_APP_PRIVATE_KEY_SECRET_REF, GITHUB_APP_PRIVATE_KEY, "
+            "or GITHUB_APP_PRIVATE_KEY_PATH",
         )
 
-    if have_inline:
-        return pem_inline.encode("utf-8")
+    if have_inline or have_ref:
+        try:
+            return load_app_secret_text_from_env(
+                "GITHUB_APP_PRIVATE_KEY",
+            ).encode("utf-8")
+        except SecretStoreError as exc:
+            raise GithubJWTError(
+                "secret_provider_error",
+                "failed to resolve GITHUB_APP_PRIVATE_KEY_SECRET_REF",
+                error_type=type(exc).__name__,
+            ) from exc
 
     try:
         with open(pem_path, "rb") as fh:

@@ -34,6 +34,7 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 
+from lib.shared.db import configure_connection_timeouts
 from services.ingest.ingestion.feature_flags.circuit_breaker import (
     BreakerConfig,
     _process_tick,
@@ -368,6 +369,7 @@ async def test_breaker_uses_pgbouncer_compatible_pool(
     )
     assert "min_size" in captured["kwargs"]
     assert "max_size" in captured["kwargs"]
+    assert captured["kwargs"]["init"] is configure_connection_timeouts
 
 
 # =====================================================================

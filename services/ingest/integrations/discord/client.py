@@ -24,7 +24,6 @@ emits the raw `guild_id`. Operators correlate via `tenant_id` and
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from typing import Any
 from uuid import UUID
@@ -34,6 +33,7 @@ import httpx
 import structlog
 
 from lib.shared.errors import DiscordApiError
+from lib.shared.secrets import load_app_secret_text_from_env
 from services.ingest.integrations.discord.uninstall import _disable_and_zeroize_discord
 
 
@@ -66,6 +66,7 @@ class DiscordClient:
         wall_budget_s: float = _DEFAULT_WALL_BUDGET_S,
         http_client: httpx.AsyncClient | None = None,
         base_url: str | None = None,
+        bot_token: str | None = None,
     ) -> None:
         from lib.integrations.endpoints import endpoint
         self._api_base = (base_url or endpoint("discord_api")).rstrip("/")
@@ -77,7 +78,7 @@ class DiscordClient:
         self._tenant_resolver = tenant_resolver
         self._max_attempts = max_attempts
         self._wall_budget_s = wall_budget_s
-        self._bot_token: str | None = None
+        self._bot_token_override = bot_token
         self._owns_client = http_client is None
         self._client: httpx.AsyncClient | None = http_client
 
@@ -94,17 +95,16 @@ class DiscordClient:
         Raises `DiscordApiError(code='discord_secret_unavailable')`
         if the env var is unset or empty.
         """
-        if self._bot_token is not None:
-            return self._bot_token
-        token = os.environ.get("DISCORD_BOT_TOKEN", "")
+        if self._bot_token_override is not None:
+            return self._bot_token_override
+        token = load_app_secret_text_from_env("DISCORD_BOT_TOKEN")
         if not token:
             raise DiscordApiError(
                 "DISCORD_BOT_TOKEN env var not configured",
                 code="discord_secret_unavailable",
                 context={"tenant_id": str(self._tenant_id)},
             )
-        self._bot_token = token
-        return self._bot_token
+        return token
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._client is None:

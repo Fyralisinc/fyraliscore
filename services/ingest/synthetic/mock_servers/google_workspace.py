@@ -62,7 +62,7 @@ The org is a single fixture object (see `WorkspaceOrg`). The mock synthesizes
 nothing it isn't given, so a test controls exactly what lands.
 
 Usage:
-    org = WorkspaceOrg(domain="acme.com", users=[...], ...)
+    org = WorkspaceOrg(domain="acme.example", users=[...], ...)
     server, env = start_mock_workspace(org)
     try:
         os.environ.update(env)          # GOOGLE_*_BASE_URL + token uri wiring

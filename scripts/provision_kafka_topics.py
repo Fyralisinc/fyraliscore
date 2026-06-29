@@ -17,7 +17,10 @@ Env:
     KAFKA_TOPIC_REPLICATION   replication factor (default 1; single broker)
     KAFKA_TOPIC_RETENTION_MS  retention (default 604800000 = 7 days)
 
-Exit 0 if every topic exists (created or already present), 1 on error.
+Exit 0 if every topic exists (created or already present) with the expected
+partition count, 1 on error. Existing topics with the wrong partition count are
+reported and left untouched; shrinking Kafka topics is destructive and growing
+them changes key placement, so deployment must make that decision explicitly.
 """
 from __future__ import annotations
 
@@ -54,6 +57,74 @@ from services.platform.extensions.egress.kafka import egress_topics  # noqa: E40
 ALL_TOPICS = INGESTION_TOPICS + tuple(egress_topics())
 
 
+def _topic_name(description: object) -> str | None:
+    if isinstance(description, dict):
+        value = description.get("topic") or description.get("name")
+        return value if isinstance(value, str) else None
+    value = getattr(description, "topic", None) or getattr(description, "name", None)
+    return value if isinstance(value, str) else None
+
+
+def _partition_count(description: object) -> int | None:
+    partitions: object | None = None
+    if isinstance(description, dict):
+        partitions = description.get("partitions")
+    else:
+        partitions = getattr(description, "partitions", None)
+    if isinstance(partitions, (list, tuple)):
+        return len(partitions)
+    return None
+
+
+def _topic_error(description: object) -> object | None:
+    if isinstance(description, dict):
+        return description.get("error_code") or description.get("error")
+    return (
+        getattr(description, "error_code", None)
+        or getattr(description, "error", None)
+    )
+
+
+def validate_topic_descriptions(
+    descriptions: list[object],
+    *,
+    expected_topics: tuple[str, ...],
+    expected_partitions: int,
+) -> list[str]:
+    """Return deployment-blocking topic drift issues.
+
+    This is intentionally pure so CI can test the production verification logic
+    without a live broker.
+    """
+    by_name: dict[str, object] = {}
+    issues: list[str] = []
+    for description in descriptions:
+        name = _topic_name(description)
+        if not name:
+            issues.append(f"topic description missing name: {description!r}")
+            continue
+        by_name[name] = description
+        error = _topic_error(description)
+        if error not in (None, 0):
+            issues.append(f"{name}: broker returned topic error {error!r}")
+
+    for topic in expected_topics:
+        description = by_name.get(topic)
+        if description is None:
+            issues.append(f"{topic}: missing after provisioning")
+            continue
+        partition_count = _partition_count(description)
+        if partition_count is None:
+            issues.append(f"{topic}: broker did not report partition metadata")
+            continue
+        if partition_count != expected_partitions:
+            issues.append(
+                f"{topic}: has {partition_count} partitions; "
+                f"expected {expected_partitions}"
+            )
+    return issues
+
+
 async def _provision() -> int:
     bootstrap = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     partitions = int(os.environ.get("KAFKA_TOPIC_PARTITIONS", "12"))
@@ -71,31 +142,40 @@ async def _provision() -> int:
         missing = [t for t in ALL_TOPICS if t not in existing]
         if not missing:
             log.info("all %d ingestion topics already present", len(INGESTION_TOPICS))
-            return 0
-
-        new_topics = [
-            NewTopic(
-                name=name,
-                num_partitions=partitions,
-                replication_factor=replication,
-                topic_configs=dict(topic_configs),
+        else:
+            new_topics = [
+                NewTopic(
+                    name=name,
+                    num_partitions=partitions,
+                    replication_factor=replication,
+                    topic_configs=dict(topic_configs),
+                )
+                for name in missing
+            ]
+            try:
+                await admin.create_topics(new_topics)
+            except TopicAlreadyExistsError:
+                # Concurrent provisioner won the race — fine.
+                pass
+            log.info(
+                "created topics %s (partitions=%d replication=%d)",
+                missing, partitions, replication,
             )
-            for name in missing
-        ]
-        try:
-            await admin.create_topics(new_topics)
-        except TopicAlreadyExistsError:
-            # Concurrent provisioner won the race — fine.
-            pass
-        log.info(
-            "created topics %s (partitions=%d replication=%d)",
-            missing, partitions, replication,
-        )
         # Verify.
         existing = set(await admin.list_topics())
         still_missing = [t for t in ALL_TOPICS if t not in existing]
         if still_missing:
             log.error("topics still missing after create: %s", still_missing)
+            return 1
+        descriptions = await admin.describe_topics(list(ALL_TOPICS))
+        issues = validate_topic_descriptions(
+            descriptions,
+            expected_topics=ALL_TOPICS,
+            expected_partitions=partitions,
+        )
+        if issues:
+            for issue in issues:
+                log.error("topic verification failed: %s", issue)
             return 1
         return 0
     finally:

@@ -31,6 +31,21 @@ from uuid import UUID
 
 import asyncpg
 
+from services.platform.access_control.checks import EntityKind, can_read_by_id
+from services.platform.access_control.audit import record_override, record_override_if_needed
+from services.platform.access_control.roles import has_role
+
+
+_TARGET_ACCESS_KIND: dict[str, EntityKind] = {
+    "commitment": "commitment",
+    "goal": "goal",
+    "decision": "decision",
+    "resource": "resource",
+    "customer": "resource",
+    "model": "model",
+    "prediction": "model",
+}
+
 
 # Minimum resolved sample count per bin before we report a hit-rate.
 # Mirrors services.reasoning.calibration.hit_rate.MIN_SAMPLES_FOR_CALIBRATION but
@@ -83,6 +98,8 @@ class CalibrationSummary:
 async def accuracy_bins(
     conn: asyncpg.Connection,
     tenant_id: UUID,
+    *,
+    actor_id: UUID | None = None,
     range_days: int = 180,
 ) -> list[AccuracyBin]:
     """Compute bin-by-bin hit rates over the last `range_days`.
@@ -94,7 +111,8 @@ async def accuracy_bins(
     range_days = max(7, int(range_days))
     rows = await conn.fetch(
         """
-        SELECT confidence, outcome
+        SELECT id, target_node_kind, target_node_id,
+               created_by_actor_id, scope_actors, confidence, outcome
         FROM predictions
         WHERE tenant_id = $1
           AND status = 'resolved'
@@ -102,6 +120,12 @@ async def accuracy_bins(
           AND resolved_at >= now() - make_interval(days => $2)
         """,
         tenant_id, range_days,
+    )
+    rows = await _filter_visible_rows(
+        conn,
+        tenant_id,
+        actor_id,
+        list(rows),
     )
 
     counters: dict[str, list[float]] = {b[2]: [] for b in _BINS}
@@ -143,13 +167,17 @@ async def accuracy_bins(
 async def recent_resolutions(
     conn: asyncpg.Connection,
     tenant_id: UUID,
+    *,
+    actor_id: UUID | None = None,
     limit: int = 20,
 ) -> list[RecentResolution]:
     """Most recently resolved predictions, newest first."""
     limit = max(1, min(int(limit), 200))
     rows = await conn.fetch(
         """
-        SELECT id, statement, category, confidence, outcome,
+        SELECT id, target_node_kind, target_node_id,
+               created_by_actor_id, scope_actors,
+               statement, category, confidence, outcome,
                resolution_timeliness, resolved_at, resolution_at
         FROM predictions
         WHERE tenant_id = $1
@@ -160,6 +188,12 @@ async def recent_resolutions(
         LIMIT $2
         """,
         tenant_id, limit,
+    )
+    rows = await _filter_visible_rows(
+        conn,
+        tenant_id,
+        actor_id,
+        list(rows),
     )
     return [
         RecentResolution(
@@ -184,6 +218,8 @@ async def recent_resolutions(
 async def calibration_summary(
     conn: asyncpg.Connection,
     tenant_id: UUID,
+    *,
+    actor_id: UUID | None = None,
 ) -> CalibrationSummary:
     """Single calibration score for the summary strip.
 
@@ -197,7 +233,9 @@ async def calibration_summary(
     """
     rows = await conn.fetch(
         """
-        SELECT confidence, outcome, resolved_at
+        SELECT id, target_node_kind, target_node_id,
+               created_by_actor_id, scope_actors,
+               confidence, outcome, resolved_at
         FROM predictions
         WHERE tenant_id = $1
           AND status = 'resolved'
@@ -206,6 +244,12 @@ async def calibration_summary(
           AND resolved_at >= now() - make_interval(days => 180)
         """,
         tenant_id,
+    )
+    rows = await _filter_visible_rows(
+        conn,
+        tenant_id,
+        actor_id,
+        list(rows),
     )
     if not rows:
         return CalibrationSummary(value=None, delta_vs_last_week=None,
@@ -250,6 +294,116 @@ async def calibration_summary(
         delta_vs_last_week=delta,
         n_resolved_total=len(rows),
     )
+
+
+async def _filter_visible_rows(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    actor_id: UUID | None,
+    rows: list[asyncpg.Record],
+) -> list[asyncpg.Record]:
+    if actor_id is None:
+        return rows
+    visible: list[asyncpg.Record] = []
+    for row in rows:
+        if await _prediction_row_visible(conn, tenant_id, actor_id, row):
+            visible.append(row)
+    return visible
+
+
+async def _prediction_row_visible(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    actor_id: UUID,
+    row: asyncpg.Record,
+) -> bool:
+    kind = row["target_node_kind"]
+    target_id = row["target_node_id"]
+    if kind is None and target_id is None:
+        return await _targetless_prediction_visible(
+            conn,
+            tenant_id,
+            actor_id,
+            prediction_id=row["id"],
+            created_by_actor_id=row["created_by_actor_id"],
+            scope_actors=_coerce_uuid_list(row["scope_actors"]),
+        )
+    if kind is None or target_id is None:
+        return False
+    access_kind = _TARGET_ACCESS_KIND.get(kind)
+    if access_kind is None:
+        return False
+    decision = await can_read_by_id(
+        actor_id,
+        access_kind,
+        target_id,
+        conn=conn,
+        tenant_id=tenant_id,
+    )
+    await record_override_if_needed(
+        decision,
+        actor_id=actor_id,
+        entity_type=access_kind,
+        entity_id=target_id,
+        conn=conn,
+        tenant_id=tenant_id,
+    )
+    return decision.allowed
+
+
+async def _targetless_prediction_visible(
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    actor_id: UUID,
+    *,
+    prediction_id: UUID,
+    created_by_actor_id: UUID | None,
+    scope_actors: list[UUID],
+) -> bool:
+    if created_by_actor_id == actor_id:
+        return True
+    if actor_id in scope_actors:
+        return True
+    if await has_role(actor_id, "admin", conn=conn, tenant_id=tenant_id):
+        await record_override(
+            actor_id,
+            "prediction",
+            prediction_id,
+            "admin",
+            conn=conn,
+            tenant_id=tenant_id,
+            reason="admin_override",
+        )
+        return True
+    if await has_role(actor_id, "leadership", conn=conn, tenant_id=tenant_id):
+        await record_override(
+            actor_id,
+            "prediction",
+            prediction_id,
+            "leadership",
+            conn=conn,
+            tenant_id=tenant_id,
+            reason="leadership_override",
+        )
+        return True
+    return False
+
+
+def _coerce_uuid_list(value: object) -> list[UUID]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        value = list(value) if isinstance(value, tuple) else [value]
+    out: list[UUID] = []
+    for raw in value:
+        if isinstance(raw, UUID):
+            out.append(raw)
+            continue
+        try:
+            out.append(UUID(str(raw)))
+        except (ValueError, TypeError):
+            continue
+    return out
 
 
 __all__ = [

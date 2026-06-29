@@ -6,7 +6,8 @@ Public surface:
                          concrete MVP impl).
     FernetSecretStore  — Fernet-backed implementation, backed by the
                          encrypted_secrets table (migration 0040).
-    build_secret_store — Factory wiring MASTER_KEK into a FernetSecretStore.
+    build_secret_store — Factory wiring MASTER_KEK or managed-provider KEK
+                         material into a FernetSecretStore.
     SecretStoreError   — backend / decrypt failures (HTTP 503 upstream).
     SecretNotFoundError — ref unknown for tenant (HTTP 401-shape upstream
                          for webhook signature paths).
@@ -15,7 +16,6 @@ Contract: see specs/IN-08-slack-production-integration/contracts/module-secret-s
 """
 from __future__ import annotations
 
-import os
 import warnings
 from collections.abc import Callable
 from typing import Protocol, runtime_checkable
@@ -25,6 +25,11 @@ import asyncpg
 from cryptography.fernet import Fernet
 
 from lib.shared.errors import SecretNotFoundError, SecretStoreError
+from lib.shared.secrets.provider_contract import (
+    SecretProviderConfig,
+    load_app_secret_text_from_env,
+    load_master_kek_from_config,
+)
 from lib.shared.secrets.store import FernetSecretStore
 
 
@@ -81,6 +86,7 @@ def build_secret_store(
     pool: asyncpg.Pool,
     *,
     master_kek_loader: Callable[[], bytes] | None = None,
+    provider_config: SecretProviderConfig | None = None,
 ) -> SecretStore:
     """Construct a production FernetSecretStore.
 
@@ -88,7 +94,10 @@ def build_secret_store(
 
     1. If `master_kek_loader` is provided, call it. The result is the
        URL-safe-base64-encoded 32-byte Fernet key.
-    2. Otherwise read the `MASTER_KEK` env var directly.
+    2. Otherwise resolve the key through `SecretProviderConfig`.
+       `MASTER_KEK_PROVIDER=env` is the compatibility mode and reads
+       `MASTER_KEK` directly. Managed modes read `MASTER_KEK_SECRET_REF`
+       from AWS Secrets Manager, GCP Secret Manager, or HashiCorp Vault.
 
     In production (`FYRALIS_ENV=prod`):
         Missing/empty key → SecretStoreError (fail-startup).
@@ -101,8 +110,7 @@ def build_secret_store(
     if master_kek_loader is not None:
         raw = master_kek_loader()
     else:
-        env_val = os.environ.get("MASTER_KEK", "")
-        raw = env_val.encode("ascii") if env_val else b""
+        raw = load_master_kek_from_config(provider_config)
 
     if not raw:
         # No KEK configured. Behavior split on environment.
@@ -130,7 +138,9 @@ def build_secret_store(
 __all__ = [
     "SecretStore",
     "FernetSecretStore",
+    "SecretProviderConfig",
     "build_secret_store",
+    "load_app_secret_text_from_env",
     "SecretStoreError",
     "SecretNotFoundError",
 ]

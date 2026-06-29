@@ -1,12 +1,14 @@
 """Tests for lib/embeddings/ollama.py."""
 from __future__ import annotations
 
+import asyncio
 import os
 
 import httpx
 import pytest
 import respx
 
+from lib.shared.circuit_breaker import AsyncCircuitBreaker, CircuitState
 from lib.embeddings.ollama import (
     DEFAULT_MODEL,
     EMBEDDING_DIM,
@@ -14,6 +16,7 @@ from lib.embeddings.ollama import (
     OllamaConfig,
     OllamaDimensionMismatch,
     OllamaError,
+    _record_ollama_breaker_exception,
 )
 
 
@@ -32,6 +35,16 @@ def _cfg(**overrides) -> OllamaConfig:
     )
     defaults.update(overrides)
     return OllamaConfig(**defaults)
+
+
+def _breaker(name: str, *, min_samples: int = 2) -> AsyncCircuitBreaker:
+    return AsyncCircuitBreaker(
+        name=name,
+        failure_threshold=0.5,
+        min_samples=min_samples,
+        open_duration=30.0,
+        record_exception=_record_ollama_breaker_exception,
+    )
 
 
 # =====================================================================
@@ -108,6 +121,45 @@ async def test_embed_does_not_retry_4xx():
         assert route.call_count == 1
 
 
+async def test_embed_4xx_does_not_count_against_breaker():
+    breaker = _breaker("ollama_embedding_4xx_test", min_samples=1)
+    with respx.mock(base_url=BASE) as mock:
+        route = mock.post("/api/embeddings").respond(400, text="bad")
+        async with OllamaClient(
+            _cfg(max_retries=5),
+            breaker=breaker,
+        ) as c:
+            with pytest.raises(OllamaError) as exc:
+                await c.embed("x")
+
+    assert exc.value.context["status"] == 400
+    assert route.call_count == 1
+    assert breaker.state == CircuitState.CLOSED
+    assert breaker.status()["samples"] == 0
+
+
+async def test_embed_fast_fails_when_breaker_is_open():
+    breaker = _breaker("ollama_embedding_open_test", min_samples=2)
+    with respx.mock(base_url=BASE) as mock:
+        route = mock.post("/api/embeddings").respond(503, text="busy")
+        async with OllamaClient(
+            _cfg(max_retries=1),
+            breaker=breaker,
+        ) as c:
+            for _ in range(2):
+                with pytest.raises(OllamaError):
+                    await c.embed("x")
+
+            assert breaker.state == CircuitState.OPEN
+            with pytest.raises(OllamaError) as exc:
+                await c.embed("x")
+
+    assert route.call_count == 2
+    assert exc.value.context["circuit_open"] is True
+    assert exc.value.context["attempts"] == 0
+    assert exc.value.context["breaker"] == "ollama_embedding_open_test"
+
+
 async def test_embed_retries_on_connect_error():
     with respx.mock(base_url=BASE) as mock:
         route = mock.post("/api/embeddings")
@@ -143,6 +195,30 @@ async def test_embed_batch_returns_ordered_vectors():
 async def test_embed_batch_empty():
     async with OllamaClient(_cfg()) as c:
         assert await c.embed_batch([]) == []
+
+
+async def test_embed_batch_respects_client_concurrency_budget():
+    cfg = _cfg(expected_dim=1, max_concurrency=2)
+    c = OllamaClient(cfg)
+    active = 0
+    max_active = 0
+
+    async def _fake_post(path, body, *, operation="embed"):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return {"embedding": [float(len(body["prompt"]))]}
+
+    c._post_with_retry = _fake_post  # type: ignore[method-assign]
+    try:
+        out = await c.embed_batch(["a", "bb", "ccc", "dddd", "eeeee"])
+    finally:
+        await c.close()
+
+    assert [v[0] for v in out] == [1.0, 2.0, 3.0, 4.0, 5.0]
+    assert max_active == 2
 
 
 async def test_embed_returns_floats_not_ints():

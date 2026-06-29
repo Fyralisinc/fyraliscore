@@ -33,6 +33,10 @@ scrape_configs:
         labels: { worker: observation_writer }
       - targets: ["dlq_writer:9300"]
         labels: { worker: dlq_writer }
+      - targets: ["summarization_worker:9300"]
+        labels: { worker: summarization_worker }
+      - targets: ["summarization_batch_worker:9300"]
+        labels: { worker: summarization_batch_worker }
       - targets: ["embedding_worker:9300"]
         labels: { worker: embedding_worker }
       - targets: ["embedding_backlog:9300"]
@@ -45,6 +49,12 @@ scrape_configs:
         labels: { worker: think_worker }
       - targets: ["post_commit_worker:9300"]
         labels: { worker: post_commit_worker }
+      - targets: ["anomaly_processor_worker:9300"]
+        labels: { worker: anomaly_processor_worker }
+      - targets: ["entity_resolver_worker:9300"]
+        labels: { worker: entity_resolver_worker }
+      - targets: ["schema_drift_monitor:9300"]
+        labels: { worker: schema_drift_monitor }
       - targets: ["shard_fetch:9300"]
         labels: { worker: shard_fetch }
       - targets: ["oauth_poller:9300"]
@@ -55,6 +65,8 @@ scrape_configs:
         labels: { worker: source_onboarding }
       - targets: ["reconciler:9300"]
         labels: { worker: reconciler }
+      - targets: ["extension_workers:9300"]
+        labels: { worker: extension_workers }
       - targets: ["feels_onboarded_monitor:9300"]
         labels: { worker: feels_onboarded_monitor }
       - targets: ["discord_gateway_worker:9300"]
@@ -79,6 +91,8 @@ scrape_configs:
         labels: { worker: sage_structural_features_worker }
       - targets: ["sage_topology_optimizer_worker:9300"]
         labels: { worker: sage_topology_optimizer_worker }
+      - targets: ["housekeeper_worker:9300"]
+        labels: { worker: housekeeper_worker }
       - targets: ["relationship_ontology_proposals_worker:9300"]
         labels: { worker: relationship_ontology_proposals_worker }
 

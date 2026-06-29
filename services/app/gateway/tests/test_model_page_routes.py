@@ -33,6 +33,25 @@ from services.app.gateway.model_page_routes import _deal_reality_from_propositio
 from services.product.resolution_threads import repo as resolution_repo
 
 
+async def _make_model_private(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    model_id: UUID,
+    *scope_actors: UUID,
+) -> None:
+    await pool.execute(
+        """
+        UPDATE models
+        SET visible_to_subjects = FALSE,
+            scope_actors = $3::uuid[]
+        WHERE id = $1 AND tenant_id = $2
+        """,
+        model_id,
+        tenant_id,
+        list(scope_actors),
+    )
+
+
 def test_deal_reality_projection_from_situation_payload():
     payload = {
         "kind": "belief",
@@ -291,6 +310,39 @@ async def test_overview_tenant_isolation(
 
 
 @pytest.mark.asyncio
+async def test_overview_filters_same_tenant_private_models(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, actor_id = valid_session
+    public_id = await _seed_model(
+        gateway_pool, tenant_id, natural="Commitment public roadmap",
+    )
+    hidden_id = await _seed_model(
+        gateway_pool, tenant_id, natural="Commitment hidden roadmap",
+    )
+    scoped_id = await _seed_model(
+        gateway_pool, tenant_id, natural="Commitment scoped roadmap",
+    )
+    await _make_model_private(gateway_pool, tenant_id, hidden_id)
+    await _make_model_private(gateway_pool, tenant_id, scoped_id, actor_id)
+
+    resp = await client.get("/model/overview", headers=_auth(token))
+
+    assert resp.status_code == 200, resp.text
+    item_ids = {
+        i["id"]
+        for cat in resp.json()["categories"]
+        for i in cat["topItems"]
+    }
+    assert str(public_id) in item_ids
+    assert str(scoped_id) in item_ids
+    assert str(hidden_id) not in item_ids
+
+
+@pytest.mark.asyncio
 async def test_overview_unauthorized(
     client: httpx.AsyncClient,
 ):
@@ -487,6 +539,60 @@ async def test_item_detail_not_found_returns_404(
 
 
 @pytest.mark.asyncio
+async def test_item_detail_denies_same_tenant_private_model(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, _ = valid_session
+    hidden_id = await _seed_model(
+        gateway_pool, tenant_id, natural="Commitment hidden detail",
+    )
+    await _make_model_private(gateway_pool, tenant_id, hidden_id)
+
+    resp = await client.get(f"/model/items/{hidden_id}", headers=_auth(token))
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_item_detail_filters_private_neighbors(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, _ = valid_session
+    commitment = await _seed_model(
+        gateway_pool, tenant_id,
+        natural="Commitment visible central node",
+        proposition_kind="state",
+    )
+    hidden_risk = await _seed_model(
+        gateway_pool, tenant_id,
+        natural="Risk R-70 hidden risk",
+        proposition_kind="concern",
+    )
+    await _make_model_private(gateway_pool, tenant_id, hidden_risk)
+    await _seed_edge(
+        gateway_pool, tenant_id,
+        source=hidden_risk, target=commitment, kind="supports",
+    )
+
+    resp = await client.get(f"/model/items/{commitment}", headers=_auth(token))
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    neighbor_ids = {
+        n["sourceItem"]["id"] for n in body["neighbors"]["incoming"]
+    } | {
+        n["targetItem"]["id"] for n in body["neighbors"]["outgoing"]
+    }
+    assert str(hidden_risk) not in neighbor_ids
+
+
+@pytest.mark.asyncio
 async def test_item_trace_consequence_walks_edges(
     client: httpx.AsyncClient,
     gateway_pool: asyncpg.Pool,
@@ -523,6 +629,41 @@ async def test_item_trace_consequence_walks_edges(
 
 
 @pytest.mark.asyncio
+async def test_item_trace_filters_private_chain_nodes(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, _ = valid_session
+    seed = await _seed_model(
+        gateway_pool, tenant_id,
+        natural="Seed visible commitment",
+        proposition_kind="state",
+    )
+    hidden_downstream = await _seed_model(
+        gateway_pool, tenant_id,
+        natural="Hidden downstream customer outcome",
+        proposition_kind="market_assessment",
+    )
+    await _make_model_private(gateway_pool, tenant_id, hidden_downstream)
+    await _seed_edge(
+        gateway_pool, tenant_id,
+        source=seed, target=hidden_downstream, kind="supports",
+    )
+
+    resp = await client.get(
+        f"/model/items/{seed}/trace?direction=consequence&depth=3",
+        headers=_auth(token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    chain_ids = [n["id"] for n in resp.json()["nodes"]]
+    assert str(seed) in chain_ids
+    assert str(hidden_downstream) not in chain_ids
+
+
+@pytest.mark.asyncio
 async def test_item_trace_invalid_direction_returns_400(
     client: httpx.AsyncClient,
     valid_session,
@@ -533,3 +674,25 @@ async def test_item_trace_invalid_direction_returns_400(
         headers=_auth(token),
     )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_v1_model_trace_denies_same_tenant_private_seed(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, _ = valid_session
+    hidden_id = await _seed_model(
+        gateway_pool, tenant_id, natural="Commitment hidden v1 trace",
+    )
+    await _make_model_private(gateway_pool, tenant_id, hidden_id)
+
+    resp = await client.get(f"/v1/model/{hidden_id}/trace", headers=_auth(token))
+
+    assert resp.status_code == 403
+    assert resp.json() == {
+        "error": "access_denied",
+        "reason": "model_out_of_scope",
+    }

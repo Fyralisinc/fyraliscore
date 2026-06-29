@@ -55,7 +55,7 @@ _DEFAULT_ADMIN_URL = "postgresql://company_os:company_os@localhost:5434/company_
 _TENANT_ID = UUID("00000000-0000-0000-0000-000000001717")
 _BASE_URL = "https://acme.atlassian.net"
 _SITE = "acme.atlassian.net"
-_EMAIL = "sandbox@acme.com"
+_EMAIL = "sandbox@acme.example"
 _PROJECT = "ENG"
 
 
@@ -85,8 +85,8 @@ def _build_fixtures() -> dict:
             "issuetype": {"name": "Story"},
             "status": {"name": status},
             "priority": {"name": "High"},
-            "assignee": {"accountId": "u-bob", "emailAddress": "bob@acme.com", "displayName": "Bob"},
-            "reporter": {"accountId": "u-alice", "emailAddress": "alice@acme.com", "displayName": "Alice"},
+            "assignee": {"accountId": "u-bob", "emailAddress": "bob@acme.example", "displayName": "Bob"},
+            "reporter": {"accountId": "u-alice", "emailAddress": "alice@acme.example", "displayName": "Alice"},
             "project": {"key": _PROJECT},
             "labels": ["backend"],
             "created": _iso(now - timedelta(days=10)),
@@ -101,13 +101,13 @@ def _build_fixtures() -> dict:
         if with_comment:
             fields["comment"] = {"comments": [{
                 "id": f"cm-{iid}", "created": updated, "updated": updated,
-                "author": {"emailAddress": "carol@acme.com", "displayName": "Carol"},
+                "author": {"emailAddress": "carol@acme.example", "displayName": "Carol"},
                 "body": "Looks ready for review.",
             }]}
         if with_changelog:
             obj["changelog"] = {"histories": [{
                 "id": hist_id or f"hist-{iid}", "created": updated,
-                "author": {"emailAddress": "bob@acme.com", "displayName": "Bob"},
+                "author": {"emailAddress": "bob@acme.example", "displayName": "Bob"},
                 "items": [{"field": "status", "fromString": from_status or "To Do",
                            "toString": status}],
             }]}
@@ -318,7 +318,7 @@ async def run(args) -> int:
         _hr("LIVE WEBHOOK (handler parity with backfill)")
         webhook_payload = {
             "webhookEvent": "jira:issue_updated",
-            "user": {"emailAddress": "bob@acme.com", "displayName": "Bob"},
+            "user": {"emailAddress": "bob@acme.example", "displayName": "Bob"},
             "issue": {"id": "10001", "key": "ENG-1",
                       "self": f"{_BASE_URL}/rest/api/2/issue/10001",
                       "fields": {"updated": _iso(datetime.now(timezone.utc) - timedelta(hours=1))}},
@@ -334,7 +334,7 @@ async def run(args) -> int:
             "webhookEvent": "comment_created",
             "issue": {"id": "10002", "key": "ENG-2", "self": f"{_BASE_URL}/x/10002"},
             "comment": {"id": "live-1", "updated": _iso(datetime.now(timezone.utc)),
-                        "author": {"emailAddress": "dave@acme.com"}, "body": "shipping now"},
+                        "author": {"emailAddress": "dave@acme.example"}, "body": "shipping now"},
         }
         res = await ingest("jira:issue", comment_payload, pool=pool, tenant_id=_TENANT_ID)
         _check("new live comment lands as a fresh observation", res.deduped is False)

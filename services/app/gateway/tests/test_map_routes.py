@@ -32,6 +32,7 @@ from services.reasoning.topology.umap_projector import (
     MIN_MODELS_FOR_UMAP,
     UMAPProjector,
 )
+from services.platform.access_control.roles import grant_role
 
 # These tests fit a real `umap.UMAP` (via the projector or the /map/snapshot
 # route). umap-learn is numba-backed, and the first fit in a process pays a
@@ -181,6 +182,25 @@ async def _seed_model(
     return mid
 
 
+async def _make_model_private(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    model_id: UUID,
+    *scope_actors: UUID,
+) -> None:
+    await pool.execute(
+        """
+        UPDATE models
+        SET visible_to_subjects = FALSE,
+            scope_actors = $3::uuid[]
+        WHERE id = $1 AND tenant_id = $2
+        """,
+        model_id,
+        tenant_id,
+        list(scope_actors),
+    )
+
+
 async def _seed_edge(
     pool: asyncpg.Pool,
     tenant_id: UUID,
@@ -324,11 +344,95 @@ async def test_snapshot_returns_only_tenant_models(
 
 
 @pytest.mark.asyncio
+async def test_snapshot_filters_same_tenant_private_models_edges_and_neighborhoods(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, _ = valid_session
+    visible = await _seed_model(
+        gateway_pool, tenant_id, natural="Visible commitment"
+    )
+    hidden = await _seed_model(
+        gateway_pool, tenant_id, natural="Hidden sensitive commitment"
+    )
+    await _make_model_private(gateway_pool, tenant_id, hidden)
+    neighborhood = await _seed_neighborhood(
+        gateway_pool,
+        tenant_id,
+        members=[visible, hidden],
+        named_signature="sensitive mixed neighborhood",
+    )
+    await _seed_edge(
+        gateway_pool, tenant_id,
+        source=visible, target=hidden, kind="supports",
+    )
+
+    resp = await client.get(
+        "/map/snapshot?lens=commitment",
+        headers=_auth(token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    node_ids = {n["id"] for n in body["nodes"]}
+    assert str(visible) in node_ids
+    assert str(hidden) not in node_ids
+    assert all(
+        str(hidden) not in {e["source"], e["target"]}
+        for e in body["edges"]
+    )
+    nbh = next(n for n in body["neighborhoods"] if n["id"] == str(neighborhood))
+    assert nbh["member_count"] == 1
+    assert nbh["named_signature"] is None
+
+
+@pytest.mark.asyncio
 async def test_snapshot_unauthorized_without_token(
     client: httpx.AsyncClient,
 ):
     resp = await client.get("/map/snapshot")
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_snapshot_reports_no_visible_models_degradation(
+    client: httpx.AsyncClient,
+    valid_session,
+):
+    token, _ = valid_session
+
+    resp = await client.get("/map/snapshot?lens=commitment", headers=_auth(token))
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["nodes"] == []
+    assert body["neighborhoods"] == []
+    assert body["degraded_reasons"] == ["no_visible_models"]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_reports_topology_warming_degradation(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, _ = valid_session
+    for i in range(MIN_MODELS_FOR_UMAP - 1):
+        await _seed_model(gateway_pool, tenant_id, natural=f"warming-{i}")
+
+    resp = await client.get("/map/snapshot?lens=commitment", headers=_auth(token))
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert len(body["nodes"]) == MIN_MODELS_FOR_UMAP - 1
+    assert body["projection_fitted_at"] is None
+    assert set(body["degraded_reasons"]) == {
+        "projection_warming",
+        "topology_warming",
+    }
 
 
 @pytest.mark.asyncio
@@ -484,26 +588,32 @@ async def test_topology_events_respects_since_and_limit(
 ):
     token, _ = valid_session
     now = datetime.now(timezone.utc)
+    visible_member = await _seed_model(
+        gateway_pool, tenant_id, natural="Visible topology member",
+    )
     # 3 events: 2 inside the since window, 1 outside.
     nbh = await _seed_neighborhood(
-        gateway_pool, tenant_id, members=[],
+        gateway_pool, tenant_id, members=[visible_member],
         named_signature="hot zone",
     )
     inside_a = await _seed_topology_event(
         gateway_pool, tenant_id,
         kind="emergence", neighborhood_id=nbh,
+        members=[visible_member],
         occurred_at=now - timedelta(hours=2),
         magnitude=0.5,
     )
     inside_b = await _seed_topology_event(
         gateway_pool, tenant_id,
         kind="drift", neighborhood_id=nbh,
+        members=[visible_member],
         occurred_at=now - timedelta(hours=1),
         magnitude=0.7,
     )
     outside = await _seed_topology_event(
         gateway_pool, tenant_id,
         kind="merge", neighborhood_id=nbh,
+        members=[visible_member],
         occurred_at=now - timedelta(days=10),
         magnitude=0.2,
     )
@@ -531,6 +641,55 @@ async def test_topology_events_respects_since_and_limit(
     )
     assert resp_lim.status_code == 200, resp_lim.text
     assert len(resp_lim.json()["events"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_topology_events_filter_hidden_only_members(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, _ = valid_session
+    now = datetime.now(timezone.utc)
+    visible_member = await _seed_model(
+        gateway_pool, tenant_id, natural="Visible topology event member",
+    )
+    hidden_member = await _seed_model(
+        gateway_pool, tenant_id, natural="Hidden topology event member",
+    )
+    await _make_model_private(gateway_pool, tenant_id, hidden_member)
+    visible_nbh = await _seed_neighborhood(
+        gateway_pool, tenant_id, members=[visible_member],
+        named_signature="visible neighborhood",
+    )
+    hidden_nbh = await _seed_neighborhood(
+        gateway_pool, tenant_id, members=[hidden_member],
+        named_signature="hidden neighborhood",
+    )
+    visible_event = await _seed_topology_event(
+        gateway_pool, tenant_id,
+        kind="emergence", neighborhood_id=visible_nbh,
+        members=[visible_member],
+        occurred_at=now - timedelta(minutes=10),
+    )
+    hidden_event = await _seed_topology_event(
+        gateway_pool, tenant_id,
+        kind="emergence", neighborhood_id=hidden_nbh,
+        members=[hidden_member],
+        occurred_at=now - timedelta(minutes=5),
+    )
+
+    since = (now - timedelta(days=1)).isoformat()
+    resp = await client.get(
+        f"/map/topology_events?since={since}",
+        headers=_auth(token),
+    )
+
+    assert resp.status_code == 200, resp.text
+    ids = {e["id"] for e in resp.json()["events"]}
+    assert str(visible_event) in ids
+    assert str(hidden_event) not in ids
 
 
 # ---------------------------------------------------------------------
@@ -589,6 +748,65 @@ async def test_model_story_404_for_other_tenant_model(
     assert resp.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_model_story_404_for_same_tenant_private_model(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, _ = valid_session
+    hidden = await _seed_model(
+        gateway_pool, tenant_id, natural="Hidden model story",
+    )
+    await _make_model_private(gateway_pool, tenant_id, hidden)
+
+    resp = await client.get(f"/map/models/{hidden}", headers=_auth(token))
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_model_story_filters_same_tenant_private_neighbors(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id: UUID,
+    valid_session,
+):
+    token, _ = valid_session
+    target = await _seed_model(gateway_pool, tenant_id, natural="target visible")
+    visible_supporter = await _seed_model(
+        gateway_pool, tenant_id, natural="visible supporter"
+    )
+    hidden_supporter = await _seed_model(
+        gateway_pool, tenant_id, natural="hidden supporter"
+    )
+    await _make_model_private(gateway_pool, tenant_id, hidden_supporter)
+    await _seed_edge(
+        gateway_pool, tenant_id,
+        source=visible_supporter, target=target, kind="supports",
+    )
+    await _seed_edge(
+        gateway_pool, tenant_id,
+        source=hidden_supporter, target=target, kind="supports",
+    )
+
+    resp = await client.get(f"/map/models/{target}", headers=_auth(token))
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    supporting_ids = {edge["neighbor_id"] for edge in body["supporting"]}
+    assert str(visible_supporter) in supporting_ids
+    assert str(hidden_supporter) not in supporting_ids
+    activity_ids = {
+        entry["detail"].get("other_model_id")
+        for entry in body["recent_activity"]
+        if "other_model_id" in entry["detail"]
+    }
+    assert str(visible_supporter) in activity_ids
+    assert str(hidden_supporter) not in activity_ids
+
+
 # ---------------------------------------------------------------------
 # PCA projector
 # ---------------------------------------------------------------------
@@ -644,7 +862,17 @@ async def test_refresh_projection_invalidates_cache_and_refits(
     tenant_id: UUID,
     valid_session,
 ):
-    token, _ = valid_session
+    token, actor_id = valid_session
+    async with gateway_pool.acquire() as conn:
+        await grant_role(
+            actor_id,
+            "tenant",
+            None,
+            "leadership",
+            actor_id,
+            conn=conn,
+            tenant_id=tenant_id,
+        )
     for i in range(8):
         await _seed_model(
             gateway_pool, tenant_id, natural=f"r-{i}",
@@ -682,3 +910,41 @@ async def test_refresh_projection_invalidates_cache_and_refits(
     )
     assert cache_row2 is not None
     assert cache_row2["cached_at"] > fitted_first
+    audit_row = await gateway_pool.fetchrow(
+        """
+        SELECT actor_id, action, resource_type, resource_id, metadata
+        FROM operator_action_log
+        WHERE tenant_id = $1
+          AND action = 'map.projection.refresh'
+        """,
+        tenant_id,
+    )
+    assert audit_row is not None
+    assert audit_row["actor_id"] == actor_id
+    assert audit_row["resource_type"] == "map_projection"
+    assert audit_row["resource_id"] is None
+    metadata = audit_row["metadata"]
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    assert metadata["model_count"] == 8
+    assert metadata["n_neighbors"] >= 1
+    assert metadata["min_dist"] >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_refresh_projection_requires_admin_or_leadership(
+    client: httpx.AsyncClient,
+    valid_session,
+):
+    token, _ = valid_session
+
+    resp = await client.post(
+        "/map/refresh_projection",
+        headers=_auth(token),
+    )
+
+    assert resp.status_code == 403, resp.text
+    assert resp.json() == {
+        "error": "forbidden",
+        "reason": "projection_refresh_requires_admin_or_leadership",
+    }

@@ -58,7 +58,7 @@ async def _main() -> int:
                     INSERT INTO actors
                         (id, tenant_id, type, display_name, email, status, metadata, created_at)
                     VALUES ($1, $2, 'human_internal', 'Rachin',
-                            'rachin@fyralis.internal', 'active', $3::jsonb, now())
+                            'operator@fyralis.test', 'active', $3::jsonb, now())
                     ON CONFLICT (id) DO UPDATE SET
                         display_name = EXCLUDED.display_name,
                         email = EXCLUDED.email

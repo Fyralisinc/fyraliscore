@@ -19,6 +19,7 @@ import respx
 
 from services.ingest.integrations.discord.gateway.dispatch import DispatchDeps
 from services.ingest.integrations.discord.gateway.tests.conftest import FakeGateway
+from services.ingest.integrations.discord.gateway import worker as worker_mod
 from services.ingest.integrations.discord.gateway.worker import GatewayWorker
 
 
@@ -82,3 +83,37 @@ async def test_request_shutdown_during_connect_failure_loop_exits_clean(
                 run_task.cancel()
                 pytest.fail("worker stuck in backoff loop, did not honor shutdown")
             assert exit_code == 0
+
+
+async def test_worker_rereads_bot_token_provider_between_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+    dispatch_deps: DispatchDeps,
+) -> None:
+    created_tokens: list[str] = []
+    tokens = iter(["first-token", "second-token"])
+
+    class _FakeClient:
+        def __init__(self, *, bot_token: str, **_kwargs) -> None:
+            created_tokens.append(bot_token)
+
+        async def run(self) -> None:
+            if len(created_tokens) == 1:
+                raise RuntimeError("force reconnect")
+            return None
+
+        def request_shutdown(self) -> None:
+            return None
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr(worker_mod, "DiscordGatewayClient", _FakeClient)
+    monkeypatch.setattr(worker_mod, "_next_backoff", lambda _attempt: 0.0)
+
+    worker = GatewayWorker(
+        bot_token_provider=lambda: next(tokens),
+        deps=dispatch_deps,
+    )
+
+    assert await worker.run_forever() == 0
+    assert created_tokens == ["first-token", "second-token"]

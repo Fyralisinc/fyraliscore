@@ -255,8 +255,10 @@ class UMAPProjector:
             return None
 
         import numpy as np
-        import umap
-        from sklearn.manifold import trustworthiness
+        try:
+            from sklearn.manifold import trustworthiness
+        except Exception:  # pragma: no cover - optional metric dependency
+            trustworthiness = None  # type: ignore[assignment]
 
         ids = [str(r["id"]) for r in rows]
         embeddings = np.asarray(
@@ -271,23 +273,39 @@ class UMAPProjector:
         # doesn't crash. With MIN_MODELS_FOR_UMAP = 6 this is always
         # respected for the default 15 by capping to n-1.
         n_neighbors = min(DEFAULT_N_NEIGHBORS, len(rows) - 1)
-        # Deterministic RNG — same input → same projection. Critical
-        # for the "stable map" design promise.
-        reducer = umap.UMAP(
-            n_components=2,
-            n_neighbors=n_neighbors,
-            min_dist=DEFAULT_MIN_DIST,
-            metric="cosine",  # topo embeddings are L2-normalised; cosine matches the substrate's notion of similarity
-            random_state=42,
-        )
-        coords_2d = reducer.fit_transform(embeddings)
+        projection_backend = "umap"
+        try:
+            import umap
+
+            # Deterministic RNG — same input → same projection. Critical
+            # for the "stable map" design promise.
+            reducer = umap.UMAP(
+                n_components=2,
+                n_neighbors=n_neighbors,
+                min_dist=DEFAULT_MIN_DIST,
+                # Topo embeddings are L2-normalised; cosine matches
+                # the substrate's notion of similarity.
+                metric="cosine",
+                random_state=42,
+            )
+            coords_2d = reducer.fit_transform(embeddings)
+        except (ImportError, ModuleNotFoundError):
+            # Production should install `umap-learn`, but the map must
+            # degrade instead of 500ing when an optional projection
+            # dependency is absent in a dev/test or constrained runtime.
+            coords_2d = _pca_2d(embeddings)
+            projection_backend = "pca_fallback"
 
         # Trustworthiness — 0..1. Computed against the same data we
         # fitted on; uses k separate from UMAP's n_neighbors so it
         # measures preservation, not the algorithm's own definition.
         k = min(TRUSTWORTHINESS_K, len(rows) - 1)
         try:
-            trust = float(trustworthiness(embeddings, coords_2d, n_neighbors=k))
+            trust = (
+                float(trustworthiness(embeddings, coords_2d, n_neighbors=k))
+                if trustworthiness is not None
+                else 0.0
+            )
         except Exception:
             # Defensive: trustworthiness can fail on degenerate inputs.
             # Don't block caching the projection on a metric.
@@ -310,6 +328,7 @@ class UMAPProjector:
             "trustworthiness": trust,
             "n_neighbors": int(n_neighbors),
             "min_dist": DEFAULT_MIN_DIST,
+            "projection_backend": projection_backend,
         }
         await self._pool.execute(
             """
@@ -327,6 +346,21 @@ class UMAPProjector:
             json.dumps(payload),
         )
         return payload
+
+
+def _pca_2d(embeddings: Any) -> Any:
+    import numpy as np
+
+    centered = embeddings - embeddings.mean(axis=0, keepdims=True)
+    try:
+        _u, _s, vt = np.linalg.svd(centered, full_matrices=False)
+        components = vt[:2].T
+        coords = centered @ components
+    except Exception:
+        coords = centered[:, :2]
+    if coords.shape[1] < 2:
+        coords = np.pad(coords, ((0, 0), (0, 2 - coords.shape[1])))
+    return coords[:, :2]
 
 
 __all__ = [

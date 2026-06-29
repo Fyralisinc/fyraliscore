@@ -20,6 +20,10 @@ import httpx
 import structlog
 
 from lib.shared.errors import CompanyOSError
+from services.ingest.integrations.secret_cache import (
+    SecretValueCache,
+    coerce_secret_text,
+)
 
 
 log = structlog.get_logger("integrations.slack.client")
@@ -52,6 +56,20 @@ class SlackApiError(CompanyOSError):
     retry budget. The structured context carries `endpoint`,
     `slack_error` (when present), and `attempts`."""
     default_code = "slack_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        recoverable: bool | None = None,
+        **context: Any,
+    ) -> None:
+        super().__init__(message, **context)
+        if code is not None:
+            self._code = code
+        if recoverable is not None:
+            self._recoverable = recoverable
 
 
 class SlackClient:
@@ -88,7 +106,8 @@ class SlackClient:
         self._wall_budget_s = (
             wall_budget_s if wall_budget_s is not None else _default_wall_budget_s()
         )
-        self._bot_token: str | None = None  # lazy
+        self._bot_token_cache = SecretValueCache()
+        self._bot_token_lock = asyncio.Lock()
         self._client: httpx.AsyncClient | None = http_client
 
     async def _resolve_token(self) -> str:
@@ -104,34 +123,50 @@ class SlackClient:
         return await self._resolve_bot_token()
 
     async def _resolve_bot_token(self) -> str:
-        if self._bot_token is not None:
-            return self._bot_token
-        row = await self._pool.fetchrow(
-            """
-            SELECT id::text AS id
-              FROM encrypted_secrets
-             WHERE tenant_id = $1
-               AND label = $2
-             ORDER BY created_at DESC
-             LIMIT 1
-            """,
-            self._tenant_id,
-            f"slack_bot_token:{self._team_id}",
-        )
-        if row is None:
-            raise SlackApiError(
+        return await self._resolve_labeled_secret(
+            label=f"slack_bot_token:{self._team_id}",
+            cache=self._bot_token_cache,
+            lock=self._bot_token_lock,
+            missing_error=lambda: SlackApiError(
                 "bot token not found for installation",
                 endpoint=None,
                 tenant=str(self._tenant_id),
+            ),
+        )
+
+    async def _resolve_labeled_secret(
+        self,
+        *,
+        label: str,
+        cache: SecretValueCache,
+        lock: asyncio.Lock,
+        missing_error: Any,
+    ) -> str:
+        value = cache.get_if_fresh()
+        if value is not None:
+            return value
+        async with lock:
+            value = cache.get_if_fresh()
+            if value is not None:
+                return value
+            row = await self._pool.fetchrow(
+                """
+                SELECT id::text AS id
+                  FROM encrypted_secrets
+                 WHERE tenant_id = $1
+                   AND label = $2
+                 ORDER BY created_at DESC
+                 LIMIT 1
+                """,
+                self._tenant_id,
+                label,
             )
-        plaintext = await self._secret_store.get(
-            row["id"], tenant_id=self._tenant_id,
-        )
-        self._bot_token = (
-            plaintext.decode("utf-8") if isinstance(plaintext, (bytes, bytearray))
-            else str(plaintext)
-        )
-        return self._bot_token
+            if row is None:
+                raise missing_error()
+            plaintext = await self._secret_store.get(
+                row["id"], tenant_id=self._tenant_id,
+            )
+            return cache.set(coerce_secret_text(plaintext))
 
     def _httpx(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -189,6 +224,7 @@ class SlackClient:
                         "transport error and wall budget exhausted",
                         endpoint=endpoint,
                         attempts=attempt,
+                        error_type=type(exc).__name__,
                     ) from exc
                 await asyncio.sleep(sleep_s)
                 continue
@@ -202,6 +238,7 @@ class SlackClient:
                 if attempt >= self._max_attempts or retry_after >= remaining:
                     raise SlackApiError(
                         "Slack rate limit (429) exhausted retry budget",
+                        code="slack_api_rate_limited",
                         endpoint=endpoint,
                         retry_after=retry_after,
                         attempts=attempt,
@@ -209,7 +246,26 @@ class SlackClient:
                 await asyncio.sleep(retry_after)
                 continue
 
-            r.raise_for_status()
+            if r.status_code >= 500:
+                raise SlackApiError(
+                    f"Slack returned HTTP {r.status_code}",
+                    endpoint=endpoint,
+                    http_status=r.status_code,
+                    attempts=attempt,
+                )
+            if r.status_code >= 400:
+                code = (
+                    "slack_api_unauthorized"
+                    if r.status_code in (401, 403)
+                    else "slack_api_error"
+                )
+                raise SlackApiError(
+                    f"Slack returned HTTP {r.status_code}",
+                    code=code,
+                    endpoint=endpoint,
+                    http_status=r.status_code,
+                    attempts=attempt,
+                )
             data = r.json()
             if data.get("ok") is True:
                 return data
@@ -363,39 +419,22 @@ class SlackUserClient(SlackClient):
     def __init__(self, *, user_id: str, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._user_id = user_id
-        self._user_token: str | None = None  # lazy; preset in spammer mode
+        self._user_token_cache = SecretValueCache()
+        self._user_token_lock = asyncio.Lock()
 
     async def _resolve_token(self) -> str:
-        if self._user_token is not None:
-            return self._user_token
-        row = await self._pool.fetchrow(
-            """
-            SELECT id::text AS id
-              FROM encrypted_secrets
-             WHERE tenant_id = $1
-               AND label = $2
-             ORDER BY created_at DESC
-             LIMIT 1
-            """,
-            self._tenant_id,
-            f"slack_user_token:{self._team_id}:{self._user_id}",
-        )
-        if row is None:
-            raise SlackApiError(
+        return await self._resolve_labeled_secret(
+            label=f"slack_user_token:{self._team_id}:{self._user_id}",
+            cache=self._user_token_cache,
+            lock=self._user_token_lock,
+            missing_error=lambda: SlackApiError(
                 "user token not found for DM install",
                 endpoint=None,
                 tenant=str(self._tenant_id),
                 team_id=self._team_id,
                 user_id=self._user_id,
-            )
-        plaintext = await self._secret_store.get(
-            row["id"], tenant_id=self._tenant_id,
+            ),
         )
-        self._user_token = (
-            plaintext.decode("utf-8") if isinstance(plaintext, (bytes, bytearray))
-            else str(plaintext)
-        )
-        return self._user_token
 
     async def conversations_list(  # type: ignore[override]
         self, *, types: str = "im,mpim",

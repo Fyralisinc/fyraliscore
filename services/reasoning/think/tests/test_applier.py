@@ -5,6 +5,7 @@ lock, cascade, anomalies) live in test_end_to_end.py.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -2709,6 +2710,53 @@ async def test_apply_idempotency_second_apply_raises(fresh_db, tenant, tenant_cl
         async with conn.transaction():
             with pytest.raises(AlreadyAppliedError):
                 await apply_diff(diff, conn, "T1", oid, models_repo=repo)
+
+
+async def test_apply_idempotency_concurrent_same_trigger_is_atomic(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+    monkeypatch,
+):
+    """Concurrent same-trigger applies produce one winner, not a PK failure."""
+    from services.reasoning.think import region_locks
+
+    async def noop_acquire_region_lock(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        region_locks,
+        "acquire_region_lock",
+        noop_acquire_region_lock,
+    )
+
+    diff = ValidatedDiff(trigger_ref=uuid7(), tenant_id=tenant)
+
+    async def run_once() -> str:
+        async with fresh_db.acquire() as conn:
+            try:
+                async with conn.transaction():
+                    await apply_diff(diff, conn, "T1")
+                return "applied"
+            except AlreadyAppliedError:
+                return "already_applied"
+
+    outcomes = await asyncio.gather(*(run_once() for _ in range(20)))
+
+    async with fresh_db.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT COUNT(*)::int AS n, max(outcome) AS outcome
+            FROM applied_triggers
+            WHERE trigger_id = $1
+            """,
+            diff.trigger_ref,
+        )
+
+    assert outcomes.count("applied") == 1
+    assert outcomes.count("already_applied") == 19
+    assert row["n"] == 1
+    assert row["outcome"] == "success"
 
 
 async def test_apply_partial_failure_rolls_back_all_ops(fresh_db, tenant, tenant_cleanup):

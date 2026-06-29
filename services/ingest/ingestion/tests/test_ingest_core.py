@@ -157,9 +157,12 @@ def test_candidate_phrases_normalizes_in_dedup():
 
 
 def test_dedup_lock_key_is_stable_and_scoped():
-    key = _dedup_lock_key("slack:message", "T:C:1.0")
-    assert key == _dedup_lock_key("slack:message", "T:C:1.0")
-    assert key != _dedup_lock_key("github:issue", "T:C:1.0")
+    tenant = uuid7()
+    other_tenant = uuid7()
+    key = _dedup_lock_key(tenant, "slack:message", "T:C:1.0")
+    assert key == _dedup_lock_key(tenant, "slack:message", "T:C:1.0")
+    assert key != _dedup_lock_key(tenant, "github:issue", "T:C:1.0")
+    assert key != _dedup_lock_key(other_tenant, "slack:message", "T:C:1.0")
     assert 0 <= key <= 0x7FFFFFFFFFFFFFFF
 
 
@@ -405,6 +408,44 @@ async def test_dedup_same_slack_message_twice(
         tenant_id,
     )
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_same_external_id_is_not_deduped_across_tenants(
+    gateway_pool, tenant_id, _DeterministicEmbedder
+):
+    other_tenant = uuid7()
+    await gateway_pool.execute(
+        "INSERT INTO tenants (id, name) VALUES ($1, $2)",
+        other_tenant,
+        f"test-tenant-{other_tenant.hex[:8]}",
+    )
+    ts = f"{time.time():.6f}"
+
+    first = await _ingest_slack(
+        gateway_pool,
+        tenant_id,
+        ts=ts,
+        embedder=_DeterministicEmbedder(),
+    )
+    second = await _ingest_slack(
+        gateway_pool,
+        other_tenant,
+        ts=ts,
+        embedder=_DeterministicEmbedder(),
+    )
+
+    assert first.observation.external_id == second.observation.external_id
+    assert first.observation.id != second.observation.id
+    assert second.deduped is False
+    count = await gateway_pool.fetchval(
+        """
+        SELECT count(*) FROM observations
+        WHERE source_channel = 'slack:message' AND external_id = $1
+        """,
+        first.observation.external_id,
+    )
+    assert count == 2
 
 
 @pytest.mark.asyncio

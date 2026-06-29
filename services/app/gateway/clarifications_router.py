@@ -16,6 +16,7 @@ from services.app.gateway.auth import AuthContext
 from services.domain.clarifications import (
     answer_clarification_request,
     dismiss_clarification_request,
+    get_clarification_request,
     list_clarification_requests,
 )
 from services.domain.acts import commitments as commitments_svc
@@ -23,6 +24,55 @@ from services.domain.resources import repo as resources_repo
 from services.domain.substrate_candidates import get_substrate_candidate
 from services.domain.substrate_promotion import apply_candidate_resolution_answer
 from services.domain.triggers import enqueue_trigger
+from services.platform.access_control.audit import record_override_if_needed
+from services.platform.access_control.checks import (
+    AccessDecision,
+    EntityKind,
+    can_read_by_id,
+)
+from services.platform.access_control.roles import has_role
+from services.platform.product_action_audit import record_product_action
+
+
+_OBJECT_ACCESS_KINDS: dict[str, EntityKind] = {
+    "observation": "observation",
+    "model": "model",
+    "commitment": "commitment",
+    "goal": "goal",
+    "decision": "decision",
+    "resource": "resource",
+    "customer": "resource",
+}
+
+_SAFE_ANSWER_ACTIONS = {
+    "accept_candidate",
+    "create_actor",
+    "create_new_entity",
+    "keep_provisional",
+    "link_existing",
+    "merge",
+    "not_same_entity",
+    "promote_actor",
+    "promote_commitment",
+    "promote_pattern_candidate",
+    "promote_resource",
+    "reject",
+    "reject_candidate",
+}
+
+_SAFE_ENTITY_TYPES = {
+    "actor",
+    "commitment",
+    "customer",
+    "organization",
+    "person",
+    "project",
+    "resource",
+    "service",
+    "system",
+    "vendor",
+    "workstream",
+}
 
 
 class ClarificationAnswerBody(BaseModel):
@@ -77,15 +127,20 @@ async def list_clarifications_endpoint(
                 status=status_filter,
                 limit=bounded_limit,
             )
-        except ValidationError as exc:
+        except ValidationError:
             return JSONResponse(
-                {"error": "invalid_status", "detail": str(exc)},
+                {"error": "invalid_status"},
                 status_code=400,
             )
+        visible_rows = []
+        for row in rows:
+            decision = await _clarification_access_decision(conn, auth, row)
+            if decision.allowed:
+                visible_rows.append(row)
     return JSONResponse(
         {
-            "items": [row.to_dict() for row in rows],
-            "count": len(rows),
+            "items": [row.to_dict() for row in visible_rows],
+            "count": len(visible_rows),
         },
         status_code=200,
     )
@@ -108,6 +163,18 @@ async def answer_clarification_endpoint(
     async with deps.pool.acquire() as conn:
         try:
             async with _optional_transaction(conn):
+                existing = await get_clarification_request(
+                    conn,
+                    tenant_id=auth.tenant_id,
+                    request_id=cid,
+                )
+                if existing is None:
+                    row = None
+                    return JSONResponse({"error": "not_found"}, status_code=404)
+                decision = await _clarification_access_decision(conn, auth, existing)
+                if not decision.allowed:
+                    row = None
+                    return _forbidden(decision.reason)
                 row = await answer_clarification_request(
                     conn,
                     tenant_id=auth.tenant_id,
@@ -123,9 +190,18 @@ async def answer_clarification_endpoint(
                         tenant_id=auth.tenant_id,
                         answered_by=auth.actor_id,
                     )
-        except ValidationError as exc:
+                    await _record_clarification_action(
+                        conn,
+                        request=request,
+                        auth=auth,
+                        action="clarification.answer",
+                        resource_id=cid,
+                        row=row,
+                        metadata=_clarification_answer_metadata(row, body.answer),
+                    )
+        except ValidationError:
             return JSONResponse(
-                {"error": "invalid_answer", "detail": str(exc)},
+                {"error": "invalid_answer"},
                 status_code=400,
             )
     if row is None:
@@ -148,13 +224,34 @@ async def dismiss_clarification_endpoint(
 
     deps = _deps(request)
     async with deps.pool.acquire() as conn:
-        row = await dismiss_clarification_request(
-            conn,
-            tenant_id=auth.tenant_id,
-            request_id=cid,
-            reason=body.reason,
-            answered_by=auth.actor_id,
-        )
+        async with _optional_transaction(conn):
+            existing = await get_clarification_request(
+                conn,
+                tenant_id=auth.tenant_id,
+                request_id=cid,
+            )
+            if existing is None:
+                return JSONResponse({"error": "not_found"}, status_code=404)
+            decision = await _clarification_access_decision(conn, auth, existing)
+            if not decision.allowed:
+                return _forbidden(decision.reason)
+            row = await dismiss_clarification_request(
+                conn,
+                tenant_id=auth.tenant_id,
+                request_id=cid,
+                reason=body.reason,
+                answered_by=auth.actor_id,
+            )
+            if row is not None:
+                await _record_clarification_action(
+                    conn,
+                    request=request,
+                    auth=auth,
+                    action="clarification.dismiss",
+                    resource_id=cid,
+                    row=row,
+                    metadata={"reason_chars": _text_len(body.reason)},
+                )
     if row is None:
         return JSONResponse({"error": "not_found"}, status_code=404)
     return JSONResponse(row.to_dict(), status_code=200)
@@ -176,6 +273,242 @@ def _optional_transaction(conn: Any) -> Any:
     if transaction is None:
         return contextlib.AsyncExitStack()
     return transaction()
+
+
+async def _record_clarification_action(
+    conn: Any,
+    *,
+    request: Request,
+    auth: AuthContext,
+    action: str,
+    resource_id: UUID,
+    row: Any,
+    metadata: dict[str, Any],
+) -> None:
+    out = _clarification_base_metadata(request, row)
+    for key, value in metadata.items():
+        if value is not None:
+            out[key] = value
+    await record_product_action(
+        conn,
+        tenant_id=auth.tenant_id,
+        actor_id=auth.actor_id,
+        action=action,
+        resource_type="clarification_request",
+        resource_id=resource_id,
+        metadata=out,
+    )
+
+
+def _clarification_base_metadata(request: Request, row: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    request_id = getattr(request.state, "request_id", None)
+    if request_id:
+        metadata["request_id"] = str(request_id)
+
+    kind = _safe_token(getattr(row, "kind", None))
+    if kind:
+        metadata["clarification_kind"] = kind
+    object_kind = _safe_token(getattr(row, "object_kind", None))
+    if object_kind:
+        metadata["object_kind"] = object_kind
+
+    metadata["has_source_observation"] = _coerce_uuid(
+        getattr(row, "source_observation_id", None)
+    ) is not None
+    metadata["has_model"] = _coerce_uuid(getattr(row, "model_id", None)) is not None
+    metadata["has_object"] = _coerce_uuid(getattr(row, "object_id", None)) is not None
+    return metadata
+
+
+def _clarification_answer_metadata(
+    row: Any,
+    answer: dict[str, Any],
+) -> dict[str, Any]:
+    normalized = _normalized_answer(answer)
+    metadata: dict[str, Any] = {
+        "answer_keys": _safe_answer_keys(normalized),
+    }
+    action = _safe_token(normalized.get("action"), allowed=_SAFE_ANSWER_ACTIONS)
+    if action:
+        metadata["answer_action"] = action
+    entity_type = _safe_token(
+        normalized.get("entity_type")
+        or normalized.get("canonical_type")
+        or normalized.get("type")
+        or normalized.get("kind"),
+        allowed=_SAFE_ENTITY_TYPES,
+    )
+    if entity_type:
+        metadata["entity_type"] = entity_type
+    metadata["answer_value_is_nested"] = isinstance(answer.get("value"), dict)
+    metadata["created_side_effects"] = getattr(row, "status", None) == "answered"
+    return metadata
+
+
+def _safe_answer_keys(answer: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    saw_other = False
+    for raw_key in sorted(answer.keys(), key=str)[:16]:
+        safe = _safe_token(raw_key)
+        if safe and safe != "other":
+            keys.append(safe)
+        else:
+            saw_other = True
+    if saw_other:
+        keys.append("other")
+    return keys
+
+
+def _safe_token(value: Any, *, allowed: set[str] | None = None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().casefold().replace("-", "_")
+    if not text:
+        return None
+    if allowed is not None:
+        return text if text in allowed else "other"
+    safe_chars = set("abcdefghijklmnopqrstuvwxyz0123456789_.")
+    if len(text) <= 80 and all(char in safe_chars for char in text):
+        return text
+    return "other"
+
+
+def _text_len(value: Any) -> int:
+    return len(value.strip()) if isinstance(value, str) else 0
+
+
+async def _clarification_access_decision(
+    conn: Any,
+    auth: AuthContext,
+    row: Any,
+) -> AccessDecision:
+    decisions: list[AccessDecision] = []
+    source_observation_id = _coerce_uuid(row.source_observation_id)
+    if source_observation_id is not None:
+        decisions.append(
+            await _entity_access_decision(
+                conn,
+                auth,
+                "observation",
+                source_observation_id,
+            )
+        )
+
+    model_id = _coerce_uuid(row.model_id)
+    if model_id is not None:
+        decisions.append(
+            await _entity_access_decision(conn, auth, "model", model_id)
+        )
+
+    object_kind = str(row.object_kind or "").strip().casefold()
+    object_id = _coerce_uuid(row.object_id)
+    if object_id is not None and object_kind == "substrate_candidate":
+        decisions.extend(
+            await _substrate_candidate_access_decisions(conn, auth, object_id)
+        )
+    elif object_id is not None:
+        entity_kind = _OBJECT_ACCESS_KINDS.get(object_kind)
+        if entity_kind is not None:
+            decisions.append(
+                await _entity_access_decision(conn, auth, entity_kind, object_id)
+            )
+
+    if not decisions:
+        return await _targetless_clarification_decision(conn, auth, row)
+    for decision in decisions:
+        if not decision.allowed:
+            return decision
+    return AccessDecision(True, "clarification_anchors_visible")
+
+
+async def _entity_access_decision(
+    conn: Any,
+    auth: AuthContext,
+    entity_kind: EntityKind,
+    entity_id: UUID,
+) -> AccessDecision:
+    decision = await can_read_by_id(
+        auth.actor_id,
+        entity_kind,
+        entity_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
+    await record_override_if_needed(
+        decision,
+        actor_id=auth.actor_id,
+        entity_type=entity_kind,
+        entity_id=entity_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
+    return decision
+
+
+async def _substrate_candidate_access_decisions(
+    conn: Any,
+    auth: AuthContext,
+    candidate_id: UUID,
+) -> list[AccessDecision]:
+    candidate = await get_substrate_candidate(
+        conn,
+        tenant_id=auth.tenant_id,
+        candidate_id=candidate_id,
+    )
+    if candidate is None:
+        return [AccessDecision(False, "clarification_object_not_found")]
+
+    decisions: list[AccessDecision] = []
+    for observation_id in candidate.evidence_observation_ids:
+        decisions.append(
+            await _entity_access_decision(conn, auth, "observation", observation_id)
+        )
+    for model_id in candidate.evidence_model_ids:
+        decisions.append(await _entity_access_decision(conn, auth, "model", model_id))
+    return decisions
+
+
+async def _targetless_clarification_decision(
+    conn: Any,
+    auth: AuthContext,
+    row: Any,
+) -> AccessDecision:
+    if await has_role(auth.actor_id, "admin", conn=conn, tenant_id=auth.tenant_id):
+        decision = AccessDecision(True, "admin_override", override_applied=True)
+        await record_override_if_needed(
+            decision,
+            actor_id=auth.actor_id,
+            entity_type="clarification_request",
+            entity_id=_coerce_uuid(row.id),
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+        return decision
+    if await has_role(
+        auth.actor_id,
+        "leadership",
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    ):
+        decision = AccessDecision(True, "leadership_override", override_applied=True)
+        await record_override_if_needed(
+            decision,
+            actor_id=auth.actor_id,
+            entity_type="clarification_request",
+            entity_id=_coerce_uuid(row.id),
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+        return decision
+    return AccessDecision(False, "clarification_without_visible_anchor")
+
+
+def _forbidden(reason: str) -> JSONResponse:
+    return JSONResponse(
+        {"error": "forbidden", "reason": reason},
+        status_code=status.HTTP_403_FORBIDDEN,
+    )
 
 
 async def _apply_clarification_answer_side_effects(
@@ -314,6 +647,8 @@ def _first_candidate_confidence(payload: dict[str, Any]) -> float | None:
     if not candidates or not isinstance(candidates[0], dict):
         return None
     raw = candidates[0].get("confidence")
+    if raw is None:
+        return None
     try:
         return float(raw)
     except (TypeError, ValueError):

@@ -72,6 +72,11 @@ CREATE INDEX IF NOT EXISTS post_commit_pending_idx
   ON pending_post_commit_actions (scheduled_at)
   WHERE processed_at IS NULL AND dead_lettered_at IS NULL;
 
+-- Tenant-scoped worker poll query.
+CREATE INDEX IF NOT EXISTS post_commit_pending_tenant_idx
+  ON pending_post_commit_actions (tenant_id, scheduled_at)
+  WHERE processed_at IS NULL AND dead_lettered_at IS NULL;
+
 -- Secondary: inspect every action for a specific trigger.
 CREATE INDEX IF NOT EXISTS post_commit_trigger_idx
   ON pending_post_commit_actions (trigger_id);

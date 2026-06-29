@@ -27,6 +27,9 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
+from services.app.webhooks.provider_installations import (
+    upsert_provider_installation_for_tenant,
+)
 from services.ingest.integrations.quickbooks import metrics
 from services.ingest.integrations.quickbooks.client import DEFAULT_ENTITIES
 
@@ -125,17 +128,12 @@ async def register_webhook_installation(
     """Register / refresh the provider_installations row the webhook edge uses to
     resolve the tenant + load the verifier token. installation_id is the realmId
     (matches tenant_resolver._extract_quickbooks)."""
-    await pool.execute(
-        """
-        INSERT INTO provider_installations
-            (id, tenant_id, provider, installation_id, secret_ref, enabled)
-        VALUES ($1, $2, 'quickbooks', $3, $4, TRUE)
-        ON CONFLICT (provider, installation_id) DO UPDATE
-            SET tenant_id = EXCLUDED.tenant_id,
-                secret_ref = EXCLUDED.secret_ref,
-                enabled = TRUE
-        """,
-        uuid7(), tenant_id, realm_id, webhook_secret_ref,
+    await upsert_provider_installation_for_tenant(
+        pool,
+        provider="quickbooks",
+        tenant_id=tenant_id,
+        installation_id=realm_id,
+        secret_ref=webhook_secret_ref,
     )
     log.info("quickbooks_webhook_installation_registered", realm_id=realm_id)
 

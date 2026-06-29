@@ -157,6 +157,9 @@ class MapSnapshotResponse(_Strict):
     edges: list[MapEdge]
     neighborhoods: list[MapNeighborhood]
     change_summary: MapSnapshotChangeSummary
+    # Machine-readable reasons the map is intentionally partial. Empty means
+    # the topology/projection surface is fully populated for the visible data.
+    degraded_reasons: list[str] = Field(default_factory=list)
     # When the UMAP projection was last fitted. Null when the tenant
     # has too few models with topo_embedding (renderer falls back to
     # force-directed in that case).

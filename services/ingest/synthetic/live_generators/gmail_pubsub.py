@@ -29,10 +29,10 @@ Usage (high-level):
 
     async with GmailPubSubGenerator(
         app=fastapi_app, pool=pool,
-        mailboxes={"alice@x.com": mock_gmail_alice, ...},
+        mailboxes={"alice@x.example": mock_gmail_alice, ...},
     ) as gen:
         result = await gen.simulate_push(
-            mailbox_email="alice@x.com", new_messages=3,
+            mailbox_email="alice@x.example", new_messages=3,
         )
         assert result.http_status == 200
 """
@@ -259,7 +259,7 @@ class GmailPubSubGenerator:
                             ) VALUES ($1, $2, $3, $4, 'gmail.metadata')
                             """,
                             install_id, tenant_id,
-                            email.split("@", 1)[1] if "@" in email else "x.com",
+                            email.split("@", 1)[1] if "@" in email else "x.example",
                             "sa@y1-test.iam.gserviceaccount.com",
                         )
                         await tctx.execute(

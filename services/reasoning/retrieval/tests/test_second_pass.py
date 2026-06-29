@@ -166,7 +166,7 @@ async def test_second_pass_dependency_evidence_survives_context_assembly(
             UPDATE models
             SET status = 'archived',
                 archived_at = now(),
-                archive_reason = 'second-pass test narrows dependency evidence'
+                archive_reason = 'manual'
             WHERE id = ANY($1::uuid[])
             """,
             existing_dependency_model_ids,

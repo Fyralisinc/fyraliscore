@@ -13,6 +13,7 @@ be removed; the test bodies will keep working unchanged.
 from __future__ import annotations
 
 from typing import AsyncGenerator
+from uuid import UUID
 
 import asyncpg
 import httpx
@@ -23,14 +24,43 @@ from services.product.decision_deltas.router import build_router
 from services.app.gateway.main import build_app
 
 from .conftest import (
+    grant_actor_role,
     seed_commitment_for_target,
     seed_decision_delta,
     seed_observation_minimal,
     seed_recommendation_for_promotion,
+    seed_resource_for_target,
 )
 
 
 pytestmark = pytest.mark.integration
+
+
+async def _latest_product_action(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+    action: str,
+    resource_id: UUID,
+) -> asyncpg.Record | None:
+    return await pool.fetchrow(
+        """
+        SELECT action, resource_type, resource_id, metadata
+        FROM product_action_audit_log
+        WHERE tenant_id = $1
+          AND actor_id = $2
+          AND action = $3
+          AND resource_type = 'decision_delta'
+          AND resource_id = $4
+        ORDER BY occurred_at DESC
+        LIMIT 1
+        """,
+        tenant_id,
+        actor_id,
+        action,
+        resource_id,
+    )
 
 
 @pytest_asyncio.fixture
@@ -135,6 +165,188 @@ async def test_list_isolates_by_tenant(
 
 
 # =====================================================================
+# Target access
+# =====================================================================
+
+
+@pytest.mark.asyncio
+async def test_list_filters_invisible_target_delta(
+    dd_client: httpx.AsyncClient,
+    valid_session,
+    gateway_pool: asyncpg.Pool,
+    tenant_id,
+):
+    token, _ = valid_session
+    visible = await seed_decision_delta(
+        gateway_pool,
+        tenant=tenant_id,
+        status="proposed",
+        main_assertion="Targetless delta remains visible.",
+    )
+    resource_id = await seed_resource_for_target(gateway_pool, tenant=tenant_id)
+    hidden = await seed_decision_delta(
+        gateway_pool,
+        tenant=tenant_id,
+        status="proposed",
+        target_node_kind="resource",
+        target_node_id=resource_id,
+        main_assertion="Restricted financial resource delta.",
+    )
+
+    resp = await dd_client.get(
+        "/v1/decision_deltas/?status=proposed",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    ids = {item["id"] for item in resp.json()["items"]}
+    assert str(visible) in ids
+    assert str(hidden) not in ids
+
+
+@pytest.mark.asyncio
+async def test_get_target_delta_forbidden_without_access(
+    dd_client: httpx.AsyncClient,
+    valid_session,
+    gateway_pool: asyncpg.Pool,
+    tenant_id,
+):
+    token, _ = valid_session
+    resource_id = await seed_resource_for_target(gateway_pool, tenant=tenant_id)
+    delta_id = await seed_decision_delta(
+        gateway_pool,
+        tenant=tenant_id,
+        target_node_kind="resource",
+        target_node_id=resource_id,
+    )
+
+    resp = await dd_client.get(
+        f"/v1/decision_deltas/{delta_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == {
+        "error": "forbidden",
+        "reason": "resource_out_of_scope:financial",
+    }
+
+
+@pytest.mark.asyncio
+async def test_accept_target_delta_forbidden_without_access(
+    dd_client: httpx.AsyncClient,
+    valid_session,
+    gateway_pool: asyncpg.Pool,
+    tenant_id,
+):
+    token, _ = valid_session
+    resource_id = await seed_resource_for_target(gateway_pool, tenant=tenant_id)
+    delta_id = await seed_decision_delta(
+        gateway_pool,
+        tenant=tenant_id,
+        status="proposed",
+        target_node_kind="resource",
+        target_node_id=resource_id,
+    )
+
+    resp = await dd_client.post(
+        f"/v1/decision_deltas/{delta_id}/accept",
+        headers={"Authorization": f"Bearer {token}"},
+        json={},
+    )
+
+    assert resp.status_code == 403
+    stored_status = await gateway_pool.fetchval(
+        "SELECT status FROM decision_deltas WHERE id = $1",
+        delta_id,
+    )
+    assert stored_status == "proposed"
+
+
+@pytest.mark.asyncio
+async def test_get_target_delta_allowed_with_resource_viewer_role(
+    dd_client: httpx.AsyncClient,
+    valid_session,
+    gateway_pool: asyncpg.Pool,
+    tenant_id,
+):
+    token, actor_id = valid_session
+    resource_id = await seed_resource_for_target(gateway_pool, tenant=tenant_id)
+    delta_id = await seed_decision_delta(
+        gateway_pool,
+        tenant=tenant_id,
+        target_node_kind="resource",
+        target_node_id=resource_id,
+    )
+    await grant_actor_role(
+        gateway_pool,
+        tenant=tenant_id,
+        actor_id=actor_id,
+        entity_type="resource",
+        entity_id=resource_id,
+        role="viewer",
+    )
+
+    resp = await dd_client.get(
+        f"/v1/decision_deltas/{delta_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["target_node_id"] == str(resource_id)
+
+
+@pytest.mark.asyncio
+async def test_get_target_delta_admin_override_is_audited(
+    dd_client: httpx.AsyncClient,
+    valid_session,
+    gateway_pool: asyncpg.Pool,
+    tenant_id,
+):
+    token, actor_id = valid_session
+    resource_id = await seed_resource_for_target(gateway_pool, tenant=tenant_id)
+    delta_id = await seed_decision_delta(
+        gateway_pool,
+        tenant=tenant_id,
+        target_node_kind="resource",
+        target_node_id=resource_id,
+    )
+    await grant_actor_role(
+        gateway_pool,
+        tenant=tenant_id,
+        actor_id=actor_id,
+        entity_type="tenant",
+        entity_id=None,
+        role="admin",
+    )
+
+    resp = await dd_client.get(
+        f"/v1/decision_deltas/{delta_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200, resp.text
+    row = await gateway_pool.fetchrow(
+        """
+        SELECT override_kind, reason, entity_type, entity_id
+        FROM access_override_log
+        WHERE tenant_id = $1
+          AND actor_id = $2
+          AND entity_type = 'resource'
+          AND entity_id = $3
+        ORDER BY occurred_at DESC
+        LIMIT 1
+        """,
+        tenant_id,
+        actor_id,
+        resource_id,
+    )
+    assert row is not None
+    assert row["override_kind"] == "admin"
+    assert row["reason"] == "admin_override"
+
+
+# =====================================================================
 # GET /v1/decision_deltas/{delta_id}
 # =====================================================================
 
@@ -195,7 +407,7 @@ async def test_accept_marks_accepted(
     gateway_pool: asyncpg.Pool,
     tenant_id,
 ):
-    token, _ = valid_session
+    token, actor_id = valid_session
     delta_id = await seed_decision_delta(
         gateway_pool, tenant=tenant_id, status="proposed",
     )
@@ -209,6 +421,18 @@ async def test_accept_marks_accepted(
     assert body["delta"]["status"] == "accepted"
     assert body["delta"]["accepted_by"] is not None
     assert body["triggered"]["target_event_id"] is not None
+    row = await _latest_product_action(
+        gateway_pool,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        action="decision_delta.accept",
+        resource_id=delta_id,
+    )
+    assert row is not None
+    assert row["resource_type"] == "decision_delta"
+    assert row["metadata"]["status_before"] == "proposed"
+    assert row["metadata"]["status_after"] == "accepted"
+    assert row["metadata"]["target_event_id"] == body["triggered"]["target_event_id"]
 
 
 @pytest.mark.asyncio
@@ -257,7 +481,7 @@ async def test_delegate_transitions_and_records_owner(
     tenant_id,
     seeded_actor,
 ):
-    token, _ = valid_session
+    token, actor_id = valid_session
     delta_id = await seed_decision_delta(
         gateway_pool, tenant=tenant_id, status="proposed",
     )
@@ -273,6 +497,17 @@ async def test_delegate_transitions_and_records_owner(
     body = resp.json()
     assert body["delta"]["status"] == "delegated"
     assert body["delta"]["impact"]["delegation"]["owner_id"] == str(seeded_actor)
+    row = await _latest_product_action(
+        gateway_pool,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        action="decision_delta.delegate",
+        resource_id=delta_id,
+    )
+    assert row is not None
+    assert row["metadata"]["delegate_to_actor_id"] == str(seeded_actor)
+    assert row["metadata"]["note_chars"] == len("Please handle by EOW.")
+    assert "Please handle" not in str(row["metadata"])
 
 
 # =====================================================================
@@ -306,7 +541,7 @@ async def test_contest_records_reason(
     gateway_pool: asyncpg.Pool,
     tenant_id,
 ):
-    token, _ = valid_session
+    token, actor_id = valid_session
     delta_id = await seed_decision_delta(
         gateway_pool, tenant=tenant_id, status="proposed",
     )
@@ -321,6 +556,16 @@ async def test_contest_records_reason(
     assert body["delta"]["impact"]["contest"]["reason"] == (
         "Disagree with evidence weighting."
     )
+    row = await _latest_product_action(
+        gateway_pool,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        action="decision_delta.contest",
+        resource_id=delta_id,
+    )
+    assert row is not None
+    assert row["metadata"]["reason_chars"] == len("Disagree with evidence weighting.")
+    assert "Disagree with evidence" not in str(row["metadata"])
 
 
 # =====================================================================
@@ -335,7 +580,7 @@ async def test_add_context_appends_note(
     gateway_pool: asyncpg.Pool,
     tenant_id,
 ):
-    token, _ = valid_session
+    token, actor_id = valid_session
     delta_id = await seed_decision_delta(
         gateway_pool, tenant=tenant_id, status="proposed",
     )
@@ -356,6 +601,27 @@ async def test_add_context_appends_note(
     assert len(notes) == 2
     assert notes[0]["note"].startswith("Anchor")
     assert notes[1]["note"].startswith("Additional")
+    rows = await gateway_pool.fetch(
+        """
+        SELECT metadata
+        FROM product_action_audit_log
+        WHERE tenant_id = $1
+          AND actor_id = $2
+          AND action = 'decision_delta.add_context'
+          AND resource_id = $3
+        ORDER BY occurred_at ASC
+        """,
+        tenant_id,
+        actor_id,
+        delta_id,
+    )
+    assert len(rows) == 2
+    assert rows[0]["metadata"]["note_chars"] == len("Anchor CSM confirmed via call.")
+    assert rows[1]["metadata"]["note_chars"] == len(
+        "Additional context: customer has 30d to switch."
+    )
+    assert "Anchor CSM" not in str(rows[0]["metadata"])
+    assert "Additional context" not in str(rows[1]["metadata"])
 
 
 # =====================================================================
@@ -371,7 +637,7 @@ async def test_promote_from_recommendation_creates_delta(
     tenant_id,
     seeded_actor,
 ):
-    token, _ = valid_session
+    token, actor_id = valid_session
 
     # Seed an observation + commitment + recommendation row that we
     # can promote.
@@ -402,6 +668,15 @@ async def test_promote_from_recommendation_creates_delta(
     # The promotion should attach the supporting observation as
     # evidence.
     assert len(body["delta"]["evidence"]) >= 1
+    row = await _latest_product_action(
+        gateway_pool,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        action="decision_delta.promote_from_recommendation",
+        resource_id=UUID(body["delta"]["id"]),
+    )
+    assert row is not None
+    assert row["metadata"]["source_recommendation_id"] == str(rec_id)
 
 
 # =====================================================================

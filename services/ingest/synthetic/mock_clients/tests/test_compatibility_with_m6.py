@@ -31,7 +31,7 @@ def test_mock_gmail_implements_methods_called_by_m6_fetcher() -> None:
     """M6.3 fetcher calls messages_list, history_list, get_message,
     get_profile. The mock implements all four."""
     client = MockGmailClient(
-        fixture=make_gmail_mailbox(email="x@y.com", messages=1),
+        fixture=make_gmail_mailbox(email="x@y.example", messages=1),
     )
     for name in (
         "messages_list", "history_list", "get_message", "get_profile",
@@ -85,7 +85,7 @@ def test_mock_clients_compatible_with_existing_M6_tests() -> None:
     contract is honored.
     """
     gmail_mock = MockGmailClient(
-        fixture=make_gmail_mailbox(email="x@y.com", messages=1),
+        fixture=make_gmail_mailbox(email="x@y.example", messages=1),
     )
     github_mock = MockGithubClient(
         fixture=make_github_repos(org_or_user="o", repos=1),

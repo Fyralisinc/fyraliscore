@@ -51,6 +51,7 @@ from lib.observability.health import (
 )
 from lib.observability.metrics import counter, render_default
 from lib.observability.pools import register_pool, unregister_pool
+from lib.shared.db import configure_connection_timeouts
 
 log = logging.getLogger("extensions.run_workers")
 
@@ -213,7 +214,11 @@ async def _run() -> None:
     ticker = None
     try:
         pool = await asyncpg.create_pool(
-            dsn=dsn, min_size=1, max_size=max(2, pool_max), statement_cache_size=0
+            dsn=dsn,
+            min_size=1,
+            max_size=max(2, pool_max),
+            init=configure_connection_timeouts,
+            statement_cache_size=0,
         )
         register_pool(_POOL_NAME, pool)
         health = start_health_server(

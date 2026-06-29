@@ -1,4 +1,4 @@
-"""Resume draining the existing Alpen Think queue without enqueueing triggers."""
+"""Resume draining the existing Sandbox Think queue without enqueueing triggers."""
 from __future__ import annotations
 
 import asyncio
@@ -23,7 +23,7 @@ from tests.real_llm.infrastructure.durability_flow import run_think_until_drain
 
 TENANT = UUID(
     os.environ.get(
-        "ALPEN_TENANT_ID",
+        "SANDBOX_TENANT_ID",
         "90864cdd-731b-44b3-96c5-78f0004af3e2",
     )
 )

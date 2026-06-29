@@ -8,6 +8,7 @@ from the exact evidence bundle the LLM is about to read.
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -47,7 +48,7 @@ _HEX_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.I)
 _NUMBER_RE = re.compile(r"\b\d+\b")
 _URL_RE = re.compile(r"https?://[^\s)]+", re.I)
 
-_INTERNAL_DOMAINS = {"alpenlabs.io", "alpenlabs.com", "alpen.labs"}
+_INTERNAL_EMAIL_DOMAINS_ENV = "FYRALIS_INTERNAL_EMAIL_DOMAINS"
 _VENDOR_SOURCE_ROOTS = {
     "ashby",
     "brex",
@@ -113,6 +114,27 @@ _KIND_PRIORITY = {
     "vendor": 6,
     "pattern": 7,
 }
+
+
+def _normalize_email_domain(domain: str) -> str:
+    return domain.strip().strip(".").casefold()
+
+
+def _configured_internal_email_domains(
+    domains: Iterable[str] | None = None,
+) -> frozenset[str]:
+    values = domains
+    if values is None:
+        values = os.environ.get(_INTERNAL_EMAIL_DOMAINS_ENV, "").split(",")
+    return frozenset(
+        normalized
+        for value in values
+        if (normalized := _normalize_email_domain(str(value)))
+    )
+
+
+def _is_internal_email_domain(domain: str, internal_email_domains: frozenset[str]) -> bool:
+    return _normalize_email_domain(domain) in internal_email_domains
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,10 +264,15 @@ async def build_substrate_candidates(
     run_id: UUID | None = None,
     limit: int = 80,
     clarification_limit: int = 5,
+    internal_email_domains: Iterable[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Extract, upsert, and return prompt-facing candidate dicts."""
 
-    specs = candidate_specs_from_observations(observations, limit=limit)
+    specs = candidate_specs_from_observations(
+        observations,
+        limit=limit,
+        internal_email_domains=internal_email_domains,
+    )
     model_ids = [
         _coerce_uuid(getattr(model, "id", None))
         for model in models
@@ -329,9 +356,13 @@ def candidate_specs_from_observations(
     observations: Iterable[Any],
     *,
     limit: int = 80,
+    internal_email_domains: Iterable[str] | None = None,
 ) -> list[CandidateSpec]:
     """Pure deterministic extractor used by Think and unit tests."""
 
+    internal_email_domain_set = _configured_internal_email_domains(
+        internal_email_domains
+    )
     accumulator = _SpecAccumulator()
     pattern_groups: dict[str, dict[str, Any]] = defaultdict(
         lambda: {"count": 0, "observation_ids": set(), "actors": set(), "label": ""}
@@ -355,6 +386,7 @@ def candidate_specs_from_observations(
             accumulator,
             source_channel=source_channel,
             source_actor_ref=source_actor_ref,
+            internal_email_domains=internal_email_domain_set,
             observation_id=observation_id,
         )
         customer_keys = _add_entity_candidates(
@@ -370,6 +402,7 @@ def candidate_specs_from_observations(
             source_channel=source_channel,
             actor_fingerprint=actor_fingerprint,
             seed_customer_keys=customer_keys,
+            internal_email_domains=internal_email_domain_set,
             observation_id=observation_id,
         )
         _track_patterns(
@@ -448,6 +481,7 @@ def _add_actor_candidates(
     *,
     source_channel: str,
     source_actor_ref: Any,
+    internal_email_domains: frozenset[str],
     observation_id: UUID | None,
 ) -> str | None:
     if source_actor_ref in (None, ""):
@@ -459,7 +493,11 @@ def _add_actor_candidates(
         if ":" in source_actor_ref
         else f"{source_channel}:{source_actor_ref}"
     )
-    identity = _actor_identity(source_channel, source_actor_ref)
+    identity = _actor_identity(
+        source_channel,
+        source_actor_ref,
+        internal_email_domains=internal_email_domains,
+    )
     label = identity["label"]
     actor_fingerprint = f"actor:{identity['key']}"
     alias = {
@@ -549,6 +587,7 @@ def _add_text_candidates(
     source_channel: str,
     actor_fingerprint: str | None,
     seed_customer_keys: Iterable[tuple[str, str]] = (),
+    internal_email_domains: frozenset[str],
     observation_id: UUID | None,
 ) -> None:
     if not text:
@@ -671,7 +710,7 @@ def _add_text_candidates(
 
     for local, domain in _EMAIL_RE.findall(text):
         domain_key = domain.casefold()
-        if domain_key in _INTERNAL_DOMAINS:
+        if _is_internal_email_domain(domain_key, internal_email_domains):
             continue
         key = accumulator.add(
             kind="customer",
@@ -693,7 +732,7 @@ def _add_text_candidates(
 
     for match in _ORG_SUFFIX_RE.finditer(text):
         label = _clean_label(match.group(1))
-        if not label or "alpen" in label.casefold():
+        if not label:
             continue
         key = accumulator.add(
             kind="customer",
@@ -785,17 +824,23 @@ def _add_pattern_candidates(
             )
 
 
-def _actor_identity(source_channel: str, source_actor_ref: str) -> dict[str, Any]:
+def _actor_identity(
+    source_channel: str,
+    source_actor_ref: str,
+    *,
+    internal_email_domains: frozenset[str],
+) -> dict[str, Any]:
     compact = _strip_ref_channel(source_actor_ref)
     email = _EMAIL_RE.search(compact)
     if email:
         local = _norm_key(email.group(1))
         domain = email.group(2).casefold()
-        key = local if domain in _INTERNAL_DOMAINS else f"{local}@{domain}"
+        internal = _is_internal_email_domain(domain, internal_email_domains)
+        key = local if internal else f"{local}@{domain}"
         return {
             "key": key,
             "label": _title(email.group(1).replace(".", " ")),
-            "confidence": 0.86 if domain in _INTERNAL_DOMAINS else 0.72,
+            "confidence": 0.86 if internal else 0.72,
             "is_machine": bool(_BOT_RE.search(compact)),
         }
 
@@ -843,7 +888,6 @@ def _entity_kind(
         str(entity.get(key) or "")
         for key in ("type", "kind", "entity_type", "object_type")
     ).casefold()
-    label_lower = label.casefold()
     if "customer" in raw_kind:
         return "customer"
     if "vendor" in raw_kind:
@@ -862,7 +906,7 @@ def _entity_kind(
         return "system"
     if source_root in _VENDOR_SOURCE_ROOTS:
         return "vendor"
-    if "alpen" not in label_lower and _ORG_SUFFIX_RE.search(label):
+    if _ORG_SUFFIX_RE.search(label):
         return "customer"
     return None
 

@@ -224,6 +224,39 @@ async def seed_model(
     return model_id
 
 
+async def seed_calibration_stat(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID = TENANT_A,
+    actor_id: UUID | None = None,
+    source_model_id: UUID | None = None,
+    asserted_confidence: float = 0.8,
+    outcome: bool = True,
+    resolved_at: datetime | None = None,
+) -> UUID:
+    stat_id = uuid7()
+    actor = actor_id or await seed_actor(pool, tenant_id=tenant_id)
+    model = source_model_id or await seed_model(pool, tenant_id=tenant_id)
+    resolved = resolved_at or datetime.now(timezone.utc)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO calibration_stats (
+              id, tenant_id, actor_id, proposition_kind,
+              asserted_confidence, outcome, resolved_at, source_model_id
+            ) VALUES ($1, $2, $3, 'state', $4, $5, $6, $7)
+            """,
+            stat_id,
+            tenant_id,
+            actor,
+            asserted_confidence,
+            outcome,
+            resolved,
+            model,
+        )
+    return stat_id
+
+
 async def seed_commitment(
     pool: asyncpg.Pool,
     *,

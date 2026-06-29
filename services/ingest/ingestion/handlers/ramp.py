@@ -50,6 +50,7 @@ from typing import Any
 
 from lib.shared.errors import ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
@@ -80,20 +81,11 @@ _USER_STATE_CHANGES = frozenset({
 
 _RECORD_TYPES = frozenset({"transaction", "reimbursement", "card", "user"})
 
-# external_id segment per record type.
-_ID_SEGMENT = {
-    "transaction": "txn",
-    "reimbursement": "reimb",
-    "card": "card",
-    "user": "user",
-}
-
-
 def _external_id(
     record_type: str, business_id: str, entity_id: str, state: str,
 ) -> str:
     """ramp:{business_id}:{seg}:{id}:{state} — versioned by state (§4)."""
-    return f"ramp:{business_id}:{_ID_SEGMENT[record_type]}:{entity_id}:{state}"
+    return idempotency.ramp_entity(record_type, business_id, entity_id, state)
 
 
 def _change_external_id(business_id: str, entity_id: str, ver: str) -> str:
@@ -101,7 +93,7 @@ def _change_external_id(business_id: str, entity_id: str, ver: str) -> str:
     stable event id (constant across retries) so each live change event stays
     distinct from its backfill twin until the poll re-fetch carries the
     authoritative body."""
-    return f"ramp:{business_id}:txn:{entity_id}:chg:{ver}"
+    return idempotency.ramp_change(business_id, entity_id, ver)
 
 
 def _utcnow() -> datetime:

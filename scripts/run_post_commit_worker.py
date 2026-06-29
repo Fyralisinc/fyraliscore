@@ -33,6 +33,7 @@ from lib.observability.health import (  # noqa: E402
 )
 from lib.observability.metrics import render_default  # noqa: E402
 from lib.observability.pools import register_pool  # noqa: E402
+from lib.shared.db import asyncpg_pool_runtime_kwargs, positive_int_env  # noqa: E402
 from services.app.gateway.db_bootstrap import _register_codecs  # noqa: E402
 from services.reasoning.think.post_commit import (  # noqa: E402
     WorkerStats,
@@ -62,11 +63,17 @@ async def _main() -> None:
     log = structlog.get_logger("dogfood.post_commit_worker")
     dsn = os.environ["DATABASE_URL"]
     poll_s = float(os.environ.get("POST_COMMIT_WORKER_POLL_INTERVAL_S", "5"))
+    pool_max = positive_int_env("POST_COMMIT_POSTGRES_POOL_SIZE", default=4)
+    runtime_kwargs = asyncpg_pool_runtime_kwargs(
+        dsn=dsn,
+        process_env_var="POST_COMMIT_POSTGRES_PGBOUNCER_COMPATIBLE",
+    )
     pool = await asyncpg.create_pool(
         dsn=dsn,
         min_size=2,
-        max_size=4,
+        max_size=pool_max,
         init=_register_codecs,
+        **runtime_kwargs,
     )
     register_pool("post_commit_worker", pool)
 

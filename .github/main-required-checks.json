@@ -1,0 +1,42 @@
+{
+  "branch": "main",
+  "require_strict_status_checks": true,
+  "required_checks": [
+    {
+      "workflow_file": ".github/workflows/ci.yml",
+      "context": "Lint (ruff)"
+    },
+    {
+      "workflow_file": ".github/workflows/ci.yml",
+      "context": "Architecture (static contracts)"
+    },
+    {
+      "workflow_file": ".github/workflows/ci.yml",
+      "context": "Typecheck (critical backend contracts)"
+    },
+    {
+      "workflow_file": ".github/workflows/ci.yml",
+      "context": "Benchmark baselines (offline)"
+    },
+    {
+      "workflow_file": ".github/workflows/ci.yml",
+      "context": "Docs (MkDocs strict)"
+    },
+    {
+      "workflow_file": ".github/workflows/ci.yml",
+      "context": "Security scan + SBOM"
+    },
+    {
+      "workflow_file": ".github/workflows/ci.yml",
+      "context": "Migrations (unique prefixes)"
+    },
+    {
+      "workflow_file": ".github/workflows/ci.yml",
+      "context": "Tests (unit + integration)"
+    },
+    {
+      "workflow_file": ".github/workflows/ingestion-tests.yml",
+      "context": "services/ingest/ingestion/tests"
+    }
+  ]
+}

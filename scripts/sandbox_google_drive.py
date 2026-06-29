@@ -53,9 +53,9 @@ import asyncpg
 
 _DEFAULT_ADMIN_URL = "postgresql://company_os:company_os@localhost:5434/company_os"
 _TENANT_ID = UUID("00000000-0000-0000-0000-00000000160d")
-_WORKSPACE = "acme.com"
+_WORKSPACE = "acme.example"
 _SA_EMAIL = "fyralis-gdrive@fyralis-sandbox.iam.gserviceaccount.com"
-_OWNER = "alice@acme.com"
+_OWNER = "alice@acme.example"
 
 _DOC_MIME = "application/vnd.google-apps.document"
 _SHEET_MIME = "application/vnd.google-apps.spreadsheet"
@@ -108,10 +108,10 @@ def _file(fid, name, mime, version, *, trashed=False):
         "modifiedTime": "2026-05-20T10:00:00.000Z",
         "webViewLink": f"https://docs.google.com/d/{fid}",
         "owners": [{"emailAddress": _OWNER, "displayName": "Alice"}],
-        "lastModifyingUser": {"emailAddress": "bob@acme.com"},
+        "lastModifyingUser": {"emailAddress": "bob@acme.example"},
         "permissions": [
             {"emailAddress": _OWNER, "role": "owner", "type": "user"},
-            {"emailAddress": "investor@vc.com", "role": "reader", "type": "user"},
+            {"emailAddress": "investor@vc.example", "role": "reader", "type": "user"},
         ],
         "shared": True,
     }
@@ -172,13 +172,13 @@ def _build_fixtures() -> dict:
         "comments": {
             "d-roadmap": [
                 {"id": "cmt-1", "content": "Can we pull Helios into Q3?",
-                 "author": {"displayName": "Bob", "emailAddress": "bob@acme.com"},
+                 "author": {"displayName": "Bob", "emailAddress": "bob@acme.example"},
                  "createdTime": "2026-05-20T11:00:00.000Z",
                  "modifiedTime": "2026-05-20T11:30:00.000Z", "resolved": False,
                  "quotedFileContent": {"value": "plan Helios for Q4"},
                  "replies": [
                      {"id": "rep-1", "content": "tight but doable",
-                      "author": {"displayName": "Alice", "emailAddress": "alice@acme.com"},
+                      "author": {"displayName": "Alice", "emailAddress": "alice@acme.example"},
                       "createdTime": "2026-05-20T11:30:00.000Z"},
                  ]},
             ],
@@ -186,9 +186,9 @@ def _build_fixtures() -> dict:
         "revisions": {
             "d-roadmap": [
                 {"id": "rev-1", "modifiedTime": "2026-05-18T09:00:00.000Z",
-                 "lastModifyingUser": {"emailAddress": "alice@acme.com"}},
+                 "lastModifyingUser": {"emailAddress": "alice@acme.example"}},
                 {"id": "rev-2", "modifiedTime": "2026-05-20T10:00:00.000Z",
-                 "lastModifyingUser": {"emailAddress": "bob@acme.com"}},
+                 "lastModifyingUser": {"emailAddress": "bob@acme.example"}},
             ],
         },
     }
@@ -304,7 +304,7 @@ async def run(args) -> int:
         )
         targets = [
             DriveTarget("my_drive", "my-drive", _OWNER, f"{_OWNER} (My Drive)"),
-            DriveTarget("shared_drive", "0ENG", "admin@acme.com", "Engineering"),
+            DriveTarget("shared_drive", "0ENG", "admin@acme.example", "Engineering"),
         ]
         install_id = await finalize_install(
             pool, tenant_id=_TENANT_ID, workspace_domain=_WORKSPACE,

@@ -30,6 +30,9 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
+from services.app.webhooks.provider_installations import (
+    upsert_provider_installation_for_tenant,
+)
 from services.ingest.integrations.fireflies import metrics
 
 
@@ -112,17 +115,12 @@ async def register_webhook_installation(
     """Register / refresh the provider_installations row the webhook edge uses
     to resolve the tenant + load the HMAC signing secret. installation_id is the
     Fireflies workspace id (matches tenant_resolver._extract_fireflies)."""
-    await pool.execute(
-        """
-        INSERT INTO provider_installations
-            (id, tenant_id, provider, installation_id, secret_ref, enabled)
-        VALUES ($1, $2, 'fireflies', $3, $4, TRUE)
-        ON CONFLICT (provider, installation_id) DO UPDATE
-            SET tenant_id = EXCLUDED.tenant_id,
-                secret_ref = EXCLUDED.secret_ref,
-                enabled = TRUE
-        """,
-        uuid7(), tenant_id, workspace_id, webhook_secret_ref,
+    await upsert_provider_installation_for_tenant(
+        pool,
+        provider="fireflies",
+        tenant_id=tenant_id,
+        installation_id=workspace_id,
+        secret_ref=webhook_secret_ref,
     )
     log.info("fireflies_webhook_installation_registered", workspace_id=workspace_id)
 

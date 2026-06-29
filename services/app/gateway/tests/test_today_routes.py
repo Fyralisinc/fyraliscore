@@ -30,6 +30,9 @@ from services.product.decision_deltas.tests.conftest import (  # type: ignore  #
     _ensure_tenant,
     seed_decision_delta,
 )
+from services.app.gateway.tests.test_dashboard_router import (  # type: ignore
+    _seed_customer,
+)
 
 
 pytestmark = pytest.mark.integration
@@ -51,6 +54,8 @@ async def _seed(
     impact: dict | None = None,
     consequence_preview: dict | None = None,
     evidence: list[dict] | None = None,
+    target_node_kind: str | None = None,
+    target_node_id: UUID | None = None,
 ) -> UUID:
     return await seed_decision_delta(
         pool,
@@ -63,6 +68,8 @@ async def _seed(
         impact=impact,
         consequence_preview=consequence_preview,
         evidence=evidence,
+        target_node_kind=target_node_kind,
+        target_node_id=target_node_id,
     )
 
 
@@ -155,6 +162,58 @@ async def test_today_tenant_isolation(
         titles.append(body["primaryJudgment"]["title"])
     titles += [c["title"] for c in body["otherChanges"]]
     assert "B-tenant delta" not in titles
+
+
+@pytest.mark.asyncio
+async def test_today_filters_hidden_target_deltas_from_page_and_summary(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id,
+    valid_session,
+):
+    token, actor_id = valid_session
+    visible_customer = await _seed_customer(
+        gateway_pool,
+        tenant_id,
+        identity="Visible Customer",
+        account_owner_id=actor_id,
+    )
+    hidden_customer = await _seed_customer(
+        gateway_pool,
+        tenant_id,
+        identity="Hidden Customer",
+    )
+    visible_delta = await _seed(
+        gateway_pool,
+        tenant_id,
+        main_assertion="Visible customer needs review",
+        label="authority_required",
+        impact={"arr_at_risk": 100_000, "accounts_affected": 1},
+        target_node_kind="customer",
+        target_node_id=visible_customer,
+    )
+    await _seed(
+        gateway_pool,
+        tenant_id,
+        main_assertion="Hidden customer needs review",
+        label="authority_required",
+        impact={"arr_at_risk": 900_000, "accounts_affected": 1},
+        target_node_kind="customer",
+        target_node_id=hidden_customer,
+    )
+
+    resp = await client.get("/today", headers=_auth(token))
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert UUID(body["primaryJudgment"]["id"]) == visible_delta
+    titles = [body["primaryJudgment"]["title"]]
+    titles += [change["title"] for change in body["otherChanges"]]
+    assert "Visible customer needs review" in titles
+    assert "Hidden customer needs review" not in titles
+    assert body["summary"]["requiresAuthority"] == 1
+    assert body["summary"]["needJudgment"] == 1
+    assert body["summary"]["exposure"]["amount"] == 100_000
 
 
 @pytest.mark.asyncio
@@ -302,6 +361,46 @@ async def test_get_delta_returns_spec_shape(
 
 
 @pytest.mark.asyncio
+async def test_get_delta_denies_hidden_target_delta(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id,
+    valid_session,
+):
+    token, _actor_id = valid_session
+    hidden_customer = await _seed_customer(
+        gateway_pool,
+        tenant_id,
+        identity="Hidden Customer",
+    )
+    did = await _seed(
+        gateway_pool,
+        tenant_id,
+        main_assertion="Hidden customer delta",
+        target_node_kind="customer",
+        target_node_id=hidden_customer,
+        evidence=[
+            {
+                "source": "support",
+                "title": "Hidden evidence",
+                "excerpt": "This excerpt should not leave scope.",
+            }
+        ],
+    )
+
+    resp = await client.get(
+        f"/today/deltas/{did}",
+        headers=_auth(token),
+    )
+
+    assert resp.status_code == 403, resp.text
+    assert resp.json() == {
+        "error": "access_denied",
+        "reason": "resource_out_of_scope:relational",
+    }
+
+
+@pytest.mark.asyncio
 async def test_get_delta_404(
     client: httpx.AsyncClient, valid_session,
 ):
@@ -426,6 +525,43 @@ async def test_apply_stale_returns_409(
     # returns 200 in that case (UI sees the change as already applied).
     assert resp.status_code == 200
     assert resp.json()["status"] == "applied"
+
+
+@pytest.mark.asyncio
+async def test_apply_denies_hidden_target_delta_without_mutation(
+    client: httpx.AsyncClient,
+    gateway_pool: asyncpg.Pool,
+    tenant_id,
+    valid_session,
+):
+    token, _actor_id = valid_session
+    hidden_customer = await _seed_customer(
+        gateway_pool,
+        tenant_id,
+        identity="Hidden Customer",
+    )
+    did = await _seed(
+        gateway_pool,
+        tenant_id,
+        main_assertion="Hidden customer apply",
+        label="authority_required",
+        target_node_kind="customer",
+        target_node_id=hidden_customer,
+    )
+
+    resp = await client.post(
+        f"/today/deltas/{did}/apply",
+        headers=_auth(token),
+    )
+
+    assert resp.status_code == 403, resp.text
+    row = await gateway_pool.fetchrow(
+        "SELECT status, accepted_at, accepted_by FROM decision_deltas WHERE id = $1",
+        did,
+    )
+    assert row["status"] == "proposed"
+    assert row["accepted_at"] is None
+    assert row["accepted_by"] is None
 
 
 # =====================================================================

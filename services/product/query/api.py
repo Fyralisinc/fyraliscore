@@ -32,9 +32,8 @@ Behavioral notes:
     store. If CONTRACTS ever forbids this we drop the extension
     (logged separately).
 
-Tenant resolution is stubbed — single-tenant dogfood. Header
-`x-tenant-id` can override for test harnesses. Real auth lands with
-Agent-GRT's WS auth pass.
+Tenant resolution accepts development harness defaults outside production. In
+production, requests must carry the gateway-authenticated actor context.
 """
 from __future__ import annotations
 
@@ -43,10 +42,11 @@ from datetime import datetime
 from typing import Any, Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from pydantic import BaseModel, Field
 
-from lib.shared.errors import ValidationError
+from lib.shared.errors import DependencyUnavailableError, ValidationError
+from services.product.error_contract import dependency_unavailable_detail
 
 from .core import (
     AnswerQueryRequest,
@@ -165,6 +165,11 @@ def _default_verbs() -> list[VerbModel]:
     ]
 
 
+def _request_is_production(request: Request) -> bool:
+    settings = getattr(request.app.state, "gateway_settings", None)
+    return bool(getattr(settings, "is_production", False))
+
+
 # ---------------------------------------------------------------------
 # Dependency wiring
 # ---------------------------------------------------------------------
@@ -180,12 +185,12 @@ def _tenant_id_from_header(
             return UUID(x_tenant_id)
         except ValueError as e:
             raise HTTPException(
-                status_code=400, detail="invalid x-tenant-id"
+                status_code=400, detail="invalid_x_tenant_id"
             ) from e
     # The handler factory below binds the dogfood tenant via closure.
     raise HTTPException(
         status_code=400,
-        detail="x-tenant-id header required",
+        detail="x_tenant_id_required",
     )
 
 
@@ -209,18 +214,26 @@ def build_router(
     store = turn_store or _TurnStore()
 
     def tenant_dep(
+        request: Request,
         x_tenant_id: Optional[str] = Header(default=None),
     ) -> UUID:
+        auth = getattr(request.state, "auth", None)
+        if auth is not None:
+            if x_tenant_id and x_tenant_id != str(auth.tenant_id):
+                raise HTTPException(status_code=403, detail="tenant_mismatch")
+            return auth.tenant_id
+        if _request_is_production(request):
+            raise HTTPException(status_code=401, detail="unauthorized")
         if x_tenant_id:
             try:
                 return UUID(x_tenant_id)
             except ValueError as e:
                 raise HTTPException(
-                    status_code=400, detail="invalid x-tenant-id"
+                    status_code=400, detail="invalid_x_tenant_id"
                 ) from e
         if default_tenant_id is not None:
             return default_tenant_id
-        raise HTTPException(status_code=400, detail="x-tenant-id header required")
+        raise HTTPException(status_code=400, detail="x_tenant_id_required")
 
     @router.post("/view/ceo/ask", response_model=AskResponseBody)
     async def ask(
@@ -277,7 +290,16 @@ def build_router(
         try:
             resp = await handler.answer_query(req)
         except ValidationError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            raise HTTPException(status_code=400, detail="validation_error") from e
+        except DependencyUnavailableError as e:
+            log.warning(
+                "ask_dependency_unavailable",
+                extra={"error_detail": e.to_dict()},
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=dependency_unavailable_detail(e),
+            ) from e
         except Exception as e:  # noqa: BLE001
             log.exception("ask_handler_failed")
             raise HTTPException(status_code=500, detail="internal_error") from e
@@ -308,7 +330,7 @@ def build_router(
             if not body.follow_up_query or not body.follow_up_query.strip():
                 raise HTTPException(
                     status_code=400,
-                    detail="follow_up_query required for action=followup",
+                    detail="follow_up_query_required",
                 )
             req = AnswerQueryRequest(
                 tenant_id=tenant_id,
@@ -322,13 +344,22 @@ def build_router(
             try:
                 resp = await handler.answer_query(req)
             except ValidationError as e:
-                raise HTTPException(status_code=400, detail=str(e)) from e
+                raise HTTPException(status_code=400, detail="validation_error") from e
+            except DependencyUnavailableError as e:
+                log.warning(
+                    "followup_dependency_unavailable",
+                    extra={"error_detail": e.to_dict()},
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=dependency_unavailable_detail(e),
+                ) from e
             except Exception as e:  # noqa: BLE001
                 log.exception("followup_handler_failed")
                 raise HTTPException(status_code=500, detail="internal_error") from e
             return TurnActionResponseBody(ok=True, new_turn_id=resp.turn_id)
         # Unreachable — Literal enforces the set.
-        raise HTTPException(status_code=400, detail="unknown action")
+        raise HTTPException(status_code=400, detail="unknown_action")
 
     return router
 

@@ -53,6 +53,7 @@ import asyncpg
 import orjson
 from aiokafka import AIOKafkaConsumer
 
+from lib.shared.db import configure_connection_timeouts
 from lib.shared.ids import uuid7
 from services.ingest.ingestion.alerts import send_ops_alert
 from services.ingest.ingestion.dlq.models import DLQEnvelope
@@ -468,6 +469,7 @@ def main() -> None:
             min_size=1,
             max_size=config.postgres_pool_size,
             command_timeout=30.0,
+            init=configure_connection_timeouts,
             statement_cache_size=0,  # pgbouncer transaction mode
         )
         try:

@@ -20,6 +20,7 @@ import contextlib
 import json
 import socket
 import time
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -27,7 +28,10 @@ import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI
+from starlette.testclient import TestClient
 
+from services.app.gateway.settings import GatewaySettings
+from services.app.gateway.auth import create_session
 from services.product.greeting.api import build_ceo_api_router
 from services.product.greeting.cache import ViewCeoCacheRepo
 from services.product.greeting.scheduler import GreetingScheduler, SchedulerConfig
@@ -40,6 +44,7 @@ from services.product.greeting.stream import (
 from services.product.greeting.viewer_state_repo import ViewerStateRepo
 from services.product.greeting.tests.conftest import (
     TENANT_A,
+    seed_actor,
     seed_anomaly,
     seed_commitment,
     seed_goal,
@@ -226,6 +231,108 @@ async def test_home_endpoint_with_empty_cache(greeting_db):
     assert body["status"]["substrate_alive"] is False
 
 
+async def test_home_endpoint_accepts_gateway_actor_session(greeting_db):
+    actor_id = await seed_actor(greeting_db)
+    token, _ctx = await create_session(
+        greeting_db,
+        actor_id=actor_id,
+        tenant_id=TENANT_A,
+    )
+    app, _sched, _stream = _build_app(greeting_db)
+    app.state.deps = SimpleNamespace(pool=greeting_db)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/view/ceo/home",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["greeting"]["body_html"] == ""
+    assert body["viewer_state"]["previous_last_seen_at"] is None
+
+
+async def test_home_endpoint_accepts_gateway_actor_session_cookie(greeting_db):
+    actor_id = await seed_actor(greeting_db)
+    token, _ctx = await create_session(
+        greeting_db,
+        actor_id=actor_id,
+        tenant_id=TENANT_A,
+    )
+    app, _sched, _stream = _build_app(greeting_db)
+    app.state.deps = SimpleNamespace(pool=greeting_db)
+    app.state.gateway_settings = GatewaySettings(
+        websocket_query_token_auth_enabled=False,
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/view/ceo/home",
+            headers={"cookie": f"fyralis_session={token}"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["viewer_state"]["previous_last_seen_at"] is None
+
+
+async def test_home_endpoint_rejects_default_tenant_fallback_in_production():
+    app = FastAPI()
+    app.state.gateway_settings = SimpleNamespace(
+        is_production=True,
+        websocket_query_token_auth_enabled=False,
+        websocket_session_cookie_name="fyralis_session",
+    )
+    stream_mgr = ViewCeoStreamManager(token_map=StaticTenantTokenMap(tokens={}))
+    app.include_router(
+        build_ceo_api_router(
+            cache=object(),
+            scheduler=object(),
+            stream_manager=stream_mgr,
+            viewer_state_repo=object(),
+            default_tenant_id=TENANT_A,
+        )
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        missing = await client.get("/view/ceo/home")
+        invalid = await client.get(
+            "/view/ceo/home",
+            headers={"Authorization": "Bearer invalid-static-token"},
+        )
+
+    assert missing.status_code == 401
+    assert missing.json() == {"detail": {"error": "missing_token"}}
+    assert invalid.status_code == 401
+    assert invalid.json() == {"detail": {"error": "invalid_token"}}
+
+
+async def test_home_endpoint_rejects_query_token_when_disabled(greeting_db):
+    app, _sched, _stream = _build_app(greeting_db)
+    app.state.gateway_settings = GatewaySettings(
+        websocket_query_token_auth_enabled=False,
+    )
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/view/ceo/home?token={DEV_TOKEN}")
+
+    assert resp.status_code == 401
+
+
+async def test_home_endpoint_rejects_query_token_by_default(greeting_db):
+    app, _sched, _stream = _build_app(greeting_db)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/view/ceo/home?token={DEV_TOKEN}")
+
+    assert resp.status_code == 401
+
+
 # =====================================================================
 # Stream manager — unit tests (no WS transport needed).
 # =====================================================================
@@ -277,6 +384,15 @@ async def test_stream_manager_resolve_token():
     )
     assert mgr.resolve_token(DEV_TOKEN) == TENANT_A
     assert mgr.resolve_token("nope") is None
+
+
+def test_static_tenant_token_map_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("VIEW_CEO_STATIC_TOKENS", f"{DEV_TOKEN}:{TENANT_A}")
+
+    token_map = StaticTenantTokenMap.from_env(enabled=False)
+
+    assert token_map.tokens == {}
+    assert token_map.resolve(DEV_TOKEN) is None
 
 
 # =====================================================================
@@ -334,6 +450,9 @@ async def test_ws_stream_receives_updates(greeting_db):
 
     await _seed_minimal(greeting_db)
     app, sched, _ = _build_app(greeting_db)
+    app.state.gateway_settings = GatewaySettings(
+        websocket_query_token_auth_enabled=True,
+    )
 
     async with _running_server(app) as port:
         url = f"ws://127.0.0.1:{port}/view/ceo/stream?token={DEV_TOKEN}"
@@ -364,6 +483,47 @@ async def test_ws_stream_receives_updates(greeting_db):
                     seen.add(msg["type"])
             assert "greeting_updated" in seen
             assert "status_updated" in seen
+
+
+def test_ceo_stream_rejects_query_token_when_disabled() -> None:
+    app = FastAPI()
+    app.state.gateway_settings = GatewaySettings(
+        websocket_query_token_auth_enabled=False,
+    )
+    manager = ViewCeoStreamManager(
+        token_map=StaticTenantTokenMap(tokens={DEV_TOKEN: TENANT_A}),
+    )
+    app.include_router(build_ceo_stream_router(manager))
+
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            f"/view/ceo/stream?token={DEV_TOKEN}"
+        ) as ws:
+            msg = json.loads(ws.receive_text())
+            assert msg["type"] == "error"
+            assert msg["message"] == "missing_token"
+            with pytest.raises(Exception):
+                ws.receive_text()
+
+
+def test_ceo_stream_accepts_session_cookie_when_query_token_disabled() -> None:
+    app = FastAPI()
+    app.state.gateway_settings = GatewaySettings(
+        websocket_query_token_auth_enabled=False,
+    )
+    manager = ViewCeoStreamManager(
+        token_map=StaticTenantTokenMap(tokens={DEV_TOKEN: TENANT_A}),
+    )
+    app.include_router(build_ceo_stream_router(manager))
+
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/view/ceo/stream",
+            headers={"cookie": f"fyralis_session={DEV_TOKEN}"},
+        ) as ws:
+            msg = json.loads(ws.receive_text())
+            assert msg["type"] == "hello"
+            assert msg["tenant_id"] == str(TENANT_A)
 
 
 async def test_ws_stream_rejects_missing_token(greeting_db):

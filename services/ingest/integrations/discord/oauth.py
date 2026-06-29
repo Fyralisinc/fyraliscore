@@ -55,6 +55,7 @@ from lib.shared.errors import (
     StateTokenInvalidError,
 )
 from lib.shared.ids import uuid7
+from lib.shared.secrets import load_app_secret_text_from_env
 from services.ingest.integrations.discord import commands as discord_commands
 from services.ingest.integrations.discord import metrics
 from services.ingest.integrations.slack.oauth import (
@@ -195,7 +196,7 @@ async def _exchange_code_for_tokens(code: str) -> dict[str, Any]:
     Raises on HTTP-level errors; caller maps to `discord_oauth_token_exchange_failed`.
     """
     client_id = os.environ.get("DISCORD_CLIENT_ID", "")
-    client_secret = os.environ.get("DISCORD_CLIENT_SECRET", "")
+    client_secret = load_app_secret_text_from_env("DISCORD_CLIENT_SECRET")
     redirect_uri = os.environ.get("DISCORD_REDIRECT_URI", "")
     basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
     async with httpx.AsyncClient(timeout=15.0) as client:
@@ -267,7 +268,7 @@ async def _persist_secrets(
         tenant_id=tenant_id,
     )
 
-    public_key = os.environ.get("WEBHOOK_SECRET_DISCORD", "")
+    public_key = load_app_secret_text_from_env("WEBHOOK_SECRET_DISCORD")
     if not public_key:
         raise SecretStoreError(
             "WEBHOOK_SECRET_DISCORD not configured — cannot mirror app public key",

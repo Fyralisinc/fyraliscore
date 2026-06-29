@@ -61,7 +61,7 @@ async def uninstall_install(
         scope = install["scope"]
         watches = await tctx.fetch(
             """
-            SELECT email_address FROM gmail_mailbox_watches
+            SELECT id, email_address FROM gmail_mailbox_watches
              WHERE gmail_installation_id = $1
                AND state IN ('active', 'pending', 'errored')
             """,
@@ -78,20 +78,46 @@ async def uninstall_install(
                 except GoogleApiError as exc:
                     log.warning(
                         "gmail.uninstall.stop_failed",
-                        email=w["email_address"],
+                        gmail_installation_id=str(gmail_installation_id),
+                        watch_id=str(w["id"]),
                         error=str(exc)[:200],
                     )
 
-    async with PubsubAdmin() as admin:
-        await admin.teardown(tenant_id)
+    pubsub_teardown_succeeded = True
+    try:
+        async with PubsubAdmin() as admin:
+            await admin.teardown(tenant_id)
+    except Exception as exc:  # pragma: no cover - backend-specific
+        pubsub_teardown_succeeded = False
+        log.warning(
+            "gmail.uninstall.pubsub_teardown_failed",
+            tenant_id=str(tenant_id),
+            gmail_installation_id=str(gmail_installation_id),
+            error_class=exc.__class__.__name__,
+            error=str(exc)[:200],
+        )
 
     async with tenant_transaction(tenant_id) as tctx:
         await tctx.execute(
             """
             UPDATE gmail_mailbox_watches
-               SET state = 'paused'
+               SET state = 'paused',
+                   history_id = NULL,
+                   watch_expiration = NULL,
+                   last_push_at = NULL,
+                   last_poll_at = NULL,
+                   consecutive_poll_failures = 0,
+                   last_error = NULL
              WHERE gmail_installation_id = $1
-               AND state IN ('active', 'pending', 'errored')
+               AND (
+                    state IN ('active', 'pending', 'errored')
+                    OR history_id IS NOT NULL
+                    OR watch_expiration IS NOT NULL
+                    OR last_push_at IS NOT NULL
+                    OR last_poll_at IS NOT NULL
+                    OR consecutive_poll_failures <> 0
+                    OR last_error IS NOT NULL
+               )
             """,
             gmail_installation_id,
         )
@@ -116,7 +142,10 @@ async def uninstall_install(
             gmail_installation_id=gmail_installation_id,
             action="gmail.uninstall",
             actor_email=actor_email,
-            details={"watches_stopped": len(watches)},
+            details={
+                "watches_stopped": len(watches),
+                "pubsub_teardown_succeeded": pubsub_teardown_succeeded,
+            },
         )
     log.info(
         "gmail.uninstall.completed",
@@ -154,7 +183,7 @@ async def stop_mailbox(
         except GoogleApiError as exc:
             log.warning(
                 "gmail.stop_mailbox.failed",
-                email=email_address,
+                gmail_installation_id=str(gmail_installation_id),
                 error=str(exc)[:200],
             )
 
@@ -162,10 +191,24 @@ async def stop_mailbox(
         await tctx.execute(
             """
             UPDATE gmail_mailbox_watches
-               SET state = 'paused'
+               SET state = 'paused',
+                   history_id = NULL,
+                   watch_expiration = NULL,
+                   last_push_at = NULL,
+                   last_poll_at = NULL,
+                   consecutive_poll_failures = 0,
+                   last_error = NULL
              WHERE gmail_installation_id = $1
                AND email_address = $2
-               AND state IN ('active', 'pending', 'errored')
+               AND (
+                    state IN ('active', 'pending', 'errored')
+                    OR history_id IS NOT NULL
+                    OR watch_expiration IS NOT NULL
+                    OR last_push_at IS NOT NULL
+                    OR last_poll_at IS NOT NULL
+                    OR consecutive_poll_failures <> 0
+                    OR last_error IS NOT NULL
+               )
             """,
             gmail_installation_id, email_address.lower(),
         )

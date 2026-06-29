@@ -43,17 +43,17 @@ from services.ingest.synthetic.mock_clients import (
 # Gmail.
 # =====================================================================
 def test_mock_gmail_serves_fixture_data_correctly() -> None:
-    fixture = make_gmail_mailbox(email="alice@x.com", messages=3)
+    fixture = make_gmail_mailbox(email="alice@x.example", messages=3)
     client = MockGmailClient(fixture=fixture)
 
     async def _run() -> None:
         resp = await client.messages_list(
-            user_email="alice@x.com", scope="gmail.metadata",
+            user_email="alice@x.example", scope="gmail.metadata",
         )
         assert len(resp["messages"]) == 3
         # Hydrate each message.
         msg = await client.get_message(
-            user_email="alice@x.com", scope="gmail.metadata",
+            user_email="alice@x.example", scope="gmail.metadata",
             message_id=resp["messages"][0]["id"],
         )
         assert msg["id"] == resp["messages"][0]["id"]
@@ -63,26 +63,26 @@ def test_mock_gmail_serves_fixture_data_correctly() -> None:
 
 def test_mock_gmail_advances_cursor_state_across_pages() -> None:
     fixture = make_gmail_mailbox(
-        email="alice@x.com", messages=12, page_size=5,
+        email="alice@x.example", messages=12, page_size=5,
     )
     client = MockGmailClient(fixture=fixture)
 
     async def _run() -> None:
         page1 = await client.messages_list(
-            user_email="alice@x.com", scope="gmail.metadata",
+            user_email="alice@x.example", scope="gmail.metadata",
         )
         assert len(page1["messages"]) == 5
         assert "nextPageToken" in page1
 
         page2 = await client.messages_list(
-            user_email="alice@x.com", scope="gmail.metadata",
+            user_email="alice@x.example", scope="gmail.metadata",
             page_token=page1["nextPageToken"],
         )
         assert len(page2["messages"]) == 5
         assert "nextPageToken" in page2
 
         page3 = await client.messages_list(
-            user_email="alice@x.com", scope="gmail.metadata",
+            user_email="alice@x.example", scope="gmail.metadata",
             page_token=page2["nextPageToken"],
         )
         assert len(page3["messages"]) == 2
@@ -92,7 +92,7 @@ def test_mock_gmail_advances_cursor_state_across_pages() -> None:
 
 
 def test_mock_gmail_rate_limits_after_threshold() -> None:
-    fixture = make_gmail_mailbox(email="alice@x.com", messages=100)
+    fixture = make_gmail_mailbox(email="alice@x.example", messages=100)
     client = MockGmailClient(
         fixture=fixture,
         profile=FaultProfile(rate_limit_after_n_requests=2),
@@ -108,7 +108,7 @@ def test_mock_gmail_rate_limits_after_threshold() -> None:
 
 
 def test_mock_gmail_returns_correct_error_types_on_fault() -> None:
-    fixture = make_gmail_mailbox(email="alice@x.com", messages=1)
+    fixture = make_gmail_mailbox(email="alice@x.example", messages=1)
 
     async def _run() -> None:
         c1 = MockGmailClient(
@@ -138,14 +138,14 @@ def test_mock_gmail_stateful_history_id_progression() -> None:
     mock's `get_profile` reports a higher `historyId` than the cursor's
     `final_history_id`. Verifies the gap-detection probe surface."""
     fixture = make_gmail_mailbox(
-        email="alice@x.com", messages=5, history_events=3,
+        email="alice@x.example", messages=5, history_events=3,
         starting_history_id=1000,
     )
     client = MockGmailClient(fixture=fixture)
 
     async def _run() -> None:
         prof = await client.get_profile(
-            user_email="alice@x.com", scope="gmail.metadata",
+            user_email="alice@x.example", scope="gmail.metadata",
         )
         # 1000 + 3 history events = 1003.
         assert prof["historyId"] == "1003"
@@ -433,8 +433,8 @@ def test_mock_discord_stateful_after_snowflake_filter() -> None:
 # =====================================================================
 def test_fixture_generators_are_deterministic() -> None:
     """Same params → identical fixtures across calls."""
-    a = make_gmail_mailbox(email="a@x.com", messages=5)
-    b = make_gmail_mailbox(email="a@x.com", messages=5)
+    a = make_gmail_mailbox(email="a@x.example", messages=5)
+    b = make_gmail_mailbox(email="a@x.example", messages=5)
     assert a == b
 
     c = make_github_repos(org_or_user="o", repos=3, events_per_repo=2)

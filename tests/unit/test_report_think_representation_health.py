@@ -6,7 +6,7 @@ from scripts.report_think_representation_health import (
 )
 
 
-def test_substrate_readiness_warnings_catch_alpen_failure_shape() -> None:
+def test_substrate_readiness_warnings_catch_large_run_failure_shape() -> None:
     warnings = _substrate_readiness_warnings(
         {
             "observations": {

@@ -36,6 +36,7 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Callable
 from uuid import UUID
 
 import asyncpg
@@ -519,13 +520,20 @@ class AnomalyProcessor:
     # -----------------------------------------------------------------
     # Long-running poll loop
     # -----------------------------------------------------------------
-    async def run(self, stop_event: asyncio.Event) -> None:
+    async def run(
+        self,
+        stop_event: asyncio.Event,
+        *,
+        on_cycle: Callable[[dict[str, int]], None] | None = None,
+    ) -> None:
         _log.info("anomaly.worker.started")
         while not stop_event.is_set():
             try:
                 tenants = await self._list_active_tenants()
                 if tenants:
-                    await self.process_once(tenants)
+                    counters = await self.process_once(tenants)
+                    if on_cycle is not None:
+                        on_cycle(counters)
             except Exception as e:  # pragma: no cover
                 _log.exception("anomaly.worker.loop_error", error=str(e))
             try:

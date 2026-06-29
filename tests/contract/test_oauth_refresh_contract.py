@@ -1,5 +1,5 @@
 """Contract test: the OAuth token-refresh core exchanges + parses the REAL
-documented token-endpoint shapes for QBO / Ramp / Gusto / Carta.
+documented token-endpoint shapes for QBO / Ramp / Gusto / Carta / LinkedIn.
 
 Guards the Phase-3 CRITICAL blocker (findings #24/#26/#38/#40): poll installs
 stopped fetching once their ~1h access token expired because no refresh exchange
@@ -37,6 +37,7 @@ _CASES = [
     ("ramp", "client_credentials", True, False),
     ("gusto", "refresh", False, True),
     ("carta", "client_credentials", True, False),
+    ("linkedin", "refresh", False, True),
 ]
 
 

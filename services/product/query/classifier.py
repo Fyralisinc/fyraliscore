@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -48,6 +47,7 @@ from lib.llm.provider import (
     LLMError,
     LLMProvider,
 )
+from lib.shared.secrets import load_app_secret_text_from_env
 
 log = logging.getLogger(__name__)
 
@@ -227,9 +227,8 @@ def _build_classifier_provider() -> LLMProvider:
     Otherwise we read `DEEPSEEK_API_KEY` directly; if that's empty the
     provider will raise on call and we fall back to heuristics."""
     api_key = (
-        os.environ.get("DEEPSEEK_API_KEY")
-        or os.environ.get("LLM_API_KEY")
-        or ""
+        load_app_secret_text_from_env("DEEPSEEK_API_KEY")
+        or load_app_secret_text_from_env("LLM_API_KEY")
     )
     cfg = LLMConfig(
         provider="deepseek",

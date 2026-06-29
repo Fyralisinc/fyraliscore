@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 from fastapi import FastAPI
@@ -59,6 +60,20 @@ def test_think_quality_endpoint_delegates_to_report_builder(monkeypatch):
         "limit": 25,
         "low_context_ratio": 0.4,
     }
+
+
+def test_default_tenant_env_is_ignored_in_production(monkeypatch):
+    monkeypatch.setenv("DEFAULT_TENANT_ID", "00000000-0000-0000-0000-000000000001")
+
+    app = FastAPI()
+    app.state.gateway_settings = SimpleNamespace(is_production=True)
+    app.include_router(build_debug_router())
+    client = TestClient(app)
+
+    response = client.get("/debug/think-quality")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "tenant_id missing"
 
 
 def test_think_quality_cases_endpoint_delegates_to_case_builder(monkeypatch):

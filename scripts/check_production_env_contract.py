@@ -22,6 +22,11 @@ REQUIRED_KEYS = frozenset(
         "COMPANY_OS_ENV",
         "FYRALIS_ENV",
         "DATABASE_URL",
+        "REDIS_URL",
+        "POSTGRES_PGBOUNCER_COMPATIBLE",
+        "DB_STATEMENT_TIMEOUT_MS",
+        "DB_LOCK_TIMEOUT_MS",
+        "DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS",
         "OLLAMA_URL",
         "OLLAMA_EMBED_MODEL",
         "GRT_RENDERING_BASE_URL",
@@ -29,18 +34,35 @@ REQUIRED_KEYS = frozenset(
         "QUERY_CACHE_BACKEND",
         "LLM_PROVIDER",
         "LLM_STRICT_CONFIG",
+        "CODEX_API_KEY_SECRET_REF",
         "CODEX_API_KEY",
         "CODEX_TRANSPORT",
         "CODEX_MODEL",
         "CODEX_REASONING_EFFORT",
         "INQUIRY_CODEX_QUESTION_MODEL",
-        "MASTER_KEK",
+        "THINK_NARROW_INFERENTIAL_TX",
+        "SECRET_STORE_BACKEND",
+        "MASTER_KEK_PROVIDER",
+        "MASTER_KEK_SECRET_REF",
+        "SECRET_PROVIDER_REGION",
+        "SECRET_PROVIDER_TIMEOUT_SECONDS",
+        "OAUTH_STATE_HMAC_KEY_SECRET_REF",
         "OAUTH_STATE_HMAC_KEY",
+        "AUTH_BOOTSTRAP_SECRET_SECRET_REF",
         "AUTH_BOOTSTRAP_SECRET",
+        "DEBUG_ENDPOINTS_ENABLED",
         "FINANCE_PANEL_ENABLED",
         "SLACK_DM_PANEL_ENABLED",
+        "SPEC_DEMO_ROUTES_ENABLED",
+        "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED",
+        "WEBSOCKET_SESSION_COOKIE_NAME",
+        "VIEW_CEO_STATIC_TOKENS_ENABLED",
+        "GATEWAY_MOUNT_SIM",
+        "GATEWAY_START_GRT_SCHEDULER",
         "WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW",
         "KAFKA_BOOTSTRAP_SERVERS",
+        "GATEWAY_REQUIRE_REALTIME",
+        "GATEWAY_REQUIRE_GITHUB_INTEGRATION",
         "GATEWAY_REQUIRE_INGESTION_DATA_PLANE",
         "S3_RAW_BUCKET",
         "S3_REGION_NAME",
@@ -49,17 +71,24 @@ REQUIRED_KEYS = frozenset(
         "EMBEDDER_BACKEND",
         "GITHUB_APP_ID",
         "GITHUB_APP_SLUG",
+        "GITHUB_APP_PRIVATE_KEY_SECRET_REF",
         "GITHUB_APP_PRIVATE_KEY",
+        "WEBHOOK_SECRET_GITHUB_SECRET_REF",
         "WEBHOOK_SECRET_GITHUB",
         "SLACK_CLIENT_ID",
+        "SLACK_CLIENT_SECRET_SECRET_REF",
         "SLACK_CLIENT_SECRET",
         "SLACK_REDIRECT_URI",
+        "SLACK_SIGNING_SECRET_SECRET_REF",
         "SLACK_SIGNING_SECRET",
+        "DISCORD_BOT_TOKEN_SECRET_REF",
         "DISCORD_BOT_TOKEN",
         "DISCORD_APPLICATION_ID",
         "DISCORD_CLIENT_ID",
+        "DISCORD_CLIENT_SECRET_SECRET_REF",
         "DISCORD_CLIENT_SECRET",
         "DISCORD_REDIRECT_URI",
+        "WEBHOOK_SECRET_DISCORD_SECRET_REF",
         "WEBHOOK_SECRET_DISCORD",
         "PYTHONHASHSEED",
         "GMAIL_SERVICE_ACCOUNT_JSON_FILE",
@@ -68,9 +97,29 @@ REQUIRED_KEYS = frozenset(
         "GMAIL_PUBSUB_PUSH_ENDPOINT",
         "GMAIL_PUBSUB_PUSH_OIDC_AUDIENCE",
         "GMAIL_PUBSUB_PUSH_OIDC_SA",
+        "GRAFANA_ADMIN_PASSWORD",
+        "GATEWAY_POSTGRES_POOL_SIZE",
+        "WRITER_POSTGRES_POOL_SIZE",
+        "POSTGRES_POOL_SIZE",
+        "THINK_POSTGRES_POOL_SIZE",
+        "POST_COMMIT_POSTGRES_POOL_SIZE",
+        "HOUSEKEEPER_POSTGRES_POOL_SIZE",
+        "MAINTENANCE_POSTGRES_POOL_SIZE",
+        "SOURCE_GATEWAY_POSTGRES_POOL_SIZE",
+        "SOURCE_SCHEDULER_POSTGRES_POOL_SIZE",
+        "EXTENSION_WORKERS_POOL_MAX",
+        "THINK_MAX_CONCURRENCY_PER_TENANT",
+        "ANOMALY_T3_BUDGET_PER_MIN",
+        "ENTITY_RESOLVER_LLM_BUDGET_PER_MIN",
+        "TOPOLOGY_SWEEPER_LIMIT_PER_TENANT",
+        "RELATIONSHIP_ONTOLOGY_PROPOSALS_LIMIT_PER_TENANT",
+        "SAGE_TOPOLOGY_OPTIMIZER_LIMIT",
+        "HOUSEKEEPER_ENABLE_EXPENSIVE_JOBS",
         "WEBHOOK_TENANT_DEFAULT_ALLOW",
         "LOG_LEVEL",
         "DEBUG_ARTIFACT_CAPTURE",
+        "SHARD_FETCH_RATE_LIMIT",
+        "SHARD_FETCH_RATE_LIMIT_MAX_WAIT_SEC",
     }
 )
 
@@ -81,15 +130,107 @@ REQUIRED_EXACT_VALUES = {
     "LLM_PROVIDER": "codex",
     "LLM_STRICT_CONFIG": "1",
     "CODEX_TRANSPORT": "responses",
+    "DEBUG_ENDPOINTS_ENABLED": "0",
     "FINANCE_PANEL_ENABLED": "false",
     "SLACK_DM_PANEL_ENABLED": "false",
+    "SPEC_DEMO_ROUTES_ENABLED": "0",
+    "WEBSOCKET_QUERY_TOKEN_AUTH_ENABLED": "0",
+    "VIEW_CEO_STATIC_TOKENS_ENABLED": "0",
+    "THINK_NARROW_INFERENTIAL_TX": "1",
+    "GATEWAY_MOUNT_SIM": "0",
     "WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW": "0",
     "GATEWAY_REQUIRE_INGESTION_DATA_PLANE": "1",
     "PYTHONHASHSEED": "0",
     "WEBHOOK_TENANT_DEFAULT_ALLOW": "0",
     "DEBUG_ARTIFACT_CAPTURE": "0",
+    "SHARD_FETCH_RATE_LIMIT": "1",
+    "HOUSEKEEPER_ENABLE_EXPENSIVE_JOBS": "0",
 }
-FORBIDDEN_KEYS = frozenset({"DEFAULT_TENANT_ID", "COMPANY_OS_TENANT_ID"})
+REQUIRED_ALLOWED_VALUES = {
+    "SECRET_STORE_BACKEND": {"fernet"},
+    "MASTER_KEK_PROVIDER": {
+        "aws-secrets-manager",
+        "gcp-secret-manager",
+        "hashicorp-vault",
+    },
+    "POSTGRES_PGBOUNCER_COMPATIBLE": {"0", "1"},
+    "GATEWAY_REQUIRE_REALTIME": {"0", "1"},
+    "GATEWAY_REQUIRE_GITHUB_INTEGRATION": {"0", "1"},
+    "GATEWAY_START_GRT_SCHEDULER": {"0", "1"},
+}
+FORBIDDEN_EXACT_VALUES = {
+    "GRAFANA_ADMIN_PASSWORD": {"", "admin", "password", "fyralis-admin"},
+}
+REQUIRED_BLANK_SECRET_PLACEHOLDER_KEYS = frozenset(
+    {
+        "AUTH_BOOTSTRAP_SECRET",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "CODEX_API_KEY",
+        "DISCORD_BOT_TOKEN",
+        "DISCORD_CLIENT_SECRET",
+        "GITHUB_APP_PRIVATE_KEY",
+        "OAUTH_STATE_HMAC_KEY",
+        "SLACK_CLIENT_SECRET",
+        "SLACK_SIGNING_SECRET",
+        "WEBHOOK_SECRET_DISCORD",
+        "WEBHOOK_SECRET_GITHUB",
+    }
+)
+REQUIRED_NONEMPTY_SECRET_REF_KEYS = frozenset(
+    {
+        "AUTH_BOOTSTRAP_SECRET_SECRET_REF",
+        "CODEX_API_KEY_SECRET_REF",
+        "DISCORD_BOT_TOKEN_SECRET_REF",
+        "DISCORD_CLIENT_SECRET_SECRET_REF",
+        "GITHUB_APP_PRIVATE_KEY_SECRET_REF",
+        "OAUTH_STATE_HMAC_KEY_SECRET_REF",
+        "SLACK_CLIENT_SECRET_SECRET_REF",
+        "SLACK_SIGNING_SECRET_SECRET_REF",
+        "WEBHOOK_SECRET_DISCORD_SECRET_REF",
+        "WEBHOOK_SECRET_GITHUB_SECRET_REF",
+    }
+)
+FORBIDDEN_KEYS = frozenset(
+    {
+        "DEFAULT_ACTOR_ID",
+        "DEFAULT_TENANT_ID",
+        "COMPANY_OS_TENANT_ID",
+        "GMAIL_SERVICE_ACCOUNT_JSON",
+        "MASTER_KEK",
+        "WHATSAPP_APP_SECRET",
+        "WHATSAPP_VERIFY_TOKEN",
+        "WHATSAPP_ALLOW_UNSIGNED",
+    }
+)
+REQUIRED_POSITIVE_INTEGER_KEYS = frozenset(
+    {
+        "DB_STATEMENT_TIMEOUT_MS",
+        "DB_LOCK_TIMEOUT_MS",
+        "DB_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS",
+        "GATEWAY_POSTGRES_POOL_SIZE",
+        "WRITER_POSTGRES_POOL_SIZE",
+        "POSTGRES_POOL_SIZE",
+        "THINK_POSTGRES_POOL_SIZE",
+        "POST_COMMIT_POSTGRES_POOL_SIZE",
+        "HOUSEKEEPER_POSTGRES_POOL_SIZE",
+        "MAINTENANCE_POSTGRES_POOL_SIZE",
+        "SOURCE_GATEWAY_POSTGRES_POOL_SIZE",
+        "SOURCE_SCHEDULER_POSTGRES_POOL_SIZE",
+        "EXTENSION_WORKERS_POOL_MAX",
+        "THINK_MAX_CONCURRENCY_PER_TENANT",
+        "ANOMALY_T3_BUDGET_PER_MIN",
+        "ENTITY_RESOLVER_LLM_BUDGET_PER_MIN",
+        "TOPOLOGY_SWEEPER_LIMIT_PER_TENANT",
+        "RELATIONSHIP_ONTOLOGY_PROPOSALS_LIMIT_PER_TENANT",
+        "SAGE_TOPOLOGY_OPTIMIZER_LIMIT",
+    }
+)
+REQUIRED_POSITIVE_NUMBER_KEYS = frozenset(
+    {
+        "SHARD_FETCH_RATE_LIMIT_MAX_WAIT_SEC",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -192,16 +333,144 @@ def check_env_contract(path: Path = DEFAULT_ENV_TEMPLATE) -> list[EnvContractVio
         )
 
     for key, expected in sorted(REQUIRED_EXACT_VALUES.items()):
-        entry = values_by_key.get(key)
-        if entry is None:
+        exact_entry = values_by_key.get(key)
+        if exact_entry is None:
             continue
-        if entry.value != expected:
+        if exact_entry.value != expected:
             violations.append(
                 EnvContractViolation(
                     path=path,
                     key=key,
-                    line_number=entry.line_number,
-                    message=f"expected {expected!r}, found {entry.value!r}",
+                    line_number=exact_entry.line_number,
+                    message=f"expected {expected!r}, found {exact_entry.value!r}",
+                )
+            )
+
+    for key, allowed_values in sorted(REQUIRED_ALLOWED_VALUES.items()):
+        allowed_entry = values_by_key.get(key)
+        if allowed_entry is None:
+            continue
+        if allowed_entry.value not in allowed_values:
+            allowed = ", ".join(repr(value) for value in sorted(allowed_values))
+            violations.append(
+                EnvContractViolation(
+                    path=path,
+                    key=key,
+                    line_number=allowed_entry.line_number,
+                    message=(
+                        f"expected one of {allowed}; found {allowed_entry.value!r}"
+                    ),
+                )
+            )
+
+    for key, forbidden_values in sorted(FORBIDDEN_EXACT_VALUES.items()):
+        forbidden_entry = values_by_key.get(key)
+        if forbidden_entry is None:
+            continue
+        if forbidden_entry.value in forbidden_values:
+            violations.append(
+                EnvContractViolation(
+                    path=path,
+                    key=key,
+                    line_number=forbidden_entry.line_number,
+                    message=(
+                        f"must not use known unsafe value "
+                        f"{forbidden_entry.value!r}"
+                    ),
+                )
+            )
+
+    for key in sorted(REQUIRED_BLANK_SECRET_PLACEHOLDER_KEYS):
+        blank_secret_entry = values_by_key.get(key)
+        if blank_secret_entry is None:
+            continue
+        if blank_secret_entry.value:
+            violations.append(
+                EnvContractViolation(
+                    path=path,
+                    key=key,
+                    line_number=blank_secret_entry.line_number,
+                    message=(
+                        "must stay blank in the checked-in production "
+                        "template; inject the real secret through the runtime "
+                        "secret mechanism"
+                    ),
+                )
+            )
+
+    for key in sorted(REQUIRED_NONEMPTY_SECRET_REF_KEYS):
+        secret_ref_entry = values_by_key.get(key)
+        if secret_ref_entry is None:
+            continue
+        if not secret_ref_entry.value:
+            violations.append(
+                EnvContractViolation(
+                    path=path,
+                    key=key,
+                    line_number=secret_ref_entry.line_number,
+                    message=(
+                        "must point at a managed secret reference in the "
+                        "checked-in production template; keep the raw "
+                        "companion secret key blank"
+                    ),
+                )
+            )
+
+    for key in sorted(REQUIRED_POSITIVE_INTEGER_KEYS):
+        integer_entry = values_by_key.get(key)
+        if integer_entry is None:
+            continue
+        try:
+            int_value = int(integer_entry.value)
+        except ValueError:
+            violations.append(
+                EnvContractViolation(
+                    path=path,
+                    key=key,
+                    line_number=integer_entry.line_number,
+                    message=(
+                        "must be a positive integer number of milliseconds; "
+                        f"found {integer_entry.value!r}"
+                    ),
+                )
+            )
+            continue
+        if int_value <= 0:
+            violations.append(
+                EnvContractViolation(
+                    path=path,
+                    key=key,
+                    line_number=integer_entry.line_number,
+                    message=(
+                        "must be a positive integer number of milliseconds; "
+                        f"found {integer_entry.value!r}"
+                    ),
+                )
+            )
+
+    for key in sorted(REQUIRED_POSITIVE_NUMBER_KEYS):
+        number_entry = values_by_key.get(key)
+        if number_entry is None:
+            continue
+        try:
+            number_value = float(number_entry.value)
+        except ValueError:
+            violations.append(
+                EnvContractViolation(
+                    path=path,
+                    key=key,
+                    line_number=number_entry.line_number,
+                    message=f"must be a positive number; found {number_entry.value!r}",
+                )
+            )
+            continue
+        if number_value <= 0:
+            violations.append(
+                EnvContractViolation(
+                    path=path,
+                    key=key,
+                    line_number=number_entry.line_number,
+                    message=f"must be a positive number; found {number_entry.value!r}",
                 )
             )
 

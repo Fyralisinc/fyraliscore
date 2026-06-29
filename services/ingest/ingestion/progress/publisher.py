@@ -41,6 +41,8 @@ import logging
 from collections.abc import Iterable
 from typing import Any
 
+from services.app.gateway.product_workflow_metrics import record_product_workflow_event
+
 from .events import ProgressEvent
 
 
@@ -73,6 +75,7 @@ async def publish_progress_event(
         value=payload,
         key=key,
     )
+    _record_product_workflow_event(event)
     log.debug(
         "progress.event_published",
         extra={
@@ -128,6 +131,21 @@ async def publish_progress_events(
                     "error": f"{type(exc).__name__}: {exc}"[:200],
                 },
             )
+
+
+def _record_product_workflow_event(event: ProgressEvent) -> None:
+    if event.event_kind == "source.onboarding.started":
+        record_product_workflow_event(
+            workflow="source_onboarding",
+            event="source_onboarding_started",
+            outcome="success",
+        )
+    elif event.event_kind == "source.onboarding.complete":
+        record_product_workflow_event(
+            workflow="source_onboarding",
+            event="source_onboarding_completed",
+            outcome="success",
+        )
 
 
 __all__ = [

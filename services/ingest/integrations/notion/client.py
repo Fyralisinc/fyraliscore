@@ -32,6 +32,7 @@ import httpx
 import structlog
 
 from lib.shared.errors import NotionApiError
+from services.ingest.integrations.secret_cache import SecretValueCache
 
 
 log = structlog.get_logger("integrations.notion.client")
@@ -92,7 +93,7 @@ class NotionClient:
         # Preset token (OAuth callback hands the freshly-minted token, and
         # spammer mode presets a recognized token); otherwise resolved
         # lazily from the secret store on first request.
-        self._bot_token: str | None = bot_token
+        self._bot_token_cache = SecretValueCache(preset=bot_token)
         self._token_lock = asyncio.Lock()
         self._api_base_url = (api_base_url or _NOTION_API_BASE).rstrip("/")
         self._owns_client = http_client is None
@@ -110,28 +111,17 @@ class NotionClient:
             self._http = None
 
     async def _token(self) -> str:
-        if self._bot_token is not None:
-            return self._bot_token
-        async with self._token_lock:
-            if self._bot_token is not None:
-                return self._bot_token
-            if (
-                self._secret_store is None
-                or self._secret_ref is None
-                or self._tenant_id is None
-            ):
-                raise NotionApiError(
-                    "notion client has no bot token and cannot resolve one "
-                    "(missing secret_store / secret_ref / tenant_id)",
-                    code="notion_api_unauthorized",
-                )
-            raw = await self._secret_store.get(
-                self._secret_ref, tenant_id=self._tenant_id,
+        return await self._bot_token_cache.resolve(
+            lock=self._token_lock,
+            secret_store=self._secret_store,
+            secret_ref=self._secret_ref,
+            tenant_id=self._tenant_id,
+            missing_error=lambda: NotionApiError(
+                "notion client has no bot token and cannot resolve one "
+                "(missing secret_store / secret_ref / tenant_id)",
+                code="notion_api_unauthorized",
             )
-            self._bot_token = (
-                raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            )
-            return self._bot_token
+        )
 
     async def _request(
         self,

@@ -85,7 +85,7 @@ async def test_inferential_think_enters_run_once_without_wide_transaction(
     async def fake_record_cost(*args, **kwargs):
         return None
 
-    monkeypatch.setenv("THINK_NARROW_INFERENTIAL_TX", "1")
+    monkeypatch.delenv("THINK_NARROW_INFERENTIAL_TX", raising=False)
     monkeypatch.setattr(reason_mod, "is_authoritative", lambda _trigger: False)
     monkeypatch.setattr(reason_mod, "_run_once", fake_run_once)
     monkeypatch.setattr(reason_mod, "_record_cost_for_outcome", fake_record_cost)
@@ -100,7 +100,7 @@ async def test_inferential_think_enters_run_once_without_wide_transaction(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("authoritative", "narrow_env"),
-    [(True, "1"), (False, "0")],
+    [(True, "1"), (False, "0"), (False, "false"), (False, "off")],
 )
 async def test_authoritative_and_disabled_narrow_mode_keep_wide_transaction(
     monkeypatch,

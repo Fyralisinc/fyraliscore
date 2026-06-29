@@ -2,8 +2,9 @@
 """Bootstrap helper for testing IN-07 + IN-08 + IN-09 on the merged
 `integration/ingestion-hardening` branch.
 
-Mints a fresh tenant + actor + session bearer, then issues OAuth state
-tokens for Slack and Discord and prints the OAuth authorize URLs.
+Mints a fresh tenant + actor, then issues OAuth state tokens for Slack and
+Discord and prints the OAuth authorize URLs. It intentionally does not mint or
+print API credentials; use the normal local auth flow for API calls.
 Click the URLs in a browser, complete the respective consent screen,
 and the callbacks will seed `provider_installations` +
 `encrypted_secrets` automatically. After both installs land, send a
@@ -29,7 +30,6 @@ if str(_REPO_ROOT) not in sys.path:
 import asyncpg
 
 from lib.shared.ids import uuid7
-from services.app.gateway.auth import create_session
 from services.ingest.integrations.discord.oauth import (
     issue_state_token as discord_issue_state_token,
 )
@@ -39,8 +39,8 @@ from services.ingest.integrations.slack.oauth import (
 
 
 _TENANT_NAME = "integration-hardening-test"
-_ACTOR_DISPLAY = "Prajwal (integration test)"
-_ACTOR_EMAIL = "rachin.kalakheti@gmail.com"
+_ACTOR_DISPLAY = "Integration Test User"
+_ACTOR_EMAIL = "integration-user@example.test"
 
 
 async def _get_or_create_tenant(pool: asyncpg.Pool) -> UUID:
@@ -103,9 +103,6 @@ async def main() -> None:
     try:
         tenant_id = await _get_or_create_tenant(pool)
         actor_id = await _get_or_create_actor(pool, tenant_id)
-        token_str, _ctx = await create_session(
-            pool, actor_id=actor_id, tenant_id=tenant_id,
-        )
         slack_state = await slack_issue_state_token(tenant_id, pool)
         discord_state = await discord_issue_state_token(tenant_id, pool)
 
@@ -117,9 +114,6 @@ async def main() -> None:
         print("================================================================")
         print(f"Tenant ID : {tenant_id}")
         print(f"Actor ID  : {actor_id}")
-        print()
-        print(f"Bearer    : {token_str}")
-        print("  (24h TTL; keep handy for /v1/* admin calls if needed.)")
         print()
         print("Step 1 — Install Slack: open this URL in a browser, click")
         print("         'Allow', wait for the success redirect.")

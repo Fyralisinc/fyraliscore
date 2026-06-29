@@ -131,6 +131,10 @@ async def seed_prediction(
     resolution_days: int = 5,
     impact: dict[str, Any] | None = None,
     key_drivers: list[dict[str, Any]] | None = None,
+    target_node_kind: str | None = None,
+    target_node_id: UUID | None = None,
+    created_by_actor_id: UUID | None = None,
+    scope_actors: list[UUID] | None = None,
     target_label: str | None = None,
     outcome: str | None = None,
     timeliness: str | None = None,
@@ -146,15 +150,21 @@ async def seed_prediction(
         """
         INSERT INTO predictions (
           id, tenant_id, status, statement, category, target_label,
+          target_node_kind, target_node_id,
+          created_by_actor_id, scope_actors,
           confidence, key_drivers, impact,
           resolution_at, resolved_at, outcome, resolution_timeliness
         ) VALUES (
           $1, $2, $3, $4, $5, $6,
-          $7, $8::jsonb, $9::jsonb,
-          $10, $11, $12, $13
+          $7, $8,
+          $9, $10::uuid[],
+          $11, $12::jsonb, $13::jsonb,
+          $14, $15, $16, $17
         )
         """,
         pid, tenant, status, statement, category, target_label,
+        target_node_kind, target_node_id,
+        created_by_actor_id, scope_actors or [],
         confidence,
         json.dumps(key_drivers or []),
         json.dumps(impact or {}),

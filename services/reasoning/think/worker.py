@@ -48,6 +48,7 @@ from lib.observability.health import (
     start_health_server,
 )
 from lib.observability.metrics import render_default
+from lib.shared.backoff import queue_retry_backoff_seconds
 from lib.shared.ids import uuid7
 from services.domain.triggers import enqueue_trigger
 
@@ -486,6 +487,37 @@ def _daily_budget_usd_per_tenant() -> float | None:
     return value if value > 0 else None
 
 
+def _daily_token_budget_per_tenant() -> int | None:
+    """Daily per-tenant LLM token ceiling. None disables (default)."""
+    raw = os.environ.get("LLM_DAILY_TOKEN_BUDGET_PER_TENANT")
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _daily_request_budget_per_tenant() -> int | None:
+    """Daily per-tenant LLM request ceiling. None disables (default)."""
+    raw = os.environ.get("LLM_DAILY_REQUEST_BUDGET_PER_TENANT")
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _rowcount_from_execute_tag(tag: str) -> int:
+    parts = tag.split()
+    if parts and parts[-1].isdigit():
+        return int(parts[-1])
+    return 0
+
+
 # ---------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------
@@ -639,6 +671,13 @@ class ThinkWorker:
             run_heartbeat_ticker(heartbeat, self._shutdown_event)
         )
         try:
+            try:
+                await self._recover_orphaned_trigger_locks()
+            except Exception as e:  # noqa: BLE001
+                _log.warning(
+                    "think.worker.lock_recovery_failed",
+                    error=str(e),
+                )
             while not self._shutdown_event.is_set():
                 heartbeat.touch()
                 try:
@@ -681,6 +720,48 @@ class ThinkWorker:
 
     async def stop(self) -> None:
         self._shutdown_event.set()
+
+    async def _recover_orphaned_trigger_locks(self) -> int:
+        tenant_clause = ""
+        args: list[Any] = [
+            self.config.worker_id,
+            str(self.config.trigger_lock_timeout_s),
+        ]
+        if self.config.tenant_filter is not None:
+            args.append(self.config.tenant_filter)
+            tenant_clause = f"AND tenant_id = ${len(args)}"
+
+        async with self.pool.acquire() as conn:
+            tag = await conn.execute(
+                f"""
+                UPDATE think_trigger_queue
+                SET locked_by = NULL,
+                    locked_at = NULL
+                WHERE completed_at IS NULL
+                  AND locked_by IS NOT NULL
+                  {tenant_clause}
+                  AND (
+                    locked_by = $1
+                    OR locked_at IS NULL
+                    OR locked_at < now() - ($2 || ' seconds')::interval
+                  )
+                """,
+                *args,
+            )
+
+        recovered = _rowcount_from_execute_tag(tag)
+        if recovered:
+            emit(
+                "think.worker.recovered_orphaned_trigger_locks",
+                recovered=recovered,
+                worker_id=self.config.worker_id,
+                tenant_filter=(
+                    str(self.config.tenant_filter)
+                    if self.config.tenant_filter is not None
+                    else None
+                ),
+            )
+        return recovered
 
     # -----------------------------------------------------------------
     # Reeval-queue promotion
@@ -2132,33 +2213,55 @@ class ThinkWorker:
         return self._escalation_provider
 
     async def _tenant_over_daily_budget(self, tenant_id: UUID) -> bool:
-        """Cost-plan §3.1: True when the tenant's today LLM spend (from
-        `think_run_costs`) has reached `LLM_DAILY_BUDGET_USD_PER_TENANT`. Returns
-        False immediately — no query — when enforcement is off or unset."""
+        """Cost-plan §3.1: True when today's tenant LLM usage has
+        reached a configured daily LLM ceiling. Returns False immediately — no
+        query — when enforcement is off or no ceiling is set."""
         if not _daily_budget_enforcement_enabled():
             return False
-        budget = _daily_budget_usd_per_tenant()
-        if budget is None:
+        spend_budget = _daily_budget_usd_per_tenant()
+        token_budget = _daily_token_budget_per_tenant()
+        request_budget = _daily_request_budget_per_tenant()
+        if spend_budget is None and token_budget is None and request_budget is None:
             return False
         async with self.pool.acquire() as conn:
-            spend = await conn.fetchval(
+            row = await conn.fetchrow(
                 """
-                SELECT COALESCE(SUM(llm_cost_usd), 0)::float8
+                SELECT
+                    COALESCE(SUM(llm_cost_usd), 0)::float8 AS spend_usd,
+                    COALESCE(
+                        SUM(llm_input_tokens_total + llm_output_tokens_total),
+                        0
+                    )::bigint AS total_tokens,
+                    COALESCE(SUM(llm_calls_count), 0)::bigint AS total_requests
                 FROM think_run_costs
                 WHERE tenant_id = $1
                   AND computed_at >= date_trunc('day', now() AT TIME ZONE 'UTC')
                 """,
                 tenant_id,
             )
-        over = float(spend or 0.0) >= budget
-        if over:
+        spend = float(row["spend_usd"] or 0.0) if row is not None else 0.0
+        total_tokens = int(row["total_tokens"] or 0) if row is not None else 0
+        total_requests = int(row["total_requests"] or 0) if row is not None else 0
+        spend_over = spend_budget is not None and spend >= spend_budget
+        token_over = token_budget is not None and total_tokens >= token_budget
+        request_over = (
+            request_budget is not None and total_requests >= request_budget
+        )
+        if spend_over or token_over or request_over:
             _log.warning(
                 "think.daily_budget_exceeded",
                 tenant_id=str(tenant_id),
-                spend_usd=float(spend or 0.0),
-                budget_usd=budget,
+                spend_usd=spend,
+                budget_usd=spend_budget,
+                total_tokens=total_tokens,
+                token_budget=token_budget,
+                total_requests=total_requests,
+                request_budget=request_budget,
+                spend_over=spend_over,
+                token_over=token_over,
+                request_over=request_over,
             )
-        return over
+        return spend_over or token_over or request_over
 
     async def _defer_trigger_for_budget(
         self, trigger_id: UUID, tenant_id: UUID
@@ -2388,7 +2491,8 @@ class ThinkWorker:
                     UPDATE think_trigger_queue
                     SET completed_at = now(),
                         locked_by = NULL,
-                        locked_at = NULL
+                        locked_at = NULL,
+                        last_error = NULL
                     WHERE id = $1
                       AND locked_by = $2
                     """,
@@ -2406,7 +2510,8 @@ class ThinkWorker:
                         UPDATE think_trigger_queue
                         SET completed_at = now(),
                             locked_by = NULL,
-                            locked_at = NULL
+                            locked_at = NULL,
+                            last_error = NULL
                         WHERE id = ANY($1::uuid[])
                           AND batch_parent_id = $2
                           AND completed_at IS NULL
@@ -2476,7 +2581,7 @@ class ThinkWorker:
                 backoff_seconds = (
                     provider_backoff_seconds
                     if provider_backoff_seconds is not None
-                    else min(300, 10 * (2 ** min(attempts, 4)))
+                    else queue_retry_backoff_seconds(attempts)
                 )
                 if terminal:
                     await conn.execute(
@@ -2484,13 +2589,16 @@ class ThinkWorker:
                         UPDATE think_trigger_queue
                         SET attempts = $2,
                             completed_at = now(),
+                            last_error = $3,
                             locked_by = NULL,
                             locked_at = NULL
                         WHERE id = $1
                         """,
                         trigger_id,
                         attempts,
+                        error[:2000],
                     )
+                    METRICS.inc_retry_exhausted("think_trigger_queue")
                     member_ids = _payload_uuid_list(payload, "batch_member_trigger_ids")
                     if member_ids:
                         # Cost-plan §2.3 C7: stamp `unbatched_from` so released
@@ -2540,6 +2648,7 @@ class ThinkWorker:
                             locked_by = NULL,
                             locked_at = NULL,
                             scheduled_for = now() + ($3 || ' seconds')::interval,
+                            last_error = $5,
                             payload = jsonb_set(
                                 payload, '{validation_feedback}',
                                 to_jsonb($4::text), true
@@ -2550,6 +2659,7 @@ class ThinkWorker:
                         attempts,
                         str(backoff_seconds),
                         feedback[:2000],
+                        error[:2000],
                     )
                 else:
                     await conn.execute(
@@ -2558,12 +2668,14 @@ class ThinkWorker:
                         SET attempts = $2,
                             locked_by = NULL,
                             locked_at = NULL,
-                            scheduled_for = now() + ($3 || ' seconds')::interval
+                            scheduled_for = now() + ($3 || ' seconds')::interval,
+                            last_error = $4
                         WHERE id = $1
                         """,
                         trigger_id,
                         attempts,
                         str(backoff_seconds),
+                        error[:2000],
                     )
 
     async def _dead_letter_reeval(
@@ -2584,6 +2696,7 @@ class ThinkWorker:
         )
         if row is None:
             return
+        METRICS.inc_retry_exhausted("model_reeval_queue")
         await conn.execute(
             """
             INSERT INTO model_reeval_dead_letter
@@ -2622,25 +2735,51 @@ class ThinkWorker:
     async def _queue_depth(self) -> int:
         async with self.pool.acquire() as conn:
             if self.config.tenant_filter is None:
-                n = await conn.fetchval(
+                row = await conn.fetchrow(
                     """
-                    SELECT COUNT(*) FROM think_trigger_queue
-                    WHERE completed_at IS NULL
-                      AND batch_parent_id IS NULL
-                    """
+                    SELECT
+                      COUNT(*) FILTER (
+                        WHERE completed_at IS NULL
+                          AND batch_parent_id IS NULL
+                      )::int AS pending_depth,
+                      COUNT(*) FILTER (
+                        WHERE completed_at IS NULL
+                          AND locked_by IS NOT NULL
+                          AND (
+                            locked_at IS NULL
+                            OR locked_at < now() - ($1 || ' seconds')::interval
+                          )
+                      )::int AS stale_locks
+                    FROM think_trigger_queue
+                    """,
+                    str(self.config.trigger_lock_timeout_s),
                 )
             else:
-                n = await conn.fetchval(
+                row = await conn.fetchrow(
                     """
-                    SELECT COUNT(*) FROM think_trigger_queue
-                    WHERE completed_at IS NULL
-                      AND batch_parent_id IS NULL
-                      AND tenant_id = $1
+                    SELECT
+                      COUNT(*) FILTER (
+                        WHERE completed_at IS NULL
+                          AND batch_parent_id IS NULL
+                      )::int AS pending_depth,
+                      COUNT(*) FILTER (
+                        WHERE completed_at IS NULL
+                          AND locked_by IS NOT NULL
+                          AND (
+                            locked_at IS NULL
+                            OR locked_at < now() - ($2 || ' seconds')::interval
+                          )
+                      )::int AS stale_locks
+                    FROM think_trigger_queue
+                    WHERE tenant_id = $1
                     """,
                     self.config.tenant_filter,
+                    str(self.config.trigger_lock_timeout_s),
                 )
-            depth = int(n or 0)
+            depth = int(row["pending_depth"] or 0) if row is not None else 0
+            stale_locks = int(row["stale_locks"] or 0) if row is not None else 0
             METRICS.set_queue_depth("all", depth)
+            METRICS.set_stale_trigger_locks(stale_locks)
             return depth
 
 

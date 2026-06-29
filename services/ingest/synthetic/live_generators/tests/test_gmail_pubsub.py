@@ -78,16 +78,16 @@ async def test_pubsub_generator_basic_push_succeeds(
     app = _build_app(fresh_db)
     client = MockGmailClient(
         fixture=make_gmail_mailbox(
-            email="alice@y1.com", messages=0,
+            email="alice@y1.example", messages=0,
             starting_history_id=1000,
         ),
     )
     async with GmailPubSubGenerator(
         app=app, pool=fresh_db,
-        mailboxes={"alice@y1.com": client},
+        mailboxes={"alice@y1.example": client},
     ) as gen:
         result = await gen.simulate_push(
-            mailbox_email="alice@y1.com", new_messages=3,
+            mailbox_email="alice@y1.example", new_messages=3,
         )
 
     assert result.http_status == 200, result.response_body
@@ -104,14 +104,14 @@ async def test_pubsub_generator_coordinates_mock_gmail_state(
     app = _build_app(fresh_db)
     client = MockGmailClient(
         fixture=make_gmail_mailbox(
-            email="b@y1.com", messages=0, starting_history_id=2000,
+            email="b@y1.example", messages=0, starting_history_id=2000,
         ),
     )
     async with GmailPubSubGenerator(
-        app=app, pool=fresh_db, mailboxes={"b@y1.com": client},
+        app=app, pool=fresh_db, mailboxes={"b@y1.example": client},
     ) as gen:
         result = await gen.simulate_push(
-            mailbox_email="b@y1.com", new_messages=4,
+            mailbox_email="b@y1.example", new_messages=4,
         )
     # Mock advanced by 4 events from baseline 2000.
     assert client._fixture["current_history_id"] == "2004"
@@ -127,7 +127,7 @@ async def test_pubsub_generator_burst_pattern_executes_correctly(
     app = _build_app(fresh_db)
     client = MockGmailClient(
         fixture=make_gmail_mailbox(
-            email="bursty@y1.com", messages=0,
+            email="bursty@y1.example", messages=0,
             starting_history_id=3000,
         ),
     )
@@ -135,7 +135,7 @@ async def test_pubsub_generator_burst_pattern_executes_correctly(
         tenants=[
             PerTenantBurst(
                 tenant_slug="bursty",
-                mailbox_email="bursty@y1.com",
+                mailbox_email="bursty@y1.example",
                 # 5 small bursts back-to-back; no large sleeps in tests.
                 burst_pattern=[(50, 2), (50, 2), (50, 2), (50, 2),
                                (50, 2)],
@@ -144,7 +144,7 @@ async def test_pubsub_generator_burst_pattern_executes_correctly(
     )
     async with GmailPubSubGenerator(
         app=app, pool=fresh_db,
-        mailboxes={"bursty@y1.com": client},
+        mailboxes={"bursty@y1.example": client},
     ) as gen:
         result = await gen.run_scenario(scenario)
 
@@ -165,9 +165,9 @@ async def test_pubsub_generator_multi_tenant_parallel(
     observations belong only to that tenant; no cross-contamination."""
     app = _build_app(fresh_db)
     mailboxes = {
-        f"multi-{i}@y1.com": MockGmailClient(
+        f"multi-{i}@y1.example": MockGmailClient(
             fixture=make_gmail_mailbox(
-                email=f"multi-{i}@y1.com", messages=0,
+                email=f"multi-{i}@y1.example", messages=0,
                 starting_history_id=4000 + i * 1000,
             ),
         )
@@ -177,7 +177,7 @@ async def test_pubsub_generator_multi_tenant_parallel(
         tenants=[
             PerTenantBurst(
                 tenant_slug=f"multi-{i}",
-                mailbox_email=f"multi-{i}@y1.com",
+                mailbox_email=f"multi-{i}@y1.example",
                 burst_pattern=[(0, 2)],
             )
             for i in range(3)
@@ -215,7 +215,7 @@ async def test_pubsub_generator_replay_idempotency(
     app = _build_app(fresh_db)
     client = MockGmailClient(
         fixture=make_gmail_mailbox(
-            email="replay@y1.com", messages=0,
+            email="replay@y1.example", messages=0,
             starting_history_id=5000,
         ),
     )
@@ -223,7 +223,7 @@ async def test_pubsub_generator_replay_idempotency(
         tenants=[
             PerTenantBurst(
                 tenant_slug="replay",
-                mailbox_email="replay@y1.com",
+                mailbox_email="replay@y1.example",
                 burst_pattern=[(0, 2), (0, 2)],  # 4 unique messages
             ),
         ],
@@ -231,11 +231,11 @@ async def test_pubsub_generator_replay_idempotency(
     )
     async with GmailPubSubGenerator(
         app=app, pool=fresh_db,
-        mailboxes={"replay@y1.com": client},
+        mailboxes={"replay@y1.example": client},
         rng_seed=0,
     ) as gen:
         result = await gen.run_scenario(scenario)
-        tenant_id = gen._bindings["replay@y1.com"].tenant_id
+        tenant_id = gen._bindings["replay@y1.example"].tenant_id
 
     # 2 real bursts + 2 replays = 4 pushes total.
     assert len(result.pushes) == 4
@@ -262,17 +262,17 @@ async def test_pubsub_generator_handles_signature_validation(
     app = _build_app(fresh_db)
     client = MockGmailClient(
         fixture=make_gmail_mailbox(
-            email="sig@y1.com", messages=0, starting_history_id=6000,
+            email="sig@y1.example", messages=0, starting_history_id=6000,
         ),
     )
     async with GmailPubSubGenerator(
-        app=app, pool=fresh_db, mailboxes={"sig@y1.com": client},
+        app=app, pool=fresh_db, mailboxes={"sig@y1.example": client},
     ) as gen:
         # Inside: verifier is patched (we know because the push
         # succeeds without a real OIDC token).
         assert gp_mod.verify_pubsub_oidc_token is not original_verify
         result = await gen.simulate_push(
-            mailbox_email="sig@y1.com", new_messages=1,
+            mailbox_email="sig@y1.example", new_messages=1,
         )
         assert result.http_status == 200
 
@@ -293,15 +293,15 @@ async def test_pubsub_generator_fault_profile_rate_limit(
     from services.ingest.synthetic.fault_profiles import FaultProfile
     client = MockGmailClient(
         fixture=make_gmail_mailbox(
-            email="rl@y1.com", messages=0, starting_history_id=7000,
+            email="rl@y1.example", messages=0, starting_history_id=7000,
         ),
         profile=FaultProfile(rate_limit_after_n_requests=0),
     )
     async with GmailPubSubGenerator(
-        app=app, pool=fresh_db, mailboxes={"rl@y1.com": client},
+        app=app, pool=fresh_db, mailboxes={"rl@y1.example": client},
     ) as gen:
         result = await gen.simulate_push(
-            mailbox_email="rl@y1.com", new_messages=1,
+            mailbox_email="rl@y1.example", new_messages=1,
         )
 
     assert result.http_status == 200, result.response_body
@@ -324,14 +324,14 @@ async def test_pubsub_generator_composable_with_x3_seeding(
     app = _build_app(fresh_db)
     client = MockGmailClient(
         fixture=make_gmail_mailbox(
-            email="compose@y1.com", messages=0,
+            email="compose@y1.example", messages=0,
             starting_history_id=8000,
         ),
     )
     async with GmailPubSubGenerator(
-        app=app, pool=fresh_db, mailboxes={"compose@y1.com": client},
+        app=app, pool=fresh_db, mailboxes={"compose@y1.example": client},
     ) as gen:
-        tenant_id = gen._bindings["compose@y1.com"].tenant_id
+        tenant_id = gen._bindings["compose@y1.example"].tenant_id
 
         # Simulate a prior backfill observation (X3-style write).
         backfill_obs_id = await fresh_db.fetchval(
@@ -350,7 +350,7 @@ async def test_pubsub_generator_composable_with_x3_seeding(
 
         # Now drive a live push.
         result = await gen.simulate_push(
-            mailbox_email="compose@y1.com", new_messages=2,
+            mailbox_email="compose@y1.example", new_messages=2,
         )
         assert result.http_status == 200
 
@@ -374,16 +374,16 @@ async def test_pubsub_generator_default_kwarg_preserves_existing_behavior(
     app = _build_app(fresh_db)
     client = MockGmailClient(
         fixture=make_gmail_mailbox(
-            email="def@y1.com", messages=0, starting_history_id=9100,
+            email="def@y1.example", messages=0, starting_history_id=9100,
         ),
     )
     async with GmailPubSubGenerator(
-        app=app, pool=fresh_db, mailboxes={"def@y1.com": client},
+        app=app, pool=fresh_db, mailboxes={"def@y1.example": client},
     ) as gen:
-        tenant_id = gen._bindings["def@y1.com"].tenant_id
-        install_id = gen._bindings["def@y1.com"].gmail_installation_id
+        tenant_id = gen._bindings["def@y1.example"].tenant_id
+        install_id = gen._bindings["def@y1.example"].gmail_installation_id
         result = await gen.simulate_push(
-            mailbox_email="def@y1.com", new_messages=1,
+            mailbox_email="def@y1.example", new_messages=1,
         )
 
     assert result.http_status == 200, result.response_body
@@ -407,18 +407,18 @@ async def test_pubsub_generator_injected_identity_propagates_to_observation(
     app = _build_app(fresh_db)
     client = MockGmailClient(
         fixture=make_gmail_mailbox(
-            email="inj@y1.com", messages=0, starting_history_id=9200,
+            email="inj@y1.example", messages=0, starting_history_id=9200,
         ),
     )
     injected_mid = "msg-y1-twin-0001"
     injected_idate = "1767225600000"  # 2026-01-01T00:00:00Z in epoch ms
     async with GmailPubSubGenerator(
-        app=app, pool=fresh_db, mailboxes={"inj@y1.com": client},
+        app=app, pool=fresh_db, mailboxes={"inj@y1.example": client},
     ) as gen:
-        tenant_id = gen._bindings["inj@y1.com"].tenant_id
-        install_id = gen._bindings["inj@y1.com"].gmail_installation_id
+        tenant_id = gen._bindings["inj@y1.example"].tenant_id
+        install_id = gen._bindings["inj@y1.example"].gmail_installation_id
         result = await gen.simulate_push(
-            mailbox_email="inj@y1.com", new_messages=1,
+            mailbox_email="inj@y1.example", new_messages=1,
             message_id=injected_mid, internal_date=injected_idate,
         )
 
@@ -447,7 +447,7 @@ async def test_pubsub_generator_reuses_existing_install(
 
     from lib.shared.ids import uuid7
 
-    email = "reuse@y1.com"
+    email = "reuse@y1.example"
     pre_tenant = _uuid4()
     pre_install = uuid7()
     await fresh_db.execute(
@@ -458,7 +458,7 @@ async def test_pubsub_generator_reuses_existing_install(
         "INSERT INTO gmail_installations "
         "(id, tenant_id, workspace_domain, service_account_email, scope) "
         "VALUES ($1, $2, $3, $4, 'gmail.metadata')",
-        pre_install, pre_tenant, "y1.com", "sa@y1-test.iam.gserviceaccount.com",
+        pre_install, pre_tenant, "y1.example", "sa@y1-test.iam.gserviceaccount.com",
     )
     await fresh_db.execute(
         "INSERT INTO gmail_mailbox_watches "

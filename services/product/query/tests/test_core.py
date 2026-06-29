@@ -80,6 +80,28 @@ async def test_handler_empty_query_raises(handler):
         await handler.answer_query(req)
 
 
+async def test_handler_close_closes_rendering_adapter(fake_strategies):
+    class ClosableRenderingAdapter(FakeRenderingAdapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    renderer = ClosableRenderingAdapter()
+    handler = QueryHandler(
+        conn_provider=fake_conn_provider(),
+        classifier=ScriptedClassifier(category="arbitrary"),
+        rendering_adapter=renderer,
+        cache_adapter=InMemoryCacheAdapter(),
+    )
+
+    await handler.aclose()
+
+    assert renderer.closed is True
+
+
 async def test_handler_passes_history_to_rendering(fake_strategies):
     renderer = FakeRenderingAdapter()
     handler = QueryHandler(

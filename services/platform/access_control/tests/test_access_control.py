@@ -630,7 +630,7 @@ async def test_first_person_override(tx_conn, tenant):
 
 
 async def test_admin_override_with_audit(tx_conn, tenant):
-    from services.platform.access_control.audit import record_override
+    from services.platform.access_control.audit import record_override_if_needed
 
     admin = await insert_actor(tx_conn, tenant)
     owner = await insert_actor(tx_conn, tenant)
@@ -647,10 +647,12 @@ async def test_admin_override_with_audit(tx_conn, tenant):
     assert decision.override_applied
 
     # Record audit row.
-    log_id = await record_override(
-        admin, "commitment", cid, "admin",
+    log_id = await record_override_if_needed(
+        decision,
+        actor_id=admin,
+        entity_type="commitment",
+        entity_id=cid,
         conn=tx_conn, tenant_id=tenant,
-        reason="test_admin_override",
     )
     assert log_id is not None
     row = await tx_conn.fetchrow(
@@ -662,7 +664,7 @@ async def test_admin_override_with_audit(tx_conn, tenant):
     )
     assert row is not None
     assert row["override_kind"] == "admin"
-    assert row["reason"] == "test_admin_override"
+    assert row["reason"] == "admin_override"
 
     # Admin override still denies cross-tenant (Layer 1 > override).
     other = uuid7()

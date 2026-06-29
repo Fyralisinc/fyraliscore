@@ -1,0 +1,87 @@
+name: Deploy to Staging
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: "CI run id on main containing signed fyraliscore-sboms."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deploy:
+    name: Deploy to staging host
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    environment:
+      name: staging
+
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.6.0
+
+      - name: Download signed SBOM artifacts from CI run
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: fyraliscore-sboms
+          path: release-artifacts
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download signed SBOM artifacts from requested CI run
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@v4
+        with:
+          name: fyraliscore-sboms
+          path: release-artifacts
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify signed release artifacts
+        run: |
+          set -euo pipefail
+          cd release-artifacts
+          COSIGN_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@refs/heads/main"
+          cosign verify-blob \
+            --certificate-identity "${COSIGN_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --bundle fyraliscore-source.spdx.json.sigstore \
+            fyraliscore-source.spdx.json
+          cosign verify-blob \
+            --certificate-identity "${COSIGN_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --bundle fyraliscore-image.cdx.json.sigstore \
+            fyraliscore-image.cdx.json
+          cosign verify-blob \
+            --certificate-identity "${COSIGN_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --bundle fyraliscore-sboms.SHA256SUMS.sigstore \
+            fyraliscore-sboms.SHA256SUMS
+          sha256sum -c fyraliscore-sboms.SHA256SUMS
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.STAGING_LIGHTSAIL_HOST }}
+          username: ${{ secrets.STAGING_LIGHTSAIL_USER }}
+          key: ${{ secrets.STAGING_LIGHTSAIL_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.STAGING_APP_DIR }}"
+            PREV_SHA="$(git rev-parse HEAD)"
+
+            echo "==> Pulling latest main"
+            git fetch origin main
+            git reset --hard origin/main
+
+            bash scripts/deploy_compose_release.sh --previous-sha "${PREV_SHA}"

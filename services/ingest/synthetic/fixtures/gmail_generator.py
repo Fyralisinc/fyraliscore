@@ -5,7 +5,7 @@ produces a deterministic mailbox shaped to feed `MockGmailClient`.
 
 Output shape:
     {
-      "email": "alice@x.com",
+      "email": "alice@x.example",
       "messages": [{"id": "msg-001", "threadId": "thr-001",
                     "snippet": "...", "internalDate": "...",
                     "payload": {...}, "historyId": "1001"}, ...],

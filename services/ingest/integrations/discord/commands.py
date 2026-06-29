@@ -24,13 +24,13 @@ audit row carries `status='error'` and the Discord error code.
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
 import structlog
 
 from lib.shared.errors import DiscordOAuthError
+from lib.shared.secrets import load_app_secret_text_from_env
 
 
 log = structlog.get_logger("integrations.discord.commands")
@@ -70,7 +70,7 @@ async def register_fyralis_command(
     ignored in favour of the env-level `DISCORD_BOT_TOKEN`. See the
     module docstring for why.
     """
-    auth_token = os.environ.get("DISCORD_BOT_TOKEN", "")
+    auth_token = load_app_secret_text_from_env("DISCORD_BOT_TOKEN")
     if not auth_token:
         raise DiscordOAuthError(
             "DISCORD_BOT_TOKEN env var not configured — cannot register global commands",

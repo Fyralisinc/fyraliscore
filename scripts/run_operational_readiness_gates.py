@@ -477,10 +477,38 @@ def _production_env_contract_gate(args: argparse.Namespace) -> GateResult:
     )
 
 
+def _github_required_checks_gate(args: argparse.Namespace) -> GateResult:
+    token_present = bool(os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
+    repo_present = bool(os.environ.get("GITHUB_REPOSITORY"))
+    if not token_present or not repo_present:
+        return _manual_gate(
+            "github_main_required_checks",
+            (
+                "Run scripts/check_github_required_checks.py --live with "
+                "GITHUB_REPOSITORY and a GitHub token that can read branch "
+                "protection/rulesets."
+            ),
+            metrics={
+                "github_token_present": token_present,
+                "github_repository_present": repo_present,
+            },
+            artifacts={"policy": ".github/main-required-checks.json"},
+        )
+    return _run_command_gate(
+        "github_main_required_checks",
+        _python_command("scripts/check_github_required_checks.py", "--live"),
+        details="GitHub main branch protection requires all checked-in CI gates.",
+        timeout_s=min(args.command_timeout_s, 60),
+        env=_base_env(),
+        artifacts={"policy": ".github/main-required-checks.json"},
+    )
+
+
 def _collect_gates(args: argparse.Namespace) -> list[GateResult]:
     gates: list[GateResult] = [
         _artifact_gate(),
         _production_env_contract_gate(args),
+        _github_required_checks_gate(args),
         _feedback_gap_gate(args),
         _storyline_report_gate(args),
         _schema_drift_gate(args),

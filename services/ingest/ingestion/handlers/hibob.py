@@ -37,6 +37,7 @@ from typing import Any
 
 from lib.shared.errors import ValidationError
 
+from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.handlers import (
     CHANNEL_TRUST_MAP,
     ObservationDraft,
@@ -83,17 +84,6 @@ def _parse_iso(value: Any) -> datetime | None:
 
 def _truncate(text: str, limit: int = 600) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def _external_id(company_id: str, entity_kind: str, entity_id: str, ver: str) -> str:
-    """`hibob:{company}:{entity}:{id}:{ver}` — namespaced by company and
-    discriminated by entity kind (so multiple entity kinds sharing an id never
-    collide), VERSIONED by the row's modified/version so each change re-observes.
-
-    Built inline (NOT via the shared idempotency module) so this handler adds no
-    new shared-file surface; the format is the CONTRACT external_id verbatim.
-    """
-    return f"hibob:{company_id}:{entity_kind}:{entity_id}:{ver}"
 
 
 # ---------------------------------------------------------------------
@@ -174,7 +164,12 @@ def _entity_draft(
     # Version slot for the external_id: prefer the row's modified field; fall
     # back to a stable marker so an unversioned row dedups against itself.
     ver = modified or "0"
-    external_id = _external_id(company_id, entity_kind, entity_id, ver)
+    external_id = idempotency.hibob_entity(
+        company_id,
+        entity_kind,
+        entity_id,
+        ver,
+    )
 
     occurred = _parse_iso(modified) or _utcnow()
     status_word = _status_of(entity)
@@ -235,13 +230,19 @@ def _thin_change_draft(
 ) -> ObservationDraft:
     """A webhook notification with no full entity body. Emit a thin change
     observation; the next backfill/poll re-fetch fills the full body (and dedups
-    by the modified version if unchanged)."""
+    by the modified version if unchanged). If the provider omits a version, use
+    a stable marker so webhook redelivery still dedups."""
     if not company_id or not entity_id:
         raise ValidationError(
             "hibob change missing company_id/id", channel=_CHANNEL,
         )
-    ver = modified or _utcnow().isoformat()
-    external_id = _external_id(company_id, entity_kind, entity_id, f"chg:{ver}")
+    ver = modified or "none"
+    external_id = idempotency.hibob_change(
+        company_id,
+        entity_kind,
+        entity_id,
+        ver,
+    )
     occurred = _parse_iso(modified) or _utcnow()
     ev = event_type or "update"
     content_text = f"{entity_kind.title()} #{entity_id} {ev.lower()} (live)"

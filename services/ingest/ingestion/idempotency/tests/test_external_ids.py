@@ -124,6 +124,53 @@ def test_quickbooks_entity_and_thin_change() -> None:
     )
 
 
+def test_ramp_entity_and_thin_change() -> None:
+    assert idem.ramp_entity("transaction", "biz1", "t1", "cleared") == (
+        "ramp:biz1:txn:t1:cleared"
+    )
+    assert idem.ramp_entity("reimbursement", "biz1", "r1", "pending") == (
+        "ramp:biz1:reimb:r1:pending"
+    )
+    assert idem.ramp_entity("card", "biz1", "c1", "active") == (
+        "ramp:biz1:card:c1:active"
+    )
+    assert idem.ramp_entity("user", "biz1", "u1", "user_active") == (
+        "ramp:biz1:user:u1:user_active"
+    )
+    assert idem.ramp_change("biz1", "t1", "evt-1") == "ramp:biz1:txn:t1:chg:evt-1"
+
+
+def test_linkedin_hibob_ashby_keys() -> None:
+    assert idem.linkedin_entity("urn:li:org:1", "post", "urn:li:share:9") == (
+        "linkedin:urn:li:org:1:post:urn:li:share:9"
+    )
+    assert idem.hibob_entity("co1", "employee", "e1", "2026-05-01T00:00:00Z") == (
+        "hibob:co1:employee:e1:2026-05-01T00:00:00Z"
+    )
+    assert idem.hibob_change("co1", "employee", "e1", "evt-1") == (
+        "hibob:co1:employee:e1:chg:evt-1"
+    )
+    assert idem.ashby_entity("org1", "candidate", "cand1") == (
+        "ashby:org1:candidate:cand1"
+    )
+
+
+def test_adopted_verbatim_registry_documents_pass_through_keys() -> None:
+    expected = {
+        "calendar:event",
+        "email:message",
+        "github:comment",
+        "github:review",
+        "github:check_run",
+        "linear:issue",
+        "linear:comment",
+        "linear:project",
+        "stripe:event",
+        "system",
+    }
+    assert expected.issubset(idem.ADOPTED_VERBATIM_KEYS)
+
+
 # --- Surface invariants ----------------------------------------------
 def test_all_exports_callable() -> None:
     for name in idem.__all__:

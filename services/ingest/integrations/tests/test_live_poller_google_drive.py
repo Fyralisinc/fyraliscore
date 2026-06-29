@@ -5,6 +5,7 @@ exercised with a stubbed fetcher + stubbed `core.ingest` against real Postgres.
 """
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -127,6 +128,45 @@ async def test_lease_skips_unseeded_paused_and_recent(
     async with fresh_db.acquire() as conn:
         leased = await live_poller._lease_due_targets(conn, limit=50)
     assert leased == []
+
+
+async def test_concurrent_replicas_lease_distinct_targets(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    _tenant_a, _install_a, target_a = await _seed_target(
+        fresh_db,
+        start_page_token="tok-a",
+    )
+    _tenant_b, _install_b, target_b = await _seed_target(
+        fresh_db,
+        start_page_token="tok-b",
+    )
+    first_ready = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _lease_one() -> UUID:
+        async with fresh_db.acquire() as conn:
+            async with conn.transaction():
+                rows = await live_poller._lease_due_targets(conn, limit=1)
+                assert len(rows) == 1
+                first_ready.set()
+                await release.wait()
+                return rows[0]["id"]
+
+    first = asyncio.create_task(_lease_one())
+    try:
+        await asyncio.wait_for(first_ready.wait(), timeout=5.0)
+        async with fresh_db.acquire() as conn:
+            async with conn.transaction():
+                rows = await live_poller._lease_due_targets(conn, limit=1)
+                assert len(rows) == 1
+                second_id = rows[0]["id"]
+        release.set()
+        first_id = await asyncio.wait_for(first, timeout=5.0)
+    finally:
+        release.set()
+
+    assert {first_id, second_id} == {target_a, target_b}
 
 
 async def test_failure_bumps_counter(

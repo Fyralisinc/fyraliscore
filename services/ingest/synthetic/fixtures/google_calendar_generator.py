@@ -4,7 +4,7 @@
 serves and the X3 harness's install-seeding reads. Shape:
 
     {
-      "calendars": ["alice@acme.com", "bob@acme.com"],   # one shard each
+      "calendars": ["alice@acme.example", "bob@acme.example"],   # one shard each
       "events":  {calendar_id: [<Calendar v3 event objects>]},  # backfill
       "delta":   {calendar_id: [<Calendar v3 event objects>]},  # incremental
       "page_size": 250,
@@ -48,7 +48,7 @@ def _event(
         "creator": {"email": calendar_id},
         "attendees": [
             {"email": calendar_id, "responseStatus": "accepted"},
-            {"email": "guest@partner.com", "responseStatus": "tentative"},
+            {"email": "guest@partner.example", "responseStatus": "tentative"},
         ],
         "htmlLink": f"https://calendar.google.com/event?eid={eid}",
         # `updated` strictly increases with idx so the high-water mark is
@@ -69,7 +69,7 @@ def make_google_calendar(
 ) -> dict[str, Any]:
     """Build a backfill fixture: `events_per_calendar` confirmed events on
     each calendar. `delta` is left empty (clean backfill scenario)."""
-    calendars = list(calendars or ["alice@acme.com", "bob@acme.com"])
+    calendars = list(calendars or ["alice@acme.example", "bob@acme.example"])
     events: dict[str, list[dict[str, Any]]] = {}
     for cal in calendars:
         events[cal] = [

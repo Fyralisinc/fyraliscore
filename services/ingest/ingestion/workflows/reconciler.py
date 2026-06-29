@@ -132,6 +132,7 @@ import asyncpg
 import orjson
 
 from lib.shared.ids import uuid7
+from services.app.gateway.product_workflow_metrics import record_product_workflow_event
 from services.ingest.ingestion.progress.events import (
     CoverageConfidence,
     ProgressEvent,
@@ -681,7 +682,7 @@ class Reconciler(LongRunningService):
         }
         if failure_reason is not None:
             data["failure_reason"] = failure_reason
-        await emit_signal(
+        result = await emit_signal(
             conn,
             workflow_kind=TENANT_ONBOARDING_INBOX_KIND,
             workflow_id=TENANT_ONBOARDING_INBOX_ID,
@@ -689,6 +690,12 @@ class Reconciler(LongRunningService):
             idempotency_key=f"{run_id}:{source}",
             signal_data=data,
         )
+        if failure_reason is not None and result.was_new:
+            record_product_workflow_event(
+                workflow="source_onboarding",
+                event="source_onboarding_failed",
+                outcome="error",
+            )
 
     async def _persist_scan_state(
         self, *, signals_processed: int,

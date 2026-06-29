@@ -62,6 +62,51 @@ jobs:
       - name: Check architecture ratchets
         run: python scripts/check_architecture_ratchets.py
 
+      # Keeps the checked-in main-branch required status-check policy aligned
+      # with the workflow job names GitHub exposes for branch protection.
+      - name: Check required merge checks policy
+        run: python scripts/check_github_required_checks.py
+
+      # Verifies the production-mounted gateway route inventory remains behind
+      # the expected auth boundary and substrate routes keep row-level access.
+      - name: Check production route access
+        run: python scripts/audit_gateway_route_access.py --production --check > /tmp/gateway-route-access.md
+
+      # Ensures every bounded product workflow has explicit p95/p99 query
+      # budgets plus hot-path/index-review evidence before soak testing.
+      - name: Check product query performance budgets
+        run: python scripts/check_product_query_budgets.py
+
+      # Ensures tenant-scoped and expensive-worker concurrency controls remain
+      # explicit in the production environment contract.
+      - name: Check concurrency controls
+        run: python scripts/check_concurrency_controls.py
+
+      # Ensures explicit cross-tenant boundary tests stay present across DB,
+      # gateway, repository, worker, and realtime layers.
+      - name: Check cross-tenant boundary tests
+        run: python scripts/check_cross_tenant_boundary_tests.py
+
+      # Ensures every canonical ingestion source has a status/pause/resume/
+      # uninstall/rotation operator path through generic or dedicated tooling.
+      - name: Check source lifecycle contract
+        run: python scripts/check_source_lifecycle_contract.py
+
+      # Ensures every real-provider contract registry entry has a sanitized
+      # physical fixture committed under tests/contract/fixtures.
+      - name: Check real-provider contract fixture coverage
+        run: python scripts/check_contract_fixture_coverage.py
+
+      # Blocks product-facing HTTP routes from returning raw exception text or
+      # free-form implementation details instead of bounded error codes.
+      - name: Check product error contract
+        run: python scripts/check_product_error_contract.py
+
+      # Blocks gateway HTTP routes from returning raw exception text at
+      # JSONResponse/HTTPException response boundaries.
+      - name: Check gateway error contract
+        run: python scripts/check_gateway_error_contract.py
+
       # Keeps `.env.production.example` aligned with fail-closed production
       # settings so deploy operators see required keys before runtime startup.
       - name: Check production env contract
@@ -76,6 +121,38 @@ jobs:
       # increase hotspot counts or parse/queue-owner violations.
       - name: Check technical debt budget
         run: python scripts/check_tech_debt_budget.py
+
+  typecheck:
+    name: Typecheck (critical backend contracts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install typechecker
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[dev]"
+
+      - name: Run targeted mypy gate
+        run: |
+          .venv/bin/mypy \
+            --ignore-missing-imports \
+            --follow-imports=skip \
+            --check-untyped-defs \
+            lib/shared/secrets/provider_contract.py \
+            lib/shared/secrets/__init__.py \
+            lib/shared/http_headers.py \
+            services/app/gateway/error_handlers.py \
+            scripts/check_production_env_contract.py \
+            scripts/check_architecture_ratchets.py
 
   benchmark-baselines:
     name: Benchmark baselines (offline)
@@ -118,6 +195,140 @@ jobs:
             --baseline benchmarks/baselines/stress10_bm25/metrics_summary.json \
             --current benchmarks/reports/generated/ci/stress10_bm25/metrics_summary.json \
             --absolute-tolerance 0.02
+
+  docs:
+    name: Docs (MkDocs strict)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install docs dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[docs]"
+
+      - name: Build docs strictly
+        run: .venv/bin/mkdocs build --strict
+
+  security-supply-chain:
+    name: Security scan + SBOM
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project and pip-audit
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[dev]"
+          .venv/bin/pip install pip-audit==2.7.3
+
+      - name: Audit Python dependencies
+        run: .venv/bin/pip-audit --local --strict
+
+      - name: Scan repository filesystem
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Build scan image
+        run: docker build -t fyraliscore-ci:${{ github.sha }} .
+
+      - name: Scan container image
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: fyraliscore-ci:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Generate source SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: fyraliscore-source.spdx.json
+
+      - name: Generate image SBOM
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: fyraliscore-ci:${{ github.sha }}
+          format: cyclonedx
+          output: fyraliscore-image.cdx.json
+          exit-code: "0"
+
+      - name: Generate SBOM checksums
+        run: sha256sum fyraliscore-source.spdx.json fyraliscore-image.cdx.json > fyraliscore-sboms.SHA256SUMS
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.6.0
+
+      - name: Sign SBOM artifacts
+        run: |
+          cosign sign-blob --yes \
+            --bundle fyraliscore-source.spdx.json.sigstore \
+            fyraliscore-source.spdx.json
+          cosign sign-blob --yes \
+            --bundle fyraliscore-image.cdx.json.sigstore \
+            fyraliscore-image.cdx.json
+          cosign sign-blob --yes \
+            --bundle fyraliscore-sboms.SHA256SUMS.sigstore \
+            fyraliscore-sboms.SHA256SUMS
+
+      - name: Verify SBOM signatures
+        run: |
+          COSIGN_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@${GITHUB_REF}"
+          cosign verify-blob \
+            --certificate-identity "${COSIGN_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --bundle fyraliscore-source.spdx.json.sigstore \
+            fyraliscore-source.spdx.json
+          cosign verify-blob \
+            --certificate-identity "${COSIGN_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --bundle fyraliscore-image.cdx.json.sigstore \
+            fyraliscore-image.cdx.json
+          cosign verify-blob \
+            --certificate-identity "${COSIGN_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --bundle fyraliscore-sboms.SHA256SUMS.sigstore \
+            fyraliscore-sboms.SHA256SUMS
+          sha256sum -c fyraliscore-sboms.SHA256SUMS
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fyraliscore-sboms
+          path: |
+            fyraliscore-source.spdx.json
+            fyraliscore-image.cdx.json
+            fyraliscore-sboms.SHA256SUMS
+            fyraliscore-source.spdx.json.sigstore
+            fyraliscore-image.cdx.json.sigstore
+            fyraliscore-sboms.SHA256SUMS.sigstore
 
   migration-filenames:
     name: Migrations (unique prefixes)
@@ -179,6 +390,12 @@ jobs:
           python -m venv .venv
           .venv/bin/pip install --upgrade pip
           .venv/bin/pip install -e ".[dev]"
+
+      - name: Apply migrations for schema drift check
+        run: .venv/bin/python scripts/apply_db_migrations.py --dsn "$DATABASE_URL"
+
+      - name: Check schema drift
+        run: .venv/bin/python scripts/check_schema_drift.py --dsn "$DATABASE_URL"
 
       # Real-LLM tests are gated by RUN_REAL_LLM and DEEPSEEK_API_KEY (neither
       # set here, so they're skipped). Ollama-marked tests are excluded

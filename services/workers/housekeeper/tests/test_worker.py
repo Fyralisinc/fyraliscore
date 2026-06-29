@@ -22,7 +22,12 @@ def test_housekeeper_default_registry_keeps_expensive_jobs_disabled(monkeypatch)
         "obligation_due_sweep",
         "hourly_decay",
         "archive_decayed",
+        "access_matview_refresh",
         "relationship_maintenance",
+        "think_run_artifact_retention",
+        "sage_trace_retention",
+        "backup_recovery_metrics",
+        "db_activity_metrics",
         "calibration_updater",
         "edge_drift",
     } <= enabled

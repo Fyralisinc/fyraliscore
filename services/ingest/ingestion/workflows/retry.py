@@ -44,6 +44,8 @@ import random
 import time
 from typing import Awaitable, Callable, TypeVar
 
+from lib.shared.backoff import exponential_backoff_seconds
+
 
 log = logging.getLogger(__name__)
 
@@ -111,9 +113,10 @@ async def retry_with_backoff_on_429(
             is_last = attempt == max_attempts
             delay = (
                 None if is_last
-                else min(
-                    base_delay_seconds * (2 ** (attempt - 1)),
-                    max_delay_seconds,
+                else exponential_backoff_seconds(
+                    attempt,
+                    base_seconds=base_delay_seconds,
+                    cap_seconds=max_delay_seconds,
                 )
             )
             _log_attempt(
@@ -210,10 +213,15 @@ async def retry_indefinitely_on_transient(
                 max_elapsed_seconds is None
                 or elapsed < max_elapsed_seconds
             )
-            delay = min(
-                base_delay_seconds * (2 ** min(attempt - 1, 16)),
-                max_delay_seconds,
-            ) if will_retry else None
+            delay = (
+                exponential_backoff_seconds(
+                    attempt,
+                    base_seconds=base_delay_seconds,
+                    cap_seconds=max_delay_seconds,
+                )
+                if will_retry
+                else None
+            )
             log.info(
                 "workflow.retry.retry_indefinitely_on_transient",
                 extra={

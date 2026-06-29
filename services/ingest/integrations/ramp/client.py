@@ -46,6 +46,10 @@ import httpx
 import structlog
 
 from lib.shared.errors import RampApiError
+from services.ingest.integrations.secret_cache import (
+    SecretValueCache,
+    coerce_secret_text,
+)
 
 
 log = structlog.get_logger("integrations.ramp.client")
@@ -104,12 +108,14 @@ class RampClient:
         # Phase 3: reactive OAuth re-mint on 401 (inert in spammer mode).
         self._install_row_id = install_row_id
         self._refresh_secret_ref = refresh_secret_ref
-        self._access_token: str | None = access_token
+        self._access_token_cache = SecretValueCache(preset=access_token)
         self._token_lock = asyncio.Lock()
-        # Client-credentials mint material (falls back to RAMP_CLIENT_ID /
-        # RAMP_CLIENT_SECRET env); only used when no token is preset/stored.
+        # Client-credentials mint material. New installs can store a JSON
+        # client_id/client_secret payload behind refresh_secret_ref; direct
+        # constructor args and env remain compatibility/test fallbacks.
         self._client_id = client_id
-        self._client_secret = client_secret
+        self._client_secret_cache = SecretValueCache(preset=client_secret)
+        self._client_secret_lock = asyncio.Lock()
         self._scopes = scopes
         # In production the base is the canonical Ramp host
         # (https://api.ramp.com/developer/v1); a spammer/test override
@@ -137,10 +143,35 @@ class RampClient:
     # Token: preset (spammer) → secret store → client-credentials mint
     # -----------------------------------------------------------------
 
-    def _mint_credentials(self) -> tuple[str | None, str | None]:
+    async def _mint_credentials(self) -> tuple[str | None, str | None]:
+        from services.ingest.integrations.oauth_refresh import (
+            decode_client_credentials_secret,
+        )
+
         cid = self._client_id or os.environ.get("RAMP_CLIENT_ID")
-        csec = self._client_secret or os.environ.get("RAMP_CLIENT_SECRET")
-        return cid, csec
+        stored = self._client_secret_cache.get_if_fresh()
+        if stored is None and (
+            self._secret_store is not None
+            and self._refresh_secret_ref is not None
+            and self._tenant_id is not None
+        ):
+            stored = await self._client_secret_cache.resolve(
+                lock=self._client_secret_lock,
+                secret_store=self._secret_store,
+                secret_ref=self._refresh_secret_ref,
+                tenant_id=self._tenant_id,
+                missing_error=lambda: RampApiError(
+                    "ramp client cannot resolve client-credentials secret",
+                    code="ramp_api_unauthorized",
+                ),
+            )
+        if stored:
+            stored_cid, stored_secret = decode_client_credentials_secret(stored)
+            return (
+                stored_cid or cid,
+                stored_secret or os.environ.get("RAMP_CLIENT_SECRET"),
+            )
+        return cid, os.environ.get("RAMP_CLIENT_SECRET")
 
     async def mint_token(self) -> dict[str, Any]:
         """`POST {base}/token` — client-credentials mint (docs.ramp.com
@@ -150,11 +181,12 @@ class RampClient:
         for this grant) and caches the access token on the client."""
         from services.ingest.integrations.ramp import metrics
 
-        cid, csec = self._mint_credentials()
+        cid, csec = await self._mint_credentials()
         if not (cid and csec):
             raise RampApiError(
                 "ramp client cannot mint a token (missing client_id/"
-                "client_secret; set RAMP_CLIENT_ID/RAMP_CLIENT_SECRET)",
+                "client_secret; set refresh_secret_ref or "
+                "RAMP_CLIENT_ID/RAMP_CLIENT_SECRET)",
                 code="ramp_api_unauthorized",
             )
         basic = base64.b64encode(f"{cid}:{csec}".encode("utf-8")).decode("ascii")
@@ -190,15 +222,17 @@ class RampClient:
                 code="ramp_api_error",
                 context={"path": "/token"},
             )
-        self._access_token = token
+        self._access_token_cache.set(token)
         return body
 
     async def _token(self) -> str:
-        if self._access_token is not None:
-            return self._access_token
+        value = self._access_token_cache.get_if_fresh()
+        if value is not None:
+            return value
         async with self._token_lock:
-            if self._access_token is not None:
-                return self._access_token
+            value = self._access_token_cache.get_if_fresh()
+            if value is not None:
+                return value
             if (
                 self._secret_store is not None
                 and self._secret_ref is not None
@@ -207,15 +241,13 @@ class RampClient:
                 raw = await self._secret_store.get(
                     self._secret_ref, tenant_id=self._tenant_id,
                 )
-                self._access_token = (
-                    raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-                )
-                return self._access_token
-            cid, csec = self._mint_credentials()
+                return self._access_token_cache.set(coerce_secret_text(raw))
+            cid, csec = await self._mint_credentials()
             if cid and csec:
-                await self.mint_token()
-                assert self._access_token is not None
-                return self._access_token
+                body = await self.mint_token()
+                token = body.get("access_token") if isinstance(body, dict) else None
+                if isinstance(token, str) and token:
+                    return token
             raise RampApiError(
                 "ramp client has no access token and cannot resolve or mint "
                 "one (missing secret_store/secret_ref/tenant_id and no "
@@ -264,9 +296,10 @@ class RampClient:
 
         attempt = 0
         reminted = False
+        refreshed_token: str | None = None
         while True:
             attempt += 1
-            token = await self._token()
+            token = refreshed_token or await self._token()
             headers = {
                 "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
@@ -317,15 +350,19 @@ class RampClient:
                         refresh_secret_ref=self._refresh_secret_ref,
                     )
                     if new_token is not None:
-                        self._access_token = new_token
+                        self._access_token_cache.set(new_token)
+                        refreshed_token = new_token
                         continue
                     # Self-mint fallback when the client holds creds directly.
-                    cid, csec = self._mint_credentials()
+                    cid, csec = await self._mint_credentials()
                     if cid and csec:
                         try:
-                            await self.mint_token()
+                            body = await self.mint_token()
                         except RampApiError:
                             raise _api_error_from_response(response, log_path)
+                        token = body.get("access_token") if isinstance(body, dict) else None
+                        if isinstance(token, str) and token:
+                            refreshed_token = token
                         continue
                 raise _api_error_from_response(response, log_path)
             metrics.record_request("error")

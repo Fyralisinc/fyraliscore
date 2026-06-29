@@ -15,12 +15,11 @@ surface is operator-mediated credential submission: the operator pastes either
 the same business_id every Ramp webhook carries at root); a provided
 ``business_id`` is validated against the probe when both exist.
 
-Re-mint credentials for the poll path are app-level env config
-(``RAMP_CLIENT_ID`` / ``RAMP_CLIENT_SECRET`` — see oauth_refresh.py).
-> **TODO(human):** decide whether tenants bring their OWN Ramp app
-> (per-install client credentials, Carta-style `client_secret_from_install`)
-> or share one platform app via the env creds — a product decision the docs
-> don't make for us. The env-cred model is wired today.
+Re-mint credentials for the poll path are stored under
+``ramp_installations.refresh_secret_ref`` when the operator supplies
+``client_id`` + ``client_secret``. Legacy/access-token-only installs can still
+fall back to app-level runtime config (``RAMP_CLIENT_ID`` /
+``RAMP_CLIENT_SECRET``).
 
 Flow:
 
@@ -44,6 +43,7 @@ Flow:
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
@@ -241,10 +241,23 @@ async def connect_finalize(request: Request) -> JSONResponse:
             detail="could not determine business_id from the Ramp API",
         )
 
-    # 2. Persist the token encrypted-at-rest; only opaque refs reach the DB.
+    # 2. Persist secrets encrypted-at-rest; only opaque refs reach the DB.
     secret_ref = await store.put(
         access_token, label=f"ramp_access_token:{business_id}", tenant_id=tenant_id,
     )
+    refresh_secret_ref = None
+    if creds["client_id"] and creds["client_secret"]:
+        refresh_secret_ref = await store.put(
+            json.dumps(
+                {
+                    "client_id": creds["client_id"],
+                    "client_secret": creds["client_secret"],
+                },
+                separators=(",", ":"),
+            ),
+            label=f"ramp_client_credentials:{business_id}",
+            tenant_id=tenant_id,
+        )
     webhook_secret_ref = None
     if webhook_verifier_token:
         webhook_secret_ref = await store.put(
@@ -252,9 +265,9 @@ async def connect_finalize(request: Request) -> JSONResponse:
             tenant_id=tenant_id,
         )
 
-    # 3. Install: ramp_installations + ramp_entities + trigger. (No rotating
-    # refresh token exists for client_credentials — refresh_secret_ref stays
-    # NULL; expiry is handled by the env-cred re-mint.)
+    # 3. Install: ramp_installations + ramp_entities + trigger. No rotating
+    # refresh token exists for client_credentials; refresh_secret_ref stores
+    # encrypted re-mint material when it is available.
     install_id = await finalize_install(
         pool,
         tenant_id=tenant_id,
@@ -262,6 +275,7 @@ async def connect_finalize(request: Request) -> JSONResponse:
         base_url=creds["base_url"],
         entities=entities,
         secret_ref=secret_ref,
+        refresh_secret_ref=refresh_secret_ref,
         token_expires_at=token_expires_at,
         webhook_secret_ref=webhook_secret_ref,
     )

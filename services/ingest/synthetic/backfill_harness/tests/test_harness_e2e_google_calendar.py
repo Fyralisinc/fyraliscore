@@ -60,7 +60,7 @@ async def test_harness_single_tenant_google_calendar_completes(
             tenant_slug="e2e-gcal",
             source="google_calendar",
             fixture_params={
-                "calendars": ["alice@e2e.com", "bob@e2e.com"],
+                "calendars": ["alice@e2e.example", "bob@e2e.example"],
                 "events_per_calendar": 3,
             },
             expected_observation_count=6,

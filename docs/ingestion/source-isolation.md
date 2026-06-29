@@ -206,9 +206,10 @@ scale the all-sources singletons to 0.
       failure is isolated (no-lag for that lane that tick) so one bad lane can't
       blind the others.
     - *Recovery:* operator-driven (no auto-recovery). After the lane drains,
-      `python scripts/reenable_kafka_path.py <tenant> --operator <you>` flips the
-      tenant back (`--list` shows every tripped tenant); the breaker auto-resets
-      its bookkeeping on the next tick.
+      `python scripts/reenable_kafka_path.py <tenant> --operator-actor <actor-uuid>`
+      flips the tenant back (`--list` shows every tripped tenant); the operator
+      actor must have tenant-wide `admin` or `leadership`, and the breaker
+      auto-resets its bookkeeping on the next tick.
     - *Live verification:* `scripts/smoke_circuit_breaker_lag.py` exercises the
       real Kafka readers (and a full unmocked `_process_tick` → flag flip)
       against a live broker — the path unit tests mock. Run it after changing the

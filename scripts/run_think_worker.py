@@ -23,6 +23,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from lib.llm.provider import build_provider  # noqa: E402
 from lib.observability.pools import register_pool  # noqa: E402
+from lib.shared.db import asyncpg_pool_runtime_kwargs, positive_int_env  # noqa: E402
 from services.app.gateway.db_bootstrap import _register_codecs  # noqa: E402
 from services.reasoning.think.worker import ThinkWorker  # noqa: E402
 
@@ -30,8 +31,17 @@ from services.reasoning.think.worker import ThinkWorker  # noqa: E402
 async def _main() -> None:
     log = structlog.get_logger("dogfood.think_worker")
     dsn = os.environ["DATABASE_URL"]
+    pool_max = positive_int_env("THINK_POSTGRES_POOL_SIZE", default=8)
+    runtime_kwargs = asyncpg_pool_runtime_kwargs(
+        dsn=dsn,
+        process_env_var="THINK_POSTGRES_PGBOUNCER_COMPATIBLE",
+    )
     pool = await asyncpg.create_pool(
-        dsn=dsn, min_size=2, max_size=8, init=_register_codecs,
+        dsn=dsn,
+        min_size=2,
+        max_size=pool_max,
+        init=_register_codecs,
+        **runtime_kwargs,
     )
     register_pool("think_worker", pool)
     llm = build_provider()

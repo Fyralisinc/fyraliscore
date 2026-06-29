@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from scripts.render_runtime_process_manifest import (
     render_dogfood_tsv,
@@ -18,7 +19,7 @@ from services.platform.runtime.process_manifest import (
 ROOT = Path(__file__).resolve().parents[4]
 
 
-class _Args:
+class _Args(argparse.Namespace):
     python_bin = ".venv/bin/python"
     uvicorn_bin = ".venv/bin/uvicorn"
     gateway_port = "8000"
@@ -63,9 +64,11 @@ def test_production_manifest_json_contains_compose_metadata() -> None:
     rows = json.loads(render_production_json())
     by_name = {row["name"]: row for row in rows}
 
+    assert by_name["gateway"]["has_healthcheck"] is True
     assert by_name["circuit_breaker"]["singleton"] is True
     assert by_name["circuit_breaker"]["has_healthcheck"] is True
     assert by_name["circuit_breaker"]["compose_service"] == "circuit_breaker"
+    assert by_name["extension_workers"]["singleton"] is True
 
 
 def test_production_manifest_matches_compose_services() -> None:
@@ -81,14 +84,15 @@ def test_production_manifest_matches_compose_services() -> None:
     for service_name, process in manifest.items():
         service = services[service_name]
         expected_command = process.compose_command()
+        assert process.has_healthcheck is True
         if "command" in service and expected_command is not None:
             assert service["command"] == expected_command
         if process.has_healthcheck:
             assert "healthcheck" in service
-        elif "healthcheck" in service and expected_command is not None:
+        if not process.singleton and "container_name" in service:
             raise AssertionError(
-                f"{service_name} has a compose healthcheck but the runtime "
-                "manifest does not mark has_healthcheck=True"
+                f"{service_name} is horizontally scalable in the runtime "
+                "manifest but pins container_name in docker-compose.yml"
             )
 
 
@@ -104,6 +108,7 @@ def test_compose_python_runtime_services_are_manifested() -> None:
         if isinstance(service.get("command"), str)
         and (
             service["command"].startswith("python -m services.")
+            or service["command"].startswith("python -m lib.")
             or service["command"].startswith("python scripts/run_")
         )
     }
@@ -114,6 +119,46 @@ def test_compose_python_runtime_services_are_manifested() -> None:
         name for name in python_runtime_services if "healthcheck" not in services[name]
     )
     assert missing_healthchecks == []
+
+
+def test_prometheus_scrapes_every_production_process() -> None:
+    with open(ROOT / "observability/prometheus/prometheus.yml", encoding="utf-8") as fh:
+        config = yaml.safe_load(fh)
+
+    static_configs = [
+        static_config
+        for scrape in config["scrape_configs"]
+        for static_config in scrape.get("static_configs", [])
+    ]
+    targets = {
+        target
+        for static_config in static_configs
+        for target in static_config.get("targets", [])
+    }
+
+    expected_targets = {
+        f"{process.compose_service}:8000"
+        if process.name == "gateway"
+        else f"{process.compose_service}:9300"
+        for process in production_processes()
+        if process.compose_service
+    }
+    assert sorted(expected_targets - targets) == []
+
+    labels_by_target = {
+        target: static_config.get("labels", {})
+        for static_config in static_configs
+        for target in static_config.get("targets", [])
+    }
+    for process in production_processes():
+        if not process.compose_service:
+            continue
+        target = (
+            f"{process.compose_service}:8000"
+            if process.name == "gateway"
+            else f"{process.compose_service}:9300"
+        )
+        assert labels_by_target[target].get("worker") == process.name
 
 
 def test_manifest_python_commands_have_existing_entrypoints() -> None:

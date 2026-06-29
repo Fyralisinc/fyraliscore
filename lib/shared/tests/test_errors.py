@@ -4,10 +4,13 @@ from __future__ import annotations
 import json
 
 from hypothesis import given, strategies as st
+import pytest
 
+from lib.shared import errors as shared_errors
 from lib.shared.errors import (
     CalibrationMissingError,
     CompanyOSError,
+    DependencyUnavailableError,
     FalsifierInadequateError,
     InvariantViolation,
     SchemaDriftError,
@@ -21,6 +24,7 @@ def test_all_errors_subclass_root():
         ValidationError,
         InvariantViolation,
         SchemaDriftError,
+        DependencyUnavailableError,
         TrustTierError,
         FalsifierInadequateError,
         CalibrationMissingError,
@@ -71,6 +75,78 @@ def test_schema_drift_error_code():
     e = SchemaDriftError("column missing", table="models", column="confirmed_count")
     assert e.code == "schema_drift"
     assert e.context["table"] == "models"
+
+
+def test_dependency_unavailable_error_is_recoverable():
+    e = DependencyUnavailableError(
+        "rendering",
+        "conversation-turn",
+        attempts=3,
+        status_code=503,
+    )
+    assert e.code == "dependency_unavailable"
+    assert e.recoverable is True
+    assert e.context["dependency"] == "rendering"
+    assert e.context["operation"] == "conversation-turn"
+    assert e.context["attempts"] == 3
+
+
+@pytest.mark.parametrize(
+    ("class_name", "prefix"),
+    [
+        ("DiscordApiError", "discord"),
+        ("GithubApiError", "github"),
+        ("NotionApiError", "notion"),
+        ("JiraApiError", "jira"),
+        ("MercuryApiError", "mercury"),
+        ("QuickBooksApiError", "quickbooks"),
+        ("GrafanaApiError", "grafana"),
+        ("BrexApiError", "brex"),
+        ("RampApiError", "ramp"),
+        ("GustoApiError", "gusto"),
+        ("DeelApiError", "deel"),
+        ("FirefliesApiError", "fireflies"),
+        ("MiroApiError", "miro"),
+        ("FigmaApiError", "figma"),
+        ("SignalApiError", "signal"),
+        ("AwsApiError", "aws"),
+        ("CartaApiError", "carta"),
+        ("HibobApiError", "hibob"),
+        ("AshbyApiError", "ashby"),
+        ("LinkedinApiError", "linkedin"),
+    ],
+)
+def test_source_api_errors_infer_recoverability(
+    class_name: str,
+    prefix: str,
+) -> None:
+    cls = getattr(shared_errors, class_name)
+
+    assert cls(
+        "rate limited",
+        code=f"{prefix}_api_rate_limited",
+        context={"http_status": 429},
+    ).recoverable is True
+    assert cls(
+        "upstream down",
+        code=f"{prefix}_api_error",
+        context={"http_status": 503},
+    ).recoverable is True
+    assert cls(
+        "transport down",
+        code=f"{prefix}_api_error",
+        context={"error_type": "ConnectError"},
+    ).recoverable is True
+    assert cls(
+        "unauthorized",
+        code=f"{prefix}_api_unauthorized",
+        context={"http_status": 401},
+    ).recoverable is False
+    assert cls(
+        "not found",
+        code=f"{prefix}_api_not_found",
+        context={"http_status": 404},
+    ).recoverable is False
 
 
 def test_trust_tier_error_captures_required_actual():

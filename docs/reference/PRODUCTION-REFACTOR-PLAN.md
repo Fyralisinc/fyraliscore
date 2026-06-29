@@ -1020,7 +1020,7 @@ pytest services/domain/tests/test_triggers.py services/workers/housekeeper/tests
 
 Known immediate lint cleanup from the scan:
 
-- remove unused `traceback` import in `scripts/alpen_ingest.py`
+- remove unused `traceback` import in `scripts/sandbox_ingest.py`
 - remove unused `timedelta` import in `services/ingest/synthetic/fixtures/linkedin_generator.py`
 
 ### A3. Commit Slices

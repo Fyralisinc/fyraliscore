@@ -4,8 +4,8 @@ Two concerns, kept separate from the per-tenant capability grant (`grants.py`):
 
   1. **Client store** (`ExtensionOAuthClientsRepo`) — register / verify / rotate /
      revoke OAuth2 client credentials for an extension, backed by
-     `extension_oauth_clients` (migration 0128). The plaintext secret is shown
-     once at registration; only a PBKDF2-SHA256 verifier is stored.
+     `extension_oauth_clients` (migration 0128). The plaintext secret is returned
+     once to the operator flow; only a PBKDF2-SHA256 verifier is stored.
   2. **Access tokens** — mint/verify short-lived bearer JWTs (HS256) carrying the
      extension id + environment. The token proves *who is calling*; *what they may
      do* for a given tenant is resolved per-request from `extension_grants`

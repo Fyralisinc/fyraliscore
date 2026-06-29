@@ -143,7 +143,7 @@ class _NoDBAccessError(AssertionError):
     caught by production code."""
 
 
-_NOW = dt.datetime(2026, 5, 17, 12, 0, 0, tzinfo=dt.timezone.utc)
+_NOW = dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0)
 
 
 def _slack_payload(i: int) -> dict:
@@ -166,7 +166,8 @@ def _build_envelope_bytes(payload: dict, *, source: str, ingress_kind: str):
     s3_key = (
         # Prefix segment must equal content_hash[:2] per the M2.4
         # invariant in services/ingest/ingestion/normalizer/invariants.py.
-        f"dev/{source}/{tenant}/2026-05/{content_hash[:2]}/{content_hash}.json"
+        f"dev/{source}/{tenant}/{_NOW:%Y-%m}/{content_hash[:2]}/"
+        f"{content_hash}.json"
     )
     env = RawEnvelope(
         source=source,

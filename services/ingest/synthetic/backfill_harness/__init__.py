@@ -20,7 +20,7 @@ Usage:
         BackfillScenario(
             tenant_slug="alice",
             source="gmail",
-            fixture_params={"email": "alice@x.com", "messages": 10},
+            fixture_params={"email": "alice@x.example", "messages": 10},
             fault_profile=HAPPY_PATH,
         ),
         # ...

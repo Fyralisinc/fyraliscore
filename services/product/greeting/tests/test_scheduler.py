@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
@@ -46,6 +47,66 @@ FOUNDER = FounderContext(
 class _FailingGreetingRenderer(MockRenderingAdapter):
     async def render_greeting(self, snapshot, founder):
         raise TimeoutError("rendering service timed out")
+
+
+class _ClosableRenderer(MockRenderingAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class _CountingScheduler(GreetingScheduler):
+    def __init__(self, pool, *, holder_id: str) -> None:
+        self.refresh_count = 0
+        self.refresh_event = asyncio.Event()
+        super().__init__(
+            pool,
+            rendering=MockRenderingAdapter(),
+            config=SchedulerConfig(
+                refresh_interval_seconds=0.2,
+                post_commit_poll_seconds=9999,
+                tod_check_seconds=9999,
+                leader_lease_ttl_seconds=2.0,
+                leader_lease_refresh_seconds=0.2,
+                leader_lease_retry_seconds=0.1,
+                leader_lease_holder_id=holder_id,
+            ),
+        )
+
+    async def refresh_all_tenants(self, *, reason: str = "scheduled") -> None:
+        self.refresh_count += 1
+        self.refresh_event.set()
+
+
+class _BlockingRefreshScheduler(GreetingScheduler):
+    def __init__(self, pool, *, holder_id: str) -> None:
+        self.inner_calls = 0
+        self.entered = asyncio.Event()
+        self.release_event = asyncio.Event()
+        super().__init__(
+            pool,
+            rendering=MockRenderingAdapter(),
+            config=SchedulerConfig(
+                leader_election_enabled=False,
+                leader_lease_holder_id=holder_id,
+                tenant_refresh_lease_ttl_seconds=2.0,
+            ),
+        )
+
+    async def _refresh_tenant_inner(
+        self,
+        tenant_id,
+        founder,
+        *,
+        reason: str,
+        prior: dict[str, Any],
+    ) -> None:
+        self.inner_calls += 1
+        self.entered.set()
+        await self.release_event.wait()
 
 
 async def _seed_minimal(pool):
@@ -142,6 +203,88 @@ async def test_scheduled_loop_fires_with_short_interval(greeting_db):
     cache = ViewCeoCacheRepo(greeting_db)
     rows = await cache.get_all(TENANT_A)
     assert "greeting" in rows
+
+
+async def test_scheduler_background_loops_are_single_leader(greeting_db):
+    sched_a = _CountingScheduler(greeting_db, holder_id="scheduler-a")
+    sched_b = _CountingScheduler(greeting_db, holder_id="scheduler-b")
+
+    await sched_a.start()
+    await sched_b.start()
+    try:
+        await asyncio.sleep(0.7)
+    finally:
+        await sched_a.stop()
+        await sched_b.stop()
+
+    assert (sched_a.refresh_count > 0) ^ (sched_b.refresh_count > 0)
+
+
+async def test_scheduler_standby_takes_over_after_leader_stop(greeting_db):
+    leader = _CountingScheduler(greeting_db, holder_id="scheduler-leader")
+    standby = _CountingScheduler(greeting_db, holder_id="scheduler-standby")
+
+    await leader.start()
+    try:
+        await asyncio.wait_for(leader.refresh_event.wait(), timeout=2.0)
+        assert leader.is_leader() is True
+
+        await standby.start()
+        await asyncio.sleep(0.4)
+        assert standby.refresh_count == 0
+
+        await leader.stop()
+        await asyncio.wait_for(standby.refresh_event.wait(), timeout=2.0)
+        assert standby.is_leader() is True
+        assert standby.refresh_count > 0
+    finally:
+        await leader.stop()
+        await standby.stop()
+
+
+async def test_refresh_tenant_skips_when_cross_replica_lease_is_held(
+    greeting_db,
+):
+    sched_a = _BlockingRefreshScheduler(greeting_db, holder_id="refresh-a")
+    sched_b = _BlockingRefreshScheduler(greeting_db, holder_id="refresh-b")
+    sched_a.register_tenant(TENANT_A, FOUNDER)
+    sched_b.register_tenant(TENANT_A, FOUNDER)
+
+    task_b: asyncio.Task | None = None
+    task_a = asyncio.create_task(
+        sched_a.refresh_tenant(TENANT_A, reason="manual-a")
+    )
+    try:
+        await asyncio.wait_for(sched_a.entered.wait(), timeout=2.0)
+
+        task_b = asyncio.create_task(
+            sched_b.refresh_tenant(TENANT_A, reason="manual-b")
+        )
+        await asyncio.sleep(0.2)
+
+        assert sched_a.inner_calls == 1
+        assert sched_b.inner_calls == 0
+
+        sched_a.release_event.set()
+        await asyncio.gather(task_a, task_b)
+    finally:
+        sched_a.release_event.set()
+        await asyncio.gather(task_a, return_exceptions=True)
+        if task_b is not None:
+            await asyncio.gather(task_b, return_exceptions=True)
+        await sched_a.stop()
+        await sched_b.stop()
+
+
+async def test_stop_closes_rendering_adapter_when_scheduler_was_not_started(
+    greeting_db,
+):
+    renderer = _ClosableRenderer()
+    sched = GreetingScheduler(greeting_db, rendering=renderer)
+
+    await sched.stop()
+
+    assert renderer.closed is True
 
 
 async def test_trigger_driven_invalidation(greeting_db):

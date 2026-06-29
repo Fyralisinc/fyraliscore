@@ -109,7 +109,9 @@ The `docker-compose.yml` stack (init one-shots, infra, then app processes):
     Despite appearing in the runtime diagram above, `topology_sweeper` is **not**
     defined in `docker-compose.yml`. It runs as a host process via
     `scripts/run_topology_sweeper.py` (and is started by `scripts/dogfood_up.sh`).
-    No `services/workers/*` package is wired into compose — see [Workers](workers.md).
+    Other `services/workers/*` packages are production-wired through
+    `anomaly_processor_worker`, `entity_resolver_worker`, and
+    `housekeeper_worker`; see [Workers](workers.md).
 
 `docker-compose.per-source.yml` overlays a per-source-isolated consumer topology
 (one normalizer pinned per source via `INGESTION_SOURCE`), scaling the all-source

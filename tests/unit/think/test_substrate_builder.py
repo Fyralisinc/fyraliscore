@@ -41,7 +41,7 @@ def test_actor_candidates_merge_email_and_handle_aliases() -> None:
     observations = [
         _obs(
             source_channel="slack:message",
-            source_actor_ref="rachel@alpenlabs.io",
+            source_actor_ref="rachel@internal.example",
             text="Raised a PR for STR-101.",
         ),
         _obs(
@@ -51,13 +51,16 @@ def test_actor_candidates_merge_email_and_handle_aliases() -> None:
         ),
     ]
 
-    specs = candidate_specs_from_observations(observations)
+    specs = candidate_specs_from_observations(
+        observations,
+        internal_email_domains={"internal.example"},
+    )
 
     actors = [spec for spec in specs if spec.kind == "actor"]
     rachel = [spec for spec in actors if spec.fingerprint == "actor:rachel"]
     assert len(rachel) == 1
     alias_refs = {alias["full_ref"] for alias in rachel[0].aliases}
-    assert "slack:message:rachel@alpenlabs.io" in alias_refs
+    assert "slack:message:rachel@internal.example" in alias_refs
     assert "github:webhook:rachel" in alias_refs
     assert len(rachel[0].evidence_observation_ids) == 2
 
@@ -66,17 +69,20 @@ def test_repeated_pr_language_preserves_actor_and_issue_context() -> None:
     observations = [
         _obs(
             source_channel="slack:message",
-            source_actor_ref="alice@alpenlabs.io",
+            source_actor_ref="alice@internal.example",
             text="raised a PR for STR-101",
         ),
         _obs(
             source_channel="slack:message",
-            source_actor_ref="bob@alpenlabs.io",
+            source_actor_ref="bob@internal.example",
             text="raised a PR for STR-202",
         ),
     ]
 
-    specs = candidate_specs_from_observations(observations)
+    specs = candidate_specs_from_observations(
+        observations,
+        internal_email_domains={"internal.example"},
+    )
 
     contextual_commitments = [
         spec
@@ -95,14 +101,35 @@ def test_repeated_pr_language_preserves_actor_and_issue_context() -> None:
     assert patterns, "repeated signal shape should become a discovered pattern"
 
 
-def test_customer_commitment_relation_preserves_observation_context() -> None:
+def test_internal_email_domains_can_come_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FYRALIS_INTERNAL_EMAIL_DOMAINS", "internal.example")
     observation = _obs(
         source_channel="slack:message",
-        source_actor_ref="sam@alpenlabs.io",
-        text="Opened PR #77 for Beta Corp Inc renewal blocker.",
+        source_actor_ref="maya@internal.example",
+        text="maya@internal.example raised a PR for STR-404.",
     )
 
     specs = candidate_specs_from_observations([observation])
+
+    assert any(spec.fingerprint == "actor:maya" for spec in specs if spec.kind == "actor")
+    assert not any(
+        spec.fingerprint == "customer:domain:internal.example"
+        for spec in specs
+        if spec.kind == "customer"
+    )
+
+
+def test_customer_commitment_relation_preserves_observation_context() -> None:
+    observation = _obs(
+        source_channel="slack:message",
+        source_actor_ref="sam@internal.example",
+        text="Opened PR #77 for Beta Corp Inc renewal blocker.",
+    )
+
+    specs = candidate_specs_from_observations(
+        [observation],
+        internal_email_domains={"internal.example"},
+    )
 
     customers = [spec for spec in specs if spec.kind == "customer"]
     commitments = [spec for spec in specs if spec.kind == "commitment"]
@@ -282,7 +309,7 @@ async def test_build_substrate_candidates_auto_promotes_safe_candidate(monkeypat
     observation = _obs(
         source_channel="slack:message",
         source_actor_ref=None,
-        text="Alpen Inc is waiting on contract review.",
+        text="Atlas Inc is waiting on contract review.",
     )
     promoted: list[str] = []
 
@@ -291,10 +318,10 @@ async def test_build_substrate_candidates_auto_promotes_safe_candidate(monkeypat
             id=uuid4(),
             tenant_id=kwargs["tenant_id"],
             kind="customer",
-            label="Alpen Inc",
+            label="Atlas Inc",
             status="proposed",
             confidence=0.86,
-            fingerprint="customer:alpen-inc",
+            fingerprint="customer:atlas-inc",
             aliases=list(kwargs.get("aliases") or []),
             evidence_observation_ids=list(kwargs.get("evidence_observation_ids") or []),
             evidence_model_ids=[],

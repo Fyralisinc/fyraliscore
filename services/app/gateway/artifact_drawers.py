@@ -9,6 +9,9 @@ from uuid import UUID
 
 import asyncpg
 
+from services.platform.access_control.checks import EntityKind, can_read_by_id
+from services.platform.access_control.audit import record_override_if_needed
+
 # ---------------------------------------------------------------------
 # Artifact lookup — per-type fetch + relationship queries powering the
 # artifact drawer. Each kind composes a few short SELECTs and assembles
@@ -69,7 +72,11 @@ class _CommitmentOverlayRows:
 
 
 async def fetch_commitment_overlay(
-    cid: UUID, tenant_id: UUID, conn: asyncpg.Connection,
+    cid: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    actor_id: UUID | None = None,
 ) -> dict[str, Any] | None:
     """Build the Structure-overlay payload for a single commitment:
     the commitment row + its contributing goals + its customer link +
@@ -78,11 +85,19 @@ async def fetch_commitment_overlay(
     rows = await _fetch_commitment_overlay_rows(cid, tenant_id, conn)
     if rows is None:
         return None
+    if actor_id is not None:
+        rows = await _filter_commitment_overlay_rows(
+            rows,
+            tenant_id=tenant_id,
+            conn=conn,
+            actor_id=actor_id,
+        )
 
     activity_payload, substrate_insight = await _build_commitment_activity_payload(
         rows.state_changes,
         tenant_id,
         conn,
+        actor_id=actor_id,
     )
     customers_payload, customer_id_str, customer_label = _build_customer_payload(
         rows.customers
@@ -92,6 +107,7 @@ async def fetch_commitment_overlay(
         rows.pattern_models,
         tenant_id,
         conn,
+        actor_id=actor_id,
     )
 
     commitment_payload = _build_commitment_overlay_payload(
@@ -232,10 +248,74 @@ async def _fetch_commitment_overlay_rows(
     )
 
 
+async def _filter_commitment_overlay_rows(
+    rows: _CommitmentOverlayRows,
+    *,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    actor_id: UUID,
+) -> _CommitmentOverlayRows:
+    return _CommitmentOverlayRows(
+        commitment=rows.commitment,
+        owner=rows.owner,
+        goals=await _filter_visible_rows(
+            rows.goals,
+            kind="goal",
+            id_key="id",
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            conn=conn,
+        ),
+        customers=await _filter_visible_rows(
+            rows.customers,
+            kind="resource",
+            id_key="id",
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            conn=conn,
+        ),
+        contributors=rows.contributors,
+        consumed_resources=await _filter_visible_rows(
+            rows.consumed_resources,
+            kind="resource",
+            id_key="id",
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            conn=conn,
+        ),
+        decisions=await _filter_visible_rows(
+            rows.decisions,
+            kind="decision",
+            id_key="id",
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            conn=conn,
+        ),
+        pattern_models=await _filter_visible_rows(
+            rows.pattern_models,
+            kind="model",
+            id_key="id",
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            conn=conn,
+        ),
+        state_changes=await _filter_visible_rows(
+            rows.state_changes,
+            kind="observation",
+            id_key="id",
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            conn=conn,
+        ),
+    )
+
+
 async def _build_commitment_activity_payload(
     state_change_rows: list[Any],
     tenant_id: UUID,
     conn: asyncpg.Connection,
+    *,
+    actor_id: UUID | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     activity_payload: list[dict[str, Any]] = []
     substrate_insight: str | None = None
@@ -261,6 +341,14 @@ async def _build_commitment_activity_payload(
         if cause_id is None or cause_id in seen_cause_ids:
             continue
         seen_cause_ids.add(cause_id)
+        if not await _reference_visible(
+            "observation",
+            cause_id,
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            conn=conn,
+        ):
+            continue
         cause_row = await conn.fetchrow(
             "SELECT source_channel, content_text, occurred_at, "
             "       actor_id "
@@ -414,6 +502,8 @@ async def _build_commitment_learnings_payload(
     pattern_model_rows: list[Any],
     tenant_id: UUID,
     conn: asyncpg.Connection,
+    *,
+    actor_id: UUID | None = None,
 ) -> list[dict[str, Any]]:
     # Build LearnedPattern bundles from the scoped models. Each model's
     # natural-language statement becomes the pattern statement;
@@ -437,6 +527,14 @@ async def _build_commitment_learnings_payload(
                     UUID(str(x)) if not isinstance(x, UUID) else x
                     for x in ev_lookup_ids
                 ],
+            )
+            ev_rows = await _filter_visible_rows(
+                list(ev_rows),
+                kind="observation",
+                id_key="id",
+                actor_id=actor_id,
+                tenant_id=tenant_id,
+                conn=conn,
             )
             for er in ev_rows:
                 t = (er["content_text"] or "").strip()
@@ -515,8 +613,85 @@ def _json_obj(value: Any) -> dict[str, Any]:
     return value
 
 
+_LINK_ACCESS_KIND: dict[str, EntityKind] = {
+    "commitment": "commitment",
+    "goal": "goal",
+    "decision": "decision",
+    "resource": "resource",
+    "observation": "observation",
+    "model": "model",
+}
+
+
+async def _reference_visible(
+    kind: str,
+    entity_id: UUID,
+    *,
+    actor_id: UUID | None,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+) -> bool:
+    if actor_id is None:
+        return True
+    if kind == "actor":
+        return True
+    access_kind = _LINK_ACCESS_KIND.get(kind)
+    if access_kind is None:
+        return False
+    decision = await can_read_by_id(
+        actor_id,
+        access_kind,
+        entity_id,
+        conn=conn,
+        tenant_id=tenant_id,
+    )
+    await record_override_if_needed(
+        decision,
+        actor_id=actor_id,
+        entity_type=access_kind,
+        entity_id=entity_id,
+        conn=conn,
+        tenant_id=tenant_id,
+    )
+    return decision.allowed
+
+
+async def _filter_visible_rows(
+    rows: list[Any],
+    *,
+    kind: str,
+    id_key: str,
+    actor_id: UUID | None,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+) -> list[Any]:
+    if actor_id is None:
+        return rows
+    visible: list[Any] = []
+    for row in rows:
+        raw_id = row[id_key]
+        try:
+            entity_id = raw_id if isinstance(raw_id, UUID) else UUID(str(raw_id))
+        except (ValueError, TypeError):
+            continue
+        if await _reference_visible(
+            kind,
+            entity_id,
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            conn=conn,
+        ):
+            visible.append(row)
+    return visible
+
+
 async def fetch_artifact(
-    kind: str, aid: UUID, tenant_id: UUID, conn: asyncpg.Connection,
+    kind: str,
+    aid: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    actor_id: UUID | None = None,
 ) -> dict[str, Any] | None:
     """Dispatch to per-kind builder. Each builder does its own queries
     and returns the assembled drawer payload."""
@@ -532,14 +707,18 @@ async def fetch_artifact(
     builder = builders.get(kind)
     if builder is None:
         return None
-    return await builder(aid, tenant_id, conn)
+    return await builder(aid, tenant_id, conn, actor_id=actor_id)
 
 
 # ----- actor ---------------------------------------------------------
 
 
 async def _build_actor_drawer(
-    aid: UUID, tenant_id: UUID, conn: asyncpg.Connection,
+    aid: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    actor_id: UUID | None = None,
 ) -> dict[str, Any] | None:
     row = await conn.fetchrow(
         "SELECT id, display_name, type, email, created_at, last_seen_at "
@@ -628,7 +807,11 @@ async def _build_actor_drawer(
 
 
 async def _build_commitment_drawer(
-    aid: UUID, tenant_id: UUID, conn: asyncpg.Connection,
+    aid: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    actor_id: UUID | None = None,
 ) -> dict[str, Any] | None:
     row = await conn.fetchrow(
         "SELECT c.id, c.title, c.state, c.description, c.created_at, "
@@ -676,6 +859,22 @@ async def _build_commitment_drawer(
         ORDER BY confidence DESC LIMIT 5
         """,
         tenant_id, str(aid),
+    )
+    recent_obs = await _filter_visible_rows(
+        list(recent_obs),
+        kind="observation",
+        id_key="id",
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        conn=conn,
+    )
+    related_models = await _filter_visible_rows(
+        list(related_models),
+        kind="model",
+        id_key="id",
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        conn=conn,
     )
 
     state = row["state"] or "unknown"
@@ -773,7 +972,11 @@ async def _build_commitment_drawer(
 
 
 async def _build_goal_drawer(
-    aid: UUID, tenant_id: UUID, conn: asyncpg.Connection,
+    aid: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    actor_id: UUID | None = None,
 ) -> dict[str, Any] | None:
     row = await conn.fetchrow(
         "SELECT id, title, state, description, altitude, target_date, "
@@ -806,6 +1009,30 @@ async def _build_goal_drawer(
         ORDER BY c.last_state_change_at DESC LIMIT 8
         """,
         aid, tenant_id,
+    )
+    if parent_row is not None and not await _reference_visible(
+        "goal",
+        parent_row["id"],
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        conn=conn,
+    ):
+        parent_row = None
+    children = await _filter_visible_rows(
+        list(children),
+        kind="goal",
+        id_key="id",
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        conn=conn,
+    )
+    contrib = await _filter_visible_rows(
+        list(contrib),
+        kind="commitment",
+        id_key="id",
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        conn=conn,
     )
 
     summary_bits: list[str] = []
@@ -881,7 +1108,11 @@ async def _build_goal_drawer(
 
 
 async def _build_decision_drawer(
-    aid: UUID, tenant_id: UUID, conn: asyncpg.Connection,
+    aid: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    actor_id: UUID | None = None,
 ) -> dict[str, Any] | None:
     row = await conn.fetchrow(
         "SELECT id, title, state, decision_text, rationale, "
@@ -914,6 +1145,22 @@ async def _build_decision_drawer(
         ORDER BY confidence DESC LIMIT 5
         """,
         tenant_id, str(aid),
+    )
+    constrained = await _filter_visible_rows(
+        list(constrained),
+        kind="commitment",
+        id_key="id",
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        conn=conn,
+    )
+    related_models = await _filter_visible_rows(
+        list(related_models),
+        kind="model",
+        id_key="id",
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        conn=conn,
     )
 
     days_since_change = (
@@ -982,7 +1229,11 @@ async def _build_decision_drawer(
 
 
 async def _build_resource_drawer(
-    aid: UUID, tenant_id: UUID, conn: asyncpg.Connection,
+    aid: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    actor_id: UUID | None = None,
 ) -> dict[str, Any] | None:
     row = await conn.fetchrow(
         "SELECT id, kind, identity, description, current_value, "
@@ -1016,24 +1267,37 @@ async def _build_resource_drawer(
     unit = cv.get("unit") or ""
     legacy_value = cv.get("value")  # customer rows etc.
 
-    # Aggregate deployed quantity if this is a capacity resource.
+    consumers: list[Any] = []
+
+    # Aggregate deployed quantity only from commitments the actor can read.
     total_deployed = 0.0
     deployments_count = 0
     util_pct = 0.0
     if is_capacity_kind:
-        agg = await conn.fetchrow(
-            "SELECT COALESCE(SUM((deployed_quantity->>'value')::float), 0) AS total, "
-            "       COUNT(*) AS n "
+        consumers = list(await conn.fetch(
+            "SELECT c.id, c.title, c.state, "
+            "       (rd.deployed_quantity->>'value')::float AS qty, "
+            "       a.display_name AS owner_name "
             "FROM resource_deployments rd "
             "JOIN commitments c ON c.id = rd.commitment_id "
+            "LEFT JOIN actors a ON a.id = c.owner_id "
             "WHERE rd.resource_id = $1 "
             "  AND rd.released_at IS NULL "
             "  AND c.tenant_id = $2 "
-            "  AND c.terminal_at IS NULL",
+            "  AND c.terminal_at IS NULL "
+            "ORDER BY (rd.deployed_quantity->>'value')::float DESC NULLS LAST",
             aid, tenant_id,
+        ))
+        consumers = await _filter_visible_rows(
+            consumers,
+            kind="commitment",
+            id_key="id",
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            conn=conn,
         )
-        total_deployed = float(agg["total"] or 0.0)
-        deployments_count = int(agg["n"] or 0)
+        total_deployed = sum(float(cr["qty"] or 0.0) for cr in consumers)
+        deployments_count = len(consumers)
         if isinstance(capacity, (int, float)) and capacity > 0:
             util_pct = total_deployed / float(capacity) * 100.0
 
@@ -1085,23 +1349,8 @@ async def _build_resource_drawer(
         })
 
     if is_capacity_kind:
-        consumers = await conn.fetch(
-            "SELECT c.id, c.title, c.state, "
-            "       (rd.deployed_quantity->>'value')::float AS qty, "
-            "       a.display_name AS owner_name "
-            "FROM resource_deployments rd "
-            "JOIN commitments c ON c.id = rd.commitment_id "
-            "LEFT JOIN actors a ON a.id = c.owner_id "
-            "WHERE rd.resource_id = $1 "
-            "  AND rd.released_at IS NULL "
-            "  AND c.tenant_id = $2 "
-            "  AND c.terminal_at IS NULL "
-            "ORDER BY (rd.deployed_quantity->>'value')::float DESC NULLS LAST "
-            "LIMIT 8",
-            aid, tenant_id,
-        )
         items: list[dict[str, Any]] = []
-        for cr in consumers:
+        for cr in consumers[:8]:
             qty = float(cr["qty"] or 0.0)
             secondary = cr["owner_name"] or ""
             meta_str = (
@@ -1155,7 +1404,11 @@ def _fmt_quantity(value: float, unit: str) -> str:
 
 
 async def _build_observation_drawer(
-    aid: UUID, tenant_id: UUID, conn: asyncpg.Connection,
+    aid: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    actor_id: UUID | None = None,
 ) -> dict[str, Any] | None:
     row = await conn.fetchrow(
         "SELECT id, kind, source_channel, occurred_at, content_text, "
@@ -1191,6 +1444,14 @@ async def _build_observation_drawer(
         """,
         tenant_id, aid,
     )
+    using_models = await _filter_visible_rows(
+        list(using_models),
+        kind="model",
+        id_key="id",
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+        conn=conn,
+    )
 
     # entities_mentioned is a jsonb array of {type,id}; resolve ids → titles
     mentioned: list[dict[str, Any]] = []
@@ -1211,6 +1472,14 @@ async def _build_observation_drawer(
             try:
                 e_uuid = UUID(str(eid))
             except (ValueError, TypeError):
+                continue
+            if not await _reference_visible(
+                str(etype),
+                e_uuid,
+                actor_id=actor_id,
+                tenant_id=tenant_id,
+                conn=conn,
+            ):
                 continue
             title = await _resolve_entity_title(etype, e_uuid, tenant_id, conn)
             if title:
@@ -1282,7 +1551,11 @@ async def _build_observation_drawer(
 
 
 async def _build_model_drawer(
-    aid: UUID, tenant_id: UUID, conn: asyncpg.Connection,
+    aid: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    actor_id: UUID | None = None,
 ) -> dict[str, Any] | None:
     row = await conn.fetchrow(
         'SELECT id, "natural", proposition_kind, confidence, status, '
@@ -1309,6 +1582,14 @@ async def _build_model_drawer(
             "ORDER BY occurred_at DESC LIMIT 5",
             list(row["supporting_event_ids"]), tenant_id,
         )
+        rows_obs = await _filter_visible_rows(
+            list(rows_obs),
+            kind="observation",
+            id_key="id",
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            conn=conn,
+        )
         for o in rows_obs:
             sup_obs.append({
                 "type": "observation", "id": str(o["id"]),
@@ -1324,6 +1605,14 @@ async def _build_model_drawer(
             "FROM models WHERE id = ANY($1::uuid[]) AND tenant_id = $2 "
             "ORDER BY confidence DESC LIMIT 5",
             list(row["supporting_model_ids"]), tenant_id,
+        )
+        rows_m = await _filter_visible_rows(
+            list(rows_m),
+            kind="model",
+            id_key="id",
+            actor_id=actor_id,
+            tenant_id=tenant_id,
+            conn=conn,
         )
         for m in rows_m:
             sup_models.append({
@@ -1355,6 +1644,8 @@ async def _build_model_drawer(
             "WHERE id = ANY($1::uuid[]) AND tenant_id = $2 LIMIT 6",
             list(row["scope_actors"]), tenant_id,
         )
+        if actor_id is not None:
+            rows_a = [a for a in rows_a if a["id"] == actor_id]
         for a in rows_a:
             actor_links.append({
                 "type": "actor", "id": str(a["id"]),
@@ -1381,6 +1672,14 @@ async def _build_model_drawer(
             try:
                 e_uuid = UUID(str(eid))
             except (ValueError, TypeError):
+                continue
+            if not await _reference_visible(
+                str(etype),
+                e_uuid,
+                actor_id=actor_id,
+                tenant_id=tenant_id,
+                conn=conn,
+            ):
                 continue
             title = await _resolve_entity_title(etype, e_uuid, tenant_id, conn)
             if title:

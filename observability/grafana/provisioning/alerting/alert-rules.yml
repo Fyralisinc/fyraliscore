@@ -18,7 +18,7 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "A worker heartbeat is older than 120s — the worker loop is stalled or dead (covers legacy ingestion workers and think/post-commit workers)."
+          summary: "A worker heartbeat is older than 120s — a production worker loop is stalled or dead."
         data:
           - refId: A
             relativeTimeRange:
@@ -27,7 +27,7 @@ groups:
             datasourceUid: fyralis-prom
             model:
               refId: A
-              expr: 'max by (worker) (ingestion_heartbeat_age_seconds or worker_heartbeat_age_seconds)'
+              expr: "fyralis:worker_heartbeat_age_seconds"
               instant: true
           - refId: C
             relativeTimeRange:
@@ -345,6 +345,90 @@ groups:
                     params: []
                   type: query
 
+      - uid: think-stale-locks
+        title: ThinkStaleLocks
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "Think trigger queue has stale locks for 5m — workers are wedged, crashed mid-trigger, or lock reclamation is not keeping up."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'max(think_trigger_stale_locks)'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: think-retry-exhausted
+        title: ThinkRetryExhausted
+        condition: C
+        for: 1m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: critical
+        annotations:
+          summary: "Think or model-reeval queue retries exhausted in the last 15m — rows need operator inspection or replay."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'sum(increase(think_queue_retry_exhausted_total[15m]))'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
       - uid: db-pool-saturated
         title: DBPoolSaturated
         condition: C
@@ -378,6 +462,132 @@ groups:
                 - evaluator:
                     type: gt
                     params: [0.9]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: backup-recovery-unhealthy
+        title: BackupRecoveryUnhealthy
+        condition: C
+        for: 5m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: critical
+        annotations:
+          summary: "A backup, restore-test, or inventory check is stale, missing, or failed — do not promote releases until recovery evidence is fresh."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'max(backup_recovery_health_status{state=~"stale|missing|failed"})'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: schema-rls-drift-detected
+        title: SchemaRLSDriftDetected
+        condition: C
+        for: 2m
+        noDataState: NoData
+        execErrState: Error
+        labels:
+          severity: critical
+        annotations:
+          summary: "Live Postgres schema or RLS coverage no longer matches the schema lock — block release promotion and reconcile migrations/policies."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'max(schema_drift_check_status{status=~"drift|error"} or vector(0)) + sum(schema_drift_findings or vector(0))'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query
+
+      - uid: product-slo-burn-high
+        title: ProductSLOBurnHigh
+        condition: C
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "Product workflow SLO burn is high for 10m — user-facing routes are breaching the 5xx or p95 latency budget."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'max((fyralis:product_workflow_error_budget_burn:5m > bool 5) or vector(0)) + max((fyralis:product_workflow_latency_budget_burn:5m > bool 1.25) or vector(0))'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
                   operator:
                     type: and
                   query:

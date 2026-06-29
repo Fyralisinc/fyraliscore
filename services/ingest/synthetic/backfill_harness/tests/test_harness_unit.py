@@ -40,7 +40,7 @@ async def test_harness_writes_install_and_trigger_per_tenant_gmail(
     scenario = BackfillScenario(
         tenant_slug="harness-gmail",
         source="gmail",
-        fixture_params={"email": "alice@x3.com", "messages": 3},
+        fixture_params={"email": "alice@x3.example", "messages": 3},
     )
     harness = BackfillHarness(pool=fresh_db, scenarios=[scenario])
 
@@ -192,7 +192,7 @@ async def test_registry_written_contains_per_tenant_fixtures(
     scenarios = [
         BackfillScenario(
             tenant_slug="t1", source="gmail",
-            fixture_params={"email": "a@x.com", "messages": 3},
+            fixture_params={"email": "a@x.example", "messages": 3},
         ),
         BackfillScenario(
             tenant_slug="t2", source="slack",
@@ -232,7 +232,7 @@ async def test_harness_writes_kafka_path_enabled_flag(
 
     scenario = BackfillScenario(
         tenant_slug="flag-test", source="gmail",
-        fixture_params={"email": "a@x.com", "messages": 1},
+        fixture_params={"email": "a@x.example", "messages": 1},
     )
     harness = BackfillHarness(pool=fresh_db, scenarios=[scenario])
     outcomes = [_stub_outcome(scenario)]

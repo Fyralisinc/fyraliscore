@@ -67,25 +67,25 @@ require_llm_auth() {
   local provider="${LLM_PROVIDER:-deepseek}"
   case "$provider" in
     deepseek)
-      [ -n "${DEEPSEEK_API_KEY:-${LLM_API_KEY:-}}" ] \
-        || fail "DEEPSEEK_API_KEY or LLM_API_KEY not set for LLM_PROVIDER=deepseek"
+      [ -n "${DEEPSEEK_API_KEY:-${DEEPSEEK_API_KEY_SECRET_REF:-${LLM_API_KEY:-${LLM_API_KEY_SECRET_REF:-}}}}" ] \
+        || fail "DEEPSEEK_API_KEY(_SECRET_REF) or LLM_API_KEY(_SECRET_REF) not set for LLM_PROVIDER=deepseek"
       ;;
     openai)
-      [ -n "${OPENAI_API_KEY:-${LLM_API_KEY:-}}" ] \
-        || fail "OPENAI_API_KEY or LLM_API_KEY not set for LLM_PROVIDER=openai"
+      [ -n "${OPENAI_API_KEY:-${OPENAI_API_KEY_SECRET_REF:-${LLM_API_KEY:-${LLM_API_KEY_SECRET_REF:-}}}}" ] \
+        || fail "OPENAI_API_KEY(_SECRET_REF) or LLM_API_KEY(_SECRET_REF) not set for LLM_PROVIDER=openai"
       ;;
     anthropic)
-      [ -n "${ANTHROPIC_API_KEY:-${LLM_API_KEY:-}}" ] \
-        || fail "ANTHROPIC_API_KEY or LLM_API_KEY not set for LLM_PROVIDER=anthropic"
+      [ -n "${ANTHROPIC_API_KEY:-${ANTHROPIC_API_KEY_SECRET_REF:-${LLM_API_KEY:-${LLM_API_KEY_SECRET_REF:-}}}}" ] \
+        || fail "ANTHROPIC_API_KEY(_SECRET_REF) or LLM_API_KEY(_SECRET_REF) not set for LLM_PROVIDER=anthropic"
       ;;
     codex)
       local codex_auth="${CODEX_AUTH_FILE:-${CODEX_HOME:-$HOME/.codex}/auth.json}"
       if [ "${CODEX_TRANSPORT:-auto}" = "responses" ]; then
-        [ -n "${CODEX_API_KEY:-${OPENAI_API_KEY:-${LLM_API_KEY:-}}}" ] \
-          || fail "Codex Responses auth missing: set CODEX_API_KEY/OPENAI_API_KEY/LLM_API_KEY"
+        [ -n "${CODEX_API_KEY:-${CODEX_API_KEY_SECRET_REF:-${OPENAI_API_KEY:-${OPENAI_API_KEY_SECRET_REF:-${LLM_API_KEY:-${LLM_API_KEY_SECRET_REF:-}}}}}}" ] \
+          || fail "Codex Responses auth missing: set CODEX_API_KEY/OPENAI_API_KEY/LLM_API_KEY or *_SECRET_REF"
       else
-        [ -n "${CODEX_API_KEY:-${OPENAI_API_KEY:-${LLM_API_KEY:-}}}" ] || [ -f "$codex_auth" ] \
-          || fail "Codex auth missing: set CODEX_API_KEY/OPENAI_API_KEY/LLM_API_KEY or run codex login"
+        [ -n "${CODEX_API_KEY:-${CODEX_API_KEY_SECRET_REF:-${OPENAI_API_KEY:-${OPENAI_API_KEY_SECRET_REF:-${LLM_API_KEY:-${LLM_API_KEY_SECRET_REF:-}}}}}}" ] || [ -f "$codex_auth" ] \
+          || fail "Codex auth missing: set CODEX_API_KEY/OPENAI_API_KEY/LLM_API_KEY or *_SECRET_REF, or run codex login"
       fi
       ;;
     *)

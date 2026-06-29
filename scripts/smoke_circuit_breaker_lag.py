@@ -19,7 +19,10 @@ It:
      which is the per-source robustness the live path must have.
   5. If DATABASE_URL is set, runs a full unmocked `_process_tick` loop and
      asserts the tenant's `ingestion.kafka_path_enabled` flag flips to FALSE
-     in Postgres — the entire production path, nothing mocked.
+     in Postgres — the entire production trip path, nothing mocked.
+  6. Commits the lagging slack group to the head, exercises the operator
+     re-enable helper, then runs one more real broker-backed breaker tick and
+     asserts breaker bookkeeping resets.
 
 Usage:
     KAFKA_BOOTSTRAP_SERVERS=localhost:9092 \
@@ -126,6 +129,19 @@ def _commit_group_offsets() -> None:
     c_github.close()
 
 
+def _commit_slack_at_head() -> None:
+    c_slack = Consumer({
+        "bootstrap.servers": BOOT,
+        "group.id": f"{GROUP_BASE}.slack",
+        "enable.auto.commit": False,
+    })
+    _low, high = c_slack.get_watermark_offsets(
+        TopicPartition(SLACK_TOPIC, 0), timeout=10.0,
+    )
+    _commit_with_retry(c_slack, [TopicPartition(SLACK_TOPIC, 0, high)])
+    c_slack.close()
+
+
 def _emit_signal(producer: Producer, tenant_id: UUID) -> None:
     body = json.dumps({
         "tenant_id": str(tenant_id),
@@ -180,6 +196,7 @@ async def _phase_b_full_tick(tenant_id: UUID) -> None:
     from services.ingest.ingestion.feature_flags.client import (
         KAFKA_PATH_ENABLED, TenantFlags,
     )
+    from reenable_kafka_path import _reenable
 
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3, statement_cache_size=0)
     try:
@@ -194,6 +211,31 @@ async def _phase_b_full_tick(tenant_id: UUID) -> None:
                 "INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
                 tid, f"smoke-{tid.hex[:8]}",
             )
+        operator_actor_id = uuid4()
+        await pool.execute(
+            """
+            INSERT INTO actors (
+              id, tenant_id, type, display_name, status, metadata, created_at
+            )
+            VALUES ($1, $2, 'human_internal', 'Smoke operator', 'active',
+                    '{}'::jsonb, now())
+            ON CONFLICT (id) DO NOTHING
+            """,
+            operator_actor_id,
+            tenant_id,
+        )
+        await pool.execute(
+            """
+            INSERT INTO actor_roles (
+              tenant_id, actor_id, entity_type, entity_id, role,
+              granted_by, granted_at, revoked_at
+            )
+            VALUES ($1, $2, 'tenant', NULL, 'admin', $2, now(), NULL)
+            ON CONFLICT ON CONSTRAINT actor_roles_dedup DO NOTHING
+            """,
+            tenant_id,
+            operator_actor_id,
+        )
         flags = TenantFlags(pool)
         config = BreakerConfig(
             instance_name=f"smoke-{tenant_id.hex[:8]}",
@@ -231,6 +273,43 @@ async def _phase_b_full_tick(tenant_id: UUID) -> None:
         )
         print(f"  ✅ Phase B: flag flipped FALSE by auto:circuit_breaker; "
               f"alert lane={alerts[0][1]['source']} lag={alerts[0][1]['lag_seconds']:.0f}s")
+
+        print("\n[Phase C] operator re-enable after broker catch-up")
+        _commit_slack_at_head()
+        await _reenable(
+            pool,
+            tenant_id,
+            operator_actor_id=operator_actor_id,
+            note="circuit-breaker live smoke broker caught up",
+        )
+        enabled = await pool.fetchrow(
+            "SELECT flag_value, set_by FROM tenant_flags "
+            "WHERE tenant_id = $1 AND flag_name = $2",
+            tenant_id, KAFKA_PATH_ENABLED,
+        )
+        assert enabled is not None and enabled["flag_value"] is True, enabled
+        assert enabled["set_by"] == f"operator:{operator_actor_id}", enabled
+
+        await _process_tick(
+            config=config, pool=pool, tenant_flags=flags, state=state,
+            measure_lag_fn=_measure_kafka_lag_default,
+            active_tenants_fn=_sample_active_tenants_default,
+            alert_fn=_alert,
+        )
+        breaker_row = await pool.fetchrow(
+            """
+            SELECT tripped, tripped_at, consecutive_breach_ticks
+            FROM circuit_breaker_state
+            WHERE tenant_id = $1 AND instance_name = $2
+            """,
+            tenant_id, config.instance_name,
+        )
+        assert breaker_row is not None, "breaker state row missing after reset"
+        assert breaker_row["tripped"] is False, breaker_row
+        assert breaker_row["tripped_at"] is None, breaker_row
+        assert breaker_row["consecutive_breach_ticks"] == 0, breaker_row
+        print("  ✅ Phase C: operator re-enable set flag TRUE and breaker "
+              "bookkeeping reset on the next live-broker tick")
     finally:
         await pool.close()
 

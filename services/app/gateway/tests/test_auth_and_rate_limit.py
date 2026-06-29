@@ -36,7 +36,9 @@ async def test_valid_token_returns_200_on_observations(
         headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 200
-    assert resp.json()["stub"] is True
+    body = resp.json()
+    assert body["stub"] is False
+    assert body["source"] == "substrate"
 
 
 @pytest.mark.asyncio
@@ -105,6 +107,7 @@ async def test_rate_limit_allows_up_to_capacity_then_429(
 ):
     token, _actor = valid_session
     headers = {"Authorization": f"Bearer {token}"}
+    rate_limiter.clock = lambda: 0.0  # type: ignore[assignment]
     capacity, _ = rate_limiter.budget(RateTier.DEFAULT)
     # Burst the whole bucket on GET /observations (DEFAULT tier).
     ok_count = 0
@@ -165,27 +168,40 @@ async def test_tenant_a_cannot_see_tenant_b_observations(
 
     from lib.shared.ids import uuid7
 
-    # Insert one observation per tenant directly.
-    for tid, content_text in [
-        (tenant_id, "alpha only"),
-        (tenant_id_b, "beta only"),
+    token_a, actor_a = valid_session
+    token_b, actor_b = valid_session_b
+    actor_c = uuid7()
+    await gateway_pool.execute(
+        """
+        INSERT INTO actors (id, tenant_id, type, display_name, status)
+        VALUES ($1, $2, 'human_internal', 'Charlie', 'active')
+        """,
+        actor_c,
+        tenant_id,
+    )
+
+    # Insert visible and hidden observations directly. Actor A should see only
+    # their own same-tenant row; tenant B should see only tenant B's authored row.
+    for tid, actor_id, content_text in [
+        (tenant_id, actor_a, "alpha own"),
+        (tenant_id, actor_c, "alpha same tenant hidden"),
+        (tenant_id_b, actor_b, "beta only"),
     ]:
         await gateway_pool.execute(
             """
             INSERT INTO observations (
-                id, tenant_id, occurred_at, kind, source_channel,
+                id, tenant_id, actor_id, occurred_at, kind, source_channel,
                 content, content_text, trust_tier
-            ) VALUES ($1, $2, $3, 'signal', 'test:harness',
-                      '{}'::jsonb, $4, 'authoritative')
+            ) VALUES ($1, $2, $3, $4, 'signal', 'test:harness',
+                      '{}'::jsonb, $5, 'authoritative')
             """,
             uuid7(),
             tid,
+            actor_id,
             datetime.now(timezone.utc),
             content_text,
         )
 
-    token_a, _ = valid_session
-    token_b, _ = valid_session_b
     r_a = await client.get(
         "/observations", headers={"Authorization": f"Bearer {token_a}"}
     )
@@ -195,8 +211,18 @@ async def test_tenant_a_cannot_see_tenant_b_observations(
     assert r_a.status_code == 200 and r_b.status_code == 200
     texts_a = [o["content_text"] for o in r_a.json()["items"]]
     texts_b = [o["content_text"] for o in r_b.json()["items"]]
-    assert "alpha only" in texts_a and "beta only" not in texts_a
-    assert "beta only" in texts_b and "alpha only" not in texts_b
+    assert "alpha own" in texts_a
+    assert "alpha same tenant hidden" not in texts_a
+    assert "beta only" not in texts_a
+    assert "beta only" in texts_b
+    assert "alpha own" not in texts_b
+
+    r_a_limited = await client.get(
+        "/observations?limit=1",
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert r_a_limited.status_code == 200
+    assert [o["content_text"] for o in r_a_limited.json()["items"]] == ["alpha own"]
 
 
 @pytest.mark.asyncio
@@ -254,6 +280,43 @@ async def test_post_auth_session_wrong_actor_404(
         },
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_post_auth_session_rejects_tenant_header_mismatch(
+    client: httpx.AsyncClient,
+    seeded_actor,
+    tenant_id,
+    tenant_id_b,
+):
+    resp = await client.post(
+        "/auth/session",
+        headers={"X-Tenant-Id": str(tenant_id_b)},
+        json={
+            "actor_id": str(seeded_actor),
+            "tenant_id": str(tenant_id),
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json() == {"error": "tenant_id_mismatch"}
+
+
+@pytest.mark.asyncio
+async def test_post_auth_session_rejects_invalid_tenant_header(
+    client: httpx.AsyncClient,
+    seeded_actor,
+    tenant_id,
+):
+    resp = await client.post(
+        "/auth/session",
+        headers={"X-Tenant-Id": "not-a-uuid"},
+        json={
+            "actor_id": str(seeded_actor),
+            "tenant_id": str(tenant_id),
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json() == {"error": "invalid_tenant_header"}
 
 
 @pytest.mark.asyncio

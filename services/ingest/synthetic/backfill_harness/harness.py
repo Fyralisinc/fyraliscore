@@ -540,7 +540,7 @@ async def _write_google_calendar_install_and_trigger(
         "sa@x3-test.iam.gserviceaccount.com",
     )
     for cal in outcome.scenario.fixture_params.get(
-        "calendars", ["alice@acme.com", "bob@acme.com"],
+        "calendars", ["alice@acme.example", "bob@acme.example"],
     ):
         await conn.execute(
             """

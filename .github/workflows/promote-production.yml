@@ -1,0 +1,99 @@
+name: Promote to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: "Full commit SHA from main that was successfully deployed to staging."
+        required: true
+        type: string
+      staging_deploy_run_id:
+        description: "Successful Deploy to Staging workflow run id for target_sha."
+        required: true
+        type: string
+      release_notes_path:
+        description: "Release notes file reviewed for this promotion."
+        required: true
+        default: "docs/operations/release-notes-template.md"
+        type: string
+      confirm_staging_validation:
+        description: "I confirm staging validation, dashboards, migration gates, and rollback plan are reviewed."
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  promote:
+    name: Promote approved staging SHA
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: inputs.confirm_staging_validation == true
+    environment:
+      name: production
+
+    steps:
+      - name: Check out main history
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate promotion inputs
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+          RELEASE_NOTES_PATH: ${{ inputs.release_notes_path }}
+        run: |
+          set -euo pipefail
+          git fetch origin main production
+          git cat-file -e "${TARGET_SHA}^{commit}"
+          if ! git merge-base --is-ancestor "${TARGET_SHA}" origin/main; then
+            echo "target_sha must be reachable from origin/main" >&2
+            exit 1
+          fi
+          if [ ! -f "${RELEASE_NOTES_PATH}" ]; then
+            echo "release_notes_path does not exist: ${RELEASE_NOTES_PATH}" >&2
+            exit 1
+          fi
+
+      - name: Verify staging deployment run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING_DEPLOY_RUN_ID: ${{ inputs.staging_deploy_run_id }}
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${STAGING_DEPLOY_RUN_ID}")"
+          workflow_name="$(jq -r '.name' <<< "${run_json}")"
+          conclusion="$(jq -r '.conclusion' <<< "${run_json}")"
+          head_sha="$(jq -r '.head_sha' <<< "${run_json}")"
+          head_branch="$(jq -r '.head_branch' <<< "${run_json}")"
+          if [ "${workflow_name}" != "Deploy to Staging" ]; then
+            echo "staging_deploy_run_id must reference Deploy to Staging, got ${workflow_name}" >&2
+            exit 1
+          fi
+          if [ "${conclusion}" != "success" ]; then
+            echo "staging deployment must be successful, got ${conclusion}" >&2
+            exit 1
+          fi
+          if [ "${head_branch}" != "main" ]; then
+            echo "staging deployment must come from main, got ${head_branch}" >&2
+            exit 1
+          fi
+          if [ "${head_sha}" != "${TARGET_SHA}" ]; then
+            echo "staging deployment SHA ${head_sha} does not match target ${TARGET_SHA}" >&2
+            exit 1
+          fi
+
+      - name: Promote SHA to production branch
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git push origin "${TARGET_SHA}:refs/heads/production"
+          echo "Promoted ${TARGET_SHA} to production. CI on production will trigger Deploy to Production after it succeeds."

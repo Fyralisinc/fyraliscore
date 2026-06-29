@@ -1,0 +1,1336 @@
+# Fyralis BYOC Production Blueprint
+
+Last reviewed from `main` on 2026-06-24.
+
+This document turns the generic BYOC prompt into a Fyralis-specific production
+blueprint. It assumes Fyralis Core remains backend-only and that the demo/UI
+overlay is deployed separately or bundled as a customer-facing surface on top of
+the same data-plane boundary.
+
+## Executive Position
+
+The BYOC direction is correct for the first enterprise customer. Fyralis ingests
+and reasons over sensitive organizational, financial, HR, infrastructure, and
+communication data, so the production design must make the customer's cloud the
+only place where raw customer content, provider credentials, embeddings, model
+state, durable queues, and operational logs exist.
+
+The Gemini prompt is directionally useful, but it needs these Fyralis-specific
+corrections:
+
+- The data plane is not only a stateless application runtime. For Fyralis it
+  includes the gateway, ingestion workers, Think/post-commit workers, Postgres
+  with pgvector, Kafka or compatible streaming, object/blob storage, Redis,
+  embeddings/inference, local observability, and source-specific live workers.
+- The control plane should not own long-lived broad admin access to customer
+  clouds. Prefer a customer-side bootstrap runner and a persistent egress agent
+  that pulls signed desired state from our control plane.
+- The current DB RLS policy is a migration safety net with a permissive branch
+  when no tenant is bound. Enterprise launch requires strict tenant binding,
+  non-superuser DB roles, and RLS validation under the same role shape used in
+  production.
+- Static `.env` secrets are acceptable for local development only. BYOC must
+  resolve secrets from the customer's cloud KMS/Secrets Manager/Vault and keep
+  only opaque refs in Fyralis tables.
+- Observability must be allowlisted, aggregated, and source/tenant-safe by
+  design. Raw application logs, prompts, payloads, embeddings, database rows,
+  and provider tokens must never leave the customer boundary.
+- Self-service onboarding should feel like one wizard, but the privileged work
+  should run in a customer-owned execution context with signed IaC artifacts,
+  explicit external IDs, short-lived credentials, and auditable state changes.
+
+## Current Fyralis Baseline
+
+Verified strengths already present in the repo:
+
+- Backend-only layered architecture with import boundaries enforced through
+  `lint-imports` in `pyproject.toml`.
+- FastAPI gateway, bearer auth middleware, request IDs, route-template HTTP
+  metrics, and header redaction via `lib/shared/http_headers.py`.
+- Tenant-scoped domain data, `TenantContext`, RLS migrations, and CI ingestion
+  tests that run under a non-superuser, non-BYPASSRLS role.
+- Fernet-backed `encrypted_secrets` store with tenant-scoped lookups and a
+  rotation seam.
+- Production env contract checks that require fail-closed settings such as
+  `AUTH_BOOTSTRAP_SECRET`, disabled debug panels, no default tenant IDs in prod,
+  webhook env fallback disabled, and required ingestion data-plane wiring.
+- Kafka-first ingestion path with S3 raw tier, per-source topic isolation, DLQ,
+  source-lane circuit breaker, and inline fallback.
+- Prometheus/Grafana metrics stack with worker `/healthz`, `/metrics`, DB pool
+  gauges, queue depth, LLM cost metrics, and cardinality controls.
+- Operational readiness harness for schema drift, production env contract,
+  privacy probes, feedback-loop gates, calibration, and queue drain checks.
+
+Open launch risks that must be treated as blockers for enterprise BYOC:
+
+- Strict RLS is not complete while the permissive no-tenant branch remains.
+- Some workers are implemented but not first-class compose/Kubernetes services.
+- Scheduler and some gateway loops still need leader election or advisory locks
+  before horizontal scaling.
+- Known stability risks remain around network I/O inside DB transactions,
+  trigger idempotency races, orphaned queue locks, unbounded artifacts, and
+  incomplete dead-letter operator surfaces.
+- Current production examples still rely on env-injected application secrets and
+  local compose credentials.
+- Existing deploy/migration workflow is host/compose-oriented, not yet a signed,
+  reproducible multi-cloud release controller.
+
+## Target Principles
+
+- Customer data locality: raw payloads, extracted text, embeddings, prompts,
+  model state, logs, and source credentials stay inside the customer cloud.
+- Egress-only connectivity: the data plane initiates all control-plane
+  communication. No inbound public firewall rule is required.
+- Identity over secrets: runtime components use workload identity, IAM roles,
+  managed identities, or service account impersonation. Static access keys are
+  forbidden outside local development.
+- Least privilege by artifact boundary: IaC, images, Helm charts, migrations,
+  and agent commands are signed, versioned, and scoped to a single deployment.
+- Local autonomy: the data plane continues serving local product traffic and
+  processing already-authorized work during control-plane outages.
+- Telemetry minimization: the control plane receives only predeclared aggregate
+  metrics, health state, deployment state, billing counters, and privacy-safe
+  product usage events.
+- Reversible rollout: every app version, config change, and migration has an
+  explicit rollout, pause, rollback, and reconciliation path.
+
+## Phase 1 - Core Production Readiness Checklist
+
+### Security And Data Hardening
+
+Implementation requirements:
+
+- Encrypt all data at rest using customer-owned keys.
+  - Postgres/RDS/Cloud SQL/Azure Database encryption with customer managed KMS
+    keys where the customer requires key ownership.
+  - Object storage buckets for raw payloads and future large blobs encrypted
+    with customer KMS keys, bucket public access blocked, versioning enabled,
+    and lifecycle policy defined by the customer DPA.
+  - Kafka/MSK/Confluent/Pub/Sub/Event Hubs storage encryption enabled.
+  - Redis/ElastiCache/Memorystore encryption at rest and in transit where the
+    service supports it.
+- Encrypt all data in transit.
+  - TLS 1.2 minimum, TLS 1.3 preferred, for browser/API, internal service,
+    database, object storage, broker, and control-plane agent traffic.
+  - mTLS between the data-plane agent and control plane.
+  - Private networking for database, broker, object storage, Redis, and
+    embedding endpoints. No public Postgres, Kafka, Redis, MinIO, or Ollama.
+- Replace static env secrets with customer-owned secret providers.
+  - AWS: Secrets Manager or SSM Parameter Store plus KMS.
+  - GCP: Secret Manager plus Cloud KMS.
+  - Azure: Key Vault plus managed identity.
+  - HashiCorp Vault: Kubernetes auth or cloud IAM auth, with short TTL leases.
+  - Fyralis DB stores only `secret_ref` values; plaintext only exists in memory
+    for the active operation.
+- Promote the current Fernet store to a compatibility layer.
+  - `MASTER_KEK` must be resolved from customer KMS/Vault, never embedded in
+    `.env.production`.
+  - Add a `SecretStore` interface that can dispatch to cloud-native backends
+    while preserving existing `FernetSecretStore` tests.
+  - Add key rotation runbooks and an automated rotation rehearsal.
+- Enforce strict tenant and customer boundaries.
+  - Production DB role must not be superuser and must not have `BYPASSRLS`.
+  - Remove the permissive no-tenant RLS branch after all production repos use
+    `TenantContext` or explicit tenant-bound transactions.
+  - Add a startup gate that fails if `current_user` has superuser/BYPASSRLS or
+    if strict RLS policy shape is not installed.
+  - Keep application-level `WHERE tenant_id = $1` filters as defense in depth.
+- Remove hardcoded tenant assumptions.
+  - `DEFAULT_ACTOR_ID`, `DEFAULT_TENANT_ID`, and `COMPANY_OS_TENANT_ID` are
+    forbidden in production.
+  - Any BYOC deployment ID, customer ID, region, cloud account, source list,
+    and feature flags must come from signed control-plane config or local
+    customer config, not code constants.
+  - Demo and debug routers must be disabled unless explicitly enabled in a
+    non-production deployment.
+- Lock down source ingress.
+  - All public webhooks must use provider signature verification or OIDC
+    verification before any queue write.
+  - Provider install rows must distinguish missing install from cross-tenant
+    access without leaking existence.
+  - Live workers such as Discord and Telegram must use single-leader leases.
+- Add supply-chain controls.
+  - Build SBOMs for images.
+  - Sign images and Helm/IaC artifacts.
+  - Verify signatures in the data-plane bootstrap runner before apply.
+  - Pin base images and run vulnerability scans before promotion.
+
+Strict RLS launch gate:
+
+```sql
+-- Target production policy shape after repo migration to TenantContext.
+DROP POLICY IF EXISTS tenant_isolation ON observations;
+CREATE POLICY tenant_isolation ON observations
+  USING (tenant_id = current_setting('app.current_tenant', false)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.current_tenant', false)::uuid);
+
+ALTER TABLE observations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE observations FORCE ROW LEVEL SECURITY;
+```
+
+### Performance And Scalability
+
+Implementation requirements:
+
+- Database query and index strategy.
+  - Keep tenant/time composite indexes for every hot tenant-scoped queue and
+    product read path.
+  - Add missing queue indexes called out by the hardening backlog, especially
+    `(tenant_id, scheduled_at)` for pending post-commit actions.
+  - Validate every hot query with `EXPLAIN (ANALYZE, BUFFERS)` against a
+    production-sized anonymized or synthetic dataset.
+  - Maintain HNSW/vector index settings per environment and document
+    `ef_search` / memory tradeoffs.
+  - Partition high-volume append-only tables such as `observations`,
+    `resource_transactions`, `think_run_artifacts`, and raw/error ledgers by
+    time.
+  - Add retention policies for debug artifacts, raw payloads, telemetry, and
+    logs before external launch.
+- Connection pooling.
+  - Use pgbouncer transaction mode for high-fanout workers and configure
+    `statement_cache_size=0` for compatible asyncpg pools.
+  - Size pools per process class, not globally. Gateway, Think workers,
+    observation writers, embedding workers, reconciler, and OAuth workers need
+    separate budgets.
+  - Expose `db_pool_*` gauges for every pool and alert at sustained saturation.
+  - Add statement timeouts and lock timeouts for app roles.
+- Stateless application layer.
+  - Gateway replicas must not own singleton background work unless protected by
+    leases.
+  - Realtime dispatch, scheduler, OAuth sweeper, and source live workers must
+    use DB or Redis leader locks with TTL refresh and failover.
+  - Session/auth state must live in Postgres/Redis or customer IdP, not process
+    memory.
+  - Durable queues must use `FOR UPDATE SKIP LOCKED`, leases, heartbeat, and
+    orphan recovery.
+- Ingestion scalability.
+  - Preserve per-source topics and per-source worker deployment from
+    [source isolation](../ingestion/source-isolation.md).
+  - Keep Kafka path enabled by default with an inline fallback kill switch.
+  - Run normalizer with bounded per-tenant ordered concurrency.
+  - Limit embedding concurrency per source to avoid thundering herd on Ollama or
+    the selected embedder.
+- Third-party dependency resilience.
+  - Centralize retry policies with exponential backoff and jitter for source
+    APIs, LLM providers, embedding backends, object storage, and broker flushes.
+  - Keep circuit breakers for LLM and ingestion cutover. Add budget breakers for
+    per-tenant LLM spend and tokens.
+  - Do not hold DB transactions while calling LLMs, embedding providers, source
+    APIs, object storage, or HTTP rendering adapters.
+  - Prefer idempotent writes with `INSERT ... ON CONFLICT` and stable
+    idempotency keys.
+- Graceful degradation.
+  - If Kafka is unhealthy, ingress can safely fall back to inline path when the
+    tenant flag is tripped.
+  - If embeddings fail, set `embedding_pending=True` and let the backlog worker
+    retry.
+  - If control-plane connectivity is down, local app traffic and local worker
+    processing continue; telemetry queues locally.
+  - If LLM budget is exhausted, product surfaces should return structured
+    degraded states instead of silently fabricating placeholders.
+
+### Error Handling And Code Hygiene
+
+Implementation requirements:
+
+- Standardize error propagation.
+  - Domain/runtime errors inherit from `CompanyOSError` and carry structured
+    `code`, `message`, and safe context.
+  - User-facing HTTP responses must not include Python tracebacks, provider
+    tokens, raw payloads, raw prompts, SQL text with values, or source secrets.
+  - Internal logs may carry exception type and request ID; raw values require a
+    local-only debug mode with explicit retention.
+- Strengthen log redaction.
+  - Keep the `safe_headers` and `redact_header_values` processors.
+  - Add body/key redaction for common token fields in JSON payloads.
+  - Add tests that captured logs do not contain `Bearer`, `xoxb-`, OAuth
+    refresh tokens, webhook signatures, private keys, API keys, account/routing
+    numbers, SSNs, or bank identifiers.
+- CI/CD gates.
+  - Required on every PR: ruff, import-linter, architecture ratchets,
+    production env contract, technical debt budget, unit/integration tests, and
+    migration prefix uniqueness.
+  - Required before release: schema drift check, strict RLS probe under
+    production-like non-superuser role, operational readiness harness, load/soak
+    report, migration rehearsal, rollback rehearsal, SBOM/signature verification,
+    and vulnerability scan.
+  - Nightly: real LLM suite, ingestion subprocess E2Es, per-source pipeline
+    drain, and representative source-contract fixtures.
+- Type safety.
+  - Continue Pydantic validation at boundaries.
+  - Add mypy or pyright in staged mode for `lib/` and critical service packages.
+  - Use typed config objects instead of ad hoc `os.environ` reads in hot paths.
+- Integration test coverage.
+  - Multi-replica scheduler and worker tests.
+  - No network I/O inside transaction static check.
+  - IaC bootstrap dry-run tests.
+  - Upgrade/rollback tests against a staging BYOC cluster.
+  - Telemetry privacy tests that attempt to emit PII and assert it is dropped.
+
+## Phase 2 - BYOC Architecture
+
+### System Boundary
+
+```mermaid
+flowchart LR
+    subgraph CP["Fyralis Control Plane - hosted by Fyralis"]
+      PORTAL["Admin + customer onboarding portal"]
+      REG["Deployment registry"]
+      CONFIG["Signed config desired state"]
+      ART["Artifact registry<br/>images, Helm, Terraform modules"]
+      REL["Release orchestration"]
+      TEL["Telemetry aggregation<br/>privacy-safe metrics only"]
+      BILL["Billing and license counters"]
+    end
+
+    subgraph CUSTOMER["Customer cloud account / project / subscription"]
+      subgraph DP["Fyralis Data Plane"]
+        AGENT["Egress agent / reconciler"]
+        GW["Gateway + API"]
+        ING["Ingestion workers<br/>per-source lanes"]
+        THINK["Think + post-commit workers"]
+        LIVE["Live source workers"]
+        PG[("Postgres + pgvector")]
+        BUS["Kafka/MSK/Pub/Sub/Event Hubs"]
+        OBJ["Object/blob storage"]
+        REDIS[("Redis")]
+        EMB["Embedding / inference runtime"]
+        GRAF["Local Grafana/Prometheus"]
+        SECRETS["Customer KMS + secrets"]
+      end
+      USERS["Customer users and admins"]
+      SOURCES["Customer-authorized sources<br/>Slack, Gmail, Jira, finance, infra"]
+    end
+
+    USERS --> GW
+    SOURCES -->|"webhooks / polling / push / WSS"| GW
+    GW --> ING
+    ING --> BUS
+    ING --> OBJ
+    ING --> PG
+    ING --> EMB
+    THINK --> PG
+    THINK --> EMB
+    GW --> PG
+    GW --> REDIS
+    DP --> SECRETS
+    DP --> GRAF
+
+    AGENT -- "mTLS egress only: status, config pull, artifact refs" --> CP
+    CP -- "no raw data, no inbound customer ports" --> AGENT
+```
+
+### Control Plane Hosted By Fyralis
+
+Allowed data:
+
+- Customer account metadata: company name, billing owner, deployment owner,
+  legal/DPA state, support tier, cloud provider, region, deployment ID.
+- Cloud deployment metadata: cloud account/project/subscription IDs, region,
+  VPC/VNet identifiers, cluster name, stack names, agent version, artifact
+  versions, feature flags, rollout channel, allowed source families.
+- Configuration desired state: signed release versions, chart values that do
+  not contain secrets, resource sizing profiles, policy pack IDs, retention
+  class, telemetry allowlist version.
+- Aggregated billing counters: active seats, source family enabled counts,
+  event counts by source family, LLM/embedding token buckets by coarse class,
+  storage high-water marks, connector count.
+- Health telemetry: heartbeat, component readiness, queue depth buckets,
+  p50/p95/p99 latency, error-rate counters, deploy state, drift state, and
+  alert state.
+- Support metadata: deployment run IDs, failure codes, sanitized stack events,
+  support tickets, customer-approved diagnostics bundle pointers.
+
+Forbidden data:
+
+- Raw source payloads or extracted text.
+- Database row payloads, prompts, completions, embeddings, vector IDs tied to
+  customer content, actor/user names, emails, file names, object keys that embed
+  tenant/customer/source data, source API tokens, OAuth refresh tokens, webhook
+  secrets, private keys, log lines containing payload fields.
+
+Control-plane services:
+
+- Onboarding portal.
+- Deployment registry and desired-state store.
+- Artifact registry and signing service.
+- Release controller.
+- Telemetry ingestion API with schema validation and PII rejection.
+- Fleet dashboard for Fyralis operators.
+- Customer support workflow that can request but not silently pull local logs.
+
+Operator dashboard:
+
+- Fleet list by customer, region, deployment status, current version, target
+  version, drift status, last heartbeat, last successful reconcile, and support
+  mode.
+- Drill-down panels with aggregate health only: gateway up, worker up counts,
+  queue-depth bands, DLQ counts, error-rate bands, storage/broker/database
+  utilization, LLM spend/budget bands, and control-plane connectivity status.
+- No raw logs by default. A diagnostics export requires customer admin approval
+  and is generated inside the data plane with a privacy filter.
+
+### Data Plane Hosted In The Customer Cloud
+
+Required components:
+
+- Application runtime:
+  - Gateway/API service.
+  - Ingestion gateway and webhooks.
+  - Per-source normalizer, observation writer, embedding worker, DLQ writer.
+  - Tenant/source onboarding workflows.
+  - Think worker and post-commit worker.
+  - Live workers such as Discord/Telegram/Gmail/Calendar/Drive where enabled.
+  - Maintenance workers that are currently dormant in compose but required for
+    production if their tables/features are enabled.
+- Data services:
+  - Postgres 16 plus pgvector.
+  - Kafka/MSK/Confluent or cloud-native equivalent for the ingestion pipeline.
+  - Object storage for raw payloads and future blob/chunk tiers.
+  - Redis-compatible cache/rate limit/leader-lock store.
+  - Embedding backend: local Ollama, customer-hosted model endpoint, or
+    customer-approved managed embedding endpoint.
+  - Local Prometheus/Grafana or equivalent.
+- Customer cloud primitives:
+  - IAM roles/service accounts/managed identities.
+  - KMS keys.
+  - Secrets manager.
+  - Private subnets/security groups/firewall rules.
+  - Object storage buckets.
+  - Managed database, broker, Redis, and Kubernetes/ECS/Cloud Run/AKS/GKE/EKS
+    compute depending on deployment profile.
+
+Runtime identity:
+
+- Pods/tasks use workload identity.
+- Each component gets a distinct service account/role.
+- Gateway cannot administer infrastructure.
+- Workers can only read secrets and cloud resources for the source families
+  they own.
+- IaC runner/agent has elevated deployment permissions, but only in a dedicated
+  namespace/account role and with an explicit permissions boundary.
+
+### Secure Cross-Plane Connectivity
+
+Preferred model: data-plane agent pull.
+
+- The customer deploys a small bootstrap runner with one-time credentials.
+- The runner installs the permanent Fyralis data-plane agent.
+- The agent initiates mTLS to the Fyralis control plane over outbound 443.
+- The agent authenticates with a deployment certificate bound to deployment ID,
+  customer ID, cloud account/project, and allowed region.
+- The agent polls desired state, verifies signatures, applies changes locally,
+  and reports status.
+- The control plane never opens an inbound socket into the customer network.
+
+Optional private connectivity:
+
+- AWS PrivateLink for customers that require private AWS backbone access to the
+  control-plane endpoint.
+- GCP Private Service Connect for private service attachment to the control
+  plane.
+- Azure Private Link for control-plane endpoints.
+- Site-to-site VPN or Direct Connect/Interconnect is not the default. Use only
+  when the customer already mandates it and still keep data-plane initiated
+  control operations.
+
+Connectivity contract:
+
+```yaml
+control_plane_connectivity:
+  direction: egress_only
+  protocol: https
+  port: 443
+  auth: mtls
+  agent_poll_interval_seconds: 30
+  heartbeat_interval_seconds: 15
+  max_telemetry_batch_bytes: 262144
+  raw_logs_allowed: false
+  raw_payloads_allowed: false
+  fail_closed_for_new_config_after: 24h
+  continue_serving_local_traffic_when_disconnected: true
+```
+
+## Phase 3 - Self-Service BYOC Onboarding
+
+### Wizard Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Customer Admin
+    participant P as Fyralis Portal
+    participant Cloud as Customer Cloud
+    participant R as Bootstrap Runner
+    participant A as Data-Plane Agent
+    participant CP as Fyralis Control Plane
+
+    C->>P: Create BYOC deployment
+    P->>P: Generate deployment ID, external ID, signed manifest
+    P-->>C: Show cloud-specific bootstrap template
+    C->>Cloud: Apply IAM/bootstrap template
+    Cloud-->>P: Role ARN / service account / managed identity
+    P->>Cloud: Optional preflight assume/impersonate permission check
+    C->>Cloud: Launch bootstrap runner
+    R->>CP: Fetch signed IaC bundle over outbound TLS
+    R->>R: Verify signatures and policy pack
+    R->>Cloud: Provision VPC/private resources/cluster/data services
+    R->>Cloud: Install Helm chart and agent
+    A->>CP: mTLS enroll + heartbeat
+    A->>A: Run post-deploy validation
+    A->>CP: Report health, version, validation result
+    P-->>C: Deployment successful or actionable remediation
+```
+
+Wizard pages:
+
+1. Deployment profile
+   - Cloud provider, region, environment, expected data volume, source families,
+     retention class, HA tier, and whether the customer supplies existing VPC,
+     database, broker, and object storage.
+2. Permission handshake
+   - Generate external ID, role/service account template, permissions boundary,
+     and customer-side approval commands.
+3. Network plan
+   - VPC/VNet/subnet validation, private endpoints, DNS, egress allowlist, and
+     no-inbound assertion.
+4. IaC execution
+   - Customer runs bootstrap or authorizes the portal to trigger a customer-side
+     runner.
+5. Validation
+   - Component checks, network checks, secret checks, migration checks,
+     source-ready checks, and privacy telemetry checks.
+6. Handoff
+   - Local admin URL, local Grafana URL, first source setup, support boundary,
+     backup/restore summary, and update channel.
+
+### Cloud Authentication And Permission Handshake
+
+AWS preferred handshake:
+
+- Portal generates:
+  - `deployment_id`
+  - `external_id`
+  - expected Fyralis control-plane principal ARN
+  - stack name prefix
+  - required region
+  - permissions boundary ARN or inline boundary
+- Customer applies a CloudFormation/Terraform bootstrap template.
+- The template creates:
+  - `FyralisByocProvisionerRole`
+  - optional `FyralisByocCloudFormationServiceRole`
+  - KMS key or references customer KMS key
+  - Secrets Manager namespace
+  - S3 artifact/state bucket or references customer bucket
+  - IAM permissions boundary for created roles
+- The portal preflights `sts:AssumeRole` using the external ID.
+- The permanent data-plane agent later runs inside the customer account using
+  IRSA/EKS Pod Identity, ECS task role, or EC2 instance role.
+
+AWS trust policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowFyralisControlPlaneAssumeWithExternalId",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::<FYRALIS_CONTROL_PLANE_ACCOUNT_ID>:role/fyralis-byoc-provisioner"
+      },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": {
+          "sts:ExternalId": "<DEPLOYMENT_EXTERNAL_ID>"
+        }
+      }
+    }
+  ]
+}
+```
+
+AWS narrow control-plane role policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadAccountAndRegionPreflight",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeSecurityGroups",
+        "eks:DescribeCluster",
+        "rds:DescribeDBInstances",
+        "s3:GetBucketLocation"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageFyralisStacksOnly",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:CreateChangeSet",
+        "cloudformation:CreateStack",
+        "cloudformation:DeleteChangeSet",
+        "cloudformation:DeleteStack",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStacks",
+        "cloudformation:ExecuteChangeSet",
+        "cloudformation:GetTemplate",
+        "cloudformation:UpdateStack"
+      ],
+      "Resource": "arn:aws:cloudformation:<REGION>:<CUSTOMER_ACCOUNT_ID>:stack/fyralis-<DEPLOYMENT_ID>-*/*"
+    },
+    {
+      "Sid": "PassDedicatedCloudFormationServiceRoleOnly",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::<CUSTOMER_ACCOUNT_ID>:role/fyralis-<DEPLOYMENT_ID>-cloudformation-service-role",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "cloudformation.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "ReadFyralisTaggedResourcesForDrift",
+      "Effect": "Allow",
+      "Action": [
+        "tag:GetResources",
+        "cloudformation:ListStackResources",
+        "cloudformation:DetectStackDrift",
+        "cloudformation:DescribeStackResourceDrifts"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "<REGION>"
+        }
+      }
+    }
+  ]
+}
+```
+
+AWS CloudFormation service role policy shape:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CreateOnlyFyralisTaggedResources",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:*",
+        "eks:*",
+        "rds:*",
+        "elasticache:*",
+        "kafka:*",
+        "s3:*",
+        "kms:CreateGrant",
+        "kms:DescribeKey",
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "secretsmanager:*",
+        "logs:*",
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:PutRolePolicy",
+        "iam:DeleteRolePolicy",
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:TagRole",
+        "iam:PassRole"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "<REGION>"
+        },
+        "StringLikeIfExists": {
+          "aws:RequestTag/fyralis:deployment-id": "<DEPLOYMENT_ID>",
+          "aws:ResourceTag/fyralis:deployment-id": "<DEPLOYMENT_ID>"
+        }
+      }
+    }
+  ]
+}
+```
+
+Notes:
+
+- The narrow control-plane role should be the steady-state default. The broader
+  service role is customer-owned and can be replaced with customer-run Terraform
+  when the customer does not allow SaaS-triggered CloudFormation.
+- For production, replace broad service wildcards with the exact actions used by
+  the selected IaC profile after the Terraform/CloudFormation plan is frozen.
+- Require a permissions boundary on every IAM role created by the Fyralis stack.
+- Require resource tags:
+  - `fyralis:deployment-id`
+  - `fyralis:customer-id`
+  - `fyralis:managed=true`
+  - `fyralis:environment`
+
+GCP preferred handshake:
+
+- Portal generates deployment ID and an allowlisted Fyralis workload identity
+  principal.
+- Customer creates `fyralis-byoc-provisioner@PROJECT.iam.gserviceaccount.com`.
+- Customer grants our workload identity permission to impersonate that service
+  account, or launches a customer-side bootstrap runner that uses it locally.
+- Runtime services use GKE Workload Identity or Cloud Run service identities.
+
+GCP custom role starting point:
+
+```yaml
+title: Fyralis BYOC Provisioner
+description: Provision and reconcile one Fyralis BYOC data plane.
+stage: GA
+includedPermissions:
+  - resourcemanager.projects.get
+  - serviceusage.services.get
+  - serviceusage.services.enable
+  - compute.networks.get
+  - compute.subnetworks.get
+  - compute.addresses.create
+  - compute.firewalls.create
+  - compute.firewalls.get
+  - container.clusters.create
+  - container.clusters.get
+  - container.clusters.update
+  - container.nodePools.create
+  - container.nodePools.get
+  - iam.serviceAccounts.create
+  - iam.serviceAccounts.get
+  - iam.serviceAccounts.setIamPolicy
+  - cloudkms.cryptoKeys.get
+  - cloudkms.cryptoKeys.create
+  - secretmanager.secrets.create
+  - secretmanager.secrets.get
+  - secretmanager.versions.add
+  - storage.buckets.create
+  - storage.buckets.get
+  - storage.objects.get
+  - logging.sinks.create
+  - monitoring.alertPolicies.create
+```
+
+Azure preferred handshake:
+
+- Customer creates a user-assigned managed identity for the bootstrap runner.
+- Customer grants a custom role scoped to the resource group.
+- Runtime workloads use managed identities with Key Vault, Storage, Database,
+  and Container Registry access scoped per component.
+
+### Automated Infrastructure Provisioning
+
+Supported IaC delivery modes:
+
+- Terraform module published as a signed OCI artifact.
+- Helm chart published as a signed OCI artifact for Kubernetes profiles.
+- CloudFormation template for AWS bootstrap and optional full AWS profile.
+- GCP Deployment Manager or Terraform for GCP.
+- Azure Bicep or Terraform for Azure.
+
+Recommended profile for first enterprise customer:
+
+- Kubernetes data plane on EKS/GKE/AKS if the customer already operates managed
+  Kubernetes.
+- Managed Postgres with pgvector support.
+- Managed Kafka/MSK or customer-approved Kafka-compatible equivalent. For GCP
+  and Azure, decide whether to run Kafka in-cluster or map to cloud-native
+  messaging after validating ordering, replay, and consumer lag semantics.
+- Managed object storage.
+- Managed Redis.
+- Customer KMS and Secrets Manager.
+- Local Prometheus/Grafana deployed privately.
+
+Control-plane trigger model:
+
+- Control plane writes signed desired state:
+
+```json
+{
+  "deployment_id": "dep_01j...",
+  "desired_revision": "2026.06.24-3",
+  "artifact_set": {
+    "helm_chart": "oci://registry.fyralis.com/fyralis/dataplane:2026.06.24-3",
+    "terraform_module": "oci://registry.fyralis.com/fyralis/aws-byoc:2026.06.24-3",
+    "image_bundle": "sha256:..."
+  },
+  "policy_pack": "enterprise-default-v1",
+  "telemetry_contract": "telemetry-v1",
+  "signature": "cosign-or-dsse-signature"
+}
+```
+
+- Data-plane agent pulls desired state.
+- Agent verifies signature, evaluates policy pack, takes state lock, plans,
+  applies, validates, and reports structured progress.
+- Portal displays progress from agent events, not from raw IaC logs.
+
+Helm values baseline:
+
+```yaml
+global:
+  deploymentId: dep_01j...
+  cloudProvider: aws
+  region: us-east-1
+  telemetry:
+    controlPlaneUrl: https://control.fyralis.com
+    mode: aggregate-only
+    rawLogsAllowed: false
+  secrets:
+    provider: aws-secrets-manager
+    kmsKeyArn: arn:aws:kms:us-east-1:123456789012:key/...
+
+gateway:
+  replicas: 3
+  env:
+    FYRALIS_ENV: prod
+    WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW: "0"
+    DEBUG_ARTIFACT_CAPTURE: "0"
+    GATEWAY_REQUIRE_INGESTION_DATA_PLANE: "1"
+  serviceAccount:
+    annotations:
+      eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/fyralis-gateway
+
+workers:
+  think:
+    replicas: 2
+    maxConcurrencyPerTenant: 1
+  postCommit:
+    replicas: 2
+  ingestion:
+    perSource: true
+    sources:
+      - slack
+      - gmail
+      - google_drive
+      - jira
+
+postgres:
+  mode: managed
+  sslMode: verify-full
+
+observability:
+  localGrafana: true
+  exposePublicly: false
+```
+
+### Automated Post-Deployment Verification
+
+Validation sequence:
+
+1. Identity checks
+   - Confirm workload identity for every service account.
+   - Confirm data-plane agent certificate matches deployment ID.
+   - Confirm runtime roles cannot mutate infrastructure.
+2. Network checks
+   - Gateway reachable only through approved customer ingress.
+   - No public DB, broker, Redis, object storage, Ollama, or metrics endpoints.
+   - Agent can egress to control-plane endpoint over 443.
+   - Private DNS resolves managed service endpoints.
+3. Secret checks
+   - Read/write one test secret in customer secret provider.
+   - Verify `MASTER_KEK` or equivalent key material is not present as a plain
+     environment variable.
+   - Verify application can resolve a `secret_ref` and cannot cross-resolve a
+     different tenant/deployment ref.
+4. Database checks
+   - Apply migrations with state lock.
+   - Run schema drift check.
+   - Run strict RLS probe under production DB role.
+   - Verify pgvector extension and vector index health.
+   - Verify pool registration metrics.
+5. Storage and broker checks
+   - Put/get/delete test object with customer KMS encryption.
+   - Produce/consume test event on every per-source topic.
+   - Verify DLQ topic and DLQ writer.
+6. Application checks
+   - `/healthz`, `/readyz`, `/metrics` for gateway and workers.
+   - Auth session minting disabled without bootstrap secret.
+   - Debug panels disabled.
+   - Webhook signature negative test returns rejection.
+7. Ingestion checks
+   - Synthetic non-sensitive event through Kafka path.
+   - Inline fallback path behind controlled flag.
+   - Embedding pending/retry path using a fake test payload.
+8. Reasoning checks
+   - Run a non-sensitive Think smoke with fixture data.
+   - Verify queue drain, post-commit drain, and no dead letters.
+9. Telemetry privacy checks
+   - Emit a test metric and confirm it reaches the control plane.
+   - Attempt to emit blocked fields and confirm local collector drops them.
+   - Confirm control plane sees deployment IDs but no payload text or user IDs.
+
+Success criteria:
+
+- All required checks pass.
+- Any optional degraded component is explicitly accepted by policy.
+- Portal displays local dashboard link and source setup next step.
+- Data-plane agent reports version, health, telemetry contract, and last
+  successful validation timestamp.
+
+## Phase 4 - Edge Cases, Boundaries, And Failure Modes
+
+### Drift Detection
+
+Drift sources:
+
+- Customer manually deletes or edits an IAM role, KMS key policy, bucket policy,
+  DB parameter group, security group, subnet route, Kubernetes object, secret,
+  broker topic, or Grafana dashboard.
+- Cloud provider changes managed service defaults.
+- Fyralis agent is down during a partial rollout.
+- Customer policy tooling mutates Fyralis-managed tags or network rules.
+
+Reconciliation loop:
+
+```mermaid
+flowchart TD
+    T["Every N minutes or on control-plane desired-state change"]
+    INV["Collect inventory by tags and state backend"]
+    PLAN["Run IaC plan / cloud drift detection"]
+    CLASS["Classify drift severity"]
+    SAFE["Auto-remediate safe drift"]
+    HOLD["Hold and request approval"]
+    ALERT["Emit privacy-safe drift alert"]
+
+    T --> INV --> PLAN --> CLASS
+    CLASS -->|"missing label/dashboard/replica count"| SAFE
+    CLASS -->|"IAM/KMS/network/database destructive drift"| HOLD
+    SAFE --> ALERT
+    HOLD --> ALERT
+```
+
+Severity classes:
+
+- Informational: tag drift, dashboard drift, extra noncritical config.
+- Degraded: missing scrape target, worker replica drift, topic config drift.
+- Critical: IAM permission removed, secret inaccessible, KMS key disabled,
+  database unreachable, public exposure detected, RLS policy drift.
+- Security incident: public DB/broker/object store, cross-tenant RLS failure,
+  secret leakage, unexpected egress destination.
+
+Rules:
+
+- Auto-remediate only non-destructive, policy-approved drift.
+- Never recreate or delete customer data stores without explicit approval.
+- Do not overwrite customer-managed network policy if it would open traffic.
+- Keep a signed drift report in the customer environment and a sanitized status
+  in the control plane.
+
+### Failed Deployments And Rollbacks
+
+Deployment state machine:
+
+```text
+planned -> preflight -> locked -> applying -> validating -> healthy
+                                 \-> failed_preflight
+                                 \-> failed_apply -> rollback_pending -> rolled_back
+                                 \-> failed_validate -> rollback_or_hold
+```
+
+Failure handling:
+
+- Quotas or unsupported region:
+  - Fail in preflight.
+  - Show exact cloud quota/service blocker.
+  - Do not create partial resources.
+- Failure during infrastructure apply:
+  - Keep Terraform/CloudFormation state lock.
+  - Capture sanitized stack events.
+  - Roll back only resources marked ephemeral or newly created by the failed
+    revision.
+  - Preserve existing data stores unless the customer explicitly approved
+    destroy for first-time onboarding.
+- Failure during app rollout:
+  - Keep previous deployment running.
+  - Roll back Kubernetes deployment/Helm release to previous chart.
+  - Leave DB migrations only if they are expand-only and backward compatible.
+- Failure during validation:
+  - Hold rollout if rollback might drop data.
+  - Keep customer-facing app on previous healthy version where possible.
+  - Surface validation failure with remediation.
+
+Rollback requirements:
+
+- Every migration follows expand/contract:
+  - Release N adds nullable columns/tables/indexes.
+  - Release N writes compatibly.
+  - Release N+1 reads new shape.
+  - Release N+2 removes old shape after validation.
+- Destructive migrations require manual approval and backup verification.
+- Queue schema changes require dual-read/dual-write or quiesced drain.
+- Rollback never deletes tenant/customer data.
+
+### Version Upgrades And Patching
+
+Release model:
+
+- Control plane publishes release channels: `stable`, `preview`, `emergency`.
+- Each customer deployment pins a channel and a maintenance window.
+- Data-plane agent pulls desired version, verifies signatures, and applies
+  locally.
+- Each update includes app images, Helm chart, migrations, config schema,
+  policy pack, telemetry contract, and rollback metadata.
+
+Application rollout:
+
+- Gateway: rolling or blue/green deployment with readiness gates.
+- Workers: canary one replica, verify queue processing, then roll remaining.
+- Think worker: enforce per-tenant concurrency and drain/lease behavior.
+- Source live workers: one leader at a time with lease handoff.
+- Kafka consumers: cooperative rebalancing and lag checks.
+
+Database rollout:
+
+- Pre-migration backup or snapshot.
+- Apply expand migrations before app rollout.
+- Run schema drift check.
+- Run strict RLS probe.
+- Roll app.
+- Run post-deploy health and queue drain.
+- Contract migrations only in later releases.
+
+Blue/green profile:
+
+```mermaid
+flowchart LR
+    LB["Customer private ingress"]
+    BLUE["Blue gateway/workers<br/>current"]
+    GREEN["Green gateway/workers<br/>candidate"]
+    PG[("Shared Postgres<br/>expand-compatible schema")]
+    BUS["Shared broker"]
+
+    LB --> BLUE
+    GREEN --> PG
+    GREEN --> BUS
+    BLUE --> PG
+    BLUE --> BUS
+    LB -. "shift after validation" .-> GREEN
+```
+
+Patch emergency:
+
+- Control plane marks advisory and target version.
+- Agent pulls emergency release outside normal window only if customer policy
+  allows.
+- Otherwise portal shows required customer approval.
+- Critical security patches can disable vulnerable feature flags before full
+  rollout if the local data plane remains safe.
+
+### Air-Gapped And Semi-Connected States
+
+Semi-connected default:
+
+- Data plane can lose control-plane connectivity without losing local app
+  availability.
+- Last known signed config remains active.
+- Local source ingestion continues if source credentials and network are still
+  available.
+- Local observability remains available.
+- Telemetry batches spool locally with bounded disk usage and TTL.
+- New release/config changes are not applied until connectivity returns.
+
+Disconnected behavior:
+
+| Function | Behavior while control plane is unavailable |
+| --- | --- |
+| Customer UI/API | Continue serving locally. |
+| Source ingestion | Continue if source APIs reachable from customer cloud. |
+| Think/reasoning | Continue subject to local budgets and config. |
+| Telemetry | Queue locally, aggregate, expire by TTL. |
+| Billing counters | Accumulate locally and send aggregate after reconnect. |
+| License/config | Continue until signed config TTL. After TTL, fail closed for new privileged changes but keep read/local service online according to customer contract. |
+| Upgrades | Pause. |
+| Support diagnostics | Local-only until customer approves export after reconnect. |
+
+Agent local spool:
+
+```yaml
+telemetry_spool:
+  path: /var/lib/fyralis-agent/telemetry
+  max_bytes: 1073741824
+  max_age: 7d
+  overflow_policy: drop_oldest_aggregate
+  raw_event_storage: false
+```
+
+Air-gapped option:
+
+- Fully offline customers receive signed artifact bundles and license files
+  through their approved software distribution process.
+- Control-plane telemetry is disabled.
+- Billing is based on customer-provided aggregate export or contract tier.
+- Support bundles are generated locally with a customer-review step.
+- Updates are customer-pulled from an offline registry mirror.
+
+## Phase 5 - Observability, Metrics, And Product Insights
+
+### Telemetry Isolation
+
+Allowed to leave the customer boundary:
+
+| Category | Examples | Labels allowed |
+| --- | --- | --- |
+| Deployment health | heartbeat, version, component up/down, validation status, drift status | deployment_id, region, component, version |
+| Performance | API p50/p95/p99, worker duration buckets, queue-depth bands, DB pool saturation, broker lag bands | route template, component, source family, status class |
+| Reliability | error counts by code, retry counts, circuit breaker state, DLQ counts, failed validation count | bounded error_code, component, source family |
+| Capacity | CPU/memory/storage utilization, DB connections, object storage bytes, topic partitions | component, resource class |
+| Billing/product aggregate | active seat count, enabled source families, event count by source family, token bucket totals, monthly active users | source family, coarse plan/tier |
+| Release state | current version, target version, rollout phase, rollback count | version, phase |
+
+Forbidden to leave:
+
+- Raw logs.
+- Request/response bodies.
+- Source payloads.
+- Prompt text and completion text.
+- Embeddings and vector payloads.
+- User identifiers, emails, display names, file names, channel names, object
+  paths, message IDs, external IDs, OAuth subject IDs.
+- Provider tokens, refresh tokens, webhook signatures, private keys, KMS data
+  keys.
+- Free-form exception messages from source APIs unless sanitized and mapped to
+  bounded error codes.
+
+Telemetry event contract:
+
+```json
+{
+  "schema": "fyralis.telemetry.v1",
+  "deployment_id": "dep_01j...",
+  "sent_at": "2026-06-24T10:15:30Z",
+  "window": {
+    "start": "2026-06-24T10:14:30Z",
+    "end": "2026-06-24T10:15:30Z"
+  },
+  "metrics": [
+    {
+      "name": "gateway_http_latency_p95_ms",
+      "value": 184.2,
+      "labels": {
+        "route": "/v1/today",
+        "status_class": "2xx"
+      }
+    },
+    {
+      "name": "ingestion_events_total",
+      "value": 521,
+      "labels": {
+        "source_family": "gmail"
+      }
+    }
+  ],
+  "privacy": {
+    "raw_logs": false,
+    "contains_customer_payload": false,
+    "contract": "aggregate-only-v1"
+  }
+}
+```
+
+### PII And Data Masking Guardrails
+
+Architecture controls:
+
+- Metrics API accepts only a compiled allowlist of metric names and bounded
+  label keys/values.
+- Label values are enums or buckets. Free-form labels are rejected locally.
+- Tenant IDs, installation IDs, user IDs, email addresses, file names, channel
+  names, raw routes, object keys, and external IDs are forbidden as labels.
+- Logs stay local by default.
+- If a support bundle is approved, a local scrubber runs before export and
+  produces a manifest of removed fields.
+- Prometheus remote write is disabled unless pointed at a customer-owned
+  backend. Fyralis control-plane telemetry uses the agent aggregate API, not raw
+  Prometheus federation.
+- OpenTelemetry traces remain local until a privacy review defines span
+  processors and attribute allowlists.
+
+Collector filter sketch:
+
+```yaml
+processors:
+  attributes/fyralis_redact:
+    actions:
+      - key: http.request.header.authorization
+        action: delete
+      - key: user.email
+        action: delete
+      - key: tenant_id
+        action: delete
+      - key: installation_id
+        action: delete
+      - key: db.statement
+        action: delete
+      - key: llm.prompt
+        action: delete
+      - key: llm.completion
+        action: delete
+  filter/fyralis_remote_allowlist:
+    metrics:
+      include:
+        match_type: regexp
+        metric_names:
+          - "^gateway_http_.*"
+          - "^worker_.*"
+          - "^db_pool_.*"
+          - "^ingestion_.*"
+          - "^think_.*"
+          - "^deployment_.*"
+```
+
+Application controls:
+
+- Keep route-template metrics, never raw paths.
+- Keep `tenant_id` out of Prometheus labels.
+- Map source errors to bounded `error_code` values before telemetry export.
+- Add a CI test that fails if a new metric defines forbidden labels.
+- Add a log-capture test that injects known PII/secrets and confirms redaction.
+- Disable debug artifact capture in production by default.
+
+### Customer-Facing Status Dashboards
+
+Local dashboards inside the customer boundary:
+
+- System health:
+  - Gateway/worker uptime.
+  - Component readiness.
+  - DB, broker, Redis, object storage, embedding backend.
+- Ingestion:
+  - Per-source throughput.
+  - Per-source lag.
+  - DLQ counts.
+  - Source onboarding progress.
+  - Circuit breaker state.
+- Reasoning:
+  - Think queue depth.
+  - Think latency buckets.
+  - Validation failures.
+  - LLM spend/token local counters.
+  - Post-commit queue depth.
+- Security/privacy:
+  - RLS probe status.
+  - Secret provider health.
+  - Public exposure checks.
+  - Agent connectivity.
+  - Telemetry export status.
+- Deployment:
+  - Current version, target version, rollout status.
+  - Drift status.
+  - Last migration run.
+  - Last backup.
+  - Last validation run.
+
+Customer controls:
+
+- Download local logs.
+- Generate sanitized support bundle.
+- Pause telemetry export.
+- Pause upgrades.
+- Trigger validation.
+- Re-run drift detection.
+- Rotate agent certificate.
+- Revoke control-plane registration.
+
+## Production Launch Gate
+
+Minimum gates before first enterprise customer:
+
+- Security:
+  - Customer-owned KMS/secrets integrated.
+  - Static production env secrets removed or limited to non-secret refs.
+  - Strict RLS launch path completed or customer deployment constrained to a
+    single-tenant DB with explicit compensating controls and a dated removal
+    plan.
+  - No public data services.
+  - Header/body/log redaction tests passing.
+  - Webhook signature negative tests passing.
+- Reliability:
+  - No LLM/embed/http calls inside DB transactions.
+  - Scheduler leader election implemented.
+  - Source live workers have leases.
+  - Queue orphan recovery implemented.
+  - Idempotency races fixed.
+  - Dead-letter metrics, dashboard, and runbook available.
+- Scalability:
+  - Per-source ingestion lanes deployed.
+  - Pool budgets set and measured.
+  - Load/soak test at first-customer expected volume.
+  - Kafka fallback and circuit breaker tested.
+- Operations:
+  - Signed release artifacts.
+  - BYOC bootstrap dry run.
+  - Upgrade and rollback rehearsal.
+  - Backup/restore rehearsal.
+  - Drift detection dry run.
+  - Incident/support bundle workflow approved.
+- Observability:
+  - Local Grafana dashboards deployed.
+  - Control-plane telemetry allowlist enforced.
+  - PII egress test passing.
+  - Customer-facing health status available.
+
+## Roadmap
+
+### Milestone 0 - Decision Freeze
+
+- Select first-customer cloud provider and deployment profile.
+- Decide Kubernetes vs customer-managed compose/ECS/Cloud Run equivalent.
+- Decide managed Kafka vs in-cluster Kafka vs cloud-native eventing.
+- Decide embedding/inference location and provider policy.
+- Freeze data retention classes.
+
+### Milestone 1 - Core Hardening
+
+- Complete P0/P1 backlog items relevant to backend production.
+- Add strict RLS migration plan and production startup gate.
+- Finish secret-provider abstraction.
+- Add no-network-in-transaction static check.
+- Add worker leader election and orphan recovery.
+- Add dead-letter operator endpoint/runbook.
+
+### Milestone 2 - BYOC Bootstrap
+
+- Build data-plane agent.
+- Publish signed Terraform/Helm artifacts.
+- Build AWS first profile.
+- Implement onboarding portal state machine.
+- Add post-deployment validator.
+- Add local dashboards.
+
+### Milestone 3 - Release And Drift
+
+- Add desired-state reconciler.
+- Add drift detector.
+- Add blue/green app rollout.
+- Add migration expand/contract release policy.
+- Add rollback rehearsal automation.
+
+### Milestone 4 - Telemetry Privacy
+
+- Implement telemetry allowlist.
+- Add local scrubber and support bundle workflow.
+- Add control-plane fleet dashboard.
+- Add privacy test suite.
+
+### Milestone 5 - Enterprise Pilot
+
+- Run onboarding in a customer staging account.
+- Run 72-hour soak.
+- Rehearse network disconnect.
+- Rehearse failed update rollback.
+- Review generated support bundle with customer security team.
+- Move to production with a written go/no-go checklist.

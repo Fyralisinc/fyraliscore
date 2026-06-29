@@ -19,9 +19,13 @@ from typing import get_args
 
 from services.ingest.ingestion.raw_tier.envelope import SourceLiteral
 from services.ingest.ingestion.raw_tier.s3 import (
+    RawTierIntegrityError,
     S3Client,
     build_raw_s3_key,
     compute_content_hash,
+    raw_object_metadata,
+    raw_object_tagging,
+    raw_retention_days,
 )
 
 
@@ -99,6 +103,42 @@ def test_content_hash_rejects_str() -> None:
 
 
 # ---------------------------------------------------------------------
+# raw-tier retention metadata/tags.
+# ---------------------------------------------------------------------
+
+def test_raw_retention_days_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("S3_RAW_RETENTION_DAYS", raising=False)
+    assert raw_retention_days() == 30
+
+
+def test_raw_retention_days_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("S3_RAW_RETENTION_DAYS", "45")
+    assert raw_retention_days() == 45
+
+
+def test_raw_retention_days_rejects_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("S3_RAW_RETENTION_DAYS", "0")
+    with pytest.raises(ValueError, match="must be positive"):
+        raw_retention_days()
+
+
+def test_raw_object_metadata_and_tags() -> None:
+    content_hash = "abcd1234" * 5
+
+    assert raw_object_metadata(
+        content_hash=content_hash,
+        retention_days=30,
+    ) == {
+        "fyralis-content-hash": content_hash,
+        "fyralis-data-class": "raw-ingestion",
+        "fyralis-retention-days": "30",
+    }
+    assert raw_object_tagging(retention_days=30) == (
+        "fyralis-data-class=raw-ingestion&fyralis-retention-days=30"
+    )
+
+
+# ---------------------------------------------------------------------
 # S3Client.put_if_absent — aioboto3 client-level mocking.
 # ---------------------------------------------------------------------
 
@@ -136,6 +176,11 @@ async def test_put_if_absent_succeeds_on_200(monkeypatch):
     assert call_kwargs["Key"] == "k/foo"
     assert call_kwargs["Body"] == b"body-bytes"
     assert call_kwargs["IfNoneMatch"] == "*"
+    assert call_kwargs["ContentType"] == "application/octet-stream"
+    assert call_kwargs["Metadata"] == raw_object_metadata(
+        content_hash=compute_content_hash(b"body-bytes"),
+    )
+    assert call_kwargs["Tagging"] == raw_object_tagging()
 
 
 @pytest.mark.asyncio
@@ -205,3 +250,42 @@ async def test_get_returns_body_bytes() -> None:
         async with S3Client("test-bucket") as s3:
             data = await s3.get("k/foo")
     assert data == b"the-body"
+
+
+@pytest.mark.asyncio
+async def test_get_verified_accepts_matching_hash() -> None:
+    mock_client, session = _patched_client()
+    body_stream = MagicMock(name="streaming_body")
+    body_stream.read = AsyncMock(return_value=b"the-body")
+    body_stream.close = MagicMock(return_value=None)
+    mock_client.get_object = AsyncMock(return_value={"Body": body_stream})
+
+    fake_aioboto3 = MagicMock()
+    fake_aioboto3.Session = MagicMock(return_value=session)
+    with patch.dict(
+        "sys.modules", {"aioboto3": fake_aioboto3}, clear=False,
+    ):
+        async with S3Client("test-bucket") as s3:
+            data = await s3.get_verified(
+                "k/foo",
+                compute_content_hash(b"the-body"),
+            )
+    assert data == b"the-body"
+
+
+@pytest.mark.asyncio
+async def test_get_verified_rejects_hash_mismatch() -> None:
+    mock_client, session = _patched_client()
+    body_stream = MagicMock(name="streaming_body")
+    body_stream.read = AsyncMock(return_value=b"tampered-body")
+    body_stream.close = MagicMock(return_value=None)
+    mock_client.get_object = AsyncMock(return_value={"Body": body_stream})
+
+    fake_aioboto3 = MagicMock()
+    fake_aioboto3.Session = MagicMock(return_value=session)
+    with patch.dict(
+        "sys.modules", {"aioboto3": fake_aioboto3}, clear=False,
+    ):
+        async with S3Client("test-bucket") as s3:
+            with pytest.raises(RawTierIntegrityError, match="hash mismatch"):
+                await s3.get_verified("k/foo", compute_content_hash(b"original"))

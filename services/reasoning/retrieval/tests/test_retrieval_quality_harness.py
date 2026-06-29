@@ -463,7 +463,7 @@ async def _add_mixed_entrypoint_graph(tx_conn, tenant, fs) -> _MixedEntrypointGr
         UPDATE models
         SET status = 'archived',
             archived_at = now(),
-            archive_reason = 'quality_eval_negative'
+            archive_reason = 'manual'
         WHERE id = $1
         """,
         graph_ids.archived_neighbor_id,

@@ -1,0 +1,4 @@
+# Customer launch evidence can contain contracts, DPAs, screenshots, topology,
+# logs, support artifacts, and security questionnaire answers. Keep it out of
+# this repository; commit templates only.
+customers/

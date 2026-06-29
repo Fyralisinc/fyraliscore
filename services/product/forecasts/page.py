@@ -123,6 +123,7 @@ async def build_page_payload(
     conn: asyncpg.Connection,
     tenant_id: UUID,
     *,
+    actor_id: UUID | None = None,
     horizon_days: int = 90,
 ) -> dict[str, Any]:
     """Initial ForecastsPagePayload for `GET /v1/forecasts/page`.
@@ -132,10 +133,14 @@ async def build_page_payload(
     """
     active = await repo_mod.list_predictions(
         conn, tenant_id, status="active", sort="earliest_resolution",
-        limit=200,
+        actor_id=actor_id, limit=200,
     )
-    counters = await repo_mod.summary_counters(conn, tenant_id)
-    cal = await accuracy_mod.calibration_summary(conn, tenant_id)
+    counters = await repo_mod.summary_counters(
+        conn, tenant_id, actor_id=actor_id,
+    )
+    cal = await accuracy_mod.calibration_summary(
+        conn, tenant_id, actor_id=actor_id,
+    )
 
     # Pull all signals for active rows in a single batched query so the
     # detail-by-id map can be served from memory without N+1 fetches.
@@ -469,9 +474,13 @@ async def build_forecast_detail(
     conn: asyncpg.Connection,
     tenant_id: UUID,
     forecast_id: UUID,
+    *,
+    actor_id: UUID | None = None,
 ) -> dict[str, Any] | None:
     """ForecastDetail for /v1/forecasts/detail/{id}."""
-    pred = await repo_mod.get_prediction(conn, tenant_id, forecast_id)
+    pred = await repo_mod.get_prediction(
+        conn, tenant_id, forecast_id, actor_id=actor_id,
+    )
     if pred is None:
         return None
     return _build_detail(pred.prediction, pred.signals)
@@ -913,10 +922,12 @@ def _synthesize_patterns(
 async def list_patterns(
     conn: asyncpg.Connection,
     tenant_id: UUID,
+    *,
+    actor_id: UUID | None = None,
 ) -> list[dict[str, Any]]:
     """Public wrapper used by the /patterns endpoint."""
     active = await repo_mod.list_predictions(
-        conn, tenant_id, status="active", limit=200,
+        conn, tenant_id, status="active", actor_id=actor_id, limit=200,
     )
     return _synthesize_patterns(active)
 
@@ -962,6 +973,8 @@ async def handle_ask(
     conn: asyncpg.Connection,
     tenant_id: UUID,
     req: AskRequest,
+    *,
+    actor_id: UUID | None = None,
 ) -> dict[str, Any]:
     """Templated Ask response. Real LLM plumbing can replace this
     function body without changing the wire contract — it accepts an
@@ -972,7 +985,7 @@ async def handle_ask(
     signals: list[PredictionSignal] = []
     if req.selected_forecast_id:
         detail = await repo_mod.get_prediction(
-            conn, tenant_id, req.selected_forecast_id,
+            conn, tenant_id, req.selected_forecast_id, actor_id=actor_id,
         )
         if detail is not None:
             pred = detail.prediction

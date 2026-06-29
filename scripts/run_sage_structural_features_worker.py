@@ -13,6 +13,7 @@ from worker_observability import (
     register_pool,
     start_worker_health,
 )
+from lib.shared.db import asyncpg_pool_runtime_kwargs, positive_int_env
 from services.app.gateway.db_bootstrap import _register_codecs
 from services.workers.sage_structural_features.worker import (
     DEFAULT_INTERVAL_S,
@@ -46,12 +47,18 @@ async def _main() -> None:
     )
     once = _env_bool("SAGE_STRUCTURAL_FEATURES_ONCE", False)
     tenant_id = _env_uuid("SAGE_STRUCTURAL_FEATURES_TENANT_ID")
+    pool_max = positive_int_env("MAINTENANCE_POSTGRES_POOL_SIZE", default=3)
+    runtime_kwargs = asyncpg_pool_runtime_kwargs(
+        dsn=dsn,
+        process_env_var="MAINTENANCE_POSTGRES_PGBOUNCER_COMPATIBLE",
+    )
 
     pool = await asyncpg.create_pool(
         dsn=dsn,
         min_size=1,
-        max_size=3,
+        max_size=pool_max,
         init=_register_codecs,
+        **runtime_kwargs,
     )
     register_pool("sage_structural_features_worker", pool)
     shutdown = asyncio.Event()

@@ -123,7 +123,7 @@ class _FakeReader:
 
 class _FailingReader:
     async def read(self, **kwargs):
-        raise RuntimeError("reader unavailable")
+        raise RuntimeError("reader unavailable password=super-secret")
 
 
 class _FailingAnswerStore(InMemoryAskStore):
@@ -651,6 +651,37 @@ async def test_state_gap_query_creates_validation_gated_change():
     )
     assert accepted.status == "accepted"
     assert accepted.linked_trigger_id is not None
+
+
+async def test_reader_failure_returns_explicit_degraded_answer():
+    store = InMemoryAskStore()
+    orch = AskOrchestrator(
+        store=store,
+        conn_provider=_ConnProvider(),
+        reader=_FailingReader(),
+    )
+    session = await orch.create_session(
+        tenant_id=TENANT,
+        viewer_id=VIEWER,
+        body=AskSessionCreateRequest(
+            initial_scope=AskScope(type="current_page", label="Acme deal"),
+        ),
+    )
+
+    response = await orch.answer_turn(
+        tenant_id=TENANT,
+        viewer_id=VIEWER,
+        session_id=session.id,
+        body=AskTurnRequest(query="What changed?"),
+    )
+
+    assert response.payload.degraded_reasons == [
+        "synthesis_reader_fallback",
+        "no_accessible_synthesis_state",
+    ]
+    assert response.payload.confidence < 0.6
+    assert any("limited fallback read" in item for item in response.payload.unknowns)
+    assert "super-secret" not in response.model_dump_json()
 
 
 async def test_answer_turn_marks_retrieval_run_failed_on_persistence_error():

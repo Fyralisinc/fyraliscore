@@ -120,6 +120,26 @@ def test_extract_docx_text_preserves_paragraphs() -> None:
 
 
 @pytest.mark.asyncio
+async def test_upload_page_uses_nonce_csp_and_security_headers() -> None:
+    app, _pool, _s3, _producer = _app()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/debug/document-ingest")
+
+    assert resp.status_code == 200
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert resp.headers["x-frame-options"] == "DENY"
+    assert resp.headers["referrer-policy"] == "no-referrer"
+    assert resp.headers["cache-control"] == "no-store"
+    body = resp.text
+    assert "__CSP_NONCE__" not in body
+    nonce = body.split('<script nonce="', 1)[1].split('"', 1)[0]
+    assert f"script-src 'nonce-{nonce}'" in resp.headers["content-security-policy"]
+    assert f"style-src 'nonce-{nonce}'" in resp.headers["content-security-policy"]
+
+
+@pytest.mark.asyncio
 async def test_upload_document_publishes_google_drive_raw_envelope() -> None:
     app, pool, s3, producer = _app()
     body = _docx_bytes("Quarterly plan", "Revenue expansion")

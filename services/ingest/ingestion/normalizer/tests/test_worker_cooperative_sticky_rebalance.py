@@ -185,14 +185,18 @@ def _envelope_bytes_for(i: int, *, s3: _InMemoryS3) -> bytes:
     payload = _slack_payload(i)
     raw_body = orjson.dumps(payload)
     content_hash = f"{i:040x}"
-    s3_key = f"dev/slack/{tenant}/2026-05/{content_hash[:2]}/{content_hash}.json"
+    ingested_at = dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0)
+    s3_key = (
+        f"dev/slack/{tenant}/{ingested_at:%Y-%m}/"
+        f"{content_hash[:2]}/{content_hash}.json"
+    )
     s3.put(s3_key, raw_body)
     envelope = RawEnvelope(
         source="slack",
         tenant_id=tenant,
         raw_s3_key=s3_key,
         content_hash=content_hash,
-        ingested_at=dt.datetime(2026, 5, 17, 12, 0, 0, tzinfo=dt.timezone.utc),
+        ingested_at=ingested_at,
         ingress_kind="webhook",
         ingress_metadata={"i": i},
     )

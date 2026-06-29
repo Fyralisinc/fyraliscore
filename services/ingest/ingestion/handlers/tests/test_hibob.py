@@ -48,3 +48,80 @@ async def test_numeric_company_id_from_webhook_is_stringified():
     }, {})
     assert draft.content["company_id"] == "42"
     assert draft.external_id == "hibob:42:employee:e1:2026-05-01T00:00:00Z"
+
+
+async def test_webhook_redelivery_with_same_modified_dedups():
+    payload = {
+        "companyId": "co-1",
+        "type": "employee.updated",
+        "entity": {
+            "id": "e1",
+            "displayName": "Grace Hopper",
+            "modified": "2026-05-01T00:00:00Z",
+        },
+    }
+    first = await handle_hibob_object(payload, {})
+    retry = await handle_hibob_object(dict(payload), {})
+
+    assert first.external_id == retry.external_id
+    assert first.external_id == "hibob:co-1:employee:e1:2026-05-01T00:00:00Z"
+
+
+async def test_modified_bump_produces_distinct_external_id():
+    first = await handle_hibob_object({
+        "companyId": "co-1",
+        "type": "employee.updated",
+        "entity": {
+            "id": "e1",
+            "displayName": "Grace Hopper",
+            "modified": "2026-05-01T00:00:00Z",
+        },
+    }, {})
+    changed = await handle_hibob_object({
+        "companyId": "co-1",
+        "type": "employee.updated",
+        "entity": {
+            "id": "e1",
+            "displayName": "Grace Hopper",
+            "modified": "2026-05-02T00:00:00Z",
+        },
+    }, {})
+
+    assert first.external_id != changed.external_id
+
+
+async def test_backfill_and_webhook_full_body_dedup_to_same_external_id():
+    backfill = await handle_hibob_object({
+        "_fyralis_record_type": "employee",
+        "_fyralis_company_id": "co-1",
+        "entity": {
+            "id": "e1",
+            "displayName": "Grace Hopper",
+            "modified": "2026-05-01T00:00:00Z",
+        },
+    }, {})
+    webhook = await handle_hibob_object({
+        "companyId": "co-1",
+        "type": "employee.updated",
+        "entity": {
+            "id": "e1",
+            "displayName": "Grace Hopper",
+            "modified": "2026-05-01T00:00:00Z",
+        },
+    }, {})
+
+    assert backfill.external_id == webhook.external_id
+
+
+async def test_thin_webhook_without_modified_has_stable_retry_key():
+    payload = {
+        "companyId": "co-1",
+        "type": "employee.updated",
+        "id": "e1",
+    }
+    first = await handle_hibob_object(payload, {})
+    retry = await handle_hibob_object(dict(payload), {})
+
+    assert first.content["thin_change"] is True
+    assert first.external_id == retry.external_id
+    assert first.external_id == "hibob:co-1:employee:e1:chg:none"

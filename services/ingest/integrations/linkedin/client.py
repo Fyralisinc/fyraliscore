@@ -6,8 +6,8 @@ LinkedIn Community Management API (Rest.li finders under
 Bearer **access token** (3-legged; the org read surface is partner-gated) and
 every call is scoped to an ``organization_urn`` (the scope-id, analogous to
 Carta's ``firm_id`` / QuickBooks' ``realmId``). The access token is resolved
-once from the secret store (or preset in spammer mode) and reused for the life
-of the client.
+through a short-lived secret-ref cache (or preset in spammer mode), so rotation
+is picked up without process restart.
 
 Wire contract (pinned against Microsoft Learn, 2026-06):
   - Posts finder:  ``GET /rest/posts?q=author&author={encoded org URN}``
@@ -37,13 +37,12 @@ URN query params are Rest.li-2.0 / URL encoded (``urn%3Ali%3Aorganization%3A123`
 All timestamps on the wire are **epoch-millis integers** (``createdAt``,
 ``lastModifiedAt``, ``timeRange.start/end``).
 
-TODO(human): implement LinkedIn OAuth token refresh — NONE exists yet. The
-    install row persists `refresh_secret_ref` + `token_expires_at`; LinkedIn
-    access tokens are ~60 days, and *programmatic refresh tokens* (~1 year,
-    refresh-token grant at https://www.linkedin.com/oauth/v2/accessToken) are
-    only issued to approved partner programs — confirm against your partner
-    entitlement before wiring a refresh-on-401 exchange or an oauth_poller
-    section in `integrations/oauth_refresh.py`.
+Reactive refresh: on a 401/403, the client asks the shared OAuth refresh core
+to exchange the install's `refresh_secret_ref` at
+``https://www.linkedin.com/oauth/v2/accessToken``, persists the returned access
+and refresh token refs, then retries once. Programmatic refresh tokens are only
+issued to approved partner programs; if refresh fails, the original auth error
+surfaces and shard_fetch records the shard as degraded.
 
 Rate limits: 429 + Retry-After (env knobs LINKEDIN_RL_MAX_ATTEMPTS /
 LINKEDIN_RL_MAX_SLEEP_SEC). Non-2xx maps to ``LinkedinApiError``.
@@ -62,6 +61,7 @@ import httpx
 import structlog
 
 from lib.shared.errors import LinkedinApiError
+from services.ingest.integrations.secret_cache import SecretValueCache
 
 
 log = structlog.get_logger("integrations.linkedin.client")
@@ -136,13 +136,17 @@ class LinkedinClient:
         access_token: str | None = None,
         http_client: httpx.AsyncClient | None = None,
         api_base_url: str | None = None,
+        install_row_id: Any | None = None,
+        refresh_secret_ref: str | None = None,
     ) -> None:
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
         self._organization_urn = organization_urn
-        self._access_token: str | None = access_token
+        self._install_row_id = install_row_id
+        self._refresh_secret_ref = refresh_secret_ref
+        self._access_token_cache = SecretValueCache(preset=access_token)
         self._token_lock = asyncio.Lock()
         # In production the base is https://api.linkedin.com/rest; a spammer/
         # test override (api_base_url) wins so backfill points at the mock.
@@ -162,51 +166,43 @@ class LinkedinClient:
             self._http = None
 
     async def _token(self) -> str:
-        if self._access_token is not None:
-            return self._access_token
-        async with self._token_lock:
-            if self._access_token is not None:
-                return self._access_token
-            if (
-                self._secret_store is None
-                or self._secret_ref is None
-                or self._tenant_id is None
-            ):
-                raise LinkedinApiError(
-                    "linkedin client has no access token and cannot resolve "
-                    "one (missing secret_store / secret_ref / tenant_id)",
-                    code="linkedin_api_unauthorized",
-                )
-            raw = await self._secret_store.get(
-                self._secret_ref, tenant_id=self._tenant_id,
+        return await self._access_token_cache.resolve(
+            lock=self._token_lock,
+            secret_store=self._secret_store,
+            secret_ref=self._secret_ref,
+            tenant_id=self._tenant_id,
+            missing_error=lambda: LinkedinApiError(
+                "linkedin client has no access token and cannot resolve "
+                "one (missing secret_store / secret_ref / tenant_id)",
+                code="linkedin_api_unauthorized",
             )
-            self._access_token = (
-                raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            )
-            return self._access_token
+        )
 
     async def _request(
         self, method: str, path: str, *, params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         from services.ingest.integrations.linkedin import metrics
+        from services.ingest.integrations.oauth_refresh import refresh_on_unauthorized
 
-        token = await self._token()
         url = f"{self._api_base_url}{path}"
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/json",
-            # BOTH headers are REQUIRED on every Community-Management call;
-            # missing/expired version → 400/426.
-            "LinkedIn-Version": linkedin_version(),
-            "X-Restli-Protocol-Version": _RESTLI_PROTOCOL_VERSION,
-        }
         max_attempts = int(os.environ.get("LINKEDIN_RL_MAX_ATTEMPTS", "4"))
         max_sleep = float(os.environ.get("LINKEDIN_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
         attempt = 0
+        reminted = False
+        refreshed_token: str | None = None
         while True:
             attempt += 1
+            token = refreshed_token or await self._token()
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                # BOTH headers are REQUIRED on every Community-Management call;
+                # missing/expired version → 400/426.
+                "LinkedIn-Version": linkedin_version(),
+                "X-Restli-Protocol-Version": _RESTLI_PROTOCOL_VERSION,
+            }
             try:
                 response = await client.request(
                     method, url, headers=headers, params=params,
@@ -238,6 +234,22 @@ class LinkedinClient:
 
             if response.status_code in (401, 403):
                 metrics.record_request("unauthorized")
+                if not reminted:
+                    reminted = True
+                    new_token = await refresh_on_unauthorized(
+                        provider="linkedin",
+                        pool=self._pool,
+                        secret_store=self._secret_store,
+                        http=client,
+                        tenant_id=self._tenant_id,
+                        install_row_id=self._install_row_id,
+                        current_access_ref=self._secret_ref,
+                        refresh_secret_ref=self._refresh_secret_ref,
+                    )
+                    if new_token is not None:
+                        self._access_token_cache.set(new_token)
+                        refreshed_token = new_token
+                        continue
             else:
                 metrics.record_request("error")
             raise _api_error_from_response(response, path)

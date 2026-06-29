@@ -10,7 +10,7 @@ Output shape (everything `MockGoogleDriveClient` consumes):
     {
       "targets": [
         {
-          "owner_email": "alice@acme.com",
+          "owner_email": "alice@acme.example",
           "drive_id": "my-drive",          # MY_DRIVE_SENTINEL for a personal corpus
           "drive_kind": "my_drive",        # or "shared_drive"
           "start_page_token": "drive-start-1",  # warm-start token this drive serves
@@ -162,7 +162,7 @@ def make_google_drive(
     Args:
       targets: list of `{owner_email, drive_id?, drive_kind?}` dicts — one per
         drive shard. Defaults to a single My Drive target for
-        `alice@acme.com`.
+        `alice@acme.example`.
       files_per_target: files seeded per drive (the FULL-backfill corpus).
       comments_per_file: comment threads attached to each non-folder file
         (fan-out; default 0 so a file -> exactly 1 record).
@@ -181,7 +181,7 @@ def make_google_drive(
         base = base.replace(tzinfo=timezone.utc)
 
     if targets is None:
-        targets = [{"owner_email": "alice@acme.com"}]
+        targets = [{"owner_email": "alice@acme.example"}]
 
     built: list[dict[str, Any]] = []
     for t in targets:

@@ -10,8 +10,7 @@ Three worker modules + an in-process scheduler.
 * `monthly.py` — vacuum analyze, cold-partition migration notes,
   activation histogram, uncontested-high-confidence Model report.
 * `scheduler.py` — simple in-process asyncio scheduler that runs each
-  job on its own interval, with a `pg_advisory_lock` single-instance
-  guard per job.
+  job on its own interval, with a pgbouncer-safe row lease per job.
 
 Spec references:
 - ARCHITECTURE-FINAL.md §8 "Background maintenance workers" (lines
@@ -50,6 +49,7 @@ from services.workers.maintenance.scheduler import (  # noqa: F401
     JobDescriptor,
     MaintenanceScheduler,
     advisory_lock_key,
+    job_lease_name,
 )
 
 __all__ = [
@@ -78,4 +78,5 @@ __all__ = [
     "JobDescriptor",
     "MaintenanceScheduler",
     "advisory_lock_key",
+    "job_lease_name",
 ]

@@ -58,7 +58,7 @@ async def _lifespan(app: FastAPI):
 
 def build_app() -> FastAPI:
     app = FastAPI(title="WhatsApp Live Ingestion", lifespan=_lifespan)
-    app.include_router(build_whatsapp_router())
+    app.include_router(build_whatsapp_router(debug_endpoints_enabled=True))
     return app
 
 

@@ -80,7 +80,9 @@ async def _build_ceo_greeting_runtime(
         scheduler=scheduler,
         settings=settings,
     )
-    token_map = StaticTenantTokenMap.from_env()
+    token_map = StaticTenantTokenMap.from_env(
+        enabled=settings.view_ceo_static_tokens_enabled,
+    )
     if default_tenant_uuid and settings.view_ceo_token not in token_map.tokens:
         token_map.tokens[settings.view_ceo_token] = default_tenant_uuid
 
@@ -247,10 +249,8 @@ def _include_google_admin_routers(app_: FastAPI) -> None:
         log.warning("google_drive_mount_failed", error=str(exc))
 
 
-def _include_debug_router(app_: FastAPI) -> None:
-    from lib.shared.env import env_name
-
-    if env_name() not in ("dev", "staging", "test"):
+def _include_debug_router(app_: FastAPI, *, settings: GatewaySettings) -> None:
+    if not settings.debug_endpoints_enabled:
         return
 
     try:
@@ -305,5 +305,5 @@ async def configure_ceo_view(
     # startup hook. Core no longer imports the `simulation` package.
     _include_push_ingress_routers(app_)
     _include_google_admin_routers(app_)
-    _include_debug_router(app_)
+    _include_debug_router(app_, settings=resolved_settings)
     _publish_ceo_view_state(app_, greeting=greeting, qry_handler=qry_handler)

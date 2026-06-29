@@ -109,6 +109,14 @@ class ProbeHandler:
         if req.kind == "ask" and not (req.query and req.query.strip()):
             raise ValueError("query required for ask probes")
 
+        decision = await self._repo.card_access_decision(
+            tenant_id=req.tenant_id,
+            actor_id=req.actor_id,
+            card_id=req.card_id,
+        )
+        if not decision.allowed:
+            raise PermissionError("card_out_of_scope")
+
         conv = await self._repo.get_or_create(
             tenant_id=req.tenant_id,
             actor_id=req.actor_id,

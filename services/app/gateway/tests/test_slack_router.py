@@ -7,6 +7,11 @@ install -> backfill -> live -> status path is exercised end-to-end by the
 running stack (see docs/ingestion/slack-dm-demo.md)."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from fastapi import FastAPI
+from starlette.testclient import TestClient
+
 from services.app.gateway.slack_router import (
     _dm_channel,
     _slack_dm_backfill_records,
@@ -25,6 +30,19 @@ def test_router_has_four_controls():
         "/slack/{user_id}/live/emit",
         "/slack/{user_id}/status",
     }
+
+
+def test_default_tenant_env_is_ignored_in_production(monkeypatch):
+    monkeypatch.setenv("DEFAULT_TENANT_ID", "00000000-0000-0000-0000-000000000001")
+    app = FastAPI()
+    app.state.gateway_settings = SimpleNamespace(is_production=True)
+    app.include_router(build_slack_router())
+    client = TestClient(app)
+
+    response = client.post("/slack/U_ALICE/install")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "tenant_id missing"
 
 
 def test_dm_channel_is_stable_and_symmetric():

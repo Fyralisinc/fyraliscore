@@ -521,9 +521,11 @@ runaway cascade can never loop forever (§6.10).
 
 ### 6.2 Orchestration, region locks, and retries
 
-`think()` runs the whole pipeline inside **one transaction** and returns a rich
-`ThinkRunOutcome` (op counts, cascade depth, anomaly count, LLM latency/cost,
-region hashes). Two retry families:
+`think()` returns a rich `ThinkRunOutcome` (op counts, cascade depth, anomaly
+count, LLM latency/cost, region hashes). Inferential triggers run retrieval,
+planning, and LLM reasoning outside an explicit DB transaction, then use a short
+mutation transaction for validation/apply/cascade; authoritative deterministic
+triggers keep the legacy wide transaction. Two retry families:
 
 - **OutOfRegionError** — if validation finds the diff touching entities outside
   the retrieved region, retrieval re-runs with an expanded entity set (up to

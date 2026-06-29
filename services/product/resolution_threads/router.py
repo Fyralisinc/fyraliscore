@@ -7,14 +7,36 @@ updating, observing, and evaluating the trackers.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Request
 
 from lib.shared.errors import CompanyOSError, ValidationError
+from services.product.error_contract import product_data_plane_unavailable
 from services.product.resolution_threads import evaluator, repo
+from services.platform.access_control.audit import record_override_if_needed
+from services.platform.access_control.checks import (
+    AccessDecision,
+    EntityKind,
+    can_read_by_id,
+)
+from services.platform.access_control.roles import has_role
+
+
+if TYPE_CHECKING:
+    from services.app.gateway.auth import AuthContext
+
+
+_TARGET_ACCESS_KIND: dict[str, EntityKind] = {
+    "customer": "resource",
+    "resource": "resource",
+    "commitment": "commitment",
+    "goal": "goal",
+    "decision": "decision",
+    "model": "model",
+}
 
 
 def build_router() -> APIRouter:
@@ -45,7 +67,7 @@ def _auth(request: Request):
 def _pool(request: Request) -> asyncpg.Pool:
     deps = getattr(request.app.state, "deps", None)
     if deps is None or getattr(deps, "pool", None) is None:
-        raise HTTPException(status_code=503, detail="pool_unavailable")
+        raise product_data_plane_unavailable()
     return deps.pool
 
 
@@ -80,9 +102,17 @@ async def list_route(request: Request) -> dict[str, Any]:
                 source_decision_delta_id=source_delta_id,
                 limit=limit,
             )
+            visible: list[repo.ResolutionThread] = []
+            for thread in items:
+                decision = await _thread_access_decision(conn, auth, thread)
+                if decision.allowed:
+                    visible.append(thread)
     except ValidationError as e:
         raise _validation_error(e)
-    return {"items": [repo.thread_to_wire(t) for t in items], "count": len(items)}
+    return {
+        "items": [repo.thread_to_wire(t) for t in visible],
+        "count": len(visible),
+    }
 
 
 async def create_route(request: Request) -> dict[str, Any]:
@@ -98,6 +128,13 @@ async def create_route(request: Request) -> dict[str, Any]:
     try:
         async with _pool(request).acquire() as conn:
             async with conn.transaction():
+                await _ensure_source_delta_visible(conn, auth, source_delta_id)
+                await _ensure_target_visible(
+                    conn,
+                    auth,
+                    str(target_kind) if target_kind else None,
+                    target_id,
+                )
                 thread = await repo.create_thread(
                     conn,
                     tenant_id=auth.tenant_id,
@@ -122,6 +159,7 @@ async def get_route(thread_id: str, request: Request) -> dict[str, Any]:
             thread_id=tid,
             include_events=True,
         )
+        await _ensure_thread_visible(conn, auth, thread)
     if thread is None:
         raise HTTPException(status_code=404, detail="not_found")
     return {"thread": repo.thread_to_wire(thread, include_events=True)}
@@ -135,6 +173,10 @@ async def update_status_route(thread_id: str, request: Request) -> dict[str, Any
     try:
         async with _pool(request).acquire() as conn:
             async with conn.transaction():
+                current = await repo.get_thread(
+                    conn, tenant_id=auth.tenant_id, thread_id=tid,
+                )
+                await _ensure_thread_visible(conn, auth, current)
                 thread = await repo.update_thread_status(
                     conn,
                     tenant_id=auth.tenant_id,
@@ -159,6 +201,10 @@ async def update_step_route(thread_id: str, step_id: str, request: Request) -> d
     try:
         async with _pool(request).acquire() as conn:
             async with conn.transaction():
+                current = await repo.get_thread(
+                    conn, tenant_id=auth.tenant_id, thread_id=tid,
+                )
+                await _ensure_thread_visible(conn, auth, current)
                 thread = await repo.update_step_status(
                     conn,
                     tenant_id=auth.tenant_id,
@@ -188,6 +234,10 @@ async def update_signal_route(thread_id: str, signal_id: str, request: Request) 
     try:
         async with _pool(request).acquire() as conn:
             async with conn.transaction():
+                current = await repo.get_thread(
+                    conn, tenant_id=auth.tenant_id, thread_id=tid,
+                )
+                await _ensure_thread_visible(conn, auth, current)
                 thread = await repo.update_signal_status(
                     conn,
                     tenant_id=auth.tenant_id,
@@ -216,6 +266,10 @@ async def observe_signal_route(thread_id: str, signal_id: str, request: Request)
     try:
         async with _pool(request).acquire() as conn:
             async with conn.transaction():
+                current = await repo.get_thread(
+                    conn, tenant_id=auth.tenant_id, thread_id=tid,
+                )
+                await _ensure_thread_visible(conn, auth, current)
                 thread = await evaluator.observe_signal(
                     conn,
                     tenant_id=auth.tenant_id,
@@ -238,6 +292,10 @@ async def evaluate_route(thread_id: str, request: Request) -> dict[str, Any]:
     try:
         async with _pool(request).acquire() as conn:
             async with conn.transaction():
+                current = await repo.get_thread(
+                    conn, tenant_id=auth.tenant_id, thread_id=tid,
+                )
+                await _ensure_thread_visible(conn, auth, current)
                 thread, result = await evaluator.evaluate_thread(
                     conn,
                     tenant_id=auth.tenant_id,
@@ -280,6 +338,142 @@ def _maybe_uuid(raw: Any, field: str) -> UUID | None:
         return UUID(str(raw))
     except (TypeError, ValueError) as e:
         raise HTTPException(status_code=400, detail=f"invalid_{field}") from e
+
+
+async def _ensure_thread_visible(
+    conn: asyncpg.Connection,
+    auth: "AuthContext",
+    thread: repo.ResolutionThread | None,
+) -> None:
+    if thread is None:
+        return
+    decision = await _thread_access_decision(conn, auth, thread)
+    if not decision.allowed:
+        raise _forbidden(decision.reason)
+
+
+async def _thread_access_decision(
+    conn: asyncpg.Connection,
+    auth: "AuthContext",
+    thread: repo.ResolutionThread,
+) -> AccessDecision:
+    target_decision = await _target_access_decision(
+        conn,
+        auth,
+        thread.target_node_kind,
+        thread.target_node_id,
+    )
+    if target_decision is not None:
+        return target_decision
+    if thread.created_by == auth.actor_id:
+        return AccessDecision(True, "resolution_thread_creator")
+    if await has_role(auth.actor_id, "admin", conn=conn, tenant_id=auth.tenant_id):
+        decision = AccessDecision(True, "admin_override", override_applied=True)
+        await record_override_if_needed(
+            decision,
+            actor_id=auth.actor_id,
+            entity_type="resolution_thread",
+            entity_id=thread.id,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+        return decision
+    if await has_role(
+        auth.actor_id,
+        "leadership",
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    ):
+        decision = AccessDecision(
+            True, "leadership_override", override_applied=True,
+        )
+        await record_override_if_needed(
+            decision,
+            actor_id=auth.actor_id,
+            entity_type="resolution_thread",
+            entity_id=thread.id,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+        return decision
+    return AccessDecision(False, "resolution_thread_out_of_scope")
+
+
+async def _ensure_target_visible(
+    conn: asyncpg.Connection,
+    auth: "AuthContext",
+    target_node_kind: str | None,
+    target_node_id: UUID | None,
+) -> None:
+    decision = await _target_access_decision(
+        conn, auth, target_node_kind, target_node_id,
+    )
+    if decision is not None and not decision.allowed:
+        raise _forbidden(decision.reason)
+
+
+async def _target_access_decision(
+    conn: asyncpg.Connection,
+    auth: "AuthContext",
+    target_node_kind: str | None,
+    target_node_id: UUID | None,
+) -> AccessDecision | None:
+    if target_node_kind is None and target_node_id is None:
+        return None
+    if target_node_kind is None or target_node_id is None:
+        return AccessDecision(False, "resolution_thread_target_incomplete")
+    access_kind = _TARGET_ACCESS_KIND.get(str(target_node_kind))
+    if access_kind is None:
+        return AccessDecision(False, "resolution_thread_target_kind_unsupported")
+    decision = await can_read_by_id(
+        auth.actor_id,
+        access_kind,
+        target_node_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
+    await record_override_if_needed(
+        decision,
+        actor_id=auth.actor_id,
+        entity_type=access_kind,
+        entity_id=target_node_id,
+        conn=conn,
+        tenant_id=auth.tenant_id,
+    )
+    return None if decision.allowed else decision
+
+
+async def _ensure_source_delta_visible(
+    conn: asyncpg.Connection,
+    auth: "AuthContext",
+    source_decision_delta_id: UUID | None,
+) -> None:
+    if source_decision_delta_id is None:
+        return
+    row = await conn.fetchrow(
+        """
+        SELECT target_node_kind, target_node_id
+        FROM decision_deltas
+        WHERE id = $1 AND tenant_id = $2
+        """,
+        source_decision_delta_id,
+        auth.tenant_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="source_decision_delta_not_found")
+    await _ensure_target_visible(
+        conn,
+        auth,
+        row["target_node_kind"],
+        row["target_node_id"],
+    )
+
+
+def _forbidden(reason: str) -> HTTPException:
+    return HTTPException(
+        status_code=403,
+        detail={"error": "forbidden", "reason": reason},
+    )
 
 
 async def _read_json(request: Request) -> dict[str, Any]:

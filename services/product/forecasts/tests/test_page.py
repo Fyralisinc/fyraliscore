@@ -22,6 +22,22 @@ from .conftest import seed_prediction, seed_signal
 pytestmark = pytest.mark.integration
 
 
+async def _seed_actor_prediction(
+    pool: asyncpg.Pool,
+    *,
+    tenant: UUID,
+    actor_id: UUID,
+    **kwargs,
+) -> UUID:
+    return await seed_prediction(
+        pool,
+        tenant=tenant,
+        created_by_actor_id=actor_id,
+        scope_actors=[actor_id],
+        **kwargs,
+    )
+
+
 @pytest_asyncio.fixture
 async def fc_client(app_deps) -> AsyncGenerator[httpx.AsyncClient, None]:
     app = build_app(
@@ -47,10 +63,10 @@ async def test_page_endpoint_returns_full_payload(
     gateway_pool: asyncpg.Pool,
     registered_tenant: UUID,
 ):
-    token, _ = valid_session
+    token, actor_id = valid_session
     # Seed three active rows across two domains.
-    p1 = await seed_prediction(
-        gateway_pool, tenant=registered_tenant,
+    p1 = await _seed_actor_prediction(
+        gateway_pool, tenant=registered_tenant, actor_id=actor_id,
         statement="Beacon renewal at risk", category="customer_risk",
         confidence=0.78, resolution_days=2,
         impact={"arr_at_risk": 1_200_000},
@@ -60,8 +76,8 @@ async def test_page_endpoint_returns_full_payload(
         ],
         target_label="Beacon",
     )
-    await seed_prediction(
-        gateway_pool, tenant=registered_tenant,
+    await _seed_actor_prediction(
+        gateway_pool, tenant=registered_tenant, actor_id=actor_id,
         statement="Engineering capacity will exceed 90%", category="capacity",
         confidence=0.72, resolution_days=6,
         impact={"capacity_pct": 92},
@@ -69,8 +85,8 @@ async def test_page_endpoint_returns_full_payload(
                       "direction": "up"}],
         target_label="Engineering",
     )
-    await seed_prediction(
-        gateway_pool, tenant=registered_tenant,
+    await _seed_actor_prediction(
+        gateway_pool, tenant=registered_tenant, actor_id=actor_id,
         statement="Q3 delivery commitments at risk", category="delivery",
         confidence=0.65, resolution_days=19,
         impact={"arr_at_risk": 480_000},
@@ -129,9 +145,9 @@ async def test_detail_v2_returns_spec_shape(
     gateway_pool: asyncpg.Pool,
     registered_tenant: UUID,
 ):
-    token, _ = valid_session
-    pid = await seed_prediction(
-        gateway_pool, tenant=registered_tenant,
+    token, actor_id = valid_session
+    pid = await _seed_actor_prediction(
+        gateway_pool, tenant=registered_tenant, actor_id=actor_id,
         statement="X happens", category="customer_risk",
         confidence=0.7, resolution_days=4,
         key_drivers=[{"label": "Driver A", "delta_label": "+10%",
@@ -175,13 +191,13 @@ async def test_patterns_endpoint(
     gateway_pool: asyncpg.Pool,
     registered_tenant: UUID,
 ):
-    token, _ = valid_session
-    await seed_prediction(
-        gateway_pool, tenant=registered_tenant,
+    token, actor_id = valid_session
+    await _seed_actor_prediction(
+        gateway_pool, tenant=registered_tenant, actor_id=actor_id,
         category="customer_risk", confidence=0.7,
     )
-    await seed_prediction(
-        gateway_pool, tenant=registered_tenant,
+    await _seed_actor_prediction(
+        gateway_pool, tenant=registered_tenant, actor_id=actor_id,
         category="capacity", confidence=0.6,
     )
     resp = await fc_client.get(
@@ -201,9 +217,9 @@ async def test_ask_returns_scenario_for_what_if(
     gateway_pool: asyncpg.Pool,
     registered_tenant: UUID,
 ):
-    token, _ = valid_session
-    pid = await seed_prediction(
-        gateway_pool, tenant=registered_tenant,
+    token, actor_id = valid_session
+    pid = await _seed_actor_prediction(
+        gateway_pool, tenant=registered_tenant, actor_id=actor_id,
         statement="Beacon renewal at risk", category="customer_risk",
         confidence=0.78,
     )
@@ -233,9 +249,9 @@ async def test_ask_returns_explanation_for_why(
     gateway_pool: asyncpg.Pool,
     registered_tenant: UUID,
 ):
-    token, _ = valid_session
-    pid = await seed_prediction(
-        gateway_pool, tenant=registered_tenant,
+    token, actor_id = valid_session
+    pid = await _seed_actor_prediction(
+        gateway_pool, tenant=registered_tenant, actor_id=actor_id,
         category="customer_risk", confidence=0.6,
     )
     resp = await fc_client.post(

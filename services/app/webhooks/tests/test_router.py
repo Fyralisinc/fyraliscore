@@ -18,19 +18,22 @@ from __future__ import annotations
 
 import json
 import os
+import time as _t
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
 import httpx
 import pytest
 
+from lib.shared.errors import DependencyUnavailableError, ValidationError
 from services.app.webhooks.tenant_resolver import (
     PayloadMissing,
     Resolved,
     UnknownInstallation,
 )
 from services.app.webhooks.tests.conftest import slack_sign
+from services.ingest.ingestion.handlers import HandlerNotFound
 
 
 _TENANT = UUID("11111111-1111-1111-1111-111111111111")
@@ -275,3 +278,150 @@ async def test_failure_metric_increments(_router_app) -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
         await c.post("/webhooks/slack/events", content=b"{}")
     assert metrics.get_count("slack", "missing_signature_header") == 1
+
+
+@pytest.mark.asyncio
+async def test_inline_validation_error_response_is_sanitized(
+    _router_app,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_ingest = AsyncMock(
+        side_effect=ValidationError(
+            "secret parser detail: team_id=T_LEAK",
+            channel="slack:message",
+            raw_payload={"team_id": "T_LEAK"},
+        )
+    )
+    monkeypatch.setattr("services.app.webhooks.router.ingest", mock_ingest)
+
+    body = json.dumps({
+        "team_id": "T0001",
+        "event": {
+            "type": "message",
+            "ts": "1780184162.000102",
+            "channel": "C01",
+            "user": "U01",
+            "text": "hi",
+        },
+    }).encode("utf-8")
+    ts = int(_t.time())
+    sig = slack_sign(os.environ["WEBHOOK_SECRET_SLACK"], body, ts)
+
+    transport = httpx.ASGITransport(app=_router_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        r = await c.post(
+            "/webhooks/slack/events",
+            content=body,
+            headers={
+                "X-Slack-Request-Timestamp": str(ts),
+                "X-Slack-Signature": sig,
+            },
+        )
+
+    assert r.status_code == 400
+    assert r.json() == {
+        "code": "webhook_payload_rejected",
+        "message": "webhook payload rejected",
+        "context": {"provider": "slack"},
+    }
+    rendered = json.dumps(r.json())
+    assert "T_LEAK" not in rendered
+    assert "slack:message" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_recoverable_inline_error_returns_retryable_sanitized_response(
+    _router_app,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_ingest = AsyncMock(
+        side_effect=DependencyUnavailableError(
+            "postgres",
+            "inline_ingest",
+            message="dsn password=super-secret unavailable",
+            dsn="postgresql://password=super-secret",
+        )
+    )
+    monkeypatch.setattr("services.app.webhooks.router.ingest", mock_ingest)
+
+    body = json.dumps({
+        "team_id": "T0001",
+        "event": {
+            "type": "message",
+            "ts": "1780184162.000103",
+            "channel": "C01",
+            "user": "U01",
+            "text": "hi",
+        },
+    }).encode("utf-8")
+    ts = int(_t.time())
+    sig = slack_sign(os.environ["WEBHOOK_SECRET_SLACK"], body, ts)
+
+    transport = httpx.ASGITransport(app=_router_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        r = await c.post(
+            "/webhooks/slack/events",
+            content=body,
+            headers={
+                "X-Slack-Request-Timestamp": str(ts),
+                "X-Slack-Signature": sig,
+            },
+        )
+
+    assert r.status_code == 503
+    assert r.headers["Retry-After"] == "30"
+    assert r.json() == {
+        "code": "webhook_processing_unavailable",
+        "message": "webhook processing temporarily unavailable",
+        "context": {"provider": "slack"},
+    }
+    rendered = json.dumps(r.json())
+    assert "super-secret" not in rendered
+    assert "postgres" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_missing_handler_returns_retryable_sanitized_response(
+    _router_app,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_ingest = AsyncMock(
+        side_effect=HandlerNotFound(
+            "no handler for channel slack:message",
+            channel="slack:message",
+        )
+    )
+    monkeypatch.setattr("services.app.webhooks.router.ingest", mock_ingest)
+
+    body = json.dumps({
+        "team_id": "T0001",
+        "event": {
+            "type": "message",
+            "ts": "1780184162.000104",
+            "channel": "C01",
+            "user": "U01",
+            "text": "hi",
+        },
+    }).encode("utf-8")
+    ts = int(_t.time())
+    sig = slack_sign(os.environ["WEBHOOK_SECRET_SLACK"], body, ts)
+
+    transport = httpx.ASGITransport(app=_router_app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        r = await c.post(
+            "/webhooks/slack/events",
+            content=body,
+            headers={
+                "X-Slack-Request-Timestamp": str(ts),
+                "X-Slack-Signature": sig,
+            },
+        )
+
+    assert r.status_code == 503
+    assert r.headers["Retry-After"] == "30"
+    assert r.json() == {
+        "code": "webhook_processing_unavailable",
+        "message": "webhook processing temporarily unavailable",
+        "context": {"provider": "slack"},
+    }
+    assert "slack:message" not in json.dumps(r.json())

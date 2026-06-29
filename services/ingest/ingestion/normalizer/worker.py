@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import inspect
 import logging
 import os
 import time
@@ -488,8 +489,14 @@ async def _normalize_one_with_envelope(
         return envelope, False
 
     # Fetch the raw body from S3 (the only network call in this hot
-    # path besides Kafka).
-    raw_body = await s3.get(envelope.raw_s3_key)
+    # path besides Kafka). Production S3Client verifies the body against the
+    # envelope content hash before parsing; older test doubles may only expose
+    # get(), so keep that fallback at the boundary.
+    get_verified = getattr(s3, "get_verified", None)
+    if inspect.iscoroutinefunction(get_verified):
+        raw_body = await get_verified(envelope.raw_s3_key, envelope.content_hash)
+    else:
+        raw_body = await s3.get(envelope.raw_s3_key)
     payload = orjson.loads(raw_body)
 
     # M6.7 (A27.3) — the backfill producer (shard_fetch) wraps the

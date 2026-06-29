@@ -81,6 +81,7 @@ async def test_hello_identify_ready_loop(fake_gateway: FakeGateway) -> None:
                 bot_token="test-bot-token",
                 dispatch_handler=_null_dispatch,
                 http_client=http,
+                gateway_bot_url="https://discord.com/api/v10/gateway/bot",
             )
             run_task = asyncio.create_task(client.run())
             try:
@@ -128,6 +129,7 @@ async def test_heartbeat_is_sent_periodically(fake_gateway: FakeGateway) -> None
                 bot_token="test",
                 dispatch_handler=_null_dispatch,
                 http_client=http,
+                gateway_bot_url="https://discord.com/api/v10/gateway/bot",
             )
             run_task = asyncio.create_task(client.run())
             try:
@@ -170,6 +172,7 @@ async def test_close_4014_raises_fatal_gateway_error(
                 bot_token="test",
                 dispatch_handler=_null_dispatch,
                 http_client=http,
+                gateway_bot_url="https://discord.com/api/v10/gateway/bot",
             )
             with pytest.raises(FatalGatewayError) as exc_info:
                 await client.run()
@@ -207,6 +210,7 @@ async def test_resume_path_uses_resume_gateway_url(
                 bot_token="test",
                 dispatch_handler=_track_dispatch,
                 http_client=http,
+                gateway_bot_url="https://discord.com/api/v10/gateway/bot",
             )
             run_task = asyncio.create_task(client.run())
             try:

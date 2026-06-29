@@ -1,17 +1,74 @@
 name: Deploy to Production
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
     branches: [production]
+    types: [completed]
   workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: "CI run id on production containing signed fyraliscore-sboms."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   deploy:
     name: Deploy to AWS Lightsail
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    environment:
+      name: production
 
     steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.6.0
+
+      - name: Download signed SBOM artifacts from CI run
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: fyraliscore-sboms
+          path: release-artifacts
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download signed SBOM artifacts from requested CI run
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@v4
+        with:
+          name: fyraliscore-sboms
+          path: release-artifacts
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify signed release artifacts
+        run: |
+          set -euo pipefail
+          cd release-artifacts
+          COSIGN_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml@refs/heads/production"
+          cosign verify-blob \
+            --certificate-identity "${COSIGN_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --bundle fyraliscore-source.spdx.json.sigstore \
+            fyraliscore-source.spdx.json
+          cosign verify-blob \
+            --certificate-identity "${COSIGN_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --bundle fyraliscore-image.cdx.json.sigstore \
+            fyraliscore-image.cdx.json
+          cosign verify-blob \
+            --certificate-identity "${COSIGN_IDENTITY}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --bundle fyraliscore-sboms.SHA256SUMS.sigstore \
+            fyraliscore-sboms.SHA256SUMS
+          sha256sum -c fyraliscore-sboms.SHA256SUMS
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -19,19 +76,12 @@ jobs:
           username: ${{ secrets.LIGHTSAIL_USER }}
           key: ${{ secrets.LIGHTSAIL_SSH_KEY }}
           script: |
-            set -e
+            set -euo pipefail
             cd ~/fyraliscore
+            PREV_SHA="$(git rev-parse HEAD)"
 
             echo "==> Pulling latest code"
             git fetch origin production
             git reset --hard origin/production
 
-            echo "==> Rebuilding and restarting containers"
-            docker compose pull
-            docker compose up -d --build --remove-orphans
-
-            echo "==> Waiting for gateway health check"
-            timeout 60 bash -c 'until curl -sf http://localhost:8000/healthz; do sleep 3; done'
-
-            echo "==> Deployment complete"
-            docker compose ps
+            bash scripts/deploy_compose_release.sh --previous-sha "${PREV_SHA}"

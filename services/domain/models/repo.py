@@ -21,7 +21,8 @@ Public API per BUILD-PLAN §2 Prompt 1-C + Q3 resolution:
         3. apply_calibration (identity in Wave 1)
         4. Clip confidence to [0.05, 0.95]
         5. Validate scope_actors exist
-        6. Compute embedding from `natural` (if no vec supplied)
+        6. Resolve embedding before opening any repo-owned transaction
+           (transactional callers must pass a precomputed vector)
         7. INSERT (proposition_kind is the generated column — never in
            the column list; confidence_at_assertion is written once
            here and never UPDATEd afterwards)
@@ -67,6 +68,7 @@ vector.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Sequence
 from uuid import UUID
@@ -81,7 +83,7 @@ from lib.embeddings.ollama import (
     OllamaDimensionMismatch,
     OllamaError,
 )
-from lib.shared.db import RowHydrationError
+from lib.shared.db import RowHydrationError, configure_connection_timeouts
 from lib.shared.edge_registry import EDGE_REGISTRY, get_spec
 from lib.shared.errors import CompanyOSError, FalsifierInadequateError, ValidationError
 from lib.shared.ids import uuid7
@@ -338,6 +340,7 @@ async def pgvector_pool_init(conn: asyncpg.Connection) -> None:
     Idempotent: a duplicate `register_vector` call against the same
     connection is a no-op at the Postgres level.
     """
+    await configure_connection_timeouts(conn)
     try:
         await register_vector(conn)
     except Exception:
@@ -1275,10 +1278,10 @@ async def _bulk_sync_model_scope_sidecars(
     seen_entity_rows: set[tuple[UUID, str, UUID]] = set()
     for model in models:
         for actor_id in model.scope_actors or []:
-            key = (model.id, actor_id)
-            if key in seen_actor_rows:
+            actor_key = (model.id, actor_id)
+            if actor_key in seen_actor_rows:
                 continue
-            seen_actor_rows.add(key)
+            seen_actor_rows.add(actor_key)
             actor_rows.append((model.id, model.tenant_id, actor_id, "model_scope"))
         for raw in model.scope_entities or []:
             if not isinstance(raw, dict):
@@ -1291,10 +1294,10 @@ async def _bulk_sync_model_scope_sidecars(
                 entity_uuid = entity_id if isinstance(entity_id, UUID) else UUID(str(entity_id))
             except (ValueError, TypeError):
                 continue
-            key = (model.id, str(entity_type), entity_uuid)
-            if key in seen_entity_rows:
+            entity_key = (model.id, str(entity_type), entity_uuid)
+            if entity_key in seen_entity_rows:
                 continue
-            seen_entity_rows.add(key)
+            seen_entity_rows.add(entity_key)
             entity_rows.append((
                 model.id,
                 model.tenant_id,
@@ -1811,9 +1814,14 @@ class ModelsRepo:
         # lookup adjusts `confidence` on the way in.
         conf_at_assertion = _clip_confidence(proposed.confidence_at_assertion)
 
-        # -- 3/4/5/6/7/8. Calibration, clip, INSERT, emit state_change
-        # all happen in the transaction so calibration's DB read sees
-        # any offsets written by a concurrent updater before we commit.
+        # -- 3/4/5/6/7/8. Precompute embedding, then calibrate, clip,
+        # INSERT, and emit state_change in the transaction. The embedding
+        # provider call stays outside repo-owned transactions.
+        constructed = await self._precompute_constructed_embedding(
+            constructed,
+            conn=conn,
+        )
+        proposed = constructed.proposed
         if conn is not None:
             return await self._insert_core(
                 conn,
@@ -1854,6 +1862,7 @@ class ModelsRepo:
             return []
 
         plan = plan_model_batch(list(proposed))
+        plan = await self._precompute_batch_embeddings(plan, conn=conn)
 
         async def _run(c: asyncpg.Connection) -> list[ModelRow]:
             if not self._batch_requires_serial_insert(plan):
@@ -2015,13 +2024,7 @@ class ModelsRepo:
                 calibrated_conf = proposed.confidence
             final_conf = _clip_confidence(calibrated_conf)
 
-            embedding = await self._resolve_embedding(proposed)
-            if len(embedding) != EMBEDDING_DIM:
-                raise ValidationError(
-                    f"embedding dim {len(embedding)} != {EMBEDDING_DIM}",
-                    got=len(embedding),
-                    expected=EMBEDDING_DIM,
-                )
+            embedding = self._precomputed_embedding(proposed)
             topo_anchor: list[float] | None = None
             try:
                 topo_anchor = content_anchor(embedding)
@@ -2184,13 +2187,7 @@ class ModelsRepo:
         else:
             calibrated_conf = proposed.confidence
         await self._validate_scope_actors(conn, proposed)
-        embedding = await self._resolve_embedding(proposed)
-        if len(embedding) != EMBEDDING_DIM:
-            raise ValidationError(
-                f"embedding dim {len(embedding)} != {EMBEDDING_DIM}",
-                got=len(embedding),
-                expected=EMBEDDING_DIM,
-            )
+        embedding = self._precomputed_embedding(proposed)
         return {
             "model_id": model_id,
             "final_conf": _clip_confidence(calibrated_conf),
@@ -2421,6 +2418,77 @@ class ModelsRepo:
                 },
             )
             await _maybe_auto_accept(hydrated, conn)
+
+    async def _precompute_batch_embeddings(
+        self,
+        plan: ModelBatchPlan,
+        *,
+        conn: asyncpg.Connection | None,
+    ) -> ModelBatchPlan:
+        replacements: dict[UUID, PlannedModel] = {}
+        for planned in plan.models:
+            constructed = await self._precompute_constructed_embedding(
+                planned.constructed,
+                conn=conn,
+            )
+            replacements[planned.id] = replace(planned, constructed=constructed)
+
+        return ModelBatchPlan(
+            models=tuple(replacements[planned.id] for planned in plan.models),
+            strata=tuple(
+                tuple(replacements[planned.id] for planned in stratum)
+                for stratum in plan.strata
+            ),
+        )
+
+    async def _precompute_constructed_embedding(
+        self,
+        constructed: ConstructedModel,
+        *,
+        conn: asyncpg.Connection | None,
+    ) -> ConstructedModel:
+        proposed = constructed.proposed
+        if self._has_valid_embedding(proposed):
+            return replace(
+                constructed,
+                proposed=proposed.model_copy(
+                    update={"embedding": self._precomputed_embedding(proposed)}
+                ),
+            )
+        if self._embedder is not None and self._conn_is_in_transaction(conn):
+            raise ValidationError(
+                "model embedding must be precomputed before passing a transactional "
+                "connection to ModelsRepo.insert",
+                field="embedding",
+            )
+        embedding = await self._resolve_embedding(proposed)
+        self._validate_embedding_dim(embedding)
+        return replace(
+            constructed,
+            proposed=proposed.model_copy(update={"embedding": embedding}),
+        )
+
+    @staticmethod
+    def _conn_is_in_transaction(conn: asyncpg.Connection | None) -> bool:
+        return bool(conn is not None and conn.is_in_transaction())
+
+    @staticmethod
+    def _has_valid_embedding(proposed: ModelCreate) -> bool:
+        return bool(proposed.embedding) and len(proposed.embedding) == EMBEDDING_DIM
+
+    @staticmethod
+    def _validate_embedding_dim(embedding: Sequence[float]) -> None:
+        if len(embedding) != EMBEDDING_DIM:
+            raise ValidationError(
+                f"embedding dim {len(embedding)} != {EMBEDDING_DIM}",
+                got=len(embedding),
+                expected=EMBEDDING_DIM,
+            )
+
+    def _precomputed_embedding(self, proposed: ModelCreate) -> list[float]:
+        embedding = [float(x) for x in proposed.embedding]
+        self._validate_embedding_dim(embedding)
+        return embedding
 
     async def _resolve_embedding(self, proposed: ModelCreate) -> list[float]:
         if proposed.embedding and len(proposed.embedding) == EMBEDDING_DIM:

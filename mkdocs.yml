@@ -94,6 +94,7 @@ nav:
       - Workers — Background Jobs: architecture/workers.md
       - Shared Libraries (lib): architecture/lib.md
       - Runtime & Data Plane: architecture/data-plane.md
+      - BYOC Production Blueprint: architecture/byoc-production-blueprint.md
       - Interfaces & Extensions: architecture/interfaces.md
       - Interface platform roadmap: architecture/interface-platform-roadmap.md
       - Observability — Prometheus & Grafana: architecture/observability_architecture.md
@@ -115,6 +116,36 @@ nav:
       - Wiring gaps: status/wiring-gaps.md
       - Legacy & test-only: status/dead-legacy.md
       - Inquiry retrieval gap analysis: status/inquiry-retrieval-gap-analysis.md
+  - Operations:
+      - Production readiness master checklist: operations/fyralis-production-readiness-master-checklist.md
+      - Production architecture overview: operations/production-architecture-overview.md
+      - Admin and role management: operations/admin-role-management-guide.md
+      - Customer launch evidence:
+          - Overview: operations/customer-launch-evidence/README.md
+          - Customer launch template: operations/customer-launch-evidence/customer-launch-evidence-template.md
+          - Integration evidence template: operations/customer-launch-evidence/integration-evidence-template.md
+      - Data retention, backup, and recovery: operations/data-retention-backup-recovery.md
+      - Durable dead-letter admin runbook: operations/dead-letter-admin-runbook.md
+      - Deployment runbook: operations/deployment-runbook.md
+      - Gateway route access inventory: operations/gateway-route-access-inventory.md
+      - Ingestion DLQ replay/quarantine runbook: operations/ingestion-dlq-replay-quarantine-runbook.md
+      - Incident response guide: operations/incident-response-guide.md
+      - Integration data classification: operations/integration-data-classification.md
+      - Integration security review register: operations/integration-security-review-register.md
+      - Known limitations and feature flags: operations/known-limitations-feature-flags.md
+      - LLM prompt/content use policy: operations/llm-prompt-content-use-policy.md
+      - Migration release runbook: operations/migration-release-runbook.md
+      - Observability and alert guide: operations/observability-alert-guide.md
+      - Performance, scale, and cost targets: operations/performance-cost-targets.md
+      - Per-source worker scaling runbook: operations/per-source-worker-scaling-runbook.md
+      - Product workflow support guide: operations/product-workflow-support-guide.md
+      - Production readiness gates: operations/production-readiness-gates.md
+      - Release notes template: operations/release-notes-template.md
+      - Rollback runbook: operations/rollback-runbook.md
+      - Operator runbook index: operations/runbook-index.md
+      - Source onboarding runbook: operations/source-onboarding-runbook.md
+      - Subprocessor and third-party data flow: operations/subprocessor-data-flow.md
+      - Worker fabric runbook: operations/worker-fabric-runbook.md
   - Decisions (ADRs):
       - Overview: adr/README.md
       - ADR Template: adr/0000-template.md
@@ -128,10 +159,37 @@ nav:
       - Ingestion:
           - Overview: ingestion/README.md
           - Canonical architecture: ingestion/architecture.md
+          - End-to-end flow and architecture: ingestion/ingestion-flow-and-architecture.md
           - Source isolation: ingestion/source-isolation.md
           - Finance sources: ingestion/finance-sources.md
           - Finance API map: ingestion/finance-api-map.md
           - Slack DM (test env): ingestion/slack-dm-demo.md
+          - Source flow deep dives:
+              - Ashby: ingestion/flows/ashby-ingestion.md
+              - AWS: ingestion/flows/aws-ingestion.md
+              - Brex: ingestion/flows/brex-ingestion.md
+              - Carta: ingestion/flows/carta-ingestion.md
+              - Deel: ingestion/flows/deel-ingestion.md
+              - Discord: ingestion/flows/discord-ingestion.md
+              - Figma: ingestion/flows/figma-ingestion.md
+              - Fireflies: ingestion/flows/fireflies-ingestion.md
+              - GitHub: ingestion/flows/github-ingestion.md
+              - Gmail: ingestion/flows/gmail-ingestion.md
+              - Google Calendar: ingestion/flows/google_calendar-ingestion.md
+              - Google Drive: ingestion/flows/google_drive-ingestion.md
+              - Grafana: ingestion/flows/grafana-ingestion.md
+              - Gusto: ingestion/flows/gusto-ingestion.md
+              - HiBob: ingestion/flows/hibob-ingestion.md
+              - Jira: ingestion/flows/jira-ingestion.md
+              - LinkedIn: ingestion/flows/linkedin-ingestion.md
+              - Mercury: ingestion/flows/mercury-ingestion.md
+              - Miro: ingestion/flows/miro-ingestion.md
+              - Notion: ingestion/flows/notion-ingestion.md
+              - QuickBooks: ingestion/flows/quickbooks-ingestion.md
+              - Ramp: ingestion/flows/ramp-ingestion.md
+              - Signal: ingestion/flows/signal-ingestion.md
+              - Slack: ingestion/flows/slack-ingestion.md
+              - Telegram: ingestion/flows/telegram-ingestion.md
           - Sources:
               - Slack: ingestion/sources/slack.md
               - GitHub: ingestion/sources/github.md

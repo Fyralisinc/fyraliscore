@@ -33,6 +33,7 @@ from uuid import UUID
 import structlog
 
 from lib.shared.errors import TelegramApiError
+from services.ingest.integrations.secret_cache import SecretValueCache
 
 
 log = structlog.get_logger("integrations.telegram.client")
@@ -91,16 +92,37 @@ class TelegramClient:
         self._api_hash_secret_ref = api_hash_secret_ref
         self._session_secret_ref = session_secret_ref
         # Preset session / api_hash (spammer/test); else resolved from secrets.
-        self._session: str | None = session
-        self._api_hash: str | None = api_hash
+        self._session_cache = SecretValueCache(preset=session)
+        self._api_hash_cache = SecretValueCache(preset=api_hash)
+        self._secret_lock = asyncio.Lock()
         self._client: Any | None = None
         self._connect_lock = asyncio.Lock()
 
-    async def _resolve_secret(self, ref: str | None) -> str | None:
+    async def _resolve_secret(
+        self, ref: str | None, cache: SecretValueCache,
+    ) -> str | None:
         if ref is None or self._secret_store is None or self._tenant_id is None:
             return None
-        raw = await self._secret_store.get(ref, tenant_id=self._tenant_id)
-        return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        return await cache.resolve(
+            lock=self._secret_lock,
+            secret_store=self._secret_store,
+            secret_ref=ref,
+            tenant_id=self._tenant_id,
+            missing_error=lambda: TelegramApiError(
+                "telegram client missing secret material",
+                code="telegram_api_unauthorized",
+            ),
+        )
+
+    async def _resolve_session(self) -> str | None:
+        return await self._resolve_secret(
+            self._session_secret_ref, self._session_cache,
+        )
+
+    async def _resolve_api_hash(self) -> str | None:
+        return await self._resolve_secret(
+            self._api_hash_secret_ref, self._api_hash_cache,
+        )
 
     async def _connect(self) -> Any:
         if self._client is not None:
@@ -118,12 +140,8 @@ class TelegramClient:
                     code="telegram_api_error",
                 ) from exc
 
-            session = self._session or await self._resolve_secret(
-                self._session_secret_ref,
-            )
-            api_hash = self._api_hash or await self._resolve_secret(
-                self._api_hash_secret_ref,
-            )
+            session = await self._resolve_session()
+            api_hash = await self._resolve_api_hash()
             if not (session and self._api_id and api_hash):
                 raise TelegramApiError(
                     "telegram client missing session / api_id / api_hash",

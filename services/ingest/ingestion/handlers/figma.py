@@ -49,22 +49,6 @@ _CHANNEL = "figma:event"
 _TRUST = "authoritative"
 
 
-def _figma_event_external_id(team_id: str, event_id: str, version: str) -> str:
-    """`figma:{team_id}:event:{event_id}:{version}` — namespaced by the Figma
-    team id (Figma-global, so two tenants' identical synthetic event ids stay
-    distinct under the global UNIQUE-without-tenant_id) and VERSIONED by version
-    so a re-publish lands a NEW observation while identical re-fetches dedup.
-
-    Single source of truth is `idempotency.figma_event` once the shared-file /
-    wiring agent adds it (see the source summary `notes`); this inline fallback
-    keeps the handler self-contained + testable until then and produces the
-    IDENTICAL string, so swapping to the shared constructor is a no-op.
-    """
-    fn = getattr(idempotency, "figma_event", None)
-    if callable(fn):
-        return fn(team_id, event_id, version)
-    return f"figma:{team_id}:event:{event_id}:{version}"
-
 # Event types (or derived statuses) that represent a design-lifecycle reversal —
 # a deletion or a ready-for-dev rollback. Everything else is a forward signal.
 _STATE_CHANGE_EVENTS = frozenset({"FILE_DELETE"})
@@ -148,10 +132,10 @@ def _event_draft(
     event_id = str(event.get("id") or event.get("event_id") or "")
     if event_id:
         version = _event_version(event)
-        external_id = _figma_event_external_id(scope_id, event_id, version)
+        external_id = idempotency.figma_event(scope_id, event_id, version)
     else:
         # Real Figma Webhooks V2 carry NO event id — the durable discriminator
-        # is (file_key, timestamp). `_figma_event_external_id` is the same
+        # is (file_key, timestamp). `idempotency.figma_event` is the same
         # f-string, so this stays one shape: figma:{scope}:event:{file_key}:{ts}.
         ts = str(
             event.get("timestamp")
@@ -164,7 +148,7 @@ def _event_draft(
                 "figma webhook missing file_key/timestamp", channel=_CHANNEL,
             )
         version = ts
-        external_id = _figma_event_external_id(scope_id, file_key, ts)
+        external_id = idempotency.figma_event(scope_id, file_key, ts)
 
     occurred = (
         _parse_iso(event.get("createdAt"))

@@ -54,7 +54,9 @@ from .anomaly_integration import (
 )
 from .applier import AlreadyAppliedError, apply_diff, check_already_applied
 from .debug_capture import capture as debug_capture
+from .debug_capture import defer_transactional_captures
 from .debug_capture import capture_with_pool as debug_capture_with_pool
+from .debug_capture import flush_captures as flush_debug_captures
 from .deterministic import is_authoritative
 from .observability import (
     METRICS,
@@ -112,7 +114,12 @@ def _early_idempotency_skip_enabled() -> bool:
 
 
 def _narrow_inferential_transaction_enabled() -> bool:
-    return os.environ.get("THINK_NARROW_INFERENTIAL_TX", "0") != "0"
+    return os.environ.get("THINK_NARROW_INFERENTIAL_TX", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 @asynccontextmanager
@@ -187,10 +194,11 @@ async def think(
 
     Authoritative/deterministic triggers keep the legacy wide
     transaction because a few deterministic handlers intentionally do
-    side-effectful reasoning. Inferential triggers also default to the
-    wide transaction path so region advisory locks are held before LLM
-    reasoning; set THINK_NARROW_INFERENTIAL_TX=1 only when a stronger
-    freshness protocol is available.
+    side-effectful reasoning. Inferential triggers default to the narrow
+    path: retrieval/planning and LLM reasoning run outside an explicit DB
+    transaction, then validation/apply/cascade run inside the short mutation
+    transaction. Set THINK_NARROW_INFERENTIAL_TX=0 only as an emergency
+    rollback to the legacy wide transaction.
 
     For tests that want to drive everything inside one pre-opened
     transaction (ROLLBACK at teardown), use `think_in_conn` instead —
@@ -410,10 +418,24 @@ async def _run_think_attempt(
     use_wide_transaction = (
         is_authoritative(trigger) or not _narrow_inferential_transaction_enabled()
     )
-    async with pool.acquire() as conn:
-        if use_wide_transaction:
-            async with conn.transaction():
-                return await _run_once(
+    with defer_transactional_captures() as debug_scope:
+        async with pool.acquire() as conn:
+            if use_wide_transaction:
+                async with conn.transaction():
+                    outcome = await _run_once(
+                        conn=conn,
+                        trigger=trigger,
+                        llm_provider=llm_provider,
+                        embedder=embedder,
+                        access_context=access_context,
+                        triggering_content=triggering_content,
+                        reason_for_trigger=reason_for_trigger,
+                        record=record,
+                        expanded_region=expanded_region,
+                        reason_cache=reason_cache,
+                    )
+            else:
+                outcome = await _run_once(
                     conn=conn,
                     trigger=trigger,
                     llm_provider=llm_provider,
@@ -422,21 +444,11 @@ async def _run_think_attempt(
                     triggering_content=triggering_content,
                     reason_for_trigger=reason_for_trigger,
                     record=record,
-                    expanded_region=expanded_region,
-                    reason_cache=reason_cache,
-                )
-        return await _run_once(
-            conn=conn,
-            trigger=trigger,
-            llm_provider=llm_provider,
-            embedder=embedder,
-            access_context=access_context,
-            triggering_content=triggering_content,
-            reason_for_trigger=reason_for_trigger,
-            record=record,
-            expanded_region=expanded_region,
-            reason_cache=reason_cache,
-        )
+                        expanded_region=expanded_region,
+                        reason_cache=reason_cache,
+                    )
+    await flush_debug_captures(pool, debug_scope.artifacts)
+    return outcome
 
 
 def _expand_region_after_out_of_region(
@@ -691,6 +703,7 @@ async def _record_cost_for_outcome(
         )
         return
 
+    assert usage_agg is not None
     for purpose, usage in by_purpose.items():
         is_main = purpose == "main_reasoning"
         await record_think_run_cost(

@@ -16,24 +16,25 @@ findings are summarized at the end. _Resolutions 2026-06-02; see
 
 ## 🟠 Background worker fabric (Wave-4) — partially wired
 
-The single largest theme. A `housekeeper_worker` now runs the low-frequency
-lifecycle jobs that previously only existed in tests, but several source- and
-LLM-heavy workers still need deliberate deployment decisions. See
+The single largest theme. `housekeeper_worker` now runs low-frequency lifecycle
+jobs that previously only existed in tests, while `anomaly_processor_worker` and
+`entity_resolver_worker` cover the highest-impact LLM/reasoning seams. Several
+expensive or non-selected jobs still need deliberate deployment decisions. See
 [Workers](../architecture/workers.md).
 
 | Feature | Expected | Current status | Severity |
 |---------|----------|----------------|:--------:|
-| Worker deployment | 8 worker packages run as compose/cron processes | **Partially resolved (2026-06-12).** `housekeeper_worker` is now in `docker-compose.yml` and the runtime manifest; it runs low-frequency lifecycle jobs by default and keeps expensive jobs opt-in. Anomaly/entity-resolution deployment is still open. | medium |
+| Worker deployment | 8 worker packages run as compose/cron processes | **Partially resolved (2026-06-24).** `housekeeper_worker`, `anomaly_processor_worker`, and `entity_resolver_worker` are now first-class production processes with healthchecks, Prometheus scrape targets, and runtime-manifest entries. Expensive/non-selected jobs such as precipitation still need an explicit launch decision. | medium |
 | Activation decay + archival | `hourly_decay`/`archive_decayed` run via maintenance worker | ✅ **Resolved (2026-06-12).** Housekeeper schedules `hourly_decay` and `archive_decayed` through the existing `MaintenanceScheduler`, so Models can decay/archive outside tests. | ✅ resolved |
 | Maintenance scheduler (Wave-4-D) | In-proc scheduler runs daily/weekly/monthly upkeep | ✅ **Resolved for default lifecycle jobs (2026-06-12).** `housekeeper_worker` instantiates `MaintenanceScheduler` for deadline resolution, obligations, decay/archive, relationship maintenance, calibration, and edge drift. Monthly/expensive jobs remain separately flagged. | ✅ resolved |
-| Anomaly → `T3` generation | `anomaly_processor` detects 6 kinds, debounces, enqueues `T3` | Fully implemented, not-wired → **no `T3` anomaly triggers in prod**; `signal_memory_fabric` never accumulates | high |
+| Anomaly → `T3` generation | `anomaly_processor` detects 6 kinds, debounces, enqueues `T3` | ✅ **Resolved (2026-06-24).** `anomaly_processor_worker` is now production-wired and exports cycle/counter metrics. | ✅ resolved |
 | Deadline → `T2` generation | `deadline_resolver` polls overdue predictions → `T2` | ✅ **Resolved (2026-06-12).** Housekeeper runs `DeadlineResolver.run_once()` on `HOUSEKEEPER_DEADLINE_RESOLVER_INTERVAL_S`. | ✅ resolved |
-| Deferred entity resolution | `entity_resolver` resolves `_unresolved_phrases` → aliases + `T1` re-enqueue | Implemented, not-wired → unresolved phrases never aliased/re-triggered; `entity_review_queue` has no consumer | high |
+| Deferred entity resolution | `entity_resolver` resolves `_unresolved_phrases` → aliases + `T1` re-enqueue | ✅ **Resolved (2026-06-24).** `entity_resolver_worker` is now production-wired with bounded polling, LLM budget controls, health/metrics, and terminal phrase cleanup so completed aliases do not burn repeated LLM calls. | ✅ resolved |
 | Calibration pipeline | `calibration_updater` refreshes `calibration_offsets` weekly | ✅ **Resolved (2026-06-12).** Housekeeper runs `calibration_updater.run_once()` weekly by default, so offsets are no longer test/manual-only. | ✅ resolved |
 | Precipitation pattern formation | Nightly clustering writes `pattern_candidates` + `T4` | Partially wired: housekeeper can run precipitation, but it is disabled by default behind `HOUSEKEEPER_ENABLE_PRECIPITATION` / `HOUSEKEEPER_ENABLE_EXPENSIVE_JOBS` until runtime cost is characterized. | medium |
 | `edge_drift` parity check | Worker samples `model_edges` vs. legacy arrays to catch divergence | ✅ **Resolved (2026-06-12).** Housekeeper runs `edge_drift.run_once()` on `HOUSEKEEPER_EDGE_DRIFT_INTERVAL_S`. | ✅ resolved |
-| `entity_aliases` slow path | `insert_alias`/`record_usage`/`list_ambiguous` driven by `entity_resolver` | Live ingest uses only `fast_path_resolve`; slow-path funcs consumed only by the unwired worker | medium |
-| `actor_visible_*` matview refresh | Daily `refresh_all` keeps scope views current; `checks.py` reads them | Sole caller is the undeployed `maintenance/daily.py` → matviews **never refreshed** at runtime (stale/empty scope data) | high |
+| `entity_aliases` slow path | `insert_alias`/`record_usage`/`list_ambiguous` driven by `entity_resolver` | ✅ **Resolved (2026-06-24).** The production `entity_resolver_worker` drives alias insert/usage, `entity_review_queue`, clarification creation, and material `T1` re-enqueue. | ✅ resolved |
+| `actor_visible_*` matview refresh | Daily `refresh_all` keeps scope views current; `checks.py` reads them | ✅ **Resolved (2026-06-24).** Housekeeper now schedules `access_matview_refresh` daily through the production housekeeper process, reusing the existing `maintenance.daily.access_matview_refresh` implementation. | ✅ resolved |
 
 ## 🔴 Access control & authorization
 
@@ -49,7 +50,8 @@ See [Platform](../architecture/platform.md).
 
 | Feature | Expected | Current status | Severity |
 |---------|----------|----------------|:--------:|
-| Post-commit side-effects | Dispatch anomaly handoff / prediction scheduling / realtime broadcast / metric invalidation | Queue + `post_commit_worker` are live, but all 4 dispatchers are **no-op loggers** ("left for a later integration PR") | high |
+| Anomaly processor | Six detectors score anomaly candidates, write `signal_memory_fabric`, and enqueue T3 triggers | ✅ **Resolved (2026-06-24).** `anomaly_processor_worker` is now in the production runtime manifest, docker compose, Prometheus scrape config, and exposes health/metrics via `scripts/run_anomaly_processor_worker.py`. | ✅ resolved |
+| Post-commit side-effects | Dispatch anomaly handoff / prediction scheduling / realtime broadcast / metric invalidation | Queue + `post_commit_worker` is live. Realtime broadcast, metric invalidation, anomaly-published, and prediction-scheduled actions now emit transactional `view_ceo_refresh` NOTIFYs consumed by the CEO-view scheduler; `schedule_predictions` also rejects payloads missing `evaluate_at`. | ✅ resolved |
 | Execution signal routing (`decide_route`) | Classify every signal | `decide_route` has **no caller outside tests**; ingestion never builds a `SignalEnvelope`, and the old `signal_routing_decisions` ledger was dropped by migration `0127` | high |
 
 ## 🟠 Ingestion pipeline & data plane
@@ -100,8 +102,8 @@ See [Product](../architecture/product.md).
 | Query/Ask cache adapter | `PostgresCacheAdapter` persisting to `view_ceo_cache` | ✅ **Resolved (2026-06-12).** Dev/test may still use the process-local `InMemoryCacheAdapter`, but production now fails closed unless `QUERY_CACHE_BACKEND=pg` and a DB pool are supplied. `.env.production.example` sets `QUERY_CACHE_BACKEND=pg`, and gateway wiring already calls `build_cache_adapter(pool=pool)`. | ✅ resolved |
 | Confidence calibration (insert path) | `apply_calibration` reads empirical `calibration_offsets` (n≥20) | Active in insert/validate, but offsets table never populated (writer worker undeployed) → **permanently cold-start**; `apply_calibration_sync` is dead | medium |
 | `model_edges` ↔ legacy arrays | Stage-2/3 cutover drops `supporting_model_ids`/`contributing_models` | Still permanent dual-write (both cycle-checks + cascades run); the `edge_drift` parity guard is itself unwired | medium |
-| CEO Map (`/api/map/*`) | Map populated from live neighborhood/topology data | Reads `model_neighborhoods`/`topology_events` (compat-only) + UMAP cache populated only by `topology_sweeper` → empty/degraded on tenants without sweeper output | medium |
-| Spec routes (`/v1/spec/*`, ledger) | Derived from substrate (models/decisions/predictions) | Returns in-code seed payloads mirroring the UI mocks → fixture-backed, tenant-agnostic | medium |
+| CEO Map (`/api/map/*`) | Map populated from live neighborhood/topology data or explicit warming state | ✅ **Degrades explicitly (2026-06-24).** Snapshot responses now include `degraded_reasons` (`no_visible_models`, `projection_warming`, `topology_warming`) so clients can render empty/warming topology states intentionally. | ✅ resolved for graceful degradation |
+| Spec routes (`/v1/spec/*`, ledger) | Derived from substrate (models/decisions/predictions) or hidden from production | ✅ **Production-hidden (2026-06-24).** Seed-payload routes remain for dev/e2e only, are isolated to `spec_routes.py`, and are unmounted in production through `SPEC_DEMO_ROUTES_ENABLED=0` with route ratchets. | ✅ resolved for prod exposure |
 
 ## 🟢 Low-severity findings (64)
 

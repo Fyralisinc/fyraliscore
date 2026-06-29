@@ -198,10 +198,10 @@ def build_extension_router() -> APIRouter:
             views = await reader.query_observations(channel=channel, since=since, limit=limit)
         except ExtensionAuthError as exc:
             return JSONResponse({"error": exc.code}, status_code=exc.status)
-        except CapabilityError as exc:
-            return JSONResponse({"error": "capability_denied", "detail": str(exc)}, status_code=403)
-        except ValueError as exc:
-            return JSONResponse({"error": "invalid_query", "detail": str(exc)}, status_code=400)
+        except CapabilityError:
+            return JSONResponse({"error": "capability_denied"}, status_code=403)
+        except ValueError:
+            return JSONResponse({"error": "invalid_query"}, status_code=400)
         await AuditLog(get_gateway_deps(request).pool).record(
             extension_id=principal.extension_id, action="read_observations",
             tenant_id=tenant_id, item_count=len(views), detail={"channel": channel})
@@ -214,8 +214,8 @@ def build_extension_router() -> APIRouter:
             view = await reader.get_observation(UUID(observation_id))
         except ExtensionAuthError as exc:
             return JSONResponse({"error": exc.code}, status_code=exc.status)
-        except CapabilityError as exc:
-            return JSONResponse({"error": "capability_denied", "detail": str(exc)}, status_code=403)
+        except CapabilityError:
+            return JSONResponse({"error": "capability_denied"}, status_code=403)
         except ValueError:
             return JSONResponse({"error": "invalid_observation_id"}, status_code=400)
         if view is None:
@@ -308,8 +308,8 @@ def build_extension_router() -> APIRouter:
             view = await reader.get_model(UUID(model_id))
         except ExtensionAuthError as exc:
             return JSONResponse({"error": exc.code}, status_code=exc.status)
-        except CapabilityError as exc:
-            return JSONResponse({"error": "capability_denied", "detail": str(exc)}, status_code=403)
+        except CapabilityError:
+            return JSONResponse({"error": "capability_denied"}, status_code=403)
         except ValueError:
             return JSONResponse({"error": "invalid_model_id"}, status_code=400)
         if view is None:

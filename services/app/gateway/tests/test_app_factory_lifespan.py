@@ -98,7 +98,13 @@ def _patch_lightweight_startup(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any
         "closed_github_clients": [],
     }
 
-    async def run_extension_startup_hooks(app: Any, pool: Any) -> None:
+    async def run_extension_startup_hooks(
+        app: Any,
+        pool: Any,
+        *,
+        production: bool = False,
+    ) -> None:
+        del production
         return None
 
     def wire_integration_runtime_state(app: Any, pool: Any) -> Any:
@@ -282,6 +288,52 @@ async def test_gateway_created_pool_is_closed(
 
     assert pool.closed is True
     assert calls["closed_pools"] == [pool]
+
+
+@pytest.mark.asyncio
+async def test_production_extension_startup_failure_aborts_lifespan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import services.app.gateway.main as main_module
+
+    _patch_lightweight_startup(monkeypatch)
+    pool = FakePool()
+
+    async def failing_extension_hooks(
+        app: Any,
+        pool: Any,
+        *,
+        production: bool = False,
+    ) -> None:
+        del app, pool
+        assert production is True
+        raise RuntimeError("customer extension not configured")
+
+    monkeypatch.setattr(
+        main_module,
+        "run_extension_startup_hooks",
+        failing_extension_hooks,
+    )
+
+    startup_status = main_module.StartupStatus()
+    app = main_module.build_app(
+        pool=pool,
+        actor_repo=object(),
+        alias_repo=object(),
+        rate_limiter=RateLimiter(),
+        settings=_settings(environment="production"),
+        configure_logging=False,
+    )
+    app.state.startup_status = startup_status
+
+    with pytest.raises(RuntimeError, match="customer extension"):
+        async with app.router.lifespan_context(app):
+            pass
+
+    component = startup_status.components["extensions"]
+    assert startup_status.failed is True
+    assert component.status == "failed"
+    assert component.required is True
 
 
 @pytest.mark.asyncio
@@ -487,6 +539,32 @@ def test_integration_runtime_rejects_pool_alias_drift() -> None:
         wire_integration_runtime_state(app, FakePool())  # type: ignore[arg-type]
 
     assert exc_info.value.component == "integration_state.pool"
+
+
+def test_integration_runtime_safety_runs_for_existing_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.app.gateway.state_wiring import (
+        IntegrationRuntimeState,
+        IntegrationRuntimeWiringError,
+        wire_integration_runtime_state,
+    )
+
+    pool = FakePool()
+    app = FastAPI()
+    app.state.integration_runtime = IntegrationRuntimeState(
+        pool=pool,  # type: ignore[arg-type]
+        secret_store=object(),
+        tenant_resolver=object(),
+        tenant_flags=object(),
+    )
+    monkeypatch.setenv("FYRALIS_ENV", "prod")
+    monkeypatch.setenv("WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW", "1")
+
+    with pytest.raises(IntegrationRuntimeWiringError) as exc_info:
+        wire_integration_runtime_state(app, pool)  # type: ignore[arg-type]
+
+    assert exc_info.value.component == "integration_state.safety"
 
 
 @pytest.mark.asyncio

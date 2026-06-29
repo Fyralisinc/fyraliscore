@@ -49,6 +49,7 @@ def _make_client(fresh_db, secret_store, tenant_id, install_row_id) -> SlackClie
         tenant_id=tenant_id,
         installation_row_id=install_row_id,
         team_id=_TEAM_ID,
+        base_url="https://slack.com/api",
     )
 
 
@@ -135,6 +136,7 @@ async def test_429_budget_exhausted_raises(fresh_db: asyncpg.Pool) -> None:
         team_id=_TEAM_ID,
         max_attempts=2,
         wall_budget_s=1.0,
+        base_url="https://slack.com/api",
     )
 
     with respx.mock(base_url="https://slack.com") as router:

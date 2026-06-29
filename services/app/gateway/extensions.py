@@ -42,6 +42,7 @@ class GatewayExtension:
     name: str = "extension"
     routers: list[APIRouter] = field(default_factory=list)
     startup_hooks: list[StartupHook] = field(default_factory=list)
+    production_enabled: bool = False
     # Path prefixes that bypass the bearer-session middleware (the overlay's
     # public, self-authenticating endpoints).
     public_path_prefixes: tuple[str, ...] = ()
@@ -75,6 +76,7 @@ def discovered_extensions() -> list[GatewayExtension]:
                 source=ep.name,
                 routers=len(ext.routers),
                 startup_hooks=len(ext.startup_hooks),
+                production_enabled=ext.production_enabled,
                 public_prefixes=len(ext.public_path_prefixes),
             )
         except Exception:  # noqa: BLE001 - one bad overlay must not break others
@@ -83,29 +85,59 @@ def discovered_extensions() -> list[GatewayExtension]:
     return found
 
 
-def mount_extension_routers(app: FastAPI) -> None:
+def _extension_allowed(ext: GatewayExtension, *, production: bool) -> bool:
+    if production and not ext.production_enabled:
+        log.warning(
+            "gateway_extension_skipped_in_production",
+            source=ext.name,
+        )
+        return False
+    return True
+
+
+def mount_extension_routers(app: FastAPI, *, production: bool = False) -> None:
     """Include every router contributed by discovered extensions."""
     for ext in discovered_extensions():
+        if not _extension_allowed(ext, production=production):
+            continue
         for router in ext.routers:
             app.include_router(router)
 
 
-def extension_public_path_prefixes() -> tuple[str, ...]:
+def extension_public_path_prefixes(*, production: bool = False) -> tuple[str, ...]:
     """All public path prefixes contributed by discovered extensions."""
     prefixes: list[str] = []
     for ext in discovered_extensions():
+        if not _extension_allowed(ext, production=production):
+            continue
         prefixes.extend(ext.public_path_prefixes)
     return tuple(prefixes)
 
 
-async def run_extension_startup_hooks(app: FastAPI, pool: asyncpg.Pool) -> None:
-    """Run each extension's startup hooks; failures are logged, not fatal."""
+async def run_extension_startup_hooks(
+    app: FastAPI,
+    pool: asyncpg.Pool,
+    *,
+    production: bool = False,
+) -> None:
+    """Run each extension's startup hooks.
+
+    Dev/dogfood extensions are optional and keep the historical degraded-only
+    behavior. A production-enabled extension is part of the runtime contract:
+    if its startup hook fails in production, gateway startup must fail closed.
+    """
     for ext in discovered_extensions():
+        if not _extension_allowed(ext, production=production):
+            continue
         for hook in ext.startup_hooks:
             try:
                 await hook(app, pool)
-            except Exception:  # noqa: BLE001 - optional startup work
+            except Exception as exc:  # noqa: BLE001 - optional outside production
                 log.exception("gateway_extension_startup_hook_failed", source=ext.name)
+                if production:
+                    raise RuntimeError(
+                        f"gateway extension {ext.name!r} startup hook failed"
+                    ) from exc
 
 
 def reset_for_tests() -> None:
