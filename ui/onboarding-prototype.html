@@ -1,0 +1,4018 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Get Fyralis</title>
+    <style>
+      :root {
+        color: #192326;
+        background: #eef3ef;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        font-synthesis: none;
+        line-height: 1.45;
+        text-rendering: optimizeLegibility;
+        --ink: #192326;
+        --muted: #66747b;
+        --line: #d7ded8;
+        --soft-line: #eef1ee;
+        --panel: #ffffff;
+        --green: #2f7d67;
+        --green-dark: #17614d;
+        --green-soft: #e7f4ee;
+        --blue: #315f91;
+        --blue-soft: #e8f0fa;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-width: 320px;
+        min-height: 100vh;
+        margin: 0;
+        color: var(--ink);
+        background: var(--background, #eef3ef);
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+
+      button {
+        min-height: 40px;
+        border: 1px solid #243034;
+        border-radius: 6px;
+        background: #243034;
+        color: #fff;
+        padding: 0 14px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #111719;
+      }
+
+      button.secondary {
+        border-color: #b9c4bd;
+        background: #fff;
+        color: #243034;
+      }
+
+      button.secondary:hover {
+        border-color: var(--green);
+        background: var(--green-soft);
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.05;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: 24px;
+        line-height: 1.2;
+      }
+
+      h3 {
+        font-size: 17px;
+        line-height: 1.25;
+      }
+
+      label {
+        display: grid;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        min-height: 40px;
+        border: 1px solid #c8d1cb;
+        border-radius: 6px;
+        background: #fff;
+        color: var(--ink);
+        padding: 0 10px;
+      }
+
+      textarea {
+        min-height: 96px;
+        resize: vertical;
+        padding: 10px;
+      }
+
+      input:focus,
+      select:focus,
+      textarea:focus,
+      .plan-card:focus-visible {
+        border-color: var(--green);
+        outline: 2px solid #cde7dd;
+      }
+
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        background: #fff;
+        padding: 18px 28px;
+      }
+
+      .brand {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .mark {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        background: #243034;
+        color: #fff;
+        font-weight: 900;
+      }
+
+      .brand strong,
+      .brand small {
+        display: block;
+      }
+
+      .brand small {
+        color: var(--muted);
+      }
+
+      .shell {
+        max-width: 1180px;
+        margin: 0 auto;
+        padding: 34px 22px 48px;
+      }
+
+      .progress-rail {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.96);
+        padding: 12px;
+        margin-bottom: 22px;
+        backdrop-filter: blur(10px);
+      }
+
+      .progress-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+
+      .progress-head strong,
+      .progress-head span {
+        display: block;
+      }
+
+      .progress-head span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .progress-grid {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 6px;
+      }
+
+      .progress-step {
+        min-height: 48px;
+        border: 1px solid var(--soft-line);
+        border-radius: 6px;
+        background: #fbfcfb;
+        color: var(--muted);
+        padding: 7px;
+      }
+
+      .progress-step strong,
+      .progress-step span {
+        display: block;
+      }
+
+      .progress-step strong {
+        color: var(--ink);
+        font-size: 12px;
+        line-height: 1.2;
+      }
+
+      .progress-step span {
+        margin-bottom: 3px;
+        font-size: 11px;
+        font-weight: 800;
+      }
+
+      .progress-step.done {
+        border-color: #b9d7cb;
+        background: #f4fbf7;
+        color: var(--green-dark);
+      }
+
+      .progress-step.active {
+        border-color: var(--green);
+        background: var(--green-soft);
+        box-shadow: inset 3px 0 0 var(--green);
+        color: var(--green-dark);
+      }
+
+      .boundary-banner {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 12px;
+      }
+
+      .boundary-item {
+        border: 1px solid var(--soft-line);
+        border-radius: 6px;
+        background: #fbfcfb;
+        padding: 10px;
+      }
+
+      .boundary-item strong,
+      .boundary-item span,
+      .boundary-item code {
+        display: block;
+      }
+
+      .boundary-item span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .boundary-item code {
+        margin-top: 5px;
+        overflow-wrap: anywhere;
+        color: #425157;
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 12px;
+      }
+
+      .page {
+        display: none;
+      }
+
+      .page.active {
+        display: block;
+      }
+
+      .intro {
+        max-width: 760px;
+        margin-bottom: 20px;
+      }
+
+      .eyebrow {
+        margin-bottom: 8px;
+        color: #557064;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0;
+        text-transform: uppercase;
+      }
+
+      .lead {
+        margin-top: 12px;
+        color: #4e5c62;
+        font-size: 17px;
+      }
+
+      .surface-note {
+        margin-top: 12px;
+        color: #425157;
+        font-size: 14px;
+      }
+
+      .surface-note strong {
+        color: var(--ink);
+      }
+
+      .panel,
+      .plan-card {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .panel-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 14px;
+        align-items: center;
+        min-height: 62px;
+        border-bottom: 1px solid var(--soft-line);
+        padding: 16px;
+      }
+
+      .panel-body {
+        padding: 16px;
+      }
+
+      .plan-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .plan-card {
+        display: grid;
+        grid-template-rows: auto auto 1fr auto;
+        gap: 14px;
+        min-height: 326px;
+        color: var(--ink);
+        padding: 18px;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .plan-card:hover,
+      .plan-card.selected {
+        border-color: var(--green);
+        background: #f4fbf7;
+      }
+
+      .plan-card.selected {
+        box-shadow: inset 0 3px 0 var(--green);
+      }
+
+      .plan-card strong,
+      .plan-card span,
+      .plan-card small {
+        display: block;
+      }
+
+      .plan-card span,
+      .plan-card small {
+        color: var(--muted);
+      }
+
+      .plan-title strong {
+        margin-top: 8px;
+        font-size: 19px;
+        line-height: 1.15;
+      }
+
+      .plan-title span {
+        margin-top: 7px;
+      }
+
+      .terms {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .term {
+        min-height: 64px;
+        border: 1px solid var(--soft-line);
+        border-radius: 6px;
+        background: #fbfcfb;
+        padding: 9px;
+      }
+
+      .term span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .term strong {
+        margin-top: 3px;
+        font-size: 14px;
+      }
+
+      .feature-list {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        color: #425157;
+        font-size: 13px;
+      }
+
+      .feature-list li {
+        display: grid;
+        grid-template-columns: 14px minmax(0, 1fr);
+        gap: 8px;
+      }
+
+      .feature-list li::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--green);
+        margin-top: 6px;
+      }
+
+      .plan-footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: center;
+        border-top: 1px solid var(--soft-line);
+        padding-top: 12px;
+      }
+
+      .plan-footer span {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .plan-cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 32px;
+        border-radius: 6px;
+        background: #243034;
+        color: #fff;
+        padding: 0 10px;
+        font-size: 12px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .form-note {
+        margin-bottom: 16px;
+        color: #425157;
+      }
+
+      .field-reason {
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 500;
+      }
+
+      .full {
+        grid-column: 1 / -1;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-top: 16px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 24px;
+        border: 1px solid transparent;
+        border-radius: 999px;
+        padding: 0 9px;
+        font-size: 12px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .pill.good {
+        border-color: var(--green);
+        background: var(--green-soft);
+        color: var(--green-dark);
+      }
+
+      .pill.info {
+        border-color: #4f78a8;
+        background: var(--blue-soft);
+        color: var(--blue);
+      }
+
+      .result {
+        display: none;
+        border: 1px solid #a7cbbb;
+        border-radius: 8px;
+        background: #fff;
+        color: var(--green-dark);
+        padding: 12px 13px;
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .result.visible {
+        display: block;
+      }
+
+      .process-list {
+        display: grid;
+        gap: 10px;
+        margin: 0 0 16px;
+        padding: 0;
+        list-style: none;
+      }
+
+      .process-list li {
+        display: grid;
+        grid-template-columns: 32px minmax(0, 1fr);
+        gap: 10px;
+        align-items: start;
+        border-top: 1px solid var(--soft-line);
+        padding-top: 10px;
+      }
+
+      .process-list li:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+
+      .process-index {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: var(--green-soft);
+        color: var(--green-dark);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .process-list strong,
+      .process-list span {
+        display: block;
+      }
+
+      .process-list span {
+        margin-top: 2px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .package-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 16px;
+      }
+
+      .package-item {
+        min-height: 64px;
+        border: 1px solid var(--soft-line);
+        border-radius: 6px;
+        background: #fbfcfb;
+        padding: 10px;
+      }
+
+      .package-item strong,
+      .package-item span,
+      .package-item code {
+        display: block;
+      }
+
+      .package-item span {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .package-item code {
+        margin-top: 6px;
+        overflow-wrap: anywhere;
+        color: #425157;
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 12px;
+      }
+
+      .checklist {
+        display: grid;
+        gap: 8px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .checklist li {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 10px;
+        align-items: start;
+        border: 1px solid var(--soft-line);
+        border-radius: 6px;
+        background: #fbfcfb;
+        padding: 10px;
+      }
+
+      .checklist input {
+        width: 18px;
+        min-height: 18px;
+        margin-top: 2px;
+        accent-color: var(--green);
+      }
+
+      .checklist strong,
+      .checklist span {
+        display: block;
+      }
+
+      .checklist span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .artifact-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .artifact-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+        border-top: 1px solid var(--soft-line);
+        padding-top: 10px;
+      }
+
+      .artifact-row:first-child {
+        border-top: 0;
+        padding-top: 0;
+      }
+
+      .artifact-row strong,
+      .artifact-row span,
+      .artifact-row code {
+        display: block;
+      }
+
+      .artifact-row span {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .artifact-row code {
+        margin-top: 5px;
+        overflow-wrap: anywhere;
+        color: #425157;
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 12px;
+      }
+
+      .source-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .source-card {
+        display: grid;
+        gap: 10px;
+        align-content: space-between;
+        min-height: 152px;
+        border: 1px solid var(--soft-line);
+        border-radius: 6px;
+        background: #fbfcfb;
+        padding: 12px;
+      }
+
+      .source-card.prepared {
+        border-color: #a7cbbb;
+        background: #f4fbf7;
+      }
+
+      .source-card strong,
+      .source-card span {
+        display: block;
+      }
+
+      .source-card span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .source-needed {
+        border-top: 1px solid var(--soft-line);
+        padding-top: 9px;
+      }
+
+      .source-needed strong {
+        margin-bottom: 3px;
+        color: var(--ink);
+        font-size: 12px;
+      }
+
+      .source-needed span {
+        line-height: 1.35;
+      }
+
+      .source-endpoints {
+        display: grid;
+        gap: 7px;
+        border-top: 1px solid var(--soft-line);
+        padding-top: 9px;
+      }
+
+      .endpoint-row strong,
+      .endpoint-row code,
+      .endpoint-row span {
+        display: block;
+      }
+
+      .endpoint-row strong {
+        margin-bottom: 2px;
+        color: var(--ink);
+        font-size: 12px;
+      }
+
+      .endpoint-row code {
+        overflow-wrap: anywhere;
+        color: #425157;
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 11px;
+        line-height: 1.35;
+      }
+
+      .source-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .source-chip {
+        display: inline-flex;
+        align-items: center;
+        min-height: 22px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #fff;
+        color: #425157;
+        padding: 0 8px;
+        font-size: 11px;
+        font-weight: 800;
+      }
+
+      .source-card button {
+        justify-self: start;
+      }
+
+      .detail-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .detail-item {
+        border: 1px solid var(--soft-line);
+        border-radius: 6px;
+        background: #fbfcfb;
+        padding: 10px;
+      }
+
+      .detail-item strong,
+      .detail-item span,
+      .detail-item code {
+        display: block;
+      }
+
+      .detail-item span {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .detail-item code {
+        margin-top: 6px;
+        overflow-wrap: anywhere;
+        color: #425157;
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 12px;
+      }
+
+      .status-grid,
+      .metric-grid,
+      .workspace-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .status-item,
+      .metric-card,
+      .empty-state {
+        border: 1px solid var(--soft-line);
+        border-radius: 6px;
+        background: #fbfcfb;
+        padding: 10px;
+      }
+
+      .status-item.ready,
+      .metric-card.ready {
+        border-color: #a7cbbb;
+        background: #f4fbf7;
+      }
+
+      .status-item.warning,
+      .metric-card.warning {
+        border-color: #d7b56d;
+        background: #fffaf0;
+      }
+
+      .status-item strong,
+      .status-item span,
+      .metric-card strong,
+      .metric-card span,
+      .empty-state strong,
+      .empty-state span {
+        display: block;
+      }
+
+      .status-item span,
+      .metric-card span,
+      .empty-state span {
+        margin-top: 3px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .metric-card strong {
+        font-size: 22px;
+        line-height: 1.15;
+      }
+
+      .scope-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .source-table {
+        display: grid;
+        gap: 8px;
+      }
+
+      .source-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: center;
+        border: 1px solid var(--soft-line);
+        border-radius: 6px;
+        background: #fbfcfb;
+        padding: 10px;
+      }
+
+      .source-row strong,
+      .source-row span {
+        display: block;
+      }
+
+      .source-row span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      @media (max-width: 780px) {
+        .plan-grid,
+        .form-grid,
+        .package-grid,
+        .source-grid,
+        .boundary-banner,
+        .status-grid,
+        .metric-grid,
+        .workspace-grid,
+        .scope-list {
+          grid-template-columns: 1fr;
+        }
+
+        .full {
+          grid-column: auto;
+        }
+      }
+
+      @media (max-width: 620px) {
+        .topbar {
+          align-items: flex-start;
+          flex-direction: column;
+          padding: 16px;
+        }
+
+        .shell {
+          padding: 24px 16px 36px;
+        }
+
+        .panel-head,
+        .plan-footer,
+        .artifact-row,
+        .source-row,
+        .progress-head {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .progress-rail {
+          position: static;
+        }
+
+        .progress-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        h1 {
+          font-size: 34px;
+        }
+      }
+
+      @media (min-width: 781px) and (max-width: 1020px) {
+        .source-grid,
+        .progress-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark">F</span>
+        <span>
+          <strong>Fyralis</strong>
+          <small>BYOC onboarding prototype</small>
+        </span>
+      </div>
+      <span class="pill info" id="stepPill">Step 1 of 17</span>
+    </header>
+
+    <main class="shell">
+      <nav class="progress-rail" aria-label="Onboarding progress">
+        <div class="progress-head">
+          <span>
+            <strong>Onboarding progress</strong>
+            <span id="progressSummary">Hosted portal setup has started.</span>
+          </span>
+          <span class="pill info" id="boundaryPill">Hosted portal</span>
+        </div>
+        <div class="progress-grid">
+          <span class="progress-step active" data-step="1">
+            <span>1</span>
+            <strong>Get Fyralis</strong>
+          </span>
+          <span class="progress-step" data-step="2">
+            <span>2</span>
+            <strong>Customer details</strong>
+          </span>
+          <span class="progress-step" data-step="3">
+            <span>3</span>
+            <strong>Cloud readiness</strong>
+          </span>
+          <span class="progress-step" data-step="4">
+            <span>4</span>
+            <strong>Setup package</strong>
+          </span>
+          <span class="progress-step" data-step="5">
+            <span>5</span>
+            <strong>Boundary handoff</strong>
+          </span>
+          <span class="progress-step" data-step="6">
+            <span>6</span>
+            <strong>Preflight</strong>
+          </span>
+          <span class="progress-step" data-step="7">
+            <span>7</span>
+            <strong>Deploy</strong>
+          </span>
+          <span class="progress-step" data-step="8">
+            <span>8</span>
+            <strong>Deploy validation</strong>
+          </span>
+          <span class="progress-step" data-step="9">
+            <span>9</span>
+            <strong>Source catalog</strong>
+          </span>
+          <span class="progress-step" data-step="10">
+            <span>10</span>
+            <strong>Source setup</strong>
+          </span>
+          <span class="progress-step" data-step="11">
+            <span>11</span>
+            <strong>Source validation</strong>
+          </span>
+          <span class="progress-step" data-step="12">
+            <span>12</span>
+            <strong>Source scope</strong>
+          </span>
+          <span class="progress-step" data-step="13">
+            <span>13</span>
+            <strong>First sync</strong>
+          </span>
+          <span class="progress-step" data-step="14">
+            <span>14</span>
+            <strong>Ingestion health</strong>
+          </span>
+          <span class="progress-step" data-step="15">
+            <span>15</span>
+            <strong>Activate source</strong>
+          </span>
+          <span class="progress-step" data-step="16">
+            <span>16</span>
+            <strong>Pilot launch</strong>
+          </span>
+          <span class="progress-step" data-step="17">
+            <span>17</span>
+            <strong>Workspace home</strong>
+          </span>
+        </div>
+      </nav>
+
+      <section class="page active" id="planPage">
+        <div class="intro">
+          <p class="eyebrow">Fyralis hosted portal</p>
+          <h1>Choose how we start.</h1>
+          <p class="lead">
+            For the first customer, Fyralis should start as a design-partner BYOC
+            deployment in the partner's cloud. After that deployment hardens the
+            system, the same flow becomes the commercial enterprise path.
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Choose a plan</h2>
+            <span class="pill good" id="selectedPlan">Design Partner BYOC Pilot</span>
+          </div>
+          <div class="panel-body">
+            <div class="plan-grid">
+              <article class="plan-card selected" data-plan="Design Partner BYOC Pilot" role="button" tabindex="0">
+                <span class="plan-title">
+                  <span class="pill good">First deployment</span>
+                  <strong>Design Partner BYOC Pilot</strong>
+                  <span>For the partner whose cloud will host the first Fyralis deployment.</span>
+                </span>
+                <span class="terms">
+                  <span class="term">
+                    <span>Commercial shape</span>
+                    <strong>Design partner agreement</strong>
+                  </span>
+                  <span class="term">
+                    <span>Timeline</span>
+                    <strong>2-4 week pilot</strong>
+                  </span>
+                </span>
+                <ul class="feature-list">
+                  <li>Deploy Fyralis inside the partner's cloud using the BYOC model.</li>
+                  <li>Start with a narrow source scope and explicit success criteria.</li>
+                  <li>Use the deployment to harden readiness, security, and operations.</li>
+                </ul>
+                <span class="plan-footer">
+                  <span>Next page</span>
+                  <span class="plan-cta">Provide partner details</span>
+                </span>
+              </article>
+
+              <article class="plan-card" data-plan="Commercial BYOC Rollout" role="button" tabindex="0">
+                <span class="plan-title">
+                  <span class="pill info">Commercial path</span>
+                  <strong>Commercial BYOC Rollout</strong>
+                  <span>For enterprise customers after the design-partner deployment proves the motion.</span>
+                </span>
+                <span class="terms">
+                  <span class="term">
+                    <span>Commercial shape</span>
+                    <strong>Annual enterprise contract</strong>
+                  </span>
+                  <span class="term">
+                    <span>Timeline</span>
+                    <strong>4-8 week rollout</strong>
+                  </span>
+                </span>
+                <ul class="feature-list">
+                  <li>Procurement, security review, DPA, support terms, and rollout plan.</li>
+                  <li>Production BYOC workspace with implementation and launch gates.</li>
+                  <li>Repeatable onboarding process shaped by the design-partner pilot.</li>
+                </ul>
+                <span class="plan-footer">
+                  <span>Next page</span>
+                  <span class="plan-cta">Start commercial intake</span>
+                </span>
+              </article>
+            </div>
+
+            <div class="actions">
+              <button type="button" id="continueButton">Continue</button>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="intakePage">
+        <div class="intro">
+          <p class="eyebrow">Fyralis hosted portal</p>
+          <h1>Tell us what we need to start.</h1>
+          <p class="lead">
+            We only collect commercial and implementation context here. Cloud
+            credentials, source tokens, logs, prompts, and customer data stay out
+            of this intake.
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>What we need from the customer</h2>
+            <span class="pill info" id="intakePlan">No secrets</span>
+          </div>
+          <div class="panel-body">
+            <p class="form-note">
+              We use this to assign the right owners, scope the first BYOC
+              deployment, and prepare the cloud-readiness plan. We do not need
+              credentials or customer data here.
+            </p>
+            <div class="form-grid">
+              <label>
+                Company
+                <input id="company" value="Acme Finance" autocomplete="off" />
+                <span class="field-reason">For the customer record, tenant name, and commercial handoff.</span>
+              </label>
+              <label>
+                Fyralis setup owner
+                <input id="setupOwner" value="platform-owner@acme.example" autocomplete="off" />
+                <span class="field-reason">The technical owner who can coordinate cloud access, infrastructure setup, and BYOC validation.</span>
+              </label>
+              <label>
+                Target cloud
+                <select id="targetCloud">
+                  <option>AWS</option>
+                  <option>GCP future profile</option>
+                  <option>Azure future profile</option>
+                  <option>Not sure yet</option>
+                </select>
+                <span class="field-reason">So we prepare the right BYOC manifest, IAM shape, and runbook.</span>
+              </label>
+            </div>
+
+            <div class="actions">
+              <button type="button" id="createButton">Create intake draft</button>
+              <button class="secondary" type="button" id="backButton">Back to plans</button>
+              <p class="result" id="result">Intake draft created.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="cloudPage">
+        <div class="intro">
+          <p class="eyebrow">Fyralis hosted portal</p>
+          <h1>Prepare the BYOC setup package.</h1>
+          <p class="lead">
+            Fyralis uses these readiness answers to prepare the right manifests,
+            Kubernetes install path, preflight checklist, and validation steps.
+            This page still does not ask for credentials, private URLs, source
+            data, or logs.
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Required BYOC components</h2>
+            <span class="pill info">No secrets</span>
+          </div>
+          <div class="panel-body">
+            <div class="form-grid">
+              <label>
+                Cloud region
+                <select id="cloudRegion">
+                  <option>us-east-1</option>
+                  <option>us-west-2</option>
+                  <option>eu-west-1</option>
+                  <option>Not sure yet</option>
+                </select>
+                <span class="field-reason">Used for deployment location and data residency.</span>
+              </label>
+              <label>
+                Deployment environment
+                <select id="deploymentEnv">
+                  <option>pilot</option>
+                  <option>staging</option>
+                  <option>production</option>
+                </select>
+                <span class="field-reason">Controls naming, safety gates, and rollout strictness.</span>
+              </label>
+              <label>
+                Kubernetes runtime readiness
+                <select id="runtimePreference">
+                  <option>Kubernetes available</option>
+                  <option>Need Kubernetes setup guidance</option>
+                  <option>Not sure yet</option>
+                </select>
+                <span class="field-reason">Fyralis prepares the first BYOC install path around Kubernetes.</span>
+              </label>
+              <label>
+                Network/VPC readiness
+                <select id="networkApproach">
+                  <option>Existing VPC/network ready</option>
+                  <option>Need isolated VPC guidance</option>
+                  <option>Not sure yet</option>
+                </select>
+                <span class="field-reason">Confirms whether Fyralis can fit into an approved network boundary.</span>
+              </label>
+              <label>
+                AWS Secrets Manager readiness
+                <select id="secretManager">
+                  <option>AWS Secrets Manager available</option>
+                  <option>Need setup guidance</option>
+                  <option>Not sure yet</option>
+                </select>
+                <span class="field-reason">Fyralis uses secret refs later, never secret values.</span>
+              </label>
+              <label>
+                Postgres with pgvector readiness
+                <select id="databaseOption">
+                  <option>Postgres with pgvector available</option>
+                  <option>Need setup guidance</option>
+                  <option>Not sure yet</option>
+                </select>
+                <span class="field-reason">Required for tenant data, model state, and vector search.</span>
+              </label>
+              <label>
+                S3-compatible object storage readiness
+                <select id="storageOption">
+                  <option>S3-compatible object storage available</option>
+                  <option>Need bucket setup guidance</option>
+                  <option>Not sure yet</option>
+                </select>
+                <span class="field-reason">Required for raw payload tier and deployment artifacts.</span>
+              </label>
+              <label>
+                Kafka/MSK readiness
+                <select id="queueOption">
+                  <option>Kafka/MSK available</option>
+                  <option>Need Kafka/MSK setup guidance</option>
+                  <option>Not sure yet</option>
+                </select>
+                <span class="field-reason">Required for Kafka-first ingestion durability and worker orchestration.</span>
+              </label>
+            </div>
+
+            <div class="actions">
+              <button type="button" id="preparePackageButton">Prepare setup package</button>
+              <button class="secondary" type="button" id="backToIntakeButton">Back to customer details</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>How Fyralis prepares it</h2>
+            <span class="pill good" id="packageStatus">Ready to prepare</span>
+          </div>
+          <div class="panel-body">
+            <ul class="process-list">
+              <li>
+                <span class="process-index">1</span>
+                <span>
+                  <strong>Use the deployment shape</strong>
+                  <span>Region, environment, network readiness, and required data-plane components define the BYOC path.</span>
+                </span>
+              </li>
+              <li>
+                <span class="process-index">2</span>
+                <span>
+                  <strong>Select the matching Fyralis templates</strong>
+                  <span>Fyralis prepares the data-plane manifest, permissions shape, bootstrap bundle, and Kubernetes runtime plan.</span>
+                </span>
+              </li>
+              <li>
+                <span class="process-index">3</span>
+                <span>
+                  <strong>Generate customer-side instructions</strong>
+                  <span>The setup owner runs validators and preflight checks from inside the customer cloud.</span>
+                </span>
+              </li>
+              <li>
+                <span class="process-index">4</span>
+                <span>
+                  <strong>Accept safe readiness evidence</strong>
+                  <span>Fyralis receives statuses, bounded failure codes, counts, digests, and receipts only.</span>
+                </span>
+              </li>
+            </ul>
+
+            <div class="package-grid">
+              <div class="package-item">
+                <strong>Data-plane manifest</strong>
+                <span>Deployment identity, runtime, telemetry, and service shape.</span>
+              </div>
+              <div class="package-item">
+                <strong>Permission manifest</strong>
+                <span>Least-privilege cloud permission expectations.</span>
+              </div>
+              <div class="package-item">
+                <strong>Bootstrap bundle</strong>
+                <span>Digest-pinned artifacts and setup runner inputs.</span>
+              </div>
+              <div class="package-item">
+                <strong>Preflight checklist</strong>
+                <span>Customer-side validation before any source connection.</span>
+              </div>
+            </div>
+
+            <div class="actions">
+              <p class="result" id="packageResult">Setup package prepared.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="setupPackagePage">
+        <div class="intro">
+          <p class="eyebrow">Fyralis hosted portal</p>
+          <h1>Review what Fyralis prepared.</h1>
+          <p class="lead">
+            This package gives the setup owner the safe materials needed to
+            prepare the customer cloud. It does not include credentials, source
+            tokens, private endpoint values, raw logs, prompts, or customer data.
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>What did Fyralis generate?</h2>
+            <span class="pill good" id="reviewPackageStatus">Package draft ready</span>
+          </div>
+          <div class="panel-body">
+            <div class="package-grid">
+              <div class="package-item">
+                <strong>Data-plane manifest</strong>
+                <span>Deployment identity, runtime, service shape, telemetry posture.</span>
+              </div>
+              <div class="package-item">
+                <strong>Permission/IAM manifest</strong>
+                <span>Least-privilege cloud role and boundary expectations.</span>
+              </div>
+              <div class="package-item">
+                <strong>Kubernetes install path</strong>
+                <span id="runtimePathSummary">Kubernetes install path for pilot.</span>
+              </div>
+              <div class="package-item">
+                <strong>Bootstrap bundle</strong>
+                <span>Digest-pinned artifacts and setup runner inputs.</span>
+              </div>
+              <div class="package-item">
+                <strong>Preflight checklist</strong>
+                <span>Customer-side checks before source connection.</span>
+              </div>
+              <div class="package-item">
+                <strong>Post-deploy validation checklist</strong>
+                <span>Gateway, workers, database, queue, and object storage validation.</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>What must the customer prepare?</h2>
+            <span class="pill info">Customer cloud</span>
+          </div>
+          <div class="panel-body">
+            <ul class="checklist">
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Region confirmed</strong>
+                  <span id="regionChecklist">us-east-1 selected for deployment.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Kubernetes runtime ready</strong>
+                  <span id="runtimeChecklist">Kubernetes availability confirmed.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Network/VPC ready</strong>
+                  <span id="networkChecklist">Existing VPC/network readiness confirmed.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>AWS Secrets Manager ready</strong>
+                  <span id="secretChecklist">AWS Secrets Manager readiness confirmed.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Postgres with pgvector ready</strong>
+                  <span id="databaseChecklist">Postgres with pgvector readiness confirmed.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>S3-compatible object storage ready</strong>
+                  <span id="storageChecklist">S3-compatible object storage readiness confirmed.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Kafka/MSK ready</strong>
+                  <span id="queueChecklist">Kafka/MSK readiness confirmed.</span>
+                </span>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>What does the setup owner use?</h2>
+            <span class="pill info">Safe to copy</span>
+          </div>
+          <div class="panel-body">
+            <p class="form-note">
+              Fyralis generates these customer-specific drafts from its BYOC
+              templates. They contain setup shape and instructions only, not
+              credentials, private endpoints, source data, or logs.
+            </p>
+            <div class="artifact-list">
+              <div class="artifact-row">
+                <span>
+                  <strong>Generated manifest</strong>
+                  <span>Customer data-plane manifest draft generated from the selected readiness answers.</span>
+                  <code>customer-dataplane.yaml</code>
+                </span>
+                <button class="secondary download-artifact" type="button" data-file="customer-dataplane.yaml">Download manifest</button>
+              </div>
+              <div class="artifact-row">
+                <span>
+                  <strong>Generated permission template</strong>
+                  <span>Customer IAM/permission draft for the required BYOC components.</span>
+                  <code>customer-permissions.yaml</code>
+                </span>
+                <button class="secondary download-artifact" type="button" data-file="customer-permissions.yaml">Download permissions</button>
+              </div>
+              <div class="artifact-row">
+                <span>
+                  <strong>Generated bootstrap bundle</strong>
+                  <span>Customer bootstrap bundle draft with artifact references and setup inputs.</span>
+                  <code>customer-bootstrap-bundle.yaml</code>
+                </span>
+                <button class="secondary download-artifact" type="button" data-file="customer-bootstrap-bundle.yaml">Download bundle</button>
+              </div>
+              <div class="artifact-row">
+                <span>
+                  <strong>Preflight command</strong>
+                  <span>Real Fyralis script. Customer draft filenames are generated by the setup package.</span>
+                  <code>uv run python scripts/run_byoc_preflight_bundle.py --json --dataplane-manifest customer-dataplane.yaml --permissions-manifest customer-permissions.yaml --bootstrap-bundle customer-bootstrap-bundle.yaml --env-file customer-byoc.env</code>
+                </span>
+                <button class="secondary copy-artifact" type="button" data-copy="uv run python scripts/run_byoc_preflight_bundle.py --json --dataplane-manifest customer-dataplane.yaml --permissions-manifest customer-permissions.yaml --bootstrap-bundle customer-bootstrap-bundle.yaml --env-file customer-byoc.env">Copy command</button>
+              </div>
+              <div class="artifact-row">
+                <span>
+                  <strong>Validation command</strong>
+                  <span>Real Fyralis script. Live mode later needs customer-local endpoints/DSNs supplied by the setup owner.</span>
+                  <code>uv run python scripts/run_byoc_post_deploy_validation.py --json --manifest customer-dataplane.yaml --env-file customer-byoc.env --require-live</code>
+                </span>
+                <button class="secondary copy-artifact" type="button" data-copy="uv run python scripts/run_byoc_post_deploy_validation.py --json --manifest customer-dataplane.yaml --env-file customer-byoc.env --require-live">Copy command</button>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button class="secondary" type="button" id="backToCloudButton">Back to cloud readiness</button>
+              <button type="button" id="continueToHandoffButton">Continue to customer-cloud install</button>
+              <p class="result" id="copyResult">Copied.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="handoffPage">
+        <div class="intro">
+          <p class="eyebrow">Trust boundary handoff</p>
+          <h1>Install Fyralis in the customer cloud.</h1>
+          <p class="lead">
+            This is the point where the setup owner leaves the hosted Fyralis
+            portal and continues from the customer-controlled environment. From
+            here onward, privileged checks, deployment validation, and source
+            credentials stay inside the customer cloud.
+          </p>
+          <p class="surface-note">
+            Hosted portal: <strong>portal.fyralis.com</strong> moves to local
+            console: <strong class="local-console-url">https://fyralis.acme.internal</strong>
+            and provider ingress: <strong class="provider-ingress-url">https://fyralis-ingress.acme.com</strong>
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>What moves into the customer cloud?</h2>
+            <span class="pill good">Boundary switch</span>
+          </div>
+          <div class="panel-body">
+            <div class="package-grid">
+              <div class="package-item">
+                <strong>Bootstrap runner</strong>
+                <span>Runs in the customer cloud, verifies the signed bundle, and prepares the local Fyralis runtime path.</span>
+              </div>
+              <div class="package-item">
+                <strong>Local console</strong>
+                <span>Customer-cloud UI for preflight, deployment validation, source setup, and local source health.</span>
+              </div>
+              <div class="package-item">
+                <strong>Customer secret manager</strong>
+                <span>Stores source tokens, OAuth refresh tokens, webhook secrets, passcodes, and session material.</span>
+              </div>
+              <div class="package-item">
+                <strong>Egress-only agent</strong>
+                <span>Sends safe status, version, readiness, and bounded issue codes back to the Fyralis control plane.</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>Customer-cloud install handoff</h2>
+            <span class="pill info">No source secrets</span>
+          </div>
+          <div class="panel-body">
+            <div class="artifact-list">
+              <div class="artifact-row">
+                <span>
+                  <strong>Customer applies setup package</strong>
+                  <span>Run from the customer-controlled cloud account after reviewing the generated manifest, permissions, and bootstrap bundle.</span>
+                  <code>uv run python scripts/run_byoc_preflight_bundle.py --json --dataplane-manifest customer-dataplane.yaml --permissions-manifest customer-permissions.yaml --bootstrap-bundle customer-bootstrap-bundle.yaml --env-file customer-byoc.env</code>
+                </span>
+                <button class="secondary copy-artifact" type="button" data-copy="uv run python scripts/run_byoc_preflight_bundle.py --json --dataplane-manifest customer-dataplane.yaml --permissions-manifest customer-permissions.yaml --bootstrap-bundle customer-bootstrap-bundle.yaml --env-file customer-byoc.env">Copy command</button>
+              </div>
+              <div class="artifact-row">
+                <span>
+                  <strong>Local console URL</strong>
+                  <span>After bootstrap, the setup owner continues in the customer-cloud console.</span>
+                  <code class="local-console-url">https://fyralis.acme.internal</code>
+                </span>
+                <button class="secondary copy-local-console" type="button">Copy URL</button>
+              </div>
+              <div class="artifact-row">
+                <span>
+                  <strong>Provider ingress URL</strong>
+                  <span>OAuth callbacks, webhooks, Pub/Sub pushes, and provider pings terminate here when a source needs public ingress.</span>
+                  <code class="provider-ingress-url">https://fyralis-ingress.acme.com</code>
+                </span>
+                <button class="secondary copy-provider-ingress" type="button">Copy URL</button>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button type="button" id="continueToPreflightButton">Continue in local console</button>
+              <button class="secondary" type="button" id="backToPackageFromHandoffButton">Back to setup package</button>
+              <p class="result" id="handoffResult">Local console ready.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>What stays out of Fyralis hosted portal?</h2>
+            <span class="pill good">Customer controlled</span>
+          </div>
+          <div class="panel-body">
+            <div class="package-grid">
+              <div class="package-item">
+                <strong>Source credentials</strong>
+                <span>API tokens, OAuth refresh tokens, webhook secrets, sessions, and passcodes are never entered into the hosted portal.</span>
+              </div>
+              <div class="package-item">
+                <strong>Raw customer data</strong>
+                <span>Files, emails, messages, transcripts, source payloads, prompts, embeddings, and local logs stay in the data plane.</span>
+              </div>
+              <div class="package-item">
+                <strong>Private runtime values</strong>
+                <span>Private URLs, DSNs, account IDs, ARNs, command output, and secret refs are handled locally or sanitized before reporting.</span>
+              </div>
+              <div class="package-item">
+                <strong>Allowed status back</strong>
+                <span>Fyralis receives deployment status, readiness receipts, aggregate counts, and bounded issue codes only.</span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="preflightPage">
+        <div class="intro">
+          <p class="eyebrow">Customer cloud local console</p>
+          <h1>Run preflight inside the customer cloud.</h1>
+          <p class="lead">
+            The setup owner runs this from the customer-controlled environment.
+            Fyralis receives only sanitized readiness evidence, not credentials,
+            raw command output, private URLs, source data, prompts, or logs.
+          </p>
+          <p class="surface-note">
+            Local console: <strong class="local-console-url">https://fyralis.acme.internal</strong>
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Preflight command</h2>
+            <span class="pill info">Run locally</span>
+          </div>
+          <div class="panel-body">
+            <div class="artifact-row">
+              <span>
+                <strong>Command to run</strong>
+                <span>Uses the generated setup-package files from the previous step.</span>
+                <code id="preflightCommand">uv run python scripts/run_byoc_preflight_bundle.py --json --dataplane-manifest customer-dataplane.yaml --permissions-manifest customer-permissions.yaml --bootstrap-bundle customer-bootstrap-bundle.yaml --env-file customer-byoc.env</code>
+              </span>
+              <button class="secondary copy-artifact" type="button" data-copy="uv run python scripts/run_byoc_preflight_bundle.py --json --dataplane-manifest customer-dataplane.yaml --permissions-manifest customer-permissions.yaml --bootstrap-bundle customer-bootstrap-bundle.yaml --env-file customer-byoc.env">Copy command</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>Files used by preflight</h2>
+            <span class="pill good">Generated drafts</span>
+          </div>
+          <div class="panel-body">
+            <div class="package-grid">
+              <div class="package-item">
+                <strong>customer-dataplane.yaml</strong>
+                <span>Deployment shape, runtime, telemetry, and required components.</span>
+              </div>
+              <div class="package-item">
+                <strong>customer-permissions.yaml</strong>
+                <span>Least-privilege permission expectations.</span>
+              </div>
+              <div class="package-item">
+                <strong>customer-bootstrap-bundle.yaml</strong>
+                <span>Digest-pinned artifact and setup runner references.</span>
+              </div>
+              <div class="package-item">
+                <strong>customer-byoc.env</strong>
+                <span>Customer-local env refs. No raw secret values in Fyralis.</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>What preflight checks</h2>
+            <span class="pill info">Before deployment</span>
+          </div>
+          <div class="panel-body">
+            <ul class="checklist">
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Manifest validity</strong>
+                  <span>Data-plane shape matches Fyralis BYOC contract.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Permission/IAM shape</strong>
+                  <span>Least-privilege boundaries and no control-plane customer-data access.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Required BYOC components</strong>
+                  <span>Kubernetes, Postgres with pgvector, S3-compatible storage, Kafka/MSK, and Secrets Manager readiness.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Privacy-safe telemetry posture</strong>
+                  <span>Aggregate-only reporting, no raw logs, prompts, embeddings, source data, or credentials.</span>
+                </span>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>What Fyralis receives</h2>
+            <span class="pill info">Sanitized only</span>
+          </div>
+          <div class="panel-body">
+            <div class="package-grid">
+              <div class="package-item">
+                <strong>Pass/fail status</strong>
+                <span>Overall readiness state for the preflight run.</span>
+              </div>
+              <div class="package-item">
+                <strong>Bounded failure codes</strong>
+                <span>Safe next-action codes, not raw command output.</span>
+              </div>
+              <div class="package-item">
+                <strong>Counts and digests</strong>
+                <span>Aggregate check counts and artifact fingerprints.</span>
+              </div>
+              <div class="package-item">
+                <strong>Readiness receipt</strong>
+                <span>A customer-safe proof that can feed the next gate.</span>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button type="button" id="markPreflightButton">Mark preflight complete</button>
+              <button type="button" id="continueToDeployButton">Continue to deployment</button>
+              <button class="secondary" type="button" id="backToPackageButton">Back to install handoff</button>
+              <p class="result" id="preflightResult">Preflight complete.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="deployPage">
+        <div class="intro">
+          <p class="eyebrow">Customer cloud local console</p>
+          <h1>Install the data plane in the customer cloud.</h1>
+          <p class="lead">
+            The setup owner applies the generated deployment bundle from inside
+            the customer environment. Fyralis runtime components use customer-local
+            config and secret refs; no secret values are entered here.
+          </p>
+          <p class="surface-note">
+            Local console: <strong class="local-console-url">https://fyralis.acme.internal</strong>
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Deployment bundle</h2>
+            <span class="pill info">Customer cloud</span>
+          </div>
+          <div class="panel-body">
+            <div class="artifact-list">
+              <div class="artifact-row">
+                <span>
+                  <strong>Generated Kubernetes deployment bundle</strong>
+                  <span>Customer-facing runtime bundle generated from the setup package.</span>
+                  <code>customer-kubernetes-deployment.yaml</code>
+                </span>
+                <button class="secondary download-artifact" type="button" data-file="customer-kubernetes-deployment.yaml">Download bundle</button>
+              </div>
+              <div class="artifact-row">
+                <span>
+                  <strong>Deploy command</strong>
+                  <span>Run from the customer-controlled Kubernetes context.</span>
+                  <code id="deployCommand">kubectl apply -f customer-kubernetes-deployment.yaml</code>
+                </span>
+                <button class="secondary copy-artifact" type="button" data-copy="kubectl apply -f customer-kubernetes-deployment.yaml">Copy command</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>Data-plane components</h2>
+            <span class="pill good">Required runtime</span>
+          </div>
+          <div class="panel-body">
+            <div class="package-grid">
+              <div class="package-item">
+                <strong>Gateway</strong>
+                <span>Customer-local API surface and health endpoints.</span>
+              </div>
+              <div class="package-item">
+                <strong>Ingestion workers</strong>
+                <span>Kafka-first source ingestion workers.</span>
+              </div>
+              <div class="package-item">
+                <strong>Think/post-commit workers</strong>
+                <span>Background reasoning and post-ingestion processing.</span>
+              </div>
+              <div class="package-item">
+                <strong>BYOC agent</strong>
+                <span>Egress-only control-plane coordination and heartbeat.</span>
+              </div>
+              <div class="package-item">
+                <strong>Config refs</strong>
+                <span>Postgres, S3-compatible storage, Kafka/MSK, and Secrets Manager refs.</span>
+              </div>
+              <div class="package-item">
+                <strong>Local observability</strong>
+                <span>Customer-boundary logs, metrics, and health checks.</span>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button type="button" id="markDeploymentStartedButton">Mark deployment started</button>
+              <button type="button" id="markDeploymentCompleteButton">Mark deployment complete</button>
+              <button type="button" id="continueToValidationButton">Continue to validation</button>
+              <button class="secondary" type="button" id="backToPreflightButton">Back to preflight</button>
+              <p class="result" id="deploymentResult">Deployment status updated.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="postDeployPage">
+        <div class="intro">
+          <p class="eyebrow">Customer cloud local console</p>
+          <h1>Prove the deployment is healthy.</h1>
+          <p class="lead">
+            After deployment, the setup owner runs live validation from inside
+            the customer cloud. Fyralis receives only sanitized status, bounded
+            failure codes, counts, digests, and readiness receipts.
+          </p>
+          <p class="surface-note">
+            Local console: <strong class="local-console-url">https://fyralis.acme.internal</strong>
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Validation command</h2>
+            <span class="pill info">Run locally</span>
+          </div>
+          <div class="panel-body">
+            <div class="artifact-row">
+              <span>
+                <strong>Command to run</strong>
+                <span>Live mode uses customer-local gateway, worker, database, Kafka/MSK, and object-store refs.</span>
+                <code id="validationCommand">uv run python scripts/run_byoc_post_deploy_validation.py --json --manifest customer-dataplane.yaml --env-file customer-byoc.env --require-live</code>
+              </span>
+              <button class="secondary copy-artifact" type="button" data-copy="uv run python scripts/run_byoc_post_deploy_validation.py --json --manifest customer-dataplane.yaml --env-file customer-byoc.env --require-live">Copy command</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>What validation checks</h2>
+            <span class="pill good">After deployment</span>
+          </div>
+          <div class="panel-body">
+            <ul class="checklist">
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Gateway health</strong>
+                  <span>Gateway responds from inside the customer data plane.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Worker health</strong>
+                  <span>Ingestion and background workers expose expected health state.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Database/RLS posture</strong>
+                  <span>Postgres with pgvector is reachable and production role checks can run.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Kafka/MSK reachability</strong>
+                  <span>Kafka-first ingestion path can reach the broker.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>S3-compatible object storage reachability</strong>
+                  <span>Raw payload tier and artifact storage are reachable from the data plane.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>BYOC privacy posture</strong>
+                  <span>No raw logs, prompts, credentials, source payloads, or customer data are submitted to Fyralis.</span>
+                </span>
+              </li>
+            </ul>
+
+            <div class="actions">
+              <button type="button" id="markValidationButton">Mark validation complete</button>
+              <button type="button" id="continueToSourcesButton">Continue to sources</button>
+              <button class="secondary" type="button" id="backToDeployButton">Back to deployment</button>
+              <p class="result" id="validationResult">Validation complete.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="sourcesPage">
+        <div class="intro">
+          <p class="eyebrow">Customer cloud local console</p>
+          <h1>Choose the first data sources.</h1>
+          <p class="lead">
+            Sources are connected from inside the customer data plane after BYOC
+            validation passes. Fyralis stores source credentials as customer-local
+            secret refs and shows only connection status, safe issue codes, and
+            readiness receipts here.
+          </p>
+          <p class="surface-note">
+            Local console: <strong class="local-console-url">https://fyralis.acme.internal</strong>
+            Provider ingress: <strong class="provider-ingress-url">https://fyralis-ingress.acme.com</strong>
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Source setup endpoints</h2>
+            <span class="pill good">Customer-owned</span>
+          </div>
+          <div class="panel-body">
+            <div class="package-grid">
+              <div class="package-item">
+                <strong>Admin console</strong>
+                <span>Used by the setup owner to configure sources and store secret refs locally.</span>
+                <code class="local-console-url">https://fyralis.acme.internal</code>
+              </div>
+              <div class="package-item">
+                <strong>Provider ingress</strong>
+                <span>Used only when a provider needs an OAuth callback, webhook, Pub/Sub push, or verify handshake.</span>
+                <code class="provider-ingress-url">https://fyralis-ingress.acme.com</code>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>Source catalog</h2>
+            <span class="pill info">No tokens here</span>
+          </div>
+          <div class="panel-body">
+            <p class="form-note">
+              Pick a narrow first batch, usually two or three sources, then add
+              more after the ingestion path is healthy. The setup owner completes
+              OAuth, API-token, webhook, or gateway setup in the customer cloud.
+            </p>
+            <div class="source-grid">
+              <article class="source-card" data-source="Slack">
+                <span>
+                  <strong>Slack</strong>
+                  <span>Channels, events, and consented DMs.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Collaboration</span>
+                  <span class="source-chip">OAuth/webhook</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Gmail">
+                <span>
+                  <strong>Gmail</strong>
+                  <span>Workspace email with watch and history polling.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Workspace</span>
+                  <span class="source-chip">Google OAuth</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Google Calendar">
+                <span>
+                  <strong>Google Calendar</strong>
+                  <span>Calendar events and change watches.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Workspace</span>
+                  <span class="source-chip">Google OAuth</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Google Drive">
+                <span>
+                  <strong>Google Drive</strong>
+                  <span>Files, metadata, and Drive watches.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Workspace</span>
+                  <span class="source-chip">Google OAuth</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="GitHub">
+                <span>
+                  <strong>GitHub</strong>
+                  <span>Repositories, pull requests, issues, and code intelligence.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Engineering</span>
+                  <span class="source-chip">GitHub App</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Jira">
+                <span>
+                  <strong>Jira</strong>
+                  <span>Issues, projects, and work tracking signals.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Product</span>
+                  <span class="source-chip">API token</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Notion">
+                <span>
+                  <strong>Notion</strong>
+                  <span>Pages, databases, and workspace knowledge.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Knowledge</span>
+                  <span class="source-chip">API token</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Discord">
+                <span>
+                  <strong>Discord</strong>
+                  <span>Community and team message streams.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Collaboration</span>
+                  <span class="source-chip">Gateway</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Telegram">
+                <span>
+                  <strong>Telegram</strong>
+                  <span>MTProto user-account backfill and live updates.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Messaging</span>
+                  <span class="source-chip">Gateway</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Signal">
+                <span>
+                  <strong>Signal</strong>
+                  <span>Linked-device message ingestion.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Messaging</span>
+                  <span class="source-chip">Gateway</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="WhatsApp">
+                <span>
+                  <strong>WhatsApp</strong>
+                  <span>Cloud API live webhook ingestion.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Messaging</span>
+                  <span class="source-chip">Webhook</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Fireflies">
+                <span>
+                  <strong>Fireflies</strong>
+                  <span>Meeting transcripts and conversation records.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Meetings</span>
+                  <span class="source-chip">OAuth/API</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Figma">
+                <span>
+                  <strong>Figma</strong>
+                  <span>Design files, teams, and file update events.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Design</span>
+                  <span class="source-chip">API token</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Miro">
+                <span>
+                  <strong>Miro</strong>
+                  <span>Boards, items, and collaboration artifacts.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Design</span>
+                  <span class="source-chip">API token</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Grafana">
+                <span>
+                  <strong>Grafana</strong>
+                  <span>Dashboards, alerts, and operations signals.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Operations</span>
+                  <span class="source-chip">API token</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="AWS">
+                <span>
+                  <strong>AWS</strong>
+                  <span>Cloud inventory and operational events.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Cloud</span>
+                  <span class="source-chip">IAM ref</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Mercury">
+                <span>
+                  <strong>Mercury</strong>
+                  <span>Banking, cash accounts, and transactions.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Finance</span>
+                  <span class="source-chip">API token</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="QuickBooks">
+                <span>
+                  <strong>QuickBooks</strong>
+                  <span>Accounting, company, and ledger signals.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Finance</span>
+                  <span class="source-chip">OAuth</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Brex">
+                <span>
+                  <strong>Brex</strong>
+                  <span>Corporate cards, cash, and transactions.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Finance</span>
+                  <span class="source-chip">API token</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Ramp">
+                <span>
+                  <strong>Ramp</strong>
+                  <span>Spend management and finance events.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Finance</span>
+                  <span class="source-chip">API token</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Carta">
+                <span>
+                  <strong>Carta</strong>
+                  <span>Cap table, grants, and equity-management signals.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">Finance</span>
+                  <span class="source-chip">OAuth</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Gusto">
+                <span>
+                  <strong>Gusto</strong>
+                  <span>Payroll and company HR finance records.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">People</span>
+                  <span class="source-chip">OAuth</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="HiBob">
+                <span>
+                  <strong>HiBob</strong>
+                  <span>People directory and HRIS signals.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">People</span>
+                  <span class="source-chip">API token</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Ashby">
+                <span>
+                  <strong>Ashby</strong>
+                  <span>Recruiting pipeline and hiring signals.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">People</span>
+                  <span class="source-chip">API token</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="Deel">
+                <span>
+                  <strong>Deel</strong>
+                  <span>Contractor, payroll, and workforce records.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">People</span>
+                  <span class="source-chip">API token</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+              <article class="source-card" data-source="LinkedIn">
+                <span>
+                  <strong>LinkedIn</strong>
+                  <span>Company and professional-network signals.</span>
+                </span>
+                <span class="source-meta">
+                  <span class="source-chip">GTM</span>
+                  <span class="source-chip">API token</span>
+                </span>
+                <button class="secondary source-action" type="button">Prepare connection</button>
+              </article>
+            </div>
+
+            <div class="actions">
+              <button class="secondary" type="button" id="backToValidationButton">Back to validation</button>
+              <p class="result" id="sourceResult">Source connection prepared.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>Connection boundary</h2>
+            <span class="pill good">Customer controlled</span>
+          </div>
+          <div class="panel-body">
+            <div class="package-grid">
+              <div class="package-item">
+                <strong>Credentials stay local</strong>
+                <span>OAuth tokens, API keys, passcodes, sessions, and webhook secrets are stored in the customer's secret manager.</span>
+              </div>
+              <div class="package-item">
+                <strong>Fyralis sees status only</strong>
+                <span>Connection state, source name, bounded errors, counts, and receipts can be sent back.</span>
+              </div>
+              <div class="package-item">
+                <strong>Source data stays in BYOC</strong>
+                <span>Raw payloads, logs, prompts, files, messages, and transcripts remain inside the customer data plane.</span>
+              </div>
+              <div class="package-item">
+                <strong>Roll out in batches</strong>
+                <span>Start small, validate ingestion health, then add the next source family.</span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="sourceDetailPage">
+        <div class="intro">
+          <p class="eyebrow">Customer cloud local console</p>
+          <h1 id="sourceDetailTitle">Connect source</h1>
+          <p class="lead" id="sourceDetailLead">
+            Configure this source from the customer-cloud console. Credentials,
+            tokens, webhook secrets, source payloads, and raw logs stay inside
+            the customer data plane.
+          </p>
+          <p class="surface-note">
+            Admin console: <strong class="local-console-url">https://fyralis.acme.internal</strong>
+            Provider ingress: <strong class="provider-ingress-url">https://fyralis-ingress.acme.com</strong>
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Customer-owned endpoints</h2>
+            <span class="pill good">Local setup</span>
+          </div>
+          <div class="panel-body">
+            <div class="detail-list">
+              <div class="detail-item">
+                <strong>Admin console URL</strong>
+                <span>Setup owner uses this customer-cloud UI to configure the source and store secret refs.</span>
+                <code class="local-console-url">https://fyralis.acme.internal</code>
+              </div>
+              <div class="detail-item">
+                <strong>Provider ingress</strong>
+                <span>Use these customer-owned provider-facing endpoints only when the app needs OAuth callbacks, webhooks, Pub/Sub pushes, or verify handshakes.</span>
+                <span id="sourceDetailIngressList"></span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>What this app needs</h2>
+            <span class="pill info">No secrets here</span>
+          </div>
+          <div class="panel-body">
+            <div class="detail-item">
+              <strong id="sourceDetailNeedsTitle">Setup requirements</strong>
+              <span id="sourceDetailNeeds">Select a source to see setup requirements.</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>Connection steps</h2>
+            <span class="pill good">Customer cloud</span>
+          </div>
+          <div class="panel-body">
+            <ul class="process-list" id="sourceDetailSteps"></ul>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>Secret refs created locally</h2>
+            <span class="pill info">Refs only</span>
+          </div>
+          <div class="panel-body">
+            <div class="package-grid" id="sourceDetailRefs"></div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>What Fyralis receives</h2>
+            <span class="pill good">Sanitized only</span>
+          </div>
+          <div class="panel-body">
+            <div class="package-grid">
+              <div class="package-item">
+                <strong>Connection status</strong>
+                <span>Connected, pending, or failed with bounded issue code.</span>
+              </div>
+              <div class="package-item">
+                <strong>Source family enabled</strong>
+                <span>The source name and rollout state, not provider credentials.</span>
+              </div>
+              <div class="package-item">
+                <strong>Aggregate counts</strong>
+                <span>Discovery counts, event counts, and health receipts only.</span>
+              </div>
+              <div class="package-item">
+                <strong>No raw data</strong>
+                <span>No source payloads, tokens, webhook signatures, messages, files, prompts, or logs.</span>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button type="button" id="markSourcePreparedButton">Mark source prepared</button>
+              <button type="button" id="continueToSourceValidationButton">Continue to source validation</button>
+              <button class="secondary" type="button" id="backToSourcesButton">Back to source catalog</button>
+              <p class="result" id="sourceDetailResult">Source setup prepared.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="sourceValidationPage">
+        <div class="intro">
+          <p class="eyebrow">Customer cloud local console</p>
+          <h1 id="sourceValidationTitle">Validate source connection</h1>
+          <p class="lead" id="sourceValidationLead">
+            Run a local connection test before any real sync. Fyralis receives
+            status, bounded issue codes, and readiness receipts only.
+          </p>
+          <div class="boundary-banner">
+            <span class="boundary-item">
+              <strong>Admin console</strong>
+              <span>Runs inside the customer cloud.</span>
+              <code class="local-console-url">https://fyralis.acme.internal</code>
+            </span>
+            <span class="boundary-item">
+              <strong>Provider ingress</strong>
+              <span id="sourceValidationIngressNote">Used only when this source needs callbacks or webhooks.</span>
+              <code class="provider-ingress-url">https://fyralis-ingress.acme.com</code>
+            </span>
+          </div>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Connection test</h2>
+            <span class="pill info">No raw output</span>
+          </div>
+          <div class="panel-body">
+            <div class="status-grid">
+              <div class="status-item" id="credentialCheck">
+                <strong>Secret refs reachable</strong>
+                <span>Pending local test.</span>
+              </div>
+              <div class="status-item" id="providerCheck">
+                <strong>Provider endpoint reachable</strong>
+                <span>Pending local test.</span>
+              </div>
+              <div class="status-item" id="scopeCheck">
+                <strong>Required scopes present</strong>
+                <span>Pending local test.</span>
+              </div>
+              <div class="status-item" id="rateLimitCheck">
+                <strong>Rate limits acceptable</strong>
+                <span>Pending local test.</span>
+              </div>
+              <div class="status-item" id="receiptCheck">
+                <strong>Readiness receipt</strong>
+                <span>No receipt yet.</span>
+              </div>
+              <div class="status-item" id="issueCheck">
+                <strong>Issue state</strong>
+                <span>No issue code emitted.</span>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button type="button" id="runSourceValidationButton">Run connection test</button>
+              <button class="secondary" type="button" id="simulateSourceIssueButton">Show failed state</button>
+              <button class="secondary" type="button" id="retrySourceValidationButton">Retry test</button>
+              <button type="button" id="continueToScopeButton">Continue to scope</button>
+              <button class="secondary" type="button" id="backToSourceDetailButton">Back to source setup</button>
+              <p class="result" id="sourceValidationResult">Connection test ready.</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>Empty and retry states</h2>
+            <span class="pill info">Operational UI</span>
+          </div>
+          <div class="panel-body">
+            <div class="empty-state" id="sourceValidationState">
+              <strong>No validation run yet</strong>
+              <span>Run the local test to produce a sanitized readiness receipt before choosing ingest scope.</span>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="sourceScopePage">
+        <div class="intro">
+          <p class="eyebrow">Customer cloud local console</p>
+          <h1 id="sourceScopeTitle">Choose allowed scope</h1>
+          <p class="lead" id="sourceScopeLead">
+            Start narrow. The setup owner chooses exactly what this source is
+            allowed to ingest before any first sync runs.
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Allowed scope</h2>
+            <span class="pill good">Customer approved</span>
+          </div>
+          <div class="panel-body">
+            <ul class="scope-list" id="scopeOptionsList"></ul>
+
+            <div class="form-grid" style="margin-top: 14px;">
+              <label>
+                Backfill window
+                <select id="backfillWindow">
+                  <option>Last 7 days</option>
+                  <option>Last 30 days</option>
+                  <option>Last 90 days</option>
+                  <option>No historical backfill</option>
+                </select>
+                <span class="field-reason">Keeps initial ingestion bounded during the pilot.</span>
+              </label>
+              <label>
+                Rollout batch
+                <select id="rolloutBatch">
+                  <option>Pilot batch 1</option>
+                  <option>Pilot batch 2</option>
+                  <option>Production candidate</option>
+                </select>
+                <span class="field-reason">Used for source-level activation and rollback gates.</span>
+              </label>
+            </div>
+
+            <div class="actions">
+              <button type="button" id="saveScopeButton">Save scope</button>
+              <button type="button" id="continueToFirstSyncButton">Continue to first sync</button>
+              <button class="secondary" type="button" id="backToSourceValidationButton">Back to validation</button>
+              <p class="result" id="scopeResult">Scope saved.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="firstSyncPage">
+        <div class="intro">
+          <p class="eyebrow">Customer cloud local console</p>
+          <h1 id="firstSyncTitle">Run first sync</h1>
+          <p class="lead" id="firstSyncLead">
+            Run a controlled sync inside the customer data plane. Start with a
+            dry run or limited backfill, then review health before activation.
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>First sync mode</h2>
+            <span class="pill info">Bounded rollout</span>
+          </div>
+          <div class="panel-body">
+            <div class="form-grid">
+              <label>
+                Sync mode
+                <select id="syncMode">
+                  <option>Dry run only</option>
+                  <option>Limited backfill</option>
+                  <option>Live events only</option>
+                  <option>Backfill plus live events</option>
+                </select>
+                <span class="field-reason">Controls whether Fyralis only validates, backfills, listens live, or does both.</span>
+              </label>
+              <label>
+                Batch size
+                <select id="syncBatchSize">
+                  <option>Small pilot batch</option>
+                  <option>Medium pilot batch</option>
+                  <option>Production candidate batch</option>
+                </select>
+                <span class="field-reason">Keeps load and provider rate limits predictable.</span>
+              </label>
+            </div>
+
+            <div class="empty-state" id="firstSyncState" style="margin-top: 14px;">
+              <strong>No first sync run yet</strong>
+              <span>The customer can run a dry test before any source payload is processed.</span>
+            </div>
+
+            <div class="actions">
+              <button type="button" id="startFirstSyncButton">Start first sync</button>
+              <button type="button" id="continueToIngestionHealthButton">Review ingestion health</button>
+              <button class="secondary" type="button" id="backToScopeButton">Back to scope</button>
+              <p class="result" id="firstSyncResult">First sync started.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="ingestionHealthPage">
+        <div class="intro">
+          <p class="eyebrow">Customer cloud local console</p>
+          <h1 id="ingestionHealthTitle">Review ingestion health</h1>
+          <p class="lead">
+            Confirm the source is actually moving through the BYOC data plane:
+            provider input, Kafka/MSK, workers, Postgres, and object storage.
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Health summary</h2>
+            <span class="pill good" id="healthStatusPill">Healthy</span>
+          </div>
+          <div class="panel-body">
+            <div class="metric-grid">
+              <div class="metric-card ready">
+                <span>Events received</span>
+                <strong id="eventsMetric">128</strong>
+                <span>From allowed source scope.</span>
+              </div>
+              <div class="metric-card ready">
+                <span>Kafka/MSK publish</span>
+                <strong id="kafkaMetric">OK</strong>
+                <span>Messages accepted by the customer broker.</span>
+              </div>
+              <div class="metric-card ready">
+                <span>Worker processing</span>
+                <strong id="workerMetric">OK</strong>
+                <span>Ingestion workers processed the pilot batch.</span>
+              </div>
+              <div class="metric-card ready">
+                <span>Postgres writes</span>
+                <strong id="postgresMetric">OK</strong>
+                <span>Metadata and state writes succeeded.</span>
+              </div>
+              <div class="metric-card ready">
+                <span>Object storage writes</span>
+                <strong id="storageMetric">OK</strong>
+                <span>Payload tier accepted bounded test artifacts.</span>
+              </div>
+              <div class="metric-card ready">
+                <span>Bounded errors</span>
+                <strong id="errorMetric">0</strong>
+                <span>No raw logs or source data shown here.</span>
+              </div>
+            </div>
+
+            <div class="actions">
+              <button type="button" id="refreshHealthButton">Refresh health</button>
+              <button class="secondary" type="button" id="simulateHealthIssueButton">Show issue state</button>
+              <button class="secondary" type="button" id="retryHealthButton">Retry failed check</button>
+              <button type="button" id="continueToActivateButton">Continue to activation</button>
+              <button class="secondary" type="button" id="backToFirstSyncButton">Back to first sync</button>
+              <p class="result" id="healthResult">Health refreshed.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="activateSourcePage">
+        <div class="intro">
+          <p class="eyebrow">Customer cloud local console</p>
+          <h1 id="activateSourceTitle">Activate source for pilot</h1>
+          <p class="lead">
+            The source can move into the pilot only after setup, validation,
+            scope, first sync, and ingestion health are complete.
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Activation gate</h2>
+            <span class="pill info">Pilot controlled</span>
+          </div>
+          <div class="panel-body">
+            <ul class="checklist">
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Connection validated</strong>
+                  <span>Local secret refs and provider reachability passed.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Scope approved</strong>
+                  <span>Only selected channels, repos, mailboxes, projects, or entities are enabled.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>First sync completed</strong>
+                  <span>Initial sync produced safe status and bounded issue evidence.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Health is acceptable</strong>
+                  <span>Kafka/MSK, workers, Postgres, and object storage checks are healthy.</span>
+                </span>
+              </li>
+            </ul>
+
+            <div class="actions">
+              <button type="button" id="activateSourceButton">Activate source</button>
+              <button class="secondary" type="button" id="connectAnotherSourceButton">Connect another source</button>
+              <button type="button" id="continueToLaunchButton">Continue to pilot launch</button>
+              <button class="secondary" type="button" id="backToHealthButton">Back to health</button>
+              <p class="result" id="activateSourceResult">Source activated.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="launchChecklistPage">
+        <div class="intro">
+          <p class="eyebrow">Customer cloud local console</p>
+          <h1>Pilot launch checklist</h1>
+          <p class="lead">
+            Before the pilot opens to users, confirm the deployment, active
+            sources, support path, and operational posture are ready.
+          </p>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Launch gates</h2>
+            <span class="pill info" id="launchStatusPill">Pending launch approval</span>
+          </div>
+          <div class="panel-body">
+            <ul class="checklist">
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Deployment health is green</strong>
+                  <span>Gateway, workers, database, Kafka/MSK, and object storage passed post-deploy validation.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>At least one source is active</strong>
+                  <span id="activeSourceLaunchText">No active source yet.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Observability is ready</strong>
+                  <span>Customer-local logs and metrics are available; Fyralis receives safe status only.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Access controls are checked</strong>
+                  <span>Setup-owner and pilot-user access has been reviewed.</span>
+                </span>
+              </li>
+              <li>
+                <input type="checkbox" checked />
+                <span>
+                  <strong>Support contact confirmed</strong>
+                  <span>Escalation path and launch-day owner are recorded outside this mock.</span>
+                </span>
+              </li>
+            </ul>
+
+            <div class="actions">
+              <button type="button" id="markLaunchReadyButton">Mark pilot launch ready</button>
+              <button type="button" id="openWorkspaceHomeButton">Open workspace home</button>
+              <button class="secondary" type="button" id="backToActivateButton">Back to activation</button>
+              <p class="result" id="launchResult">Pilot launch ready.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="page" id="workspaceHomePage">
+        <div class="intro">
+          <p class="eyebrow">Customer cloud local console</p>
+          <h1 id="workspaceTitle">Fyralis workspace is ready</h1>
+          <p class="lead">
+            This becomes the customer-cloud home after onboarding: runtime
+            health, active sources, safe control-plane status, and next actions.
+          </p>
+          <div class="boundary-banner">
+            <span class="boundary-item">
+              <strong>Local workspace</strong>
+              <span>Used by the customer to operate Fyralis.</span>
+              <code class="local-console-url">https://fyralis.acme.internal</code>
+            </span>
+            <span class="boundary-item">
+              <strong>Hosted control plane receives</strong>
+              <span>Heartbeat, version, readiness receipts, counts, and bounded issue codes.</span>
+              <code>portal.fyralis.com/status-only</code>
+            </span>
+          </div>
+        </div>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Workspace status</h2>
+            <span class="pill good">Running in customer cloud</span>
+          </div>
+          <div class="panel-body">
+            <div class="workspace-grid">
+              <div class="metric-card ready">
+                <span>Deployment</span>
+                <strong>Healthy</strong>
+                <span>Post-deploy validation complete.</span>
+              </div>
+              <div class="metric-card ready">
+                <span>Active sources</span>
+                <strong id="activeSourceCount">1</strong>
+                <span id="activeSourceSummary">Slack active for pilot.</span>
+              </div>
+              <div class="metric-card ready">
+                <span>Data boundary</span>
+                <strong>BYOC</strong>
+                <span>No source data leaves the customer cloud.</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-top: 14px;">
+          <div class="panel-head">
+            <h2>Connected sources</h2>
+            <span class="pill info">Pilot scope</span>
+          </div>
+          <div class="panel-body">
+            <div class="source-table" id="workspaceSourceList"></div>
+
+            <div class="actions">
+              <button class="secondary" type="button" id="connectMoreFromHomeButton">Connect another source</button>
+              <button class="secondary" type="button" id="backToLaunchButton">Back to launch checklist</button>
+            </div>
+          </div>
+        </section>
+      </section>
+
+    </main>
+
+    <script>
+      const planCards = Array.from(document.querySelectorAll(".plan-card"));
+      const selectedPlan = document.getElementById("selectedPlan");
+      const intakePlan = document.getElementById("intakePlan");
+      const planPage = document.getElementById("planPage");
+      const intakePage = document.getElementById("intakePage");
+      const cloudPage = document.getElementById("cloudPage");
+      const setupPackagePage = document.getElementById("setupPackagePage");
+      const handoffPage = document.getElementById("handoffPage");
+      const preflightPage = document.getElementById("preflightPage");
+      const deployPage = document.getElementById("deployPage");
+      const postDeployPage = document.getElementById("postDeployPage");
+      const sourcesPage = document.getElementById("sourcesPage");
+      const sourceDetailPage = document.getElementById("sourceDetailPage");
+      const sourceValidationPage = document.getElementById("sourceValidationPage");
+      const sourceScopePage = document.getElementById("sourceScopePage");
+      const firstSyncPage = document.getElementById("firstSyncPage");
+      const ingestionHealthPage = document.getElementById("ingestionHealthPage");
+      const activateSourcePage = document.getElementById("activateSourcePage");
+      const launchChecklistPage = document.getElementById("launchChecklistPage");
+      const workspaceHomePage = document.getElementById("workspaceHomePage");
+      const progressItems = Array.from(document.querySelectorAll(".progress-step"));
+      const progressSummary = document.getElementById("progressSummary");
+      const boundaryPill = document.getElementById("boundaryPill");
+      const continueButton = document.getElementById("continueButton");
+      const backButton = document.getElementById("backButton");
+      const createButton = document.getElementById("createButton");
+      const backToIntakeButton = document.getElementById("backToIntakeButton");
+      const backToCloudButton = document.getElementById("backToCloudButton");
+      const continueToHandoffButton = document.getElementById("continueToHandoffButton");
+      const continueToPreflightButton = document.getElementById("continueToPreflightButton");
+      const backToPackageFromHandoffButton = document.getElementById("backToPackageFromHandoffButton");
+      const backToPackageButton = document.getElementById("backToPackageButton");
+      const markPreflightButton = document.getElementById("markPreflightButton");
+      const continueToDeployButton = document.getElementById("continueToDeployButton");
+      const backToPreflightButton = document.getElementById("backToPreflightButton");
+      const markDeploymentStartedButton = document.getElementById("markDeploymentStartedButton");
+      const markDeploymentCompleteButton = document.getElementById("markDeploymentCompleteButton");
+      const continueToValidationButton = document.getElementById("continueToValidationButton");
+      const backToDeployButton = document.getElementById("backToDeployButton");
+      const markValidationButton = document.getElementById("markValidationButton");
+      const continueToSourcesButton = document.getElementById("continueToSourcesButton");
+      const backToValidationButton = document.getElementById("backToValidationButton");
+      const backToSourcesButton = document.getElementById("backToSourcesButton");
+      const continueToSourceValidationButton = document.getElementById("continueToSourceValidationButton");
+      const backToSourceDetailButton = document.getElementById("backToSourceDetailButton");
+      const runSourceValidationButton = document.getElementById("runSourceValidationButton");
+      const simulateSourceIssueButton = document.getElementById("simulateSourceIssueButton");
+      const retrySourceValidationButton = document.getElementById("retrySourceValidationButton");
+      const continueToScopeButton = document.getElementById("continueToScopeButton");
+      const saveScopeButton = document.getElementById("saveScopeButton");
+      const continueToFirstSyncButton = document.getElementById("continueToFirstSyncButton");
+      const backToSourceValidationButton = document.getElementById("backToSourceValidationButton");
+      const startFirstSyncButton = document.getElementById("startFirstSyncButton");
+      const continueToIngestionHealthButton = document.getElementById("continueToIngestionHealthButton");
+      const backToScopeButton = document.getElementById("backToScopeButton");
+      const refreshHealthButton = document.getElementById("refreshHealthButton");
+      const simulateHealthIssueButton = document.getElementById("simulateHealthIssueButton");
+      const retryHealthButton = document.getElementById("retryHealthButton");
+      const continueToActivateButton = document.getElementById("continueToActivateButton");
+      const backToFirstSyncButton = document.getElementById("backToFirstSyncButton");
+      const activateSourceButton = document.getElementById("activateSourceButton");
+      const connectAnotherSourceButton = document.getElementById("connectAnotherSourceButton");
+      const continueToLaunchButton = document.getElementById("continueToLaunchButton");
+      const backToHealthButton = document.getElementById("backToHealthButton");
+      const markLaunchReadyButton = document.getElementById("markLaunchReadyButton");
+      const openWorkspaceHomeButton = document.getElementById("openWorkspaceHomeButton");
+      const backToActivateButton = document.getElementById("backToActivateButton");
+      const connectMoreFromHomeButton = document.getElementById("connectMoreFromHomeButton");
+      const backToLaunchButton = document.getElementById("backToLaunchButton");
+      const preparePackageButton = document.getElementById("preparePackageButton");
+      const result = document.getElementById("result");
+      const packageResult = document.getElementById("packageResult");
+      const packageStatus = document.getElementById("packageStatus");
+      const copyResult = document.getElementById("copyResult");
+      const handoffResult = document.getElementById("handoffResult");
+      const preflightResult = document.getElementById("preflightResult");
+      const deploymentResult = document.getElementById("deploymentResult");
+      const validationResult = document.getElementById("validationResult");
+      const sourceResult = document.getElementById("sourceResult");
+      const sourceDetailTitle = document.getElementById("sourceDetailTitle");
+      const sourceDetailLead = document.getElementById("sourceDetailLead");
+      const sourceDetailIngressList = document.getElementById("sourceDetailIngressList");
+      const sourceDetailNeedsTitle = document.getElementById("sourceDetailNeedsTitle");
+      const sourceDetailNeeds = document.getElementById("sourceDetailNeeds");
+      const sourceDetailSteps = document.getElementById("sourceDetailSteps");
+      const sourceDetailRefs = document.getElementById("sourceDetailRefs");
+      const sourceDetailResult = document.getElementById("sourceDetailResult");
+      const markSourcePreparedButton = document.getElementById("markSourcePreparedButton");
+      const sourceValidationTitle = document.getElementById("sourceValidationTitle");
+      const sourceValidationLead = document.getElementById("sourceValidationLead");
+      const sourceValidationIngressNote = document.getElementById("sourceValidationIngressNote");
+      const credentialCheck = document.getElementById("credentialCheck");
+      const providerCheck = document.getElementById("providerCheck");
+      const scopeCheck = document.getElementById("scopeCheck");
+      const rateLimitCheck = document.getElementById("rateLimitCheck");
+      const receiptCheck = document.getElementById("receiptCheck");
+      const issueCheck = document.getElementById("issueCheck");
+      const sourceValidationState = document.getElementById("sourceValidationState");
+      const sourceValidationResult = document.getElementById("sourceValidationResult");
+      const sourceScopeTitle = document.getElementById("sourceScopeTitle");
+      const sourceScopeLead = document.getElementById("sourceScopeLead");
+      const scopeOptionsList = document.getElementById("scopeOptionsList");
+      const backfillWindow = document.getElementById("backfillWindow");
+      const rolloutBatch = document.getElementById("rolloutBatch");
+      const scopeResult = document.getElementById("scopeResult");
+      const firstSyncTitle = document.getElementById("firstSyncTitle");
+      const firstSyncLead = document.getElementById("firstSyncLead");
+      const firstSyncState = document.getElementById("firstSyncState");
+      const firstSyncResult = document.getElementById("firstSyncResult");
+      const syncMode = document.getElementById("syncMode");
+      const syncBatchSize = document.getElementById("syncBatchSize");
+      const ingestionHealthTitle = document.getElementById("ingestionHealthTitle");
+      const healthStatusPill = document.getElementById("healthStatusPill");
+      const eventsMetric = document.getElementById("eventsMetric");
+      const kafkaMetric = document.getElementById("kafkaMetric");
+      const workerMetric = document.getElementById("workerMetric");
+      const postgresMetric = document.getElementById("postgresMetric");
+      const storageMetric = document.getElementById("storageMetric");
+      const errorMetric = document.getElementById("errorMetric");
+      const healthResult = document.getElementById("healthResult");
+      const activateSourceTitle = document.getElementById("activateSourceTitle");
+      const activateSourceResult = document.getElementById("activateSourceResult");
+      const launchStatusPill = document.getElementById("launchStatusPill");
+      const activeSourceLaunchText = document.getElementById("activeSourceLaunchText");
+      const launchResult = document.getElementById("launchResult");
+      const workspaceTitle = document.getElementById("workspaceTitle");
+      const activeSourceCount = document.getElementById("activeSourceCount");
+      const activeSourceSummary = document.getElementById("activeSourceSummary");
+      const workspaceSourceList = document.getElementById("workspaceSourceList");
+      const company = document.getElementById("company");
+      const setupOwner = document.getElementById("setupOwner");
+      const targetCloud = document.getElementById("targetCloud");
+      const stepPill = document.getElementById("stepPill");
+      const cloudRegion = document.getElementById("cloudRegion");
+      const runtimePreference = document.getElementById("runtimePreference");
+      const deploymentEnv = document.getElementById("deploymentEnv");
+      const networkApproach = document.getElementById("networkApproach");
+      const secretManager = document.getElementById("secretManager");
+      const databaseOption = document.getElementById("databaseOption");
+      const storageOption = document.getElementById("storageOption");
+      const queueOption = document.getElementById("queueOption");
+      const runtimePathSummary = document.getElementById("runtimePathSummary");
+      const regionChecklist = document.getElementById("regionChecklist");
+      const runtimeChecklist = document.getElementById("runtimeChecklist");
+      const networkChecklist = document.getElementById("networkChecklist");
+      const secretChecklist = document.getElementById("secretChecklist");
+      const databaseChecklist = document.getElementById("databaseChecklist");
+      const storageChecklist = document.getElementById("storageChecklist");
+      const queueChecklist = document.getElementById("queueChecklist");
+      let activeSourceName = "Slack";
+      const activatedSources = new Set();
+
+      function selectPlan(card) {
+        planCards.forEach((item) => item.classList.remove("selected"));
+        card.classList.add("selected");
+        selectedPlan.textContent = card.dataset.plan;
+      }
+
+      const pageStepMap = {
+        plans: 1,
+        intake: 2,
+        cloud: 3,
+        package: 4,
+        handoff: 5,
+        preflight: 6,
+        deploy: 7,
+        postDeploy: 8,
+        sources: 9,
+        sourceDetail: 10,
+        sourceValidation: 11,
+        sourceScope: 12,
+        firstSync: 13,
+        ingestionHealth: 14,
+        activateSource: 15,
+        launchChecklist: 16,
+        workspaceHome: 17
+      };
+
+      const pageSummary = {
+        plans: "Choose the commercial path.",
+        intake: "Collect customer and setup-owner context.",
+        cloud: "Prepare the customer-cloud deployment shape.",
+        package: "Review generated BYOC setup artifacts.",
+        handoff: "Move from hosted portal to customer cloud.",
+        preflight: "Run customer-side preflight.",
+        deploy: "Install the Fyralis data plane.",
+        postDeploy: "Validate the deployment.",
+        sources: "Choose source connectors.",
+        sourceDetail: "Configure the selected source locally.",
+        sourceValidation: "Run a safe local source test.",
+        sourceScope: "Approve the allowed ingest scope.",
+        firstSync: "Run a bounded first sync.",
+        ingestionHealth: "Review ingestion health.",
+        activateSource: "Activate the source for pilot.",
+        launchChecklist: "Confirm pilot launch gates.",
+        workspaceHome: "Operate Fyralis from the workspace home."
+      };
+
+      const customerCloudPages = new Set([
+        "preflight",
+        "deploy",
+        "postDeploy",
+        "sources",
+        "sourceDetail",
+        "sourceValidation",
+        "sourceScope",
+        "firstSync",
+        "ingestionHealth",
+        "activateSource",
+        "launchChecklist",
+        "workspaceHome"
+      ]);
+
+      function syncProgress(name) {
+        const step = pageStepMap[name] || 1;
+        stepPill.textContent = `Step ${step} of 17`;
+        progressSummary.textContent = pageSummary[name] || pageSummary.plans;
+        boundaryPill.textContent = customerCloudPages.has(name)
+          ? "Customer cloud local console"
+          : "Fyralis hosted portal";
+        boundaryPill.className = customerCloudPages.has(name)
+          ? "pill good"
+          : "pill info";
+        progressItems.forEach((item) => {
+          const itemStep = Number(item.dataset.step);
+          item.classList.toggle("done", itemStep < step);
+          item.classList.toggle("active", itemStep === step);
+        });
+      }
+
+      function showPage(name) {
+        const pageName = name === "plans" ? "plans" : name;
+        planPage.classList.toggle("active", pageName === "plans");
+        intakePage.classList.toggle("active", pageName === "intake");
+        cloudPage.classList.toggle("active", pageName === "cloud");
+        setupPackagePage.classList.toggle("active", pageName === "package");
+        handoffPage.classList.toggle("active", pageName === "handoff");
+        preflightPage.classList.toggle("active", pageName === "preflight");
+        deployPage.classList.toggle("active", pageName === "deploy");
+        postDeployPage.classList.toggle("active", pageName === "postDeploy");
+        sourcesPage.classList.toggle("active", pageName === "sources");
+        sourceDetailPage.classList.toggle("active", pageName === "sourceDetail");
+        sourceValidationPage.classList.toggle("active", pageName === "sourceValidation");
+        sourceScopePage.classList.toggle("active", pageName === "sourceScope");
+        firstSyncPage.classList.toggle("active", pageName === "firstSync");
+        ingestionHealthPage.classList.toggle("active", pageName === "ingestionHealth");
+        activateSourcePage.classList.toggle("active", pageName === "activateSource");
+        launchChecklistPage.classList.toggle("active", pageName === "launchChecklist");
+        workspaceHomePage.classList.toggle("active", pageName === "workspaceHome");
+        if (pageName === "intake") {
+          intakePlan.textContent = selectedPlan.textContent;
+        }
+        syncProgress(pageName);
+        syncLocalConsoleUrl();
+        window.scrollTo({ top: 0, behavior: "instant" });
+      }
+
+      function customerSlug() {
+        const raw = company.value.trim().toLowerCase();
+        return raw
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .split("-")[0] || "customer";
+      }
+
+      function localConsoleUrl() {
+        const slug = customerSlug();
+        return `https://fyralis.${slug}.internal`;
+      }
+
+      function providerIngressUrl() {
+        const slug = customerSlug();
+        return `https://fyralis-ingress.${slug}.com`;
+      }
+
+      function syncLocalConsoleUrl() {
+        document.querySelectorAll(".local-console-url").forEach((item) => {
+          item.textContent = localConsoleUrl();
+        });
+        document.querySelectorAll(".provider-ingress-url").forEach((item) => {
+          item.textContent = providerIngressUrl();
+        });
+        document.querySelectorAll(".source-provider-url").forEach((item) => {
+          const path = item.dataset.path || "";
+          item.textContent = `${providerIngressUrl()}${path}`;
+        });
+      }
+
+      function syncSetupPackage() {
+        runtimePathSummary.textContent = `Kubernetes install path for ${deploymentEnv.value}. Readiness: ${runtimePreference.value}.`;
+        regionChecklist.textContent = `${cloudRegion.value} selected for deployment.`;
+        runtimeChecklist.textContent = runtimePreference.value;
+        networkChecklist.textContent = networkApproach.value;
+        secretChecklist.textContent = secretManager.value;
+        databaseChecklist.textContent = databaseOption.value;
+        storageChecklist.textContent = storageOption.value;
+        queueChecklist.textContent = queueOption.value;
+      }
+
+      planCards.forEach((card) => {
+        card.addEventListener("click", () => selectPlan(card));
+        card.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            selectPlan(card);
+          }
+        });
+      });
+
+      continueButton.addEventListener("click", () => showPage("intake"));
+      backButton.addEventListener("click", () => showPage("plans"));
+      backToIntakeButton.addEventListener("click", () => showPage("intake"));
+      backToCloudButton.addEventListener("click", () => showPage("cloud"));
+      continueToHandoffButton.addEventListener("click", () => showPage("handoff"));
+      continueToPreflightButton.addEventListener("click", () => showPage("preflight"));
+      backToPackageFromHandoffButton.addEventListener("click", () => showPage("package"));
+      backToPackageButton.addEventListener("click", () => showPage("handoff"));
+      continueToDeployButton.addEventListener("click", () => showPage("deploy"));
+      backToPreflightButton.addEventListener("click", () => showPage("preflight"));
+      continueToValidationButton.addEventListener("click", () => showPage("postDeploy"));
+      backToDeployButton.addEventListener("click", () => showPage("deploy"));
+      continueToSourcesButton.addEventListener("click", () => showPage("sources"));
+      backToValidationButton.addEventListener("click", () => showPage("postDeploy"));
+      backToSourcesButton.addEventListener("click", () => showPage("sources"));
+      continueToSourceValidationButton.addEventListener("click", () => {
+        renderSourceValidation(activeSourceName);
+        showPage("sourceValidation");
+      });
+      backToSourceDetailButton.addEventListener("click", () => {
+        renderSourceDetail(activeSourceName);
+        showPage("sourceDetail");
+      });
+      continueToScopeButton.addEventListener("click", () => {
+        renderSourceScope(activeSourceName);
+        showPage("sourceScope");
+      });
+      backToSourceValidationButton.addEventListener("click", () => {
+        renderSourceValidation(activeSourceName);
+        showPage("sourceValidation");
+      });
+      continueToFirstSyncButton.addEventListener("click", () => {
+        renderFirstSync(activeSourceName);
+        showPage("firstSync");
+      });
+      backToScopeButton.addEventListener("click", () => {
+        renderSourceScope(activeSourceName);
+        showPage("sourceScope");
+      });
+      continueToIngestionHealthButton.addEventListener("click", () => {
+        renderIngestionHealth(activeSourceName);
+        showPage("ingestionHealth");
+      });
+      backToFirstSyncButton.addEventListener("click", () => {
+        renderFirstSync(activeSourceName);
+        showPage("firstSync");
+      });
+      continueToActivateButton.addEventListener("click", () => {
+        renderActivateSource(activeSourceName);
+        showPage("activateSource");
+      });
+      backToHealthButton.addEventListener("click", () => {
+        renderIngestionHealth(activeSourceName);
+        showPage("ingestionHealth");
+      });
+      connectAnotherSourceButton.addEventListener("click", () => showPage("sources"));
+      continueToLaunchButton.addEventListener("click", () => {
+        renderLaunchChecklist();
+        showPage("launchChecklist");
+      });
+      backToActivateButton.addEventListener("click", () => {
+        renderActivateSource(activeSourceName);
+        showPage("activateSource");
+      });
+      openWorkspaceHomeButton.addEventListener("click", () => {
+        renderWorkspaceHome();
+        showPage("workspaceHome");
+      });
+      connectMoreFromHomeButton.addEventListener("click", () => showPage("sources"));
+      backToLaunchButton.addEventListener("click", () => {
+        renderLaunchChecklist();
+        showPage("launchChecklist");
+      });
+
+      document.querySelectorAll(".copy-local-console").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const value = localConsoleUrl();
+          const copied = await copyText(value);
+          handoffResult.textContent = `${copied ? "Copied" : "Selected"} local console URL: ${value}`;
+          handoffResult.classList.add("visible");
+        });
+      });
+
+      document.querySelectorAll(".copy-provider-ingress").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const value = providerIngressUrl();
+          const copied = await copyText(value);
+          handoffResult.textContent = `${copied ? "Copied" : "Selected"} provider ingress URL: ${value}`;
+          handoffResult.classList.add("visible");
+        });
+      });
+
+      createButton.addEventListener("click", () => {
+        const name = company.value.trim() || "the customer";
+        const owner = setupOwner.value.trim() || "the setup owner";
+        result.textContent = `Intake draft created for ${name}. ${owner} can continue to cloud readiness next.`;
+        result.classList.add("visible");
+        showPage("cloud");
+      });
+
+      preparePackageButton.addEventListener("click", () => {
+        packageStatus.textContent = "Package draft ready";
+        packageStatus.className = "pill good";
+        packageResult.textContent = `${selectedPlan.textContent} setup package prepared for ${company.value.trim() || "the customer"}: ${deploymentEnv.value}, ${cloudRegion.value}, Kubernetes path with required BYOC components.`;
+        packageResult.classList.add("visible");
+        syncSetupPackage();
+        showPage("package");
+      });
+
+      markPreflightButton.addEventListener("click", () => {
+        preflightResult.textContent = "Preflight marked complete. Deployment can start when the setup owner is ready.";
+        preflightResult.classList.add("visible");
+      });
+
+      markDeploymentStartedButton.addEventListener("click", () => {
+        deploymentResult.textContent = "Deployment marked started in the customer cloud.";
+        deploymentResult.classList.add("visible");
+      });
+
+      markDeploymentCompleteButton.addEventListener("click", () => {
+        deploymentResult.textContent = "Deployment marked complete. Continue to post-deploy validation.";
+        deploymentResult.classList.add("visible");
+      });
+
+      markValidationButton.addEventListener("click", () => {
+        validationResult.textContent = "Post-deploy validation marked complete. Sanitized deployment readiness evidence is ready.";
+        validationResult.classList.add("visible");
+      });
+
+      const sourceNeeds = {
+        Slack: "Slack workspace admin approval, app/OAuth install, event callback signing secret, channel allowlist, optional DM consent.",
+        Gmail: "Google Workspace admin approval, OAuth or DWD setup, mailbox/user scope, Pub/Sub watch topic, history-poller access.",
+        "Google Calendar": "Google Workspace admin approval, calendar scopes, calendar allowlist, watch channel setup, poll fallback access.",
+        "Google Drive": "Google Workspace admin approval, Drive scopes, shared-drive/file scope, change watch setup, large-file policy.",
+        GitHub: "GitHub App installation, repository selection, webhook secret, org/repo admin approval, installation ID mapping.",
+        Jira: "Jira site URL, project/team scope, API token or OAuth app, webhook callback approval, issue/comment permissions.",
+        Notion: "Workspace integration token, pages/databases shared to the integration, workspace owner approval, selector scope.",
+        Discord: "Discord app or bot token, guild/channel allowlist, gateway intents, single-worker lease readiness.",
+        Telegram: "Telegram API ID/hash, authorized user session, chats allowlist, backfill account approval, gateway worker readiness.",
+        Signal: "Linked-device session, account/device approval, contact or group scope, gateway worker readiness.",
+        WhatsApp: "WhatsApp Cloud API app, business account and phone IDs, verify token, webhook secret, customer-local access token.",
+        Fireflies: "Workspace/admin approval, API or OAuth token, transcript scope, meeting history window, webhook or poll setup.",
+        Figma: "Team ID, file keys or team scope, org/team access token, optional webhook passcode, file visibility confirmation.",
+        Miro: "Workspace/team admin approval, bearer token, board allowlist, webhook or poll setup, API base confirmation.",
+        Grafana: "Grafana instance URL, service account token, dashboard/folder scope, alert scope, network reachability from BYOC.",
+        AWS: "AWS account and region, customer IAM role or access ref, inventory scope, CloudTrail/EventBridge scope if enabled.",
+        Mercury: "Mercury organization ID, account IDs, API token, webhook secret if live events are enabled, account scope.",
+        QuickBooks: "QuickBooks company realm ID, OAuth access/refresh token path, sandbox or production base URL, webhook verifier.",
+        Brex: "Brex organization ID, account IDs, API token, webhook secret if live events are enabled, transaction scope.",
+        Ramp: "Ramp business/account scope, API token, entity allowlist, transaction/card permissions, poll schedule approval.",
+        Carta: "Carta firm or issuer ID, OAuth access token or client-credentials path, entity scope, token re-mint process.",
+        Gusto: "Gusto company ID, OAuth app approval, access/refresh token path, payroll and employee scopes.",
+        HiBob: "HiBob company ID, service user/API credentials, people-field scope, employee directory approval.",
+        Ashby: "Ashby organization access, API token, jobs/candidates scope, recruiting data approval.",
+        Deel: "Deel organization access, API token, worker/contract scope, payroll or contractor data approval.",
+        LinkedIn: "LinkedIn organization/page access, OAuth app or API token, company/profile scope, rate-limit approval."
+      };
+
+      const sourceIngress = {
+        Slack: ["/integrations/slack/callback", "/webhooks/slack/events"],
+        Gmail: ["/webhooks/gmail/pubsub"],
+        "Google Calendar": ["/webhooks/google_calendar/push"],
+        "Google Drive": ["/webhooks/google_drive/push"],
+        GitHub: ["/integrations/github/callback", "/webhooks/github"],
+        Jira: ["/webhooks/jira/events"],
+        Notion: ["/integrations/notion/callback", "/webhooks/notion"],
+        Discord: ["/integrations/discord/callback", "/webhooks/discord"],
+        Telegram: "Not required. The local MTProto gateway session runs from the customer cloud.",
+        Signal: "Not required. The linked-device gateway session runs from the customer cloud.",
+        WhatsApp: ["/integrations/whatsapp/webhook"],
+        Fireflies: ["/webhooks/fireflies"],
+        Figma: ["/webhooks/figma"],
+        Miro: ["/webhooks/miro"],
+        Grafana: ["/webhooks/grafana/events"],
+        AWS: "Not required. Fyralis polls customer-authorized AWS APIs from the local data plane.",
+        Mercury: ["/webhooks/mercury/events"],
+        QuickBooks: ["/webhooks/quickbooks/events"],
+        Brex: ["/webhooks/brex"],
+        Ramp: ["/webhooks/ramp"],
+        Carta: "Not required. Carta is poll-only from the customer data plane.",
+        Gusto: ["/webhooks/gusto"],
+        HiBob: ["/webhooks/hibob"],
+        Ashby: ["/webhooks/ashby/{install-id}"],
+        Deel: ["/webhooks/deel"],
+        LinkedIn: "Not required. LinkedIn is poll-only from the customer data plane."
+      };
+
+      const sourceScopes = {
+        Slack: ["#leadership", "#customer-success", "#finance-ops", "#engineering", "Consented direct messages", "Pinned files only"],
+        Gmail: ["Pilot executives", "Finance mailbox", "Customer-success mailbox", "Last 30 days only", "Exclude personal labels", "Metadata plus approved bodies"],
+        "Google Calendar": ["Executive calendars", "Team calendars", "External meetings", "Internal meetings", "Last 30 days only", "Future events only"],
+        "Google Drive": ["Pilot shared drive", "Finance folder", "Customer-success folder", "Docs only", "Exclude personal drives", "Metadata-first crawl"],
+        GitHub: ["Core application repos", "Infrastructure repos", "Open pull requests", "Issues and projects", "Release branches", "Security repos excluded"],
+        Jira: ["Pilot project", "Customer-success project", "Engineering board", "Open issues", "Recent comments", "Done issues excluded"],
+        Notion: ["Company wiki", "Product docs", "Finance workspace", "Selected databases", "Archived pages excluded", "Comments excluded"],
+        Discord: ["Pilot guild", "Public team channels", "Moderator-approved channels", "Recent messages", "Thread replies", "Private channels excluded"],
+        Telegram: ["Approved chats", "Pilot groups", "Recent messages", "Media metadata only", "Personal chats excluded", "Live updates only"],
+        Signal: ["Approved groups", "Linked-device scope", "Recent messages", "Media metadata only", "Personal chats excluded", "Live updates only"],
+        WhatsApp: ["Business account", "Approved phone number", "Customer conversations", "Template status", "Media metadata only", "Live webhooks"],
+        AWS: ["Pilot AWS account", "Selected regions", "Cloud inventory", "CloudTrail events", "Config metadata", "No secret values"],
+        LinkedIn: ["Company page", "Approved organization", "Profile metadata", "Recent updates", "Rate-limited crawl", "Private messages excluded"]
+      };
+
+      function sourceKey(sourceName) {
+        return sourceName
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "_")
+          .replace(/^_+|_+$/g, "");
+      }
+
+      function sourceIngressSummary(sourceName) {
+        const ingress = sourceIngress[sourceName];
+        if (Array.isArray(ingress)) {
+          return ingress.map((path) => `${providerIngressUrl()}${path}`);
+        }
+        return [ingress || "Not required for this source."];
+      }
+
+      function sourceScopeChoices(sourceName) {
+        return sourceScopes[sourceName] || [
+          `${sourceName} pilot workspace`,
+          `${sourceName} approved entities`,
+          "Last 30 days only",
+          "Live updates",
+          "Metadata-first crawl",
+          "Sensitive records excluded"
+        ];
+      }
+
+      function updateStatusItem(item, title, details, state = "") {
+        const heading = item.querySelector("strong");
+        const text = item.querySelector("span");
+        item.className = state ? `status-item ${state}` : "status-item";
+        heading.textContent = title;
+        text.textContent = details;
+      }
+
+      function updateSourceCardStatus(sourceName, buttonText) {
+        const sourceCard = Array.from(document.querySelectorAll(".source-card")).find(
+          (card) => card.dataset.source === sourceName
+        );
+
+        if (sourceCard) {
+          const button = sourceCard.querySelector(".source-action");
+          sourceCard.classList.add("prepared");
+          if (button) {
+            button.textContent = buttonText;
+          }
+        }
+      }
+
+      function addProcessStep(parent, index, title, details) {
+        const item = document.createElement("li");
+        const step = document.createElement("span");
+        const body = document.createElement("span");
+        const heading = document.createElement("strong");
+        const text = document.createElement("span");
+
+        step.className = "process-index";
+        step.textContent = String(index);
+        heading.textContent = title;
+        text.textContent = details;
+        body.append(heading, text);
+        item.append(step, body);
+        parent.append(item);
+      }
+
+      function addPackageItem(parent, title, details, codeValue) {
+        const item = document.createElement("div");
+        const heading = document.createElement("strong");
+        const text = document.createElement("span");
+        const code = document.createElement("code");
+
+        item.className = "package-item";
+        heading.textContent = title;
+        text.textContent = details;
+        code.textContent = codeValue;
+        item.append(heading, text, code);
+        parent.append(item);
+      }
+
+      function sourceRefRows(sourceName) {
+        const key = sourceKey(sourceName);
+        const ingress = sourceIngress[sourceName];
+        const refs = [
+          [
+            "Credential ref",
+            "OAuth token, API token, app secret, role ref, or session material stored in the customer secret manager.",
+            `${key}_credential_ref`
+          ]
+        ];
+
+        if (Array.isArray(ingress)) {
+          refs.push([
+            "Provider ingress secret ref",
+            "Webhook signing secret, verify token, private key, or provider app config stored locally when required.",
+            `${key}_provider_ingress_secret_ref`
+          ]);
+        }
+
+        if (sourceName === "Telegram" || sourceName === "Signal") {
+          refs.push([
+            "Gateway session ref",
+            "Linked-device or MTProto session material stored locally for the customer-cloud gateway.",
+            `${key}_gateway_session_ref`
+          ]);
+        }
+
+        refs.push([
+          "Connection policy ref",
+          "Scopes, allowlists, rollout state, and sync policy stored in customer-local configuration.",
+          `${key}_connection_policy_ref`
+        ]);
+
+        return refs;
+      }
+
+      function renderSourceDetail(sourceName) {
+        const ingress = sourceIngress[sourceName];
+        const hasProviderIngress = Array.isArray(ingress);
+
+        activeSourceName = sourceName;
+        sourceDetailTitle.textContent = `Connect ${sourceName}`;
+        sourceDetailLead.textContent = `${sourceName} is configured from the customer-cloud local console. Provider callbacks or webhooks, when required, terminate at the customer-owned ingress. Secrets are stored as customer-local refs only.`;
+        sourceDetailNeedsTitle.textContent = `${sourceName} setup requirements`;
+        sourceDetailNeeds.textContent = sourceNeeds[sourceName] || "Customer-local source credentials, setup approval, and rollout scope.";
+        sourceDetailResult.classList.remove("visible");
+
+        sourceDetailIngressList.replaceChildren();
+        if (hasProviderIngress) {
+          ingress.forEach((path) => {
+            const endpoint = document.createElement("code");
+            endpoint.className = "source-provider-url";
+            endpoint.dataset.path = path;
+            endpoint.textContent = `${providerIngressUrl()}${path}`;
+            sourceDetailIngressList.append(endpoint);
+          });
+        } else {
+          const endpoint = document.createElement("span");
+          endpoint.textContent = ingress || "Not required for this source.";
+          sourceDetailIngressList.append(endpoint);
+        }
+
+        sourceDetailSteps.replaceChildren();
+        addProcessStep(
+          sourceDetailSteps,
+          1,
+          "Open the customer-cloud local console",
+          `Use ${localConsoleUrl()} to start ${sourceName} setup.`
+        );
+        addProcessStep(
+          sourceDetailSteps,
+          2,
+          hasProviderIngress ? "Configure provider callbacks" : "Configure the local source path",
+          hasProviderIngress
+            ? "Set the provider callback, webhook, push, or verify URLs to the customer-owned ingress shown above."
+            : "No provider ingress is required; configure the local poll, role, session, or gateway credentials inside the customer cloud."
+        );
+        addProcessStep(
+          sourceDetailSteps,
+          3,
+          "Store secret refs locally",
+          "Write OAuth tokens, API tokens, webhook secrets, sessions, or app secrets to the customer secret manager."
+        );
+        addProcessStep(
+          sourceDetailSteps,
+          4,
+          "Run the connection test",
+          "Fyralis emits only connection status, bounded issue code, counts, and a readiness receipt."
+        );
+
+        sourceDetailRefs.replaceChildren();
+        sourceRefRows(sourceName).forEach(([title, details, codeValue]) => {
+          addPackageItem(sourceDetailRefs, title, details, codeValue);
+        });
+
+        syncLocalConsoleUrl();
+      }
+
+      function openSourceDetail(sourceName) {
+        renderSourceDetail(sourceName);
+        showPage("sourceDetail");
+      }
+
+      function renderSourceValidation(sourceName) {
+        const usesIngress = Array.isArray(sourceIngress[sourceName]);
+        activeSourceName = sourceName;
+        sourceValidationTitle.textContent = `Validate ${sourceName} connection`;
+        sourceValidationLead.textContent = `Run a local ${sourceName} connection test from ${localConsoleUrl()}. Fyralis receives status, bounded issue codes, and a readiness receipt only.`;
+        sourceValidationIngressNote.textContent = usesIngress
+          ? "Callbacks and webhooks terminate at the customer-owned ingress."
+          : "This source does not require public provider ingress.";
+        updateStatusItem(credentialCheck, "Secret refs reachable", "Pending local test.");
+        updateStatusItem(
+          providerCheck,
+          usesIngress ? "Provider endpoint reachable" : "Local source path reachable",
+          "Pending local test."
+        );
+        updateStatusItem(scopeCheck, "Required scopes present", "Pending local test.");
+        updateStatusItem(rateLimitCheck, "Rate limits acceptable", "Pending local test.");
+        updateStatusItem(receiptCheck, "Readiness receipt", "No receipt yet.");
+        updateStatusItem(issueCheck, "Issue state", "No issue code emitted.");
+        sourceValidationState.className = "empty-state";
+        sourceValidationState.querySelector("strong").textContent = "No validation run yet";
+        sourceValidationState.querySelector("span").textContent = "Run the local test to produce a sanitized readiness receipt before choosing ingest scope.";
+        sourceValidationResult.classList.remove("visible");
+        syncLocalConsoleUrl();
+      }
+
+      function setSourceValidationPassed() {
+        const usesIngress = Array.isArray(sourceIngress[activeSourceName]);
+        updateStatusItem(credentialCheck, "Secret refs reachable", `${sourceKey(activeSourceName)} credential refs resolved locally.`, "ready");
+        updateStatusItem(
+          providerCheck,
+          usesIngress ? "Provider endpoint reachable" : "Local source path reachable",
+          usesIngress
+            ? "Callback or webhook endpoint accepted the provider handshake."
+            : "Local poll, role, session, or gateway path responded inside the customer cloud.",
+          "ready"
+        );
+        updateStatusItem(scopeCheck, "Required scopes present", "Provider scopes match the requested pilot setup.", "ready");
+        updateStatusItem(rateLimitCheck, "Rate limits acceptable", "Pilot batch size fits the provider rate limit budget.", "ready");
+        updateStatusItem(receiptCheck, "Readiness receipt", `${sourceKey(activeSourceName)}-validation-receipt generated.`, "ready");
+        updateStatusItem(issueCheck, "Issue state", "No issue code emitted.", "ready");
+        sourceValidationState.className = "empty-state";
+        sourceValidationState.querySelector("strong").textContent = "Validation passed";
+        sourceValidationState.querySelector("span").textContent = "Safe readiness evidence is ready. Continue to approve the allowed source scope.";
+        sourceValidationResult.textContent = `${activeSourceName} connection validated. No credentials, raw logs, or source payloads were sent to Fyralis.`;
+        sourceValidationResult.classList.add("visible");
+      }
+
+      function setSourceValidationFailed() {
+        updateStatusItem(credentialCheck, "Secret refs reachable", "Credential refs are present locally.", "ready");
+        updateStatusItem(providerCheck, "Provider endpoint reachable", "Provider handshake returned bounded issue code SOURCE_CALLBACK_MISMATCH.", "warning");
+        updateStatusItem(scopeCheck, "Required scopes present", "One requested scope is missing.", "warning");
+        updateStatusItem(rateLimitCheck, "Rate limits acceptable", "Retry after callback and scope settings are fixed.", "warning");
+        updateStatusItem(receiptCheck, "Readiness receipt", "No readiness receipt created.", "warning");
+        updateStatusItem(issueCheck, "Issue state", "SOURCE_CALLBACK_MISMATCH", "warning");
+        sourceValidationState.className = "empty-state";
+        sourceValidationState.querySelector("strong").textContent = "Validation needs attention";
+        sourceValidationState.querySelector("span").textContent = "Fix the provider callback, webhook, or scope configuration locally, then retry. The UI shows issue codes only.";
+        sourceValidationResult.textContent = `${activeSourceName} validation failed with bounded issue code SOURCE_CALLBACK_MISMATCH. Retry after local configuration is updated.`;
+        sourceValidationResult.classList.add("visible");
+      }
+
+      function renderSourceScope(sourceName) {
+        activeSourceName = sourceName;
+        sourceScopeTitle.textContent = `Choose ${sourceName} scope`;
+        sourceScopeLead.textContent = `Approve the exact ${sourceName} scope for the pilot. Fyralis uses this customer-local policy to keep first ingestion narrow.`;
+        scopeOptionsList.replaceChildren();
+        sourceScopeChoices(sourceName).forEach((choice, index) => {
+          const item = document.createElement("li");
+          const checkbox = document.createElement("input");
+          const text = document.createElement("span");
+          const label = document.createElement("strong");
+          const detail = document.createElement("span");
+
+          checkbox.type = "checkbox";
+          checkbox.checked = index < 3;
+          label.textContent = choice;
+          detail.textContent = index < 3 ? "Included in the first pilot batch." : "Available after initial health is green.";
+          text.append(label, detail);
+          item.append(checkbox, text);
+          scopeOptionsList.append(item);
+        });
+        scopeResult.classList.remove("visible");
+      }
+
+      function selectedScopeCount() {
+        return Array.from(scopeOptionsList.querySelectorAll("input")).filter((item) => item.checked).length;
+      }
+
+      function renderFirstSync(sourceName) {
+        activeSourceName = sourceName;
+        firstSyncTitle.textContent = `Run ${sourceName} first sync`;
+        firstSyncLead.textContent = `Run a controlled ${sourceName} sync inside the customer data plane using ${selectedScopeCount() || 3} approved scope items.`;
+        firstSyncState.className = "empty-state";
+        firstSyncState.querySelector("strong").textContent = "No first sync run yet";
+        firstSyncState.querySelector("span").textContent = "The customer can run a dry test before any source payload is processed.";
+        firstSyncResult.classList.remove("visible");
+      }
+
+      function sourceEventCount(sourceName) {
+        return 80 + sourceName.length * 8;
+      }
+
+      function renderIngestionHealth(sourceName) {
+        activeSourceName = sourceName;
+        ingestionHealthTitle.textContent = `Review ${sourceName} ingestion health`;
+        setHealthHealthy();
+      }
+
+      function setHealthHealthy() {
+        healthStatusPill.textContent = "Healthy";
+        healthStatusPill.className = "pill good";
+        eventsMetric.textContent = String(sourceEventCount(activeSourceName));
+        kafkaMetric.textContent = "OK";
+        workerMetric.textContent = "OK";
+        postgresMetric.textContent = "OK";
+        storageMetric.textContent = "OK";
+        errorMetric.textContent = "0";
+        document.querySelectorAll("#ingestionHealthPage .metric-card").forEach((card) => {
+          card.classList.remove("warning");
+          card.classList.add("ready");
+        });
+        healthResult.textContent = `${activeSourceName} ingestion health is green across provider input, Kafka/MSK, workers, Postgres, and object storage.`;
+        healthResult.classList.add("visible");
+      }
+
+      function setHealthIssue() {
+        healthStatusPill.textContent = "Needs retry";
+        healthStatusPill.className = "pill info";
+        eventsMetric.textContent = String(Math.max(1, sourceEventCount(activeSourceName) - 23));
+        kafkaMetric.textContent = "OK";
+        workerMetric.textContent = "Retry";
+        postgresMetric.textContent = "OK";
+        storageMetric.textContent = "OK";
+        errorMetric.textContent = "2";
+        document.querySelectorAll("#ingestionHealthPage .metric-card").forEach((card) => {
+          card.classList.remove("warning", "ready");
+          card.classList.add("ready");
+        });
+        workerMetric.closest(".metric-card").classList.remove("ready");
+        workerMetric.closest(".metric-card").classList.add("warning");
+        errorMetric.closest(".metric-card").classList.remove("ready");
+        errorMetric.closest(".metric-card").classList.add("warning");
+        healthResult.textContent = `${activeSourceName} emitted bounded issue code WORKER_RETRYABLE_BATCH. Retry the failed check after the worker catches up.`;
+        healthResult.classList.add("visible");
+      }
+
+      function renderActivateSource(sourceName) {
+        activeSourceName = sourceName;
+        activateSourceTitle.textContent = `Activate ${sourceName} for pilot`;
+        activateSourceResult.classList.remove("visible");
+      }
+
+      function renderLaunchChecklist() {
+        const activeList = Array.from(activatedSources);
+        activeSourceLaunchText.textContent = activeList.length
+          ? `${activeList.join(", ")} active for pilot.`
+          : `${activeSourceName} is ready to activate before launch.`;
+        launchStatusPill.textContent = activeList.length ? "Ready for launch approval" : "Pending active source";
+        launchStatusPill.className = activeList.length ? "pill good" : "pill info";
+        launchResult.classList.remove("visible");
+      }
+
+      function renderWorkspaceHome() {
+        const activeList = Array.from(activatedSources);
+        const visibleSources = activeList.length ? activeList : [activeSourceName];
+        workspaceTitle.textContent = `${company.value.trim() || "Customer"} Fyralis workspace is ready`;
+        activeSourceCount.textContent = String(visibleSources.length);
+        activeSourceSummary.textContent = `${visibleSources.join(", ")} active for pilot.`;
+        workspaceSourceList.replaceChildren();
+        visibleSources.forEach((sourceName) => {
+          const row = document.createElement("div");
+          const body = document.createElement("span");
+          const title = document.createElement("strong");
+          const detail = document.createElement("span");
+          const status = document.createElement("span");
+
+          row.className = "source-row";
+          title.textContent = sourceName;
+          detail.textContent = `${backfillWindow.value}, ${syncMode.value}, ${rolloutBatch.value}.`;
+          body.append(title, detail);
+          status.className = "pill good";
+          status.textContent = "Active";
+          row.append(body, status);
+          workspaceSourceList.append(row);
+        });
+      }
+
+      document.querySelectorAll(".source-card").forEach((card) => {
+        const sourceName = card.dataset.source;
+        const needs = sourceNeeds[sourceName];
+        if (!needs) {
+          return;
+        }
+        const needed = document.createElement("span");
+        needed.className = "source-needed";
+        const label = document.createElement("strong");
+        label.textContent = "Needed to connect";
+        const details = document.createElement("span");
+        details.textContent = needs;
+        needed.append(label, details);
+        card.insertBefore(needed, card.querySelector(".source-action"));
+
+        const endpoints = document.createElement("span");
+        endpoints.className = "source-endpoints";
+
+        const adminRow = document.createElement("span");
+        adminRow.className = "endpoint-row";
+        const adminLabel = document.createElement("strong");
+        adminLabel.textContent = "Admin console";
+        const adminUrl = document.createElement("code");
+        adminUrl.className = "local-console-url";
+        adminUrl.textContent = localConsoleUrl();
+        adminRow.append(adminLabel, adminUrl);
+        endpoints.append(adminRow);
+
+        const ingressRow = document.createElement("span");
+        ingressRow.className = "endpoint-row";
+        const ingressLabel = document.createElement("strong");
+        ingressLabel.textContent = "Provider ingress";
+        ingressRow.append(ingressLabel);
+        const ingress = sourceIngress[sourceName];
+        if (Array.isArray(ingress)) {
+          ingress.forEach((path) => {
+            const ingressUrl = document.createElement("code");
+            ingressUrl.className = "source-provider-url";
+            ingressUrl.dataset.path = path;
+            ingressUrl.textContent = `${providerIngressUrl()}${path}`;
+            ingressRow.append(ingressUrl);
+          });
+        } else {
+          const ingressText = document.createElement("span");
+          ingressText.textContent = ingress || "Not required for this source.";
+          ingressRow.append(ingressText);
+        }
+        endpoints.append(ingressRow);
+        card.insertBefore(endpoints, card.querySelector(".source-action"));
+      });
+
+      document.querySelectorAll(".source-action").forEach((button) => {
+        button.textContent = "Open setup";
+        button.addEventListener("click", () => {
+          const card = button.closest(".source-card");
+          openSourceDetail(card.dataset.source);
+        });
+      });
+
+      markSourcePreparedButton.addEventListener("click", () => {
+        const ingressSummary = sourceIngressSummary(activeSourceName).join(", ");
+
+        updateSourceCardStatus(activeSourceName, "View setup");
+        sourceDetailResult.textContent = `${activeSourceName} source prepared. Admin console: ${localConsoleUrl()}. Provider ingress: ${ingressSummary}`;
+        sourceDetailResult.classList.add("visible");
+        sourceResult.textContent = `${activeSourceName} source prepared from the local console.`;
+        sourceResult.classList.add("visible");
+      });
+
+      runSourceValidationButton.addEventListener("click", () => setSourceValidationPassed());
+      simulateSourceIssueButton.addEventListener("click", () => setSourceValidationFailed());
+      retrySourceValidationButton.addEventListener("click", () => setSourceValidationPassed());
+
+      saveScopeButton.addEventListener("click", () => {
+        const count = selectedScopeCount();
+        scopeResult.textContent = `${activeSourceName} scope saved with ${count} approved item${count === 1 ? "" : "s"}, ${backfillWindow.value}, ${rolloutBatch.value}.`;
+        scopeResult.classList.add("visible");
+      });
+
+      startFirstSyncButton.addEventListener("click", () => {
+        firstSyncState.className = "empty-state";
+        firstSyncState.querySelector("strong").textContent = "First sync completed";
+        firstSyncState.querySelector("span").textContent = `${activeSourceName} completed ${syncMode.value.toLowerCase()} for ${selectedScopeCount() || 3} approved scope items. Safe counts and bounded issue codes are ready.`;
+        firstSyncResult.textContent = `${activeSourceName} first sync completed using ${syncBatchSize.value}.`;
+        firstSyncResult.classList.add("visible");
+      });
+
+      refreshHealthButton.addEventListener("click", () => setHealthHealthy());
+      simulateHealthIssueButton.addEventListener("click", () => setHealthIssue());
+      retryHealthButton.addEventListener("click", () => setHealthHealthy());
+
+      activateSourceButton.addEventListener("click", () => {
+        activatedSources.add(activeSourceName);
+        updateSourceCardStatus(activeSourceName, "Active");
+        activateSourceResult.textContent = `${activeSourceName} activated for the pilot. Continue to launch when the initial source set is ready.`;
+        activateSourceResult.classList.add("visible");
+      });
+
+      markLaunchReadyButton.addEventListener("click", () => {
+        if (!activatedSources.size) {
+          activatedSources.add(activeSourceName);
+          updateSourceCardStatus(activeSourceName, "Active");
+        }
+        renderLaunchChecklist();
+        launchStatusPill.textContent = "Pilot launch ready";
+        launchStatusPill.className = "pill good";
+        launchResult.textContent = `${company.value.trim() || "Customer"} pilot launch is ready with ${Array.from(activatedSources).join(", ")} active.`;
+        launchResult.classList.add("visible");
+      });
+
+      syncLocalConsoleUrl();
+
+      async function copyText(value) {
+        try {
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(value);
+            return true;
+          }
+        } catch (error) {
+          // Fall through to the local-file fallback below.
+        }
+        try {
+          const area = document.createElement("textarea");
+          area.value = value;
+          area.setAttribute("readonly", "");
+          area.style.position = "fixed";
+          area.style.left = "-9999px";
+          document.body.appendChild(area);
+          area.select();
+          const copied = document.execCommand("copy");
+          document.body.removeChild(area);
+          return copied;
+        } catch (error) {
+          return false;
+        }
+      }
+
+      function yamlQuote(value) {
+        return JSON.stringify(String(value || ""));
+      }
+
+      function generatedArtifact(filename) {
+        const customer = company.value.trim() || "Customer";
+        const owner = setupOwner.value.trim() || "setup-owner@example.com";
+        const header = [
+          "# Generated by Fyralis BYOC onboarding prototype.",
+          "# Safe draft only: no credentials, source data, private URLs, logs, prompts, or embeddings.",
+          ""
+        ].join("\n");
+
+        if (filename === "customer-dataplane.yaml") {
+          return `${header}schema_version: fyralis.byoc.dataplane.v1
+customer:
+  name: ${yamlQuote(customer)}
+  setup_owner: ${yamlQuote(owner)}
+plan: ${yamlQuote(selectedPlan.textContent)}
+cloud:
+  provider: ${yamlQuote(targetCloud.value)}
+  region: ${yamlQuote(cloudRegion.value)}
+environment: ${yamlQuote(deploymentEnv.value)}
+runtime:
+  type: kubernetes
+  readiness: ${yamlQuote(runtimePreference.value)}
+network:
+  readiness: ${yamlQuote(networkApproach.value)}
+required_components:
+  secrets: ${yamlQuote(secretManager.value)}
+  database: ${yamlQuote(databaseOption.value)}
+  object_storage: ${yamlQuote(storageOption.value)}
+  queue_streaming: ${yamlQuote(queueOption.value)}
+telemetry:
+  mode: aggregate_only
+  raw_logs_allowed: false
+`;
+        }
+
+        if (filename === "customer-permissions.yaml") {
+          return `${header}schema_version: fyralis.byoc.permissions.v1
+customer: ${yamlQuote(customer)}
+cloud_provider: ${yamlQuote(targetCloud.value)}
+required_boundaries:
+  - least_privilege_runtime_roles
+  - no_control_plane_customer_data_access
+  - no_raw_secret_material_in_fyralis
+aws_first_profile:
+  template_family: fyralis.aws.iam.bootstrap
+  secrets_manager_required: true
+  postgres_pgvector_required: true
+  s3_compatible_storage_required: true
+  kafka_msk_required: true
+`;
+        }
+
+        if (filename === "customer-kubernetes-deployment.yaml") {
+          return `${header}schema_version: fyralis.byoc.kubernetes_deployment.v1
+customer: ${yamlQuote(customer)}
+environment: ${yamlQuote(deploymentEnv.value)}
+region: ${yamlQuote(cloudRegion.value)}
+runtime: kubernetes
+components:
+  gateway:
+    enabled: true
+  ingestion_workers:
+    enabled: true
+  think_workers:
+    enabled: true
+  byoc_agent:
+    enabled: true
+config_refs:
+  postgres: customer-local-postgres-ref
+  object_storage: customer-local-s3-compatible-ref
+  kafka_msk: customer-local-kafka-msk-ref
+  secrets_manager: customer-local-secrets-manager-ref
+privacy:
+  raw_logs_allowed: false
+  raw_customer_data_leaves_boundary: false
+`;
+        }
+
+        return `${header}schema_version: fyralis.byoc.bootstrap_bundle.v1
+customer: ${yamlQuote(customer)}
+deployment:
+  environment: ${yamlQuote(deploymentEnv.value)}
+  region: ${yamlQuote(cloudRegion.value)}
+bundle_sources:
+  dataplane_manifest: customer-dataplane.yaml
+  permissions_manifest: customer-permissions.yaml
+  template_family: fyralis.byoc.bootstrap_bundle
+artifact_policy:
+  digest_pinned: true
+  signatures_required: true
+  sbom_required: true
+runner:
+  execution_context: customer_cloud
+  mutates_customer_cloud: false
+`;
+      }
+
+      function downloadArtifact(filename) {
+        const blob = new Blob([generatedArtifact(filename)], {
+          type: "text/yaml"
+        });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }
+
+      function activeResultTarget() {
+        return document.querySelector(".page.active .result") || copyResult;
+      }
+
+      document.querySelectorAll(".copy-artifact").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const value = button.dataset.copy;
+          const copied = await copyText(value);
+          const target = activeResultTarget();
+          target.textContent = `${copied ? "Copied" : "Selected"}: ${value}`;
+          target.classList.add("visible");
+        });
+      });
+
+      document.querySelectorAll(".download-artifact").forEach((button) => {
+        button.addEventListener("click", () => {
+          const filename = button.dataset.file;
+          downloadArtifact(filename);
+          const target = activeResultTarget();
+          target.textContent = `Downloaded generated draft: ${filename}`;
+          target.classList.add("visible");
+        });
+      });
+    </script>
+  </body>
+</html>
