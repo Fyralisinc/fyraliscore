@@ -11,6 +11,7 @@ from lib.shared.types import ModelCreate
 from services.domain.models.repo import ModelsRepo
 from services.domain.models.tests.conftest import make_embedding, state_proposition
 from services.domain.observations.events import notify_scope
+from services.reasoning.sage import reader as sage_reader
 from services.reasoning.synthesis.operational_facets import infer_operational_query_plan
 
 
@@ -176,6 +177,23 @@ async def test_operational_memory_model_insert_and_search_projection_stress(
     assert role_counts["delta"] >= 30
     assert role_counts["sequence"] >= 30
     assert role_counts["property"] >= 60
+    posting_counts = {
+        row["role"]: row["count"]
+        for row in await tx_conn.fetch(
+            """
+            SELECT role, count(*)::int AS count
+            FROM model_operational_role_postings
+            WHERE tenant_id = $1
+              AND model_id = ANY($2::uuid[])
+            GROUP BY role
+            """,
+            tenant,
+            inserted_ids,
+        )
+    }
+    assert posting_counts["delta"] == role_counts["delta"]
+    assert posting_counts["sequence"] == role_counts["sequence"]
+    assert posting_counts["property"] == role_counts["property"]
 
     ssd_matches = await _operational_matches(
         tx_conn,
@@ -240,35 +258,11 @@ async def _operational_matches(
         if role in {"action", "count", "delta", "invariant", "sequence"}
     ]
     assert seed_roles == ["delta"]
-    return list(await conn.fetch(
-        """
-        SELECT m.id, role_matches.role_match_count, lexical.lexical_match_count
-        FROM model_search_documents msd
-        JOIN models m
-          ON m.id = msd.model_id
-         AND m.tenant_id = msd.tenant_id
-        JOIN LATERAL (
-          SELECT count(*)::int AS role_match_count
-          FROM unnest($3::text[]) AS role(value)
-          WHERE coalesce(m.proposition->'operational_roles', '[]'::jsonb)
-                ? role.value
-        ) role_matches ON role_matches.role_match_count > 0
-        LEFT JOIN LATERAL (
-          SELECT count(*)::int AS lexical_match_count
-          FROM unnest($4::text[]) AS term(value)
-          WHERE strpos(msd.search_text, term.value) > 0
-        ) lexical ON TRUE
-        WHERE msd.tenant_id = $1
-          AND msd.status = 'active'
-          AND m.status = 'active'
-        ORDER BY role_matches.role_match_count DESC,
-                 lexical.lexical_match_count DESC,
-                 m.activation DESC,
-                 m.created_at DESC
-        LIMIT $2
-        """,
-        tenant,
-        12,
-        seed_roles,
-        [term.casefold() for term in plan.terms],
+    return list(await sage_reader._fetch_operational_role_matches(
+        conn,
+        tenant_id=tenant,
+        seed_roles=seed_roles,
+        terms=[term.casefold() for term in plan.terms],
+        limit=12,
+        per_role_limit=96,
     ))

@@ -173,6 +173,8 @@ _GENERIC_TERMS = {
     "claim",
     "company",
     "context",
+    "derive",
+    "durable",
     "customer",
     "customers",
     "data",
@@ -198,6 +200,8 @@ _GENERIC_TERMS = {
     "resource",
     "resources",
     "signal",
+    "signals",
+    "source",
     "system",
     "systems",
     "team",
@@ -205,7 +209,9 @@ _GENERIC_TERMS = {
     "thing",
     "user",
     "belief",
+    "window",
     "work",
+    "wrapper",
 }
 _LOW_SIGNAL_SUFFIXES = {"status", "state", "thing", "item", "record", "context"}
 _SOURCE_CHANNEL_TERMS = {
@@ -228,6 +234,20 @@ _SOURCE_CHANNEL_TERMS = {
     "ticket",
     "zendesk",
     "zoom",
+}
+_BATCH_WRAPPER_TERMS = {
+    "claim",
+    "claims",
+    "containing",
+    "derive",
+    "durable",
+    "individual",
+    "only",
+    "signal",
+    "signals",
+    "source",
+    "window",
+    "wrapper",
 }
 
 
@@ -370,7 +390,10 @@ def _term_allowed(
         return False
     if any(_is_numeric_or_tiny(word) for word in words):
         return False
-    if any(word in _SOURCE_CHANNEL_TERMS for word in words):
+    if any(
+        word in _SOURCE_CHANNEL_TERMS or word in _BATCH_WRAPPER_TERMS
+        for word in words
+    ):
         return False
     if any(word in entity_exclusions for word in words):
         return False

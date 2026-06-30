@@ -57,3 +57,21 @@ def test_derive_query_semantic_terms_matches_model_term_shape() -> None:
     assert "idempotency key collision" in terms
     assert "duplicate invoice reversal" in terms
     assert "refund replay" in terms
+
+
+def test_derive_query_semantic_terms_ignores_batch_wrapper_language() -> None:
+    terms = derive_query_semantic_terms(
+        (
+            "Evidence window containing 20 source signals. The window wrapper "
+            "is not itself a business fact; derive durable claims only from "
+            "individual signals. Atlas Retail Group procurement packet waits "
+            "for SOC2 audit export evidence."
+        )
+    )
+
+    text = " ".join(terms)
+    assert "atlas retail group" in terms
+    assert "procurement packet waits" in terms
+    assert "soc2 audit export" in terms
+    for wrapper in ("window", "wrapper", "source signals", "durable claims"):
+        assert wrapper not in text
