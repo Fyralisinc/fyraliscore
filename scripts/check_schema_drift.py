@@ -634,6 +634,7 @@ EXPECTED_TABLES: dict[str, Table] = {
             _col("tenant_id", UUID, False),
             _col("trigger_id", UUID, False),
             _col("trigger_kind", TEXT, False),
+            _col("lane", TEXT, True),
             _col("started_at", TS, False, default=True),
             _col("ended_at", TS, True),
             _col("status", TEXT, False, default=True),
@@ -652,6 +653,7 @@ EXPECTED_TABLES: dict[str, Table] = {
             "think_runs_tenant_time_idx",
             "think_runs_trigger_idx",
             "think_runs_status_idx",
+            "think_runs_lane_time_idx",
         },
     ),
     "model_reeval_dead_letter": Table(

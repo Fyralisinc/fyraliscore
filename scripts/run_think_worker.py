@@ -25,6 +25,7 @@ from lib.llm.provider import build_provider  # noqa: E402
 from lib.observability.pools import register_pool  # noqa: E402
 from services.app.gateway.db_bootstrap import _register_codecs  # noqa: E402
 from services.reasoning.think.worker import ThinkWorker  # noqa: E402
+from services.reasoning.think.lanes import lane_names  # noqa: E402
 
 
 async def _main() -> None:
@@ -42,6 +43,7 @@ async def _main() -> None:
             "think_worker.starting",
             llm_provider=llm.config.provider,
             llm_model=llm.config.model,
+            lanes=lane_names(worker.config.allowed_lanes),
         )
         await worker.run()
     finally:

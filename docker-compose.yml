@@ -428,6 +428,61 @@ services:
     command: python scripts/run_think_worker.py
     healthcheck: *consumer-healthcheck
 
+  think_worker_reflex:
+    <<: *worker
+    profiles: ["think-lanes"]
+    container_name: company_os_think_worker_reflex
+    command: python scripts/run_think_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      THINK_WORKER_ID: think-worker-reflex
+      THINK_WORKER_LANES: reflex
+
+  think_worker_batch_memory:
+    <<: *worker
+    profiles: ["think-lanes"]
+    container_name: company_os_think_worker_batch_memory
+    command: python scripts/run_think_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      THINK_WORKER_ID: think-worker-batch-memory
+      THINK_WORKER_LANES: batch_memory
+
+  think_worker_relationship:
+    <<: *worker
+    profiles: ["think-lanes"]
+    container_name: company_os_think_worker_relationship
+    command: python scripts/run_think_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      THINK_WORKER_ID: think-worker-relationship
+      THINK_WORKER_LANES: relationship
+
+  think_worker_deep_synthesis:
+    <<: *worker
+    profiles: ["think-lanes"]
+    container_name: company_os_think_worker_deep_synthesis
+    command: python scripts/run_think_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      THINK_WORKER_ID: think-worker-deep-synthesis
+      THINK_WORKER_LANES: deep_synthesis
+
+  think_worker_repair:
+    <<: *worker
+    profiles: ["think-lanes"]
+    container_name: company_os_think_worker_repair
+    command: python scripts/run_think_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      THINK_WORKER_ID: think-worker-repair
+      THINK_WORKER_LANES: repair
+
   post_commit_worker:
     <<: *worker
     container_name: company_os_post_commit_worker

@@ -37,6 +37,7 @@ from services.reasoning.relationships import (
     make_situation_candidate,
 )
 from services.reasoning.think.tests.conftest import ScriptedProvider, make_embedding
+from services.reasoning.think.lanes import ThinkLane
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
 
@@ -287,6 +288,55 @@ async def test_poll_dequeues_pending_rows(fresh_db, tenant, tenant_cleanup):
             tenant,
         )
     assert n == 2
+
+
+async def test_lane_filtered_worker_only_leases_allowed_lane(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs = await _seed_signal_observation(fresh_db, tenant)
+    t1 = await _enqueue_trigger_row(fresh_db, tenant, obs)
+    t4 = await _enqueue_t4_latent_candidate(
+        fresh_db,
+        tenant,
+        candidate_id=uuid7(),
+        member_model_ids=[],
+    )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="relationship-only",
+            tenant_filter=tenant,
+            allowed_lanes=frozenset({ThinkLane.RELATIONSHIP}),
+            t1_batch_window_s=0.0,
+            downstream_batch_window_s=0.0,
+        ),
+    )
+    dispatched: list[UUID] = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row["id"])
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    assert dispatched == [t4]
+    async with fresh_db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, locked_by
+            FROM think_trigger_queue
+            WHERE id = ANY($1::uuid[])
+            """,
+            [t1, t4],
+        )
+    locked_by = {row["id"]: row["locked_by"] for row in rows}
+    assert locked_by[t1] is None
+    assert locked_by[t4] == "relationship-only"
 
 
 async def test_poll_reclaims_stale_locked_rows(

@@ -1844,6 +1844,42 @@ async def _validate_edge_op(
     return op
 
 
+def _relation_ref_model_id(ref: Any) -> UUID | None:
+    if not isinstance(ref, dict) or ref.get("kind") != "model":
+        return None
+    raw_model_id = ref.get("model_id")
+    if raw_model_id is None:
+        return None
+    try:
+        return UUID(str(raw_model_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_relation_claim_endpoints(op: RelationClaimOp) -> RelationClaimOp:
+    source_model_id = op.source_model_id or _relation_ref_model_id(op.subject_ref)
+    target_model_id = op.target_model_id or _relation_ref_model_id(op.object_ref)
+    if source_model_id is not None and target_model_id is not None:
+        endpoint_binding_status = "bound"
+    elif source_model_id is not None or target_model_id is not None:
+        endpoint_binding_status = "partially_bound"
+    else:
+        endpoint_binding_status = "unbound"
+    if (
+        source_model_id == op.source_model_id
+        and target_model_id == op.target_model_id
+        and endpoint_binding_status == op.endpoint_binding_status
+    ):
+        return op
+    return op.model_copy(
+        update={
+            "source_model_id": source_model_id,
+            "target_model_id": target_model_id,
+            "endpoint_binding_status": endpoint_binding_status,
+        }
+    )
+
+
 async def _validate_relation_claim_op(
     op: RelationClaimOp,
     conn: asyncpg.Connection,
@@ -1872,6 +1908,7 @@ async def _validate_relation_claim_op(
             "relation_claim_op binding_confidence must be in [0, 1]",
             binding_confidence=op.binding_confidence,
         )
+    op = _normalize_relation_claim_endpoints(op)
     if (
         op.source_model_id is not None
         and op.target_model_id is not None

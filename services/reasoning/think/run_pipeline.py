@@ -378,6 +378,7 @@ async def build_raw_reasoning_output(
     from .capability_probes import maybe_inject_capability_probe_ops
     from .context_use import summarize_context_use
     from .deterministic import _trigger_ref  # type: ignore
+    from .lifecycle_obligations import maybe_inject_lifecycle_obligations
 
     raw_diff.trigger_ref = _trigger_ref(trigger)
     raw_diff.tenant_id = trigger.tenant_id
@@ -388,6 +389,7 @@ async def build_raw_reasoning_output(
     raw_diff = maybe_inject_customer_risk(raw_diff, trigger, state.bundle)
     raw_diff = maybe_inject_latent_bridge(raw_diff, trigger)
     raw_diff = maybe_inject_capability_probe_ops(raw_diff, trigger, state.bundle)
+    raw_diff = maybe_inject_lifecycle_obligations(raw_diff, trigger, state.bundle)
     raw_diff = _drop_event_batch_wrapper_claims(raw_diff, trigger)
     raw_diff = enrich_raw_diff_representation(raw_diff, trigger, state.bundle)
     raw_context_use = summarize_context_use(state.bundle, raw_diff)

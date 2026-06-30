@@ -342,6 +342,82 @@ async def test_emit_suppresses_recently_completed_same_gap(
     assert len(rows) == 1
 
 
+async def test_emit_respects_max_emitted_budget(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    actor_id = uuid7()
+    actor_id_b = uuid7()
+    obs_id_a = uuid7()
+    obs_id_b = uuid7()
+    model_id_a = uuid7()
+    model_id_b = uuid7()
+    now = datetime.now(timezone.utc)
+
+    async with fresh_db.acquire() as conn:
+        await _seed_discontinuity(
+            conn, tenant_id, actor_id, obs_id_a, model_id_a, now,
+        )
+        await _seed_substrate(conn, tenant_id, actor_id_b, obs_id_b, model_id_b)
+        await _insert_audit_event(
+            conn,
+            model_id=model_id_b,
+            tenant_id=tenant_id,
+            occurred_at=now - timedelta(hours=5),
+            cause_id=obs_id_b,
+            cause_type="field_update",
+            previous_state={"status": "active"},
+            new_state={"status": "review"},
+            changed_fields=["status"],
+        )
+        await _insert_audit_event(
+            conn,
+            model_id=model_id_b,
+            tenant_id=tenant_id,
+            occurred_at=now - timedelta(minutes=30),
+            cause_id=obs_id_b,
+            cause_type="field_update",
+            previous_state={"status": "blocked"},
+            new_state={"status": "live"},
+            changed_fields=["status"],
+        )
+        signals = await detect_dynamic_signals(
+            conn,
+            tenant_id=tenant_id,
+            model_ids=[model_id_a, model_id_b],
+            reference_time=now,
+        )
+        first = await emit_missing_transition_triggers(
+            conn,
+            tenant_id=tenant_id,
+            signals=signals,
+            reference_time=now,
+            max_emitted=1,
+        )
+        second = await emit_missing_transition_triggers(
+            conn,
+            tenant_id=tenant_id,
+            signals=signals,
+            reference_time=now,
+            max_emitted=None,
+        )
+
+        rows = await conn.fetch(
+            """
+            SELECT id FROM think_trigger_queue
+            WHERE tenant_id = $1
+              AND trigger_kind = 'T3'
+              AND trigger_subkind = $2
+            """,
+            tenant_id,
+            T3_MISSING_TRANSITION_SUBKIND,
+        )
+
+    assert len(first) == 1
+    assert len(second) == 1
+    assert len(rows) == 2
+
+
 async def test_emit_suppresses_when_model_already_has_pending_gap(
     fresh_db: asyncpg.Pool,
 ) -> None:

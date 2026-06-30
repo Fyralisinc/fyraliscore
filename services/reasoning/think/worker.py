@@ -53,6 +53,13 @@ from services.domain.triggers import enqueue_trigger
 
 from services.reasoning.retrieval.primary import TriggerContext
 
+from .lanes import (
+    ThinkLane,
+    classify_trigger_lane,
+    lane_names,
+    lane_sql_predicate,
+    parse_lane_filter,
+)
 from .observability import METRICS, emit, render_prometheus_text
 from .reason import think
 
@@ -517,6 +524,7 @@ class WorkerConfig:
     t4_topology_min_confidence: float = 0.50
     worker_id: str = "worker"
     tenant_filter: UUID | None = None
+    allowed_lanes: frozenset[ThinkLane] | None = None
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -579,6 +587,7 @@ class WorkerConfig:
                 os.environ.get("THINK_T4_TOPOLOGY_MIN_CONFIDENCE", 0.50)
             ),
             worker_id=os.environ.get("THINK_WORKER_ID", f"worker-{os.getpid()}"),
+            allowed_lanes=parse_lane_filter(os.environ.get("THINK_WORKER_LANES")),
         )
 
 
@@ -617,6 +626,13 @@ class ThinkWorker:
         # validation retries when THINK_ESCALATION_MODEL is set.
         self._escalation_provider: LLMProvider | None = None
 
+    def _lane_allowed(self, lane: ThinkLane) -> bool:
+        return self.config.allowed_lanes is None or lane in self.config.allowed_lanes
+
+    def _lane_filter_sql(self, *, prefix: str = "") -> str:
+        predicate = lane_sql_predicate(self.config.allowed_lanes, prefix=prefix)
+        return f"AND {predicate}" if predicate else ""
+
     def install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -631,7 +647,11 @@ class ThinkWorker:
     # -----------------------------------------------------------------
 
     async def run(self) -> None:
-        emit("think.worker.started", worker_id=self.config.worker_id)
+        emit(
+            "think.worker.started",
+            worker_id=self.config.worker_id,
+            lanes=lane_names(self.config.allowed_lanes),
+        )
         # P2-13: liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT,
         # which the compose x-app-env anchor already sets). /healthz goes 503
         # when the poll loop wedges; /metrics serves the Think families plus
@@ -702,6 +722,8 @@ class ThinkWorker:
         of the trigger-completion path, see `_mark_trigger_complete`).
         """
         if not self.config.process_background_triggers:
+            return
+        if not self._lane_allowed(ThinkLane.REFLEX):
             return
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -800,13 +822,15 @@ class ThinkWorker:
                 if remaining_slots <= 0:
                     poll_rows = []
                 elif self.config.tenant_filter is None:
+                    lane_filter = self._lane_filter_sql()
                     poll_rows = await conn.fetch(
-                        """
+                        f"""
                         SELECT id, tenant_id, trigger_kind, trigger_subkind,
                                observation_id, model_id, payload, attempts
                         FROM think_trigger_queue
                         WHERE completed_at IS NULL
                           AND batch_parent_id IS NULL
+                          {lane_filter}
                           AND ($6::boolean OR trigger_kind != 'T4')
                           AND (
                             locked_by IS NULL
@@ -855,13 +879,15 @@ class ThinkWorker:
                         self.config.process_background_triggers,
                     )
                 else:
+                    lane_filter = self._lane_filter_sql()
                     poll_rows = await conn.fetch(
-                        """
+                        f"""
                         SELECT id, tenant_id, trigger_kind, trigger_subkind,
                                observation_id, model_id, payload, attempts
                         FROM think_trigger_queue
                         WHERE completed_at IS NULL
                           AND batch_parent_id IS NULL
+                          {lane_filter}
                           AND (
                             locked_by IS NULL
                             OR locked_at < now() - ($4 || ' seconds')::interval
@@ -933,6 +959,8 @@ class ThinkWorker:
         conn: asyncpg.Connection,
     ) -> None:
         if not self.config.prune_low_value_downstream_triggers:
+            return
+        if self.config.allowed_lanes is not None:
             return
         tenant_clause = ""
         args: list[Any] = [self.config.worker_id]
@@ -1150,7 +1178,8 @@ class ThinkWorker:
 
     def _t1_batching_enabled(self) -> bool:
         return (
-            self.config.t1_batch_window_s > 0
+            self._lane_allowed(ThinkLane.BATCH_MEMORY)
+            and self.config.t1_batch_window_s > 0
             and self.config.t1_batch_max_size >= 2
             and self.config.t1_batch_min_size >= 2
         )
@@ -1161,15 +1190,16 @@ class ThinkWorker:
         return str(max(0.0, self.config.t1_batch_window_s))
 
     def _downstream_batching_enabled(self) -> bool:
-        t4_batch_max_size = (
-            self.config.t4_batch_max_size
-            if self.config.process_background_triggers
+        t2_batch_max_size = (
+            self.config.t2_batch_max_size
+            if self._lane_allowed(ThinkLane.REFLEX)
             else 0
         )
+        t4_batch_max_size = self._t4_downstream_batch_max_size()
         return (
             self.config.downstream_batch_window_s > 0
             and self.config.downstream_batch_min_size >= 2
-            and (self.config.t2_batch_max_size >= 2 or t4_batch_max_size >= 2)
+            and (t2_batch_max_size >= 2 or t4_batch_max_size >= 2)
         )
 
     def _downstream_batch_window_arg(self) -> str:
@@ -1179,12 +1209,19 @@ class ThinkWorker:
 
     def _downstream_batch_max_size(self, kind: str, subkind: str | None) -> int:
         if kind == "T2" and subkind == "belief_updated":
+            if not self._lane_allowed(ThinkLane.REFLEX):
+                return 0
             return max(0, self.config.t2_batch_max_size)
         if kind == "T4" and subkind == "latent_relationship_candidate":
-            if not self.config.process_background_triggers:
-                return 0
-            return max(0, self.config.t4_batch_max_size)
+            return self._t4_downstream_batch_max_size()
         return 0
+
+    def _t4_downstream_batch_max_size(self) -> int:
+        if not self.config.process_background_triggers:
+            return 0
+        if not self._lane_allowed(ThinkLane.RELATIONSHIP):
+            return 0
+        return max(0, self.config.t4_batch_max_size)
 
     async def _create_downstream_batch_rows(
         self,
@@ -1194,13 +1231,14 @@ class ThinkWorker:
     ) -> list[dict[str, Any]]:
         if not self._downstream_batching_enabled() or available_slots <= 0:
             return []
+        allow_t2 = self._lane_allowed(ThinkLane.REFLEX)
+        allow_t4 = (
+            self.config.process_background_triggers
+            and self._lane_allowed(ThinkLane.RELATIONSHIP)
+        )
         largest_batch = max(
-            self.config.t2_batch_max_size,
-            (
-                self.config.t4_batch_max_size
-                if self.config.process_background_triggers
-                else 0
-            ),
+            self.config.t2_batch_max_size if allow_t2 else 0,
+            self.config.t4_batch_max_size if allow_t4 else 0,
             0,
         )
         if largest_batch < self.config.downstream_batch_min_size:
@@ -1223,10 +1261,11 @@ class ThinkWorker:
                   AND attempts < $1
                   AND payload->>'batch' IS DISTINCT FROM 'true'
                   AND (
-                    (trigger_kind = 'T2'
+                    ($4::boolean
+                     AND trigger_kind = 'T2'
                      AND trigger_subkind = 'belief_updated'
                      AND model_id IS NOT NULL)
-                    OR ($4::boolean
+                    OR ($5::boolean
                         AND trigger_kind = 'T4'
                         AND trigger_subkind = 'latent_relationship_candidate'
                         AND payload ? 'relationship_candidate_id')
@@ -1238,7 +1277,8 @@ class ThinkWorker:
                 self.config.trigger_max_attempts,
                 str(self.config.trigger_lock_timeout_s),
                 limit,
-                self.config.process_background_triggers,
+                allow_t2,
+                allow_t4,
             )
         else:
             candidates = await conn.fetch(
@@ -1258,10 +1298,11 @@ class ThinkWorker:
                   AND tenant_id = $2
                   AND payload->>'batch' IS DISTINCT FROM 'true'
                   AND (
-                    (trigger_kind = 'T2'
+                    ($5::boolean
+                     AND trigger_kind = 'T2'
                      AND trigger_subkind = 'belief_updated'
                      AND model_id IS NOT NULL)
-                    OR ($5::boolean
+                    OR ($6::boolean
                         AND trigger_kind = 'T4'
                         AND trigger_subkind = 'latent_relationship_candidate'
                         AND payload ? 'relationship_candidate_id')
@@ -1274,7 +1315,8 @@ class ThinkWorker:
                 self.config.tenant_filter,
                 str(self.config.trigger_lock_timeout_s),
                 limit,
-                self.config.process_background_triggers,
+                allow_t2,
+                allow_t4,
             )
         if not candidates:
             return []
@@ -2210,6 +2252,30 @@ class ThinkWorker:
             tenant_id=str(tenant_id),
         )
 
+    async def _release_trigger_for_lane_mismatch(
+        self,
+        trigger_id: UUID,
+        lane_decision: Any,
+    ) -> None:
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE think_trigger_queue
+                SET locked_by = NULL,
+                    locked_at = NULL
+                WHERE id = $1 AND locked_by = $2
+                """,
+                trigger_id,
+                self.config.worker_id,
+            )
+        _log.warning(
+            "think.worker.lane_mismatch_released",
+            trigger_id=str(trigger_id),
+            lane=getattr(lane_decision.lane, "value", str(lane_decision.lane)),
+            allowed_lanes=lane_names(self.config.allowed_lanes),
+            reason=lane_decision.reason,
+        )
+
     async def _dispatch_trigger(self, row: asyncpg.Record | dict[str, Any]) -> None:
         tenant_id = row["tenant_id"]
         sem = self._semaphores.setdefault(
@@ -2221,6 +2287,14 @@ class ThinkWorker:
 
     async def _process_trigger(self, row: asyncpg.Record) -> None:
         payload = _payload_dict(row["payload"])
+        lane_decision = classify_trigger_lane(
+            row["trigger_kind"],
+            row["trigger_subkind"],
+            payload,
+        )
+        if not self._lane_allowed(lane_decision.lane):
+            await self._release_trigger_for_lane_mismatch(row["id"], lane_decision)
+            return
 
         # TK-3 — enforce cross-trigger cascade depth bound. If this T1
         # carries a `cascade_depth` that has reached MAX_CASCADE_DEPTH,
@@ -2647,23 +2721,26 @@ class ThinkWorker:
 
     async def _queue_depth(self) -> int:
         async with self.pool.acquire() as conn:
+            lane_filter = self._lane_filter_sql()
             if self.config.tenant_filter is None:
                 n = await conn.fetchval(
-                    """
+                    f"""
                     SELECT COUNT(*) FROM think_trigger_queue
                     WHERE completed_at IS NULL
                       AND batch_parent_id IS NULL
+                      {lane_filter}
                       AND ($1::boolean OR trigger_kind != 'T4')
                     """,
                     self.config.process_background_triggers,
                 )
             else:
                 n = await conn.fetchval(
-                    """
+                    f"""
                     SELECT COUNT(*) FROM think_trigger_queue
                     WHERE completed_at IS NULL
                       AND batch_parent_id IS NULL
                       AND tenant_id = $1
+                      {lane_filter}
                       AND ($2::boolean OR trigger_kind != 'T4')
                     """,
                     self.config.tenant_filter,

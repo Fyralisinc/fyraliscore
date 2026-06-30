@@ -1487,6 +1487,89 @@ async def test_validate_promotes_bound_relation_claim_to_accepted_edge_policy(
     assert relation.status == "accepted"
 
 
+async def test_validate_promotes_relation_claim_endpoint_ids_from_model_refs(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    a, obs_id = await _make_model(fresh_db, tenant, confidence=0.6)
+    b, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            relation_claim_ops=[
+                RelationClaimOp(
+                    op="upsert",
+                    source_model_id=None,
+                    target_model_id=b,
+                    subject_ref={"kind": "model", "model_id": str(a)},
+                    object_ref={"kind": "model", "model_id": str(b)},
+                    predicate="weakens",
+                    edge_kind="weakens",
+                    endpoint_binding_status="bound",
+                    write_policy="accepted_edge",
+                    status="accepted",
+                    confidence=0.72,
+                    binding_confidence=0.88,
+                    evidence_event_ids=[obs_id],
+                    evidence_model_ids=[a, b],
+                    explanation="The source model weakens the target model.",
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert validated.dropped_op_count == 0
+    assert len(validated.relation_claim_ops) == 1
+    relation = validated.relation_claim_ops[0]
+    assert relation.source_model_id == a
+    assert relation.target_model_id == b
+    assert relation.endpoint_binding_status == "bound"
+    assert relation.write_policy == "accepted_edge"
+
+
+async def test_validate_drops_accepted_relation_claim_with_one_resolvable_ref(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    a, _ = await _make_model(fresh_db, tenant, confidence=0.6)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(op="update", model_id=a, changes={"confidence": 0.55}),
+            ],
+            relation_claim_ops=[
+                RelationClaimOp(
+                    op="upsert",
+                    source_model_id=None,
+                    target_model_id=None,
+                    subject_ref={"kind": "model", "model_id": str(a)},
+                    object_ref={"kind": "text", "text": "missing endpoint"},
+                    predicate="weakens",
+                    edge_kind="weakens",
+                    endpoint_binding_status="bound",
+                    write_policy="accepted_edge",
+                    status="accepted",
+                    confidence=0.72,
+                    binding_confidence=0.88,
+                    explanation="Only one endpoint is bound.",
+                )
+            ],
+        )
+        validated = await validate(diff, rr, conn, allowed_region=None)
+
+    assert len(validated.claim_ops) == 1
+    assert validated.relation_claim_ops == []
+    assert validated.dropped_op_count == 1
+    assert "accepted relation claim requires bound endpoints" in (
+        validated.dropped_op_errors[0]
+    )
+
+
 async def test_validate_adds_required_weight_for_accepted_relation_claim(
     fresh_db,
     tenant,

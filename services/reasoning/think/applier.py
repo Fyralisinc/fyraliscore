@@ -11,12 +11,13 @@ BEFORE any op runs. If the transaction commits, outcome is updated to
 'success' in the SAME transaction. A second Think run with the same
 trigger_id sees the existing row and short-circuits.
 
-Partial-failure policy: claim apply failures remain transaction-fatal
-because downstream ops may depend on newly-created Models. Domain-invalid
-edge, act, and resource ops discovered late at apply time are classified
-and dropped, matching the validator's partial-accept policy. Unexpected
-errors still propagate and roll back the whole transaction —
-applied_triggers row included.
+Partial-failure policy: domain-invalid non-claim ops discovered late at apply
+time are classified and dropped, matching the validator's partial-accept
+policy. Claim inserts whose generated scope or payload references fail central
+Model validation are also dropped; downstream ops that depended on a dropped
+insert fail closed through their own missing-reference checks. Unexpected
+errors still propagate and roll back the whole transaction — applied_triggers
+row included.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -35,7 +36,7 @@ from lib.shared.errors import CompanyOSError, InvariantViolation, ValidationErro
 from lib.shared.ids import uuid7
 from lib.shared.memory_grammar import derive_memory_grammar
 from lib.shared.types import ModelCreate
-from lib.shared.edge_registry import EdgeRegistryError
+from lib.shared.edge_registry import EdgeRegistryError, get_spec
 from services.domain.acts import commitments as commitments_svc
 from services.domain.acts import decisions as decisions_svc
 from services.domain.acts import goals as goals_svc
@@ -830,15 +831,53 @@ async def _apply_one_expanded_claim_op(
         and recon_result.decision == "auto_merge"
         and recon_result.replacement_op is not None
     )
-    apply_result = await _apply_claim_op(
-        op,
-        conn,
-        models_repo,
-        diff.tenant_id,
-        cause_event_id=trigger_cause_event_id,
-        trigger_supporting_event_ids=trigger_evidence_ids,
-        audit_cause_override=("reconciliation_merge" if is_recon_merge else None),
-    )
+    try:
+        apply_result = await _apply_claim_op(
+            op,
+            conn,
+            models_repo,
+            diff.tenant_id,
+            cause_event_id=trigger_cause_event_id,
+            trigger_supporting_event_ids=trigger_evidence_ids,
+            audit_cause_override=("reconciliation_merge" if is_recon_merge else None),
+        )
+    except ValidationError as exc:
+        if op.op != "insert":
+            raise
+        reason = _classify_apply_claim_drop_reason(exc)
+        message = getattr(exc, "message", str(exc))
+        log_dropped_op(
+            trigger_id=diff.trigger_ref,
+            tenant_id=diff.tenant_id,
+            op_kind=op.op,
+            op_type="claim",
+            failure_reason=reason,
+            original_op=op,
+        )
+        await _record_apply_drop(
+            conn,
+            tenant_id=diff.tenant_id,
+            op_type="claim",
+            op_kind=op.op,
+            reason=reason,
+            message=message,
+        )
+        ops_summary["apply_dropped_op_count"] += 1
+        ops_summary["apply_dropped_op_errors"].append(message)
+        summary = {
+            "op": "skip",
+            "claim_op": op.op,
+            "reason": reason,
+            "message": message,
+        }
+        _annotate_claim_result_summary(
+            summary,
+            recon_result=recon_result,
+            verdict=verdict,
+            split_group_id=split_group_id,
+        )
+        ops_summary["claim_ops"].append(summary)
+        return
     _annotate_claim_result_summary(
         apply_result["summary"],
         recon_result=recon_result,
@@ -1341,6 +1380,10 @@ async def _apply_memory_lifecycle_ops_for_diff(
             "compiled_op": apply_result["summary"].get("op"),
             "changed": apply_result["summary"].get("changed", []),
             "archive_reason": apply_result["summary"].get("reason"),
+            "support_relation_drops": apply_result["summary"].get(
+                "support_relation_drops",
+                [],
+            ),
             "resolution_outcome": _lifecycle_resolution_outcome(op),
             "superseded_by_model_id": (
                 str(op.superseded_by_model_id)
@@ -1817,7 +1860,9 @@ async def _emit_valid_diff_outcome_events(
             )
 
 
-_QUESTION_POLICY_FEEDBACK_TAGS = frozenset({"question_policy", "capability_probe"})
+_QUESTION_POLICY_FEEDBACK_SOURCE_TAGS = frozenset(
+    {"capability_probe", "lifecycle_obligation"}
+)
 
 
 def _accepted_question_policy_probe_model_ids(
@@ -1829,7 +1874,10 @@ def _accepted_question_policy_probe_model_ids(
         if not isinstance(item, dict):
             continue
         tags = {str(tag) for tag in (item.get("domain_tags") or [])}
-        if not _QUESTION_POLICY_FEEDBACK_TAGS <= tags:
+        if (
+            "question_policy" not in tags
+            or not tags & _QUESTION_POLICY_FEEDBACK_SOURCE_TAGS
+        ):
             continue
         model_id = _coerce_uuid_or_none(item.get("model_id"))
         if model_id is None or model_id in seen:
@@ -2675,6 +2723,23 @@ def _classify_apply_act_drop_reason(exc: Exception) -> str:
     return "unclassified"
 
 
+def _classify_apply_claim_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "scope_actors reference" in msg or "non-existent actor" in msg:
+        return "invalid_scope_actor_reference"
+    if "scope_entities reference" in msg or "unknown entity kind" in msg:
+        return "invalid_scope_entity_reference"
+    if "model" in msg and "not found" in msg:
+        return "missing_model_reference"
+    if "falsifier" in msg:
+        return "inadequate_falsifier"
+    if "embedding dim" in msg:
+        return "invalid_embedding"
+    if "proposition" in msg or "requires" in msg:
+        return "invalid_shape"
+    return "apply_validation_error"
+
+
 def _classify_apply_edge_drop_reason(exc: Exception) -> str:
     msg = str(getattr(exc, "message", exc)).lower()
     if "cycle" in msg:
@@ -2748,6 +2813,7 @@ _ALLOWED_MODEL_UPDATE_COLUMNS = {
 class _ClaimUpdatePreparation:
     changes: dict[str, Any]
     changed_fields_for_summary: set[str]
+    support_relation_drops: list[dict[str, Any]] = field(default_factory=list)
     situation_merge_payload: dict[str, Any] | None = None
     resolution_update_dropped: bool = False
 
@@ -4267,6 +4333,12 @@ async def _prepare_claim_update(
         cause_event_id=cause_event_id,
         trigger_supporting_event_ids=trigger_supporting_event_ids,
     )
+    support_relation_drops = await _prune_conflicting_supporting_model_ids(
+        changes,
+        conn,
+        tenant_id=tenant_id,
+        model_id=op.model_id,
+    )
     resolution_update_dropped = _drop_inconsistent_resolution_update(
         changes,
         user_change_keys,
@@ -4274,6 +4346,7 @@ async def _prepare_claim_update(
     return _ClaimUpdatePreparation(
         changes=changes,
         changed_fields_for_summary=set(changes.keys()),
+        support_relation_drops=support_relation_drops,
         situation_merge_payload=situation_merge_payload,
         resolution_update_dropped=resolution_update_dropped,
     )
@@ -4317,6 +4390,68 @@ async def _merge_supporting_update_ids(
         changes["supporting_event_ids"] = merged_supporting_ids
     else:
         changes.pop("supporting_event_ids", None)
+
+
+async def _prune_conflicting_supporting_model_ids(
+    changes: dict[str, Any],
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID | None,
+) -> list[dict[str, Any]]:
+    if model_id is None or "supporting_model_ids" not in changes:
+        return []
+
+    desired_supports = _merge_event_ids(changes.get("supporting_model_ids"))
+    if not desired_supports:
+        changes["supporting_model_ids"] = []
+        return []
+
+    mutually_exclusive = get_spec("supports").mutually_exclusive_with
+    if not mutually_exclusive:
+        changes["supporting_model_ids"] = desired_supports
+        return []
+
+    rows = await conn.fetch(
+        """
+        SELECT source_model_id, edge_kind
+        FROM model_edges
+        WHERE tenant_id = $1
+          AND source_model_id = ANY($2::uuid[])
+          AND target_model_id = $3
+          AND status = 'active'
+          AND review_status != 'rejected'
+          AND edge_kind = ANY($4::text[])
+        """,
+        tenant_id,
+        desired_supports,
+        model_id,
+        list(mutually_exclusive),
+    )
+    conflicts_by_source: dict[UUID, str] = {}
+    for row in rows:
+        conflicts_by_source.setdefault(row["source_model_id"], row["edge_kind"])
+    if not conflicts_by_source:
+        changes["supporting_model_ids"] = desired_supports
+        return []
+
+    kept_supports = [
+        source for source in desired_supports if source not in conflicts_by_source
+    ]
+    changes["supporting_model_ids"] = kept_supports
+    return [
+        {
+            "op": "skip",
+            "edge_kind": "supports",
+            "source_model_id": str(source),
+            "target_model_id": str(model_id),
+            "reason": "mutually_exclusive_edge",
+            "conflicting_edge_kind": conflicts_by_source[source],
+            "source": "claim_update_relation_sync",
+        }
+        for source in desired_supports
+        if source in conflicts_by_source
+    ]
 
 
 def _drop_inconsistent_resolution_update(
@@ -5134,6 +5269,11 @@ def _claim_update_result(
             **(
                 {"dropped_inconsistent_resolution_update": True}
                 if prepared.resolution_update_dropped
+                else {}
+            ),
+            **(
+                {"support_relation_drops": prepared.support_relation_drops}
+                if prepared.support_relation_drops
                 else {}
             ),
         },

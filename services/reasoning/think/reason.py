@@ -57,6 +57,7 @@ from .applier import AlreadyAppliedError, apply_diff, check_already_applied
 from .debug_capture import capture as debug_capture
 from .debug_capture import capture_with_pool as debug_capture_with_pool
 from .deterministic import is_authoritative
+from .lanes import classify_trigger_lane
 from .observability import (
     METRICS,
     ThinkRunRecord,
@@ -348,11 +349,20 @@ def _start_think_record(
     trigger_id = _trigger_ref(trigger)
     trigger_kind_full = trigger_kind_subkind or trigger.kind
     run_id = uuid7()
+    seed_payload = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
+    lane_decision = classify_trigger_lane(
+        trigger.kind,
+        trigger.subkind,
+        seed_payload,
+    )
     record = ThinkRunRecord(
         id=run_id,
         tenant_id=trigger.tenant_id,
         trigger_id=trigger_id,
         trigger_kind=trigger_kind_full,
+        lane=lane_decision.lane.value,
     )
 
     METRICS.inc_run(trigger_kind_full)
@@ -361,6 +371,8 @@ def _start_think_record(
         run_id=str(run_id),
         trigger_id=str(trigger_id),
         trigger_kind=trigger_kind_full,
+        lane=record.lane,
+        lane_reason=lane_decision.reason,
         tenant_id=str(trigger.tenant_id),
     )
     return trigger_id, trigger_kind_full, record
@@ -752,19 +764,21 @@ async def _record_failed_run(
             await conn.execute(
                 """
                 INSERT INTO think_runs (
-                  id, tenant_id, trigger_id, trigger_kind,
+                  id, tenant_id, trigger_id, trigger_kind, lane,
                   started_at, ended_at, status, error
                 )
-                VALUES ($1, $2, $3, $4, now(), now(), 'failed', $5)
+                VALUES ($1, $2, $3, $4, $5, now(), now(), 'failed', $6)
                 ON CONFLICT (id) DO UPDATE
                 SET ended_at = now(),
                     status = 'failed',
+                    lane = COALESCE(EXCLUDED.lane, think_runs.lane),
                     error = EXCLUDED.error
                 """,
                 record.id,
                 record.tenant_id,
                 record.trigger_id,
                 record.trigger_kind,
+                record.lane,
                 (error or "failed")[:4000],
             )
     except Exception as exc:  # noqa: BLE001
@@ -1207,6 +1221,7 @@ async def _publish_anomalies_and_enqueue_post_commit(
             and summary.get("op") == "insert"
             and summary.get("open_question_id")
         ],
+        applied_ops_summary=applied,
     )
     await assert_tx_usable(conn, "post_commit_enqueue")
     return anomalies

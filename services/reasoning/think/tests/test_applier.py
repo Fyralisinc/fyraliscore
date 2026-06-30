@@ -202,6 +202,81 @@ async def test_apply_single_claim_insert(fresh_db, tenant, tenant_cleanup):
         assert outcome == "success"
 
 
+async def test_apply_drops_claim_insert_with_missing_scope_actor(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    """Generated claim inserts with stale actor scope should not fail T1."""
+    from services.reasoning.think.tests.conftest import make_embedding
+
+    async with fresh_db.acquire() as conn:
+        oid = uuid7()
+        missing_actor_id = uuid7()
+        await conn.execute(
+            """
+            INSERT INTO observations
+              (id, tenant_id, occurred_at, kind, source_channel,
+               content, content_text, embedding, embedding_pending, trust_tier)
+            VALUES ($1, $2, now(), 'signal', 'test', '{}'::jsonb, 'x',
+                    $3, FALSE, 'authoritative')
+            """,
+            oid,
+            tenant,
+            make_embedding("x"),
+        )
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            claim_ops=[
+                ClaimOp(
+                    op="insert",
+                    entry={
+                        "tenant_id": str(tenant),
+                        "born_from_event_id": str(oid),
+                        "proposition": {
+                            "kind": "state",
+                            "subject": "x",
+                            "assertion": "ships",
+                        },
+                        "natural": "x ships",
+                        "embedding": make_embedding("x ships"),
+                        "scope_actors": [str(missing_actor_id)],
+                        "scope_entities": [],
+                        "scope_temporal": {},
+                        "confidence": 0.6,
+                        "confidence_at_assertion": 0.6,
+                    },
+                ),
+            ],
+        )
+        repo = ModelsRepo(fresh_db, embedder=None)
+        async with conn.transaction():
+            result = await apply_diff(
+                diff,
+                conn,
+                trigger_kind="T1",
+                trigger_cause_event_id=oid,
+                models_repo=repo,
+            )
+
+        model_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM models WHERE tenant_id = $1",
+            tenant,
+        )
+        outcome = await conn.fetchval(
+            "SELECT outcome FROM applied_triggers WHERE trigger_id = $1",
+            diff.trigger_ref,
+        )
+
+    assert model_count == 0
+    assert outcome == "success"
+    assert result["applied_model_ids"] == []
+    assert result["apply_dropped_op_count"] == 1
+    assert result["claim_ops"][0]["op"] == "skip"
+    assert result["claim_ops"][0]["reason"] == "invalid_scope_actor_reference"
+
+
 async def test_source_digest_pattern_insert_stays_single_pattern_model(
     fresh_db,
     tenant,
@@ -3536,6 +3611,110 @@ async def test_apply_relation_claim_does_not_supersede_manual_support_edge(
     assert support["review_status"] == "accepted"
     assert weakens_count == 0
     assert a in list(target_arrays["supporting_model_ids"] or [])
+
+
+async def test_memory_lifecycle_prunes_counterevidence_support_sync(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    from services.domain.models.edges_repo import EdgesRepo
+    from services.reasoning.think.tests.conftest import _insert_observation
+
+    async with fresh_db.acquire() as conn:
+        oid = await _insert_observation(
+            conn,
+            tenant,
+            content_text="Fresh telemetry weakens the launch readiness claim",
+            external_id=f"memory-lifecycle-counterevidence-{uuid7()}",
+        )
+        evidence = await _insert_applier_model(
+            conn,
+            tenant,
+            oid,
+            "Fresh telemetry says launch readiness degraded",
+        )
+        target = await _insert_applier_model(
+            conn,
+            tenant,
+            oid,
+            "Launch readiness is stable",
+        )
+        async with conn.transaction():
+            await EdgesRepo().link(
+                conn,
+                source=evidence,
+                target=target,
+                kind="weakens",
+                tenant_id=tenant,
+                detected_by="think_edge_op",
+                weight=0.72,
+                created_by_event_id=oid,
+                evidence_event_ids=[oid],
+                evidence_model_ids=[evidence],
+            )
+
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            memory_lifecycle_ops=[
+                MemoryLifecycleOp(
+                    model_id=target,
+                    action="unchanged",
+                    evidence_event_ids=[oid],
+                    evidence_model_ids=[evidence],
+                    rationale="The new evidence is relevant, but it is counterevidence.",
+                )
+            ],
+        )
+        async with conn.transaction():
+            result = await apply_diff(diff, conn, "T4", oid)
+
+        target_arrays = await conn.fetchrow(
+            "SELECT supporting_model_ids FROM models WHERE id = $1",
+            target,
+        )
+        support_count = await conn.fetchval(
+            """
+            SELECT count(*)
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND edge_kind = 'supports'
+            """,
+            tenant,
+            evidence,
+            target,
+        )
+        weakens = await conn.fetchrow(
+            """
+            SELECT status, review_status
+            FROM model_edges
+            WHERE tenant_id = $1
+              AND source_model_id = $2
+              AND target_model_id = $3
+              AND edge_kind = 'weakens'
+            """,
+            tenant,
+            evidence,
+            target,
+        )
+
+    lifecycle_summary = result["memory_lifecycle_ops"][0]
+    assert result["apply_dropped_op_count"] == 0
+    assert lifecycle_summary["compiled_op"] == "update"
+    assert lifecycle_summary["support_relation_drops"][0]["reason"] == (
+        "mutually_exclusive_edge"
+    )
+    assert lifecycle_summary["support_relation_drops"][0]["conflicting_edge_kind"] == (
+        "weakens"
+    )
+    assert support_count == 0
+    assert weakens is not None
+    assert weakens["status"] == "active"
+    assert weakens["review_status"] == "accepted"
+    assert evidence not in list(target_arrays["supporting_model_ids"] or [])
 
 
 async def test_apply_symmetric_relation_claim_supersedes_reverse_support(

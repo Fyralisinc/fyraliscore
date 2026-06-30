@@ -534,6 +534,22 @@ async def _attach_dynamic_signals(
         reasoning_frame = reasoning_frame.with_dynamic_signals(
             [signal.to_dict() for signal in dynamic_signals]
         )
+        if not _should_emit_missing_transition_triggers(trigger):
+            missing_transition_count = sum(
+                1
+                for signal in dynamic_signals
+                if signal.dynamic_kind == "missing_transition"
+            )
+            if missing_transition_count:
+                retrieval_result.notes[
+                    "missing_transition_emission_skipped"
+                ] = {
+                    "reason": "non_t1_trigger",
+                    "trigger_kind": trigger.kind,
+                    "trigger_subkind": trigger.subkind,
+                    "signal_count": missing_transition_count,
+                }
+            return reasoning_frame
         try:
             emitted = await emit_missing_transition_triggers(
                 conn,
@@ -572,8 +588,14 @@ async def _attach_dynamic_signals(
             tenant_id=str(trigger.tenant_id),
             trigger_kind=trigger.kind,
             error=str(exc),
-        )
+            )
     return reasoning_frame
+
+
+def _should_emit_missing_transition_triggers(
+    trigger: TriggerContext,
+) -> bool:
+    return trigger.kind == "T1"
 
 
 def _raise_if_postgres_error(exc: Exception) -> None:
