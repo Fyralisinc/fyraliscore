@@ -325,24 +325,7 @@ class ProjectionRepo:
               r.projection_name,
               c.last_processed_event_id,
               c.last_processed_event_created_at,
-              c.updated_at,
-              CASE
-                WHEN c.last_processed_event_created_at IS NULL
-                  OR c.last_processed_event_id IS NULL
-                THEN NULL
-                ELSE EXISTS (
-                  SELECT 1
-                  FROM model_events e
-                  WHERE e.tenant_id = $1
-                    AND (
-                      e.created_at > c.last_processed_event_created_at
-                      OR (
-                        e.created_at = c.last_processed_event_created_at
-                        AND e.id > c.last_processed_event_id
-                      )
-                    )
-                )
-              END AS pending_exists
+              c.updated_at
             FROM requested r
             LEFT JOIN projection_checkpoints c
               ON c.tenant_id = $1
@@ -360,7 +343,16 @@ class ProjectionRepo:
                 row["last_processed_event_created_at"] is None
                 or row["last_processed_event_id"] is None
             )
-            pending_exists = bool(row["pending_exists"]) if not checkpoint_missing else False
+            pending_exists = (
+                _event_after(
+                    latest["id"],
+                    latest["created_at"],
+                    row["last_processed_event_id"],
+                    row["last_processed_event_created_at"],
+                )
+                if not checkpoint_missing
+                else False
+            )
             out.append(
                 ProjectionStaleness(
                     projection_name=row["projection_name"],
@@ -381,6 +373,19 @@ class ProjectionRepo:
                 )
             )
         return out
+
+
+def _event_after(
+    event_id: UUID,
+    event_created_at: datetime,
+    checkpoint_event_id: UUID,
+    checkpoint_event_created_at: datetime,
+) -> bool:
+    if event_created_at > checkpoint_event_created_at:
+        return True
+    if event_created_at < checkpoint_event_created_at:
+        return False
+    return event_id.int > checkpoint_event_id.int
 
 
 def _hydrate_projection(row: asyncpg.Record) -> ProjectionRecord:

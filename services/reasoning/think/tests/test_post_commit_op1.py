@@ -33,6 +33,7 @@ from services.reasoning.edge_intelligence import (
     EdgeIntelligenceRepo,
     PairEvidenceObservation,
 )
+from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.think.diff_schema import ClaimOp, OpenQuestionOp, ValidatedDiff
 from services.reasoning.think.post_commit import (
     BACKOFF_BASE_SECONDS,
@@ -291,6 +292,123 @@ async def test_enqueue_discovers_edges_for_applied_models(
     projection_payload = json.loads(projection_payload)
     assert projection_payload["model_ids"] == [str(model_a), str(model_b)]
     assert projection_payload["projection_names"] == ["all"]
+    assert projection_payload["limit"] == 24
+
+
+async def test_enqueue_edge_discovery_uses_insert_summary_and_suppresses_downstream_think(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    trigger_ref = uuid.uuid4()
+    inserted_model = uuid.uuid4()
+    updated_model = uuid.uuid4()
+    diff = ValidatedDiff(
+        trigger_ref=trigger_ref,
+        tenant_id=tenant,
+        claim_ops=[],
+        act_ops=[],
+        resource_ops=[],
+        new_predictions=[],
+    )
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await enqueue_post_commit_actions(
+                trigger=TriggerContext(
+                    kind="T4",
+                    tenant_id=tenant,
+                    subkind="latent_relationship_candidate",
+                ),
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[],
+                applied_model_ids=[inserted_model, updated_model],
+                applied_ops_summary={
+                    "claim_ops": [
+                        {"op": "insert", "model_id": str(inserted_model)},
+                        {"op": "update", "model_id": str(updated_model)},
+                    ]
+                },
+            )
+
+    payload = await db_pool.fetchval(
+        """
+        SELECT action_payload
+        FROM pending_post_commit_actions
+        WHERE trigger_id = $1 AND action_kind = 'discover_model_edges'
+        """,
+        trigger_ref,
+    )
+    payload = json.loads(payload)
+    assert payload["model_ids"] == [str(inserted_model)]
+    assert payload["selector"] == "claim_insert_models"
+    assert payload["source_trigger_kind"] == "T4"
+    assert payload["source_trigger_subkind"] == "latent_relationship_candidate"
+    assert payload["enqueue_think"] is False
+    assert payload["think_enqueue_budget"] == 0
+
+    projection_payload = await db_pool.fetchval(
+        """
+        SELECT action_payload
+        FROM pending_post_commit_actions
+        WHERE trigger_id = $1 AND action_kind = 'materialize_projections'
+        """,
+        trigger_ref,
+    )
+    projection_payload = json.loads(projection_payload)
+    assert projection_payload["model_ids"] == [
+        str(inserted_model),
+        str(updated_model),
+    ]
+    assert projection_payload["selector"] == "all_applied_models"
+    assert projection_payload["projection_names"] == ["constraints"]
+
+
+async def test_enqueue_t1_edge_discovery_caps_immediate_topology_think_budget(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    trigger_ref = uuid.uuid4()
+    models = [uuid.uuid4() for _ in range(4)]
+    diff = ValidatedDiff(
+        trigger_ref=trigger_ref,
+        tenant_id=tenant,
+        claim_ops=[],
+        act_ops=[],
+        resource_ops=[],
+        new_predictions=[],
+    )
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await enqueue_post_commit_actions(
+                trigger=TriggerContext(kind="T1", tenant_id=tenant),
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[],
+                applied_model_ids=models,
+                applied_ops_summary={
+                    "claim_ops": [
+                        {"op": "insert", "model_id": str(model_id)}
+                        for model_id in models
+                    ]
+                },
+            )
+
+    payload = await db_pool.fetchval(
+        """
+        SELECT action_payload
+        FROM pending_post_commit_actions
+        WHERE trigger_id = $1 AND action_kind = 'discover_model_edges'
+        """,
+        trigger_ref,
+    )
+    payload = json.loads(payload)
+    assert payload["model_ids"] == [str(model_id) for model_id in models]
+    assert payload["enqueue_think"] is True
+    assert payload["think_enqueue_budget"] == 2
 
 
 async def test_enqueue_searches_applied_open_questions(

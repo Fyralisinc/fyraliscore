@@ -208,14 +208,17 @@ async def test_list_staleness_batches_names_and_preserves_requested_order() -> N
                     "last_processed_event_id": None,
                     "last_processed_event_created_at": None,
                     "updated_at": None,
-                    "pending_exists": None,
                 },
                 {
                     "projection_name": "constraints",
                     "last_processed_event_id": checkpoint_event_id,
-                    "last_processed_event_created_at": now,
+                    "last_processed_event_created_at": datetime(
+                        2026,
+                        1,
+                        1,
+                        tzinfo=timezone.utc,
+                    ),
                     "updated_at": now,
-                    "pending_exists": True,
                 },
             ]
         ],
@@ -228,8 +231,41 @@ async def test_list_staleness_batches_names_and_preserves_requested_order() -> N
     )
 
     assert conn.fetch_calls[0][1][1] == ["resources", "constraints"]
+    assert "EXISTS" not in conn.fetch_calls[0][0]
+    assert "FROM model_events e" not in conn.fetch_calls[0][0]
     assert [(entry.projection_name, entry.reason) for entry in staleness] == [
         ("resources", "no_checkpoint"),
         ("constraints", "pending_model_events"),
     ]
     assert all(entry.latest_model_event_id == latest_event_id for entry in staleness)
+
+
+@pytest.mark.asyncio
+async def test_list_staleness_marks_checkpoint_current_without_event_scan() -> None:
+    tenant_id = uuid7()
+    latest_event_id = uuid7()
+    now = datetime.now(timezone.utc)
+    conn = _FakeConn(
+        fetchrow_rows=[{"id": latest_event_id, "created_at": now}],
+        fetch_rows=[
+            [
+                {
+                    "projection_name": "resources",
+                    "last_processed_event_id": latest_event_id,
+                    "last_processed_event_created_at": now,
+                    "updated_at": now,
+                },
+            ]
+        ],
+    )
+
+    staleness = await ProjectionRepo().list_staleness(
+        conn,  # type: ignore[arg-type]
+        tenant_id=tenant_id,
+        projection_names=["resources"],
+    )
+
+    assert len(staleness) == 1
+    assert staleness[0].is_stale is False
+    assert staleness[0].reason == "current"
+    assert "model_events e" not in conn.fetch_calls[0][0]

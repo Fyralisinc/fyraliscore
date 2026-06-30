@@ -67,6 +67,9 @@ BACKOFF_CAP_SECONDS = 300
 
 POLL_INTERVAL_SECONDS = 2.0
 BATCH_SIZE = 10
+PROJECTION_EVENTS_PER_MODEL = 8
+PROJECTION_MIN_EVENT_LIMIT = 24
+PROJECTION_MAX_EVENT_LIMIT = 1000
 
 ACTION_KINDS = (
     "publish_anomalies",
@@ -91,6 +94,19 @@ dispatch, not exactly-once. A crash mid-dispatch leaves the action
 available for retry; if the handler partially completed, its second
 run should be a no-op for the already-done side effects.
 """
+
+
+@dataclass(frozen=True)
+class _ProjectionMaterializationDispatch:
+    mode: str
+    processed_events: int = 0
+    failed_events: int = 0
+    routed_events: int = 0
+    enqueued_jobs: int = 0
+    route_errors: int = 0
+    processed_jobs: int = 0
+    failed_jobs: int = 0
+    projection_errors: tuple[dict[str, Any], ...] = ()
 
 
 # Most default handlers are no-ops (publish_anomalies is already
@@ -166,6 +182,22 @@ async def _projection_tables_ready(conn: asyncpg.Connection) -> bool:
     return bool(rows) and all(row["exists"] for row in rows)
 
 
+async def _projection_delta_tables_ready(conn: asyncpg.Connection) -> bool:
+    rows = await conn.fetch(
+        """
+        SELECT to_regclass(name) IS NOT NULL AS exists
+        FROM unnest($1::text[]) AS name
+        """,
+        [
+            "public.projection_refresh_jobs",
+            "public.projection_dependencies",
+            "public.projection_watch_keys",
+            "public.projection_inquiry_state",
+        ],
+    )
+    return bool(rows) and all(row["exists"] for row in rows)
+
+
 async def _default_materialize_projections(
     payload: dict[str, Any],
     tenant_id: UUID,
@@ -176,23 +208,22 @@ async def _default_materialize_projections(
         return
 
     from lib.shared.db import get_pool
-    from services.domain.projections import ProjectionRunReport, ProjectionRunner
+    from services.domain.projections import (
+        ProjectionRunner,
+        enqueue_refreshes_for_event,
+    )
     from services.domain.projections.catalog import projectors_for
+    from services.domain.projections.store import fetch_events_for_models
 
     raw_limit = payload.get("limit")
-    try:
-        limit = (
-            int(raw_limit) if raw_limit is not None else max(100, len(model_ids) * 8)
-        )
-    except (TypeError, ValueError):
-        limit = max(100, len(model_ids) * 8)
-    limit = max(1, min(limit, 1000))
+    limit = _projection_event_limit(len(model_ids), raw_limit=raw_limit)
     projection_names = payload.get("projection_names")
     if not isinstance(projection_names, list) or not projection_names:
         projection_names = ["all"]
-    runner = ProjectionRunner(projectors_for(projection_names))
+    projectors = projectors_for(projection_names)
+    runner = ProjectionRunner(projectors)
 
-    async def _run(conn: asyncpg.Connection) -> ProjectionRunReport:
+    async def _run(conn: asyncpg.Connection) -> _ProjectionMaterializationDispatch:
         if not await _projection_tables_ready(conn):
             _log.info(
                 "post_commit.materialize_projections.skipped",
@@ -200,8 +231,77 @@ async def _default_materialize_projections(
                 trigger_id=str(trigger_id),
                 reason="projection_tables_missing",
             )
-            return ProjectionRunReport()
-        return await runner.run_once_detailed(conn, tenant_id=tenant_id, limit=limit)
+            return _ProjectionMaterializationDispatch(mode="skipped")
+        if await _projection_delta_tables_ready(conn):
+            events = await fetch_events_for_models(
+                conn,
+                tenant_id=tenant_id,
+                model_ids=model_ids,
+                limit=limit,
+            )
+            route_reports = [
+                await enqueue_refreshes_for_event(conn, event, projectors)
+                for event in events
+            ]
+            enqueued_jobs = sum(len(report.enqueued_jobs) for report in route_reports)
+            refresh_report = await runner.run_queued_refresh_jobs_once_detailed(
+                conn,
+                tenant_id=tenant_id,
+                limit=max(1, limit, enqueued_jobs),
+            )
+            route_errors = [
+                {
+                    "projection_name": error.projection_name,
+                    "projection_version": error.projection_version,
+                    "event_id": str(route_report.event_id),
+                    "stage": error.stage,
+                    "message": error.message,
+                }
+                for route_report in route_reports
+                for error in route_report.errors
+            ]
+            refresh_errors = [
+                {
+                    "projection_name": error.projection_name,
+                    "projection_version": error.projection_version,
+                    "subject_key": error.subject_key,
+                    "job_id": str(error.job_id),
+                    "stage": error.stage,
+                    "message": error.message,
+                }
+                for error in refresh_report.errors
+            ]
+            return _ProjectionMaterializationDispatch(
+                mode="delta_queue",
+                routed_events=len(events),
+                enqueued_jobs=enqueued_jobs,
+                route_errors=len(route_errors),
+                processed_jobs=refresh_report.processed_jobs,
+                failed_jobs=refresh_report.failed_jobs,
+                projection_errors=tuple([*route_errors, *refresh_errors][:5]),
+            )
+
+        legacy_report = await runner.run_once_detailed(
+            conn,
+            tenant_id=tenant_id,
+            limit=limit,
+        )
+        return _ProjectionMaterializationDispatch(
+            mode="legacy_checkpoint",
+            processed_events=legacy_report.processed_events,
+            failed_events=legacy_report.failed_events,
+            projection_errors=tuple(
+                {
+                    "projection_name": error.projection_name,
+                    "projection_version": error.projection_version,
+                    "event_id": str(error.event_id),
+                    "model_id": str(error.model_id),
+                    "stage": error.stage,
+                    "message": error.message,
+                }
+                for error in legacy_report.errors[:5]
+            ),
+        )
 
     conn = _DISPATCH_CONN.get()
     if conn is not None:
@@ -215,21 +315,17 @@ async def _default_materialize_projections(
         "post_commit.materialize_projections.dispatched",
         tenant_id=str(tenant_id),
         trigger_id=str(trigger_id),
+        mode=report.mode,
         model_count=len(model_ids),
         limit=limit,
         processed_events=report.processed_events,
         failed_events=report.failed_events,
-        projection_errors=[
-            {
-                "projection_name": error.projection_name,
-                "projection_version": error.projection_version,
-                "event_id": str(error.event_id),
-                "model_id": str(error.model_id),
-                "stage": error.stage,
-                "message": error.message,
-            }
-            for error in report.errors[:5]
-        ],
+        routed_events=report.routed_events,
+        enqueued_jobs=report.enqueued_jobs,
+        route_errors=report.route_errors,
+        processed_jobs=report.processed_jobs,
+        failed_jobs=report.failed_jobs,
+        projection_errors=list(report.projection_errors),
     )
 
 
@@ -241,6 +337,11 @@ async def _default_discover_model_edges(
     model_ids = _model_ids_from_payload(payload)
     if not model_ids:
         return
+    enqueue_think = bool(payload.get("enqueue_think", True))
+    think_enqueue_budget = _think_enqueue_budget_from_payload(
+        payload,
+        default=len(model_ids) if enqueue_think else 0,
+    )
 
     from lib.shared.db import get_pool
     from services.reasoning.edge_intelligence import promote_pair_evidence_candidates
@@ -265,14 +366,16 @@ async def _default_discover_model_edges(
         nonlocal pair_evidence_candidates_inserted
         nonlocal pair_evidence_candidates_skipped
         nonlocal pair_evidence_failed
+        remaining_think_budget = think_enqueue_budget
         for model_id in model_ids:
+            model_enqueue_think = enqueue_think and remaining_think_budget > 0
             try:
                 async with conn.transaction():
                     result = await service.generate_for_model_id(
                         conn,
                         tenant_id=tenant_id,
                         model_id=model_id,
-                        enqueue_think=True,
+                        enqueue_think=model_enqueue_think,
                     )
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{model_id}: {type(exc).__name__}: {exc}")
@@ -280,6 +383,11 @@ async def _default_discover_model_edges(
 
             candidates_inserted += len(result.inserted_candidates)
             think_triggers_enqueued += result.enqueued_think_triggers
+            if model_enqueue_think:
+                remaining_think_budget = max(
+                    0,
+                    remaining_think_budget - int(result.enqueued_think_triggers or 0),
+                )
             duplicates_suppressed += result.duplicates_suppressed
             if result.skipped_reason:
                 skipped[result.skipped_reason] = (
@@ -312,6 +420,11 @@ async def _default_discover_model_edges(
         tenant_id=str(tenant_id),
         trigger_id=str(trigger_id),
         model_count=len(model_ids),
+        enqueue_think=enqueue_think,
+        think_enqueue_budget=think_enqueue_budget,
+        source_trigger_kind=payload.get("source_trigger_kind"),
+        source_trigger_subkind=payload.get("source_trigger_subkind"),
+        selector=payload.get("selector"),
         candidates_inserted=candidates_inserted,
         think_triggers_enqueued=think_triggers_enqueued,
         duplicates_suppressed=duplicates_suppressed,
@@ -613,9 +726,56 @@ def _prediction_payload_key(entry: dict[str, Any]) -> str:
 
 def _edge_discovery_payload(
     applied_model_ids: list[UUID] | tuple[UUID, ...] | None,
+    *,
+    trigger: TriggerContext | Any | None = None,
+    applied_ops_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    selected_model_ids, selector = _edge_discovery_model_ids(
+        applied_model_ids,
+        applied_ops_summary=applied_ops_summary,
+    )
+    source_kind = str(getattr(trigger, "kind", "") or "")
+    source_subkind = str(getattr(trigger, "subkind", "") or "")
+    enqueue_think = source_kind == "T1"
+    return {
+        "model_ids": [str(model_id) for model_id in selected_model_ids],
+        "source_trigger_kind": source_kind or None,
+        "source_trigger_subkind": source_subkind or None,
+        "selector": selector,
+        # Only primary business-signal batches should promote fresh topology
+        # hints into immediate T4 Think. Downstream maintenance runs may still
+        # persist cheap candidate memory, but should not recursively spend LLM.
+        "enqueue_think": enqueue_think,
+        "think_enqueue_budget": _edge_discovery_think_enqueue_budget(
+            source_kind=source_kind,
+            model_count=len(selected_model_ids),
+        ),
+    }
+
+
+def _edge_discovery_think_enqueue_budget(
+    *,
+    source_kind: str,
+    model_count: int,
+) -> int:
+    if source_kind != "T1" or model_count <= 0:
+        return 0
+    return max(1, min(2, int(model_count)))
+
+
+def _edge_discovery_model_ids(
+    applied_model_ids: list[UUID] | tuple[UUID, ...] | None,
+    *,
+    applied_ops_summary: dict[str, Any] | None = None,
+) -> tuple[list[UUID], str]:
+    inserted = _inserted_model_ids_from_apply_summary(applied_ops_summary)
+    if inserted:
+        return inserted, "claim_insert_models"
+    if applied_ops_summary is not None:
+        return [], "no_claim_insert_models"
+
     seen: set[UUID] = set()
-    model_ids: list[str] = []
+    model_ids: list[UUID] = []
     for value in applied_model_ids or ():
         try:
             model_id = value if isinstance(value, UUID) else UUID(str(value))
@@ -624,20 +784,141 @@ def _edge_discovery_payload(
         if model_id in seen:
             continue
         seen.add(model_id)
-        model_ids.append(str(model_id))
-    return {"model_ids": model_ids}
+        model_ids.append(model_id)
+    return model_ids, "legacy_all_applied_models"
+
+
+def _inserted_model_ids_from_apply_summary(
+    applied_ops_summary: dict[str, Any] | None,
+) -> list[UUID]:
+    if not isinstance(applied_ops_summary, dict):
+        return []
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for summary in applied_ops_summary.get("claim_ops") or ():
+        if not isinstance(summary, dict) or summary.get("op") != "insert":
+            continue
+        raw_model_id = summary.get("model_id")
+        try:
+            model_id = (
+                raw_model_id
+                if isinstance(raw_model_id, UUID)
+                else UUID(str(raw_model_id))
+            )
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if model_id not in seen:
+            seen.add(model_id)
+            out.append(model_id)
+    return out
 
 
 def _projection_materialization_payload(
     applied_model_ids: list[UUID] | tuple[UUID, ...] | None,
+    *,
+    trigger: TriggerContext | Any | None = None,
+    applied_ops_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload = _edge_discovery_payload(applied_model_ids)
-    model_count = len(payload["model_ids"])
+    selected_model_ids = _dedupe_model_ids(applied_model_ids)
+    source_kind = str(getattr(trigger, "kind", "") or "")
+    source_subkind = str(getattr(trigger, "subkind", "") or "")
+    model_count = len(selected_model_ids)
     return {
-        **payload,
-        "projection_names": ["all"],
-        "limit": max(100, min(1000, model_count * 8 if model_count else 0)),
+        "model_ids": [str(model_id) for model_id in selected_model_ids],
+        "source_trigger_kind": source_kind or None,
+        "source_trigger_subkind": source_subkind or None,
+        "selector": "all_applied_models",
+        "projection_names": _projection_names_for_apply_summary(applied_ops_summary),
+        "limit": _projection_event_limit(model_count),
     }
+
+
+def _projection_names_for_apply_summary(
+    applied_ops_summary: dict[str, Any] | None,
+) -> list[str]:
+    if not isinstance(applied_ops_summary, dict):
+        return ["all"]
+
+    names: set[str] = set()
+    if _summary_has_items(applied_ops_summary, "resource_ops"):
+        names.add("resources")
+    if _summary_has_actor_profile_signal(applied_ops_summary):
+        names.add("employee_profiles")
+    if any(
+        _summary_has_items(applied_ops_summary, key)
+        for key in (
+            "claim_ops",
+            "memory_lifecycle_ops",
+            "relation_claim_ops",
+            "relation_frame_ops",
+            "edge_ops",
+            "ontology_gap_ops",
+            "open_question_ops",
+            "act_ops",
+        )
+    ):
+        names.add("constraints")
+    if not names:
+        names.add("constraints")
+    return sorted(names)
+
+
+def _summary_has_items(summary: dict[str, Any], key: str) -> bool:
+    value = summary.get(key)
+    return isinstance(value, list) and bool(value)
+
+
+def _summary_has_actor_profile_signal(summary: dict[str, Any]) -> bool:
+    employee_tags = {
+        "actor",
+        "capacity",
+        "employee",
+        "employees",
+        "mentorship",
+        "people",
+        "preference",
+        "support_need",
+        "team",
+        "work_pattern",
+        "work_style",
+        "workload",
+    }
+    profile_roles = {
+        "capability",
+        "concern",
+        "pattern",
+        "relation",
+        "recommendation",
+    }
+    for item in summary.get("claim_ops") or ():
+        if not isinstance(item, dict):
+            continue
+        tags = {
+            str(tag).casefold()
+            for tag in item.get("domain_tags") or ()
+            if str(tag).strip()
+        }
+        if tags.intersection(employee_tags):
+            return True
+        if str(item.get("claim_role") or "").casefold() in profile_roles:
+            return True
+    return False
+
+
+def _projection_event_limit(model_count: int, *, raw_limit: Any = None) -> int:
+    if raw_limit is not None:
+        try:
+            explicit = int(raw_limit)
+        except (TypeError, ValueError):
+            explicit = None
+        if explicit is not None:
+            return max(1, min(explicit, PROJECTION_MAX_EVENT_LIMIT))
+
+    scaled = max(
+        PROJECTION_MIN_EVENT_LIMIT,
+        max(0, int(model_count)) * PROJECTION_EVENTS_PER_MODEL,
+    )
+    return max(1, min(scaled, PROJECTION_MAX_EVENT_LIMIT))
 
 
 def _open_questions_payload(
@@ -683,9 +964,15 @@ def _open_questions_payload(
 
 
 def _model_ids_from_payload(payload: dict[str, Any]) -> list[UUID]:
+    return _dedupe_model_ids(payload.get("model_ids") or ())
+
+
+def _dedupe_model_ids(
+    values: list[UUID] | tuple[UUID, ...] | list[Any] | tuple[Any, ...] | Any,
+) -> list[UUID]:
     out: list[UUID] = []
     seen: set[UUID] = set()
-    for value in payload.get("model_ids") or ():
+    for value in values or ():
         try:
             model_id = value if isinstance(value, UUID) else UUID(str(value))
         except (TypeError, ValueError, AttributeError):
@@ -695,6 +982,19 @@ def _model_ids_from_payload(payload: dict[str, Any]) -> list[UUID]:
         seen.add(model_id)
         out.append(model_id)
     return out
+
+
+def _think_enqueue_budget_from_payload(
+    payload: dict[str, Any],
+    *,
+    default: int,
+) -> int:
+    try:
+        raw_budget = payload.get("think_enqueue_budget", default)
+        budget = int(raw_budget)
+    except (TypeError, ValueError):
+        budget = int(default)
+    return max(0, budget)
 
 
 def _uuid_list_from_payload(payload: dict[str, Any], key: str) -> list[UUID]:
@@ -784,6 +1084,7 @@ async def enqueue_post_commit_actions(
     anomalies: list[dict[str, Any]] | None = None,
     applied_model_ids: list[UUID] | tuple[UUID, ...] | None = None,
     applied_open_question_ids: list[UUID] | tuple[UUID, ...] | None = None,
+    applied_ops_summary: dict[str, Any] | None = None,
 ) -> list[UUID]:
     """Enqueue post-commit actions derived from `validated_diff`.
 
@@ -807,9 +1108,20 @@ async def enqueue_post_commit_actions(
         ),
         (
             "materialize_projections",
-            _projection_materialization_payload(applied_model_ids),
+            _projection_materialization_payload(
+                applied_model_ids,
+                trigger=trigger,
+                applied_ops_summary=applied_ops_summary,
+            ),
         ),
-        ("discover_model_edges", _edge_discovery_payload(applied_model_ids)),
+        (
+            "discover_model_edges",
+            _edge_discovery_payload(
+                applied_model_ids,
+                trigger=trigger,
+                applied_ops_summary=applied_ops_summary,
+            ),
+        ),
         (
             "search_open_questions",
             _open_questions_payload(

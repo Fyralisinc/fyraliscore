@@ -9,12 +9,19 @@ from uuid import UUID
 import asyncpg
 
 from services.domain.projections.store import (
+    complete_projection_refresh_job,
+    fail_projection_refresh_job,
     fetch_pending_events,
+    lease_projection_refresh_jobs,
+    replace_projection_dependencies,
     upsert_checkpoint,
     upsert_projection_snapshot,
 )
-from services.domain.projections.types import Projector
-from services.domain.projections.types import ProjectionSnapshot
+from services.domain.projections.types import (
+    ProjectionRefreshJob,
+    ProjectionSnapshot,
+    Projector,
+)
 
 
 log = logging.getLogger("domain.projections.runtime")
@@ -37,6 +44,24 @@ class ProjectionRunReport:
     errors: tuple[ProjectionRunError, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True)
+class ProjectionRefreshRunError:
+    projection_name: str
+    projection_version: str
+    subject_key: str
+    job_id: UUID
+    stage: str
+    message: str
+
+
+@dataclass(frozen=True)
+class ProjectionRefreshRunReport:
+    leased_jobs: int = 0
+    processed_jobs: int = 0
+    failed_jobs: int = 0
+    errors: tuple[ProjectionRefreshRunError, ...] = field(default_factory=tuple)
+
+
 class ProjectionRegistry:
     """Small registry for core and extension-provided projectors."""
 
@@ -54,6 +79,9 @@ class ProjectionRegistry:
     @property
     def projectors(self) -> tuple[Projector, ...]:
         return tuple(self._projectors.values())
+
+    def get(self, name: str, version: str = "v1") -> Projector | None:
+        return self._projectors.get((name, version))
 
 
 class ProjectionRunner:
@@ -158,6 +186,96 @@ class ProjectionRunner:
             errors=tuple(errors),
         )
 
+    async def run_queued_refresh_jobs_once(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        tenant_id: UUID,
+        limit: int = 100,
+    ) -> int:
+        report = await self.run_queued_refresh_jobs_once_detailed(
+            conn,
+            tenant_id=tenant_id,
+            limit=limit,
+        )
+        return report.processed_jobs
+
+    async def run_queued_refresh_jobs_once_detailed(
+        self,
+        conn: asyncpg.Connection,
+        *,
+        tenant_id: UUID,
+        limit: int = 100,
+    ) -> ProjectionRefreshRunReport:
+        """Refresh subjects from queued delta jobs."""
+        jobs = await lease_projection_refresh_jobs(conn, tenant_id=tenant_id, limit=limit)
+        processed = 0
+        failures = 0
+        errors: list[ProjectionRefreshRunError] = []
+        for job in jobs:
+            projector = self._registry.get(job.projection_name, job.projection_version)
+            if projector is None:
+                failures += 1
+                message = (
+                    f"projector not registered: "
+                    f"{job.projection_name}:{job.projection_version}"
+                )
+                errors.append(_refresh_error(job, stage="lookup", message=message))
+                await fail_projection_refresh_job(
+                    conn,
+                    tenant_id=job.tenant_id,
+                    job_id=job.id,
+                    error=message,
+                )
+                continue
+            try:
+                snapshot = await projector.project_subject(
+                    conn,
+                    tenant_id=job.tenant_id,
+                    subject_key=job.subject_key,
+                    source_event_ids=job.event_ids,
+                )
+                _validate_snapshot(projector, snapshot, job.tenant_id, job.subject_key)
+                await upsert_projection_snapshot(conn, snapshot)
+                await replace_projection_dependencies(
+                    conn,
+                    snapshot,
+                    extra_refs=job.dependency_refs,
+                )
+                await complete_projection_refresh_job(
+                    conn,
+                    tenant_id=job.tenant_id,
+                    job_id=job.id,
+                )
+                processed += 1
+            except Exception as exc:  # noqa: BLE001 - isolate one queued job
+                failures += 1
+                message = f"{type(exc).__name__}: {exc}"
+                errors.append(_refresh_error(job, stage="refresh", message=message))
+                await fail_projection_refresh_job(
+                    conn,
+                    tenant_id=job.tenant_id,
+                    job_id=job.id,
+                    error=message,
+                )
+                log.error(
+                    "projection_runner.refresh_job_failed",
+                    extra={
+                        "projection_name": job.projection_name,
+                        "projection_version": job.projection_version,
+                        "tenant_id": str(job.tenant_id),
+                        "subject_key": job.subject_key,
+                        "job_id": str(job.id),
+                    },
+                    exc_info=True,
+                )
+        return ProjectionRefreshRunReport(
+            leased_jobs=len(jobs),
+            processed_jobs=processed,
+            failed_jobs=failures,
+            errors=tuple(errors),
+        )
+
 
 def _validate_snapshot(
     projector: Projector,
@@ -185,3 +303,19 @@ def _validate_snapshot(
             f"projector {projector.name!r} returned subject "
             f"{snapshot.subject_key!r}, expected {subject_key!r}"
         )
+
+
+def _refresh_error(
+    job: ProjectionRefreshJob,
+    *,
+    stage: str,
+    message: str,
+) -> ProjectionRefreshRunError:
+    return ProjectionRefreshRunError(
+        projection_name=job.projection_name,
+        projection_version=job.projection_version,
+        subject_key=job.subject_key,
+        job_id=job.id,
+        stage=stage,
+        message=message,
+    )

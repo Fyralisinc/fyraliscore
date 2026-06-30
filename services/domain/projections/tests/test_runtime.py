@@ -7,7 +7,12 @@ import pytest
 
 import services.domain.projections.runtime as runtime
 from lib.shared.ids import uuid7
-from services.domain.projections.types import ModelEvent, ProjectionSnapshot
+from services.domain.projections.types import (
+    ModelEvent,
+    ProjectionDependencyRef,
+    ProjectionRefreshJob,
+    ProjectionSnapshot,
+)
 
 
 class _Projector:
@@ -242,3 +247,147 @@ async def test_runner_surfaces_snapshot_write_failures(monkeypatch):
             object(),
             tenant_id=tenant_id,
         )
+
+
+@pytest.mark.asyncio
+async def test_queued_refresh_runner_projects_and_completes_job(monkeypatch):
+    tenant_id = uuid7()
+    event_id = uuid7()
+    job = ProjectionRefreshJob(
+        id=uuid7(),
+        tenant_id=tenant_id,
+        projection_name="customers",
+        projection_version="v1",
+        subject_key="customers:acme",
+        reason="dependency_delta",
+        event_ids=(event_id,),
+        dependency_refs=(
+            ProjectionDependencyRef("model", str(uuid7()), reason="source_model"),
+        ),
+    )
+    projector = _Projector("customers")
+    snapshots: list[ProjectionSnapshot] = []
+    replaced_dependencies: list[tuple[ProjectionSnapshot, tuple[ProjectionDependencyRef, ...]]] = []
+    completed: list[Any] = []
+    failed: list[Any] = []
+
+    async def _lease(conn, *, tenant_id, limit):
+        del conn, tenant_id, limit
+        return [job]
+
+    async def _snapshot(conn, snapshot):
+        del conn
+        snapshots.append(snapshot)
+
+    async def _replace(conn, snapshot, *, extra_refs=()):
+        del conn
+        replaced_dependencies.append((snapshot, tuple(extra_refs)))
+
+    async def _complete(conn, *, tenant_id, job_id):
+        del conn
+        completed.append((tenant_id, job_id))
+
+    async def _fail(conn, *, tenant_id, job_id, error):
+        del conn
+        failed.append((tenant_id, job_id, error))
+
+    monkeypatch.setattr(runtime, "lease_projection_refresh_jobs", _lease)
+    monkeypatch.setattr(runtime, "upsert_projection_snapshot", _snapshot)
+    monkeypatch.setattr(runtime, "replace_projection_dependencies", _replace)
+    monkeypatch.setattr(runtime, "complete_projection_refresh_job", _complete)
+    monkeypatch.setattr(runtime, "fail_projection_refresh_job", _fail)
+
+    report = await runtime.ProjectionRunner([projector]).run_queued_refresh_jobs_once_detailed(
+        object(),
+        tenant_id=tenant_id,
+    )
+
+    assert report.leased_jobs == 1
+    assert report.processed_jobs == 1
+    assert report.failed_jobs == 0
+    assert snapshots[0].subject_key == "customers:acme"
+    assert snapshots[0].source_event_ids == (event_id,)
+    assert replaced_dependencies == [(snapshots[0], job.dependency_refs)]
+    assert completed == [(tenant_id, job.id)]
+    assert failed == []
+
+
+@pytest.mark.asyncio
+async def test_queued_refresh_runner_fails_unknown_projector(monkeypatch):
+    tenant_id = uuid7()
+    job = ProjectionRefreshJob(
+        id=uuid7(),
+        tenant_id=tenant_id,
+        projection_name="missing",
+        projection_version="v1",
+        subject_key="missing:subject",
+        reason="manual",
+    )
+    failed: list[Any] = []
+
+    async def _lease(conn, *, tenant_id, limit):
+        del conn, tenant_id, limit
+        return [job]
+
+    async def _fail(conn, *, tenant_id, job_id, error):
+        del conn
+        failed.append((tenant_id, job_id, error))
+
+    monkeypatch.setattr(runtime, "lease_projection_refresh_jobs", _lease)
+    monkeypatch.setattr(runtime, "fail_projection_refresh_job", _fail)
+
+    report = await runtime.ProjectionRunner([]).run_queued_refresh_jobs_once_detailed(
+        object(),
+        tenant_id=tenant_id,
+    )
+
+    assert report.processed_jobs == 0
+    assert report.failed_jobs == 1
+    assert report.errors[0].stage == "lookup"
+    assert "projector not registered" in report.errors[0].message
+    assert failed == [(tenant_id, job.id, report.errors[0].message)]
+
+
+@pytest.mark.asyncio
+async def test_queued_refresh_runner_fails_bad_snapshot_without_completion(monkeypatch):
+    tenant_id = uuid7()
+    job = ProjectionRefreshJob(
+        id=uuid7(),
+        tenant_id=tenant_id,
+        projection_name="customers",
+        projection_version="v1",
+        subject_key="customers:acme",
+        reason="event_match",
+        event_ids=(uuid7(),),
+    )
+    projector = _Projector("customers", snapshot_projection_name="constraints")
+    completed: list[Any] = []
+    failed: list[Any] = []
+
+    async def _lease(conn, *, tenant_id, limit):
+        del conn, tenant_id, limit
+        return [job]
+
+    async def _complete(conn, *, tenant_id, job_id):
+        del conn
+        completed.append((tenant_id, job_id))
+
+    async def _fail(conn, *, tenant_id, job_id, error):
+        del conn
+        failed.append((tenant_id, job_id, error))
+
+    monkeypatch.setattr(runtime, "lease_projection_refresh_jobs", _lease)
+    monkeypatch.setattr(runtime, "complete_projection_refresh_job", _complete)
+    monkeypatch.setattr(runtime, "fail_projection_refresh_job", _fail)
+
+    report = await runtime.ProjectionRunner([projector]).run_queued_refresh_jobs_once_detailed(
+        object(),
+        tenant_id=tenant_id,
+    )
+
+    assert report.processed_jobs == 0
+    assert report.failed_jobs == 1
+    assert report.errors[0].stage == "refresh"
+    assert "returned projection 'constraints'" in report.errors[0].message
+    assert completed == []
+    assert failed == [(tenant_id, job.id, report.errors[0].message)]

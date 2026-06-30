@@ -18,8 +18,20 @@ from services.domain.projections.repo import (
     ProjectionStaleness,
 )
 from services.domain.projections.resources import ResourceProjector
+from services.domain.projections.router import (
+    ProjectionRouteError,
+    ProjectionRouteReport,
+    dependency_refs_for_event,
+    enqueue_refreshes_for_event,
+    watch_keys_for_event,
+)
 from services.domain.projections.runtime import ProjectionRegistry, ProjectionRunner
-from services.domain.projections.runtime import ProjectionRunError, ProjectionRunReport
+from services.domain.projections.runtime import (
+    ProjectionRefreshRunError,
+    ProjectionRefreshRunReport,
+    ProjectionRunError,
+    ProjectionRunReport,
+)
 from services.domain.projections.subjects import (
     ProjectionSubject,
     ProjectionSubjectResolver,
@@ -28,7 +40,14 @@ from services.domain.projections.subjects import (
     register_subject_resolver,
     resolve_projection_subjects,
 )
-from services.domain.projections.types import ModelEvent, ProjectionSnapshot
+from services.domain.projections.types import (
+    ModelEvent,
+    ProjectionDependencyRef,
+    ProjectionRefreshJob,
+    ProjectionSnapshot,
+    ProjectionSubjectRef,
+    ProjectionWatchKey,
+)
 
 __all__ = [
     "ConstraintProjector",
@@ -37,7 +56,12 @@ __all__ = [
     "ModelEvent",
     "ProjectionContext",
     "ProjectionRecord",
+    "ProjectionRefreshJob",
+    "ProjectionRefreshRunError",
+    "ProjectionRefreshRunReport",
     "ProjectionRegistry",
+    "ProjectionRouteError",
+    "ProjectionRouteReport",
     "ProjectionRunError",
     "ProjectionRunReport",
     "ProjectionRepo",
@@ -47,15 +71,21 @@ __all__ = [
     "ProjectionSubjectResolver",
     "ProjectionSubjectSeed",
     "ProjectionStaleness",
+    "ProjectionDependencyRef",
+    "ProjectionSubjectRef",
+    "ProjectionWatchKey",
     "ResourceProjector",
     "all_projectors",
     "available_projection_names",
     "available_subject_resolver_names",
     "build_projection_registry",
+    "dependency_refs_for_event",
+    "enqueue_refreshes_for_event",
     "projection_choices",
     "projector_factories",
     "projectors_for",
     "register_projector_factory",
     "register_subject_resolver",
     "resolve_projection_subjects",
+    "watch_keys_for_event",
 ]
