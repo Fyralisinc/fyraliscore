@@ -40,6 +40,10 @@ from uuid import UUID, uuid4
 
 
 from lib.shared.errors import ValidationError
+from services.platform.access_control.authority import (
+    authority_fingerprint,
+    principal_for_actor,
+)
 from services.reasoning.retrieval.assembler import AccessContext, ContextBundle
 
 from .adapters import (
@@ -111,14 +115,15 @@ class AnswerQueryRequest:
     """CONTRACTS §2.2."""
     tenant_id: UUID
     query: str
+    viewer_id: Optional[UUID] = None
     context_card_id: Optional[UUID] = None
     conversation_history: list[Turn] = field(default_factory=list)
     # Optional caller-provided card context (bypasses resolver — used by
     # tests and by the API layer when the UI passes card_context inline).
     inline_card_context: Optional[CardContext] = None
     # Optional — used by prefetch so responses can be cached under a
-    # stable key. When set, the handler writes to
-    # `query_prefetch:<query_id>` after rendering.
+    # stable key. When set, the handler writes to an authority-fingerprint
+    # scoped key after rendering.
     query_id: Optional[str] = None
 
 
@@ -187,7 +192,7 @@ class QueryHandler:
         cache_adapter: Optional[CacheAdapter] = None,
         card_resolver: Optional[CardContextResolver] = None,
         access_context_builder: Optional[
-            Callable[[UUID], AccessContext]
+            Callable[[UUID, UUID], AccessContext]
         ] = None,
         embedder: Optional[Any] = None,
     ) -> None:
@@ -197,7 +202,10 @@ class QueryHandler:
         self._cache = cache_adapter or build_cache_adapter()
         self._card_resolver = card_resolver or _noop_resolver
         self._access_builder = access_context_builder or (
-            lambda tid: AccessContext(tenant_id=tid)
+            lambda tid, actor_id: AccessContext(
+                tenant_id=tid,
+                requestor_actor_id=actor_id,
+            )
         )
         self._embedder = embedder
 
@@ -211,6 +219,12 @@ class QueryHandler:
             raise ValidationError(
                 "query must be non-empty",
                 query=request.query,
+            )
+        if request.viewer_id is None:
+            raise ValidationError(
+                "viewer_id required for query access context",
+                tenant_id=str(request.tenant_id),
+                query_id=request.query_id,
             )
 
         t_overall = time.perf_counter()
@@ -245,9 +259,18 @@ class QueryHandler:
 
         # --- Retrieval (runs in a fresh transaction per query) ---
         t_retrieve = time.perf_counter()
+        authority_cache_key: str
         async with self._conn_provider() as conn:
             async with conn.transaction():
-                access = self._access_builder(request.tenant_id)
+                access = self._access_builder(
+                    request.tenant_id,
+                    request.viewer_id,
+                )
+                authority_cache_key = await self._authority_cache_key(
+                    conn,
+                    request.tenant_id,
+                    request.viewer_id,
+                )
                 ctx = StrategyContext(
                     tenant_id=request.tenant_id,
                     conn=conn,
@@ -292,7 +315,7 @@ class QueryHandler:
         if request.query_id:
             await self._cache.set(
                 request.tenant_id,
-                f"query_prefetch:{request.query_id}",
+                _query_prefetch_key(authority_cache_key, request.query_id),
                 _serializable_response(
                     turn_id=turn_id,
                     request=request,
@@ -345,13 +368,20 @@ class QueryHandler:
     async def try_serve_from_prefetch(
         self,
         tenant_id: UUID,
+        viewer_id: UUID,
         query_id: str,
     ) -> Optional[AnswerQueryResponse]:
         """If prefetch cached a response for this query_id, rehydrate
         and return it (without rerunning retrieval or rendering). Used
         by the API layer when the UI taps a pre-loaded chip."""
+        async with self._conn_provider() as conn:
+            authority_cache_key = await self._authority_cache_key(
+                conn,
+                tenant_id,
+                viewer_id,
+            )
         row = await self._cache.get(
-            tenant_id, f"query_prefetch:{query_id}"
+            tenant_id, _query_prefetch_key(authority_cache_key, query_id)
         )
         if row is None:
             return None
@@ -360,6 +390,19 @@ class QueryHandler:
         except Exception:  # noqa: BLE001
             log.exception("prefetch_deserialize_failed")
             return None
+
+    async def _authority_cache_key(
+        self,
+        conn: Any,
+        tenant_id: UUID,
+        viewer_id: UUID,
+    ) -> str:
+        principal = await principal_for_actor(
+            viewer_id,
+            conn=conn,
+            tenant_id=tenant_id,
+        )
+        return authority_fingerprint(principal, "ask").cache_key
 
 
 # ---------------------------------------------------------------------
@@ -437,6 +480,10 @@ def _jsonify(obj: Any) -> Any:
     return obj
 
 
+def _query_prefetch_key(authority_cache_key: str, query_id: str) -> str:
+    return f"query_prefetch:{authority_cache_key}:{query_id}"
+
+
 def _serializable_response(
     *,
     turn_id: UUID,
@@ -451,6 +498,7 @@ def _serializable_response(
 ) -> dict[str, Any]:
     return {
         "turn_id": str(turn_id),
+        "viewer_id": str(request.viewer_id),
         "query_echo": request.query,
         "response_html": render_resp.response_html,
         "category": classification.category,

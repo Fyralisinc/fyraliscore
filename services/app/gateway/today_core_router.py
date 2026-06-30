@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from lib.shared.ids import uuid7
 from services.app.gateway.artifact_drawers import fetch_artifact
 from services.app.gateway.auth import AuthContext
+from services.platform.access_control.authority import principal_for_actor
 
 
 def build_today_core_router() -> APIRouter:
@@ -122,6 +123,11 @@ def build_today_core_router() -> APIRouter:
                 datetime.now(timezone.utc),
                 conn=conn,
             )
+            principal = await principal_for_actor(
+                auth.actor_id,
+                conn=conn,
+                tenant_id=auth.tenant_id,
+            )
 
             payload = await build_today(
                 tenant_id=auth.tenant_id,
@@ -131,6 +137,7 @@ def build_today_core_router() -> APIRouter:
                 conn=conn,
                 days_since_inception=days_since,
                 previous_last_seen_at=previous_last_seen,
+                principal=principal,
             )
         return JSONResponse(payload.to_dict(), status_code=200)
 

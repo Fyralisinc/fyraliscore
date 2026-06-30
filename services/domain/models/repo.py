@@ -67,8 +67,9 @@ vector.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any, Awaitable, Callable, Sequence
 from uuid import UUID
 
 import asyncpg
@@ -119,6 +120,11 @@ from services.domain.observations.state_change import (
     emit_state_change,
     render_state_change_text,
 )
+from services.platform.access_control.authority import (
+    ObjectRef,
+    record_derived_access_labels,
+    record_provenance_edge,
+)
 from services.reasoning.sage.affordances.policy import derive_default_profile_from_model
 from services.reasoning.topology import LatentTopologyService
 from services.reasoning.topology.anchor import content_anchor
@@ -145,6 +151,7 @@ _FALSIFIER_REQUIRED_ABOVE = 0.7
 _BULK_INSERT_PARAM_LIMIT = 60_000
 _BULK_INSERT_DEFAULT_CHUNK_SIZE = 1_000
 _log = structlog.get_logger(__name__)
+BulkTimingSink = Callable[[dict[str, Any]], None]
 
 
 # Columns written on INSERT. `proposition_kind` is GENERATED and
@@ -497,9 +504,9 @@ async def _upsert_model_semantic_terms(
 async def _bulk_upsert_model_semantic_terms(
     conn: asyncpg.Connection,
     rows: Sequence[ModelRow],
-) -> None:
+) -> int:
     if not rows:
-        return
+        return 0
     await conn.executemany(
         """
         INSERT INTO model_semantic_terms (
@@ -514,6 +521,7 @@ async def _bulk_upsert_model_semantic_terms(
             for row in rows
         ],
     )
+    return len(rows)
 
 
 async def _bulk_upsert_default_affordance_profiles(
@@ -1299,10 +1307,219 @@ async def _sync_model_composition_members(
     )
 
 
+async def _record_model_authority_provenance(
+    conn: asyncpg.Connection,
+    model: ModelRow,
+) -> None:
+    """Mirror model evidence arrays into the read-authority provenance graph."""
+    source_refs: list[ObjectRef] = []
+    seen_source_refs: set[tuple[str, UUID]] = set()
+    for (
+        source_kind,
+        source_id,
+        derivation_kind,
+        source_column,
+    ) in _model_authority_provenance_sources(model):
+        source_key = (source_kind, source_id)
+        if source_key not in seen_source_refs:
+            seen_source_refs.add(source_key)
+            source_refs.append(
+                ObjectRef(
+                    tenant_id=model.tenant_id,
+                    object_kind=source_kind,
+                    object_id=source_id,
+                )
+            )
+        await record_provenance_edge(
+            conn=conn,
+            tenant_id=model.tenant_id,
+            derived_kind="model",
+            derived_id=model.id,
+            source_kind=source_kind,
+            source_id=source_id,
+            derivation_kind=derivation_kind,
+            metadata={"source_column": source_column},
+        )
+    await record_derived_access_labels(
+        conn=conn,
+        tenant_id=model.tenant_id,
+        derived_kind="model",
+        derived_id=model.id,
+        source_refs=source_refs,
+        source="model_provenance",
+    )
+
+
+def _model_authority_provenance_sources(
+    model: ModelRow,
+) -> tuple[tuple[str, UUID, str, str], ...]:
+    rows: list[tuple[str, UUID, str, str]] = []
+    rows.append(
+        (
+            "observation",
+            model.born_from_event_id,
+            "model_born_from_event",
+            "born_from_event_id",
+        )
+    )
+    for event_id in model.supporting_event_ids or []:
+        rows.append(
+            (
+                "observation",
+                event_id,
+                "model_supporting_event",
+                "supporting_event_ids",
+            )
+        )
+    for source_model_id in model.supporting_model_ids or []:
+        rows.append(
+            (
+                "model",
+                source_model_id,
+                "model_supporting_model",
+                "supporting_model_ids",
+            )
+        )
+    for source_model_id in model.contributing_models or []:
+        rows.append(
+            (
+                "model",
+                source_model_id,
+                "model_contributing_model",
+                "contributing_models",
+            )
+        )
+
+    seen: set[tuple[str, UUID, str]] = set()
+    deduped: list[tuple[str, UUID, str, str]] = []
+    for source_kind, source_id, derivation_kind, source_column in rows:
+        key = (source_kind, source_id, derivation_kind)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((source_kind, source_id, derivation_kind, source_column))
+    return tuple(deduped)
+
+
+async def _bulk_record_model_authority_provenance(
+    conn: asyncpg.Connection,
+    models: Sequence[ModelRow],
+) -> dict[str, int]:
+    rows: list[tuple[UUID, UUID, str, UUID, str, str]] = []
+    seen: set[tuple[UUID, UUID, str, UUID, str]] = set()
+    for model in models:
+        for (
+            source_kind,
+            source_id,
+            derivation_kind,
+            source_column,
+        ) in _model_authority_provenance_sources(model):
+            key = (
+                model.tenant_id,
+                model.id,
+                source_kind,
+                source_id,
+                derivation_kind,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                (
+                    model.tenant_id,
+                    model.id,
+                    source_kind,
+                    source_id,
+                    derivation_kind,
+                    source_column,
+                )
+            )
+    if not rows:
+        return {
+            "provenance_edges": 0,
+            "access_label_calls": 0,
+            "row_count": 0,
+        }
+    tenant_ids = [row[0] for row in rows]
+    derived_ids = [row[1] for row in rows]
+    source_kinds = [row[2] for row in rows]
+    source_ids = [row[3] for row in rows]
+    derivation_kinds = [row[4] for row in rows]
+    source_columns = [row[5] for row in rows]
+    await conn.execute(
+        """
+        INSERT INTO object_provenance_edges (
+          tenant_id, derived_kind, derived_id,
+          source_kind, source_id, derivation_kind, metadata
+        )
+        SELECT
+          r.tenant_id,
+          'model',
+          r.derived_id,
+          r.source_kind,
+          r.source_id,
+          r.derivation_kind,
+          jsonb_build_object('source_column', r.source_column)
+        FROM unnest(
+          $1::uuid[],
+          $2::uuid[],
+          $3::text[],
+          $4::uuid[],
+          $5::text[],
+          $6::text[]
+        ) AS r(
+          tenant_id,
+          derived_id,
+          source_kind,
+          source_id,
+          derivation_kind,
+          source_column
+        )
+        ON CONFLICT (
+          tenant_id, derived_kind, derived_id,
+          source_kind, source_id, derivation_kind
+        )
+        DO UPDATE SET metadata = EXCLUDED.metadata
+        """,
+        tenant_ids,
+        derived_ids,
+        source_kinds,
+        source_ids,
+        derivation_kinds,
+        source_columns,
+    )
+    for model in models:
+        await record_derived_access_labels(
+            conn=conn,
+            tenant_id=model.tenant_id,
+            derived_kind="model",
+            derived_id=model.id,
+            source_refs=[
+                ObjectRef(
+                    tenant_id=model.tenant_id,
+                    object_kind=source_kind,
+                    object_id=source_id,
+                )
+                for (
+                    source_kind,
+                    source_id,
+                    _derivation_kind,
+                    _source_column,
+                ) in _model_authority_provenance_sources(model)
+            ],
+            source="model_provenance",
+        )
+    return {
+        "provenance_edges": len(rows),
+        "access_label_calls": len(models),
+        "row_count": len(rows),
+    }
+
+
 async def _bulk_sync_model_scope_sidecars(
     conn: asyncpg.Connection,
     models: Sequence[ModelRow],
-) -> None:
+) -> dict[str, int]:
     actor_rows: list[tuple[UUID, UUID, UUID, str]] = []
     entity_rows: list[tuple[UUID, UUID, str, UUID, str]] = []
     seen_actor_rows: set[tuple[UUID, UUID]] = set()
@@ -1350,12 +1567,17 @@ async def _bulk_sync_model_scope_sidecars(
             records=entity_rows,
             columns=["model_id", "tenant_id", "entity_type", "entity_id", "source"],
         )
+    return {
+        "actor_rows": len(actor_rows),
+        "entity_rows": len(entity_rows),
+        "row_count": len(actor_rows) + len(entity_rows),
+    }
 
 
 async def _bulk_sync_model_composition_members(
     conn: asyncpg.Connection,
     models: Sequence[ModelRow],
-) -> None:
+) -> int:
     rows: list[tuple[UUID, UUID, UUID, list[UUID], str]] = []
     seen_rows: set[tuple[UUID, UUID]] = set()
     for model in models:
@@ -1397,12 +1619,13 @@ async def _bulk_sync_model_composition_members(
             ],
             casts={"evidence_event_ids": "uuid[]"},
         )
+    return len(rows)
 
 
 async def _bulk_insert_model_relations(
     conn: asyncpg.Connection,
     models: Sequence[ModelRow],
-) -> None:
+) -> int:
     rows: list[tuple[Any, ...]] = []
     seen_edges: set[tuple[UUID, UUID, UUID, str]] = set()
     for model in models:
@@ -1442,7 +1665,7 @@ async def _bulk_insert_model_relations(
                 evidence_model_id=source,
             ))
     if not rows:
-        return
+        return 0
     await _bulk_write_records(
         conn,
         "model_edges",
@@ -1472,6 +1695,7 @@ async def _bulk_insert_model_relations(
             "evidence_model_ids": "uuid[]",
         },
     )
+    return len(rows)
 
 
 def _bulk_edge_row(
@@ -1508,7 +1732,7 @@ def _bulk_edge_row(
 async def _bulk_emit_model_state_changes(
     conn: asyncpg.Connection,
     models: Sequence[ModelRow],
-) -> None:
+) -> int:
     rows: list[tuple[Any, ...]] = []
     events: list[NewObservationEvent] = []
     occurred_at = datetime.now(timezone.utc)
@@ -1570,12 +1794,13 @@ async def _bulk_emit_model_state_changes(
         )
     for event in events:
         schedule_notify(event)
+    return len(rows)
 
 
 async def _bulk_emit_model_audits(
     conn: asyncpg.Connection,
     models: Sequence[ModelRow],
-) -> None:
+) -> int:
     from services.reasoning.think.audit import (
         CAUSE_CREATE,
         model_state_snapshot,
@@ -1613,6 +1838,7 @@ async def _bulk_emit_model_audits(
                 "source_model_ids": "uuid[]",
             },
         )
+    return len(rows)
 
 
 async def _read_array_part(
@@ -1731,6 +1957,7 @@ class ModelsRepo:
         *,
         embedder: OllamaClient | None = None,
         run_topology_on_insert: bool = True,
+        bulk_timing_sink: BulkTimingSink | None = None,
     ) -> None:
         # Pool is optional when every call site supplies its own `conn`
         # (e.g. promote_pattern_candidate inside Think T4 pattern_review).
@@ -1739,6 +1966,7 @@ class ModelsRepo:
         self._pool = pool
         self._embedder = embedder
         self._run_topology_on_insert = run_topology_on_insert
+        self._bulk_timing_sink = bulk_timing_sink
 
     def _require_pool(self) -> asyncpg.Pool:
         if self._pool is None:
@@ -1747,6 +1975,56 @@ class ModelsRepo:
                 "callers in conn-only mode must pass conn= on every call"
             )
         return self._pool
+
+    def _record_bulk_timing(self, event: dict[str, Any]) -> None:
+        if self._bulk_timing_sink is None:
+            return
+        try:
+            self._bulk_timing_sink(event)
+        except Exception:
+            _log.warning(
+                "models.bulk_timing_sink_failed",
+                phase=event.get("phase"),
+                exc_info=True,
+            )
+
+    async def _time_bulk_phase(
+        self,
+        phase: str,
+        *,
+        model_count: int,
+        op: Callable[[], Awaitable[Any]],
+        stratum_index: int | None = None,
+        metrics_from_result: Callable[[Any], dict[str, Any]] | None = None,
+    ) -> Any:
+        started = time.perf_counter()
+        result: Any = None
+        status = "ok"
+        try:
+            result = await op()
+            return result
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            event: dict[str, Any] = {
+                "phase": phase,
+                "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
+                "model_count": int(model_count),
+                "status": status,
+            }
+            if stratum_index is not None:
+                event["stratum_index"] = int(stratum_index)
+            if status == "ok" and metrics_from_result is not None:
+                try:
+                    event.update(metrics_from_result(result) or {})
+                except Exception:
+                    _log.warning(
+                        "models.bulk_timing_metrics_failed",
+                        phase=phase,
+                        exc_info=True,
+                    )
+            self._record_bulk_timing(event)
 
     # =================================================================
     # insert — the 9-step pipeline
@@ -1900,48 +2178,167 @@ class ModelsRepo:
         per-row SQL chatter that made large Model batches unusably slow.
         """
         await _ensure_vector_codec(conn)
-        await self._validate_batch_scope_actors(conn, plan)
+        await self._time_bulk_phase(
+            "validate_batch_scope_actors",
+            model_count=len(plan.models),
+            op=lambda: self._validate_batch_scope_actors(conn, plan),
+        )
 
         rows_by_id: dict[UUID, ModelRow] = {}
-        for stratum in plan.strata:
-            prepared = await self._prepare_bulk_insert_stratum(
-                conn,
-                stratum,
-                apply_confidence_calibration=apply_confidence_calibration,
+        for stratum_index, stratum in enumerate(plan.strata):
+            prepared = await self._time_bulk_phase(
+                "prepare_bulk_insert_stratum",
+                stratum_index=stratum_index,
+                model_count=len(stratum),
+                op=lambda stratum=stratum: self._prepare_bulk_insert_stratum(
+                    conn,
+                    stratum,
+                    apply_confidence_calibration=apply_confidence_calibration,
+                ),
+                metrics_from_result=lambda result: {
+                    "row_count": len(result or ()),
+                },
             )
             if not prepared:
                 continue
-            await _bulk_write_records(
-                conn,
-                "models",
-                records=[item["params"] for item in prepared],
-                columns=_BULK_MODEL_COPY_COLUMNS,
-                casts=_BULK_MODEL_VALUE_CASTS,
+            model_params = [item["params"] for item in prepared]
+            await self._time_bulk_phase(
+                "models_insert",
+                stratum_index=stratum_index,
+                model_count=len(prepared),
+                op=lambda model_params=model_params: _bulk_write_records(
+                    conn,
+                    "models",
+                    records=model_params,
+                    columns=_BULK_MODEL_COPY_COLUMNS,
+                    casts=_BULK_MODEL_VALUE_CASTS,
+                ),
+                metrics_from_result=lambda _result, count=len(prepared): {
+                    "row_count": count,
+                },
             )
             hydrated = [item["row"] for item in prepared]
             rows_by_id.update((row.id, row) for row in hydrated)
 
-            await _bulk_upsert_model_semantic_terms(conn, hydrated)
-            await _bulk_sync_model_scope_sidecars(conn, hydrated)
-            await _bulk_sync_model_composition_members(conn, hydrated)
-            await _bulk_insert_model_relations(conn, hydrated)
-            await _bulk_upsert_default_affordance_profiles(conn, hydrated)
-            await _bulk_emit_model_state_changes(conn, hydrated)
-            await _bulk_emit_model_audits(conn, hydrated)
-            await emit_model_events(
-                conn,
-                models=hydrated,
-                event_type=MODEL_EVENT_CREATED,
-                changed_fields=model_semantic_snapshot(hydrated[0]).keys(),
+            await self._time_bulk_phase(
+                "semantic_terms_upsert",
+                stratum_index=stratum_index,
+                model_count=len(hydrated),
+                op=lambda hydrated=hydrated: _bulk_upsert_model_semantic_terms(
+                    conn,
+                    hydrated,
+                ),
+                metrics_from_result=lambda result: {"row_count": int(result or 0)},
+            )
+            await self._time_bulk_phase(
+                "scope_sidecars_sync",
+                stratum_index=stratum_index,
+                model_count=len(hydrated),
+                op=lambda hydrated=hydrated: _bulk_sync_model_scope_sidecars(
+                    conn,
+                    hydrated,
+                ),
+                metrics_from_result=lambda result: dict(result or {}),
+            )
+            await self._time_bulk_phase(
+                "composition_members_sync",
+                stratum_index=stratum_index,
+                model_count=len(hydrated),
+                op=lambda hydrated=hydrated: _bulk_sync_model_composition_members(
+                    conn,
+                    hydrated,
+                ),
+                metrics_from_result=lambda result: {"row_count": int(result or 0)},
+            )
+            await self._time_bulk_phase(
+                "relations_insert",
+                stratum_index=stratum_index,
+                model_count=len(hydrated),
+                op=lambda hydrated=hydrated: _bulk_insert_model_relations(
+                    conn,
+                    hydrated,
+                ),
+                metrics_from_result=lambda result: {"row_count": int(result or 0)},
+            )
+            await self._time_bulk_phase(
+                "authority_provenance_record",
+                stratum_index=stratum_index,
+                model_count=len(hydrated),
+                op=lambda hydrated=hydrated: _bulk_record_model_authority_provenance(
+                    conn,
+                    hydrated,
+                ),
+                metrics_from_result=lambda result: dict(result or {}),
+            )
+            await self._time_bulk_phase(
+                "default_affordance_profiles_upsert",
+                stratum_index=stratum_index,
+                model_count=len(hydrated),
+                op=lambda hydrated=hydrated: _bulk_upsert_default_affordance_profiles(
+                    conn,
+                    hydrated,
+                ),
+                metrics_from_result=lambda result: {"row_count": int(result or 0)},
+            )
+            await self._time_bulk_phase(
+                "state_changes_emit",
+                stratum_index=stratum_index,
+                model_count=len(hydrated),
+                op=lambda hydrated=hydrated: _bulk_emit_model_state_changes(
+                    conn,
+                    hydrated,
+                ),
+                metrics_from_result=lambda result: {"row_count": int(result or 0)},
+            )
+            await self._time_bulk_phase(
+                "audits_emit",
+                stratum_index=stratum_index,
+                model_count=len(hydrated),
+                op=lambda hydrated=hydrated: _bulk_emit_model_audits(
+                    conn,
+                    hydrated,
+                ),
+                metrics_from_result=lambda result: {"row_count": int(result or 0)},
+            )
+            await self._time_bulk_phase(
+                "model_events_emit",
+                stratum_index=stratum_index,
+                model_count=len(hydrated),
+                op=lambda hydrated=hydrated: emit_model_events(
+                    conn,
+                    models=hydrated,
+                    event_type=MODEL_EVENT_CREATED,
+                    changed_fields=model_semantic_snapshot(hydrated[0]).keys(),
+                ),
+                metrics_from_result=lambda _result, count=len(hydrated): {
+                    "row_count": count,
+                },
             )
 
             if self._run_topology_on_insert:
-                for row in hydrated:
-                    try:
-                        async with conn.transaction():
-                            await _TOPOLOGY.generate_for_model(conn, model=row)
-                    except Exception:
-                        pass
+                async def _generate_topology() -> dict[str, int]:
+                    generated = 0
+                    failed = 0
+                    for row in hydrated:
+                        try:
+                            async with conn.transaction():
+                                await _TOPOLOGY.generate_for_model(conn, model=row)
+                            generated += 1
+                        except Exception:
+                            failed += 1
+                    return {
+                        "attempted": len(hydrated),
+                        "generated": generated,
+                        "failed": failed,
+                    }
+
+                await self._time_bulk_phase(
+                    "topology_generate",
+                    stratum_index=stratum_index,
+                    model_count=len(hydrated),
+                    op=_generate_topology,
+                    metrics_from_result=lambda result: dict(result or {}),
+                )
 
         return [
             rows_by_id[planned.id]
@@ -2344,6 +2741,7 @@ class ModelsRepo:
                 created_by_event_id=hydrated.born_from_event_id,
                 update_arrays=False,
             )
+        await _record_model_authority_provenance(conn, hydrated)
 
     async def _apply_insert_topology_effects(
         self,

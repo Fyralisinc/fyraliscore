@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from services.platform.access_control.authority import Principal, authority_fingerprint
 from services.product.query import strategies as strat_pkg
 from services.product.query.adapters import InMemoryCacheAdapter
 from services.product.query.core import (
@@ -31,6 +32,14 @@ from services.product.query.tests._helpers import (
 
 
 TENANT = uuid4()
+VIEWER = uuid4()
+
+
+def _auth_key(viewer_id=VIEWER) -> str:
+    return authority_fingerprint(
+        Principal(tenant_id=TENANT, actor_id=viewer_id),
+        "ask",
+    ).cache_key
 
 
 @pytest.fixture
@@ -63,6 +72,7 @@ def handler(fake_strategies):
 async def test_handler_returns_response(handler):
     req = AnswerQueryRequest(
         tenant_id=TENANT,
+        viewer_id=VIEWER,
         query="tell me about Acme",
     )
     resp = await handler.answer_query(req)
@@ -75,9 +85,31 @@ async def test_handler_returns_response(handler):
 
 
 async def test_handler_empty_query_raises(handler):
-    req = AnswerQueryRequest(tenant_id=TENANT, query="   ")
+    req = AnswerQueryRequest(tenant_id=TENANT, viewer_id=VIEWER, query="   ")
     with pytest.raises(Exception):
         await handler.answer_query(req)
+
+
+async def test_handler_requires_viewer_id(handler):
+    req = AnswerQueryRequest(
+        tenant_id=TENANT,
+        query="tell me about Acme",
+    )
+    with pytest.raises(Exception, match="viewer_id required"):
+        await handler.answer_query(req)
+
+
+async def test_handler_passes_viewer_to_access_context(handler, fake_strategies):
+    req = AnswerQueryRequest(
+        tenant_id=TENANT,
+        viewer_id=VIEWER,
+        query="tell me about Acme",
+    )
+    await handler.answer_query(req)
+    access = fake_strategies["arbitrary"].last_access_context
+    assert access is not None
+    assert access.tenant_id == TENANT
+    assert access.requestor_actor_id == VIEWER
 
 
 async def test_handler_passes_history_to_rendering(fake_strategies):
@@ -98,6 +130,7 @@ async def test_handler_passes_history_to_rendering(fake_strategies):
     ]
     req = AnswerQueryRequest(
         tenant_id=TENANT,
+        viewer_id=VIEWER,
         query="follow-up: what next?",
         conversation_history=history,
     )
@@ -121,6 +154,7 @@ async def test_handler_three_turn_followup_maintains_context(fake_strategies):
     for q in queries:
         req = AnswerQueryRequest(
             tenant_id=TENANT,
+            viewer_id=VIEWER,
             query=q,
             conversation_history=list(history),
         )
@@ -158,6 +192,7 @@ async def test_handler_uses_inline_card_context(fake_strategies):
     )
     req = AnswerQueryRequest(
         tenant_id=TENANT,
+        viewer_id=VIEWER,
         query="draft an update",
         context_card_id=card.card_id,
         inline_card_context=card,
@@ -192,6 +227,7 @@ async def test_handler_resolves_card_context_via_resolver(fake_strategies):
     )
     req = AnswerQueryRequest(
         tenant_id=TENANT,
+        viewer_id=VIEWER,
         query="why?",
         context_card_id=card_id,
     )
@@ -215,11 +251,12 @@ async def test_handler_caches_under_query_id_when_provided(fake_strategies):
     )
     req = AnswerQueryRequest(
         tenant_id=TENANT,
+        viewer_id=VIEWER,
         query="why is Acme at risk?",
         query_id="chip_123",
     )
     await handler.answer_query(req)
-    row = await cache.get(TENANT, "query_prefetch:chip_123")
+    row = await cache.get(TENANT, f"query_prefetch:{_auth_key()}:chip_123")
     assert row is not None
     assert row["content"]["query_echo"] == "why is Acme at risk?"
 
@@ -235,18 +272,28 @@ async def test_try_serve_from_prefetch_roundtrip(fake_strategies):
     )
     # Warm the cache.
     await handler.answer_query(AnswerQueryRequest(
-        tenant_id=TENANT, query="q1", query_id="chip_A",
+        tenant_id=TENANT,
+        viewer_id=VIEWER,
+        query="q1",
+        query_id="chip_A",
     ))
     assert len(renderer.calls) == 1
 
     # Hit the cache — no additional render call.
-    cached = await handler.try_serve_from_prefetch(TENANT, "chip_A")
+    cached = await handler.try_serve_from_prefetch(TENANT, VIEWER, "chip_A")
     assert cached is not None
     assert cached.query_echo == "q1"
     assert len(renderer.calls) == 1  # no new render call
 
+    # Another actor with the same query_id cannot use this viewer's cache.
+    other_viewer = uuid4()
+    actor_miss = await handler.try_serve_from_prefetch(
+        TENANT, other_viewer, "chip_A"
+    )
+    assert actor_miss is None
+
     # Miss.
-    miss = await handler.try_serve_from_prefetch(TENANT, "chip_missing")
+    miss = await handler.try_serve_from_prefetch(TENANT, VIEWER, "chip_missing")
     assert miss is None
 
 
@@ -261,7 +308,9 @@ async def test_handler_records_latency_breakdown(fake_strategies):
         rendering_adapter=renderer,
     )
     resp = await handler.answer_query(AnswerQueryRequest(
-        tenant_id=TENANT, query="test",
+        tenant_id=TENANT,
+        viewer_id=VIEWER,
+        query="test",
     ))
     assert resp.retrieval_trace.latency_ms_render >= 0
     assert resp.retrieval_trace.latency_ms_total >= resp.retrieval_trace.latency_ms_render

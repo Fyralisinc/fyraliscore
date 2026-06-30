@@ -33,6 +33,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from services.app.gateway.auth import AuthContext
+from services.platform.access_control.authority import Principal, principal_for_actor
 from services.product.model_trace.repo import (
     trace_back,
     trace_forward,
@@ -430,6 +431,7 @@ def register_model_page_routes(app: FastAPI) -> None:
         payload = await _build_item_trace(
             pool=deps.pool,
             tenant_id=auth.tenant_id,
+            actor_id=auth.actor_id,
             item_id=iid,
             direction=direction,
             depth=depth,
@@ -1518,15 +1520,32 @@ async def _synth_neighbors(
 
 
 async def _build_item_trace(
-    *, pool, tenant_id: UUID, item_id: UUID,
+    *, pool, tenant_id: UUID, actor_id: UUID, item_id: UUID,
     direction: str, depth: int,
 ) -> dict[str, Any]:
     """Wrap services.product.model_trace into the v2 trace response shape."""
     async with pool.acquire() as conn:
+        principal = await _principal_for_actor(
+            conn,
+            tenant_id=tenant_id,
+            actor_id=actor_id,
+        )
         if direction == "cause":
-            chain = await trace_back(conn, tenant_id, item_id, depth)
+            chain = await trace_back(
+                conn,
+                tenant_id,
+                item_id,
+                depth,
+                principal=principal,
+            )
         else:
-            chain = await trace_forward(conn, tenant_id, item_id, depth)
+            chain = await trace_forward(
+                conn,
+                tenant_id,
+                item_id,
+                depth,
+                principal=principal,
+            )
 
     if not chain:
         return {
@@ -1574,6 +1593,22 @@ def _deps(request: Request):
 
 def _auth_or_none(request: Request) -> AuthContext | None:
     return getattr(request.state, "auth", None)
+
+
+async def _principal_for_actor(
+    conn: Any,
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+) -> Principal:
+    try:
+        return await principal_for_actor(
+            actor_id,
+            conn=conn,
+            tenant_id=tenant_id,
+        )
+    except Exception:
+        return Principal(tenant_id=tenant_id, actor_id=actor_id)
 
 
 def _unauth() -> JSONResponse:

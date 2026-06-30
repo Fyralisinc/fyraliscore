@@ -43,7 +43,7 @@ from datetime import datetime
 from typing import Any, Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from pydantic import BaseModel, Field
 
 from lib.shared.errors import ValidationError
@@ -198,12 +198,15 @@ def build_router(
     handler: QueryHandler,
     *,
     default_tenant_id: Optional[UUID] = None,
+    default_viewer_id: Optional[UUID] = None,
     turn_store: Optional[_TurnStore] = None,
 ) -> APIRouter:
     """Build the FastAPI router bound to a specific QueryHandler.
 
     `default_tenant_id` is used when the request omits the
     `x-tenant-id` header (dogfood single-tenant convenience).
+    `default_viewer_id` is the matching dogfood viewer. Without bearer
+    auth or an explicit default viewer, user reads fail closed.
     """
     router = APIRouter()
     store = turn_store or _TurnStore()
@@ -222,15 +225,32 @@ def build_router(
             return default_tenant_id
         raise HTTPException(status_code=400, detail="x-tenant-id header required")
 
+    def resolve_viewer(request: Request, tenant_id: UUID) -> UUID:
+        auth = getattr(request.state, "auth", None)
+        if auth is not None:
+            if auth.tenant_id != tenant_id:
+                raise HTTPException(status_code=403, detail="tenant_mismatch")
+            return auth.actor_id
+        if (
+            default_tenant_id is not None
+            and default_viewer_id is not None
+            and tenant_id == default_tenant_id
+        ):
+            return default_viewer_id
+        raise HTTPException(status_code=401, detail="unauthorized")
+
     @router.post("/view/ceo/ask", response_model=AskResponseBody)
     async def ask(
         body: AskRequestBody,
+        request: Request,
         tenant_id: UUID = Depends(tenant_dep),
     ) -> AskResponseBody:
+        viewer_id = resolve_viewer(request, tenant_id)
+
         # --- Prefetch fast path ---
         if body.query_id:
             cached = await handler.try_serve_from_prefetch(
-                tenant_id, body.query_id
+                tenant_id, viewer_id, body.query_id
             )
             if cached is not None:
                 return AskResponseBody(
@@ -268,6 +288,7 @@ def build_router(
         req = AnswerQueryRequest(
             tenant_id=tenant_id,
             query=body.query,
+            viewer_id=viewer_id,
             context_card_id=body.context_card_id,
             conversation_history=history,
             inline_card_context=card_ctx,
@@ -296,8 +317,11 @@ def build_router(
     )
     async def turn_action(
         body: TurnActionRequestBody,
+        request: Request,
         tenant_id: UUID = Depends(tenant_dep),
     ) -> TurnActionResponseBody:
+        viewer_id = resolve_viewer(request, tenant_id)
+
         if body.action == "save":
             store.mark_saved(body.turn_id)
             return TurnActionResponseBody(ok=True)
@@ -313,6 +337,7 @@ def build_router(
             req = AnswerQueryRequest(
                 tenant_id=tenant_id,
                 query=body.follow_up_query,
+                viewer_id=viewer_id,
                 # No automatic history: the UI should re-issue
                 # /ask with conversation_history. This endpoint exists
                 # for minimalist clients (e.g. raw curl) that want

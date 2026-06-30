@@ -109,6 +109,7 @@ async def stream_recommendations_endpoint(request: Request) -> Any:
 
 async def list_recommendations(request: Request) -> JSONResponse:
     from services.product.recommendations.repo import list_for_actor
+    from services.platform.access_control.authority import principal_for_actor
 
     auth = _auth(request)
     if auth is None:
@@ -139,11 +140,17 @@ async def list_recommendations(request: Request) -> JSONResponse:
 
     deps = _deps(request)
     async with deps.pool.acquire() as conn:
+        principal = await principal_for_actor(
+            auth.actor_id,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
         views = await list_for_actor(
             tenant_id=auth.tenant_id,
             target_actor_id=target_actor,
             limit=limit,
             conn=conn,
+            principal=principal,
         )
 
     return JSONResponse(

@@ -197,6 +197,7 @@ class ProbeHandler:
             ar = await self._qh.answer_query(
                 AnswerQueryRequest(
                     tenant_id=req.tenant_id,
+                    viewer_id=req.actor_id,
                     query=query,
                     context_card_id=req.card_id,
                     inline_card_context=CardContext(

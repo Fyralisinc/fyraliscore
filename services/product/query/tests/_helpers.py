@@ -154,6 +154,7 @@ class FakeStrategy:
 
     def __init__(self, category: str = "arbitrary") -> None:
         self.category = category
+        self.last_access_context = None
 
     def parse(self, query, *, conversation_history=None, card_context=None):
         from services.product.query.strategies.base import ParsedQuery
@@ -163,6 +164,7 @@ class FakeStrategy:
         return TriggerContext(kind="T1", tenant_id=tenant_id)
 
     async def gather(self, parsed, ctx):
+        self.last_access_context = ctx.access_context
         return StrategyResult(
             parsed=parsed,
             retrieval_result=_FakeRetrievalResult(),
@@ -187,6 +189,12 @@ class _FakeTx:
 class _FakeConn:
     def transaction(self):
         return _FakeTx()
+
+    async def fetch(self, *args, **kwargs):
+        return []
+
+    async def fetchval(self, *args, **kwargs):
+        return 0
 
 
 class _FakeConnProvider:

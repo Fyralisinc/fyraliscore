@@ -50,6 +50,10 @@ from lib.shared.db import RowHydrationError
 from lib.shared.errors import CompanyOSError
 from lib.shared.ids import uuid7
 from lib.shared.types import ObservationCreate, ObservationRow, TrustTierValue
+from services.platform.access_control.authority import (
+    record_observation_access_labels,
+    record_provenance_edge,
+)
 
 from .events import NewObservationEvent, schedule_notify
 
@@ -248,7 +252,9 @@ class ObservationRepository:
                 obs.external_id,
             )
             if existing is not None:
-                return _hydrate_row(existing)
+                hydrated = _hydrate_row(existing)
+                await _record_observation_authority_metadata(conn, hydrated)
+                return hydrated
 
         # Vector: pgvector.asyncpg wants a list[float] (or np array).
         emb_value: Any = embedding
@@ -326,9 +332,13 @@ class ObservationRepository:
                     source_channel=obs.source_channel,
                     external_id=obs.external_id,
                 )
-            return _hydrate_row(existing)
+            hydrated = _hydrate_row(existing)
+            await _record_observation_authority_metadata(conn, hydrated)
+            return hydrated
 
-        return _hydrate_row(row)
+        hydrated = _hydrate_row(row)
+        await _record_observation_authority_metadata(conn, hydrated)
+        return hydrated
 
     async def _maybe_embed(self, text: str) -> tuple[list[float] | None, bool]:
         """
@@ -619,6 +629,29 @@ class ObservationRepository:
             await _ensure_vector_codec(c)
             rows = await c.fetch(sql, *params)
         return [_hydrate_row(r) for r in rows]
+
+
+async def _record_observation_authority_metadata(
+    conn: asyncpg.Connection,
+    row: ObservationRow,
+) -> None:
+    await record_observation_access_labels(
+        conn=conn,
+        tenant_id=row.tenant_id,
+        observation_id=row.id,
+        source_channel=row.source_channel,
+    )
+    if row.cause_id is not None:
+        await record_provenance_edge(
+            conn=conn,
+            tenant_id=row.tenant_id,
+            derived_kind="observation",
+            derived_id=row.id,
+            source_kind="observation",
+            source_id=row.cause_id,
+            derivation_kind="observation_cause",
+            metadata={"source_column": "cause_id"},
+        )
 
 
 async def _exact_embedding_fallback(

@@ -35,6 +35,11 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
+from services.platform.access_control.authority import (
+    CORE_ENTITY_KINDS,
+    record_observation_access_labels,
+    record_provenance_edge,
+)
 
 from .events import NewObservationEvent, schedule_notify
 
@@ -124,6 +129,35 @@ async def emit_state_change(
         STATE_CHANGE_TRUST_TIER,
         cause_event_id,
     )
+
+    await record_observation_access_labels(
+        conn=tx,
+        tenant_id=tenant_id,
+        observation_id=obs_id,
+        source_channel=STATE_CHANGE_CHANNEL,
+    )
+    if cause_event_id is not None:
+        await record_provenance_edge(
+            conn=tx,
+            tenant_id=tenant_id,
+            derived_kind="observation",
+            derived_id=obs_id,
+            source_kind="observation",
+            source_id=cause_event_id,
+            derivation_kind="state_change_cause",
+            metadata={"source_column": "cause_id"},
+        )
+    if entity_kind in CORE_ENTITY_KINDS:
+        await record_provenance_edge(
+            conn=tx,
+            tenant_id=tenant_id,
+            derived_kind="observation",
+            derived_id=obs_id,
+            source_kind=entity_kind,
+            source_id=entity_id,
+            derivation_kind="state_change_entity",
+            metadata={"source": "state_change"},
+        )
 
     schedule_notify(
         NewObservationEvent(

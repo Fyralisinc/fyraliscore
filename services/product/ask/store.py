@@ -10,6 +10,14 @@ import asyncpg
 
 from lib.shared.ids import uuid7
 from services.domain.triggers import enqueue_trigger
+from services.platform.access_control.authority import (
+    ObjectRef,
+    Principal,
+    authorize_read,
+    principal_for_actor,
+    record_derived_access_labels,
+    record_provenance_edge,
+)
 
 from .schemas import (
     AskAnswerPayload,
@@ -32,10 +40,17 @@ class AskStore(Protocol):
         source_object_id: UUID | None,
         source_object_type: str | None,
         mode: AskMode,
+        access_snapshot: dict[str, Any] | None = None,
     ) -> AskSession: ...
 
     async def get_session(self, session_id: UUID, *, tenant_id: UUID) -> AskSession | None: ...
-    async def update_scope(self, session_id: UUID, *, scope: AskScope) -> None: ...
+    async def update_scope(
+        self,
+        session_id: UUID,
+        *,
+        scope: AskScope,
+        access_snapshot: dict[str, Any] | None = None,
+    ) -> None: ...
     async def add_message(
         self,
         *,
@@ -78,6 +93,7 @@ class AskStore(Protocol):
         mode: AskMode,
         scope: AskScope,
         latency_ms: int,
+        authority_snapshot: dict[str, Any] | None = None,
     ) -> UUID: ...
     async def update_answer_payload(
         self,
@@ -131,6 +147,7 @@ class PostgresAskStore:
         source_object_id: UUID | None,
         source_object_type: str | None,
         mode: AskMode,
+        access_snapshot: dict[str, Any] | None = None,
     ) -> AskSession:
         sid = uuid7()
         scope_json = scope.model_dump(mode="json")
@@ -169,7 +186,7 @@ class PostgresAskStore:
                 scope.root_node_ids,
                 scope.related_entity_ids,
                 _jsonb(scope.filters),
-                _jsonb({"access_mode": scope.access_mode}),
+                _jsonb(access_snapshot or {"access_mode": scope.access_mode}),
             )
         return _session_from_row(row)
 
@@ -182,7 +199,13 @@ class PostgresAskStore:
             )
         return _session_from_row(row) if row else None
 
-    async def update_scope(self, session_id: UUID, *, scope: AskScope) -> None:
+    async def update_scope(
+        self,
+        session_id: UUID,
+        *,
+        scope: AskScope,
+        access_snapshot: dict[str, Any] | None = None,
+    ) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "UPDATE ask_sessions SET current_scope = $2::jsonb WHERE id = $1",
@@ -204,7 +227,7 @@ class PostgresAskStore:
                 scope.root_node_ids,
                 scope.related_entity_ids,
                 _jsonb(scope.filters),
-                _jsonb({"access_mode": scope.access_mode}),
+                _jsonb(access_snapshot or {"access_mode": scope.access_mode}),
             )
 
     async def add_message(
@@ -299,32 +322,51 @@ class PostgresAskStore:
         if not items:
             return
         async with self._pool.acquire() as conn:
-            await conn.executemany(
-                """
-                INSERT INTO ask_evidence_items (
-                  id, retrieval_run_id, source_ref, source_kind, summary,
-                  strength, supports_answer, is_counterevidence,
-                  token_estimate, access_scope, omitted_reason, raw_payload
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '{}'::jsonb, $10, $11::jsonb)
-                """,
-                [
-                    (
-                        item.id,
-                        retrieval_run_id,
-                        item.source_ref,
-                        item.source_kind,
-                        item.summary,
-                        item.strength,
-                        item.supports_answer,
-                        item.is_counterevidence,
-                        item.token_estimate,
-                        item.omitted_reason,
-                        _jsonb(item.raw_payload),
+            async with conn.transaction():
+                await conn.executemany(
+                    """
+                    INSERT INTO ask_evidence_items (
+                      id, retrieval_run_id, source_ref, source_kind, summary,
+                      strength, supports_answer, is_counterevidence,
+                      token_estimate, access_scope, omitted_reason, raw_payload
                     )
-                    for item in items
-                ],
-            )
+                    VALUES (
+                      $1, $2, $3, $4, $5, $6, $7, $8, $9, '{}'::jsonb, $10, $11::jsonb
+                    )
+                    """,
+                    [
+                        (
+                            item.id,
+                            retrieval_run_id,
+                            item.source_ref,
+                            item.source_kind,
+                            item.summary,
+                            item.strength,
+                            item.supports_answer,
+                            item.is_counterevidence,
+                            item.token_estimate,
+                            item.omitted_reason,
+                            _jsonb(item.raw_payload),
+                        )
+                        for item in items
+                    ],
+                )
+                tenant_id = await conn.fetchval(
+                    """
+                    SELECT s.tenant_id
+                    FROM ask_retrieval_runs r
+                    JOIN ask_sessions s ON s.id = r.session_id
+                    WHERE r.id = $1
+                    """,
+                    retrieval_run_id,
+                )
+                if tenant_id is not None:
+                    for item in items:
+                        await _record_ask_evidence_authority(
+                            conn,
+                            tenant_id=tenant_id,
+                            item=item,
+                        )
 
     async def add_answer(
         self,
@@ -336,6 +378,7 @@ class PostgresAskStore:
         mode: AskMode,
         scope: AskScope,
         latency_ms: int,
+        authority_snapshot: dict[str, Any] | None = None,
     ) -> UUID:
         aid = uuid7()
         async with self._pool.acquire() as conn:
@@ -343,9 +386,13 @@ class PostgresAskStore:
                 """
                 INSERT INTO ask_answers (
                   id, session_id, message_id, retrieval_run_id,
-                  answer_payload, confidence, mode, scope, token_estimate, latency_ms
+                  answer_payload, confidence, mode, scope, token_estimate,
+                  latency_ms, authority_snapshot
                 )
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10)
+                VALUES (
+                  $1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10,
+                  $11::jsonb
+                )
                 """,
                 aid,
                 session_id,
@@ -357,6 +404,7 @@ class PostgresAskStore:
                 _jsonb(scope.model_dump(mode="json")),
                 _estimate_tokens(payload.answer),
                 latency_ms,
+                _jsonb(authority_snapshot or {}),
             )
         return aid
 
@@ -598,6 +646,181 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text or "") // 4)
 
 
+async def _record_ask_evidence_authority(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    item: AskEvidenceItem,
+) -> None:
+    refs = _evidence_item_source_refs(item)
+    if not refs:
+        return
+    source_refs = [
+        ObjectRef(tenant_id=tenant_id, object_kind=kind, object_id=ref)
+        for kind, ref in refs
+    ]
+    for ref in source_refs:
+        await record_provenance_edge(
+            conn=conn,
+            tenant_id=tenant_id,
+            derived_kind="evidence",
+            derived_id=item.id,
+            source_kind=ref.object_kind,
+            source_id=ref.object_id,
+            derivation_kind="ask_evidence_source",
+            metadata={
+                "artifact": "ask_fyralis_evidence",
+                "source_kind": item.source_kind,
+            },
+        )
+    await record_derived_access_labels(
+        conn=conn,
+        tenant_id=tenant_id,
+        derived_kind="evidence",
+        derived_id=item.id,
+        source_refs=source_refs,
+        source="ask_evidence_source",
+    )
+
+
+async def _filter_authorized_evidence_rows(
+    conn: asyncpg.Connection,
+    principal: Principal,
+    rows: list[asyncpg.Record],
+) -> list[asyncpg.Record]:
+    visible: list[asyncpg.Record] = []
+    for row in rows:
+        refs = _evidence_row_source_refs(row)
+        if not refs:
+            continue
+        allowed = True
+        for kind, ref in refs:
+            decision = await authorize_read(
+                principal,
+                "ask",
+                ObjectRef(
+                    tenant_id=principal.tenant_id,
+                    object_kind=kind,
+                    object_id=ref,
+                ),
+                conn=conn,
+            )
+            if not decision.allowed:
+                allowed = False
+                break
+        if allowed:
+            visible.append(row)
+    return visible
+
+
+def _evidence_row_source_refs(row: asyncpg.Record) -> tuple[tuple[str, UUID], ...]:
+    payload = _coerce_json(_row_value(row, "raw_payload", {}))
+    return _source_refs_from_values(
+        source_kind=str(_row_value(row, "source_kind", "")),
+        source_ref=_try_uuid(_row_value(row, "source_ref")),
+        payload=payload if isinstance(payload, dict) else {},
+    )
+
+
+def _evidence_item_source_refs(item: AskEvidenceItem) -> tuple[tuple[str, UUID], ...]:
+    payload = item.raw_payload if isinstance(item.raw_payload, dict) else {}
+    return _source_refs_from_values(
+        source_kind=item.source_kind,
+        source_ref=item.source_ref,
+        payload=payload,
+    )
+
+
+def _source_refs_from_values(
+    *,
+    source_kind: str,
+    source_ref: UUID | None,
+    payload: dict[str, Any],
+) -> tuple[tuple[str, UUID], ...]:
+    refs: list[tuple[str, UUID]] = []
+    if source_kind == "composed_chain":
+        raw_ids = payload.get("source_observation_ids") or ()
+        if isinstance(raw_ids, (list, tuple)):
+            for raw_id in raw_ids:
+                ref = _try_uuid(raw_id)
+                if ref is not None:
+                    refs.append(("observation", ref))
+    refs.extend(
+        _projected_source_refs(
+            payload,
+            default_kind=source_kind,
+            default_ref=source_ref,
+        )
+    )
+    seen: set[tuple[str, UUID]] = set()
+    deduped: list[tuple[str, UUID]] = []
+    for ref in refs:
+        if ref in seen:
+            continue
+        seen.add(ref)
+        deduped.append(ref)
+    return tuple(deduped)
+
+
+def _projected_source_refs(
+    projected: dict[str, Any],
+    *,
+    default_kind: str,
+    default_ref: UUID | None,
+) -> tuple[tuple[str, UUID], ...]:
+    refs: list[tuple[str, UUID]] = []
+    normalized_kind = _normalize_evidence_kind(default_kind)
+    if default_ref is not None and normalized_kind is not None:
+        refs.append((normalized_kind, default_ref))
+    for key, kind in (
+        ("source_model_id", "model"),
+        ("model_id", "model"),
+        ("fyralis_model_id", "model"),
+        ("source_observation_id", "observation"),
+        ("observation_id", "observation"),
+    ):
+        ref = _try_uuid(projected.get(key))
+        if ref is not None:
+            refs.append((kind, ref))
+    seen: set[tuple[str, UUID]] = set()
+    deduped: list[tuple[str, UUID]] = []
+    for item in refs:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return tuple(deduped)
+
+
+def _normalize_evidence_kind(kind: str) -> str | None:
+    normalized = kind.strip().lower()
+    if normalized in {"model", "fyralis_model", "synthesis_model", "omitted_model"}:
+        return "model"
+    if normalized in {"observation", "event", "signal"}:
+        return "observation"
+    if normalized in {"resource", "commitment", "goal", "decision"}:
+        return normalized
+    return None
+
+
+def _try_uuid(value: Any) -> UUID | None:
+    if isinstance(value, UUID):
+        return value
+    if value is None:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_value(row: asyncpg.Record, key: str, default: Any = None) -> Any:
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
 class InMemoryAskStore:
     """Small test adapter with the same semantics as PostgresAskStore."""
 
@@ -605,6 +828,8 @@ class InMemoryAskStore:
         self.sessions: dict[UUID, AskSession] = {}
         self.evidence: dict[UUID, list[AskEvidenceItem]] = {}
         self.retrieval_runs: dict[UUID, dict[str, Any]] = {}
+        self.scope_snapshots: dict[UUID, list[dict[str, Any]]] = {}
+        self.answers: dict[UUID, dict[str, Any]] = {}
         self.changes: dict[UUID, AskProposedStateChange] = {}
         self.feedback: list[dict[str, Any]] = []
         self.accepted_answer_writebacks: list[dict[str, Any]] = []
@@ -619,6 +844,7 @@ class InMemoryAskStore:
         source_object_id: UUID | None,
         source_object_type: str | None,
         mode: AskMode,
+        access_snapshot: dict[str, Any] | None = None,
     ) -> AskSession:
         now = datetime.now(timezone.utc)
         session = AskSession(
@@ -636,6 +862,7 @@ class InMemoryAskStore:
             updated_at=now,
         )
         self.sessions[session.id] = session
+        self.scope_snapshots[session.id] = [access_snapshot or {}]
         return session
 
     async def get_session(self, session_id: UUID, *, tenant_id: UUID) -> AskSession | None:
@@ -644,11 +871,18 @@ class InMemoryAskStore:
             return session
         return None
 
-    async def update_scope(self, session_id: UUID, *, scope: AskScope) -> None:
+    async def update_scope(
+        self,
+        session_id: UUID,
+        *,
+        scope: AskScope,
+        access_snapshot: dict[str, Any] | None = None,
+    ) -> None:
         session = self.sessions[session_id]
         self.sessions[session_id] = session.model_copy(
             update={"current_scope": scope, "updated_at": datetime.now(timezone.utc)}
         )
+        self.scope_snapshots.setdefault(session_id, []).append(access_snapshot or {})
 
     async def add_message(
         self,
@@ -718,8 +952,20 @@ class InMemoryAskStore:
         mode: AskMode,
         scope: AskScope,
         latency_ms: int,
+        authority_snapshot: dict[str, Any] | None = None,
     ) -> UUID:
-        return uuid7()
+        aid = uuid7()
+        self.answers[aid] = {
+            "session_id": session_id,
+            "message_id": message_id,
+            "retrieval_run_id": retrieval_run_id,
+            "payload": payload,
+            "mode": mode,
+            "scope": scope,
+            "latency_ms": latency_ms,
+            "authority_snapshot": authority_snapshot or {},
+        }
+        return aid
 
     async def update_answer_payload(
         self,
@@ -838,7 +1084,7 @@ async def _enqueue_accepted_answer_writeback(
     evidence_rows = await conn.fetch(
         """
         SELECT source_ref, source_kind, summary, strength, supports_answer,
-               is_counterevidence
+               is_counterevidence, raw_payload
         FROM ask_evidence_items
         WHERE retrieval_run_id = $1
           AND omitted_reason IS NULL
@@ -847,6 +1093,18 @@ async def _enqueue_accepted_answer_writeback(
         """,
         row["retrieval_run_id"],
     )
+    principal = await principal_for_actor(
+        viewer_id,
+        conn=conn,
+        tenant_id=row["tenant_id"],
+    )
+    evidence_rows = await _filter_authorized_evidence_rows(
+        conn,
+        principal,
+        evidence_rows,
+    )
+    if not evidence_rows:
+        return
     confidence = row["confidence"]
     try:
         capped_confidence = min(float(confidence), 0.72)
