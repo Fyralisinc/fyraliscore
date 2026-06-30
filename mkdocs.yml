@@ -102,6 +102,7 @@ nav:
   - Glossary: glossary.md
   - Codebase reference:
       - Architecture & module map: reference/CODEBASE-ARCHITECTURE.md
+      - Core system architecture: reference/CORE-SYSTEM-ARCHITECTURE.md
       - Codebase management (the why): reference/CODEBASE-MANAGEMENT.md
       - Comprehensive reference: reference/FYRALIS.md
       - Architecture repair plan: reference/ARCHITECTURE-REPAIR-PLAN.md

@@ -979,6 +979,7 @@ tests pass across think/models/topology/relationships/scripts).
 |---|---|---|
 | `THINK_POLL_INTERVAL_S` | 2.0 | worker poll cadence |
 | `THINK_POLL_BATCH` | 10 | triggers fetched per poll |
+| `THINK_WORKER_LANES` | unset | optional comma-separated lane filter: `reflex`, `batch_memory`, `relationship`, `deep_synthesis`, `repair`; unset means all lanes |
 | `THINK_MAX_CONCURRENCY_PER_TENANT` | 1 | per-tenant parallelism |
 | `THINK_QUEUE_BACKPRESSURE_LIMIT` | 500 | depth that slows polling 1.5× |
 | `THINK_TRIGGER_MAX_ATTEMPTS` | 5 | retries before failure |
@@ -992,6 +993,10 @@ tests pass across think/models/topology/relationships/scripts).
 | `TOPOLOGY_SWEEPER_INTERVAL_S` | 900 | sweeper cadence |
 | `TOPOLOGY_SWEEPER_LIMIT_PER_TENANT` | 50 | models per sweep |
 | `TOPOLOGY_SWEEPER_MIN_ACTIVATION` | 0.15 | sweep activation floor |
+
+The production compose file also exposes an opt-in `think-lanes` profile with
+one specialized worker per lane. When enabling that profile, scale the default
+all-lane `think_worker` down if strict per-lane capacity isolation is desired.
 
 ---
 
