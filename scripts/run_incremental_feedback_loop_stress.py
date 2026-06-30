@@ -16,7 +16,7 @@ import statistics
 import sys
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -85,6 +85,68 @@ class SeededCompany:
     total_models: int
     insert_ms: float
     sidecars: dict[str, int]
+    timings: dict[str, Any] = field(default_factory=dict)
+
+
+def _round_ms(value: float) -> float:
+    return round(float(value), 3)
+
+
+def _summarize_seed_timing_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    by_phase: dict[str, dict[str, Any]] = {}
+    total_ms = 0.0
+    for raw in events:
+        phase = str(raw.get("phase") or "unknown")
+        elapsed_ms = float(raw.get("elapsed_ms") or 0.0)
+        total_ms += elapsed_ms
+        row = by_phase.setdefault(
+            phase,
+            {
+                "calls": 0,
+                "elapsed_ms": 0.0,
+                "max_ms": 0.0,
+                "model_count": 0,
+                "row_count": 0,
+                "error_count": 0,
+            },
+        )
+        row["calls"] += 1
+        row["elapsed_ms"] += elapsed_ms
+        row["max_ms"] = max(float(row["max_ms"]), elapsed_ms)
+        if raw.get("status") != "ok":
+            row["error_count"] += 1
+        for key in (
+            "model_count",
+            "row_count",
+            "actor_rows",
+            "entity_rows",
+            "provenance_edges",
+            "access_label_calls",
+            "attempted",
+            "generated",
+            "failed",
+        ):
+            value = raw.get(key)
+            if isinstance(value, (int, float)):
+                row[key] = int(row.get(key) or 0) + int(value)
+
+    rounded_by_phase = {
+        phase: {
+            **values,
+            "elapsed_ms": _round_ms(float(values["elapsed_ms"])),
+            "max_ms": _round_ms(float(values["max_ms"])),
+        }
+        for phase, values in sorted(
+            by_phase.items(),
+            key=lambda item: float(item[1]["elapsed_ms"]),
+            reverse=True,
+        )
+    }
+    return {
+        "total_recorded_ms": _round_ms(total_ms),
+        "summary_by_phase": rounded_by_phase,
+        "events": events,
+    }
 
 
 def _percentile(values: list[float], p: float) -> float:
@@ -425,9 +487,11 @@ async def _seed_company(
     async with pool.acquire() as conn:
         await pgvector_pool_init(conn)
         async with conn.transaction():
+            transaction_started = time.perf_counter()
             await conn.execute("SET CONSTRAINTS ALL DEFERRED")
             drafts: list[Any] = []
             family_cases: list[Any] = []
+            scaffold_started = time.perf_counter()
             for index in range(families):
                 archetype = ARCHETYPES[index % len(ARCHETYPES)]
                 scaffold = await _insert_scaffold(
@@ -445,26 +509,47 @@ async def _seed_company(
                 )
                 drafts.extend(family_drafts)
                 family_cases.append(case)
+            scaffold_ms = (time.perf_counter() - scaffold_started) * 1000.0
 
+            bulk_timing_events: list[dict[str, Any]] = []
             repo = ModelsRepo(
                 pool,
                 embedder=None,
                 run_topology_on_insert=False,
+                bulk_timing_sink=bulk_timing_events.append,
             )
             started = time.perf_counter()
+            repo_started = time.perf_counter()
             await repo.insert_many(
                 drafts,
                 conn=conn,
                 apply_confidence_calibration=False,
             )
+            repo_insert_many_ms = (time.perf_counter() - repo_started) * 1000.0
+            graph_edges_started = time.perf_counter()
             for case in family_cases:
                 await _insert_graph_edges(
                     conn,
                     tenant_id=tenant_id,
                     case=case,
                 )
-            insert_ms = (time.perf_counter() - started) * 1000.0
+            graph_edges_ms = (time.perf_counter() - graph_edges_started) * 1000.0
+            sidecar_counts_started = time.perf_counter()
             sidecars = await _sidecar_counts(conn, tenant_id)
+            sidecar_counts_ms = (
+                time.perf_counter() - sidecar_counts_started
+            ) * 1000.0
+            insert_ms = (time.perf_counter() - started) * 1000.0
+            transaction_ms = (time.perf_counter() - transaction_started) * 1000.0
+            timings = {
+                "scaffold_ms": _round_ms(scaffold_ms),
+                "repo_insert_many_ms": _round_ms(repo_insert_many_ms),
+                "graph_edges_ms": _round_ms(graph_edges_ms),
+                "sidecar_counts_ms": _round_ms(sidecar_counts_ms),
+                "insert_measured_ms": _round_ms(insert_ms),
+                "seed_transaction_ms": _round_ms(transaction_ms),
+                "bulk_insert": _summarize_seed_timing_events(bulk_timing_events),
+            }
 
     return SeededCompany(
         tenant_id=tenant_id,
@@ -472,6 +557,7 @@ async def _seed_company(
         total_models=len(drafts),
         insert_ms=insert_ms,
         sidecars=sidecars,
+        timings=timings,
     )
 
 
@@ -1057,6 +1143,7 @@ def _summarize(
                 6,
             ),
             "sidecars": company.sidecars,
+            "timings": company.timings,
         },
         "cases": len(results),
         "passed": passed_count,
@@ -1212,6 +1299,12 @@ async def run(args: argparse.Namespace) -> int:
                 "models": company.total_models,
                 "insert_ms": round(company.insert_ms, 3),
                 "sidecars": company.sidecars,
+                "timing_summary": (
+                    (company.timings.get("bulk_insert") or {}).get(
+                        "summary_by_phase"
+                    )
+                    or {}
+                ),
             }, sort_keys=True),
             flush=True,
         )

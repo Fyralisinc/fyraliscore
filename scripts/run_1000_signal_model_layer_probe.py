@@ -2676,6 +2676,7 @@ async def _seed_probe_models(
         "models": seeded.total_models,
         "insert_ms": round(seeded.insert_ms, 3),
         "sidecars": seeded.sidecars,
+        "timings": seeded.timings,
     }
     print(f"seed_status={json.dumps(seed_status, sort_keys=True)}", flush=True)
     return seed_status

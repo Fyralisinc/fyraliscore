@@ -154,6 +154,72 @@ Build-only smoke check:
   --run-id storyline-batch-buildonly-check
 ```
 
+Reusable seeded baseline for retrieval optimization:
+
+```bash
+.venv/bin/python scripts/run_storyline_batch_benchmark.py \
+  --mode seed-only \
+  --run-id retrieval-opt-seed-15000 \
+  --target-t1-batches 0 \
+  --seed-models 15000 \
+  --seed-families 120
+```
+
+Before any expensive Codex-backed append validation, run the retrieval hot-path
+probe against the seeded tenant:
+
+```bash
+.venv/bin/python scripts/run_storyline_batch_benchmark.py \
+  --mode retrieval-probe \
+  --append-to-run-id retrieval-opt-seed-15000 \
+  --run-id retrieval-opt-seed-15000-probe \
+  --target-t1-batches 0 \
+  --retrieval-probe-max-ms 1000 \
+  --skip-migrations
+```
+
+This probe is intentionally LLM-free and non-mutating. It exercises focused
+answerability, focused scoped sparse lookup, focused direct scope lookup, and
+SAGE answerability over static noisy cases plus the tenant's highest-DF sparse
+and answerability terms. The probe checks both latency and minimum non-empty
+recall for positive cases, so a path cannot pass merely by returning quickly with
+no useful rows. Treat a failed probe as a blocker for a full batch run; fix the
+hot path first, then rerun the probe.
+
+By default, `retrieval-probe` fails if it cannot find scoped Model sidecars,
+because that means the focused scope paths were not exercised. Use
+`--retrieval-probe-allow-missing-scope` only for tiny local smoke tests, not as a
+gate before a full E2E run.
+
+Then run repeated append validations without paying the 15k-model seed cost:
+
+```bash
+RUN_REAL_LLM=1 LLM_PROVIDER=codex CODEX_TRANSPORT=cli \
+.venv/bin/python scripts/run_storyline_batch_benchmark.py \
+  --mode run \
+  --append-to-run-id retrieval-opt-seed-15000 \
+  --run-id retrieval-opt-validation-5batch-a \
+  --target-t1-batches 5 \
+  --signals-per-storyline 20 \
+  --seed-models 0 \
+  --downstream-steps-per-wave 0 \
+  --adaptive-drain-cycles 1 \
+  --adaptive-drain-steps-per-cycle 0 \
+  --skip-topology-optimizer
+```
+
+Do not pass `--cleanup` to the seed-only baseline if you want to reuse it. Append
+runs intentionally mutate the reused tenant, so this workflow is fast and useful
+for iterative retrieval validation, not a clean identical A/B baseline for every
+run. Use a fresh seed-only run when you need an untouched baseline.
+
+Do not try to clean only an append run out of a reused tenant yet. The appended
+observations and Think runs can be identified, but Think may also revise
+pre-existing Models and relationship structures. Current Model rows do not carry
+a benchmark `run_id`, and these revisions are not fully reversible from the
+benchmark harness. Treat append runs as cumulative until the system has explicit
+run-scoped provenance or tenant clone/restore support.
+
 Real LLM run:
 
 ```bash

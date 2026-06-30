@@ -1,6 +1,10 @@
 import argparse
 import asyncio
 import json
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
 
 from scripts import run_storyline_batch_benchmark as benchmark
 from scripts.run_storyline_batch_benchmark import (
@@ -29,6 +33,10 @@ class _StopAfterMigration(Exception):
     pass
 
 
+class _TimedOutRows(list):
+    timed_out = True
+
+
 class _FakeAcquire:
     async def __aenter__(self):
         return object()
@@ -40,6 +48,160 @@ class _FakeAcquire:
 class _FakePool:
     def acquire(self):
         return _FakeAcquire()
+
+
+class _FakeSeedOnlyConn:
+    async def fetchval(self, query, *args):
+        if "FROM models" in query:
+            return 42
+        if "FROM observations" in query:
+            return 7
+        return None
+
+
+class _FakeSeedOnlyAcquire:
+    async def __aenter__(self):
+        return _FakeSeedOnlyConn()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeSeedOnlyPool:
+    def acquire(self):
+        return _FakeSeedOnlyAcquire()
+
+
+class _EmptyProbeTransaction:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+
+class _EmptyProbeConn:
+    async def fetchval(self, *_args, **_kwargs):
+        return None
+
+    async def fetch(self, *_args, **_kwargs):
+        return []
+
+    async def execute(self, *_args, **_kwargs):
+        return None
+
+    def transaction(self):
+        return _EmptyProbeTransaction()
+
+
+class _ReadinessProbeConn:
+    tables = {
+        "model_scope_entities",
+        "model_sparse_terms",
+        "model_answerability_index",
+        "model_representation_tag_postings",
+        "model_scope_actors",
+        "model_semantic_term_postings",
+        "model_operational_role_postings",
+    }
+    status_tables = {
+        "model_sparse_terms",
+        "model_answerability_index",
+        "model_representation_tag_postings",
+        "model_semantic_term_postings",
+        "model_operational_role_postings",
+    }
+
+    def __init__(
+        self,
+        *,
+        active_models: int = 100,
+        sparse_posted_models: int = 98,
+        sparse_rows: int = 1200,
+        sparse_terms: int = 25,
+    ) -> None:
+        self.active_models = active_models
+        self.metrics = {
+            "model_scope_entities": {
+                "row_count": 300,
+                "active_row_count": 300,
+                "active_model_hit_count": 95,
+                "orphan_row_count": 0,
+                "distinct_entities": 6,
+            },
+            "model_sparse_terms": {
+                "row_count": sparse_rows,
+                "active_row_count": sparse_rows,
+                "active_model_hit_count": sparse_posted_models,
+                "orphan_row_count": 0,
+                "distinct_terms": sparse_terms,
+            },
+            "model_answerability_index": {
+                "row_count": 1000,
+                "active_row_count": 1000,
+                "active_model_hit_count": 98,
+                "orphan_row_count": 0,
+                "distinct_terms": 22,
+                "probe_primitives": 3,
+            },
+            "model_representation_tag_postings": {
+                "row_count": 300,
+                "active_row_count": 300,
+                "active_model_hit_count": 100,
+                "orphan_row_count": 0,
+                "distinct_tags": 8,
+            },
+            "model_scope_actors": {
+                "row_count": 0,
+                "active_row_count": 0,
+                "active_model_hit_count": 0,
+                "orphan_row_count": 0,
+            },
+            "model_semantic_term_postings": {
+                "row_count": 0,
+                "active_row_count": 0,
+                "active_model_hit_count": 0,
+                "orphan_row_count": 0,
+            },
+            "model_operational_role_postings": {
+                "row_count": 0,
+                "active_row_count": 0,
+                "active_model_hit_count": 0,
+                "orphan_row_count": 0,
+            },
+        }
+
+    def _table_from_query(self, query: str) -> str:
+        for table in self.tables:
+            if table in query:
+                return table
+        return ""
+
+    async def fetchval(self, query: str, *args: object, **_kwargs: object):
+        if "to_regclass" in query:
+            table = str(args[0]).removeprefix("public.")
+            return args[0] if table in self.tables else None
+        if "information_schema.columns" in query:
+            table, column = str(args[0]), str(args[1])
+            return column == "status" and table in self.status_tables
+        if "FROM models" in query and "status = 'active'" in query:
+            return self.active_models
+
+        table = self._table_from_query(query)
+        metrics = self.metrics.get(table, {})
+        if "entity_type" in query:
+            return metrics.get("distinct_entities", 0)
+        if "primitive = ANY" in query:
+            return metrics.get("probe_primitives", 0)
+        if "DISTINCT tag_type" in query:
+            return metrics.get("distinct_tags", 0)
+        if "DISTINCT term" in query:
+            return metrics.get("distinct_terms", 0)
+        return None
+
+    async def fetchrow(self, query: str, *_args: object, **_kwargs: object):
+        table = self._table_from_query(query)
+        return dict(self.metrics.get(table, {}))
 
 
 def test_prepare_benchmark_tenant_uses_warn_migration_policy(monkeypatch) -> None:
@@ -78,6 +240,584 @@ def test_prepare_benchmark_tenant_uses_warn_migration_policy(monkeypatch) -> Non
 
     assert calls
     assert calls[0]["on_error"] == "warn"
+
+
+def test_parse_args_accepts_seed_only_mode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_storyline_batch_benchmark.py",
+            "--mode",
+            "seed-only",
+            "--run-id",
+            "unit-seed-baseline",
+        ],
+    )
+
+    args = benchmark.parse_args()
+
+    assert args.mode == "seed-only"
+    assert args.target_t1_batches == 0
+
+
+def test_parse_args_rejects_seed_only_append(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_storyline_batch_benchmark.py",
+            "--mode",
+            "seed-only",
+            "--append-to-run-id",
+            "base",
+        ],
+    )
+
+    with pytest.raises(SystemExit, match="seed-only cannot be combined"):
+        benchmark.parse_args()
+
+
+def test_parse_args_accepts_retrieval_probe_with_append_run(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_storyline_batch_benchmark.py",
+            "--mode",
+            "retrieval-probe",
+            "--append-to-run-id",
+            "unit-seed-baseline",
+            "--retrieval-probe-max-ms",
+            "750",
+        ],
+    )
+
+    args = benchmark.parse_args()
+
+    assert args.mode == "retrieval-probe"
+    assert args.append_to_run_id == "unit-seed-baseline"
+    assert args.retrieval_probe_max_ms == 750
+    assert args.target_t1_batches == 0
+
+
+def test_parse_args_rejects_retrieval_probe_without_existing_tenant(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        ["run_storyline_batch_benchmark.py", "--mode", "retrieval-probe"],
+    )
+
+    with pytest.raises(SystemExit, match="retrieval-probe requires"):
+        benchmark.parse_args()
+
+
+def test_seed_only_outputs_write_append_ready_summary(tmp_path) -> None:
+    scenario, _gold = build_storyline_scenario(
+        run_id="unit-seed-baseline",
+        signals_per_storyline=2,
+        noise_signals=0,
+    )
+    tenant_id = uuid4()
+
+    summary = asyncio.run(
+        benchmark._write_seed_only_outputs(
+            argparse.Namespace(cleanup=False),
+            pool=_FakeSeedOnlyPool(),
+            tenant_id=tenant_id,
+            scenario=scenario,
+            run_id="unit-seed-baseline",
+            report_dir=tmp_path,
+            run_config={"mode": "seed-only", "target_t1_batches": 0},
+            seed_status={"models": 42, "requested_models": 42},
+            started=0.0,
+        )
+    )
+
+    run_summary = json.loads((tmp_path / "run_summary.json").read_text())
+    storyline_scores = json.loads((tmp_path / "storyline_scores.json").read_text())
+
+    assert summary["tenant_id"] == str(tenant_id)
+    assert summary["append_ready"] is True
+    assert summary["active_model_count"] == 42
+    assert summary["processed_signal_count"] == 0
+    assert run_summary["tenant_id"] == str(tenant_id)
+    assert storyline_scores["tenant_id"] == str(tenant_id)
+    assert "append-to-run-id unit-seed-baseline" in summary["append_example"]
+
+
+def test_load_append_context_accepts_seed_only_report(tmp_path) -> None:
+    base_dir = tmp_path / "seed-baseline"
+    base_dir.mkdir()
+    tenant_id = uuid4()
+    (base_dir / "run_config.json").write_text(
+        json.dumps({"mode": "seed-only", "target_t1_batches": 0})
+    )
+    (base_dir / "run_summary.json").write_text(
+        json.dumps(
+            {
+                "tenant_id": str(tenant_id),
+                "seed_status": {"models": 15000, "families": 120},
+            }
+        )
+    )
+    (base_dir / "storyline_scores.json").write_text(json.dumps({}))
+
+    context = benchmark._load_append_context(
+        argparse.Namespace(
+            append_to_run_id="seed-baseline",
+            append_tenant_id=None,
+            report_root=tmp_path,
+            horizon_start_batch=None,
+            signals_per_storyline=20,
+            target_t1_batches=5,
+        )
+    )
+
+    assert context is not None
+    assert context["tenant_id"] == str(tenant_id)
+    assert context["horizon_start_batch"] == 0
+    assert context["base_seed_status"] == {"models": 15000, "families": 120}
+    assert context["additional_t1_batches"] == 5
+
+
+def test_maybe_seed_storyline_models_skips_seed_for_append_context() -> None:
+    seed_status = {"models": 0, "skipped": "append_to_existing_tenant"}
+
+    result = asyncio.run(
+        benchmark._maybe_seed_storyline_models(
+            argparse.Namespace(seed_models=15000, seed_families=120),
+            pool=object(),
+            tenant_id=uuid4(),
+            append_context={"tenant_id": str(uuid4())},
+            seed_status=seed_status,
+        )
+    )
+
+    assert result is seed_status
+
+
+def test_analyze_post_seed_lookup_tables_checks_and_analyzes_existing_tables() -> None:
+    class FakeConn:
+        def __init__(self) -> None:
+            self.checked: list[str] = []
+            self.executed: list[str] = []
+
+        async def fetchval(self, _query: str, table: str) -> str | None:
+            self.checked.append(table)
+            if table.endswith("model_operational_role_postings"):
+                return None
+            return table
+
+        async def execute(self, query: str) -> None:
+            self.executed.append(query)
+
+    class FakeAcquire:
+        def __init__(self, conn: FakeConn) -> None:
+            self.conn = conn
+
+        async def __aenter__(self) -> FakeConn:
+            return self.conn
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class FakePool:
+        def __init__(self) -> None:
+            self.conn = FakeConn()
+
+        def acquire(self) -> FakeAcquire:
+            return FakeAcquire(self.conn)
+
+    pool = FakePool()
+
+    result = asyncio.run(benchmark._analyze_post_seed_lookup_tables(pool))  # type: ignore[arg-type]
+
+    assert "models" in result["tables"]
+    assert "model_operational_role_postings" not in result["tables"]
+    assert "public.model_answerability_index" in pool.conn.checked
+    assert "ANALYZE model_answerability_index" in pool.conn.executed
+    assert "ANALYZE model_operational_role_postings" not in pool.conn.executed
+    assert "model_answerability_index" in result["table_timings_ms"]
+    assert "model_operational_role_postings" not in result["table_timings_ms"]
+
+
+def test_retrieval_probe_discovers_seed_scope_and_dynamic_term_cases() -> None:
+    entity_id = uuid4()
+
+    class FakeConn:
+        async def fetchval(self, _query: str, table: str) -> str | None:
+            return table
+
+        async def fetch(self, query: str, *_args: object) -> list[dict[str, object]]:
+            if "FROM model_scope_entities" in query:
+                return [
+                    {
+                        "entity_type": "customer_resource",
+                        "entity_id": entity_id,
+                        "model_count": 20,
+                    }
+                ]
+            if "FROM model_sparse_terms" in query:
+                return [
+                    {"term": "customer_resource", "df": 15000},
+                    {"term": "execution", "df": 14000},
+                ]
+            if "FROM model_answerability_index" in query:
+                return [
+                    {"term": "goal_impact", "df": 15000},
+                    {"term": "predicate", "df": 14000},
+                ]
+            return []
+
+    raw_entities, seed_pairs = asyncio.run(
+        benchmark._retrieval_probe_seed_pairs(
+            FakeConn(),  # type: ignore[arg-type]
+            tenant_id=uuid4(),
+        )
+    )
+    cases = asyncio.run(
+        benchmark._retrieval_probe_term_cases(
+            FakeConn(),  # type: ignore[arg-type]
+            tenant_id=uuid4(),
+        )
+    )
+
+    assert raw_entities == [{"type": "customer_resource", "id": str(entity_id)}]
+    assert {kind for kind, _raw_id in seed_pairs} == {
+        "customer",
+        "customer_resource",
+        "resource",
+    }
+    case_names = {case["name"] for case in cases}
+    assert "background_noise" in case_names
+    assert "top_sparse_terms" in case_names
+    assert "top_answerability_terms" in case_names
+
+
+def test_retrieval_probe_sidecar_preflight_passes_ready_core_surfaces() -> None:
+    summary = asyncio.run(
+        benchmark._retrieval_probe_sidecar_preflight(
+            _ReadinessProbeConn(),  # type: ignore[arg-type]
+            tenant_id=uuid4(),
+        )
+    )
+
+    assert summary["status"] == "passed"
+    assert summary["active_model_count"] == 100
+    assert summary["tables"]["model_sparse_terms"]["active_model_hit_count"] == 98
+    assert summary["tables"]["model_answerability_index"]["probe_primitive_count"] == 3
+    assert summary["failures"] == []
+
+
+def test_retrieval_probe_sidecar_preflight_fails_low_sparse_coverage() -> None:
+    summary = asyncio.run(
+        benchmark._retrieval_probe_sidecar_preflight(
+            _ReadinessProbeConn(
+                sparse_posted_models=40,
+                sparse_rows=200,
+                sparse_terms=3,
+            ),  # type: ignore[arg-type]
+            tenant_id=uuid4(),
+        )
+    )
+
+    assert summary["status"] == "failed"
+    assert any("model_sparse_terms" in item for item in summary["failures"])
+    assert any("coverage too low" in item for item in summary["failures"])
+    assert any("term variety too low" in item for item in summary["failures"])
+
+
+def test_render_retrieval_probe_markdown_marks_failures() -> None:
+    rendered = benchmark._render_retrieval_probe_markdown(
+        {
+            "tenant_id": str(uuid4()),
+            "status": "failed",
+            "max_ms": 1000.0,
+            "seed_pair_count": 3,
+            "results": [
+                {
+                    "label": "focused_answerability/background_noise",
+                    "elapsed_ms": 1501.25,
+                    "row_count": 0,
+                    "min_rows": 1,
+                    "coverage_passed": False,
+                    "source_count": 1,
+                    "source_set": ["answerability_index"],
+                    "min_sources": 2,
+                    "source_passed": False,
+                    "passed": False,
+                },
+                {
+                    "label": "focused_scope_sparse/background_noise",
+                    "elapsed_ms": 4.25,
+                    "row_count": 1,
+                    "min_rows": 0,
+                    "max_rows": 0,
+                    "coverage_passed": True,
+                    "excess_passed": False,
+                    "timed_out": True,
+                    "passed": False,
+                }
+            ],
+            "failures": [
+                {
+                    "label": "focused_answerability/background_noise",
+                    "elapsed_ms": 1501.25,
+                    "row_count": 0,
+                    "min_rows": 1,
+                    "coverage_passed": False,
+                    "source_count": 1,
+                    "source_set": ["answerability_index"],
+                    "min_sources": 2,
+                    "source_passed": False,
+                },
+                {
+                    "label": "focused_scope_sparse/background_noise",
+                    "elapsed_ms": 4.25,
+                    "row_count": 1,
+                    "min_rows": 0,
+                    "max_rows": 0,
+                    "coverage_passed": True,
+                    "excess_passed": False,
+                    "timed_out": True,
+                }
+            ],
+            "bounded_lookup_timeout_count": 1,
+            "bounded_lookup_timeout_paths": [
+                "focused_scope_sparse/background_noise"
+            ],
+            "coverage_failures": ["no model_scope_entities seed pairs found"],
+            "sidecar_readiness": {
+                "status": "failed",
+                "active_model_count": 100,
+                "tables": {
+                    "model_sparse_terms": {
+                        "required": True,
+                        "active_row_count": 200,
+                        "active_model_hit_count": 40,
+                        "active_model_ratio": 0.4,
+                    }
+                },
+                "failures": [
+                    "required retrieval sidecar coverage too low: "
+                    "model_sparse_terms 40.0% < 98.0%"
+                ],
+                "warnings": [],
+            },
+        }
+    )
+
+    assert "Status: `failed`" in rendered
+    assert "focused_answerability/background_noise" in rendered
+    assert "1501.250ms" in rendered
+    assert "0 / min 1" in rendered
+    assert "1 / max 0" in rendered
+    assert "1 / min 2 (answerability_index)" in rendered
+    assert "timeout" in rendered
+    assert "Bounded Lookup Timeouts" in rendered
+    assert "focused_scope_sparse/background_noise" in rendered
+    assert "below min 1" in rendered
+    assert "rows 1 above max 0" in rendered
+    assert "bounded lookup timed out" in rendered
+    assert "sources 1 below min 2" in rendered
+    assert "Sidecar Readiness" in rendered
+    assert "model_sparse_terms" in rendered
+    assert "40 (40.0%)" in rendered
+    assert "Readiness Failures" in rendered
+    assert "Coverage Failures" in rendered
+    assert "no model_scope_entities seed pairs found" in rendered
+
+
+def test_focused_action_probe_requires_multiple_sources() -> None:
+    model_id = uuid4()
+
+    async def action_call() -> SimpleNamespace:
+        return SimpleNamespace(
+            models=[SimpleNamespace(id=model_id)],
+            notes={
+                "answerability_hits": 1,
+                "scoped_sparse_hits": 0,
+                "direct_scope_hits": 0,
+                "merged_hits": 1,
+                "returned_models": 1,
+                "top_hits": [
+                    {
+                        "model_id": str(model_id),
+                        "sources": ["answerability_index"],
+                    }
+                ],
+            },
+        )
+
+    result = asyncio.run(
+        benchmark._time_focused_action_probe_call(
+            label="focused_action/common_generic",
+            max_ms=1000,
+            min_rows=1,
+            min_sources=2,
+            call=action_call(),
+        )
+    )
+
+    assert result["latency_passed"] is True
+    assert result["coverage_passed"] is True
+    assert result["source_passed"] is False
+    assert result["passed"] is False
+    assert result["row_count"] == 1
+    assert result["source_count"] == 1
+    assert result["source_set"] == ["answerability_index"]
+    assert result["notes"]["source_set"] == ["answerability_index"]
+
+
+def test_rollback_focused_action_probe_rolls_back_transaction(monkeypatch) -> None:
+    from services.platform.execution import retrieval_actions
+
+    class FakeTransaction:
+        def __init__(self) -> None:
+            self.started = False
+            self.rolled_back = False
+
+        async def start(self) -> None:
+            self.started = True
+
+        async def rollback(self) -> None:
+            self.rolled_back = True
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.tx = FakeTransaction()
+
+        def transaction(self) -> FakeTransaction:
+            return self.tx
+
+    calls: list[dict[str, object]] = []
+
+    async def fake_execute_focused_index_action(
+        action,
+        trigger,
+        conn,
+        _cfg,
+        *,
+        model_limit: int,
+    ) -> SimpleNamespace:
+        calls.append(
+            {
+                "action": action,
+                "trigger": trigger,
+                "conn": conn,
+                "model_limit": model_limit,
+            }
+        )
+        return SimpleNamespace(models=[], notes={})
+
+    monkeypatch.setattr(
+        retrieval_actions,
+        "execute_focused_index_action",
+        fake_execute_focused_index_action,
+    )
+
+    tenant_id = uuid4()
+    seed_id = uuid4()
+    conn = FakeConn()
+    result = asyncio.run(
+        benchmark._rollback_focused_action_probe(
+            conn,  # type: ignore[arg-type]
+            tenant_id=tenant_id,
+            raw_seed_entities=[{"type": "customer", "id": str(seed_id)}],
+            terms=["capacity", "billing"],
+            model_limit=5,
+        )
+    )
+
+    assert result.models == []
+    assert conn.tx.started is True
+    assert conn.tx.rolled_back is True
+    assert len(calls) == 1
+    action = calls[0]["action"]
+    trigger = calls[0]["trigger"]
+    assert action.filters["terms"] == ["capacity", "billing"]
+    assert action.filters["seed_entities"] == [
+        {"type": "customer", "id": str(seed_id)}
+    ]
+    assert trigger.tenant_id == tenant_id
+    assert calls[0]["conn"] is conn
+    assert calls[0]["model_limit"] == 5
+
+
+def test_retrieval_probe_marks_fast_empty_positive_case_as_failure() -> None:
+    async def fast_empty_call() -> list[object]:
+        return []
+
+    result = asyncio.run(
+        benchmark._time_retrieval_probe_call(
+            label="focused_answerability/common_generic",
+            max_ms=1000,
+            min_rows=1,
+            call=fast_empty_call(),
+        )
+    )
+
+    assert result["latency_passed"] is True
+    assert result["coverage_passed"] is False
+    assert result["passed"] is False
+    assert result["row_count"] == 0
+    assert result["min_rows"] == 1
+
+
+def test_retrieval_probe_marks_bounded_lookup_timeout_as_failure() -> None:
+    async def timed_out_call() -> list[object]:
+        return _TimedOutRows()
+
+    result = asyncio.run(
+        benchmark._time_retrieval_probe_call(
+            label="focused_scope_sparse/common_generic",
+            max_ms=1000,
+            min_rows=0,
+            call=timed_out_call(),
+        )
+    )
+
+    assert result["timed_out"] is True
+    assert result["timeout_passed"] is False
+    assert result["passed"] is False
+    assert result["row_count"] == 0
+
+
+def test_retrieval_probe_marks_noisy_scoped_rows_as_failure() -> None:
+    async def fast_noise_call() -> list[object]:
+        return [object()]
+
+    result = asyncio.run(
+        benchmark._time_retrieval_probe_call(
+            label="focused_scope_sparse/background_noise",
+            max_ms=1000,
+            min_rows=0,
+            max_rows=0,
+            call=fast_noise_call(),
+        )
+    )
+
+    assert result["latency_passed"] is True
+    assert result["coverage_passed"] is True
+    assert result["excess_passed"] is False
+    assert result["passed"] is False
+    assert result["row_count"] == 1
+    assert result["max_rows"] == 0
+
+
+def test_retrieval_probe_summary_fails_when_scope_missing() -> None:
+    summary = asyncio.run(
+        benchmark._run_retrieval_hot_path_probe(
+            _EmptyProbeConn(),  # type: ignore[arg-type]
+            tenant_id=uuid4(),
+            max_ms=1000,
+            model_limit=8,
+            require_scope=True,
+        )
+    )
+
+    assert summary["status"] == "failed"
+    assert summary["failures"]
+    assert summary["coverage_failures"]
 
 
 def test_storyline_scenario_builds_expected_batch_waves() -> None:
@@ -174,6 +914,45 @@ def test_storyline_scenario_builds_long_horizon_10_t1_batches_with_validation() 
     }
     assert (scenario.raw or {})["scenario_mode"] == "long_horizon"
     assert (scenario.raw or {})["warmup_batches"] < 10
+
+
+def test_lifecycle_obligation_measurement_helpers_explain_conversion() -> None:
+    opportunity_counts = benchmark._lifecycle_opportunity_counts_from_texts(
+        [
+            "Forecast says launch will slip by Friday unless approval clears.",
+            "Compliance capacity is down to two hours and owner is unclear.",
+            "Yesterday's review felt rough around the launch narrative.",
+            "The old launch-readiness memory is stale and may be replaced.",
+            "Alias ambiguity: Acme and Acme Enterprise may not be the same customer.",
+            "Capability probe. capability_probe=true prediction lifecycle.",
+        ]
+    )
+    injected = benchmark._lifecycle_injected_kinds_from_trace(
+        "reasoning\nlifecycle_obligations: injected prediction, resource, "
+        "question_policy\nmore"
+    )
+    injected_counts = {"prediction": 1, "resource": 1, "question_policy": 1}
+    persisted_counts = {"prediction": 1, "resource": 0, "question_policy": 1}
+
+    assert opportunity_counts["prediction"] == 1
+    assert opportunity_counts["resource"] == 1
+    assert opportunity_counts["question_policy"] == 1
+    assert opportunity_counts["evidence_attachment"] == 1
+    assert opportunity_counts["staleness_review"] == 1
+    assert opportunity_counts["ambiguity_review"] == 1
+    assert injected == ["prediction", "resource", "question_policy"]
+    assert benchmark._lifecycle_conversion_rates(
+        numerator=persisted_counts,
+        denominator=injected_counts,
+    )["resource"] == 0.0
+    assert any(
+        "resource operations" in note and "none persisted" in note
+        for note in benchmark._lifecycle_bottleneck_notes(
+            opportunities=opportunity_counts,
+            injected=injected_counts,
+            persisted=persisted_counts,
+        )
+    )
 
 
 def test_storyline_scenario_builds_append_horizon_without_reused_signal_ids() -> None:
@@ -319,6 +1098,339 @@ def test_story_id_from_external_id_accepts_run_prefixed_ids() -> None:
         )
         == "northstar_gap"
     )
+
+
+def test_t1_batch_retryability_classifies_transient_provider_failures() -> None:
+    assert benchmark._is_retryable_t1_batch_run(
+        {"status": "failed", "error": "ConnectTimeout: "}
+    )
+    assert benchmark._is_retryable_t1_batch_run(
+        {"status": "failed", "error": "HTTP 503 service unavailable"}
+    )
+    assert not benchmark._is_retryable_t1_batch_run(
+        {"status": "failed", "error": "ValidationError: out of region"}
+    )
+    assert not benchmark._is_retryable_t1_batch_run({"status": "success"})
+
+
+def test_downstream_drain_includes_all_t2_t3_t4_root_triggers() -> None:
+    class FakeConn:
+        def __init__(self) -> None:
+            self.fetchval_queries: list[str] = []
+            self.execute_queries: list[str] = []
+            self.pending_calls = 0
+
+        async def fetchval(self, query: str, *_args: object) -> int:
+            self.fetchval_queries.append(query)
+            self.pending_calls += 1
+            return 1 if self.pending_calls == 1 else 0
+
+        async def execute(self, query: str, *_args: object) -> None:
+            self.execute_queries.append(query)
+
+        async def fetch(self, *_args: object) -> list[dict[str, object]]:
+            return []
+
+    class FakeAcquire:
+        def __init__(self, conn: FakeConn) -> None:
+            self.conn = conn
+
+        async def __aenter__(self) -> FakeConn:
+            return self.conn
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class FakePool:
+        def __init__(self) -> None:
+            self.conn = FakeConn()
+
+        def acquire(self) -> FakeAcquire:
+            return FakeAcquire(self.conn)
+
+    class FakeWorker:
+        def __init__(self) -> None:
+            self._in_flight: set[object] = set()
+            self.polls = 0
+
+        async def _poll_and_dispatch(self) -> None:
+            self.polls += 1
+
+    pool = FakePool()
+    worker = FakeWorker()
+
+    steps = asyncio.run(
+        benchmark._drain_downstream_limited(
+            pool,  # type: ignore[arg-type]
+            worker,  # type: ignore[arg-type]
+            tenant_id=uuid4(),
+            steps=2,
+            force_window_elapsed_s=1.0,
+        )
+    )
+
+    assert len(steps) == 1
+    assert worker.polls == 1
+    assert pool.conn.execute_queries
+    selector_sql = "\n".join(pool.conn.execute_queries)
+    assert "trigger_kind IN ('T2', 'T3', 'T4')" in selector_sql
+    assert "open_question_search" not in selector_sql
+    assert "latent_relationship_candidate" not in selector_sql
+
+
+def test_think_cost_profile_classifies_t4_family_as_background(
+    monkeypatch,
+) -> None:
+    class FakeConn:
+        async def fetch(self, *_args: object) -> list[dict[str, object]]:
+            return [
+                {
+                    "trigger_kind": "T1:event_batch",
+                    "trigger_subkind": "event_batch",
+                    "runs": 10,
+                    "llm_calls": 10,
+                    "cost_usd": 1.0,
+                },
+                {
+                    "trigger_kind": "T2:belief_updated",
+                    "trigger_subkind": "belief_updated",
+                    "runs": 6,
+                    "llm_calls": 6,
+                    "cost_usd": 0.6,
+                },
+                {
+                    "trigger_kind": "T3:missing_transition",
+                    "trigger_subkind": "missing_transition",
+                    "runs": 8,
+                    "llm_calls": 5,
+                    "cost_usd": 0.5,
+                },
+                {
+                    "trigger_kind": "T4:open_question_search",
+                    "trigger_subkind": "open_question_search",
+                    "runs": 4,
+                    "llm_calls": 4,
+                    "cost_usd": 0.4,
+                },
+                {
+                    "trigger_kind": "T4:latent_relationship_candidate",
+                    "trigger_subkind": "latent_relationship_candidate",
+                    "runs": 6,
+                    "llm_calls": 6,
+                    "cost_usd": 0.6,
+                },
+                {
+                    "trigger_kind": "T4:representation_repair",
+                    "trigger_subkind": "representation_repair",
+                    "runs": 1,
+                    "llm_calls": 1,
+                    "cost_usd": 0.1,
+                },
+            ]
+
+    class FakeAcquire:
+        async def __aenter__(self) -> FakeConn:
+            return FakeConn()
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    class FakePool:
+        def acquire(self) -> FakeAcquire:
+            return FakeAcquire()
+
+    async def fake_table_exists(_conn: object, table: str) -> bool:
+        return table == "think_run_costs"
+
+    monkeypatch.setattr(benchmark, "_table_exists", fake_table_exists)
+
+    profile = asyncio.run(
+        benchmark._collect_think_cost_profile(FakePool(), tenant_id=uuid4())
+    )
+
+    assert profile["product_path"] == {
+        "runs": 24,
+        "llm_calls": 21,
+        "cost_usd": 2.1,
+    }
+    assert profile["background_maintenance"] == {
+        "runs": 11,
+        "llm_calls": 11,
+        "cost_usd": 1.1,
+    }
+    assert (
+        profile["by_kind"]["T4:open_question_search:open_question_search"][
+            "trigger_family"
+        ]
+        == "T4"
+    )
+
+
+def test_benchmark_summary_fails_when_required_t1_batch_stays_failed() -> None:
+    failed_wave = json.loads(json.dumps(_sample_success_wave()))
+    failed_wave["sequence"] = "cobalt_security_packet_horizon_wave_003"
+    failed_wave["t1_batch"]["trigger_id"] = "trigger-cobalt"
+    failed_wave["t1_batch"]["run"] = {
+        "status": "failed",
+        "error": "ConnectTimeout: ",
+        "validation_error_count": None,
+        "retrieval_model_count": None,
+        "retrieval_observation_count": None,
+    }
+    model_summary = _sample_model_summary()
+    model_summary["think_runs_success"] = 0
+    model_summary["think_runs_failed"] = 1
+
+    summary = _benchmark_summary(
+        model_summary=model_summary,
+        storyline_scores=[_sample_storyline_score()],
+        waves=[failed_wave],
+        elapsed_seconds=45.0,
+    )
+
+    assert summary["status"] == "failed"
+    assert summary["required_run_failures"] == [
+        "required T1 batch failed: cobalt_security_packet_horizon_wave_003 "
+        "trigger=trigger-cobalt error=ConnectTimeout: "
+    ]
+    rendered = _render_benchmark_markdown(summary)
+    assert "Status: `failed`" in rendered
+    assert "Required Run Failures" in rendered
+
+
+def test_benchmark_summary_passes_when_t1_batch_recovers_after_retry() -> None:
+    recovered_wave = json.loads(json.dumps(_sample_success_wave()))
+    recovered_wave["sequence"] = "cobalt_security_packet_horizon_wave_003"
+    recovered_wave["t1_batch"]["trigger_id"] = "trigger-cobalt"
+    recovered_wave["t1_batch"]["retry_count"] = 1
+    recovered_wave["t1_batch"]["attempt_history"] = [
+        {
+            "attempt": 1,
+            "status": "failed",
+            "error": "ConnectTimeout: ",
+            "retryable": True,
+        },
+        {"attempt": 2, "status": "success", "error": None, "retryable": False},
+    ]
+    recovered_wave["t1_batch"]["run"]["retry_count"] = 1
+    recovered_wave["t1_batch"]["run"]["recovered_after_retry"] = True
+    model_summary = _sample_model_summary()
+    model_summary["think_runs_success"] = 1
+    model_summary["think_runs_failed"] = 1
+
+    summary = _benchmark_summary(
+        model_summary=model_summary,
+        storyline_scores=[_sample_storyline_score()],
+        waves=[recovered_wave],
+        elapsed_seconds=90.0,
+    )
+
+    assert summary["status"] == "passed"
+    assert summary["required_run_failures"] == []
+    assert summary["t1_retry"]["recovered_t1_batches"] == 1
+    assert summary["t1_retry"]["retry_attempts"] == 1
+
+
+def test_benchmark_summary_fails_below_min_efficiency_score() -> None:
+    model_summary = _sample_model_summary()
+    model_summary["run_config"] = {"min_efficiency_score": 1.0}
+
+    summary = _benchmark_summary(
+        model_summary=model_summary,
+        storyline_scores=[_sample_storyline_score()],
+        waves=[_sample_success_wave()],
+        elapsed_seconds=30.0,
+    )
+
+    assert summary["status"] == "failed"
+    assert any(
+        item.startswith("efficiency score below required floor:")
+        for item in summary["required_run_failures"]
+    )
+
+
+def test_benchmark_efficiency_uses_product_path_cost_profile() -> None:
+    model_summary = _sample_model_summary()
+    model_summary["signal_count"] = 200
+    model_summary["think_runs_success"] = 31
+    model_summary["cost"] = {"llm_calls": 20, "cost_usd": 2.207248}
+    model_summary["think_cost_profile"] = {
+        "available": True,
+        "efficiency_scope": "product_path_excludes_t4_background_maintenance",
+        "product_path": {
+            "runs": 24,
+            "llm_calls": 13,
+            "cost_usd": 1.626488,
+        },
+        "background_maintenance": {
+            "runs": 7,
+            "llm_calls": 7,
+            "cost_usd": 0.58076,
+        },
+    }
+    model_summary["run_config"] = {"min_efficiency_score": 0.5}
+
+    summary = _benchmark_summary(
+        model_summary=model_summary,
+        storyline_scores=[_sample_storyline_score()],
+        waves=[_sample_success_wave()],
+        elapsed_seconds=30.0,
+    )
+
+    efficiency = summary["company_intelligence_scorecard"]["dimensions"]["efficiency"]
+    metrics = efficiency["metrics"]
+    assert summary["status"] == "passed"
+    assert summary["required_run_failures"] == []
+    assert efficiency["score"] >= 0.5
+    assert metrics["think_runs_per_signal"] == pytest.approx(24 / 200)
+    assert metrics["llm_calls_per_signal"] == pytest.approx(13 / 200)
+    assert metrics["cost_per_signal_usd"] == pytest.approx(0.0081)
+    assert metrics["background_maintenance_think_runs"] == 7
+    assert metrics["background_maintenance_llm_calls"] == 7
+    assert metrics["background_maintenance_cost_usd"] == pytest.approx(0.5808)
+
+
+def test_main_run_mode_returns_nonzero_for_failed_required_run(
+    monkeypatch,
+) -> None:
+    async def fake_run_benchmark(_args):
+        return {"status": "failed", "required_run_failures": ["required wave failed"]}
+
+    monkeypatch.setattr(benchmark, "run_benchmark", fake_run_benchmark)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_storyline_batch_benchmark.py",
+            "--mode",
+            "run",
+            "--target-t1-batches",
+            "1",
+        ],
+    )
+
+    assert asyncio.run(benchmark.main()) == 1
+
+
+def test_main_run_mode_allows_degraded_exit_zero_when_explicit(
+    monkeypatch,
+) -> None:
+    async def fake_run_benchmark(_args):
+        return {"status": "failed", "required_run_failures": ["required wave failed"]}
+
+    monkeypatch.setattr(benchmark, "run_benchmark", fake_run_benchmark)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_storyline_batch_benchmark.py",
+            "--mode",
+            "run",
+            "--target-t1-batches",
+            "1",
+            "--allow-degraded-exit-zero",
+        ],
+    )
+
+    assert asyncio.run(benchmark.main()) == 0
 
 
 def test_storyline_signals_do_not_leak_hidden_thesis() -> None:
@@ -1219,3 +2331,170 @@ def _sample_future_validation_wave() -> dict:
             },
         },
     }
+
+
+def test_latency_breakdown_composes_wave_think_and_inquiry_timings() -> None:
+    waves = [
+        {
+            "wave": 1,
+            "sequence": "atlas_wave",
+            "t1_batch": {
+                "trigger_id": str(uuid4()),
+                "elapsed_s": 2.0,
+                "run": {
+                    "id": str(uuid4()),
+                    "status": "success",
+                    "llm_latency_ms": 500,
+                    "retrieval_model_count": 16,
+                    "retrieval_observation_count": 12,
+                    "validation_error_count": 0,
+                },
+            },
+        }
+    ]
+    think_rows = [
+        {
+            "trigger_kind": "T1:event_batch",
+            "status": "success",
+            "elapsed_ms": 2100,
+            "llm_latency_ms": 500,
+        },
+        {
+            "trigger_kind": "T3:missing_transition",
+            "status": "success",
+            "elapsed_ms": 250,
+            "llm_latency_ms": 0,
+        },
+    ]
+    inquiry_rows = [
+        {
+            "notes": {
+                "retrieval_runtime": {
+                    "total_ms": 1200,
+                    "retrieval_action_timings_ms_total": 700,
+                    "retrieval_action_work_timings_ms_total": 600,
+                    "retrieval_action_wait_timings_ms_total": 100,
+                    "retrieval_stage_timings_ms_total": 300,
+                    "measured_ms_total": 1000,
+                    "non_wait_measured_ms_total": 900,
+                    "parallel_wait_overcount_ms": 100,
+                    "unaccounted_ms": 200,
+                    "work_unaccounted_ms": 300,
+                },
+                "retrieval_action_timings": [
+                    {
+                        "path": "sage_reader",
+                        "elapsed_ms": 300,
+                        "work_elapsed_ms": 300,
+                        "wait_elapsed_ms": 0,
+                    },
+                    {
+                        "path": "focused_index",
+                        "elapsed_ms": 400,
+                        "work_elapsed_ms": 300,
+                        "wait_elapsed_ms": 100,
+                        "cache_hit": True,
+                    },
+                ],
+                "retrieval_stage_timings": [
+                    {"stage": "context_packet_compile", "elapsed_ms": 50},
+                    {"stage": "answer_sufficiency", "elapsed_ms": 250},
+                ],
+                "question_planning": [{"mode": "llm"}],
+            }
+        }
+    ]
+
+    report = benchmark._compose_latency_breakdown(
+        waves=waves,
+        think_rows=think_rows,
+        inquiry_rows=inquiry_rows,
+    )
+
+    assert report["critical_path_summary"]["t1_wall_ms_total"] == 2000
+    assert report["critical_path_summary"]["t1_llm_ms_total"] == 500
+    assert report["critical_path_summary"]["t1_non_llm_residual_ms_total"] == 1500
+    assert report["critical_path_summary"]["t1_unclassified_or_failed_ms_total"] == 0
+    assert report["critical_path_summary"]["adaptive_inquiry_runtime_ms_total"] == 1200
+    assert report["critical_path_summary"]["main_llm_share_of_t1_wall"] == 0.25
+    assert report["t1_wave_wall_clock"]["waves"][0]["non_llm_residual_ms"] == 1500
+    assert report["think_runs"]["by_trigger_kind"]["T1:event_batch"]["count"] == 1
+    assert report["think_runs"]["non_llm_residual_ms"]["total_ms"] == 1850
+    inquiry = report["adaptive_inquiry"]
+    assert inquiry["sessions_with_runtime"] == 1
+    assert inquiry["runtime_totals"]["retrieval_action_wait_timings_ms_total"] == 100
+    assert inquiry["action_timings_by_path"]["focused_index"]["cache_hits"] == 1
+    assert inquiry["action_timings_by_path"]["sage_reader"]["work_ms_total"] == 300
+    assert inquiry["stage_timings_by_stage"]["answer_sufficiency"]["elapsed_ms_total"] == 250
+    assert inquiry["question_planning_modes"] == {"llm": 1}
+
+
+def test_render_benchmark_markdown_includes_latency_breakdown() -> None:
+    latency = benchmark._compose_latency_breakdown(
+        waves=[
+            {
+                "wave": 1,
+                "sequence": "atlas_wave",
+                "t1_batch": {
+                    "elapsed_s": 2.0,
+                    "run": {
+                        "status": "success",
+                        "llm_latency_ms": 500,
+                        "retrieval_model_count": 16,
+                        "retrieval_observation_count": 12,
+                    },
+                },
+            }
+        ],
+        think_rows=[],
+        inquiry_rows=[
+            {
+                "notes": {
+                    "retrieval_runtime": {
+                        "total_ms": 1000,
+                        "retrieval_action_timings_ms_total": 600,
+                        "retrieval_stage_timings_ms_total": 200,
+                        "unaccounted_ms": 200,
+                    },
+                    "retrieval_action_timings": [
+                        {"path": "sage_reader", "elapsed_ms": 600}
+                    ],
+                    "retrieval_stage_timings": [
+                        {"stage": "context_packet_compile", "elapsed_ms": 200}
+                    ],
+                }
+            }
+        ],
+    )
+    summary = {
+        "run_id": "latency-test",
+        "status": "passed",
+        "tenant_id": str(uuid4()),
+        "signals": 25,
+        "storyline_count": 0,
+        "average_storyline_score": 0,
+        "latent_pattern_fitness": {"average_latent_pattern_score": 0},
+        "thesis_recovery_judge": {"average_score": 0, "n": 0},
+        "calibration": {"expected_calibration_error": 0, "n": 0},
+        "run_amplification": {"think_runs_per_signal": 0, "pending_triggers": 0},
+        "question_planner_reflective_report": {},
+        "latency_breakdown": latency,
+        "storyline_scores": [],
+        "company_intelligence_scorecard": {
+            "overall_score": 0,
+            "interpretation": "test",
+            "dimensions": {},
+            "product_value_evals": {"evals": {}, "proof_gaps": []},
+            "proof_coverage": {},
+            "proof_gaps": [],
+        },
+    }
+
+    rendered = _render_benchmark_markdown(summary)
+
+    assert "## Latency Breakdown" in rendered
+    assert "| T1 wall-clock total | 2.000s |" in rendered
+    assert "| Main Think LLM share of T1 wall | 25.0% |" in rendered
+    assert "atlas_wave" in rendered
+    assert "sage_reader" in rendered
+    assert "context_packet_compile" in rendered
