@@ -11,7 +11,6 @@ from lib.shared.types import ModelCreate
 from services.domain.models.repo import ModelsRepo
 from services.domain.models.tests.conftest import make_embedding, state_proposition
 from services.domain.observations.events import notify_scope
-from services.reasoning.sage import reader as sage_reader
 from services.reasoning.synthesis.operational_facets import infer_operational_query_plan
 
 
@@ -258,11 +257,71 @@ async def _operational_matches(
         if role in {"action", "count", "delta", "invariant", "sequence"}
     ]
     assert seed_roles == ["delta"]
-    return list(await sage_reader._fetch_operational_role_matches(
-        conn,
-        tenant_id=tenant,
-        seed_roles=seed_roles,
-        terms=[term.casefold() for term in plan.terms],
-        limit=12,
-        per_role_limit=96,
+    return list(await conn.fetch(
+        """
+        WITH seed_roles AS MATERIALIZED (
+          SELECT role::text,
+                 ord::int AS role_ord
+          FROM unnest($3::text[]) WITH ORDINALITY AS r(role, ord)
+        ),
+        query_terms AS MATERIALIZED (
+          SELECT term::text
+          FROM unnest($4::text[]) AS term(value)
+          WHERE nullif(term.value, '') IS NOT NULL
+        ),
+        role_hits AS MATERIALIZED (
+          SELECT sr.role,
+                 sr.role_ord,
+                 morp.model_id,
+                 coalesce(lexical.lexical_match_count, 0)::int
+                   AS lexical_match_count
+          FROM seed_roles sr
+          JOIN model_operational_role_postings morp
+            ON morp.tenant_id = $1
+           AND morp.status = 'active'
+           AND morp.role = sr.role
+          JOIN models m
+            ON m.id = morp.model_id
+           AND m.tenant_id = $1
+           AND m.status = 'active'
+          LEFT JOIN model_search_documents msd
+            ON msd.model_id = morp.model_id
+           AND msd.tenant_id = $1
+           AND msd.status = 'active'
+          LEFT JOIN LATERAL (
+            SELECT count(*)::int AS lexical_match_count
+            FROM query_terms term
+            WHERE strpos(coalesce(msd.search_text, ''), term.term) > 0
+          ) lexical ON TRUE
+        ),
+        scored AS MATERIALIZED (
+          SELECT model_id,
+                 array_agg(DISTINCT role ORDER BY role) AS matched_roles,
+                 count(DISTINCT role)::int AS role_match_count,
+                 min(role_ord)::int AS first_role_ord,
+                 max(lexical_match_count)::int AS lexical_match_count
+          FROM role_hits
+          GROUP BY model_id
+        )
+        SELECT m.id,
+               m."natural",
+               scored.matched_roles,
+               scored.role_match_count,
+               scored.lexical_match_count
+        FROM scored
+        JOIN models m
+          ON m.id = scored.model_id
+         AND m.tenant_id = $1
+        WHERE m.status = 'active'
+        ORDER BY scored.role_match_count DESC,
+                 scored.lexical_match_count DESC,
+                 scored.first_role_ord ASC,
+                 m.activation DESC,
+                 m.created_at DESC
+        LIMIT $2
+        """,
+        tenant,
+        12,
+        seed_roles,
+        [term.casefold() for term in plan.terms],
     ))
