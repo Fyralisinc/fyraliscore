@@ -10,13 +10,18 @@ from dataclasses import replace
 from typing import Any
 
 from lib.llm.provider import LLMProvider, using_usage_purpose
+from lib.shared.utility_governor import question_planning_utility
 from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext
 
 from .config import InquiryConfig
 from .question_generation import candidate_questions
 from .question_planning_provider import (
     question_planning_provider_metadata,
+    question_planning_provider_backoff_note,
+    record_question_planning_provider_failure,
+    record_question_planning_provider_success,
     select_question_planning_provider,
+    select_question_planning_fallback_provider,
 )
 from .question_planning_runtime import (
     question_planning_max_tokens,
@@ -41,6 +46,7 @@ from .reconstruction_state import (
     planner_reconstruction_payload,
     reconstruction_state_note,
 )
+from .routing import trigger_text
 from .question_text import (
     clean_question_anchor,
     clean_question_focus_phrase,
@@ -162,29 +168,135 @@ async def candidate_questions_for_round(
             **_reconstruction_note(reconstruction_state),
             **deterministic_rule_note,
         }
+    if config.utility_governor_enabled:
+        governor_decision = question_planning_utility(
+            trigger_kind=trigger.kind,
+            trigger_text=trigger_text(trigger),
+            deterministic_primitives=[q.primitive for q in deterministic],
+            deterministic_count=len(deterministic),
+            evidence_count=len(evidence_by_key),
+            model_count=len(baseline.models),
+            unknown_count=len(unknowns),
+            round_index=round_index,
+            skip_threshold=config.utility_governor_planner_skip_threshold,
+        )
+        if not governor_decision.should_run:
+            return deterministic, {
+                "round": round_index,
+                "mode": "deterministic_fallback",
+                "reason": "execution_utility_governor",
+                "candidate_count": len(deterministic),
+                "utility_governor": governor_decision.as_note(),
+                **_reconstruction_note(reconstruction_state),
+                **deterministic_rule_note,
+            }
     planning_provider = select_question_planning_provider(llm_provider)
-    provider_metadata = question_planning_provider_metadata(planning_provider)
+    active_provider = planning_provider
+    provider_errors: list[dict[str, Any]] = []
+    provider_backoffs: list[dict[str, Any]] = []
+
+    initial_backoff = question_planning_provider_backoff_note(planning_provider)
+    if initial_backoff is not None:
+        provider_backoffs.append(initial_backoff)
+        fallback_provider = select_question_planning_fallback_provider(
+            llm_provider,
+            planning_provider,
+        )
+        fallback_backoff = question_planning_provider_backoff_note(fallback_provider)
+        if fallback_backoff is not None:
+            provider_backoffs.append(fallback_backoff)
+            fallback_provider = None
+        if fallback_provider is None:
+            return deterministic, {
+                "round": round_index,
+                "mode": "deterministic_fallback",
+                "reason": "question_planning_provider_in_backoff",
+                "candidate_count": len(deterministic),
+                "planner_provider_backoffs": provider_backoffs,
+                **_reconstruction_note(reconstruction_state),
+                **deterministic_rule_note,
+                **question_planning_provider_metadata(planning_provider),
+            }
+        active_provider = fallback_provider
 
     try:
-        plan_call = generate_llm_question_plan(
-            trigger,
-            baseline,
-            hypotheses,
-            evidence_by_key,
-            unknowns,
-            llm_provider=planning_provider,
-            config=config,
-            max_tokens=question_planning_max_tokens(config, planning_provider),
-            reflective_rules=reflective_rules,
-            reconstruction_state=reconstruction_state,
-        )
-        timeout_s = question_planning_timeout_seconds(planning_provider)
-        # Cost-plan 0.1: tag planning LLM spend as question_planning.
-        with using_usage_purpose("question_planning"):
-            if timeout_s > 0:
-                plan = await asyncio.wait_for(plan_call, timeout=timeout_s)
-            else:
-                plan = await plan_call
+        try:
+            plan = await _call_llm_question_plan(
+                trigger,
+                baseline,
+                hypotheses,
+                evidence_by_key,
+                unknowns,
+                llm_provider=active_provider,
+                config=config,
+                reflective_rules=reflective_rules,
+                reconstruction_state=reconstruction_state,
+            )
+            record_question_planning_provider_success(active_provider)
+        except Exception as exc:
+            provider_errors.append(
+                _question_planning_error_note(active_provider, exc)
+            )
+            backoff_note = record_question_planning_provider_failure(
+                active_provider,
+                exc,
+            )
+            if backoff_note is not None:
+                provider_backoffs.append(backoff_note)
+            fallback_provider = (
+                select_question_planning_fallback_provider(
+                    llm_provider,
+                    active_provider,
+                )
+                if _is_retryable_question_planning_provider_failure(exc)
+                else None
+            )
+            fallback_backoff = question_planning_provider_backoff_note(
+                fallback_provider
+            )
+            if fallback_backoff is not None:
+                provider_backoffs.append(fallback_backoff)
+                fallback_provider = None
+            if fallback_provider is None:
+                raise
+            active_provider = fallback_provider
+            try:
+                plan = await _call_llm_question_plan(
+                    trigger,
+                    baseline,
+                    hypotheses,
+                    evidence_by_key,
+                    unknowns,
+                    llm_provider=active_provider,
+                    config=config,
+                    reflective_rules=reflective_rules,
+                    reconstruction_state=reconstruction_state,
+                )
+                record_question_planning_provider_success(active_provider)
+            except Exception as fallback_exc:
+                provider_errors.append(
+                    _question_planning_error_note(active_provider, fallback_exc)
+                )
+                backoff_note = record_question_planning_provider_failure(
+                    active_provider,
+                    fallback_exc,
+                )
+                if backoff_note is not None:
+                    provider_backoffs.append(backoff_note)
+                raise fallback_exc
+
+        provider_metadata = question_planning_provider_metadata(active_provider)
+        if provider_errors:
+            provider_metadata = {
+                **provider_metadata,
+                "planner_retry_count": len(provider_errors),
+                "planner_retry_errors": provider_errors,
+            }
+        if provider_backoffs:
+            provider_metadata = {
+                **provider_metadata,
+                "planner_provider_backoffs": provider_backoffs,
+            }
         belief_delta_hypotheses = normalize_llm_belief_delta_hypotheses(
             plan.belief_deltas,
             trigger=trigger,
@@ -252,16 +364,105 @@ async def candidate_questions_for_round(
             **provider_metadata,
         }
     except Exception as exc:
+        provider_metadata = question_planning_provider_metadata(active_provider)
         return deterministic, {
             "round": round_index,
             "mode": "deterministic_fallback",
             "reason": type(exc).__name__,
-            "detail": str(exc)[:240],
+            "detail": _compact_question_planning_error_detail(exc),
             "candidate_count": len(deterministic),
+            **(
+                {
+                    "planner_retry_count": len(provider_errors),
+                    "planner_retry_errors": provider_errors,
+                }
+                if provider_errors
+                else {}
+            ),
+            **(
+                {"planner_provider_backoffs": provider_backoffs}
+                if provider_backoffs
+                else {}
+            ),
             **_reconstruction_note(reconstruction_state),
             **deterministic_rule_note,
             **provider_metadata,
         }
+
+
+async def _call_llm_question_plan(
+    trigger: TriggerContext,
+    baseline: RetrievalResult,
+    hypotheses: tuple[Hypothesis, ...],
+    evidence_by_key: dict[tuple[str, str], EvidenceCard],
+    unknowns: set[str],
+    *,
+    llm_provider: LLMProvider,
+    config: InquiryConfig,
+    reflective_rules: tuple[ReflectiveRetrievalRule, ...],
+    reconstruction_state: ReconstructionState | None,
+) -> LLMInquiryQuestionPlan:
+    plan_call = generate_llm_question_plan(
+        trigger,
+        baseline,
+        hypotheses,
+        evidence_by_key,
+        unknowns,
+        llm_provider=llm_provider,
+        config=config,
+        max_tokens=question_planning_max_tokens(config, llm_provider),
+        reflective_rules=reflective_rules,
+        reconstruction_state=reconstruction_state,
+    )
+    timeout_s = question_planning_timeout_seconds(llm_provider)
+    # Cost-plan 0.1: tag planning LLM spend as question_planning.
+    with using_usage_purpose("question_planning"):
+        if timeout_s > 0:
+            return await asyncio.wait_for(plan_call, timeout=timeout_s)
+        return await plan_call
+
+
+def _is_retryable_question_planning_provider_failure(exc: Exception) -> bool:
+    message = str(exc).casefold()
+    return any(
+        marker in message
+        for marker in (
+            "usage limit",
+            "rate limit",
+            "too many requests",
+            "insufficient quota",
+            "quota",
+            "codex app-server turn ended",
+            "out of region",
+            "temporarily unavailable",
+        )
+    )
+
+
+def _question_planning_error_note(
+    llm_provider: LLMProvider | None,
+    exc: Exception,
+) -> dict[str, Any]:
+    return {
+        "reason": type(exc).__name__,
+        "detail": _compact_question_planning_error_detail(exc),
+        **question_planning_provider_metadata(llm_provider),
+    }
+
+
+def _compact_question_planning_error_detail(exc: Exception) -> str:
+    lines = [
+        line.strip()
+        for line in str(exc).splitlines()
+        if line.strip()
+        and ":loader:" not in line
+        and "codex_core_skills::loader" not in line
+        and "ignoring interface.icon_" not in line
+    ]
+    detail = "\n".join(lines) if lines else str(exc)
+    if len(detail) <= 240:
+        return detail
+    return detail[-240:]
 
 
 def _reconstruction_note(

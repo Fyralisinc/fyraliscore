@@ -176,12 +176,12 @@ async def test_ra5_semantic_k_change_alters_retrieval_results(
     )
 
     # Config k=20.
-    cfg_low = RetrievalConfig(semantic_k=20)
+    cfg_low = RetrievalConfig(semantic_k=20, sage_retrieval_policy_enabled=False)
     trigger_default = TriggerContext(**base_trigger_kwargs)
     r_low = await primary_retrieve(trigger_default, tx_conn, config=cfg_low)
 
     # Config k=80 (much larger).
-    cfg_high = RetrievalConfig(semantic_k=80)
+    cfg_high = RetrievalConfig(semantic_k=80, sage_retrieval_policy_enabled=False)
     r_high = await primary_retrieve(
         TriggerContext(**base_trigger_kwargs), tx_conn, config=cfg_high,
     )
@@ -295,6 +295,24 @@ async def test_ra5_pathway_c_includes_entity_mentions_when_enabled(
     assert obsA in inc_ids, "author_id-matched obs missing"
     assert obsB in inc_ids, "entity-mention obs missing (the RA-5 fix)"
     assert obsC not in inc_ids
+
+    # Nearby inquiry retrieval can use the faster tenant/time prefilter and
+    # still preserve the actor mention behavior on the bounded hot lane.
+    r_prefilter = await pathway_c_temporal(
+        seed + timedelta(minutes=5),
+        timedelta(minutes=30),
+        tenant,
+        tx_conn,
+        scope_actors=[alice],
+        include_entity_mentions=True,
+        scope_filter_strategy="time_prefilter",
+    )
+    prefilter_ids = {o.id for o in r_prefilter.observations}
+    assert obsA in prefilter_ids
+    assert obsB in prefilter_ids
+    assert obsC not in prefilter_ids
+    assert r_prefilter.notes["temporal_scope_filter_strategy"] == "time_prefilter"
+    assert r_prefilter.notes["observations_scope_filtered_in_python"] is True
 
     # With include_entity_mentions=False (legacy), only A surfaces.
     r_excl = await pathway_c_temporal(

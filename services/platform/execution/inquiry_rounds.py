@@ -11,8 +11,10 @@ import asyncpg
 
 from lib.llm.provider import LLMProvider
 from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext
+from services.reasoning.sage.retrieval_policy import adapt_inquiry_actions
 
 from .action_execution import (
+    ActionExecutionSession,
     _ActionExecutionRecord,
     _QuestionRetrievalPlan,
     _execute_question_retrieval_actions,
@@ -22,6 +24,7 @@ from .answer_evaluation import (
     resolved_unknowns_for_answer,
     sufficiency_gate,
 )
+from .config import InquiryConfig
 from .inquiry_bootstrap import _InquiryBootstrapState
 from .question_planning import candidate_questions_for_round
 from .question_policy import apply_question_policy, select_questions
@@ -81,6 +84,69 @@ def _question_policy_notes(state: _InquiryBootstrapState) -> dict[str, Any]:
     }
 
 
+def _strong_context_question_budget(
+    state: _InquiryBootstrapState,
+    *,
+    round_index: int,
+) -> tuple[int | None, dict[str, Any]]:
+    evidence = list(state.evidence_by_key.values())
+    evidence_count = len(evidence)
+    model_evidence_count = sum(1 for card in evidence if card.source_type == "model")
+    action_anchor_count = sum(
+        1
+        for card in evidence
+        if card.source_type in {"commitment", "goal", "decision", "resource"}
+    )
+    model_count = len(state.baseline.models)
+    cfg = state.cfg
+    features = {
+        "enabled": bool(cfg.adaptive_question_budget_enabled),
+        "round_index": round_index,
+        "evidence_count": evidence_count,
+        "model_evidence_count": model_evidence_count,
+        "baseline_model_count": model_count,
+        "action_anchor_count": action_anchor_count,
+        "unknown_count": len(state.unknowns),
+        "min_evidence": int(cfg.adaptive_strong_context_min_evidence),
+        "min_models": int(cfg.adaptive_strong_context_min_models),
+        "question_limit": int(cfg.adaptive_strong_context_question_limit),
+    }
+    if not cfg.adaptive_question_budget_enabled:
+        features["applied"] = False
+        features["reason"] = "disabled"
+        return None, features
+    if round_index != 1:
+        features["applied"] = False
+        features["reason"] = "only_first_round"
+        return None, features
+    if state.weak_signal:
+        features["applied"] = False
+        features["reason"] = "weak_signal_uses_existing_budget"
+        return None, features
+    if evidence_count < cfg.adaptive_strong_context_min_evidence:
+        features["applied"] = False
+        features["reason"] = "insufficient_evidence"
+        return None, features
+    if model_count < cfg.adaptive_strong_context_min_models:
+        features["applied"] = False
+        features["reason"] = "insufficient_baseline_models"
+        return None, features
+    if model_evidence_count < cfg.adaptive_strong_context_min_models:
+        features["applied"] = False
+        features["reason"] = "insufficient_model_evidence"
+        return None, features
+    if (
+        action_anchor_count <= 0
+        and evidence_count < cfg.adaptive_strong_context_min_evidence * 2
+    ):
+        features["applied"] = False
+        features["reason"] = "no_action_anchor_or_extra_evidence"
+        return None, features
+    features["applied"] = True
+    features["reason"] = "primary_context_already_rich"
+    return max(1, int(cfg.adaptive_strong_context_question_limit)), features
+
+
 async def _select_questions_for_round(
     state: _InquiryBootstrapState,
     *,
@@ -108,13 +174,21 @@ async def _select_questions_for_round(
     )
     if state.question_policy:
         planning_note["policy_stats_applied"] = _question_policy_notes(state)
+    strong_context_limit, budget_note = _strong_context_question_budget(
+        state,
+        round_index=round_index,
+    )
+    planning_note["adaptive_question_budget"] = budget_note
+    questions_per_round = (
+        min(state.cfg.questions_per_round, strong_context_limit)
+        if strong_context_limit is not None
+        else state.cfg.questions_per_round
+    )
     state.question_planning_notes.append(planning_note)
     selected = select_questions(
         candidate_questions,
         questions_per_round=(
-            min(state.cfg.questions_per_round, 2)
-            if state.weak_signal
-            else state.cfg.questions_per_round
+            min(questions_per_round, 2) if state.weak_signal else questions_per_round
         ),
         round_index=round_index,
         already_asked={q.primitive for q in state.all_questions},
@@ -161,10 +235,7 @@ def _split_gated_actions(
         skip_reason: str | None = None
         if action_gate_scope == "all":
             skip_reason = action_gate_reason or "sage_reader_abstained"
-        elif (
-            action_gate_scope == "broad"
-            and action.path in _BROAD_DISCOVERY_ACTION_PATHS
-        ):
+        elif action_gate_scope == "broad" and _is_broad_discovery_action(action):
             skip_reason = action_gate_reason or "sage_reader_focused_route"
         if skip_reason is not None:
             skipped_timing_notes.append(
@@ -173,6 +244,73 @@ def _split_gated_actions(
             continue
         actions_to_run.append(action)
     return actions_to_run, skipped_timing_notes
+
+
+def _is_broad_discovery_action(action: RetrievalAction) -> bool:
+    if action.path == "temporal":
+        return str(action.filters.get("_temporal_lane") or "legacy") != "nearby"
+    return action.path in _BROAD_DISCOVERY_ACTION_PATHS
+
+
+def _build_question_read_plan(
+    state: _InquiryBootstrapState,
+    *,
+    trigger: TriggerContext,
+    question: InquiryQuestion,
+    sage_result: RetrievalResult | None,
+    learned_motif: Any | None,
+    reconstruction_state: ReconstructionState | None,
+) -> _QuestionRetrievalPlan:
+    policy_signal = state.question_policy.get(question.primitive)
+    actions = compile_retrieval_plan(
+        question,
+        trigger,
+        state.cfg,
+        policy_signal=policy_signal,
+        learned_motif=learned_motif,
+        reflective_rules=state.reflective_rules,
+        apply_reflective_rules=not state.cfg.reflective_rules_shadow_only,
+    )
+    if state.cfg.sage_retrieval_policy_enabled:
+        actions, policy_notes = adapt_inquiry_actions(
+            question_primitive=question.primitive,
+            actions=actions,
+            signal_type=trigger.kind,
+            subkind=trigger.subkind,
+            route_utilities=state.sage_route_utilities,
+            shadow=state.cfg.sage_retrieval_policy_shadow_mode,
+            semantic_budget_floor=state.cfg.sage_retrieval_policy_semantic_budget_floor,
+        )
+        state.sage_reader_notes.setdefault("retrieval_policy_actions", {})[
+            question.question_id
+        ] = policy_notes
+    action_gate_scope: Literal["all", "broad"] | None = None
+    action_gate_reason: str | None = None
+    if sage_result is not None:
+        action_gate_scope, action_gate_reason = sage_reader_action_gate(
+            sage_result,
+            gate_broad_actions=state.cfg.sage_reader_gate_broad_actions,
+        )
+
+    actions_to_run, skipped_timing_notes = _split_gated_actions(
+        question,
+        actions,
+        action_gate_scope=action_gate_scope,
+        action_gate_reason=action_gate_reason,
+    )
+    actions_to_run = apply_reconstruction_to_actions(
+        actions_to_run,
+        state=reconstruction_state,
+    )
+    return _QuestionRetrievalPlan(
+        question=question,
+        sage_result=sage_result,
+        action_gate_scope=action_gate_scope,
+        action_gate_reason=action_gate_reason,
+        actions_to_run=actions_to_run,
+        skipped_timing_notes=skipped_timing_notes,
+        learned_motif=learned_motif,
+    )
 
 
 def _build_question_read_plans(
@@ -185,46 +323,16 @@ def _build_question_read_plans(
     reconstruction_state: ReconstructionState | None,
 ) -> list[_QuestionRetrievalPlan]:
     question_read_plans: list[_QuestionRetrievalPlan] = []
+    state.all_questions.extend(selected)
     for question in selected:
-        state.all_questions.append(question)
-        policy_signal = state.question_policy.get(question.primitive)
-        actions = compile_retrieval_plan(
-            question,
-            trigger,
-            state.cfg,
-            policy_signal=policy_signal,
-            learned_motif=learned_motifs.get(question.question_id),
-            reflective_rules=state.reflective_rules,
-            apply_reflective_rules=not state.cfg.reflective_rules_shadow_only,
-        )
-        sage_result = sage_results_by_qid.get(question.question_id)
-        action_gate_scope: Literal["all", "broad"] | None = None
-        action_gate_reason: str | None = None
-        if sage_result is not None:
-            action_gate_scope, action_gate_reason = sage_reader_action_gate(
-                sage_result,
-                gate_broad_actions=state.cfg.sage_reader_gate_broad_actions,
-            )
-
-        actions_to_run, skipped_timing_notes = _split_gated_actions(
-            question,
-            actions,
-            action_gate_scope=action_gate_scope,
-            action_gate_reason=action_gate_reason,
-        )
-        actions_to_run = apply_reconstruction_to_actions(
-            actions_to_run,
-            state=reconstruction_state,
-        )
         question_read_plans.append(
-            _QuestionRetrievalPlan(
+            _build_question_read_plan(
+                state,
+                trigger=trigger,
                 question=question,
-                sage_result=sage_result,
-                action_gate_scope=action_gate_scope,
-                action_gate_reason=action_gate_reason,
-                actions_to_run=actions_to_run,
-                skipped_timing_notes=skipped_timing_notes,
+                sage_result=sage_results_by_qid.get(question.question_id),
                 learned_motif=learned_motifs.get(question.question_id),
+                reconstruction_state=reconstruction_state,
             )
         )
     return question_read_plans
@@ -243,6 +351,40 @@ def _sage_reader_batch_uses_read_pool(
         and read_pool is not None
         and len(selected) > 1
         and int(state.cfg.sage_reader_parallelism) > 1
+    )
+
+
+def _single_question_read_prep_uses_read_pool(
+    state: _InquiryBootstrapState,
+    *,
+    selected: list[InquiryQuestion],
+    read_pool: asyncpg.Pool | None,
+) -> bool:
+    return (
+        bool(state.cfg.read_prep_parallel_enabled)
+        and bool(state.cfg.sage_reader_enabled)
+        and state.sage_reader_runtime is not None
+        and read_pool is not None
+        and len(selected) == 1
+    )
+
+
+def _round_action_pipeline_enabled(
+    state: _InquiryBootstrapState,
+    *,
+    selected: list[InquiryQuestion],
+    read_pool: asyncpg.Pool | None,
+) -> bool:
+    return (
+        bool(state.cfg.round_action_pipeline_enabled)
+        and bool(state.cfg.read_prep_parallel_enabled)
+        and bool(state.cfg.question_action_parallel_enabled)
+        and int(state.cfg.question_action_parallelism) > 1
+        and _sage_reader_batch_uses_read_pool(
+            state,
+            selected=selected,
+            read_pool=read_pool,
+        )
     )
 
 
@@ -401,6 +543,152 @@ def _apply_question_read_plan_results(
     )
 
 
+async def _load_retrieval_motifs_with_read_pool(
+    conn: asyncpg.Connection,
+    read_pool: asyncpg.Pool | None,
+    trigger: TriggerContext,
+    selected: list[InquiryQuestion],
+    cfg: InquiryConfig,
+) -> dict[str, Any]:
+    if read_pool is None:
+        return await load_retrieval_motifs_for_questions(
+            conn,
+            trigger,
+            selected,
+            cfg,
+        )
+    async with read_pool.acquire() as motif_conn:
+        return await load_retrieval_motifs_for_questions(
+            motif_conn,
+            trigger,
+            selected,
+            cfg,
+        )
+
+
+async def _execute_question_read_pipeline(
+    state: _InquiryBootstrapState,
+    *,
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    embedder: Any | None,
+    read_pool: asyncpg.Pool,
+    selected: list[InquiryQuestion],
+    sage_kwargs: dict[str, Any],
+    reconstruction_state: ReconstructionState | None,
+    round_index: int,
+) -> tuple[
+    list[_QuestionRetrievalPlan],
+    dict[str, list[_ActionExecutionRecord]],
+    dict[str, Any],
+]:
+    prep_started = time.perf_counter()
+    motifs_task = asyncio.create_task(
+        _load_retrieval_motifs_with_read_pool(
+            conn,
+            None,
+            trigger,
+            selected,
+            state.cfg,
+        )
+    )
+    action_session = ActionExecutionSession(state.cfg.question_action_parallelism)
+    sage_results_by_qid: dict[str, RetrievalResult] = {}
+    plans_by_qid: dict[str, _QuestionRetrievalPlan] = {}
+    action_records_by_qid: dict[str, list[_ActionExecutionRecord]] = {}
+    action_tasks_by_qid: dict[str, asyncio.Task[None]] = {}
+
+    async def run_actions_for_question(
+        question: InquiryQuestion,
+        sage_result: RetrievalResult | None,
+    ) -> None:
+        learned_motifs = await motifs_task
+        plan = _build_question_read_plan(
+            state,
+            trigger=trigger,
+            question=question,
+            sage_result=sage_result,
+            learned_motif=learned_motifs.get(question.question_id),
+            reconstruction_state=reconstruction_state,
+        )
+        plans_by_qid[question.question_id] = plan
+        records = await _execute_question_retrieval_actions(
+            [plan],
+            trigger,
+            conn,
+            embedder,
+            state.cfg,
+            state.action_cache,
+            read_pool=read_pool,
+            semantic_session=state.semantic_session,
+            execution_session=action_session,
+        )
+        action_records_by_qid.update(records)
+
+    def schedule_question_actions(
+        question: InquiryQuestion,
+        sage_result: RetrievalResult | None,
+    ) -> None:
+        if sage_result is not None:
+            sage_results_by_qid[question.question_id] = sage_result
+        if question.question_id in action_tasks_by_qid:
+            return
+        action_tasks_by_qid[question.question_id] = asyncio.create_task(
+            run_actions_for_question(question, sage_result)
+        )
+
+    async def on_question_result(
+        question: InquiryQuestion,
+        sage_result: RetrievalResult | None,
+    ) -> None:
+        schedule_question_actions(question, sage_result)
+
+    try:
+        sage_results, sage_batch_note = await _execute_sage_reader_actions_for_round(
+            selected,
+            trigger,
+            conn,
+            state.cfg,
+            **sage_kwargs,
+            on_question_result=on_question_result,
+        )
+        sage_results_by_qid.update(sage_results)
+        for question in selected:
+            schedule_question_actions(
+                question,
+                sage_results_by_qid.get(question.question_id),
+            )
+        learned_motifs = await motifs_task
+        if action_tasks_by_qid:
+            await asyncio.gather(
+                *(action_tasks_by_qid[question.question_id] for question in selected)
+            )
+    except BaseException:
+        motifs_task.cancel()
+        for task in action_tasks_by_qid.values():
+            task.cancel()
+        raise
+
+    state.all_questions.extend(selected)
+    question_read_plans = [plans_by_qid[question.question_id] for question in selected]
+    append_stage_timing(
+        state.stage_timing_notes,
+        "round_read_action_pipeline",
+        prep_started,
+        round_index=round_index,
+        selected=len(selected),
+        sage_returned=len(sage_results_by_qid),
+        motifs=len(learned_motifs),
+        action_plans=len(question_read_plans),
+        action_records=sum(len(records) for records in action_records_by_qid.values()),
+    )
+    return (
+        question_read_plans,
+        action_records_by_qid,
+        {**sage_batch_note, "pipelined_actions": True},
+    )
+
+
 async def _execute_inquiry_round(
     state: _InquiryBootstrapState,
     *,
@@ -485,13 +773,33 @@ async def _execute_inquiry_round(
         "read_pool": read_pool,
         "evidence_state": evidence_state_for_reader(reader_reconstruction_state),
     }
-    if (
-        state.cfg.read_prep_parallel_enabled
-        and _sage_reader_batch_uses_read_pool(
+    pipelined_actions = False
+    if _round_action_pipeline_enabled(
+        state,
+        selected=selected,
+        read_pool=read_pool,
+    ):
+        assert read_pool is not None
+        (
+            question_read_plans,
+            action_records_by_qid,
+            sage_batch_note,
+        ) = await _execute_question_read_pipeline(
             state,
-            selected=selected,
+            trigger=trigger,
+            conn=conn,
+            embedder=embedder,
             read_pool=read_pool,
+            selected=selected,
+            sage_kwargs=sage_kwargs,
+            reconstruction_state=action_reconstruction_state,
+            round_index=round_index,
         )
+        pipelined_actions = True
+    elif state.cfg.read_prep_parallel_enabled and _sage_reader_batch_uses_read_pool(
+        state,
+        selected=selected,
+        read_pool=read_pool,
     ):
         prep_started = time.perf_counter()
         async with asyncio.TaskGroup() as task_group:
@@ -505,8 +813,9 @@ async def _execute_inquiry_round(
                 )
             )
             motifs_task = task_group.create_task(
-                load_retrieval_motifs_for_questions(
+                _load_retrieval_motifs_with_read_pool(
                     conn,
+                    None,
                     trigger,
                     selected,
                     state.cfg,
@@ -523,15 +832,53 @@ async def _execute_inquiry_round(
             sage_returned=len(sage_results_by_qid),
             motifs=len(learned_motifs),
         )
-    else:
-        sage_results_by_qid, sage_batch_note = (
-            await _execute_sage_reader_actions_for_round(
-                selected,
-                trigger,
-                conn,
-                state.cfg,
-                **sage_kwargs,
+    elif _single_question_read_prep_uses_read_pool(
+        state,
+        selected=selected,
+        read_pool=read_pool,
+    ):
+        prep_started = time.perf_counter()
+        async with asyncio.TaskGroup() as task_group:
+            sage_task = task_group.create_task(
+                _execute_sage_reader_actions_for_round(
+                    selected,
+                    trigger,
+                    conn,
+                    state.cfg,
+                    **sage_kwargs,
+                )
             )
+            motifs_task = task_group.create_task(
+                _load_retrieval_motifs_with_read_pool(
+                    conn,
+                    read_pool,
+                    trigger,
+                    selected,
+                    state.cfg,
+                )
+            )
+        sage_results_by_qid, sage_batch_note = sage_task.result()
+        learned_motifs = motifs_task.result()
+        append_stage_timing(
+            state.stage_timing_notes,
+            "round_read_prep_parallel",
+            prep_started,
+            round_index=round_index,
+            selected=len(selected),
+            sage_returned=len(sage_results_by_qid),
+            motifs=len(learned_motifs),
+            motif_read_pool=True,
+        )
+    else:
+        (
+            sage_results_by_qid,
+            sage_batch_note,
+        ) = await _execute_sage_reader_actions_for_round(
+            selected,
+            trigger,
+            conn,
+            state.cfg,
+            **sage_kwargs,
         )
         learned_motifs = await load_retrieval_motifs_for_questions(
             conn,
@@ -539,28 +886,30 @@ async def _execute_inquiry_round(
             selected,
             state.cfg,
         )
+    if not pipelined_actions:
+        question_read_plans = _build_question_read_plans(
+            state,
+            trigger=trigger,
+            selected=selected,
+            sage_results_by_qid=sage_results_by_qid,
+            learned_motifs=learned_motifs,
+            reconstruction_state=action_reconstruction_state,
+        )
+        action_records_by_qid = await _execute_question_retrieval_actions(
+            question_read_plans,
+            trigger,
+            conn,
+            embedder,
+            state.cfg,
+            state.action_cache,
+            read_pool=read_pool,
+            semantic_session=state.semantic_session,
+        )
     state.sage_reader_notes.setdefault("batches", []).append(
         {
             **sage_batch_note,
             "round_index": round_index,
         }
-    )
-    question_read_plans = _build_question_read_plans(
-        state,
-        trigger=trigger,
-        selected=selected,
-        sage_results_by_qid=sage_results_by_qid,
-        learned_motifs=learned_motifs,
-        reconstruction_state=action_reconstruction_state,
-    )
-    action_records_by_qid = await _execute_question_retrieval_actions(
-        question_read_plans,
-        trigger,
-        conn,
-        embedder,
-        state.cfg,
-        state.action_cache,
-        read_pool=read_pool,
     )
     for plan in question_read_plans:
         status = _apply_question_read_plan_results(
@@ -616,4 +965,5 @@ __all__ = [
     "_build_question_read_plans",
     "_execute_inquiry_round",
     "_execute_inquiry_rounds",
+    "_is_broad_discovery_action",
 ]

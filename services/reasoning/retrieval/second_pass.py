@@ -54,6 +54,7 @@ from .pathways import (
     _hydrate_obs,
 )
 from .primary import RetrievalResult
+from .read_fanout import ReadFanoutBudget
 
 
 _SECOND_PASS_MAX_HOPS = 2
@@ -284,6 +285,7 @@ async def second_pass_expand(
     models_repo: ModelsRepo | None = None,
     max_hops: int = _SECOND_PASS_MAX_HOPS,
     read_pool: asyncpg.Pool | None = None,
+    read_fanout_budget: ReadFanoutBudget | None = None,
 ) -> RetrievalResult:
     """
     Expand first_result along the named dimensions and return a new
@@ -325,6 +327,9 @@ async def second_pass_expand(
 
     if _second_pass_read_fanout_enabled(conn, read_pool) and len(dimensions_to_process) > 1:
         assert read_pool is not None
+        dimension_read_budget = read_fanout_budget or ReadFanoutBudget.from_pool(
+            read_pool
+        )
         dimension_results = await _expand_dimensions_fanout(
             dimensions_to_process,
             first_result=first_result,
@@ -333,8 +338,15 @@ async def second_pass_expand(
             original_model_ids=original_model_ids,
             original_obs_ids=original_obs_ids,
             max_hops=max_hops,
-            read_pool=read_pool,
+            read_fanout_budget=dimension_read_budget,
         )
+        budget_snapshot = dimension_read_budget.snapshot()
+        notes["read_fanout_budget"] = {
+            "max_concurrency": budget_snapshot.max_concurrency,
+            "peak_in_use": budget_snapshot.peak_in_use,
+            "acquired": budget_snapshot.acquired,
+            "denied": budget_snapshot.denied,
+        }
         for item in dimension_results:
             for model_id, model in item.models.items():
                 new_models.setdefault(model_id, model)
@@ -467,13 +479,13 @@ async def _expand_dimensions_fanout(
     original_model_ids: set[UUID],
     original_obs_ids: set[UUID],
     max_hops: int,
-    read_pool: asyncpg.Pool,
+    read_fanout_budget: ReadFanoutBudget,
 ) -> list[_SecondPassDimensionResult]:
     async def run_dimension(dim: str) -> _SecondPassDimensionResult:
         local_models: dict[UUID, ModelRow] = {}
         local_observations: dict[UUID, ObservationRow] = {}
         local_commitments: dict[UUID, CommitmentRow] = {}
-        async with read_pool.acquire() as read_conn:
+        async with read_fanout_budget.connection() as read_conn:
             if dim == "dependency_context":
                 hops = await _expand_dependency_context(
                     read_conn,

@@ -78,11 +78,13 @@ async def test_assemble_context_overlaps_independent_db_facets(
     async def fake_resources(*_args: object, **_kwargs: object):
         resources_started.set()
         await models_started.wait()
+        await customer_started.wait()
         return []
 
     async def fake_customer(*_args: object, **_kwargs: object):
         customer_started.set()
         await models_started.wait()
+        await resources_started.wait()
         return None
 
     monkeypatch.setattr(assembler, "_select_context_models", fake_models)
@@ -101,6 +103,12 @@ async def test_assemble_context_overlaps_independent_db_facets(
 
     assert bundle.models == []
     assert bundle.resources_summary == []
+    assert bundle.notes["read_fanout_budget"] == {
+        "max_concurrency": 4,
+        "peak_in_use": 3,
+        "acquired": 3,
+        "denied": 0,
+    }
 
 
 @pytest.mark.asyncio

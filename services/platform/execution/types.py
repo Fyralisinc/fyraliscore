@@ -31,6 +31,7 @@ InquiryStopStatus = Literal[
 RetrievalActionPath = Literal[
     "structural",
     "focused_index",
+    "semantic_terms",
     "semantic",
     "temporal",
     "pattern",

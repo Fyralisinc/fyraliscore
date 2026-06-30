@@ -95,6 +95,7 @@ async def _schema_looks_ready(conn: asyncpg.Connection) -> bool:
             "public.observations",
             "public.models",
             "public.model_semantic_terms",
+            "public.model_semantic_term_postings",
             "public.model_edges",
             "public.model_search_documents",
             "public.model_sparse_terms",

@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 import asyncpg
 
 from lib.shared.ids import uuid7
 from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.sage.retrieval_policy import (
+    SageRouteOutcome,
+    SageRouteUtility,
+    build_signal_signature,
+    route_utilities_from_outcomes,
+)
 
 from .config import InquiryConfig, _env_bool, _env_float, _env_int
 from .evidence_utils import stable_hash
@@ -43,6 +50,205 @@ class RetrievalMotifPenalty:
     omitted_evidence: int = 0
     returned_models: int = 0
     returned_observations: int = 0
+
+
+async def load_sage_route_utilities(
+    conn: asyncpg.Connection,
+    trigger: TriggerContext,
+    *,
+    question_primitives: list[str] | tuple[str, ...] | None = None,
+    limit: int = 128,
+) -> tuple[SageRouteUtility, ...]:
+    """Load compact SAGE route utility hints for this trigger family."""
+
+    table_name = await conn.fetchval(
+        "SELECT to_regclass('public.sage_retrieval_route_utilities')"
+    )
+    if table_name is None:
+        return ()
+    primitives = sorted(
+        {
+            str(primitive or "").upper()
+            for primitive in (question_primitives or ())
+            if str(primitive or "").strip()
+        }
+    )
+    if primitives:
+        rows = await conn.fetch(
+            """
+            SELECT signature_hash, path, signal_type, subkind, question_primitive,
+                   attempts, wins, skips, returned_models, returned_observations,
+                   selected_evidence, elapsed_ms_total, latency_ms_p95,
+                   budget_total, total_cost, total_quality_credit,
+                   utility_score, confidence
+            FROM sage_retrieval_route_utilities
+            WHERE tenant_id = $1
+              AND signal_type = $2
+              AND (question_primitive IS NULL OR question_primitive = ANY($3::text[]))
+              AND attempts >= 1
+            ORDER BY confidence DESC, utility_score DESC, updated_at DESC
+            LIMIT $4
+            """,
+            trigger.tenant_id,
+            trigger.kind,
+            primitives,
+            max(1, int(limit)),
+        )
+    else:
+        rows = await conn.fetch(
+            """
+            SELECT signature_hash, path, signal_type, subkind, question_primitive,
+                   attempts, wins, skips, returned_models, returned_observations,
+                   selected_evidence, elapsed_ms_total, latency_ms_p95,
+                   budget_total, total_cost, total_quality_credit,
+                   utility_score, confidence
+            FROM sage_retrieval_route_utilities
+            WHERE tenant_id = $1
+              AND signal_type = $2
+              AND attempts >= 1
+            ORDER BY confidence DESC, utility_score DESC, updated_at DESC
+            LIMIT $3
+            """,
+            trigger.tenant_id,
+            trigger.kind,
+            max(1, int(limit)),
+        )
+    return tuple(_route_utility_from_row(row) for row in rows)
+
+
+async def learn_sage_route_utilities(
+    conn: asyncpg.Connection,
+    result: InquiryResult,
+    trigger: TriggerContext,
+) -> None:
+    """Persist SAGE route utility from an inquiry run's retrieval telemetry."""
+
+    if not _env_bool("SAGE_ROUTE_UTILITY_LEARNING_ENABLED", True):
+        return
+    table_name = await conn.fetchval(
+        "SELECT to_regclass('public.sage_retrieval_route_utilities')"
+    )
+    if table_name is None:
+        return
+    utilities = _route_utilities_from_inquiry_result(result, trigger)
+    if not utilities:
+        return
+    await conn.executemany(
+        """
+        INSERT INTO sage_retrieval_route_utilities (
+          tenant_id, signal_type, subkind, question_primitive, signature_hash, path,
+          attempts, wins, skips, returned_models, returned_observations,
+          selected_evidence, elapsed_ms_total, latency_ms_p95, budget_total,
+          total_cost, total_quality_credit, utility_score, confidence,
+          last_observed_at, updated_at
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6,
+          $7, $8, $9, $10, $11,
+          $12, $13, $14, $15,
+          $16, $17, $18, $19,
+          now(), now()
+        )
+        ON CONFLICT (tenant_id, signature_hash, path) DO UPDATE SET
+          attempts = sage_retrieval_route_utilities.attempts + EXCLUDED.attempts,
+          wins = sage_retrieval_route_utilities.wins + EXCLUDED.wins,
+          skips = sage_retrieval_route_utilities.skips + EXCLUDED.skips,
+          returned_models = (
+            sage_retrieval_route_utilities.returned_models
+            + EXCLUDED.returned_models
+          ),
+          returned_observations = (
+            sage_retrieval_route_utilities.returned_observations
+            + EXCLUDED.returned_observations
+          ),
+          selected_evidence = (
+            sage_retrieval_route_utilities.selected_evidence
+            + EXCLUDED.selected_evidence
+          ),
+          elapsed_ms_total = (
+            sage_retrieval_route_utilities.elapsed_ms_total
+            + EXCLUDED.elapsed_ms_total
+          ),
+          latency_ms_p95 = GREATEST(
+            sage_retrieval_route_utilities.latency_ms_p95,
+            EXCLUDED.latency_ms_p95
+          ),
+          budget_total = (
+            sage_retrieval_route_utilities.budget_total + EXCLUDED.budget_total
+          ),
+          total_cost = sage_retrieval_route_utilities.total_cost + EXCLUDED.total_cost,
+          total_quality_credit = (
+            sage_retrieval_route_utilities.total_quality_credit
+            + EXCLUDED.total_quality_credit
+          ),
+          utility_score = (
+            (
+              sage_retrieval_route_utilities.utility_score
+              * GREATEST(sage_retrieval_route_utilities.attempts, 1)
+            )
+            + (EXCLUDED.utility_score * GREATEST(EXCLUDED.attempts, 1))
+          ) / GREATEST(
+            sage_retrieval_route_utilities.attempts + EXCLUDED.attempts,
+            1
+          ),
+          confidence = LEAST(
+            1.0,
+            GREATEST(
+              sage_retrieval_route_utilities.confidence,
+              EXCLUDED.confidence,
+              LN(1 + sage_retrieval_route_utilities.attempts + EXCLUDED.attempts)
+              / LN(33)
+            )
+          ),
+          last_observed_at = now(),
+          updated_at = now()
+        """,
+        [_route_utility_params(trigger.tenant_id, utility) for utility in utilities],
+    )
+
+
+async def decay_sage_route_utilities(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID | None = None,
+    stale_after_days: int = 14,
+    factor: float = 0.97,
+) -> int:
+    """Apply offline decay to stale SAGE route utility memory."""
+
+    table_name = await conn.fetchval(
+        "SELECT to_regclass('public.sage_retrieval_route_utilities')"
+    )
+    if table_name is None:
+        return 0
+    bounded_factor = min(1.0, max(0.0, float(factor)))
+    stale_days = max(1, int(stale_after_days))
+    if tenant_id is None:
+        status = await conn.execute(
+            """
+            UPDATE sage_retrieval_route_utilities
+               SET utility_score = utility_score * $1,
+                   confidence = GREATEST(0.0, confidence * $1),
+                   updated_at = now()
+             WHERE last_observed_at < now() - ($2::text || ' days')::interval
+            """,
+            bounded_factor,
+            stale_days,
+        )
+    else:
+        status = await conn.execute(
+            """
+            UPDATE sage_retrieval_route_utilities
+               SET utility_score = utility_score * $1,
+                   confidence = GREATEST(0.0, confidence * $1),
+                   updated_at = now()
+             WHERE tenant_id = $2
+               AND last_observed_at < now() - ($3::text || ' days')::interval
+            """,
+            bounded_factor,
+            tenant_id,
+            stale_days,
+        )
+    return _execute_row_count(status)
 
 
 async def load_question_policy_stats(
@@ -427,12 +633,251 @@ def motif_failure_penalties(result: InquiryResult) -> list[RetrievalMotifPenalty
     return penalties
 
 
+def _route_utility_from_row(row: Any) -> SageRouteUtility:
+    return SageRouteUtility(
+        signature_hash=str(row["signature_hash"]),
+        path=str(row["path"]),
+        signal_type=str(row["signal_type"] or ""),
+        subkind=row["subkind"],
+        question_primitive=row["question_primitive"],
+        attempts=int(row["attempts"] or 0),
+        wins=int(row["wins"] or 0),
+        skips=int(row["skips"] or 0),
+        returned_models=int(row["returned_models"] or 0),
+        returned_observations=int(row["returned_observations"] or 0),
+        selected_evidence=int(row["selected_evidence"] or 0),
+        elapsed_ms_total=int(row["elapsed_ms_total"] or 0),
+        latency_ms_p95=float(row["latency_ms_p95"] or 0.0),
+        budget_total=int(row["budget_total"] or 0),
+        total_cost=float(row["total_cost"] or 0.0),
+        total_quality_credit=float(row["total_quality_credit"] or 0.0),
+        utility_score=float(row["utility_score"] or 0.0),
+        confidence=float(row["confidence"] or 0.0),
+    )
+
+
+def _route_utility_params(
+    tenant_id: UUID,
+    utility: SageRouteUtility,
+) -> tuple[Any, ...]:
+    return (
+        tenant_id,
+        utility.signal_type,
+        utility.subkind,
+        utility.question_primitive,
+        utility.signature_hash,
+        utility.path,
+        int(utility.attempts),
+        int(utility.wins),
+        int(utility.skips),
+        int(utility.returned_models),
+        int(utility.returned_observations),
+        int(utility.selected_evidence),
+        int(utility.elapsed_ms_total),
+        float(utility.latency_ms_p95),
+        int(utility.budget_total),
+        float(utility.total_cost),
+        float(utility.total_quality_credit),
+        float(utility.utility_score),
+        float(utility.confidence),
+    )
+
+
+def _route_utilities_from_inquiry_result(
+    result: InquiryResult,
+    trigger: TriggerContext,
+) -> tuple[SageRouteUtility, ...]:
+    by_signature: dict[tuple[str | None, str], list[SageRouteOutcome]] = {}
+    question_by_id = {question.question_id: question for question in result.questions}
+    action_by_key: dict[tuple[str, str, str], RetrievalAction] = {}
+    for action in result.retrieval_actions:
+        action_by_key.setdefault(
+            (action.question_id, action.path, action.target),
+            action,
+        )
+    selected_by_question_path: dict[tuple[str, str], int] = {}
+    for card in result.evidence_cards:
+        for question_id in card.retrieved_for_questions:
+            for path in card.retrieval_paths:
+                selected_by_question_path[(question_id, path)] = (
+                    selected_by_question_path.get((question_id, path), 0) + 1
+                )
+    for note in (result.notes or {}).get("retrieval_action_timings", []) or []:
+        if not isinstance(note, dict):
+            continue
+        path = str(note.get("path") or "")
+        question_id = str(note.get("question_id") or "")
+        if not path or path == "sage_reader":
+            continue
+        question = question_by_id.get(question_id)
+        if question is None:
+            continue
+        target = str(note.get("target") or "")
+        action = action_by_key.get((question_id, path, target))
+        budget = int(getattr(action, "budget", 0) or 0) if action else 0
+        selected = selected_by_question_path.get((question_id, path), 0)
+        returned = bool(note.get("returned"))
+        elapsed_ms = _safe_int(note.get("elapsed_ms"))
+        models = _safe_int(note.get("models"))
+        observations = _safe_int(note.get("observations"))
+        signature = build_signal_signature(
+            trigger=trigger,
+            question_primitive=question.primitive,
+            projection_enabled=False,
+        )
+        by_signature.setdefault(
+            (signature.question_primitive, signature.signal_type),
+            [],
+        ).append(
+            SageRouteOutcome(
+                path=path,
+                admitted=not bool(note.get("skipped")),
+                skipped=bool(note.get("skipped")),
+                elapsed_ms=elapsed_ms,
+                returned_models=models,
+                returned_observations=observations,
+                selected_evidence=selected,
+                budget=budget,
+                quality_credit=_route_quality_credit(
+                    selected=selected,
+                    returned=returned,
+                    models=models,
+                    observations=observations,
+                ),
+                cost_units=_route_cost_units(
+                    path,
+                    elapsed_ms=elapsed_ms,
+                    budget=budget,
+                ),
+            )
+        )
+    primary_signature = build_signal_signature(
+        trigger=trigger,
+        question_primitive=None,
+        projection_enabled=True,
+    )
+    primary_outcomes = _primary_route_outcomes_from_result_notes(result)
+    if primary_outcomes:
+        by_signature.setdefault(
+            (primary_signature.question_primitive, primary_signature.signal_type),
+            [],
+        ).extend(primary_outcomes)
+    utilities: list[SageRouteUtility] = []
+    for (primitive, _signal_type), outcomes in by_signature.items():
+        signature = build_signal_signature(
+            trigger=trigger,
+            question_primitive=primitive,
+            projection_enabled=primitive is None,
+        )
+        utilities.extend(route_utilities_from_outcomes(signature, outcomes))
+    return tuple(utilities)
+
+
+def _primary_route_outcomes_from_result_notes(
+    result: InquiryResult,
+) -> tuple[SageRouteOutcome, ...]:
+    outcomes: list[SageRouteOutcome] = []
+    for stage_note in (result.notes or {}).get("retrieval_stage_timings", []) or []:
+        if not isinstance(stage_note, dict) or stage_note.get("stage") != "primary_retrieve":
+            continue
+        for item in stage_note.get("primary_pathway_timings", []) or []:
+            if not isinstance(item, dict):
+                continue
+            path = _primary_path_from_stage(str(item.get("stage") or ""))
+            if not path:
+                continue
+            elapsed_ms = _safe_int(item.get("elapsed_ms"))
+            models = _safe_int(item.get("models"))
+            observations = _safe_int(item.get("observations"))
+            skipped = bool(item.get("skipped"))
+            outcomes.append(
+                SageRouteOutcome(
+                    path=path,
+                    admitted=not skipped,
+                    skipped=skipped,
+                    elapsed_ms=elapsed_ms,
+                    returned_models=models,
+                    returned_observations=observations,
+                    selected_evidence=0,
+                    budget=0,
+                    quality_credit=_route_quality_credit(
+                        selected=0,
+                        returned=not skipped and (models > 0 or observations > 0),
+                        models=models,
+                        observations=observations,
+                    ),
+                    cost_units=_route_cost_units(path, elapsed_ms=elapsed_ms, budget=0),
+                )
+            )
+    return tuple(outcomes)
+
+
+def _primary_path_from_stage(stage: str) -> str | None:
+    if stage == "projection_context":
+        return "projection_context"
+    if not stage.startswith("pathway_"):
+        return None
+    path = stage.removeprefix("pathway_")
+    return path if path in {"A", "B", "L", "C", "D", "G"} else None
+
+
+def _route_quality_credit(
+    *,
+    selected: int,
+    returned: bool,
+    models: int,
+    observations: int,
+) -> float:
+    if selected > 0:
+        return min(4.0, 0.85 * selected)
+    if returned and (models > 0 or observations > 0):
+        return min(0.35, (models + observations) / 120.0)
+    return -0.15
+
+
+def _route_cost_units(path: str, *, elapsed_ms: int, budget: int) -> float:
+    base = {
+        "semantic": 0.34,
+        "B": 0.34,
+        "temporal": 0.14,
+        "C": 0.14,
+        "pattern": 0.12,
+        "D": 0.12,
+        "structural": 0.08,
+        "A": 0.08,
+        "model_edge": 0.08,
+        "G": 0.08,
+        "semantic_terms": 0.04,
+        "L": 0.04,
+        "focused_index": 0.04,
+        "projection_context": 0.02,
+    }.get(path, 0.08)
+    return base + max(0, int(elapsed_ms)) / 1000.0 + max(0, int(budget)) / 120.0
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _execute_row_count(status: str) -> int:
+    try:
+        return int(str(status).split()[-1])
+    except (IndexError, ValueError):
+        return 0
+
+
 __all__ = [
     "RetrievalMotifPenalty",
+    "decay_sage_route_utilities",
     "is_low_value_model_noise",
     "learn_retrieval_motifs",
+    "learn_sage_route_utilities",
     "load_question_policy_stats",
     "load_retrieval_motifs_for_questions",
+    "load_sage_route_utilities",
     "motif_failure_penalties",
     "penalize_retrieval_motifs",
 ]

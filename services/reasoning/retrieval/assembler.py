@@ -62,6 +62,7 @@ from lib.shared.types import (
 
 from .config import CONFIG, RetrievalConfig
 from .primary import RetrievalResult
+from .read_fanout import ReadFanoutBudget
 
 
 _BUDGET_OBSERVATIONS = 12
@@ -846,6 +847,7 @@ async def assemble_context(
     budget_resources: int | None = None,
     config: RetrievalConfig | None = None,
     read_pool: asyncpg.Pool | None = None,
+    read_fanout_budget: ReadFanoutBudget | None = None,
 ) -> ContextBundle:
     """
     Compose a size-bounded ContextBundle from the retrieval result.
@@ -880,6 +882,7 @@ async def assemble_context(
             budgets=budgets,
             acts_cap=acts_cap,
             read_pool=read_pool,
+            read_fanout_budget=read_fanout_budget,
         )
     )
     obs_tenant = [
@@ -927,6 +930,7 @@ async def _select_context_db_facets(
     budgets: dict[str, Any],
     acts_cap: dict[str, list],
     read_pool: asyncpg.Pool | None,
+    read_fanout_budget: ReadFanoutBudget | None,
 ) -> tuple[dict[str, Any], list[ResourceRow], dict[str, Any] | None]:
     if not _assembler_read_fanout_enabled(conn, read_pool):
         return (
@@ -951,9 +955,10 @@ async def _select_context_db_facets(
         )
 
     assert read_pool is not None
+    facet_read_budget = read_fanout_budget or ReadFanoutBudget.from_pool(read_pool)
 
     async def select_models() -> dict[str, Any]:
-        async with read_pool.acquire() as read_conn:
+        async with facet_read_budget.connection() as read_conn:
             return await _select_context_models(
                 retrieval_result,
                 access_context,
@@ -963,7 +968,7 @@ async def _select_context_db_facets(
             )
 
     async def select_resources() -> list[ResourceRow]:
-        async with read_pool.acquire() as read_conn:
+        async with facet_read_budget.connection() as read_conn:
             return await _select_context_resources(
                 retrieval_result,
                 read_conn,
@@ -972,7 +977,7 @@ async def _select_context_db_facets(
             )
 
     async def select_customer_context() -> dict[str, Any] | None:
-        async with read_pool.acquire() as read_conn:
+        async with facet_read_budget.connection() as read_conn:
             return await _compute_customer_context(
                 read_conn,
                 access_context.tenant_id,
@@ -983,7 +988,15 @@ async def _select_context_db_facets(
         models_task = task_group.create_task(select_models())
         resources_task = task_group.create_task(select_resources())
         customer_task = task_group.create_task(select_customer_context())
-    return models_task.result(), resources_task.result(), customer_task.result()
+    model_selection = models_task.result()
+    budget_snapshot = facet_read_budget.snapshot()
+    model_selection["read_fanout_budget"] = {
+        "max_concurrency": budget_snapshot.max_concurrency,
+        "peak_in_use": budget_snapshot.peak_in_use,
+        "acquired": budget_snapshot.acquired,
+        "denied": budget_snapshot.denied,
+    }
+    return model_selection, resources_task.result(), customer_task.result()
 
 
 def _assembler_read_fanout_enabled(
@@ -1299,6 +1312,8 @@ def _build_context_notes(
             selected_models=model_selection["models"],
         ),
     }
+    if "read_fanout_budget" in model_selection:
+        notes["read_fanout_budget"] = model_selection["read_fanout_budget"]
     if isinstance(retrieval_result.notes, dict):
         inquiry_notes = retrieval_result.notes.get("inquiry")
         if isinstance(inquiry_notes, dict):

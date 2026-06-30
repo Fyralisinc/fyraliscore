@@ -157,11 +157,6 @@ async def pathway_projection_context(
 
     projection_names = sorted({name for name, _ in candidates})
     subject_keys = [subject for _, subject in candidates]
-    freshness = await _freshness_notes(
-        conn,
-        tenant_id=tenant_id,
-        projection_names=projection_names,
-    )
     snapshots = await _PROJECTIONS.list_snapshots_for_subjects(
         conn,
         tenant_id=tenant_id,
@@ -179,9 +174,18 @@ async def pathway_projection_context(
                 "subject_candidates": len(candidates),
                 "subject_keys": subject_keys[:20],
                 "projection_names": projection_names,
-                "freshness": freshness,
+                "freshness": {
+                    "available": False,
+                    "reason": "skipped_no_projection_snapshots",
+                },
             },
         )
+
+    freshness = await _freshness_notes(
+        conn,
+        tenant_id=tenant_id,
+        projection_names=projection_names,
+    )
 
     model_ids: list[UUID] = []
     seen_model_ids: set[UUID] = set()

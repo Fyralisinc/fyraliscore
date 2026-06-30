@@ -24,7 +24,8 @@ from .reflective_rules import (
     ReflectiveRetrievalRule,
     load_reflective_retrieval_rules,
 )
-from .retrieval_learning import load_question_policy_stats
+from .retrieval_learning import load_question_policy_stats, load_sage_route_utilities
+from .retrieval_actions import SemanticRetrievalSession
 from .result_composition import _add_result_to_reservoir, _merge_results
 from .routing import (
     adaptive_baseline_top_n,
@@ -76,6 +77,8 @@ class _InquiryBootstrapState:
     sage_reader_runtime: Any | None
     sage_reader_substrate: Any | None
     max_rounds: int
+    semantic_session: SemanticRetrievalSession | None = None
+    sage_route_utilities: tuple[Any, ...] = ()
 
 
 async def _prepare_sage_reader_substrate(
@@ -153,6 +156,15 @@ async def _bootstrap_inquiry_run(
     stage_timing_notes: list[dict[str, Any]] = []
 
     stage_started = time.perf_counter()
+    sage_route_utilities = await load_sage_route_utilities(conn, trigger)
+    append_stage_timing(
+        stage_timing_notes,
+        "sage_route_utility_load",
+        stage_started,
+        utilities=len(sage_route_utilities),
+    )
+
+    stage_started = time.perf_counter()
     if noop_gate["used"]:
         baseline = _merge_results(
             trigger,
@@ -180,6 +192,7 @@ async def _bootstrap_inquiry_run(
             structural_read_fanout_min_seeds=cfg.structural_read_fanout_min_seeds,
             structural_read_fanout_chunk_size=cfg.structural_read_fanout_chunk_size,
             top_n=baseline_top_n,
+            sage_route_utilities=sage_route_utilities,
         )
         append_stage_timing(
             stage_timing_notes,
@@ -328,6 +341,8 @@ async def _bootstrap_inquiry_run(
         sage_reader_runtime=sage_reader_runtime,
         sage_reader_substrate=sage_reader_substrate,
         max_rounds=max_rounds,
+        semantic_session=SemanticRetrievalSession(),
+        sage_route_utilities=sage_route_utilities,
     )
 
 

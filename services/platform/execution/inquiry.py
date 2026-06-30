@@ -218,6 +218,7 @@ from .retrieval_actions import (
     cap_pathway_models as _cap_pathway_models,  # noqa: F401
     execute_focused_index_action as _execute_focused_index_action,  # noqa: F401
     execute_semantic_hybrid_action as _execute_semantic_hybrid_action,  # noqa: F401
+    execute_semantic_terms_action as _execute_semantic_terms_action,  # noqa: F401
     fetch_bounded_lookup_rows as _fetch_bounded_lookup_rows,  # noqa: F401
     fetch_hybrid_lexical_fallback_rows as _fetch_hybrid_lexical_fallback_rows,  # noqa: F401
     focused_answerability_index_scan as _focused_answerability_index_scan,  # noqa: F401
@@ -231,10 +232,13 @@ from .retrieval_actions import (
 )
 from .retrieval_learning import (
     RetrievalMotifPenalty as _RetrievalMotifPenalty,  # noqa: F401
+    decay_sage_route_utilities as _decay_sage_route_utilities,  # noqa: F401
     is_low_value_model_noise as _is_low_value_model_noise,  # noqa: F401
     learn_retrieval_motifs as _learn_retrieval_motifs,  # noqa: F401
+    learn_sage_route_utilities as _learn_sage_route_utilities,  # noqa: F401
     load_question_policy_stats as _load_question_policy_stats,  # noqa: F401
     load_retrieval_motifs_for_questions as _load_retrieval_motifs_for_questions,  # noqa: F401
+    load_sage_route_utilities as _load_sage_route_utilities,  # noqa: F401
     motif_failure_penalties as _motif_failure_penalties,  # noqa: F401
     penalize_retrieval_motifs as _penalize_retrieval_motifs,  # noqa: F401
 )

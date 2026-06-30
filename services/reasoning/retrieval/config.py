@@ -166,6 +166,11 @@ class RetrievalConfig:
     projection_context_max_snapshots: int = 8
     projection_context_max_models: int = 24
     primary_pathway_parallel_enabled: bool = True
+    # SAGE policy is a non-canonical adaptive controller over the primary
+    # pathway mix. Shadow mode records the plan without applying gates.
+    sage_retrieval_policy_enabled: bool = True
+    sage_retrieval_policy_shadow_mode: bool = False
+    sage_retrieval_policy_exploration_rate: float = 0.0
 
     # ---- Second-pass ----
     second_pass_sparse_threshold: int = 5

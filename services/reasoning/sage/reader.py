@@ -71,6 +71,11 @@ _log = structlog.get_logger(__name__)
 _MAX_LEXICAL_DISCOVERY_PATTERNS = 12
 _LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS = 1500
 _SPARSE_STRONG_SINGLE_MATCH_MAX_DF = 32
+_ANSWERABILITY_TERM_DF_PROBE_CAP = 1024
+
+
+def _answerability_max_term_df(limit: int) -> int:
+    return max(128, min(_ANSWERABILITY_TERM_DF_PROBE_CAP, max(1, int(limit)) * 64))
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +104,21 @@ class ReaderBudget:
     lexical_microquery_enabled: bool = True
     lexical_microquery_terms: int = 8
     lexical_microquery_per_term_limit: int = 16
+
+
+class _BoundedLookupRows(list[asyncpg.Record]):
+    def __init__(
+        self,
+        rows: list[asyncpg.Record] | None = None,
+        *,
+        timed_out: bool = False,
+    ) -> None:
+        super().__init__(rows or [])
+        self.timed_out = timed_out
+
+
+def _bounded_lookup_timed_out(rows: object) -> bool:
+    return bool(getattr(rows, "timed_out", False))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1123,42 +1143,20 @@ class SynthesisReader:
         ]
         if not seed_roles:
             return
-        rows = await conn.fetch(
-            """
-            SELECT m.id, m."natural",
-                   role_matches.matched_roles,
-                   role_matches.role_match_count,
-                   lexical.lexical_match_count
-            FROM model_search_documents msd
-            JOIN models m
-              ON m.id = msd.model_id
-             AND m.tenant_id = msd.tenant_id
-            JOIN LATERAL (
-              SELECT
-                array_agg(role.value ORDER BY role.value) AS matched_roles,
-                count(*)::int AS role_match_count
-              FROM unnest($3::text[]) AS role(value)
-              WHERE coalesce(m.proposition->'operational_roles', '[]'::jsonb)
-                    ? role.value
-            ) role_matches ON role_matches.role_match_count > 0
-            LEFT JOIN LATERAL (
-              SELECT count(*)::int AS lexical_match_count
-              FROM unnest($4::text[]) AS term(value)
-              WHERE strpos(msd.search_text, term.value) > 0
-            ) lexical ON TRUE
-            WHERE msd.tenant_id = $1
-              AND msd.status = 'active'
-              AND m.status = 'active'
-            ORDER BY role_matches.role_match_count DESC,
-                     lexical.lexical_match_count DESC,
-                     m.activation DESC,
-                     m.created_at DESC
-            LIMIT $2
-            """,
-            tenant_id,
-            max(8, min(self._budget.lexical_candidates, 24)),
-            seed_roles,
-            [term.casefold() for term in plan.terms],
+        rows = await _fetch_operational_role_matches(
+            conn,
+            tenant_id=tenant_id,
+            seed_roles=seed_roles,
+            terms=[term.casefold() for term in plan.terms],
+            limit=max(8, min(self._budget.lexical_candidates, 24)),
+            per_role_limit=max(
+                32,
+                min(
+                    192,
+                    int(self._budget.lexical_microquery_per_term_limit)
+                    * max(2, len(seed_roles)),
+                ),
+            ),
         )
         for rank, row in enumerate(rows):
             role_count = int(row["role_match_count"] or 1)
@@ -2635,6 +2633,8 @@ async def _fetch_search_document_matches(
     )
     if sparse_rows:
         return sparse_rows
+    if _bounded_lookup_timed_out(sparse_rows):
+        return []
 
     lookup_terms = _sparse_lookup_terms(terms, max_terms=microquery_terms)
     patterns = _contains_like_patterns(lookup_terms)
@@ -2654,19 +2654,15 @@ async def _fetch_search_document_matches(
               SELECT hit.model_id,
                      p.ord::int AS pattern_ord
               FROM patterns p
-              CROSS JOIN LATERAL (
-                SELECT msd.model_id
-                FROM model_search_documents msd
-                JOIN models m
-                  ON m.id = msd.model_id
-                 AND m.tenant_id = msd.tenant_id
-                WHERE msd.tenant_id = $1
-                  AND msd.status = 'active'
-                  AND m.status = 'active'
-                  AND msd.search_text LIKE p.pattern ESCAPE '!'
-                ORDER BY m.activation DESC, m.created_at DESC, m.id
-                LIMIT $4
-              ) hit
+          CROSS JOIN LATERAL (
+            SELECT msd.model_id
+            FROM model_search_documents msd
+            WHERE msd.tenant_id = $1
+              AND msd.status = 'active'
+              AND msd.search_text LIKE p.pattern ESCAPE '!'
+            ORDER BY msd.model_id
+            LIMIT $4
+          ) hit
             ),
             scored AS MATERIALIZED (
               SELECT model_id,
@@ -2739,6 +2735,181 @@ async def _fetch_search_document_matches(
     )
 
 
+async def _fetch_operational_role_matches(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    seed_roles: list[str] | tuple[str, ...],
+    terms: list[str] | tuple[str, ...],
+    limit: int,
+    per_role_limit: int,
+) -> list[asyncpg.Record]:
+    roles = [
+        role
+        for role in dict.fromkeys(
+            str(raw or "").strip().casefold() for raw in seed_roles
+        )
+        if role
+    ]
+    if not roles:
+        return []
+    table = await conn.fetchval(
+        "SELECT to_regclass('public.model_operational_role_postings')"
+    )
+    if table is None:
+        return await _fetch_operational_role_matches_legacy(
+            conn,
+            tenant_id=tenant_id,
+            seed_roles=roles,
+            terms=terms,
+            limit=limit,
+        )
+    rows = await _fetch_bounded_lookup_rows(
+        conn,
+        """
+        WITH seed_roles AS MATERIALIZED (
+          SELECT role::text,
+                 ord::int AS role_ord
+          FROM unnest($3::text[]) WITH ORDINALITY AS r(role, ord)
+        ),
+        query_terms AS MATERIALIZED (
+          SELECT term::text
+          FROM unnest($4::text[]) AS term(value)
+          WHERE nullif(term.value, '') IS NOT NULL
+        ),
+        query_meta AS MATERIALIZED (
+          SELECT count(*)::int AS query_term_count
+          FROM query_terms
+        ),
+        role_hits AS MATERIALIZED (
+          SELECT sr.role,
+                 sr.role_ord,
+                 hit.model_id,
+                 hit.lexical_match_count
+          FROM seed_roles sr
+          CROSS JOIN LATERAL (
+            SELECT morp.model_id,
+                   coalesce(lexical.lexical_match_count, 0)::int
+                     AS lexical_match_count
+            FROM model_operational_role_postings morp
+            JOIN models m
+              ON m.id = morp.model_id
+             AND m.tenant_id = $1
+             AND m.status = 'active'
+            LEFT JOIN model_search_documents msd
+              ON msd.model_id = morp.model_id
+             AND msd.tenant_id = $1
+             AND msd.status = 'active'
+            LEFT JOIN LATERAL (
+              SELECT count(*)::int AS lexical_match_count
+              FROM query_terms term
+              WHERE strpos(coalesce(msd.search_text, ''), term.term) > 0
+            ) lexical ON TRUE
+            CROSS JOIN query_meta
+            WHERE morp.tenant_id = $1
+              AND morp.status = 'active'
+              AND morp.role = sr.role
+              AND (
+                query_meta.query_term_count = 0
+                OR coalesce(lexical.lexical_match_count, 0) > 0
+              )
+            ORDER BY coalesce(lexical.lexical_match_count, 0) DESC,
+                     m.activation DESC,
+                     m.created_at DESC,
+                     morp.model_id
+            LIMIT $5
+          ) hit
+        ),
+        scored AS MATERIALIZED (
+          SELECT model_id,
+                 array_agg(DISTINCT role ORDER BY role) AS matched_roles,
+                 count(DISTINCT role)::int AS role_match_count,
+                 min(role_ord)::int AS first_role_ord,
+                 max(lexical_match_count)::int AS lexical_match_count
+          FROM role_hits
+          GROUP BY model_id
+        )
+        SELECT m.id,
+               m."natural",
+               scored.matched_roles,
+               scored.role_match_count,
+               scored.lexical_match_count
+        FROM scored
+        JOIN models m
+          ON m.id = scored.model_id
+         AND m.tenant_id = $1
+        WHERE m.status = 'active'
+        ORDER BY scored.role_match_count DESC,
+                 scored.lexical_match_count DESC,
+                 scored.first_role_ord ASC,
+                 m.activation DESC,
+                 m.created_at DESC
+        LIMIT $2
+        """,
+        tenant_id,
+        max(1, int(limit)),
+        roles,
+        [str(term or "").casefold() for term in terms],
+        max(1, int(per_role_limit)),
+        label="operational_role_postings",
+    )
+    if _bounded_lookup_timed_out(rows):
+        return []
+    return rows
+
+
+async def _fetch_operational_role_matches_legacy(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    seed_roles: list[str] | tuple[str, ...],
+    terms: list[str] | tuple[str, ...],
+    limit: int,
+) -> list[asyncpg.Record]:
+    rows = await _fetch_bounded_lookup_rows(
+        conn,
+        """
+        SELECT m.id, m."natural",
+               role_matches.matched_roles,
+               role_matches.role_match_count,
+               lexical.lexical_match_count
+        FROM model_search_documents msd
+        JOIN models m
+          ON m.id = msd.model_id
+         AND m.tenant_id = msd.tenant_id
+        JOIN LATERAL (
+          SELECT
+            array_agg(role.value ORDER BY role.value) AS matched_roles,
+            count(*)::int AS role_match_count
+          FROM unnest($3::text[]) AS role(value)
+          WHERE coalesce(m.proposition->'operational_roles', '[]'::jsonb)
+                ? role.value
+        ) role_matches ON role_matches.role_match_count > 0
+        LEFT JOIN LATERAL (
+          SELECT count(*)::int AS lexical_match_count
+          FROM unnest($4::text[]) AS term(value)
+          WHERE strpos(msd.search_text, term.value) > 0
+        ) lexical ON TRUE
+        WHERE msd.tenant_id = $1
+          AND msd.status = 'active'
+          AND m.status = 'active'
+        ORDER BY role_matches.role_match_count DESC,
+                 lexical.lexical_match_count DESC,
+                 m.activation DESC,
+                 m.created_at DESC
+        LIMIT $2
+        """,
+        tenant_id,
+        max(1, int(limit)),
+        list(seed_roles),
+        [str(term or "").casefold() for term in terms],
+        label="operational_role_legacy",
+    )
+    if _bounded_lookup_timed_out(rows):
+        return []
+    return rows
+
+
 async def _fetch_sparse_term_matches(
     conn: asyncpg.Connection,
     *,
@@ -2775,16 +2946,12 @@ async def _fetch_sparse_term_matches(
         term_stats AS MATERIALIZED (
           SELECT qt.term,
                  qt.term_ord,
-                 count(mstat.id)::int AS term_df
+                 count(mst.model_id)::int AS term_df
           FROM query_terms qt
           LEFT JOIN model_sparse_terms mst
             ON mst.tenant_id = $1
            AND mst.status = 'active'
            AND mst.term = qt.term
-          LEFT JOIN models mstat
-            ON mstat.id = mst.model_id
-           AND mstat.tenant_id = mst.tenant_id
-           AND mstat.status = 'active'
           GROUP BY qt.term, qt.term_ord
         ),
         term_hits AS MATERIALIZED (
@@ -2803,16 +2970,10 @@ async def _fetch_sparse_term_matches(
             SELECT mst.model_id,
                    mst.weight
             FROM model_sparse_terms mst
-            JOIN models mhit
-              ON mhit.id = mst.model_id
-             AND mhit.tenant_id = mst.tenant_id
-             AND mhit.status = 'active'
             WHERE mst.tenant_id = $1
               AND mst.status = 'active'
               AND mst.term = ts.term
             ORDER BY mst.weight DESC,
-                     mhit.activation DESC,
-                     mhit.created_at DESC,
                      mst.model_id
             LIMIT $4
           ) hit
@@ -2884,14 +3045,14 @@ async def _fetch_bounded_lookup_rows(
                     "SET LOCAL statement_timeout = "
                     f"{_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS}"
                 )
-            return list(await conn.fetch(query, *args))
+            return _BoundedLookupRows(list(await conn.fetch(query, *args)))
     except asyncpg.QueryCanceledError:
         _log.warning(
             "sage.reader.bounded_lookup_statement_timeout",
             label=label,
             timeout_ms=_LEXICAL_FALLBACK_STATEMENT_TIMEOUT_MS,
         )
-        return []
+        return _BoundedLookupRows(timed_out=True)
     finally:
         if (
             in_outer_transaction
@@ -2966,6 +3127,8 @@ async def _fetch_belief_address_matches(
     )
     if indexed_rows:
         return indexed_rows
+    if _bounded_lookup_timed_out(indexed_rows):
+        return []
 
     fts_query = _belief_address_fts_query_for_terms(terms)
     if fts_query:
@@ -2978,6 +3141,8 @@ async def _fetch_belief_address_matches(
         )
         if rows:
             return rows
+        if _bounded_lookup_timed_out(rows):
+            return []
 
     patterns = _contains_like_patterns(terms)
     if patterns:
@@ -2994,6 +3159,8 @@ async def _fetch_belief_address_matches(
             )
             if rows:
                 return rows
+            if _bounded_lookup_timed_out(rows):
+                return []
 
     address_text = "mba.search_text"
     count_parts: list[str] = []
@@ -3228,49 +3395,99 @@ async def _fetch_answerability_index_matches(
     )
     if table is None:
         return []
+    per_token_limit = max(16, min(48, max(1, int(limit)) * 4))
+    max_term_df = _answerability_max_term_df(limit)
     return await _fetch_bounded_lookup_rows(
         conn,
         """
-        WITH group_tokens AS MATERIALIZED (
+        WITH raw_group_tokens AS MATERIALIZED (
           SELECT g.group_ord::int,
                  token.value::text AS term
           FROM jsonb_array_elements($4::jsonb)
                WITH ORDINALITY AS g(tokens, group_ord)
           CROSS JOIN LATERAL jsonb_array_elements_text(g.tokens) AS token(value)
         ),
+        primitive_tokens AS MATERIALIZED (
+          SELECT gt.term,
+                 gt.group_ord,
+                 primitive.value::text AS primitive
+          FROM raw_group_tokens gt
+          CROSS JOIN unnest($3::text[]) AS primitive(value)
+        ),
+        token_stats AS MATERIALIZED (
+          SELECT pt.term,
+                 pt.group_ord,
+                 pt.primitive,
+                 stats.term_df
+          FROM primitive_tokens pt
+          CROSS JOIN LATERAL (
+            SELECT count(*)::int AS term_df
+            FROM (
+              SELECT 1
+              FROM model_answerability_index mai
+              WHERE mai.tenant_id = $1
+                AND mai.status = 'active'
+                AND mai.primitive = pt.primitive
+                AND mai.term = pt.term
+              LIMIT $6
+            ) bounded
+          ) stats
+          WHERE stats.term_df > 0
+            AND stats.term_df <= $7
+        ),
         group_sizes AS MATERIALIZED (
           SELECT group_ord,
+                 primitive,
                  count(DISTINCT term)::int AS token_count
-          FROM group_tokens
-          GROUP BY group_ord
+          FROM token_stats
+          GROUP BY group_ord, primitive
+        ),
+        token_hits AS MATERIALIZED (
+          SELECT pt.term,
+                 pt.group_ord,
+                 hit.model_id,
+                 pt.primitive,
+                 hit.weight
+          FROM token_stats pt
+          CROSS JOIN LATERAL (
+            SELECT mai.model_id,
+                   mai.weight
+            FROM model_answerability_index mai
+            WHERE mai.tenant_id = $1
+              AND mai.status = 'active'
+              AND mai.primitive = pt.primitive
+              AND mai.term = pt.term
+            ORDER BY mai.weight DESC,
+                     mai.model_id
+            LIMIT $5
+          ) hit
         ),
         matched AS MATERIALIZED (
           SELECT mai.model_id,
                  mai.primitive,
-                 gt.group_ord,
-                 count(DISTINCT gt.term)::int AS matched_terms
-          FROM group_tokens gt
-          JOIN model_answerability_index mai
-            ON mai.tenant_id = $1
-           AND mai.status = 'active'
-           AND mai.primitive = ANY($3::text[])
-           AND mai.term = gt.term
-          GROUP BY mai.model_id, mai.primitive, gt.group_ord
+                 mai.group_ord,
+                 count(DISTINCT mai.term)::int AS matched_terms,
+                 sum(mai.weight)::real AS weighted_score
+          FROM token_hits mai
+          GROUP BY mai.model_id, mai.primitive, mai.group_ord
         ),
         group_hits AS MATERIALIZED (
           SELECT matched.model_id,
                  matched.primitive,
                  matched.group_ord,
-                 group_sizes.token_count
+                 group_sizes.token_count,
+                 matched.weighted_score
           FROM matched
           JOIN group_sizes
             ON group_sizes.group_ord = matched.group_ord
+           AND group_sizes.primitive = matched.primitive
           WHERE matched.matched_terms = group_sizes.token_count
         ),
         matched_groups AS MATERIALIZED (
           SELECT model_id,
                  group_ord,
-                 max(token_count)::int AS token_count
+                 max(token_count)::int AS token_count,
+                 sum(weighted_score)::real AS weighted_score
           FROM group_hits
           GROUP BY model_id, group_ord
         ),
@@ -3286,7 +3503,8 @@ async def _fetch_answerability_index_matches(
                  matched_primitives.primitive_match_count,
                  sum(matched_groups.token_count)::int AS lexical_match_count,
                  matched_primitives.matched_primitives,
-                 min(matched_groups.group_ord)::int AS first_group_ord
+                 min(matched_groups.group_ord)::int AS first_group_ord,
+                 sum(matched_groups.weighted_score)::real AS weighted_score
           FROM matched_groups
           JOIN matched_primitives
             ON matched_primitives.model_id = matched_groups.model_id
@@ -3301,12 +3519,20 @@ async def _fetch_answerability_index_matches(
                scored.matched_primitives,
                TRUE AS lexical_terms_present
         FROM scored
-        JOIN models m
-          ON m.id = scored.model_id
-         AND m.tenant_id = $1
-        WHERE m.status = 'active'
+        JOIN LATERAL (
+          SELECT models.id,
+                 models."natural",
+                 models.activation,
+                 models.created_at
+          FROM models
+          WHERE models.id = scored.model_id
+            AND models.tenant_id = $1
+            AND models.status = 'active'
+          LIMIT 1
+        ) m ON TRUE
         ORDER BY scored.primitive_match_count DESC,
                  scored.lexical_match_count DESC,
+                 scored.weighted_score DESC,
                  scored.first_group_ord ASC,
                  m.activation DESC,
                  m.created_at DESC
@@ -3316,6 +3542,9 @@ async def _fetch_answerability_index_matches(
         max(1, int(limit)),
         primitive_values,
         json.dumps(lookup_groups),
+        per_token_limit,
+        max_term_df + 1,
+        max_term_df,
         label="answerability_index",
     )
 

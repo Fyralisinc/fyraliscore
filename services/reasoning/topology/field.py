@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from uuid import UUID
 
 import asyncpg
 
+from lib.shared.utility_governor import downstream_trigger_utility
 from lib.shared.types import ModelRow
 from services.domain.triggers import enqueue_trigger
 from services.reasoning.judgment.scoring import JudgmentScores, clamp_score
@@ -208,6 +210,23 @@ _PRESSURE_TERMS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
 _STAKE_TERMS: dict[str, tuple[str, ...]] = {
     "enterprise_value": ("enterprise", "strategic", "tier 1", "key account"),
     "revenue": ("revenue", "arr", "renewal", "contract", "invoice", "billing"),
@@ -379,6 +398,8 @@ class TopologyGenerationResult:
     candidates_ranked: int = 0
     duplicates_suppressed: int = 0
     think_triggers_skipped_low_score: int = 0
+    think_triggers_skipped_by_governor: int = 0
+    utility_governor_notes: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -392,6 +413,7 @@ class TopologySweepReport:
     candidates_ranked: int = 0
     duplicates_suppressed: int = 0
     think_triggers_skipped_low_score: int = 0
+    think_triggers_skipped_by_governor: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -413,7 +435,9 @@ class LatentTopologyService:
         candidate_insert_limit: int = 8,
         think_enqueue_limit: int = 1,
         min_insert_score: float = 0.46,
-        min_think_score: float = 0.66,
+        min_think_score: float = 0.74,
+        downstream_utility_governor_enabled: bool | None = None,
+        downstream_utility_governor_threshold: float | None = None,
     ) -> None:
         self._relationship_repo = relationship_repo or RelationshipCandidatesRepo()
         self.raw_candidate_limit = raw_candidate_limit
@@ -421,6 +445,16 @@ class LatentTopologyService:
         self.think_enqueue_limit = think_enqueue_limit
         self.min_insert_score = min_insert_score
         self.min_think_score = min_think_score
+        self.downstream_utility_governor_enabled = (
+            _env_bool("THINK_DOWNSTREAM_UTILITY_GOVERNOR_ENABLED", True)
+            if downstream_utility_governor_enabled is None
+            else bool(downstream_utility_governor_enabled)
+        )
+        self.downstream_utility_governor_threshold = (
+            _env_float("THINK_DOWNSTREAM_UTILITY_GOVERNOR_THRESHOLD", 0.78)
+            if downstream_utility_governor_threshold is None
+            else float(downstream_utility_governor_threshold)
+        )
 
     async def generate_for_model(
         self,
@@ -484,6 +518,8 @@ class LatentTopologyService:
 
         enqueued = 0
         skipped_low_score = 0
+        skipped_by_governor = 0
+        governor_notes: list[dict[str, Any]] = []
         if enqueue_think and inserted:
             for record in _rank_records_for_think_enqueue(inserted):
                 if enqueued >= self.think_enqueue_limit:
@@ -498,6 +534,20 @@ class LatentTopologyService:
                 ):
                     skipped_low_score += 1
                     continue
+                if self.downstream_utility_governor_enabled:
+                    governor_decision = _downstream_governor_decision_for_record(
+                        record,
+                        run_threshold=self.downstream_utility_governor_threshold,
+                    )
+                    governor_notes.append(
+                        {
+                            "relationship_candidate_id": str(record.get("id") or ""),
+                            **governor_decision.as_note(),
+                        }
+                    )
+                    if not governor_decision.should_run:
+                        skipped_by_governor += 1
+                        continue
                 ok = await self._enqueue_think_for_candidate(conn, record)
                 if ok:
                     enqueued += 1
@@ -512,6 +562,8 @@ class LatentTopologyService:
             candidates_ranked=len(ranked_candidates),
             duplicates_suppressed=duplicates_suppressed,
             think_triggers_skipped_low_score=skipped_low_score,
+            think_triggers_skipped_by_governor=skipped_by_governor,
+            utility_governor_notes=governor_notes,
         )
 
     async def generate_for_model_id(
@@ -590,6 +642,9 @@ class LatentTopologyService:
                 report.duplicates_suppressed += result.duplicates_suppressed
                 report.think_triggers_skipped_low_score += (
                     result.think_triggers_skipped_low_score
+                )
+                report.think_triggers_skipped_by_governor += (
+                    result.think_triggers_skipped_by_governor
                 )
             except Exception as exc:  # noqa: BLE001
                 report.errors.append(f"{row['id']}: {type(exc).__name__}: {exc}")
@@ -2290,6 +2345,23 @@ def _think_enqueue_threshold(record: dict[str, Any], *, default: float) -> float
     if _is_precise_scope_rule_edge_record(record):
         return min(default, 0.54)
     return default
+
+
+def _downstream_governor_decision_for_record(
+    record: dict[str, Any],
+    *,
+    run_threshold: float,
+):
+    return downstream_trigger_utility(
+        candidate_kind=record.get("candidate_kind"),
+        edge_kind=record.get("edge_kind"),
+        basis=record.get("basis"),
+        source=record.get("source"),
+        leverage_score=float(record.get("judgment_leverage_score") or 0.0),
+        member_count=len(record.get("member_model_ids") or []),
+        metadata=record.get("metadata") or {},
+        run_threshold=run_threshold,
+    )
 
 
 def _embedding_to_float_list(value: Any) -> list[float]:

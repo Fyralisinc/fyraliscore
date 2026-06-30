@@ -11,19 +11,30 @@ from services.reasoning.retrieval.second_pass import second_pass_expand
 
 
 class _FakeAcquire:
+    def __init__(self, pool: _FakePool) -> None:
+        self._pool = pool
+
     async def __aenter__(self) -> object:
+        self._pool.current += 1
+        self._pool.peak = max(self._pool.peak, self._pool.current)
         return _FakeConn()
 
     async def __aexit__(self, *_args: object) -> bool:
+        self._pool.current -= 1
         return False
 
 
 class _FakePool:
+    def __init__(self, max_size: int = 4) -> None:
+        self.max_size = max_size
+        self.current = 0
+        self.peak = 0
+
     def get_max_size(self) -> int:
-        return 4
+        return self.max_size
 
     def acquire(self) -> _FakeAcquire:
-        return _FakeAcquire()
+        return _FakeAcquire(self)
 
 
 class _FakeConn:
@@ -78,6 +89,7 @@ async def test_second_pass_dimensions_fan_out_and_preserve_processed_order(
         fake_adjacent,
     )
 
+    pool = _FakePool(max_size=2)
     expanded = await asyncio.wait_for(
         second_pass_expand(
             _result(),
@@ -87,7 +99,7 @@ async def test_second_pass_dimensions_fan_out_and_preserve_processed_order(
                 "adjacent_commitments",
             ],
             _FakeConn(),
-            read_pool=_FakePool(),
+            read_pool=pool,
         ),
         timeout=1.0,
     )
@@ -103,3 +115,10 @@ async def test_second_pass_dimensions_fan_out_and_preserve_processed_order(
         "supporting_evidence": 1,
         "adjacent_commitments": 1,
     }
+    assert expanded.notes["second_pass"]["read_fanout_budget"] == {
+        "max_concurrency": 2,
+        "peak_in_use": 2,
+        "acquired": 3,
+        "denied": 0,
+    }
+    assert pool.peak == 2

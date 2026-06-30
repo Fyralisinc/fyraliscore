@@ -30,6 +30,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 _REPORT: list[dict[str, Any]] = []
 _REPORT_PATH = Path(__file__).with_name("_last_run.json")
 _FIXTURES_PATH = Path(__file__).resolve().parents[1] / "synthesis_harness" / "_fixtures.py"
+_MAX_DEEP_RETRIEVAL_ACTIONS = 9
 _FIXTURES_SPEC = importlib.util.spec_from_file_location(
     "fyralis_synthesis_harness_fixtures",
     _FIXTURES_PATH,
@@ -713,7 +714,7 @@ async def test_deep_blocker_retrieval_finds_decisive_context_efficiently(fresh_d
         issues.append("active commitment did not survive into evidence reservoir")
     if str(ctx["other_tenant_distractor"]) in prompt.user:
         issues.append("cross-tenant distractor leaked into prompt")
-    if metrics["retrieval_action_count"] > 8:
+    if metrics["retrieval_action_count"] > _MAX_DEEP_RETRIEVAL_ACTIONS:
         issues.append(f"too many retrieval actions: {metrics['retrieval_action_count']}")
     if metrics["model_detail_full_rows"] > 8:
         issues.append(f"too many full model rows: {metrics['model_detail_full_rows']}")
@@ -1165,7 +1166,7 @@ async def test_noisy_same_actor_semantic_distractors_do_not_become_decisive(fres
         issues.append("same-actor semantic distractor became decisive evidence")
     if any("Zenith" in json.dumps(group, default=str) for group in h1_groups):
         issues.append("same-actor semantic distractor was grouped as H1 support")
-    if metrics["retrieval_action_count"] > 8:
+    if metrics["retrieval_action_count"] > _MAX_DEEP_RETRIEVAL_ACTIONS:
         issues.append(f"noisy case exceeded retrieval action budget: {metrics['retrieval_action_count']}")
     if packet_text.count("Zenith") > 10:
         issues.append("semantic noise dominated the context packet")

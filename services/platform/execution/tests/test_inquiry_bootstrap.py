@@ -78,4 +78,9 @@ async def test_bootstrap_cold_weak_noop_skips_primary_retrieval(
         "baseline_reservoir_seed",
         "question_policy_load",
     }
-    assert state.stage_timing_notes[0]["skipped"] is True
+    primary_note = next(
+        note
+        for note in state.stage_timing_notes
+        if note["stage"] == "primary_retrieve"
+    )
+    assert primary_note["skipped"] is True
