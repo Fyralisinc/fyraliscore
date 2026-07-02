@@ -55,6 +55,7 @@ async def _seed_trigger(
     source: str = "slack",
     trigger_kind: str = "install",
     payload: dict[str, Any] | None = None,
+    installation_row_id: UUID | None = None,
 ) -> UUID:
     """INSERT one onboarding_triggers row (simulates OAuth callback)."""
     import orjson
@@ -62,10 +63,11 @@ async def _seed_trigger(
     await pool.execute(
         """
         INSERT INTO onboarding_triggers
-            (id, tenant_id, source, trigger_kind, payload)
-        VALUES ($1, $2, $3, $4, $5::jsonb)
+            (id, tenant_id, source, trigger_kind, installation_row_id, payload)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
         """,
         trigger_id, tenant_id, source, trigger_kind,
+        installation_row_id,
         orjson.dumps(payload or {}).decode("utf-8"),
     )
     return trigger_id
@@ -173,6 +175,46 @@ async def test_oauth_poller_creates_onboarding_run_and_emits_signal_atomically(
     assert data["tenant_id"] == str(tid)
     assert data["trigger_id"] == str(trigger_id)
     assert data["source"] == "slack"
+
+
+async def test_oauth_poller_forwards_provider_installation_row_id(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Provider callbacks use installation_row_id to scope source planning."""
+    tid = await _seed_tenant(fresh_db)
+    install_id = uuid7()
+    trigger_id = await _seed_trigger(
+        fresh_db,
+        tenant_id=tid,
+        source="discord",
+        installation_row_id=install_id,
+    )
+
+    poller = OAuthPoller(
+        fresh_db,
+        config=OAuthPollerConfig(
+            tick_interval_seconds=0.01,
+            max_triggers_per_tick=1,
+        ),
+    )
+    await poller.run(max_ticks=1)
+
+    signal_row = await fresh_db.fetchrow(
+        "SELECT signal_data FROM workflow_signals "
+        "WHERE workflow_kind = 'tenant_onboarding' "
+        "AND signal_kind = $1",
+        SIGNAL_KIND_RUN_CREATED,
+    )
+    assert signal_row is not None
+    import orjson
+    raw = signal_row["signal_data"]
+    data = (
+        orjson.loads(raw) if isinstance(raw, (str, bytes, bytearray))
+        else dict(raw)
+    )
+    assert data["trigger_id"] == str(trigger_id)
+    assert data["source"] == "discord"
+    assert data["installation_row_id"] == str(install_id)
 
 
 # =====================================================================
@@ -437,8 +479,8 @@ async def test_oauth_poller_signal_emit_uses_run_id_as_idempotency_key(
         signal_data={"replay": True},
     )
     assert result.was_new is False, (
-        f"Re-emit with same idempotency_key returned was_new=True; "
-        f"the signal would have been duplicated. Contract broken."
+        "Re-emit with same idempotency_key returned was_new=True; "
+        "the signal would have been duplicated. Contract broken."
     )
 
     # Exactly ONE signal row exists for this run.

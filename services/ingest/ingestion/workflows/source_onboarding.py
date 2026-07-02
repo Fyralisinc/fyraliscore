@@ -219,6 +219,13 @@ SELECT id, tenant_id, provider, installation_id, secret_ref, enabled
  LIMIT 1
 """
 
+_LOAD_PROVIDER_INSTALL_BY_ID_SQL = """
+SELECT id, tenant_id, provider, installation_id, secret_ref, enabled
+  FROM provider_installations
+ WHERE id = $1 AND tenant_id = $2 AND provider = $3 AND enabled = TRUE
+ LIMIT 1
+"""
+
 # Per M6.3 S1 amendment (per [05-lld-amendments.md A18]
 # — per-source enrichment via JSON-aggregating LEFT JOIN):
 # Gmail's install record is workspace-scoped, but the planner needs the
@@ -822,6 +829,7 @@ async def _load_source_run(
 
 async def _load_install(
     conn: asyncpg.Connection, *, tenant_id: UUID, source: str,
+    installation_row_id: UUID | None = None,
 ) -> asyncpg.Record | None:
     """Load the active install row for this (tenant, source).
 
@@ -870,6 +878,13 @@ async def _load_install(
         return await conn.fetchrow(_LOAD_ASHBY_INSTALL_SQL, tenant_id)
     if source == "linkedin":
         return await conn.fetchrow(_LOAD_LINKEDIN_INSTALL_SQL, tenant_id)
+    if installation_row_id is not None:
+        return await conn.fetchrow(
+            _LOAD_PROVIDER_INSTALL_BY_ID_SQL,
+            installation_row_id,
+            tenant_id,
+            source,
+        )
     return await conn.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
@@ -1105,6 +1120,11 @@ class SourceOnboarding(LongRunningService):
         run_id = UUID(sig.signal_data["onboarding_run_id"])
         tenant_id = UUID(sig.signal_data["tenant_id"])
         source = sig.signal_data["source"]
+        installation_row_id = (
+            UUID(sig.signal_data["installation_row_id"])
+            if sig.signal_data.get("installation_row_id")
+            else None
+        )
 
         if source not in VALID_SOURCES:
             log.warning(
@@ -1130,6 +1150,7 @@ class SourceOnboarding(LongRunningService):
 
         install = await _load_install(
             conn, tenant_id=tenant_id, source=source,
+            installation_row_id=installation_row_id,
         )
         if install is None:
             failure_reason = (

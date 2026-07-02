@@ -635,17 +635,27 @@ class TenantOnboardingOrchestrator(LongRunningService):
             await _insert_source_row(
                 conn, run_id=run_id, source=source, tenant_id=tenant_id,
             )
+            source_signal_data = {
+                "onboarding_run_id": str(run_id),
+                "tenant_id": str(tenant_id),
+                "source": source,
+            }
+            if source == sig.signal_data.get("source"):
+                if sig.signal_data.get("installation_row_id"):
+                    source_signal_data["installation_row_id"] = (
+                        sig.signal_data["installation_row_id"]
+                    )
+                if sig.signal_data.get("gmail_installation_id"):
+                    source_signal_data["gmail_installation_id"] = (
+                        sig.signal_data["gmail_installation_id"]
+                    )
             await emit_signal(
                 conn,
                 workflow_kind=SOURCE_ONBOARDING_INBOX_KIND,
                 workflow_id=SOURCE_ONBOARDING_INBOX_ID,
                 signal_kind=SIGNAL_KIND_SOURCE_REQUESTED,
                 idempotency_key=f"{run_id}:{source}",
-                signal_data={
-                    "onboarding_run_id": str(run_id),
-                    "tenant_id": str(tenant_id),
-                    "source": source,
-                },
+                signal_data=source_signal_data,
             )
 
         # Default this tenant onto the full Kafka pipeline so its

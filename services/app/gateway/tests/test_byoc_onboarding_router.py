@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import re
+from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
-from services.app.gateway.byoc_onboarding_router import build_byoc_onboarding_router
+from services.app.gateway.byoc_onboarding_router import (
+    _ensure_rehearsal_actor,
+    build_byoc_onboarding_router,
+)
 from services.platform.runtime.byoc_onboarding_intents import (
     InMemoryOnboardingIntentStore,
 )
@@ -78,6 +82,35 @@ async def test_slack_rehearsal_is_not_enabled_by_default() -> None:
 
     assert response.status_code == 404
     assert response.json()["detail"]["error"] == "source_rehearsal_not_enabled"
+
+
+@pytest.mark.asyncio
+async def test_rehearsal_actor_gets_tenant_admin_grant(gateway_pool) -> None:
+    tenant_id = uuid4()
+    actor_id = uuid4()
+
+    await _ensure_rehearsal_actor(
+        gateway_pool,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+    )
+
+    row = await gateway_pool.fetchrow(
+        """
+        SELECT role, entity_type, entity_id, revoked_at
+          FROM actor_roles
+         WHERE tenant_id = $1
+           AND actor_id = $2
+           AND role = 'admin'
+        """,
+        tenant_id,
+        actor_id,
+    )
+
+    assert row is not None
+    assert row["entity_type"] == "tenant"
+    assert row["entity_id"] is None
+    assert row["revoked_at"] is None
 
 
 @pytest.mark.asyncio

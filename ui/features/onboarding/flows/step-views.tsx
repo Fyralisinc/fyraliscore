@@ -1639,6 +1639,7 @@ function SourceSetupStep({
   selectedConnection,
   workspace,
   updateConnection,
+  goTo,
   advance
 }: StepViewProps) {
   const rehearsalConfig = SOURCE_REHEARSAL_CONFIG[selectedSource.id];
@@ -1777,10 +1778,16 @@ function SourceSetupStep({
         <>
           <Card>
             <CardHeader>
-              <CardTitle>{selectedSource.name} provider rehearsal</CardTitle>
+              <CardTitle>{selectedSource.name} provider setup package</CardTitle>
               <Badge tone="success">{rehearsalConfig.providerKind}</Badge>
             </CardHeader>
             <CardContent className="grid gap-5">
+              <div className="rounded-lg border border-info/30 bg-info/10 p-4 text-sm text-muted-foreground">
+                Use this package view for CLI handoff details. Continue to the
+                automated setup screen to prepare the live provider install,
+                open the approval URL, poll gateway status, and load landed
+                observations.
+              </div>
               <div className="grid gap-3 md:grid-cols-3">
                 <Metric
                   label="Package"
@@ -1899,7 +1906,7 @@ function SourceSetupStep({
 
               <div className="flex flex-wrap gap-3">
                 <Button type="button" variant="secondary" onClick={generatePackage}>
-                  Generate rehearsal package
+                  Generate CLI package
                 </Button>
                 <Button type="button" onClick={markProviderGatesDone}>
                   Mark provider gates complete
@@ -1935,7 +1942,7 @@ function SourceSetupStep({
       <ActionBar
         primaryLabel={
           rehearsalConfig
-            ? "Continue to connection validation"
+            ? "Continue to automated setup"
             : "Run source autopilot"
         }
         onPrimary={() => {
@@ -1948,7 +1955,11 @@ function SourceSetupStep({
               ? `rehearsal_${selectedSource.id}_provider_ready`
               : `srcval_${selectedSource.id}_autopilot`
           });
-          advance();
+          if (rehearsalConfig) {
+            goTo("ingestion-health");
+          } else {
+            advance();
+          }
         }}
       />
     </div>

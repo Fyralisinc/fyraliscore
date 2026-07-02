@@ -733,6 +733,19 @@ async def _ensure_rehearsal_actor(
                     }
                 ),
             )
+            await conn.execute(
+                """
+                INSERT INTO actor_roles (
+                    tenant_id, actor_id, entity_type, entity_id, role,
+                    granted_by, granted_at, revoked_at
+                )
+                VALUES ($1, $2, 'tenant', NULL, 'admin', $2, now(), NULL)
+                ON CONFLICT ON CONSTRAINT actor_roles_dedup
+                DO NOTHING
+                """,
+                tenant_id,
+                actor_id,
+            )
 
 
 async def _source_rehearsal_status_payload(

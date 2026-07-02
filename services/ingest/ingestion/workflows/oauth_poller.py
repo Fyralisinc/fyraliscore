@@ -315,19 +315,29 @@ class OAuthPoller(LongRunningService):
                 # inbox for the orchestrator-family of consumers.
                 # Per-run identity lives in idempotency_key (which is
                 # str(run_id)) and signal_data.
+                signal_data = {
+                    "onboarding_run_id": str(run_id),
+                    "tenant_id": str(trigger["tenant_id"]),
+                    "trigger_id": str(trigger["id"]),
+                    "source": trigger["source"],
+                    "trigger_kind": trigger["trigger_kind"],
+                }
+                if trigger["installation_row_id"] is not None:
+                    signal_data["installation_row_id"] = str(
+                        trigger["installation_row_id"],
+                    )
+                if trigger["gmail_installation_id"] is not None:
+                    signal_data["gmail_installation_id"] = str(
+                        trigger["gmail_installation_id"],
+                    )
+
                 await emit_signal(
                     conn,
                     workflow_kind="tenant_onboarding",
                     workflow_id="tenant_onboarding",
                     signal_kind=SIGNAL_KIND_RUN_CREATED,
                     idempotency_key=str(run_id),
-                    signal_data={
-                        "onboarding_run_id": str(run_id),
-                        "tenant_id": str(trigger["tenant_id"]),
-                        "trigger_id": str(trigger["id"]),
-                        "source": trigger["source"],
-                        "trigger_kind": trigger["trigger_kind"],
-                    },
+                    signal_data=signal_data,
                 )
 
                 await _mark_trigger_consumed(

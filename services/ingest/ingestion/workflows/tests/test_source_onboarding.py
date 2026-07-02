@@ -48,6 +48,7 @@ from services.app.gateway.product_workflow_metrics import (
 )
 from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
 from services.ingest.ingestion.workflows.signals import emit_signal
+import services.ingest.ingestion.workflows.source_onboarding as source_onboarding_module
 from services.ingest.ingestion.workflows.source_onboarding import (
     RECONCILER_INBOX_ID,
     RECONCILER_INBOX_KIND,
@@ -104,16 +105,18 @@ async def _seed_tenant(pool: asyncpg.Pool, label: str = "src") -> UUID:
 
 async def _seed_provider_install(
     pool: asyncpg.Pool, *, tenant_id: UUID, provider: str,
-) -> None:
+) -> UUID:
+    install_id = uuid7()
     await pool.execute(
         """
         INSERT INTO provider_installations
             (id, tenant_id, provider, installation_id, enabled)
         VALUES ($1, $2, $3, $4, TRUE)
         """,
-        uuid7(), tenant_id, provider,
+        install_id, tenant_id, provider,
         f"inst-{tenant_id.hex[:8]}-{provider}",
     )
+    return install_id
 
 
 async def _seed_gmail_install(pool: asyncpg.Pool, *, tenant_id: UUID) -> None:
@@ -162,19 +165,24 @@ async def _seed_source_run(
 
 async def _emit_source_requested(
     pool: asyncpg.Pool, *, run_id: UUID, tenant_id: UUID, source: str,
+    installation_row_id: UUID | None = None,
 ) -> None:
     """Inject a source_onboarding_requested signal (simulates M6.1)."""
+    signal_data = {
+        "onboarding_run_id": str(run_id),
+        "tenant_id": str(tenant_id),
+        "source": source,
+    }
+    if installation_row_id is not None:
+        signal_data["installation_row_id"] = str(installation_row_id)
+
     await emit_signal(
         pool,
         workflow_kind=WORKFLOW_KIND,
         workflow_id=WORKFLOW_ID_INBOX,
         signal_kind=SIGNAL_KIND_REQUESTED,
         idempotency_key=f"{run_id}:{source}",
-        signal_data={
-            "onboarding_run_id": str(run_id),
-            "tenant_id": str(tenant_id),
-            "source": source,
-        },
+        signal_data=signal_data,
     )
 
 
@@ -365,6 +373,54 @@ async def test_source_onboarding_handles_request_with_test_planner(
         SIGNAL_KIND_REQUESTED, f"{run_id}:slack",
     )
     assert consumed_at is not None
+
+
+async def test_source_onboarding_uses_requested_provider_installation(
+    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multiple Discord guild installs must plan the exact OAuth install."""
+    seen_installation_ids: list[str] = []
+
+    async def _capturing_planner(ctx: PlannerContext) -> list[Shard]:
+        seen_installation_ids.append(ctx.install["installation_id"])
+        return []
+
+    async def _no_source_client(*args, **kwargs):  # noqa: ANN002, ANN003
+        return None
+
+    monkeypatch.setitem(PLANNER_DISPATCH, "discord", _capturing_planner)
+    monkeypatch.setattr(
+        source_onboarding_module, "_build_source_client", _no_source_client,
+    )
+
+    tid = await _seed_tenant(fresh_db)
+    first_install = uuid7()
+    second_install = uuid7()
+    await fresh_db.executemany(
+        """
+        INSERT INTO provider_installations
+            (id, tenant_id, provider, installation_id, enabled)
+        VALUES ($1, $2, 'discord', $3, TRUE)
+        """,
+        [
+            (first_install, tid, "guild-first"),
+            (second_install, tid, "guild-second"),
+        ],
+    )
+    run_id = await _seed_onboarding_run(
+        fresh_db, tenant_id=tid, source="discord",
+    )
+    await _seed_source_run(
+        fresh_db, run_id=run_id, source="discord", tenant_id=tid,
+    )
+    await _emit_source_requested(
+        fresh_db, run_id=run_id, tenant_id=tid, source="discord",
+        installation_row_id=second_install,
+    )
+
+    await _service(fresh_db).run(max_ticks=1)
+
+    assert seen_installation_ids == ["guild-second"]
 
 
 # =====================================================================

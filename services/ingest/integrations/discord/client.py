@@ -137,6 +137,7 @@ class DiscordClient:
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         require_bot_token: bool = True,
+        disable_on_missing_access: bool = True,
     ) -> dict[str, Any]:
         """The hot loop. `endpoint_template` is the unsubstituted form
         (e.g. `/guilds/{guild_id}/members/{user_id}`) — used in the
@@ -236,6 +237,16 @@ class DiscordClient:
                 except Exception:  # noqa: BLE001
                     body = {}
                 if isinstance(body, dict) and body.get("code") == 50001:
+                    if not disable_on_missing_access:
+                        raise DiscordApiError(
+                            "discord channel is not readable by this bot",
+                            code="discord_channel_forbidden",
+                            context={
+                                "tenant_id": str(self._tenant_id),
+                                "http_status": 403,
+                                "discord_error_code": 50001,
+                            },
+                        )
                     chokepoint_status = 403
 
             if chokepoint_status is not None:
@@ -391,6 +402,7 @@ class DiscordClient:
             "GET", "/channels/{channel_id}/messages",
             endpoint_substituted=f"/channels/{channel_id}/messages",
             params=params or None,
+            disable_on_missing_access=False,
         )
         return result if isinstance(result, list) else []
 

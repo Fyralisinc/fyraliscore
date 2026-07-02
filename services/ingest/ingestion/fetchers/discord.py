@@ -26,6 +26,7 @@ from typing import Any
 import asyncpg
 from pydantic import BaseModel, ConfigDict
 
+from lib.shared.errors import DiscordApiError
 from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
 
 
@@ -70,11 +71,25 @@ async def fetch_page_discord(
     cur = _decode(cursor)
     client, close = await _open_discord_client(install)
     try:
-        messages = await client.get_messages(
-            channel_id=channel_id,
-            before=cur.before_snowflake,
-            limit=_DEFAULT_PAGE,
-        )
+        try:
+            messages = await client.get_messages(
+                channel_id=channel_id,
+                before=cur.before_snowflake,
+                limit=_DEFAULT_PAGE,
+            )
+        except DiscordApiError as exc:
+            if exc.code != "discord_channel_forbidden":
+                raise
+            log.info(
+                "discord_backfill_channel_skipped reason=%s shard_kind=%s",
+                exc.code,
+                shard_identifier.get("shard_kind"),
+            )
+            return FetchResult(
+                records=[],
+                next_cursor=_encode(cur),
+                end_of_data=True,
+            )
         is_end = len(messages) < _DEFAULT_PAGE
         # A27.3: emit the MESSAGE_CREATE shape the discord:message
         # handler consumes. Inject guild_id (REST message objects omit

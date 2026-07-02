@@ -8,6 +8,7 @@ import pytest
 from services.ingest.ingestion.planners import PLANNER_DISPATCH
 from services.ingest.ingestion.planners.context import PlannerContext
 from services.ingest.ingestion.planners.discord import (
+    COVERAGE_MODE,
     SAMPLING_VERSION,
     SHARD_KIND_CHANNEL_WINDOW,
     plan_shards_discord,
@@ -37,28 +38,48 @@ class _FakeDiscordClient:
 
 
 def _ctx(tenant_id, guilds, channels):
+    install_id = str(guilds[0]["id"]) if guilds else "bot-app"
     install = _FakeRec(id=uuid4(), tenant_id=tenant_id, provider="discord",
-                       installation_id="bot-app", enabled=True)
+                       installation_id=install_id, enabled=True)
     return PlannerContext(
         tenant_id=tenant_id, install=install, conn=None,
         source_client=_FakeDiscordClient(guilds, channels),
     )
 
 
-async def test_samples_approx_5_percent():
+async def test_reads_every_text_channel_regardless_server_size():
     tid = uuid4()
-    # 100 channels in one guild; expected sample = 5.
     channels = [{"id": f"c{i}", "name": f"chan{i}", "type": 0}
                 for i in range(100)]
     ctx = _ctx(tid, [{"id": "g1"}], {"g1": channels})
     shards = await plan_shards_discord(ctx)
-    # 5% of 100 = 5 (max(1, int(100*0.05)) = 5).
-    assert len(shards) == 5
+    assert len(shards) == 100
     assert all(s.shard_kind == SHARD_KIND_CHANNEL_WINDOW for s in shards)
-    assert all(s.shard_identifier["is_sampled"] is True for s in shards)
+    assert all(s.shard_identifier["is_sampled"] is False for s in shards)
+    assert all(s.shard_identifier["coverage"] == COVERAGE_MODE for s in shards)
+    assert {s.shard_identifier["channel_id"] for s in shards} == {
+        c["id"] for c in channels
+    }
 
 
-async def test_sampling_deterministic_per_tenant():
+async def test_installed_guild_scope_only():
+    tid = uuid4()
+    ctx = _ctx(
+        tid,
+        [{"id": "installed"}, {"id": "other"}],
+        {
+            "installed": [{"id": "c-installed", "name": "general", "type": 0}],
+            "other": [{"id": "c-other", "name": "other", "type": 0}],
+        },
+    )
+
+    shards = await plan_shards_discord(ctx)
+
+    assert [s.shard_identifier["guild_id"] for s in shards] == ["installed"]
+    assert [s.shard_identifier["channel_id"] for s in shards] == ["c-installed"]
+
+
+async def test_full_coverage_deterministic_per_tenant():
     tid = uuid4()
     channels = [{"id": f"c{i}", "name": f"chan{i}", "type": 0}
                 for i in range(50)]
@@ -71,24 +92,8 @@ async def test_sampling_deterministic_per_tenant():
     assert ids_a == ids_b
 
 
-async def test_sampling_seed_is_process_stable():
-    """The seed must derive from a stable hash (sha256), not Python's
-    per-process-salted builtin hash() — otherwise the sampled set would
-    change after every restart."""
-    import hashlib
-
-    from services.ingest.ingestion.planners.discord import _stable_seed
-
-    tid = "tenant-xyz"
-    expected = int.from_bytes(
-        hashlib.sha256(f"{tid}:{SAMPLING_VERSION}".encode("utf-8")).digest()[:8],
-        "big",
-    )
-    assert _stable_seed(tid) == expected
-
-
-async def test_sampling_order_independent():
-    """Same channel universe in a different order → same sampled set."""
+async def test_full_coverage_order_independent():
+    """Same channel universe in a different order -> same selected set."""
     tid = uuid4()
     channels = [{"id": f"c{i}", "name": f"chan{i}", "type": 0}
                 for i in range(40)]
@@ -101,21 +106,20 @@ async def test_sampling_order_independent():
     }
 
 
-async def test_sampling_differs_across_tenants():
+async def test_full_coverage_same_across_tenants():
     channels = [{"id": f"c{i}", "name": f"chan{i}", "type": 0}
                 for i in range(100)]
     ctx_a = _ctx(uuid4(), [{"id": "g1"}], {"g1": channels})
     ctx_b = _ctx(uuid4(), [{"id": "g1"}], {"g1": list(channels)})
     sa = await plan_shards_discord(ctx_a)
     sb = await plan_shards_discord(ctx_b)
-    # With 100 channels × 5 samples each, near-certain to differ.
     ids_a = {s.shard_identifier["channel_id"] for s in sa}
     ids_b = {s.shard_identifier["channel_id"] for s in sb}
-    assert ids_a != ids_b
+    assert ids_a == ids_b == {c["id"] for c in channels}
 
 
 async def test_non_text_channels_filtered():
-    """Discord channel type != 0 should be excluded from sampling pool."""
+    """Discord channel type != 0 should be excluded from backfill."""
     channels = [
         {"id": "text", "type": 0, "name": "text"},
         {"id": "voice", "type": 2, "name": "voice"},
@@ -123,7 +127,6 @@ async def test_non_text_channels_filtered():
     ]
     ctx = _ctx(uuid4(), [{"id": "g1"}], {"g1": channels})
     shards = await plan_shards_discord(ctx)
-    # Only the text channel can be sampled. max(1, int(1*0.05)) = 1.
     assert len(shards) == 1
     assert shards[0].shard_identifier["channel_id"] == "text"
 

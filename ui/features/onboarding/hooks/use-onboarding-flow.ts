@@ -16,11 +16,12 @@ export function useOnboardingSnapshot() {
   });
 }
 
-export function useOnboardingFlow() {
+export function useOnboardingFlow(currentStepOverride?: StepId) {
   const store = useOnboardingStore();
 
   return useMemo(() => {
-    const currentIndex = stepIndex(store.currentStep);
+    const effectiveCurrentStep = currentStepOverride ?? store.currentStep;
+    const currentIndex = stepIndex(effectiveCurrentStep);
     const completedCount = store.completedSteps.length;
     const completion = (completedCount / ONBOARDING_STEPS.length) * 100;
     const remainingMinutes = ONBOARDING_STEPS.slice(currentIndex + 1).reduce(
@@ -33,14 +34,14 @@ export function useOnboardingFlow() {
       ...store,
       steps: ONBOARDING_STEPS.map((step) => ({
         ...step,
-        state: stepState(step, store.currentStep, store.completedSteps)
+        state: stepState(step, effectiveCurrentStep, store.completedSteps)
       })),
       currentStep,
       completion,
       remainingMinutes,
       isCustomerCloud: currentStep.boundary === "customer-cloud"
     };
-  }, [store]);
+  }, [currentStepOverride, store]);
 }
 
 function stepState(

@@ -19,12 +19,16 @@ import {
 import type { SourceConnection, StepId } from "../types";
 import { StepView, type StepViewProps } from "./step-views";
 
-export function OnboardingApp({ initialStep }: { initialStep: StepId }) {
+export function OnboardingApp({
+  initialStep,
+  initialSourceId
+}: {
+  initialStep: StepId;
+  initialSourceId?: string;
+}) {
   const router = useRouter();
   const pathname = usePathname();
   const snapshotQuery = useOnboardingSnapshot();
-  const flow = useOnboardingFlow();
-  const store = useOnboardingStore();
   const routeStep = useMemo(() => {
     const candidate = pathname.split("/").filter(Boolean).at(-1) as
       | StepId
@@ -33,10 +37,24 @@ export function OnboardingApp({ initialStep }: { initialStep: StepId }) {
       ? candidate
       : initialStep;
   }, [initialStep, pathname]);
+  const flow = useOnboardingFlow(routeStep);
+  const store = useOnboardingStore();
 
   useEffect(() => {
     useOnboardingStore.setState({ currentStep: routeStep });
   }, [routeStep]);
+
+  useEffect(() => {
+    if (!initialSourceId || !snapshotQuery.data) {
+      return;
+    }
+    const normalizedSourceId = initialSourceId.trim().toLowerCase();
+    if (
+      snapshotQuery.data.sources.some((source) => source.id === normalizedSourceId)
+    ) {
+      useOnboardingStore.setState({ selectedSourceId: normalizedSourceId });
+    }
+  }, [initialSourceId, snapshotQuery.data]);
 
   useEffect(() => {
     if (!flow.dirty) {
@@ -80,14 +98,16 @@ export function OnboardingApp({ initialStep }: { initialStep: StepId }) {
   });
 
   const snapshot = snapshotQuery.data;
+  const sourceIdFromRoute = initialSourceId?.trim().toLowerCase();
 
   const selectedSource = useMemo(() => {
     const sources = snapshot?.sources ?? [];
     return (
+      sources.find((source) => source.id === sourceIdFromRoute) ??
       sources.find((source) => source.id === flow.selectedSourceId) ??
       sources[0]
     );
-  }, [flow.selectedSourceId, snapshot?.sources]);
+  }, [flow.selectedSourceId, snapshot?.sources, sourceIdFromRoute]);
 
   const selectedConnection = useMemo<SourceConnection | undefined>(
     () =>
