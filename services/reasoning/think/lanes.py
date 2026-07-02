@@ -55,7 +55,7 @@ def parse_lane_filter(raw: str | None) -> frozenset[ThinkLane] | None:
             try:
                 lane = ThinkLane(part)
             except ValueError as exc:
-                allowed = ", ".join(sorted(l.value for l in ThinkLane))
+                allowed = ", ".join(sorted(lane_item.value for lane_item in ThinkLane))
                 raise ValueError(
                     f"unknown Think lane {part!r}; expected one of: {allowed}, all"
                 ) from exc
@@ -144,7 +144,6 @@ def _is_reflex_trigger(trigger_kind: str, trigger_subkind: str) -> bool:
             in {
                 "background_maintenance",
                 "entity_resolution_proposal",
-                "pattern_review",
                 "model_reeval",
             }
         )
@@ -210,7 +209,7 @@ def _reflex_sql(prefix: str) -> str:
         f"OR ({trigger_kind} = 'T3' AND {trigger_subkind} = 'missing_transition') "
         f"OR ({trigger_kind} = 'T4' AND {trigger_subkind} IN "
         "('background_maintenance', 'entity_resolution_proposal', "
-        "'pattern_review', 'model_reeval')))"
+        "'model_reeval')))"
     )
 
 

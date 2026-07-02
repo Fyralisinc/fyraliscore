@@ -56,9 +56,26 @@ from .substrate_builder import build_substrate_candidates
 
 _log = structlog.get_logger(__name__)
 _diag_log = structlog.get_logger("think.diag")
-_BATCH_CONTEXT_MODEL_BUDGET_DEFAULT = 16
+_BATCH_CONTEXT_MODEL_BUDGET_DEFAULT = 24
+_BATCH_CONTEXT_OBSERVATION_BUDGET_DEFAULT = 20
 _BATCH_CONTEXT_HISTORICAL_OBSERVATION_CAP_DEFAULT = 2
 _BATCH_CONTEXT_MODEL_BUDGET_FLOOR = 8
+_DEFAULT_T4_LLM_PLANNER_SUBKINDS = (
+    "open_question_search",
+    "latent_relationship_candidate",
+)
+_TRIAGE_PRIMITIVE_WEIGHTS = {
+    "COMMITMENT": 0.16,
+    "DEPENDENCY": 0.14,
+    "OWNERSHIP": 0.12,
+}
+_INVESTIGATIVE_PRIMITIVE_WEIGHTS = {
+    "RECURRENCE": 0.18,
+    "COUNTEREVIDENCE": 0.16,
+    "OWNERSHIP": 0.14,
+    "GOAL_IMPACT": 0.12,
+    "CONSTRAINT": 0.12,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +152,13 @@ def _env_int_min(name: str, default: int, *, minimum: int = 0) -> int:
         return max(minimum, default)
 
 
+def _env_csv_set(name: str, default: tuple[str, ...]) -> set[str]:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return set(default)
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
 def _is_t1_event_batch(trigger: TriggerContext) -> bool:
     if trigger.kind != "T1":
         return False
@@ -151,8 +175,26 @@ def _retrieval_config_for_trigger(trigger: TriggerContext):
         return RETRIEVAL_CONFIG
     model_budget = _env_int_min(
         "THINK_BATCH_CONTEXT_MODEL_BUDGET",
-        _BATCH_CONTEXT_MODEL_BUDGET_DEFAULT,
+        max(
+            RETRIEVAL_CONFIG.assembler_budget_models,
+            _BATCH_CONTEXT_MODEL_BUDGET_DEFAULT,
+        ),
         minimum=1,
+    )
+    observation_budget = _env_int_min(
+        "THINK_BATCH_CONTEXT_OBSERVATION_BUDGET",
+        max(
+            RETRIEVAL_CONFIG.assembler_budget_observations,
+            _BATCH_CONTEXT_OBSERVATION_BUDGET_DEFAULT,
+        ),
+        minimum=1,
+    )
+    raw_observation_floor = _env_int_min(
+        "THINK_BATCH_CONTEXT_RAW_OBSERVATION_FLOOR",
+        max(
+            RETRIEVAL_CONFIG.t1_event_batch_raw_observation_floor,
+            _BATCH_CONTEXT_OBSERVATION_BUDGET_DEFAULT,
+        ),
     )
     historical_observation_cap = _env_int_min(
         "THINK_BATCH_HISTORICAL_OBSERVATION_CAP",
@@ -163,6 +205,11 @@ def _retrieval_config_for_trigger(trigger: TriggerContext):
         assembler_budget_models=_adaptive_t1_batch_model_budget(
             trigger,
             max_budget=min(RETRIEVAL_CONFIG.assembler_budget_models, model_budget),
+        ),
+        assembler_budget_observations=observation_budget,
+        t1_event_batch_raw_observation_floor=min(
+            observation_budget,
+            raw_observation_floor,
         ),
         historical_observation_cap=min(
             RETRIEVAL_CONFIG.historical_observation_cap,
@@ -203,7 +250,7 @@ def _coerce_positive_int(value: Any) -> int | None:
     return parsed if parsed > 0 else None
 
 
-def _think_inquiry_config() -> InquiryConfig:
+def _think_inquiry_config_for_trigger(trigger: TriggerContext) -> InquiryConfig:
     """Think consumes Models as its memory substrate.
 
     Product inquiry/Ask can keep the broader default. Think is a write path:
@@ -211,16 +258,78 @@ def _think_inquiry_config() -> InquiryConfig:
     ``models_only`` fallback when no Model evidence exists.
     """
 
-    mode = os.environ.get(
-        "THINK_INQUIRY_CONTEXT_PACKET_EVIDENCE_MODE",
-        "models_only",
-    ).strip().lower()
-    if mode not in {"models_only", "model_first", "all"}:
-        mode = "models_only"
-    return replace(
-        InquiryConfig.from_env(),
-        context_packet_evidence_mode=mode,
+    base = InquiryConfig.from_env()
+    updates: dict[str, Any]
+    if trigger.kind == "T1":
+        updates = {
+            "planner_profile": "triage",
+            "max_rounds": 1,
+            "questions_per_round": 2,
+            "llm_question_planning_trigger_kinds": ("T1",),
+            "utility_governor_enabled": True,
+            "question_primitive_weights": dict(_TRIAGE_PRIMITIVE_WEIGHTS),
+        }
+    elif trigger.kind in {"T2", "T3"}:
+        updates = {
+            "planner_profile": "verification",
+            "max_rounds": 2,
+            "questions_per_round": 3,
+            "llm_question_planning_trigger_kinds": (),
+            "utility_governor_enabled": True,
+            "question_primitive_weights": {},
+        }
+    elif trigger.kind == "T4" and _t4_llm_question_planning_eligible(trigger):
+        updates = {
+            "planner_profile": "investigative_pattern",
+            "max_rounds": 4,
+            "questions_per_round": 3,
+            "llm_question_planning_trigger_kinds": ("T4",),
+            "utility_governor_enabled": True,
+            "utility_governor_planner_skip_threshold": 0.54,
+            "context_packet_evidence_mode": "model_first",
+            "question_primitive_weights": dict(_INVESTIGATIVE_PRIMITIVE_WEIGHTS),
+        }
+    else:
+        updates = {
+            "planner_profile": "verification",
+            "max_rounds": 2,
+            "questions_per_round": 3,
+            "llm_question_planning_trigger_kinds": (),
+            "utility_governor_enabled": True,
+            "question_primitive_weights": {},
+        }
+
+    mode_override = os.environ.get("THINK_INQUIRY_CONTEXT_PACKET_EVIDENCE_MODE")
+    if mode_override is not None and mode_override.strip():
+        mode = mode_override.strip().lower()
+        if mode not in {"models_only", "model_first", "all"}:
+            mode = "models_only"
+        updates["context_packet_evidence_mode"] = mode
+    else:
+        updates.setdefault("context_packet_evidence_mode", "models_only")
+    return replace(base, **updates)
+
+
+def _think_inquiry_config() -> InquiryConfig:
+    """Backward-compatible default used by older tests and helper callers."""
+    return _think_inquiry_config_for_trigger(TriggerContext(kind="T1", tenant_id=UUID(int=0)))
+
+
+def _t4_llm_question_planning_eligible(trigger: TriggerContext) -> bool:
+    allowed_subkinds = _env_csv_set(
+        "THINK_T4_LLM_QUESTION_PLANNING_SUBKINDS",
+        _DEFAULT_T4_LLM_PLANNER_SUBKINDS,
     )
+    if trigger.subkind not in allowed_subkinds:
+        return False
+    payload = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    repair_intent = str(payload.get("repair_intent") or "")
+    residual_kind = str(payload.get("residual_kind") or "")
+    if repair_intent == "repair_validation_dropped_value":
+        return False
+    if residual_kind == "validation_dropped_value":
+        return False
+    return True
 
 
 async def plan_context(
@@ -246,7 +355,7 @@ async def plan_context(
         llm_provider=retrieval_question_planning_provider(llm_provider),
         read_pool=read_pool,
         mode=_plan_mode_for_trigger(trigger),
-        config=_think_inquiry_config(),
+        config=_think_inquiry_config_for_trigger(trigger),
     )
     inquiry_result = (
         active_retrieval

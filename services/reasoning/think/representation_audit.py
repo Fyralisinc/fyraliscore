@@ -116,6 +116,9 @@ def build_representation_audit(
         retrieval_tags=retrieval_tags,
     )
     truth_stats = _truth_maintenance_stats(validated, getattr(bundle, "models", []) or [])
+    context_use = applied.get("context_use") if isinstance(applied, dict) else {}
+    if not isinstance(context_use, dict):
+        context_use = {}
 
     lifecycle_count = len(getattr(validated, "memory_lifecycle_ops", []) or [])
     model_adaptiveness = (
@@ -152,6 +155,15 @@ def build_representation_audit(
         "avg_selected_model_supporting_events": support_stats["avg"],
         "question_coverage": question_coverage,
         "truth_maintenance": truth_stats,
+        "context_use_grade": context_use.get("context_use_grade"),
+        "reasoning_trace": (
+            str(applied.get("reasoning_trace") or getattr(validated, "reasoning_trace", "") or "")
+            if isinstance(applied, dict)
+            else str(getattr(validated, "reasoning_trace", "") or "")
+        ),
+        "state_changes_emitted": _int(applied.get("state_changes_emitted"))
+        if isinstance(applied, dict)
+        else 0,
     }
     warnings = _budget_warnings(
         trigger=trigger,

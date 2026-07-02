@@ -26,7 +26,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
@@ -56,6 +56,8 @@ from services.domain.resources import deployments as deployments_svc
 from services.domain.resources import repo as resources_repo
 from services.domain.resources.transactions import record_transaction
 from services.domain.resources.deployments import release as release_deployment
+from services.reasoning.sage.discovery.negative_memory_repo import NegativeMemoryRepo
+from services.reasoning.sage.discovery.types import NegativeMemory
 
 from .diff_schema import (
     ActOp,
@@ -94,6 +96,41 @@ _RELATION_CLAIM_SUPPORT_SUPERSEDERS = frozenset({
     "weakens",
 })
 _NON_OVERRIDABLE_EDGE_PROVENANCE = frozenset({"manual"})
+_NOISE_NOOP_NEGATIVE_MEMORY_TTL = timedelta(days=60)
+_NOISE_NOOP_TRACE_MARKERS = (
+    "discard_as_noise",
+    "empty diff",
+    "no durable diff",
+    "no durable write",
+)
+_NOISE_NOOP_OBSERVATION_MARKERS = (
+    "general operational chatter",
+    "lunch logistics",
+    "duplicated dashboard links",
+    "duplicate dashboard links",
+    "non-actionable reminder",
+    "non actionable reminder",
+    "should not dominate memory",
+)
+_NOISE_NOOP_ACTIONABLE_MARKERS = (
+    "approval",
+    "blocked",
+    "blocker",
+    "capacity",
+    "churn",
+    "customer",
+    "deadline",
+    "decision",
+    "exception",
+    "implementation",
+    "incident",
+    "launch",
+    "procurement",
+    "renewal",
+    "risk",
+    "security",
+    "slip",
+)
 
 
 class ApplierError(CompanyOSError):
@@ -1398,6 +1435,317 @@ async def _apply_memory_lifecycle_ops_for_diff(
     return applied_model_ids, state_changes_emitted
 
 
+def _diff_is_noise_noop(diff: ValidatedDiff) -> bool:
+    if (
+        diff.claim_ops
+        or diff.memory_lifecycle_ops
+        or diff.relation_claim_ops
+        or diff.relation_frame_ops
+        or diff.edge_ops
+        or diff.ontology_gap_ops
+        or diff.open_question_ops
+        or diff.formation_resolutions
+        or diff.act_ops
+        or diff.resource_ops
+        or diff.new_predictions
+    ):
+        return False
+    trace = (diff.reasoning_trace or "").lower()
+    return any(marker in trace for marker in _NOISE_NOOP_TRACE_MARKERS)
+
+
+def _rows_confirm_noise_noop(rows: list[Any]) -> bool:
+    if not rows:
+        return False
+    texts: list[str] = []
+    channels: list[str] = []
+    for row in rows:
+        channel = _row_get(row, "source_channel")
+        if channel is not None:
+            channels.append(str(channel))
+        text = _row_get(row, "content_text")
+        if text is not None:
+            texts.append(str(text))
+    combined = "\n".join(texts).lower()
+    if any(marker in combined for marker in _NOISE_NOOP_ACTIONABLE_MARKERS):
+        return False
+    marker_hits = sum(
+        1 for marker in _NOISE_NOOP_OBSERVATION_MARKERS if marker in combined
+    )
+    if channels and all("noise" in channel.lower() for channel in channels):
+        return marker_hits >= 1
+    return marker_hits >= 3
+
+
+def _row_get(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except (KeyError, TypeError):
+        return getattr(row, key, None)
+
+
+def _noise_noop_signature(rows: list[Any]) -> dict[str, Any]:
+    channels = sorted({
+        str(channel)
+        for row in rows
+        if (channel := _row_get(row, "source_channel")) is not None
+    })
+    signature: dict[str, Any] = {
+        "signal_type": "noise_noop",
+        "question_primitive": "NOISE_SUPPRESSION",
+    }
+    if channels:
+        signature["entities"] = [f"channel:{channel}" for channel in channels[:8]]
+    return signature
+
+
+def _noise_noop_evidence_hash(rows: list[Any]) -> str:
+    payload = [
+        {
+            "id": str(_row_get(row, "id") or ""),
+            "source_channel": str(_row_get(row, "source_channel") or ""),
+            "content_text": str(_row_get(row, "content_text") or ""),
+        }
+        for row in rows
+    ]
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+async def _record_noise_noop_negative_memory(
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    *,
+    trigger_evidence_ids: list[UUID],
+    ops_summary: dict[str, Any],
+) -> int:
+    if not _diff_is_noise_noop(diff) or not trigger_evidence_ids:
+        return 0
+    observation_ids = list(dict.fromkeys(trigger_evidence_ids))
+    signature: dict[str, Any] | None = None
+    row_list: list[Any] = []
+    try:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                SELECT id, source_channel, content_text
+                FROM observations
+                WHERE tenant_id = $1
+                  AND id = ANY($2::uuid[])
+                ORDER BY occurred_at ASC, id ASC
+                """,
+                diff.tenant_id,
+                observation_ids,
+            )
+            row_list = list(rows)
+            if not _rows_confirm_noise_noop(row_list):
+                return 0
+            signature = _noise_noop_signature(row_list)
+            memory = NegativeMemory(
+                id=uuid7(),
+                tenant_id=diff.tenant_id,
+                memory_type="noisy_path",
+                signature=signature,
+                rejected_claim=None,
+                rejected_path={
+                    "route": "t1_noise_noop",
+                    "trigger_ref": str(diff.trigger_ref),
+                    "observation_ids": [str(oid) for oid in observation_ids],
+                    "source_channels": sorted({
+                        str(_row_get(row, "source_channel") or "")
+                        for row in row_list
+                    }),
+                },
+                reason="noise_only_trigger_discarded_without_durable_write",
+                evidence_snapshot_hash=_noise_noop_evidence_hash(row_list),
+                confidence=0.8,
+                expires_at=datetime.now(timezone.utc)
+                + _NOISE_NOOP_NEGATIVE_MEMORY_TTL,
+            )
+            await NegativeMemoryRepo(
+                None,
+                tenant_id=diff.tenant_id,
+            ).insert(memory, conn=conn)
+    except Exception as exc:  # noqa: BLE001
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "think.noise_noop_negative_memory_failed",
+            trigger_ref=str(diff.trigger_ref),
+            error=str(exc),
+        )
+        return 0
+    ops_summary.setdefault("negative_memory_ops", []).append({
+        "memory_type": "noisy_path",
+        "signature": signature,
+        "reason": "noise_only_trigger_discarded_without_durable_write",
+    })
+    await _emit_noise_noop_experience_event(
+        signature=signature or {},
+        observation_ids=observation_ids,
+        rows=row_list,
+    )
+    return 1
+
+
+async def _emit_noise_noop_experience_event(
+    *,
+    signature: dict[str, Any],
+    observation_ids: list[UUID],
+    rows: list[Any],
+) -> None:
+    try:
+        from services.reasoning.sage.inquiry_traces.emitter import emit_event
+    except Exception:  # noqa: BLE001
+        return
+
+    channels = sorted({
+        str(_row_get(row, "source_channel") or "")
+        for row in rows
+        if _row_get(row, "source_channel")
+    })
+    await emit_event(
+        "outcome_quality_assessed",
+        {
+            "experience_kind": "noise_noop_negative_memory",
+            "signal_type": "noise_noop",
+            "question_primitive": "NOISE_SUPPRESSION",
+            "objective_alignment_score": 1.0,
+            "quality_score": 1.0,
+            "failure_modes": [],
+            "policy_effects": {"negative_memory_inserts": 1},
+            "future_behavior_levers": ["negative_memory"],
+            "signature": signature,
+            "observation_ids": [str(oid) for oid in observation_ids],
+            "source_channels": channels,
+            "reason": "noise_only_trigger_discarded_without_durable_write",
+        },
+    )
+
+
+@dataclass(slots=True)
+class _ApplyDiffMutationResult:
+    applied_model_ids: list[UUID]
+    state_changes_emitted: int
+    claim_result: _ClaimOpsApplyResult
+    applied_open_question_ops: list[Any]
+    applied_relation_claim_ops: list[Any]
+    applied_relation_frame_ops: list[Any]
+    applied_edge_ops: list[Any]
+    applied_ontology_gap_ops: list[Any]
+
+
+async def _apply_diff_mutation_ops(
+    *,
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    models_repo: ModelsRepo,
+    trigger_cause_event_id: UUID | None,
+    trigger_evidence_ids: list[UUID],
+    think_run_id: UUID | None,
+    parent_cascade_payload: dict[str, Any] | None,
+    ops_summary: dict[str, Any],
+) -> _ApplyDiffMutationResult:
+    claim_result = await _apply_claim_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        models_repo=models_repo,
+        trigger_cause_event_id=trigger_cause_event_id,
+        trigger_evidence_ids=trigger_evidence_ids,
+        think_run_id=think_run_id,
+        ops_summary=ops_summary,
+    )
+    applied_model_ids = list(claim_result.applied_model_ids)
+    pending_model_ids_by_event_id = claim_result.pending_model_ids_by_event_id
+    state_changes_emitted = claim_result.state_changes_emitted
+
+    applied_open_question_ops, open_question_state_changes = (
+        await _apply_open_question_ops_for_diff(
+            diff=diff,
+            conn=conn,
+            pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+            trigger_cause_event_id=trigger_cause_event_id,
+            ops_summary=ops_summary,
+        )
+    )
+    state_changes_emitted += open_question_state_changes
+
+    lifecycle_model_ids, lifecycle_state_changes = (
+        await _apply_memory_lifecycle_ops_for_diff(
+            diff=diff,
+            conn=conn,
+            models_repo=models_repo,
+            trigger_cause_event_id=trigger_cause_event_id,
+            trigger_evidence_ids=trigger_evidence_ids,
+            ops_summary=ops_summary,
+        )
+    )
+    applied_model_ids.extend(lifecycle_model_ids)
+    state_changes_emitted += lifecycle_state_changes
+
+    applied_relation_claim_ops = await _apply_relation_claim_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        think_run_id=think_run_id,
+        ops_summary=ops_summary,
+    )
+    applied_relation_frame_ops = await _apply_relation_frame_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        think_run_id=think_run_id,
+        ops_summary=ops_summary,
+    )
+    applied_edge_ops = await _apply_edge_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
+    )
+    applied_ontology_gap_ops = await _apply_ontology_gap_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
+    )
+
+    state_changes_emitted += await _apply_act_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
+    )
+    state_changes_emitted += await _apply_resource_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
+    )
+    await _enqueue_belief_updated_for_applied_models(
+        conn=conn,
+        tenant_id=diff.tenant_id,
+        model_ids=claim_result.belief_updated_model_ids,
+        source_observation_id=trigger_cause_event_id,
+        parent_payload=parent_cascade_payload,
+    )
+    return _ApplyDiffMutationResult(
+        applied_model_ids=applied_model_ids,
+        state_changes_emitted=state_changes_emitted,
+        claim_result=claim_result,
+        applied_open_question_ops=applied_open_question_ops,
+        applied_relation_claim_ops=applied_relation_claim_ops,
+        applied_relation_frame_ops=applied_relation_frame_ops,
+        applied_edge_ops=applied_edge_ops,
+        applied_ontology_gap_ops=applied_ontology_gap_ops,
+    )
+
+
 async def apply_diff(
     diff: ValidatedDiff,
     conn: asyncpg.Connection,
@@ -1435,8 +1783,6 @@ async def apply_diff(
     """
     diff_hash = await _prepare_apply_transaction(diff, conn, trigger_kind)
 
-    applied_model_ids: list[UUID] = []
-    state_changes_emitted = 0
     ops_summary: dict[str, Any] = {
         "claim_ops": [],
         "memory_lifecycle_ops": [],
@@ -1455,7 +1801,6 @@ async def apply_diff(
         "apply_dropped_op_count": 0,
         "apply_dropped_op_errors": [],
     }
-    pending_model_ids_by_event_id: dict[UUID, UUID] = {}
     trigger_evidence_ids = _merge_event_ids(
         trigger_supporting_event_ids or (),
         (trigger_cause_event_id,) if trigger_cause_event_id is not None else (),
@@ -1467,142 +1812,49 @@ async def apply_diff(
             run_topology_on_insert=False,
         )
 
-    # --- 1. claim_ops ---------------------------------------------
-    claim_result = await _apply_claim_ops_for_diff(
+    mutation_result = await _apply_diff_mutation_ops(
         diff=diff,
         conn=conn,
         models_repo=models_repo,
         trigger_cause_event_id=trigger_cause_event_id,
         trigger_evidence_ids=trigger_evidence_ids,
         think_run_id=think_run_id,
-        ops_summary=ops_summary,
-    )
-    applied_model_ids = claim_result.applied_model_ids
-    pending_model_ids_by_event_id = claim_result.pending_model_ids_by_event_id
-    state_changes_emitted = claim_result.state_changes_emitted
-
-    # --- 2. open_question_ops -------------------------------------
-    (
-        applied_open_question_ops,
-        open_question_state_changes,
-    ) = await _apply_open_question_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
-        trigger_cause_event_id=trigger_cause_event_id,
-        ops_summary=ops_summary,
-    )
-    state_changes_emitted += open_question_state_changes
-
-    # --- 3. memory_lifecycle_ops ----------------------------------
-    lifecycle_model_ids, lifecycle_state_changes = await _apply_memory_lifecycle_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        models_repo=models_repo,
-        trigger_cause_event_id=trigger_cause_event_id,
-        trigger_evidence_ids=trigger_evidence_ids,
-        ops_summary=ops_summary,
-    )
-    applied_model_ids.extend(lifecycle_model_ids)
-    state_changes_emitted += lifecycle_state_changes
-
-    # --- 4. relation_claim_ops ------------------------------------
-    applied_relation_claim_ops = await _apply_relation_claim_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
-        trigger_cause_event_id=trigger_cause_event_id,
-        think_run_id=think_run_id,
+        parent_cascade_payload=parent_cascade_payload,
         ops_summary=ops_summary,
     )
 
-    # --- 5. relation_frame_ops ------------------------------------
-    applied_relation_frame_ops = await _apply_relation_frame_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
-        trigger_cause_event_id=trigger_cause_event_id,
-        think_run_id=think_run_id,
-        ops_summary=ops_summary,
-    )
-
-    # --- 6. edge_ops ----------------------------------------------
-    applied_edge_ops = await _apply_edge_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
-        trigger_cause_event_id=trigger_cause_event_id,
-        ops_summary=ops_summary,
-    )
-
-    # --- 7. ontology_gap_ops --------------------------------------
-    applied_ontology_gap_ops = await _apply_ontology_gap_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
-        trigger_cause_event_id=trigger_cause_event_id,
-        ops_summary=ops_summary,
-    )
-
-    # --- 8. act_ops -----------------------------------------------
-    state_changes_emitted += await _apply_act_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
-        trigger_cause_event_id=trigger_cause_event_id,
-        ops_summary=ops_summary,
-    )
-
-    # --- 9. resource_ops ------------------------------------------
-    state_changes_emitted += await _apply_resource_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        trigger_cause_event_id=trigger_cause_event_id,
-        ops_summary=ops_summary,
-    )
-
-    # --- 10. Enqueue T2:belief_updated for each new state/concern model ----
-    await _enqueue_belief_updated_for_applied_models(
-        conn=conn,
-        tenant_id=diff.tenant_id,
-        model_ids=claim_result.belief_updated_model_ids,
-        source_observation_id=trigger_cause_event_id,
-        parent_payload=parent_cascade_payload,
-    )
-
-    # --- 11. Mark applied_triggers success (still in same tx) ------
     ops_summary["memory_aggregation"] = _summarize_memory_aggregation(
         ops_summary,
         original_claim_op_count=len(diff.claim_ops),
-        expanded_claim_op_count=claim_result.expanded_claim_op_count,
+        expanded_claim_op_count=mutation_result.claim_result.expanded_claim_op_count,
     )
+    noise_negative_memory_inserts = await _record_noise_noop_negative_memory(
+        diff,
+        conn,
+        trigger_evidence_ids=list(trigger_evidence_ids),
+        ops_summary=ops_summary,
+    )
+    if noise_negative_memory_inserts:
+        ops_summary["negative_memory_inserts"] = noise_negative_memory_inserts
 
     await conn.execute(
         "UPDATE applied_triggers SET outcome = 'success' WHERE trigger_id = $1",
         diff.trigger_ref,
     )
 
-    # --- 12. Phase 1 outcome events -------------------------------
-    # The apply succeeded (we just updated applied_triggers to
-    # 'success'), so every model_id referenced by the validated diff
-    # got "used in a valid diff" for the topology optimizer's
-    # bookkeeping. We also emit one event per pair of model_ids that
-    # the diff connected via an existing model_edges edge. Both emits
-    # are best-effort and require an active TraceContext (installed by
-    # the inquiry runtime); when none is set they are no-ops.
     feedback_diff = diff.model_copy(
         update={
-            "edge_ops": applied_edge_ops,
+            "edge_ops": mutation_result.applied_edge_ops,
             "memory_lifecycle_ops": diff.memory_lifecycle_ops,
-            "relation_claim_ops": applied_relation_claim_ops,
-            "relation_frame_ops": applied_relation_frame_ops,
-            "ontology_gap_ops": applied_ontology_gap_ops,
-            "open_question_ops": applied_open_question_ops,
+            "relation_claim_ops": mutation_result.applied_relation_claim_ops,
+            "relation_frame_ops": mutation_result.applied_relation_frame_ops,
+            "ontology_gap_ops": mutation_result.applied_ontology_gap_ops,
+            "open_question_ops": mutation_result.applied_open_question_ops,
         }
     )
     await _emit_valid_diff_outcome_events(
         feedback_diff,
-        applied_model_ids=applied_model_ids,
+        applied_model_ids=mutation_result.applied_model_ids,
         conn=conn,
         ops_summary=ops_summary,
         source_observation_id=trigger_cause_event_id,
@@ -1610,8 +1862,8 @@ async def apply_diff(
 
     return {
         **ops_summary,
-        "applied_model_ids": applied_model_ids,
-        "state_changes_emitted": state_changes_emitted,
+        "applied_model_ids": mutation_result.applied_model_ids,
+        "state_changes_emitted": mutation_result.state_changes_emitted,
         "reasoning_trace": diff.reasoning_trace,
     }
 
@@ -1739,13 +1991,20 @@ async def _emit_valid_diff_outcome_events(
         source_observation_id=source_observation_id,
     )
 
-    if not emission_enabled() or ctx is None:
-        return
-
     entities = [
         str(e) for e in (ctx_meta.get("entities") or []) if e is not None and str(e)
     ]
     signal_type = ctx_meta.get("signal_type") or ctx_meta.get("trigger_kind")
+
+    if not emission_enabled() or ctx is None:
+        await _upsert_question_policy_valid_diff_stats(
+            diff,
+            conn=conn,
+            ops_summary=ops_summary or {},
+            signal_type=str(signal_type or "unknown"),
+            question_primitive=default_primitive,
+        )
+        return
 
     await _emit_question_policy_valid_diff_feedback(
         diff,
@@ -1887,6 +2146,68 @@ def _accepted_question_policy_probe_model_ids(
     return model_ids
 
 
+async def _upsert_question_policy_valid_diff_stats(
+    diff: ValidatedDiff,
+    *,
+    conn: asyncpg.Connection,
+    ops_summary: dict[str, Any],
+    signal_type: str,
+    question_primitive: str | None,
+) -> bool:
+    if not _accepted_question_policy_probe_model_ids(ops_summary):
+        return False
+    primitive = str(question_primitive or "DEPENDENCY").upper()
+    try:
+        async with conn.transaction():
+            stats_table_name = await conn.fetchval(
+                "SELECT to_regclass('public.sage_question_policy_stats')"
+            )
+            if stats_table_name is None:
+                return False
+            await conn.execute(
+                """
+                INSERT INTO sage_question_policy_stats (
+                  id, tenant_id, signal_type, question_primitive,
+                  attempts, successes, total_credit, total_cost,
+                  utility_score, last_credit_at, updated_at
+                ) VALUES (
+                  $1, $2, $3, $4,
+                  1, 1, 0.7, 0.05,
+                  0.65, now(), now()
+                )
+                ON CONFLICT (tenant_id, signal_type, question_primitive)
+                DO UPDATE SET
+                  attempts = sage_question_policy_stats.attempts + 1,
+                  successes = sage_question_policy_stats.successes + 1,
+                  total_credit = sage_question_policy_stats.total_credit + 0.7,
+                  total_cost = sage_question_policy_stats.total_cost + 0.05,
+                  utility_score = (
+                    (sage_question_policy_stats.total_credit + 0.7)
+                    - (sage_question_policy_stats.total_cost + 0.05)
+                  ) / GREATEST(sage_question_policy_stats.attempts + 1, 1),
+                  last_credit_at = now(),
+                  updated_at = now()
+                """,
+                uuid7(),
+                diff.tenant_id,
+                signal_type,
+                primitive,
+            )
+    except Exception as exc:  # noqa: BLE001 — stats bridge is best-effort
+        _raise_if_postgres_error(exc)
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "sage_trace.question_policy_stats_upsert_failed",
+            error=str(exc),
+        )
+        return False
+    ops_summary["question_policy_updates"] = (
+        int(ops_summary.get("question_policy_updates") or 0) + 1
+    )
+    return True
+
+
 async def _emit_question_policy_valid_diff_feedback(
     diff: ValidatedDiff,
     *,
@@ -1907,6 +2228,13 @@ async def _emit_question_policy_valid_diff_feedback(
     question = (
         "Would asking for the missing approval owner before writing a strong "
         "relation improve precision?"
+    )
+    await _upsert_question_policy_valid_diff_stats(
+        diff,
+        conn=conn,
+        ops_summary=ops_summary,
+        signal_type=signal_type,
+        question_primitive=primitive,
     )
     try:
         async with conn.transaction():
@@ -2001,7 +2329,7 @@ async def _emit_question_policy_valid_diff_feedback(
                             ],
                             default=str,
                         ),
-                    )
+                        )
                     for model_id in model_ids
                 ],
             )

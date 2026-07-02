@@ -23,6 +23,27 @@ _UUID_RE = re.compile(
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
 
+_MODEL_REFERENCE_KEYS = {
+    "about_model_id",
+    "confidence_basis_model_id",
+    "model_id",
+    "resolution_model_id",
+    "source_model_id",
+    "superseded_by_model_id",
+    "target_model_id",
+}
+
+_MODEL_REFERENCE_LIST_KEYS = {
+    "evidence_model_ids",
+    "member_model_ids",
+    "model_ids",
+    "related_model_ids",
+    "source_model_ids",
+    "subject_model_ids",
+    "supporting_model_ids",
+    "target_model_ids",
+}
+
 
 def _coerce_uuid(value: Any) -> UUID | None:
     if value is None:
@@ -42,6 +63,32 @@ def _uuid_set_from_strings(values: Any) -> set[UUID]:
         if uid is not None:
             out.add(uid)
     return out
+
+
+def _add_model_reference_value(value: Any, referenced: set[UUID]) -> None:
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            _add_model_reference_value(item, referenced)
+        return
+    model_id = _coerce_uuid(value)
+    if model_id is not None:
+        referenced.add(model_id)
+
+
+def _model_references_from_mapping(mapping: Any) -> set[UUID]:
+    if not isinstance(mapping, dict):
+        return set()
+    referenced: set[UUID] = set()
+    for key, value in mapping.items():
+        if key in _MODEL_REFERENCE_KEYS or key in _MODEL_REFERENCE_LIST_KEYS:
+            _add_model_reference_value(value, referenced)
+            continue
+        if isinstance(value, dict):
+            referenced |= _model_references_from_mapping(value)
+        elif isinstance(value, list):
+            for item in value:
+                referenced |= _model_references_from_mapping(item)
+    return referenced
 
 
 def _uuid_strings(values: set[UUID]) -> list[str]:
@@ -85,6 +132,9 @@ def _referenced_model_ids(diff: RawDiff | ValidatedDiff) -> set[UUID]:
         model_id = _coerce_uuid(getattr(op, "model_id", None))
         if model_id is not None:
             referenced.add(model_id)
+        entry = getattr(op, "entry", None)
+        if isinstance(entry, dict):
+            referenced |= _model_references_from_mapping(entry)
 
     for op in getattr(diff, "memory_lifecycle_ops", []) or []:
         for value in (
@@ -215,6 +265,22 @@ def _ids_from_reasoning_trace(diff: RawDiff | ValidatedDiff) -> set[UUID]:
     return {UUID(match.group(0)) for match in _UUID_RE.finditer(str(trace))}
 
 
+_TRACE_DECISION_RATIONALE_MARKERS = (
+    "no edge",
+    "no-edge",
+    "does not warrant an edge",
+    "did not warrant an edge",
+    "edge is not warranted",
+    "edge not warranted",
+    "different customer",
+    "different mechanism",
+    "not materially changed",
+    "did not receive a sharper state change",
+    "already captures",
+    "adds no new state transition",
+)
+
+
 def _trace_has_no_edge_rationale(
     diff: RawDiff | ValidatedDiff,
     graph_model_ids: set[UUID],
@@ -237,6 +303,20 @@ def _trace_has_no_edge_rationale(
         return False
     trace_ids = _ids_from_reasoning_trace(diff)
     return bool(trace_ids & graph_model_ids)
+
+
+def _trace_uses_selected_context_for_decision(
+    diff: RawDiff | ValidatedDiff,
+    selected_context_ids: set[UUID],
+) -> bool:
+    trace = getattr(diff, "reasoning_trace", None)
+    if not trace or not selected_context_ids:
+        return False
+    text = str(trace).lower()
+    if not any(marker in text for marker in _TRACE_DECISION_RATIONALE_MARKERS):
+        return False
+    trace_ids = _ids_from_reasoning_trace(diff)
+    return bool(trace_ids & selected_context_ids)
 
 
 def _relation_op_counts(
@@ -356,6 +436,139 @@ def _graph_relation_contract_satisfied(
     )
 
 
+def _context_use_report(values: dict[str, Any]) -> dict[str, Any]:
+    diff = values["diff"]
+    observation_selection = values["observation_selection"]
+    selected_context_reference_count = values["selected_context_reference_count"]
+    selected_context_count = values["selected_context_count"]
+    selected_count = values["selected_count"]
+    selected_referenced = values["selected_referenced"]
+    graph_referenced = values["graph_referenced"]
+    graph_count = values["graph_count"]
+    observation_referenced = values["observation_referenced"]
+    selected_observation_count = values["selected_observation_count"]
+    relation_claim_ops = values["relation_claim_ops"]
+    relation_frame_ops = values["relation_frame_ops"]
+    ontology_gap_ops = values["ontology_gap_ops"]
+    memory_lifecycle_ops = values["memory_lifecycle_ops"]
+    open_question_ops = values["open_question_ops"]
+    formation_resolutions = values["formation_resolutions"]
+
+    return {
+        "context_use_grade": values["context_use_grade"],
+        "selected_context_used": selected_context_reference_count > 0,
+        "selected_context_accounted_for": values["selected_context_accounted_count"] > 0,
+        "graph_context_used": values["graph_context_used"],
+        "model_context_used": values["model_context_used"],
+        "observation_context_used": values["observation_context_used"],
+        "selected_context_count": selected_context_count,
+        "selected_context_reference_count": selected_context_reference_count,
+        "selected_context_accounted_count": values["selected_context_accounted_count"],
+        "reasoning_trace_context_used": values["reasoning_trace_context_used"],
+        "reasoning_trace_context_accounted": values["reasoning_trace_context_accounted"],
+        "reasoning_trace_context_decision_used": (
+            values["trace_selected_context_decision_used"]
+        ),
+        "trace_referenced_model_ids": _uuid_strings(values["trace_referenced_models"]),
+        "trace_referenced_observation_ids": _uuid_strings(
+            values["trace_referenced_observations"]
+        ),
+        "selected_context_reference_ratio": _ratio(
+            selected_context_reference_count, selected_context_count
+        ),
+        "selected_model_count": selected_count,
+        "selected_model_reference_count": len(selected_referenced),
+        "selected_model_reference_ratio": _ratio(len(selected_referenced), selected_count),
+        "selected_model_ids": _uuid_strings(values["selected_model_ids"]),
+        "referenced_model_ids": _uuid_strings(values["referenced_models"]),
+        "op_referenced_model_ids": _uuid_strings(values["op_referenced_models"]),
+        "unused_selected_model_ids": _uuid_strings(
+            values["selected_model_ids"] - values["referenced_models"]
+        ),
+        "graph_selected_model_count": graph_count,
+        "graph_selected_reference_count": len(graph_referenced),
+        "graph_selected_reference_ratio": _ratio(len(graph_referenced), graph_count),
+        "graph_selected_model_ids": _uuid_strings(values["graph_model_ids"]),
+        "unused_graph_model_ids": _uuid_strings(
+            values["graph_model_ids"] - values["referenced_models"]
+        ),
+        "selected_observation_count": selected_observation_count,
+        "selected_trigger_observation_count": int(
+            observation_selection.get("selected_trigger_count") or 0
+        ),
+        "selected_historical_observation_count": int(
+            observation_selection.get("selected_historical_count") or 0
+        ),
+        "historical_observation_cap": int(
+            observation_selection.get("historical_cap") or 0
+        ),
+        "selected_observation_reference_count": len(observation_referenced),
+        "selected_observation_reference_ratio": _ratio(
+            len(observation_referenced), selected_observation_count
+        ),
+        "selected_observation_ids": _uuid_strings(values["selected_observation_ids"]),
+        "referenced_observation_ids": _uuid_strings(values["referenced_observations"]),
+        "op_referenced_observation_ids": _uuid_strings(
+            values["op_referenced_observations"]
+        ),
+        "unused_selected_observation_ids": _uuid_strings(
+            values["selected_observation_ids"] - values["referenced_observations"]
+        ),
+        "edge_ops_count": len(diff.edge_ops),
+        "edge_ops_between_selected_models": values["edge_ops_between_selected"],
+        "edge_ops_touching_graph_models": values["edge_ops_touching_graph"],
+        "relation_claim_ops_count": len(relation_claim_ops),
+        "relation_claim_ops_between_selected_models": (
+            values["relation_claim_ops_between_selected"]
+        ),
+        "relation_claim_ops_touching_graph_models": (
+            values["relation_claim_ops_touching_graph"]
+        ),
+        "relation_frame_ops_count": len(relation_frame_ops),
+        "relation_frame_ops_between_selected_models": (
+            values["relation_frame_ops_between_selected"]
+        ),
+        "relation_frame_ops_touching_graph_models": (
+            values["relation_frame_ops_touching_graph"]
+        ),
+        "ontology_gap_ops_count": len(ontology_gap_ops),
+        "ontology_gap_ops_between_selected_models": (
+            values["ontology_gap_ops_between_selected"]
+        ),
+        "ontology_gap_ops_touching_graph_models": (
+            values["ontology_gap_ops_touching_graph"]
+        ),
+        "graph_relation_op_count": values["graph_relation_op_count"],
+        "graph_non_relation_op_count": values["graph_non_relation_op_count"],
+        "graph_claim_op_reference_count": values["graph_claim_op_reference_count"],
+        "graph_memory_lifecycle_op_reference_count": (
+            values["graph_memory_lifecycle_op_reference_count"]
+        ),
+        "graph_act_op_reference_count": values["graph_act_op_reference_count"],
+        "graph_open_question_reference_count": (
+            values["graph_open_question_reference_count"]
+        ),
+        "graph_formation_resolution_reference_count": (
+            values["graph_formation_resolution_reference_count"]
+        ),
+        "graph_trace_reference_count": values["graph_trace_reference_count"],
+        "graph_selected_without_relation_ops": (
+            values["graph_selected_without_relation_ops"]
+        ),
+        "graph_no_edge_rationale_present": values["graph_no_edge_rationale_present"],
+        "graph_relation_contract_satisfied": (
+            values["graph_relation_contract_satisfied"]
+        ),
+        "graph_relation_contract_basis": values["graph_relation_contract_basis"],
+        "claim_ops_count": len(diff.claim_ops),
+        "memory_lifecycle_ops_count": len(memory_lifecycle_ops),
+        "open_question_ops_count": len(open_question_ops),
+        "formation_resolutions_count": len(formation_resolutions),
+        "act_ops_count": len(diff.act_ops),
+        "resource_ops_count": len(diff.resource_ops),
+    }
+
+
 def summarize_context_use(
     bundle: ContextBundle,
     diff: RawDiff | ValidatedDiff,
@@ -384,8 +597,12 @@ def summarize_context_use(
         + len(diff.act_ops)
         + len(diff.resource_ops)
     )
+    trace_selected_context_decision_used = _trace_uses_selected_context_for_decision(
+        diff,
+        selected_model_ids | selected_observation_ids,
+    )
     reasoning_trace_context_used = (
-        total_ops == 0
+        (total_ops == 0 or trace_selected_context_decision_used)
         and bool(trace_referenced_models or trace_referenced_observations)
     )
     reasoning_trace_context_accounted = bool(
@@ -467,11 +684,17 @@ def summarize_context_use(
     )
 
     observation_selection = _observation_selection_notes(bundle)
-    graph_claim_op_reference_count = sum(
-        1
-        for op in diff.claim_ops
-        if _coerce_uuid(getattr(op, "model_id", None)) in graph_model_ids
-    )
+    graph_claim_op_reference_count = 0
+    for op in diff.claim_ops:
+        claim_refs: set[UUID] = set()
+        model_id = _coerce_uuid(getattr(op, "model_id", None))
+        if model_id is not None:
+            claim_refs.add(model_id)
+        entry = getattr(op, "entry", None)
+        if isinstance(entry, dict):
+            claim_refs |= _model_references_from_mapping(entry)
+        if claim_refs & graph_model_ids:
+            graph_claim_op_reference_count += 1
     graph_memory_lifecycle_op_reference_count = sum(
         1
         for op in memory_lifecycle_ops
@@ -529,110 +752,7 @@ def summarize_context_use(
         graph_non_relation_op_count=graph_non_relation_op_count,
         graph_trace_accounted=graph_trace_accounted,
     )
-    return {
-        "context_use_grade": context_use_grade,
-        "selected_context_used": selected_context_reference_count > 0,
-        "selected_context_accounted_for": selected_context_accounted_count > 0,
-        "graph_context_used": graph_context_used,
-        "model_context_used": model_context_used,
-        "observation_context_used": observation_context_used,
-        "selected_context_count": selected_context_count,
-        "selected_context_reference_count": selected_context_reference_count,
-        "selected_context_accounted_count": selected_context_accounted_count,
-        "reasoning_trace_context_used": reasoning_trace_context_used,
-        "reasoning_trace_context_accounted": reasoning_trace_context_accounted,
-        "trace_referenced_model_ids": _uuid_strings(trace_referenced_models),
-        "trace_referenced_observation_ids": _uuid_strings(
-            trace_referenced_observations
-        ),
-        "selected_context_reference_ratio": _ratio(
-            selected_context_reference_count, selected_context_count
-        ),
-        "selected_model_count": selected_count,
-        "selected_model_reference_count": len(selected_referenced),
-        "selected_model_reference_ratio": _ratio(
-            len(selected_referenced), selected_count
-        ),
-        "selected_model_ids": _uuid_strings(selected_model_ids),
-        "referenced_model_ids": _uuid_strings(referenced_models),
-        "op_referenced_model_ids": _uuid_strings(op_referenced_models),
-        "unused_selected_model_ids": _uuid_strings(
-            selected_model_ids - referenced_models
-        ),
-        "graph_selected_model_count": graph_count,
-        "graph_selected_reference_count": len(graph_referenced),
-        "graph_selected_reference_ratio": _ratio(len(graph_referenced), graph_count),
-        "graph_selected_model_ids": _uuid_strings(graph_model_ids),
-        "unused_graph_model_ids": _uuid_strings(graph_model_ids - referenced_models),
-        "selected_observation_count": selected_observation_count,
-        "selected_trigger_observation_count": int(
-            observation_selection.get("selected_trigger_count") or 0
-        ),
-        "selected_historical_observation_count": int(
-            observation_selection.get("selected_historical_count") or 0
-        ),
-        "historical_observation_cap": int(
-            observation_selection.get("historical_cap") or 0
-        ),
-        "selected_observation_reference_count": len(observation_referenced),
-        "selected_observation_reference_ratio": _ratio(
-            len(observation_referenced), selected_observation_count
-        ),
-        "selected_observation_ids": _uuid_strings(selected_observation_ids),
-        "referenced_observation_ids": _uuid_strings(referenced_observations),
-        "op_referenced_observation_ids": _uuid_strings(
-            op_referenced_observations
-        ),
-        "unused_selected_observation_ids": _uuid_strings(
-            selected_observation_ids - referenced_observations
-        ),
-        "edge_ops_count": len(diff.edge_ops),
-        "edge_ops_between_selected_models": edge_ops_between_selected,
-        "edge_ops_touching_graph_models": edge_ops_touching_graph,
-        "relation_claim_ops_count": len(relation_claim_ops),
-        "relation_claim_ops_between_selected_models": (
-            relation_claim_ops_between_selected
-        ),
-        "relation_claim_ops_touching_graph_models": (
-            relation_claim_ops_touching_graph
-        ),
-        "relation_frame_ops_count": len(relation_frame_ops),
-        "relation_frame_ops_between_selected_models": (
-            relation_frame_ops_between_selected
-        ),
-        "relation_frame_ops_touching_graph_models": (
-            relation_frame_ops_touching_graph
-        ),
-        "ontology_gap_ops_count": len(ontology_gap_ops),
-        "ontology_gap_ops_between_selected_models": (
-            ontology_gap_ops_between_selected
-        ),
-        "ontology_gap_ops_touching_graph_models": ontology_gap_ops_touching_graph,
-        "graph_relation_op_count": graph_relation_op_count,
-        "graph_non_relation_op_count": graph_non_relation_op_count,
-        "graph_claim_op_reference_count": graph_claim_op_reference_count,
-        "graph_memory_lifecycle_op_reference_count": (
-            graph_memory_lifecycle_op_reference_count
-        ),
-        "graph_act_op_reference_count": graph_act_op_reference_count,
-        "graph_open_question_reference_count": graph_open_question_reference_count,
-        "graph_formation_resolution_reference_count": (
-            graph_formation_resolution_reference_count
-        ),
-        "graph_trace_reference_count": graph_trace_reference_count,
-        "graph_selected_without_relation_ops": (
-            graph_selected_without_relation_ops
-        ),
-        "graph_no_edge_rationale_present": graph_no_edge_rationale_present,
-        "graph_relation_contract_satisfied": graph_relation_contract_satisfied,
-        "graph_relation_contract_basis": graph_relation_contract_basis,
-        "claim_ops_count": len(diff.claim_ops),
-        "memory_lifecycle_ops_count": len(memory_lifecycle_ops),
-        "open_question_ops_count": len(open_question_ops),
-        "formation_resolutions_count": len(formation_resolutions),
-        "act_ops_count": len(diff.act_ops),
-        "resource_ops_count": len(diff.resource_ops),
-    }
+    return _context_use_report(locals())
 
 
 __all__ = ["summarize_context_use"]

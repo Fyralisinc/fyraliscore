@@ -1122,6 +1122,37 @@ async def test_validate_canonicalizes_create_decision_missing_decision_text(
     assert entity["canonicalized_missing_decision_text"] is True
 
 
+async def test_validate_rejects_create_decision_list_revisit_triggers(
+    fresh_db,
+    tenant,
+):
+    rr = _retrieval_result(tenant)
+    mid, _ = await _make_model(fresh_db, tenant, confidence=0.95)
+    async with fresh_db.acquire() as conn:
+        diff = RawDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            act_ops=[
+                ActOp(
+                    op="create_decision",
+                    confidence_basis=mid,
+                    entity={
+                        "title": "Decide Granite Insurance go/no-go",
+                        "decision_text": "Choose the accountable next action.",
+                        "revisit_triggers": ["owner assigns action"],
+                    },
+                ),
+            ],
+        )
+        with pytest.raises(ValidationFailure) as exc:
+            await validate(diff, rr, conn, allowed_region=None)
+
+    assert any(
+        "revisit_triggers must be an object" in error
+        for error in exc.value.context["errors"]
+    )
+
+
 async def test_validate_neutralizes_commitment_basis_below_threshold(fresh_db, tenant):
     """
     ActOp transition_commitment_to_doneverified requires threshold

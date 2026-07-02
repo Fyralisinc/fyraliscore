@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -74,6 +75,47 @@ class _FakeConn:
     async def fetchrow(self, query: str, *args):
         self.fetchrows.append((query, args))
         return {"id": args[0]}
+
+
+@pytest.mark.asyncio
+async def test_pattern_review_enqueue_payload_requires_semantic_review() -> None:
+    tenant_id = uuid4()
+    candidate_id = uuid4()
+    observation_id = uuid4()
+    constituent_id = uuid4()
+
+    class _PatternReviewConn(_FakeConn):
+        async def fetchrow(self, query: str, *args):
+            self.fetchrows.append((query, args))
+            assert "FROM pattern_candidates" in query
+            assert args == (tenant_id, candidate_id)
+            return {
+                "proposed_signature": {"kind": "substrate_recurrence"},
+                "observed_tendency": {"summary": "review loop recurs"},
+                "constituent_model_ids": [constituent_id],
+                "cluster_size": 1,
+                "density": 0.72,
+            }
+
+    conn = _PatternReviewConn()
+    conn.fetchval_results.append(True)
+
+    trigger_id = await substrate_promotion._enqueue_pattern_review_if_possible(
+        conn,
+        tenant_id=tenant_id,
+        pattern_candidate_id=candidate_id,
+        observation_id=observation_id,
+    )
+
+    assert trigger_id is not None
+    query, args = conn.executed[-1]
+    assert "INSERT INTO think_trigger_queue" in query
+    payload = json.loads(args[6])
+    assert payload["pattern_candidate_id"] == str(candidate_id)
+    assert payload["source"] == "substrate_promotion"
+    assert payload["review_mode"] == "semantic_required"
+    assert payload["constituent_model_ids"] == [str(constituent_id)]
+    assert payload["proposed_signature"]["kind"] == "substrate_recurrence"
 
 
 def test_high_confidence_actor_plan_preserves_cross_source_aliases() -> None:

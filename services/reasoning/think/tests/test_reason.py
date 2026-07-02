@@ -177,6 +177,62 @@ async def test_representation_repair_payloads_prioritize_severe_audit_gaps(monke
     assert "github:webhook" in first["seed_natural_text"]
 
 
+async def test_representation_repair_payloads_skip_justified_noise_noop(monkeypatch):
+    monkeypatch.setenv("THINK_REPRESENTATION_REPAIR_MAX_TRIGGERS", "3")
+    tenant_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=uuid7(),
+    )
+    audit = SimpleNamespace(
+        tenant_id=tenant_id,
+        trigger_id=uuid7(),
+        run_id=uuid7(),
+        trigger_kind="T1:event_batch",
+        source_channels=["slack:noise"],
+        model_adaptiveness=0,
+        edge_adaptiveness=0,
+        metrics={
+            "context_use_grade": "justified_noop_context_used",
+            "reasoning_trace": "discard_as_noise: lunch logistics only",
+            "state_changes_emitted": 0,
+        },
+        warnings=[
+            {"code": "missing_source_coverage", "message": "source gap"},
+            {"code": "missing_discovered_pattern_coverage", "message": "pattern gap"},
+        ],
+    )
+
+    assert reason_mod._representation_repair_payloads_from_audit(trigger, audit) == []
+
+
+async def test_representation_repair_payloads_keep_material_noop_gap(monkeypatch):
+    monkeypatch.setenv("THINK_REPRESENTATION_REPAIR_MAX_TRIGGERS", "1")
+    tenant_id = uuid7()
+    trigger = TriggerContext(kind="T1", tenant_id=tenant_id, observation_id=uuid7())
+    audit = SimpleNamespace(
+        tenant_id=tenant_id,
+        trigger_id=uuid7(),
+        run_id=uuid7(),
+        trigger_kind="T1:event_batch",
+        source_channels=["github:webhook"],
+        model_adaptiveness=0,
+        edge_adaptiveness=0,
+        metrics={
+            "context_use_grade": "no_selected_context",
+            "reasoning_trace": "No mutation, but material evidence was unresolved.",
+            "state_changes_emitted": 0,
+        },
+        warnings=[{"code": "missing_source_coverage", "message": "source gap"}],
+    )
+
+    payloads = reason_mod._representation_repair_payloads_from_audit(trigger, audit)
+
+    assert len(payloads) == 1
+    assert payloads[0]["audit_warning_code"] == "missing_source_coverage"
+
+
 async def test_representation_repair_payloads_do_not_loop_on_repair_trigger():
     trigger = TriggerContext(kind="T4", tenant_id=uuid7(), subkind="representation_repair")
     audit = SimpleNamespace(
@@ -337,6 +393,111 @@ async def test_think_t1_happy_path_inferential(
         )
     assert row["status"] == "success"
     assert row["ended_at"] is not None
+    ops_applied = row["ops_applied"]
+    if isinstance(ops_applied, str):
+        ops_applied = json.loads(ops_applied)
+    assert ops_applied["think_stage_timings"]
+    assert ops_applied["think_non_llm_stage_timings_ms_total"] >= 0
+    assert {
+        note["stage"]
+        for note in ops_applied["think_stage_timings"]
+        if isinstance(note, dict)
+    } >= {"context_plan", "main_llm_reason", "apply_and_adjudication"}
+
+
+async def test_think_noise_only_t1_fast_path_skips_retrieval_and_llm(
+    fresh_db, tenant, tenant_cleanup, monkeypatch,
+):
+    trigger_id = uuid7()
+    content_text = (
+        "General operational chatter: lunch logistics, duplicated dashboard "
+        "links, and a non-actionable reminder. This should not dominate memory."
+    )
+    obs = await _seed_observation(
+        fresh_db,
+        tenant,
+        content_text=content_text,
+        source_channel="slack:storyline-noise",
+        external_id="noise-1",
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        subkind="event_batch",
+        observation_id=obs,
+        observation_ids=[obs],
+        seed_natural_text=(
+            "Evidence window containing 1 source signal:\n"
+            f"- signal: {content_text}"
+        ),
+        seed_signature={
+            "trigger_id": str(trigger_id),
+            "source_channels": ["slack:storyline-noise"],
+            "batch_signal_fragments": [{"text": content_text}],
+        },
+    )
+    provider = ScriptedProvider(responses=[_scripted_empty_diff(trigger_id, tenant)])
+
+    async def fail_prepare_reasoning_run_state(**_kwargs):
+        raise AssertionError("noise-only T1 should not run retrieval/context planning")
+
+    monkeypatch.setattr(
+        reason_mod,
+        "prepare_reasoning_run_state",
+        fail_prepare_reasoning_run_state,
+    )
+
+    outcome = await think(
+        trigger,
+        fresh_db,
+        llm_provider=provider,
+        triggering_content=content_text,
+        reason_for_trigger="noise batch",
+    )
+
+    assert outcome.status == "success", outcome.error
+    assert provider.calls == []
+    async with fresh_db.acquire() as conn:
+        run = await conn.fetchrow(
+            """
+            SELECT status, llm_latency_ms, retrieval_model_count,
+                   retrieval_observation_count, validation_error_count,
+                   ops_applied
+            FROM think_runs
+            WHERE id = $1
+            """,
+            outcome.run_id,
+        )
+        negative = await conn.fetchrow(
+            """
+            SELECT memory_type, signature, rejected_path, reason
+            FROM negative_memory
+            WHERE tenant_id = $1
+            """,
+            tenant,
+        )
+
+    assert run["status"] == "success"
+    assert run["llm_latency_ms"] == 0
+    assert run["retrieval_model_count"] == 0
+    assert run["retrieval_observation_count"] == 0
+    assert run["validation_error_count"] == 0
+    ops_applied = run["ops_applied"]
+    if isinstance(ops_applied, str):
+        ops_applied = json.loads(ops_applied)
+    assert ops_applied["negative_memory_inserts"] == 1
+    assert negative is not None
+    assert negative["memory_type"] == "noisy_path"
+    signature = negative["signature"]
+    if isinstance(signature, str):
+        signature = json.loads(signature)
+    assert signature["signal_type"] == "noise_noop"
+    rejected_path = negative["rejected_path"]
+    if isinstance(rejected_path, str):
+        rejected_path = json.loads(rejected_path)
+    assert rejected_path["route"] == "t1_noise_noop"
+    assert rejected_path["observation_ids"] == [str(obs)]
+    assert negative["reason"] == "noise_only_trigger_discarded_without_durable_write"
 
 
 # =====================================================================

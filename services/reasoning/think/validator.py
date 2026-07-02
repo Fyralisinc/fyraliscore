@@ -44,6 +44,7 @@ commitments table to verify the ref exists.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 from typing import Any, Sequence, get_args
 from uuid import UUID
@@ -726,6 +727,56 @@ async def _verify_doneverified_evidence(
 # =====================================================================
 
 
+@dataclass(slots=True)
+class _ValidatedOpGroups:
+    claim_ops: list[ClaimOp]
+    memory_lifecycle_ops: list[MemoryLifecycleOp]
+    relation_claim_ops: list[RelationClaimOp]
+    relation_frame_ops: list[RelationFrameOp]
+    edge_ops: list[EdgeOp]
+    ontology_gap_ops: list[OntologyGapOp]
+    open_question_ops: list[OpenQuestionOp]
+    formation_resolutions: list[FormationResolutionOp]
+    act_ops: list[ActOp]
+    resource_ops: list[ResourceOp]
+    neutralized_edge_count: int
+    neutralized_act_count: int
+
+    def failure_check_groups(self) -> tuple[Sequence[Any], ...]:
+        return (
+            self.claim_ops,
+            self.memory_lifecycle_ops,
+            self.relation_claim_ops,
+            self.relation_frame_ops,
+            self.edge_ops,
+            self.ontology_gap_ops,
+            self.open_question_ops,
+            self.formation_resolutions,
+            self.act_ops,
+            self.resource_ops,
+        )
+
+    def to_validated_diff(self, diff: RawDiff, errors: list[str]) -> ValidatedDiff:
+        return ValidatedDiff(
+            trigger_ref=diff.trigger_ref,
+            tenant_id=diff.tenant_id,
+            claim_ops=self.claim_ops,
+            memory_lifecycle_ops=self.memory_lifecycle_ops,
+            relation_claim_ops=self.relation_claim_ops,
+            relation_frame_ops=self.relation_frame_ops,
+            edge_ops=self.edge_ops,
+            ontology_gap_ops=self.ontology_gap_ops,
+            open_question_ops=self.open_question_ops,
+            formation_resolutions=self.formation_resolutions,
+            act_ops=self.act_ops,
+            resource_ops=self.resource_ops,
+            new_predictions=[],
+            reasoning_trace=diff.reasoning_trace,
+            dropped_op_count=len(errors),
+            dropped_op_errors=errors[:25],
+        )
+
+
 async def validate(
     diff: RawDiff,
     retrieval_result: Any,
@@ -735,21 +786,7 @@ async def validate(
     strict_region: bool = True,
     formation_candidate_ids: set[str] | frozenset[str] | None = None,
 ) -> ValidatedDiff:
-    """
-    Validate `diff` against the retrieved context + DB invariants.
-
-    Returns a ValidatedDiff containing only the passing ops. Bad ops
-    are dropped, and their count + error messages are attached to the
-    returned diff (`dropped_op_count`, `dropped_op_errors`) so the
-    caller can record partial-accept observability. Raises
-    `ValidationFailure` only when the LLM submitted ops and every one
-    of them failed (no-survivors).
-
-    `allowed_region` is None-or-list of (type, id-str) tuples produced
-    by `region_locks.touched_entity_ids(retrieval_result)` pre-lock.
-    It is retained for observability/lock compatibility only; region
-    membership is not a validation boundary.
-    """
+    """Validate `diff` against retrieved context and DB invariants."""
     errors: list[str] = []
     claim_ops = [*diff.claim_ops, *diff.new_predictions]
     total_ops = _count_submitted_ops(diff, claim_ops)
@@ -760,95 +797,87 @@ async def validate(
         strict_region=strict_region,
     )
 
+    groups = await _validate_diff_op_groups(
+        diff=diff,
+        claim_ops=claim_ops,
+        retrieval_result=retrieval_result,
+        conn=conn,
+        errors=errors,
+        formation_candidate_ids=formation_candidate_ids,
+    )
+
+    _raise_if_every_op_failed(
+        total_ops=total_ops,
+        errors=errors,
+        neutralized_op_count=groups.neutralized_edge_count + groups.neutralized_act_count,
+        validated_groups=groups.failure_check_groups(),
+    )
+
+    return groups.to_validated_diff(diff, errors)
+
+
+async def _validate_diff_op_groups(
+    *,
+    diff: RawDiff,
+    claim_ops: list[ClaimOp],
+    retrieval_result: Any,
+    conn: asyncpg.Connection,
+    errors: list[str],
+    formation_candidate_ids: set[str] | frozenset[str] | None,
+) -> _ValidatedOpGroups:
     validated_claim_ops = await _validate_claim_ops(
         diff, claim_ops, retrieval_result, conn, errors
     )
-    validated_memory_lifecycle_ops = await _validate_memory_lifecycle_ops(
-        diff, conn, errors
-    )
-    pending_claim_basis_confidence = _pending_claim_basis_confidence(
-        validated_claim_ops
-    )
-    validated_edge_ops, neutralized_edge_count = await _validate_edge_ops(
+    memory_lifecycle_ops = await _validate_memory_lifecycle_ops(diff, conn, errors)
+    pending_confidence = _pending_claim_basis_confidence(validated_claim_ops)
+    pending_event_ids = set(pending_confidence)
+    edge_ops, neutralized_edge_count = await _validate_edge_ops(
         diff,
         conn,
         errors,
-        pending_claim_basis_confidence=pending_claim_basis_confidence,
+        pending_claim_basis_confidence=pending_confidence,
     )
-    validated_relation_claim_ops = await _validate_relation_claim_ops(
+    relation_claim_ops = await _validate_relation_claim_ops(
+        diff, conn, errors, pending_model_event_ids=pending_event_ids
+    )
+    relation_frame_ops = await _validate_relation_frame_ops(
+        diff, conn, errors, pending_model_event_ids=pending_event_ids
+    )
+    ontology_gap_ops = await _validate_ontology_gap_ops(
         diff,
         conn,
         errors,
-        pending_model_event_ids=set(pending_claim_basis_confidence),
+        pending_claim_basis_confidence=pending_confidence,
     )
-    validated_relation_frame_ops = await _validate_relation_frame_ops(
-        diff,
-        conn,
-        errors,
-        pending_model_event_ids=set(pending_claim_basis_confidence),
+    open_question_ops = await _validate_open_question_ops(
+        diff, conn, errors, pending_model_event_ids=pending_event_ids
     )
-    validated_ontology_gap_ops = await _validate_ontology_gap_ops(
-        diff,
-        conn,
-        errors,
-        pending_claim_basis_confidence=pending_claim_basis_confidence,
-    )
-    validated_open_question_ops = await _validate_open_question_ops(
-        diff,
-        conn,
-        errors,
-        pending_model_event_ids=set(pending_claim_basis_confidence),
-    )
-    validated_formation_resolutions = await _validate_formation_resolutions(
+    formation_resolutions = await _validate_formation_resolutions(
         diff,
         conn,
         errors,
         formation_candidate_ids=formation_candidate_ids,
     )
-    validated_act_ops, neutralized_act_count = await _validate_act_ops(
+    act_ops, neutralized_act_count = await _validate_act_ops(
         diff,
         retrieval_result,
         conn,
         errors,
-        pending_claim_basis_confidence=pending_claim_basis_confidence,
+        pending_claim_basis_confidence=pending_confidence,
     )
-    validated_resource_ops = await _validate_resource_ops(diff, conn, errors)
-
-    _raise_if_every_op_failed(
-        total_ops=total_ops,
-        errors=errors,
-        neutralized_op_count=neutralized_edge_count + neutralized_act_count,
-        validated_groups=(
-            validated_claim_ops,
-            validated_memory_lifecycle_ops,
-            validated_relation_claim_ops,
-            validated_relation_frame_ops,
-            validated_edge_ops,
-            validated_ontology_gap_ops,
-            validated_open_question_ops,
-            validated_formation_resolutions,
-            validated_act_ops,
-            validated_resource_ops,
-        ),
-    )
-
-    return ValidatedDiff(
-        trigger_ref=diff.trigger_ref,
-        tenant_id=diff.tenant_id,
+    return _ValidatedOpGroups(
         claim_ops=validated_claim_ops,
-        memory_lifecycle_ops=validated_memory_lifecycle_ops,
-        relation_claim_ops=validated_relation_claim_ops,
-        relation_frame_ops=validated_relation_frame_ops,
-        edge_ops=validated_edge_ops,
-        ontology_gap_ops=validated_ontology_gap_ops,
-        open_question_ops=validated_open_question_ops,
-        formation_resolutions=validated_formation_resolutions,
-        act_ops=validated_act_ops,
-        resource_ops=validated_resource_ops,
-        new_predictions=[],
-        reasoning_trace=diff.reasoning_trace,
-        dropped_op_count=len(errors),
-        dropped_op_errors=errors[:25],
+        memory_lifecycle_ops=memory_lifecycle_ops,
+        relation_claim_ops=relation_claim_ops,
+        relation_frame_ops=relation_frame_ops,
+        edge_ops=edge_ops,
+        ontology_gap_ops=ontology_gap_ops,
+        open_question_ops=open_question_ops,
+        formation_resolutions=formation_resolutions,
+        act_ops=act_ops,
+        resource_ops=await _validate_resource_ops(diff, conn, errors),
+        neutralized_edge_count=neutralized_edge_count,
+        neutralized_act_count=neutralized_act_count,
     )
 
 
@@ -1563,6 +1592,14 @@ async def _validate_act_op(
             fallback = ent.get("rationale") or title
             ent["decision_text"] = str(fallback).strip()
             ent["canonicalized_missing_decision_text"] = True
+        scope = ent.get("scope")
+        if scope is not None and not isinstance(scope, dict):
+            raise ValidationError("create_decision entity.scope must be an object")
+        revisit_triggers = ent.get("revisit_triggers")
+        if revisit_triggers is not None and not isinstance(revisit_triggers, dict):
+            raise ValidationError(
+                "create_decision entity.revisit_triggers must be an object"
+            )
         op = op.model_copy(update={"entity": ent})
 
     # Transition legality.
@@ -1981,19 +2018,15 @@ async def _validate_relation_claim_op(
     if has_bound_endpoints and op.endpoint_binding_status != "bound":
         update["endpoint_binding_status"] = "bound"
         update["binding_confidence"] = max(float(op.binding_confidence), 0.8)
-    specificity_needs_review = (
-        isinstance(op.metadata, dict)
-        and op.metadata.get("review_status_downgraded_by")
-        == "edge_specificity_guard"
-    )
-    if specificity_needs_review and op.write_policy == "accepted_edge":
+    forced_review = _relation_claim_forced_review(op)
+    if forced_review and op.write_policy == "accepted_edge":
         update["write_policy"] = "needs_review"
         update["status"] = "needs_review"
     elif (
         has_bound_endpoints
         and op.write_policy in {"candidate", "needs_review"}
         and float(op.confidence) >= 0.68
-        and not specificity_needs_review
+        and not forced_review
         and _relation_claim_can_auto_accept_as_edge(op)
         and _relation_claim_has_evidence(op)
     ):
@@ -2077,10 +2110,23 @@ async def _canonicalize_relation_claim_semantics(
         update["explanation"] = refined.explanation
     if refined.metadata != edge_proxy.metadata:
         update["metadata"] = refined.metadata
-    if refined.review_status == "accepted" and op.write_policy != "accepted_edge":
+    if (
+        refined.review_status == "accepted"
+        and op.write_policy != "accepted_edge"
+        and not _relation_claim_forced_review(op)
+    ):
         update["write_policy"] = "accepted_edge"
         update["status"] = "accepted"
     return op.model_copy(update=update) if update else op
+
+
+def _relation_claim_forced_review(op: RelationClaimOp) -> bool:
+    if not isinstance(op.metadata, dict):
+        return False
+    return op.metadata.get("review_status_downgraded_by") in {
+        "edge_specificity_guard",
+        "mutation_compiler_cycle_guard",
+    } or bool(op.metadata.get("mutation_compiler_cycle_guard"))
 
 
 def _relation_claim_semantic_text(op: RelationClaimOp) -> str:

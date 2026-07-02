@@ -46,9 +46,17 @@ from services.reasoning.think.diff_schema import (
     FormationResolutionOp,
     RawDiff,
     RawDiffClaimsOnly,
+    ValidatedDiff,
 )
 from services.reasoning.think.llm_reason import llm_reason, ReasoningFailure
 from services.reasoning.think.llm_reason import _coerce_raw_diff
+from services.reasoning.think import applier as applier_module
+from services.reasoning.think.applier import (
+    _emit_question_policy_valid_diff_feedback,
+    _emit_valid_diff_outcome_events,
+    _record_noise_noop_negative_memory,
+    _upsert_question_policy_valid_diff_stats,
+)
 from services.reasoning.think.prompt import build_prompt
 from services.reasoning.think.tests.conftest import ScriptedProvider
 
@@ -349,6 +357,19 @@ async def test_build_prompt_surfaces_inquiry_context_packet():
                         "reason": "Dependency question implies a possible edge op",
                     }
                 ],
+                "model_residual_spine": [
+                    {
+                        "residual_id": "residual-1",
+                        "residual_kind": "compression_uncertain",
+                        "source_observation_id": "obs-a",
+                        "compact_summary": (
+                            "Think previously succeeded but did not produce a "
+                            "durable fate for this signal."
+                        ),
+                        "reason": "think_success_without_durable_fate",
+                        "non_canonical": True,
+                    }
+                ],
                 "question_path": [
                     {
                         "question_id": "Q1",
@@ -381,6 +402,9 @@ async def test_build_prompt_surfaces_inquiry_context_packet():
     assert "whether the relationship is explicit enough to store" in pair.user
     assert "suggested_edge_kinds" in pair.user
     assert "Q1:DEPENDENCY=supported" in pair.user
+    assert "model_residual_spine: non-canonical compact compression debt" in pair.user
+    assert "compression_uncertain" in pair.user
+    assert "think_success_without_durable_fate" in pair.user
     assert "Q1 [DEPENDENCY]" in pair.user
 
 
@@ -2692,6 +2716,460 @@ async def test_llm_reason_broad_path_skips_mandatory_relations_for_noise_noop(
     assert diff.relation_frame_ops == []
     assert diff.edge_ops == []
     assert "packet_obligations_skipped:explicit_noop" in (diff.reasoning_trace or "")
+
+
+async def test_llm_reason_noise_only_t1_returns_noop_without_llm(monkeypatch):
+    monkeypatch.setenv("THINK_COMPILED_BATCH_MEMORY_REASONING", "1")
+    tid = uuid7()
+    trig_id = uuid7()
+    obs_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tid,
+        observation_id=obs_id,
+        observation_ids=[obs_id],
+        seed_signature={
+            "trigger_id": str(trig_id),
+            "source_channels": ["slack:storyline-noise"],
+            "batch_signal_fragments": [
+                {
+                    "text": (
+                        "General operational chatter: lunch logistics, "
+                        "duplicated dashboard links, and a non-actionable "
+                        "reminder. This should not dominate memory."
+                    ),
+                }
+            ],
+        },
+        seed_natural_text=(
+            "Evidence window containing 1 source signal:\n"
+            "- signal: General operational chatter: lunch logistics, "
+            "duplicated dashboard links, and a non-actionable reminder. "
+            "This should not dominate memory."
+        ),
+    )
+    bundle = ContextBundle(
+        notes={
+            "inquiry_context_packet": {
+                "signal_summary": trigger.seed_natural_text,
+                "memory_decision_candidates": [
+                    {
+                        "candidate_id": "MDC_STALE_RELATION",
+                        "op_family": "claim_update",
+                        "proposed_text": "Stale selected context should not revive.",
+                        "source_observation_ids": [str(obs_id)],
+                        "suggested_edge_kinds": ["blocks"],
+                        "confidence": 0.78,
+                    }
+                ],
+            }
+        }
+    )
+    provider = ScriptedProvider(
+        responses=[
+            json.dumps(
+                {
+                    "trigger_ref": str(trig_id),
+                    "tenant_id": str(tid),
+                    "claim_ops": [
+                        {
+                            "op": "insert",
+                            "entry": {
+                                "natural": "This response should not be used."
+                            },
+                        }
+                    ],
+                }
+            )
+        ]
+    )
+
+    diff, latency_ms = await llm_reason(trigger, bundle, provider, max_tokens=2048)
+
+    assert latency_ms == 0
+    assert provider.calls == []
+    assert diff.claim_ops == []
+    assert diff.relation_claim_ops == []
+    assert diff.relation_frame_ops == []
+    assert diff.edge_ops == []
+    assert "discard_as_noise" in (diff.reasoning_trace or "")
+    assert "packet_obligations_skipped:explicit_noop" in (diff.reasoning_trace or "")
+
+
+async def test_llm_reason_noise_word_with_actionable_signal_still_uses_llm():
+    tid = uuid7()
+    trig_id = uuid7()
+    obs_id = uuid7()
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tid,
+        observation_id=obs_id,
+        observation_ids=[obs_id],
+        seed_signature={
+            "trigger_id": str(trig_id),
+            "source_channels": ["slack:storyline-noise"],
+            "batch_signal_fragments": [
+                {
+                    "text": (
+                        "The latest escalation is framed as support noise, "
+                        "but the blocker named by the buyer is evidence readiness."
+                    ),
+                }
+            ],
+        },
+        seed_natural_text=(
+            "The latest escalation is framed as support noise, but the blocker "
+            "named by the buyer is evidence readiness."
+        ),
+    )
+    provider = ScriptedProvider(
+        responses=[
+            json.dumps(
+                {
+                    "trigger_ref": str(trig_id),
+                    "tenant_id": str(tid),
+                    "claim_ops": [],
+                    "reasoning_trace": "No durable write in scripted response.",
+                }
+            )
+        ]
+    )
+
+    await llm_reason(trigger, ContextBundle(), provider, max_tokens=2048)
+
+    assert len(provider.calls) == 1
+
+
+async def test_noise_noop_apply_records_negative_memory(monkeypatch):
+    tid = uuid7()
+    trig_id = uuid7()
+    obs_id = uuid7()
+    inserted = []
+
+    class FakeSavepoint:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeConn:
+        def transaction(self):
+            return FakeSavepoint()
+
+        async def fetch(self, *args):
+            del args
+            return [
+                {
+                    "id": obs_id,
+                    "source_channel": "slack:storyline-noise",
+                    "content_text": (
+                        "General operational chatter: lunch logistics, "
+                        "duplicated dashboard links, and a non-actionable "
+                        "reminder. This should not dominate memory."
+                    ),
+                }
+            ]
+
+    class FakeNegativeMemoryRepo:
+        def __init__(self, pool, *, tenant_id):
+            del pool
+            self.tenant_id = tenant_id
+
+        async def insert(self, memory, *, conn=None):
+            del conn
+            inserted.append(memory)
+            return memory
+
+    monkeypatch.setattr(
+        applier_module,
+        "NegativeMemoryRepo",
+        FakeNegativeMemoryRepo,
+    )
+    ops_summary = {}
+    diff = ValidatedDiff(
+        trigger_ref=trig_id,
+        tenant_id=tid,
+        reasoning_trace=(
+            "discard_as_noise: noise-only T1 trigger; empty diff, "
+            "no durable diff, no durable write."
+        ),
+    )
+
+    count = await _record_noise_noop_negative_memory(
+        diff,
+        FakeConn(),
+        trigger_evidence_ids=[obs_id],
+        ops_summary=ops_summary,
+    )
+
+    assert count == 1
+    assert len(inserted) == 1
+    memory = inserted[0]
+    assert memory.tenant_id == tid
+    assert memory.memory_type == "noisy_path"
+    assert memory.signature["signal_type"] == "noise_noop"
+    assert memory.signature["question_primitive"] == "NOISE_SUPPRESSION"
+    assert memory.reason == "noise_only_trigger_discarded_without_durable_write"
+    assert ops_summary["negative_memory_ops"][0]["memory_type"] == "noisy_path"
+
+
+async def test_question_policy_feedback_upserts_policy_stats_without_optimizer():
+    tid = uuid7()
+    trig_id = uuid7()
+    model_id = uuid7()
+    session_id = uuid7()
+    executed = []
+    emitted = []
+
+    class FakeSavepoint:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeConn:
+        def transaction(self):
+            return FakeSavepoint()
+
+        async def fetchval(self, query, *args):
+            del args
+            if "sage_reader_decision_attributions" in query:
+                return "sage_reader_decision_attributions"
+            if "sage_question_policy_stats" in query:
+                return "sage_question_policy_stats"
+            return None
+
+        async def executemany(self, query, args):
+            executed.append(("executemany", query, args))
+
+        async def execute(self, query, *args):
+            executed.append(("execute", query, args))
+
+    async def fake_emit_event(event_type, payload, *, ctx):
+        emitted.append((event_type, payload, ctx))
+
+    ops_summary = {
+        "claim_ops": [
+            {
+                "model_id": str(model_id),
+                "domain_tags": [
+                    "question_policy",
+                    "learning",
+                    "capability_probe",
+                ],
+            }
+        ]
+    }
+    diff = ValidatedDiff(trigger_ref=trig_id, tenant_id=tid)
+
+    await _emit_question_policy_valid_diff_feedback(
+        diff,
+        conn=FakeConn(),
+        ctx=SimpleNamespace(inquiry_session_id=session_id),
+        ops_summary=ops_summary,
+        emit_event=fake_emit_event,
+        signal_type="T1",
+        question_primitive="DEPENDENCY",
+        entities=["customer:enterprise-control"],
+    )
+
+    stat_execs = [
+        call for call in executed
+        if call[0] == "execute" and "sage_question_policy_stats" in call[1]
+    ]
+    assert len(stat_execs) == 1
+    assert stat_execs[0][2][1:] == (tid, "T1", "DEPENDENCY")
+    assert ops_summary["question_policy_updates"] == 1
+    assert emitted[0][0] == "reader_decision_used_in_valid_diff"
+    assert emitted[0][1]["model_id"] == str(model_id)
+
+
+async def test_question_policy_stats_do_not_require_trace_attribution_table():
+    tid = uuid7()
+    trig_id = uuid7()
+    model_id = uuid7()
+    session_id = uuid7()
+    executed = []
+    emitted = []
+
+    class FakeSavepoint:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeConn:
+        def transaction(self):
+            return FakeSavepoint()
+
+        async def fetchval(self, query, *args):
+            del args
+            if "sage_question_policy_stats" in query:
+                return "sage_question_policy_stats"
+            return None
+
+        async def executemany(self, query, args):
+            executed.append(("executemany", query, args))
+
+        async def execute(self, query, *args):
+            executed.append(("execute", query, args))
+
+    async def fake_emit_event(event_type, payload, *, ctx):
+        emitted.append((event_type, payload, ctx))
+
+    ops_summary = {
+        "claim_ops": [
+            {
+                "model_id": str(model_id),
+                "domain_tags": [
+                    "question_policy",
+                    "learning",
+                    "capability_probe",
+                ],
+            }
+        ]
+    }
+    diff = ValidatedDiff(trigger_ref=trig_id, tenant_id=tid)
+
+    await _emit_question_policy_valid_diff_feedback(
+        diff,
+        conn=FakeConn(),
+        ctx=SimpleNamespace(inquiry_session_id=session_id),
+        ops_summary=ops_summary,
+        emit_event=fake_emit_event,
+        signal_type="T1",
+        question_primitive="DEPENDENCY",
+        entities=["customer:enterprise-control"],
+    )
+
+    stat_execs = [
+        call for call in executed
+        if call[0] == "execute" and "sage_question_policy_stats" in call[1]
+    ]
+    attribution_execs = [
+        call for call in executed
+        if call[0] == "executemany"
+        and "sage_reader_decision_attributions" in call[1]
+    ]
+    assert len(stat_execs) == 1
+    assert attribution_execs == []
+    assert emitted == []
+    assert ops_summary["question_policy_updates"] == 1
+
+
+async def test_question_policy_stats_helper_records_without_trace_context():
+    tid = uuid7()
+    trig_id = uuid7()
+    model_id = uuid7()
+    executed = []
+
+    class FakeSavepoint:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeConn:
+        def transaction(self):
+            return FakeSavepoint()
+
+        async def fetchval(self, query, *args):
+            del query, args
+            return "sage_question_policy_stats"
+
+        async def execute(self, query, *args):
+            executed.append((query, args))
+
+    ops_summary = {
+        "claim_ops": [
+            {
+                "model_id": str(model_id),
+                "domain_tags": ["question_policy", "lifecycle_obligation"],
+            }
+        ]
+    }
+    diff = ValidatedDiff(trigger_ref=trig_id, tenant_id=tid)
+
+    recorded = await _upsert_question_policy_valid_diff_stats(
+        diff,
+        conn=FakeConn(),
+        ops_summary=ops_summary,
+        signal_type="unknown",
+        question_primitive=None,
+    )
+
+    assert recorded is True
+    assert len(executed) == 1
+    assert executed[0][1][1:] == (tid, "unknown", "DEPENDENCY")
+    assert ops_summary["question_policy_updates"] == 1
+
+
+async def test_question_policy_stats_survive_disabled_trace_emission(monkeypatch):
+    tid = uuid7()
+    trig_id = uuid7()
+    model_id = uuid7()
+    executed = []
+
+    class FakeSavepoint:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeConn:
+        def transaction(self):
+            return FakeSavepoint()
+
+        async def fetchval(self, query, *args):
+            del query, args
+            return "sage_question_policy_stats"
+
+        async def execute(self, query, *args):
+            executed.append((query, args))
+
+    from services.reasoning.sage.inquiry_traces import emitter as trace_emitter
+
+    monkeypatch.setattr(trace_emitter, "emission_enabled", lambda: False)
+    monkeypatch.setattr(
+        trace_emitter,
+        "current_trace_context",
+        lambda: SimpleNamespace(
+            metadata={
+                "signal_type": "T1",
+                "question_primitives": ["DEPENDENCY"],
+                "entities": ["customer:enterprise-control"],
+            }
+        ),
+    )
+
+    async def fail_emit_event(*_args, **_kwargs):
+        raise AssertionError("trace emission is disabled")
+
+    monkeypatch.setattr(trace_emitter, "emit_event", fail_emit_event)
+    ops_summary = {
+        "claim_ops": [
+            {
+                "model_id": str(model_id),
+                "domain_tags": ["question_policy", "capability_probe"],
+            }
+        ]
+    }
+
+    await _emit_valid_diff_outcome_events(
+        ValidatedDiff(trigger_ref=trig_id, tenant_id=tid),
+        applied_model_ids=[],
+        conn=FakeConn(),
+        ops_summary=ops_summary,
+    )
+
+    assert len(executed) == 1
+    assert executed[0][1][1:] == (tid, "T1", "DEPENDENCY")
+    assert ops_summary["question_policy_updates"] == 1
 
 
 async def test_llm_reason_broad_path_adds_mandatory_grounding_obligation(

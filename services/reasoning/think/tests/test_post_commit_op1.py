@@ -44,6 +44,7 @@ from services.reasoning.think.post_commit import (
     register_handler,
     reset_handlers,
     _compute_backoff,
+    _projection_names_for_apply_summary,
 )
 
 
@@ -139,6 +140,89 @@ def test_compute_backoff_exponential():
     assert _compute_backoff(5) == BACKOFF_BASE_SECONDS * 16  # 32s
     # Cap at 300s regardless of exponent blowing up.
     assert _compute_backoff(20) == 300
+
+
+def test_projection_names_include_decision_surfaces_for_decision_pressure_summary():
+    names = _projection_names_for_apply_summary(
+        {
+            "claim_ops": [
+                {
+                    "op": "insert",
+                    "model_id": str(uuid.uuid4()),
+                    "claim_role": "recommendation",
+                    "domain_tags": ["customers", "execution"],
+                }
+            ]
+        }
+    )
+
+    assert names == ["constraints", "customers", "decision_surfaces"]
+
+
+def test_projection_names_include_decision_surfaces_for_decision_act_summary():
+    names = _projection_names_for_apply_summary(
+        {
+            "act_ops": [
+                {
+                    "op": "create_decision",
+                    "decision_id": str(uuid.uuid4()),
+                }
+            ]
+        }
+    )
+
+    assert names == ["constraints", "decision_surfaces", "decisions"]
+
+
+def test_projection_names_include_entity_first_families_for_scoped_summary():
+    commitment_id = uuid.uuid4()
+    customer_id = uuid.uuid4()
+    goal_id = uuid.uuid4()
+
+    names = _projection_names_for_apply_summary(
+        {
+            "claim_ops": [
+                {
+                    "op": "insert",
+                    "model_id": str(uuid.uuid4()),
+                    "claim_role": "situation",
+                    "domain_tags": ["commitment", "customer", "goal"],
+                    "scope_entities": [
+                        {"type": "commitment", "id": str(commitment_id)},
+                        {"type": "customer_resource", "id": str(customer_id)},
+                        {"type": "goal", "id": str(goal_id)},
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert names == [
+        "commitments",
+        "constraints",
+        "customers",
+        "goals",
+    ]
+
+
+def test_projection_names_include_employee_profiles_only_for_people_signal():
+    actor_id = uuid.uuid4()
+
+    names = _projection_names_for_apply_summary(
+        {
+            "claim_ops": [
+                {
+                    "op": "insert",
+                    "model_id": str(uuid.uuid4()),
+                    "claim_role": "recommendation",
+                    "domain_tags": ["workload"],
+                    "scope_actors": [str(actor_id)],
+                }
+            ]
+        }
+    )
+
+    assert names == ["constraints", "employee_profiles"]
 
 
 # ---------------------------------------------------------------------
@@ -559,14 +643,30 @@ async def test_materialize_projections_handler_consumes_model_events(
             """,
             tenant,
         )
+        decision_surface_snapshot = await conn.fetchrow(
+            """
+            SELECT payload, source_model_ids
+            FROM projection_snapshots
+            WHERE tenant_id = $1
+              AND projection_name = 'decision_surfaces'
+              AND projection_version = 'v1'
+              AND subject_key = $2
+            """,
+            tenant,
+            f"company:{tenant}:decision_surface",
+        )
 
     assert stats.processed == 1
     assert stats.failed == 0
     assert processed is not None
     assert constraint_snapshot is not None
     assert resource_snapshot is not None
+    assert decision_surface_snapshot is not None
     assert str(model.id) in {str(mid) for mid in constraint_snapshot["source_model_ids"]}
     assert str(model.id) in {str(mid) for mid in resource_snapshot["source_model_ids"]}
+    assert str(model.id) in {
+        str(mid) for mid in decision_surface_snapshot["source_model_ids"]
+    }
 
 
 async def test_discover_model_edges_promotes_scoped_pair_evidence(
@@ -955,6 +1055,69 @@ async def test_worker_retries_on_handler_failure(
     # Scheduled_at should be in the future (+2s backoff).
     now = await _db_now(db_pool)
     assert row["scheduled_at"] > now
+
+
+async def test_process_batch_commits_fast_action_when_later_action_times_out(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    fast_trigger_ref = uuid.uuid4()
+    slow_trigger_ref = uuid.uuid4()
+    calls: list[str] = []
+
+    async def _fast(payload, tid, trid):
+        calls.append("fast")
+
+    async def _slow(payload, tid, trid):
+        calls.append("slow")
+        await asyncio.sleep(0.2)
+
+    register_handler("broadcast_realtime", _fast)
+    register_handler("publish_anomalies", _slow)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO pending_post_commit_actions (
+              tenant_id, trigger_id, action_kind, action_payload, scheduled_at
+            ) VALUES
+              ($1, $2, 'broadcast_realtime', '{}'::jsonb, now() - interval '2 seconds'),
+              ($1, $3, 'publish_anomalies', '{}'::jsonb, now() - interval '1 second')
+            """,
+            tenant,
+            fast_trigger_ref,
+            slow_trigger_ref,
+        )
+
+    stats = await process_batch(
+        db_pool,
+        limit=2,
+        tenant_id=tenant,
+        action_timeout_seconds=0.01,
+    )
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT trigger_id, action_kind, attempts, processed_at, last_error
+            FROM pending_post_commit_actions
+            WHERE tenant_id = $1
+              AND trigger_id = ANY($2::uuid[])
+            ORDER BY action_kind
+            """,
+            tenant,
+            [fast_trigger_ref, slow_trigger_ref],
+        )
+
+    by_kind = {row["action_kind"]: row for row in rows}
+    assert calls == ["fast", "slow"]
+    assert stats.processed == 1
+    assert stats.failed == 1
+    assert by_kind["broadcast_realtime"]["processed_at"] is not None
+    assert by_kind["publish_anomalies"]["processed_at"] is None
+    assert by_kind["publish_anomalies"]["attempts"] == 1
+    assert "TimeoutError" in (by_kind["publish_anomalies"]["last_error"] or "")
 
 
 async def test_worker_dead_letters_after_max_attempts(

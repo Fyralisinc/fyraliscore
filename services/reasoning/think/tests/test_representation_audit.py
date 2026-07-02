@@ -70,6 +70,48 @@ def test_representation_audit_flags_large_noop_batch() -> None:
     assert "missing_discovered_pattern_coverage" in codes
 
 
+def test_representation_audit_records_noop_outcome_metrics() -> None:
+    tenant_id = uuid4()
+    observations = [_obs("slack:event", "lunch logistics") for _ in range(30)]
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_id=observations[0].id,
+        observation_ids=[obs.id for obs in observations],
+    )
+    validated = ValidatedDiff(
+        trigger_ref=uuid4(),
+        tenant_id=tenant_id,
+        reasoning_trace="discard_as_noise: noise-only batch",
+    )
+    applied = {
+        "memory_aggregation": {
+            "model_inserts": 0,
+            "model_updates": 0,
+            "evidence_attachments": 0,
+            "near_duplicate_absorptions": 0,
+        },
+        "context_use": {"context_use_grade": "justified_noop_context_used"},
+        "reasoning_trace": "discard_as_noise: noise-only batch",
+        "state_changes_emitted": 0,
+    }
+
+    audit = build_representation_audit(
+        trigger=trigger,
+        run_id=uuid4(),
+        trigger_id=uuid4(),
+        trigger_kind_full="T1:event_batch",
+        validated=validated,
+        bundle=SimpleNamespace(models=[], observations=observations),
+        applied=applied,
+    )
+
+    assert audit.metrics["context_use_grade"] == "justified_noop_context_used"
+    assert audit.metrics["state_changes_emitted"] == 0
+    assert "discard_as_noise" in audit.metrics["reasoning_trace"]
+
+
 def test_representation_audit_accepts_source_digest_pattern_batch() -> None:
     tenant_id = uuid4()
     observations = [_obs("aws:event", "iam:CreateAccessKey") for _ in range(30)]

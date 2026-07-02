@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -33,6 +34,7 @@ from .context_planner import assemble_reasoning_context, plan_context
 from .debug_capture import capture as debug_capture
 from .deterministic import deterministic_handler, is_authoritative
 from .llm_reason import llm_reason
+from .mutation_compiler import compile_raw_diff_mutations
 from .observability import (
     METRICS,
     ThinkRunRecord,
@@ -69,6 +71,7 @@ class RawReasoningOutput:
     raw_context_use: dict[str, Any]
     allowed_region: Any
     llm_latency_ms: int | None
+    mutation_compile_summary: dict[str, Any] | None = None
 
 
 def _tx_health_check_enabled() -> bool:
@@ -82,6 +85,25 @@ def _diff_reuse_on_tx_retry_enabled() -> bool:
         "true",
         "yes",
     }
+
+
+def record_stage_timing(
+    stage_timings: list[dict[str, Any]] | None,
+    stage: str,
+    started_at: float,
+    **metadata: Any,
+) -> None:
+    if stage_timings is None:
+        return
+    elapsed_ms = max(0.0, (time.perf_counter() - started_at) * 1000.0)
+    note: dict[str, Any] = {
+        "stage": stage,
+        "elapsed_ms": round(elapsed_ms, 3),
+    }
+    note.update(
+        {key: value for key, value in metadata.items() if value is not None}
+    )
+    stage_timings.append(note)
 
 
 def _hash_context_bundle(trigger: TriggerContext, bundle: Any) -> str:
@@ -205,12 +227,17 @@ async def prepare_reasoning_run_state(
     expanded_region: set[tuple[str, str]] | None,
     embedder: Any | None,
     read_pool: asyncpg.Pool | None = None,
+    stage_timings: list[dict[str, Any]] | None = None,
 ) -> ReasoningRunState:
     from services.reasoning.relationships.adjudication import (
         load_candidate_for_trigger,
     )
 
+    started = time.perf_counter()
     loaded_relationship_candidate = await load_candidate_for_trigger(conn, trigger)
+    record_stage_timing(stage_timings, "relationship_candidate_load", started)
+
+    started = time.perf_counter()
     context_plan = await plan_context(
         trigger,
         conn,
@@ -218,10 +245,12 @@ async def prepare_reasoning_run_state(
         llm_provider=llm_provider,
         read_pool=read_pool,
     )
+    record_stage_timing(stage_timings, "context_plan", started)
     inquiry_result = context_plan.inquiry_result
     retrieval_result = context_plan.retrieval_result
     reasoning_frame = context_plan.reasoning_frame
     await assert_tx_usable(conn, "context_planning")
+    started = time.perf_counter()
     await _record_context_plan_observability(
         conn=conn,
         trigger=trigger,
@@ -234,6 +263,7 @@ async def prepare_reasoning_run_state(
         inquiry_result=inquiry_result,
         loaded_relationship_candidate=loaded_relationship_candidate,
     )
+    record_stage_timing(stage_timings, "context_plan_observability", started)
     _install_sage_inquiry_trace_context(
         conn=conn,
         trigger=trigger,
@@ -242,6 +272,7 @@ async def prepare_reasoning_run_state(
         inquiry_result=inquiry_result,
     )
 
+    started = time.perf_counter()
     reasoning_context = await assemble_reasoning_context(
         context_plan,
         trigger,
@@ -254,6 +285,13 @@ async def prepare_reasoning_run_state(
     bundle = reasoning_context.bundle
     allowed_region = reasoning_context.allowed_region
     actor_operating_summary = reasoning_context.actor_operating_summary
+    record_stage_timing(
+        stage_timings,
+        "reasoning_context_assembly_initial",
+        started,
+        model_count=len(bundle.models),
+        observation_count=len(bundle.observations),
+    )
     await assert_tx_usable(conn, "reasoning_context")
 
     th: int | None = None
@@ -261,6 +299,7 @@ async def prepare_reasoning_run_state(
     acquisition: RegionLockAcquisition | None = None
     mutation_row_inserted = False
     if conn.is_in_transaction():
+        started = time.perf_counter()
         th, eh = region_lock_key(
             trigger.tenant_id, [(t, i) for (t, i) in allowed_region]
         )
@@ -279,6 +318,13 @@ async def prepare_reasoning_run_state(
         acquisition = await acquire_region_lock(
             conn, trigger.tenant_id, [(t, i) for (t, i) in allowed_region]
         )
+        record_stage_timing(
+            stage_timings,
+            "region_lock_and_run_record",
+            started,
+            allowed_region_size=len(allowed_region),
+        )
+        started = time.perf_counter()
         locked_context = await assemble_reasoning_context(
             context_plan,
             trigger,
@@ -289,21 +335,37 @@ async def prepare_reasoning_run_state(
             read_pool=read_pool,
         )
         locked_region = list(locked_context.allowed_region)
+        record_stage_timing(
+            stage_timings,
+            "reasoning_context_assembly_locked",
+            started,
+            model_count=len(locked_context.bundle.models),
+            observation_count=len(locked_context.bundle.observations),
+        )
         if set(locked_region) != set(allowed_region):
+            started = time.perf_counter()
             allowed_region = sorted(set(allowed_region) | set(locked_region))
             acquisition = await acquire_region_lock(
                 conn,
                 trigger.tenant_id,
                 [(t, i) for (t, i) in allowed_region],
             )
+            record_stage_timing(
+                stage_timings,
+                "region_lock_expanded",
+                started,
+                allowed_region_size=len(allowed_region),
+            )
         bundle = locked_context.bundle
         actor_operating_summary = locked_context.actor_operating_summary
+        started = time.perf_counter()
         await update_think_run(
             conn,
             record.id,
             retrieval_model_count=len(bundle.models),
             retrieval_observation_count=len(bundle.observations),
         )
+        record_stage_timing(stage_timings, "retrieval_count_update_locked", started)
         mutation_row_inserted = True
 
     return ReasoningRunState(
@@ -330,10 +392,13 @@ async def build_raw_reasoning_output(
     record: ThinkRunRecord,
     state: ReasoningRunState,
     reason_cache: dict[str, Any] | None,
+    stage_timings: list[dict[str, Any]] | None = None,
 ) -> RawReasoningOutput:
     llm_latency_ms: int | None = None
     if is_authoritative(trigger):
+        started = time.perf_counter()
         raw_diff = await deterministic_handler(trigger, state.bundle, conn)
+        record_stage_timing(stage_timings, "deterministic_reasoning", started)
     else:
         if llm_provider is None:
             raise ValidationError(
@@ -350,10 +415,20 @@ async def build_raw_reasoning_output(
             ):
                 reused_diff = reason_cache["raw_diff"]
         if reused_diff is not None:
+            started = time.perf_counter()
             raw_diff = reused_diff
             llm_latency_ms = 0
             emit("think.diff_reused_on_tx_retry", run_id=str(record.id))
+            record_stage_timing(
+                stage_timings,
+                "main_llm_reason",
+                started,
+                is_llm=True,
+                reused=True,
+                measured_llm_ms=0,
+            )
         else:
+            started = time.perf_counter()
             raw_diff, llm_latency_ms = await llm_reason(
                 trigger,
                 state.bundle,
@@ -363,14 +438,23 @@ async def build_raw_reasoning_output(
                 reason_for_trigger=reason_for_trigger,
                 reasoning_frame=state.reasoning_frame,
             )
+            record_stage_timing(
+                stage_timings,
+                "main_llm_reason",
+                started,
+                is_llm=True,
+                measured_llm_ms=llm_latency_ms,
+            )
             if reason_cache is not None and bundle_hash is not None:
                 reason_cache["bundle_hash"] = bundle_hash
                 reason_cache["raw_diff"] = raw_diff
 
+    started = time.perf_counter()
     from .auto_create_commitment import (
         maybe_inject_block_transition,
         maybe_inject_create_commitment,
         maybe_inject_customer_risk,
+        maybe_inject_decision_pressure_recommendation,
         maybe_inject_decision_revisit,
         maybe_inject_future_prediction,
     )
@@ -387,11 +471,36 @@ async def build_raw_reasoning_output(
     raw_diff = maybe_inject_decision_revisit(raw_diff, trigger, state.bundle)
     raw_diff = maybe_inject_future_prediction(raw_diff, trigger, state.bundle)
     raw_diff = maybe_inject_customer_risk(raw_diff, trigger, state.bundle)
+    raw_diff = maybe_inject_decision_pressure_recommendation(
+        raw_diff, trigger, state.bundle
+    )
     raw_diff = maybe_inject_latent_bridge(raw_diff, trigger)
     raw_diff = maybe_inject_capability_probe_ops(raw_diff, trigger, state.bundle)
     raw_diff = maybe_inject_lifecycle_obligations(raw_diff, trigger, state.bundle)
     raw_diff = _drop_event_batch_wrapper_claims(raw_diff, trigger)
     raw_diff = enrich_raw_diff_representation(raw_diff, trigger, state.bundle)
+    record_stage_timing(stage_timings, "post_llm_enrichment", started)
+
+    started = time.perf_counter()
+    raw_diff, mutation_compile_summary = await compile_raw_diff_mutations(
+        raw_diff,
+        conn=conn,
+        retrieval_result=state.retrieval_result,
+        bundle=state.bundle,
+    )
+    record_stage_timing(
+        stage_timings,
+        "mutation_compile",
+        started,
+        changed=mutation_compile_summary.changed,
+    )
+    if mutation_compile_summary.changed:
+        emit(
+            "think.mutation_compiled",
+            run_id=str(record.id),
+            **mutation_compile_summary.to_dict(),
+        )
+    started = time.perf_counter()
     raw_context_use = summarize_context_use(state.bundle, raw_diff)
 
     allowed_region = state.allowed_region
@@ -408,12 +517,19 @@ async def build_raw_reasoning_output(
             tid = ent.get("id")
             if tid:
                 allowed_region = sorted(set(allowed_region) | {("decision", str(tid))})
+    record_stage_timing(
+        stage_timings,
+        "raw_context_use_summary",
+        started,
+        allowed_region_size=len(allowed_region),
+    )
 
     return RawReasoningOutput(
         raw_diff=raw_diff,
         raw_context_use=raw_context_use,
         allowed_region=allowed_region,
         llm_latency_ms=llm_latency_ms,
+        mutation_compile_summary=mutation_compile_summary.to_dict(),
     )
 
 
@@ -427,9 +543,11 @@ async def validate_raw_reasoning_output(
     bundle: Any,
     raw: RawReasoningOutput,
     reason_cache: dict[str, Any] | None,
+    stage_timings: list[dict[str, Any]] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
     from .context_use import summarize_context_use
 
+    started = time.perf_counter()
     validated = await validate(
         raw.raw_diff,
         retrieval_result,
@@ -438,6 +556,13 @@ async def validate_raw_reasoning_output(
         strict_region=False,
         formation_candidate_ids=formation_candidate_ids(trigger, bundle),
     )
+    record_stage_timing(
+        stage_timings,
+        "validation_core",
+        started,
+        dropped_op_count=validated.dropped_op_count,
+    )
+    started = time.perf_counter()
     validated_context_use = summarize_context_use(bundle, validated)
     METRICS.observe_context_use(trigger_kind_full, validated_context_use)
     emit(
@@ -507,6 +632,7 @@ async def validate_raw_reasoning_output(
             "context_use": validated_context_use,
         },
     )
+    record_stage_timing(stage_timings, "validation_observability", started)
     return validated, validated_context_use
 
 

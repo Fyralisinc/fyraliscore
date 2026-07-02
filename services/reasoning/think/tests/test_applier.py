@@ -2019,6 +2019,96 @@ async def test_question_policy_probe_feedback_reaches_policy_stats(
     assert stats["utility_score"] > 0
 
 
+async def test_noise_noop_negative_memory_emits_sage_experience_event(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    async with fresh_db.acquire() as conn:
+        event_id = uuid7()
+        session_id = await _insert_inquiry_session(conn, tenant)
+        content_text = (
+            "General operational chatter: lunch logistics, duplicated dashboard "
+            "links, and a non-actionable reminder. This should not dominate memory."
+        )
+        await conn.execute(
+            """
+            INSERT INTO observations
+              (id, tenant_id, occurred_at, kind, source_channel,
+               content, content_text, embedding, embedding_pending, trust_tier)
+            VALUES ($1, $2, now(), 'signal', 'slack:storyline-noise',
+                    '{}'::jsonb, $3, $4, FALSE, 'unverified')
+            """,
+            event_id,
+            tenant,
+            content_text,
+            deterministic_text_embedding(content_text),
+        )
+        diff = ValidatedDiff(
+            trigger_ref=uuid7(),
+            tenant_id=tenant,
+            reasoning_trace=(
+                "discard_as_noise: noise-only T1 trigger; empty diff, "
+                "no model or projection write."
+            ),
+        )
+        repo = ModelsRepo(fresh_db, embedder=None)
+        ctx = TraceContext(
+            tenant_id=tenant,
+            inquiry_session_id=session_id,
+            pool=fresh_db,
+            conn=conn,
+            metadata={
+                "question_primitives": ["NOISE_SUPPRESSION"],
+                "signal_type": "T1",
+                "trigger_kind": "T1:event_batch",
+            },
+        )
+        token = set_trace_context(ctx)
+        try:
+            async with conn.transaction():
+                result = await apply_diff(
+                    diff,
+                    conn,
+                    trigger_kind="T1:event_batch",
+                    trigger_cause_event_id=event_id,
+                    models_repo=repo,
+                )
+        finally:
+            reset_trace_context(token)
+
+        events = await OutcomeEventsRepo(
+            fresh_db,
+            tenant_id=tenant,
+        ).list_for_session(session_id, conn=conn)
+        experience_events = [
+            event
+            for event in events
+            if event.event_type == "outcome_quality_assessed"
+            and event.payload.get("experience_kind")
+            == "noise_noop_negative_memory"
+        ]
+        report = await TopologyOptimizer(
+            pool=fresh_db,
+            tenant_id=tenant,
+        ).optimize(
+            inquiry_session_id=session_id,
+            trigger_event="validated_synthesis_diff_applied",
+            conn=conn,
+        )
+
+    assert result["negative_memory_inserts"] == 1
+    assert len(experience_events) == 1
+    assert experience_events[0].payload["policy_effects"] == {
+        "negative_memory_inserts": 1
+    }
+    assert report.experience_loop is not None
+    assert report.experience_loop["status"] == "metabolized"
+    assert report.metrics["experience_loop_closed"] == 1.0
+    assert report.metrics["experience_policy_effects"] >= 1.0
+    assert report.metrics["experience_future_behavior_levers"] >= 1.0
+
+
 async def test_capability_probe_wave_survives_validate_apply_and_feedback(
     fresh_db,
     tenant,

@@ -79,11 +79,13 @@ def maybe_inject_latent_bridge(
 
     customer = _customer_label(full_text)
     subject = f"{customer} pricing" if customer else "Pricing"
+    phase_support = _phase_support(texts, observation_ids)
     hypothesis = (
         f"{subject} moved from a blocked discount-exception state to an "
         "approved exception-pricing state without a directly observed approval "
-        "artifact; treat the transition as a bounded, uncertain off-sensor "
-        "decision bridge."
+        "artifact. Before evidence, after evidence, and gap evidence are all "
+        "present in the supporting events; treat the transition as a bounded, "
+        "uncertain off-sensor decision bridge."
     )
     valid_from = trigger.seed_occurred_at or datetime.now(timezone.utc)
     scope_entities = [
@@ -112,6 +114,7 @@ def maybe_inject_latent_bridge(
                         "A before/after pricing state transition is visible, "
                         "but the approval transition evidence is missing."
                     ),
+                    "transition_support": phase_support,
                     "evidence_event_ids": evidence_event_ids,
                     "open_falsifier": (
                         "A complete approval record or decision-log entry "
@@ -139,6 +142,9 @@ def maybe_inject_latent_bridge(
                     "pricing",
                     "approval",
                     "decision",
+                    "before_after_transition",
+                    "transition_support",
+                    "sensor_gap",
                     "memory_quality",
                 ],
             },
@@ -151,6 +157,25 @@ def maybe_inject_latent_bridge(
     )
     raw_diff.reasoning_trace = f"{trace}\n{note}".strip() if trace else note
     return raw_diff
+
+
+def _phase_support(texts: list[str], observation_ids: list[Any]) -> dict[str, list[str]]:
+    support = {
+        "before_state_event_ids": [],
+        "after_state_event_ids": [],
+        "gap_review_event_ids": [],
+    }
+    for index, text in enumerate(texts):
+        if index >= len(observation_ids):
+            break
+        event_id = str(observation_ids[index])
+        if _BEFORE_RE.search(text):
+            support["before_state_event_ids"].append(event_id)
+        if _AFTER_RE.search(text):
+            support["after_state_event_ids"].append(event_id)
+        if _GAP_RE.search(text):
+            support["gap_review_event_ids"].append(event_id)
+    return support
 
 
 def _observation_ids(trigger: TriggerContext) -> list[Any]:

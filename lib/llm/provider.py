@@ -709,6 +709,11 @@ class LLMConfig:
     # planning so retrieval can run low effort without changing the main
     # Think provider's global CODEX_REASONING_EFFORT.
     reasoning_effort: str | None = None
+    # Optional circuit-breaker identity. Defaults to `provider`, preserving the
+    # historical per-provider breaker. Think workers can set lane-specific names
+    # such as `codex:t4:repair` so background maintenance cannot open the T1
+    # breaker.
+    circuit_breaker_name: str | None = None
 
     @classmethod
     def from_env(cls) -> "LLMConfig":
@@ -1022,6 +1027,10 @@ class LLMProvider(abc.ABC):
     # -----------------------------------------------------------------
     def set_usage_aggregator(self, agg: LLMUsageAggregator | None) -> None:
         self._usage_aggregator = agg
+
+    @property
+    def circuit_breaker_name(self) -> str:
+        return self.config.circuit_breaker_name or self.config.provider
 
     # -----------------------------------------------------------------
     # Cost-plan §1.2 — output-schema enforcement capability.
@@ -1337,7 +1346,7 @@ class AnthropicProvider(LLMProvider):
 
         # OP-3: circuit breaker — fast-fail on open for the 'anthropic' provider.
         # FU-2: `LLM_CIRCUIT_BREAKER_DISABLED=1` bypasses the wrap.
-        response = await _through_breaker(self.config.provider, _do_call)
+        response = await _through_breaker(self.circuit_breaker_name, _do_call)
         if not response.content:
             raise LLMError("empty response from anthropic", model=self.config.model)
         # OP-2: record input/output tokens if an aggregator is installed.
@@ -1412,7 +1421,7 @@ class OpenAIProvider(LLMProvider):
 
         # OP-3: circuit breaker — fast-fail on open.
         # FU-2: `LLM_CIRCUIT_BREAKER_DISABLED=1` bypasses the wrap.
-        response = await _through_breaker(self.config.provider, _do_call)
+        response = await _through_breaker(self.circuit_breaker_name, _do_call)
         content = response.choices[0].message.content
         if not content:
             raise LLMError("empty response from openai", model=self.config.model)
@@ -1529,7 +1538,7 @@ class CodexProvider(LLMProvider):
                 **call_kwargs,
             )
 
-        response = await _through_breaker(self.config.provider, _do_call)
+        response = await _through_breaker(self.circuit_breaker_name, _do_call)
         inp, outp, cache_read, cache_creation = _extract_openai_usage(response)
         self._record_usage(
             inp, outp,
@@ -1554,7 +1563,7 @@ class CodexProvider(LLMProvider):
 
         client = _codex_app_server_client()
         content = await _through_breaker(
-            self.config.provider,
+            self.circuit_breaker_name,
             lambda: client.call(
                 model=self.config.model,
                 system=system,
@@ -1664,7 +1673,7 @@ class CodexProvider(LLMProvider):
                     raise LLMError("empty response from codex cli", model=self.config.model)
                 return content
 
-        content = await _through_breaker(self.config.provider, _do_call)
+        content = await _through_breaker(self.circuit_breaker_name, _do_call)
         self._record_estimated_text_usage(
             system=system,
             user=user,
@@ -2132,7 +2141,7 @@ class DeepSeekProvider(OpenAIProvider):
 
             # OP-3: circuit breaker on the DeepSeek endpoint.
             # FU-2: `LLM_CIRCUIT_BREAKER_DISABLED=1` bypasses the wrap.
-            response = await _through_breaker(self.config.provider, _do_call)
+            response = await _through_breaker(self.circuit_breaker_name, _do_call)
             choice = response.choices[0]
             tool_calls = getattr(choice.message, "tool_calls", None) or []
             if not tool_calls:
@@ -2245,6 +2254,7 @@ def build_provider(config: LLMConfig | None = None) -> LLMProvider:
         "llm.provider_initialized",
         provider=cfg.provider,
         model=cfg.model,
+        circuit_breaker_name=cfg.circuit_breaker_name or cfg.provider,
         pricing=get_pricing_for_model(cfg.model),
     )
     if cfg.provider == "anthropic":

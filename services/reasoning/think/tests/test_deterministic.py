@@ -92,6 +92,13 @@ async def test_is_authoritative_t4_background_true():
     assert is_authoritative(t) is True
 
 
+async def test_is_authoritative_t4_pattern_review_false():
+    t = TriggerContext(
+        kind="T4", tenant_id=uuid7(), subkind="pattern_review",
+    )
+    assert is_authoritative(t) is False
+
+
 async def test_is_authoritative_t4_model_reeval_false():
     # 'model_reeval' routes through deterministic via the cascade engine
     # path, but `is_authoritative` returns False because the dispatch
@@ -618,6 +625,45 @@ async def test_t4_unknown_subkind_returns_empty(
     assert diff.claim_ops == []
     assert diff.act_ops == []
     assert diff.resource_ops == []
+
+
+async def test_pattern_review_requires_semantic_review_without_promotion():
+    tenant_id = uuid7()
+    candidate_id = uuid7()
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.fetchrow_calls: list[tuple[str, tuple[object, ...]]] = []
+
+        async def fetchrow(self, query: str, *args: object) -> dict:
+            self.fetchrow_calls.append((query, args))
+            assert "FROM pattern_candidates" in query
+            assert args == (candidate_id,)
+            return {
+                "cluster_size": 3,
+                "density": 0.74,
+                "promoted_at": None,
+                "rejected_at": None,
+            }
+
+    trigger = TriggerContext(
+        kind="T4",
+        tenant_id=tenant_id,
+        subkind="pattern_review",
+        seed_signature={"pattern_candidate_id": str(candidate_id)},
+    )
+
+    diff = await deterministic_handler(
+        trigger,
+        ContextBundle(),
+        FakeConn(),  # type: ignore[arg-type]
+    )
+
+    assert diff.claim_ops == []
+    assert diff.act_ops == []
+    assert diff.resource_ops == []
+    assert "requires semantic Think review" in diff.reasoning_trace
+    assert "no canonical write" in diff.reasoning_trace
 
 
 # =====================================================================

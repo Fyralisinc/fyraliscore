@@ -1088,13 +1088,50 @@ async def _enqueue_pattern_review_if_possible(
 ) -> UUID | None:
     if not await _table_exists(conn, "think_trigger_queue"):
         return None
+    row = await conn.fetchrow(
+        """
+        SELECT proposed_signature, observed_tendency,
+               constituent_model_ids, cluster_size, density
+        FROM pattern_candidates
+        WHERE tenant_id = $1
+          AND id = $2
+        """,
+        tenant_id,
+        pattern_candidate_id,
+    )
+    payload: dict[str, Any] = {
+        "pattern_candidate_id": str(pattern_candidate_id),
+        "source": "substrate_promotion",
+        "review_mode": "semantic_required",
+    }
+    if row is not None:
+        payload.update(
+            {
+                "proposed_signature": _json_obj_or_none(
+                    _row_get(row, "proposed_signature")
+                )
+                or {},
+                "observed_tendency": _json_obj_or_none(
+                    _row_get(row, "observed_tendency")
+                )
+                or {},
+                "constituent_model_ids": [
+                    str(model_id)
+                    for model_id in _uuid_list_from_any(
+                        _row_get(row, "constituent_model_ids")
+                    )
+                ],
+                "cluster_size": int(_row_get(row, "cluster_size") or 0),
+                "density": float(_row_get(row, "density") or 0.0),
+            }
+        )
     return await enqueue_trigger(
         conn,
         tenant_id=tenant_id,
         trigger_kind="T4",
         trigger_subkind="pattern_review",
         observation_id=observation_id,
-        payload={"pattern_candidate_id": str(pattern_candidate_id)},
+        payload=payload,
     )
 
 

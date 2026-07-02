@@ -119,16 +119,12 @@ async def db_pool() -> AsyncGenerator[asyncpg.Pool, None]:
         dsn, min_size=1, max_size=15, init=_init_connection,
     )
     async with pool.acquire() as conn:
-        from lib.shared.migrations import (
-            apply_migrations_dir,
-            schema_bootstrap_lock,
-        )
+        from lib.shared.migrations import apply_migrations_dir
 
         global _MIGRATIONS_READY
-        async with schema_bootstrap_lock(conn):
-            if not _MIGRATIONS_READY and not await _schema_looks_ready(conn):
-                await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
-            _MIGRATIONS_READY = True
+        if not _MIGRATIONS_READY and not await _schema_looks_ready(conn):
+            await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+        _MIGRATIONS_READY = True
     try:
         yield pool
     finally:
@@ -316,6 +312,12 @@ async def tenant_cleanup(fresh_db: asyncpg.Pool, tenant: uuid.UUID):
         await conn.execute(
             "DELETE FROM think_feedback_stats WHERE tenant_id = $1", tenant,
         )
+        if await conn.fetchval(
+            "SELECT to_regclass('public.negative_memory')"
+        ):
+            await conn.execute(
+                "DELETE FROM negative_memory WHERE tenant_id = $1", tenant,
+            )
         await conn.execute(
             "DELETE FROM think_trigger_queue WHERE tenant_id = $1", tenant,
         )

@@ -57,7 +57,7 @@ from lib.shared.types import ObservationCreate, ObservationRow
 from services.domain.actors.repo import ActorRepo
 from services.domain.clarifications import open_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo, normalize_phrase
-from services.domain.triggers import enqueue_trigger as enqueue_think_trigger
+from services.domain.triggers import ensure_event_arrival_trigger
 from services.ingest.ingestion.handlers import (
     ObservationDraft,
     get_handler,
@@ -143,6 +143,14 @@ class _EntityResolution:
 class _EmbeddingResult:
     embedding: list[float] | None
     pending: bool
+
+
+@dataclass(frozen=True)
+class _ObservationPreparation:
+    obs_id: UUID
+    obs_create: ObservationCreate
+    embedding: _EmbeddingResult
+    summary_pending: bool
 
 
 def _document_summary_threshold_chars() -> int:
@@ -333,78 +341,33 @@ async def ingest_from_draft(
     raw_s3_key: str | None = None,
     ingress_kind: str | None = None,
 ) -> IngestResult:
-    """Steps 2-7 of the UniformIngestPath, given an already-built draft.
-
-    Public entry for the M5.2 writer full-mode path: the normalizer
-    has already run the handler step in M2.3 and emitted a
-    `NormalizedEnvelope` carrying the draft fields. The writer
-    reconstructs an `ObservationDraft` from that envelope and calls
-    this function, avoiding a second handler dispatch + S3 raw fetch.
-
-    Contract:
-      - `draft.source_channel` MUST equal `channel`. Mismatch raises
-        `ValidationError` — same defensive check as in `ingest()`.
-      - Returns an `IngestResult` with the same shape `ingest()` does.
-      - Per-call transaction (M5 Finding 4: per-envelope ingest()
-        calls; no batched-transaction refactor). One asyncpg
-        connection acquired, one transaction committed.
-
-    All steps 2-7 logic lives here so `ingest()` and the writer
-    share the same observation-creation path — divergence here
-    would be an N1 cutover-safety failure (the writer's full-mode
-    output must be set-equal to the inline path's output for the
-    same input).
-    """
+    """Persist an already-built draft through the shared ingest path."""
     if draft.source_channel != channel:
         raise ValidationError(
             f"draft.source_channel={draft.source_channel!r} does not match "
             f"channel={channel!r}"
         )
 
-    # ---- step 1.5: draft enrichment (registered enrichers; raw-on-failure) ----
-    # Channel-keyed enrichers may augment draft.content IN PLACE before
-    # persistence, so the same observation row carries the derived signal (e.g.
-    # the github-intel extension's inline causal enrichment). Core discovers
-    # enrichers via the company_os.draft_enrichers entry-point group — it never
-    # imports an extension. No-op when none are registered; any enricher failure
-    # is swallowed inside run_enrichers so the RAW draft still persists.
-    from services.ingest.ingestion.enrichers import run_enrichers
-
-    await run_enrichers(channel, draft, pool=pool, tenant_id=tenant_id)
-
-    summary_pending = (
-        summarization_producer is not None
-        and _prepare_document_summarization(
-            draft,
-            raw_s3_key=raw_s3_key,
-            ingress_kind=ingress_kind,
-        )
-    )
-
-    # ---- step 2: pre-assign UUID v7 ----------------------------------
-    obs_id = uuid7()
-    actor = await _resolve_actor(draft, actor_repo)
-    entities = await _resolve_entities(draft, alias_repo, tenant_id)
-    embedding = (
-        _EmbeddingResult(embedding=None, pending=True)
-        if summary_pending
-        else await _compute_embedding(embedder, draft.content_text)
-    )
-    obs_create = _build_observation_create(
-        obs_id=obs_id,
-        tenant_id=tenant_id,
+    preparation = await _prepare_observation_for_ingest(
+        channel=channel,
         draft=draft,
-        actor=actor,
-        entities=entities,
+        pool=pool,
+        tenant_id=tenant_id,
+        actor_repo=actor_repo,
+        alias_repo=alias_repo,
+        embedder=embedder,
+        summarization_producer=summarization_producer,
+        raw_s3_key=raw_s3_key,
+        ingress_kind=ingress_kind,
     )
 
     result = await _insert_observation_and_maybe_enqueue_trigger(
         pool=pool,
         draft=draft,
-        obs_create=obs_create,
-        embedding=embedding,
-        enqueue_trigger=enqueue_trigger and not summary_pending,
-        obs_id=obs_id,
+        obs_create=preparation.obs_create,
+        embedding=preparation.embedding,
+        enqueue_trigger=enqueue_trigger and not preparation.summary_pending,
+        obs_id=preparation.obs_id,
         tenant_id=tenant_id,
     )
     await _publish_embedding_request_if_needed(
@@ -412,7 +375,7 @@ async def ingest_from_draft(
         tenant_id=tenant_id,
         draft=draft,
         row=result.observation,
-        skip=summary_pending,
+        skip=preparation.summary_pending,
     )
     await _publish_summarization_request_if_needed(
         producer=summarization_producer,
@@ -422,6 +385,52 @@ async def ingest_from_draft(
         deduped=result.deduped,
     )
     return result
+
+
+async def _prepare_observation_for_ingest(
+    *,
+    channel: str,
+    draft: ObservationDraft,
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    actor_repo: ActorRepo | None,
+    alias_repo: EntityAliasRepo | None,
+    embedder: OllamaClient | None,
+    summarization_producer: Any | None,
+    raw_s3_key: str | None,
+    ingress_kind: str | None,
+) -> _ObservationPreparation:
+    from services.ingest.ingestion.enrichers import run_enrichers
+
+    await run_enrichers(channel, draft, pool=pool, tenant_id=tenant_id)
+    summary_pending = (
+        summarization_producer is not None
+        and _prepare_document_summarization(
+            draft,
+            raw_s3_key=raw_s3_key,
+            ingress_kind=ingress_kind,
+        )
+    )
+    obs_id = uuid7()
+    actor = await _resolve_actor(draft, actor_repo)
+    entities = await _resolve_entities(draft, alias_repo, tenant_id)
+    embedding = (
+        _EmbeddingResult(embedding=None, pending=True)
+        if summary_pending
+        else await _compute_embedding(embedder, draft.content_text)
+    )
+    return _ObservationPreparation(
+        obs_id=obs_id,
+        obs_create=_build_observation_create(
+            obs_id=obs_id,
+            tenant_id=tenant_id,
+            draft=draft,
+            actor=actor,
+            entities=entities,
+        ),
+        embedding=embedding,
+        summary_pending=summary_pending,
+    )
 
 
 # ---------------------------------------------------------------------
@@ -557,11 +566,9 @@ async def _enqueue_event_arrival_trigger(
     draft: ObservationDraft,
     row: ObservationRow,
 ) -> UUID:
-    return await enqueue_think_trigger(
+    return await ensure_event_arrival_trigger(
         conn,
         tenant_id=tenant_id,
-        trigger_kind="T1",
-        trigger_subkind="event_arrival",
         observation_id=row.id,
         payload={
             "source_channel": draft.source_channel,
@@ -596,17 +603,31 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                 existing = await _lock_and_find_existing_observation(conn, draft)
                 if existing is not None:
                     deduped_row = await repo.insert(obs_create, conn=conn)
+                    if enqueue_trigger:
+                        trigger_queue_id = await _enqueue_event_arrival_trigger(
+                            conn,
+                            tenant_id=tenant_id,
+                            draft=draft,
+                            row=deduped_row,
+                        )
                     return IngestResult(
                         observation=deduped_row,
                         deduped=True,
-                        trigger_queue_id=None,
+                        trigger_queue_id=trigger_queue_id,
                     )
                 row = await repo.insert(obs_create, conn=conn)
                 if draft.external_id is not None and row.id != obs_id:
+                    if enqueue_trigger:
+                        trigger_queue_id = await _enqueue_event_arrival_trigger(
+                            conn,
+                            tenant_id=tenant_id,
+                            draft=draft,
+                            row=row,
+                        )
                     return IngestResult(
                         observation=row,
                         deduped=True,
-                        trigger_queue_id=None,
+                        trigger_queue_id=trigger_queue_id,
                     )
                 await _maybe_open_actor_identity_clarification(
                     conn,

@@ -840,10 +840,101 @@ def _projection_names_for_apply_summary(
         return ["all"]
 
     names: set[str] = set()
+    if _summary_has_entity_projection_signal(
+        applied_ops_summary,
+        entity_types={
+            "candidate_commitment",
+            "commitment",
+            "jira",
+            "pr",
+            "pull_request",
+            "ticket",
+            "work_item",
+        },
+        domain_tags={
+            "commitment",
+            "commitments",
+            "deadline",
+            "deliverable",
+            "handoff",
+            "obligation",
+            "promise",
+        },
+        act_ops=(),
+    ):
+        names.add("commitments")
+    if _summary_has_entity_projection_signal(
+        applied_ops_summary,
+        entity_types={
+            "account",
+            "candidate_customer",
+            "customer",
+            "customer_resource",
+            "org",
+            "organization",
+        },
+        domain_tags={
+            "account",
+            "churn",
+            "customer",
+            "customers",
+            "implementation",
+            "onboarding",
+            "relationship",
+            "renewal",
+            "retention",
+            "revenue",
+            "trust",
+        },
+        act_ops=(),
+    ):
+        names.add("customers")
+    if _summary_has_entity_projection_signal(
+        applied_ops_summary,
+        entity_types={
+            "candidate_goal",
+            "goal",
+            "initiative",
+            "objective",
+            "project",
+            "workstream",
+        },
+        domain_tags={
+            "goal",
+            "goals",
+            "initiative",
+            "milestone",
+            "northstar",
+            "objective",
+            "outcome",
+            "roadmap",
+        },
+        act_ops=(),
+    ):
+        names.add("goals")
+    if _summary_has_entity_projection_signal(
+        applied_ops_summary,
+        entity_types={"candidate_decision", "choice", "decision"},
+        domain_tags={
+            "approval",
+            "decision",
+            "decision_pressure",
+            "decisions",
+            "escalation",
+            "go/no-go",
+            "option",
+            "prioritize",
+            "tradeoff",
+        },
+        act_ops=("create_decision", "transition_decision"),
+    ):
+        names.add("decisions")
     if _summary_has_items(applied_ops_summary, "resource_ops"):
         names.add("resources")
     if _summary_has_actor_profile_signal(applied_ops_summary):
         names.add("employee_profiles")
+    if _summary_has_decision_surface_signal(applied_ops_summary):
+        names.add("decision_surfaces")
     if any(
         _summary_has_items(applied_ops_summary, key)
         for key in (
@@ -866,6 +957,65 @@ def _projection_names_for_apply_summary(
 def _summary_has_items(summary: dict[str, Any], key: str) -> bool:
     value = summary.get(key)
     return isinstance(value, list) and bool(value)
+
+
+def _summary_has_entity_projection_signal(
+    summary: dict[str, Any],
+    *,
+    entity_types: set[str],
+    domain_tags: set[str],
+    act_ops: tuple[str, ...],
+) -> bool:
+    for item in summary.get("claim_ops") or ():
+        if not isinstance(item, dict):
+            continue
+        tags = _summary_item_domain_tags(item)
+        if tags.intersection(domain_tags):
+            return True
+        for entity in _summary_item_scope_entities(item):
+            entity_type = str(entity.get("type") or "").strip().casefold()
+            if entity_type in entity_types:
+                return True
+
+    if act_ops:
+        expected = {op.casefold() for op in act_ops}
+        for item in summary.get("act_ops") or ():
+            if not isinstance(item, dict):
+                continue
+            op = str(item.get("op") or item.get("act_op") or "").casefold()
+            if op in expected:
+                return True
+    return False
+
+
+def _summary_item_domain_tags(item: dict[str, Any]) -> set[str]:
+    sources = [item]
+    for key in ("entry", "payload", "proposition"):
+        value = item.get(key)
+        if isinstance(value, dict):
+            sources.append(value)
+    tags: set[str] = set()
+    for source in sources:
+        tags.update(
+            str(tag).casefold()
+            for tag in source.get("domain_tags") or ()
+            if str(tag).strip()
+        )
+    return tags
+
+
+def _summary_item_scope_entities(item: dict[str, Any]) -> list[dict[str, Any]]:
+    sources = [item]
+    for key in ("entry", "payload", "proposition"):
+        value = item.get(key)
+        if isinstance(value, dict):
+            sources.append(value)
+    out: list[dict[str, Any]] = []
+    for source in sources:
+        for entity in source.get("scope_entities") or ():
+            if isinstance(entity, dict):
+                out.append(entity)
+    return out
 
 
 def _summary_has_actor_profile_signal(summary: dict[str, Any]) -> bool:
@@ -893,14 +1043,59 @@ def _summary_has_actor_profile_signal(summary: dict[str, Any]) -> bool:
     for item in summary.get("claim_ops") or ():
         if not isinstance(item, dict):
             continue
-        tags = {
-            str(tag).casefold()
-            for tag in item.get("domain_tags") or ()
-            if str(tag).strip()
-        }
+        tags = _summary_item_domain_tags(item)
         if tags.intersection(employee_tags):
             return True
-        if str(item.get("claim_role") or "").casefold() in profile_roles:
+        scope_actors = item.get("scope_actors") or {}
+        entry = item.get("entry") if isinstance(item.get("entry"), dict) else {}
+        if not scope_actors and isinstance(entry, dict):
+            scope_actors = entry.get("scope_actors") or ()
+        if (
+            str(item.get("claim_role") or entry.get("claim_role") or "").casefold()
+            in profile_roles
+            and bool(scope_actors)
+        ):
+            return True
+    return False
+
+
+def _summary_has_decision_surface_signal(summary: dict[str, Any]) -> bool:
+    decision_tags = {
+        "approval",
+        "blocker",
+        "blocked",
+        "bottleneck",
+        "capacity",
+        "constraint",
+        "decision",
+        "decision_pressure",
+        "dependency",
+        "escalation",
+        "execution",
+        "owner",
+        "pressure",
+        "priority",
+        "resource",
+        "risk",
+        "tradeoff",
+    }
+    decision_roles = {"concern", "recommendation", "situation"}
+    for item in summary.get("claim_ops") or ():
+        if not isinstance(item, dict):
+            continue
+        tags = _summary_item_domain_tags(item)
+        entry = item.get("entry") if isinstance(item.get("entry"), dict) else {}
+        role = str(item.get("claim_role") or entry.get("claim_role") or "").casefold()
+        if tags.intersection(decision_tags):
+            return True
+        if role in decision_roles and tags.intersection(decision_tags):
+            return True
+
+    for item in summary.get("act_ops") or ():
+        if not isinstance(item, dict):
+            continue
+        op = str(item.get("op") or item.get("act_op") or "").casefold()
+        if op in {"create_decision", "transition_decision"}:
             return True
     return False
 
@@ -1358,60 +1553,101 @@ async def process_batch(
     limit: int = BATCH_SIZE,
     stats: WorkerStats | None = None,
     tenant_id: UUID | None = None,
+    action_timeout_seconds: float | None = None,
 ) -> WorkerStats:
-    """Process one batch of pending actions. One DB connection per
-    batch; each action is dispatched under its own savepoint so a
-    handler crash doesn't roll back the bookkeeping.
+    """Process one batch of pending actions. Each action is fetched and
+    dispatched in its own transaction so one slow or failing side effect
+    cannot roll back bookkeeping for earlier successful actions.
 
     Returns the (updated) WorkerStats. Callers that want to drive the
     worker in-process one batch at a time (tests) use this directly.
     `tenant_id` restricts processing to a single tenant (per-tenant
-    workers, test isolation).
+    workers, test isolation). `action_timeout_seconds` bounds each
+    individual side effect; the outer drain may still impose a total
+    batch timeout.
     """
     stats = stats or WorkerStats()
     stats.iterations += 1
 
+    for _ in range(max(0, int(limit))):
+        dispatched = await _process_one_pending_action(
+            pool,
+            stats=stats,
+            tenant_id=tenant_id,
+            action_timeout_seconds=action_timeout_seconds,
+        )
+        if not dispatched:
+            break
+    return stats
+
+
+async def _process_one_pending_action(
+    pool: asyncpg.Pool,
+    *,
+    stats: WorkerStats,
+    tenant_id: UUID | None,
+    action_timeout_seconds: float | None,
+) -> bool:
     async with pool.acquire() as conn:
         async with conn.transaction():
             actions = await fetch_pending_actions(
                 conn,
-                limit=limit,
+                limit=1,
                 tenant_id=tenant_id,
             )
-            for action in actions:
-                try:
-                    token = _DISPATCH_CONN.set(conn)
-                    try:
-                        await dispatch_action(action)
-                    finally:
-                        _DISPATCH_CONN.reset(token)
-                except Exception as exc:
-                    err = f"{type(exc).__name__}: {exc}"
-                    new_attempts = await increment_attempts(
+            if not actions:
+                return False
+            action = actions[0]
+            try:
+                await _dispatch_action_in_transaction(
+                    action,
+                    conn,
+                    action_timeout_seconds=action_timeout_seconds,
+                )
+            except Exception as exc:
+                err = f"{type(exc).__name__}: {exc}"
+                new_attempts = await increment_attempts(
+                    conn,
+                    action.id,
+                    error=err,
+                )
+                if new_attempts >= MAX_ATTEMPTS:
+                    await move_to_dead_letter(
                         conn,
                         action.id,
-                        error=err,
+                        error=(f"exceeded max attempts ({MAX_ATTEMPTS}): {err}"),
                     )
-                    if new_attempts >= MAX_ATTEMPTS:
-                        await move_to_dead_letter(
-                            conn,
-                            action.id,
-                            error=(f"exceeded max attempts ({MAX_ATTEMPTS}): {err}"),
-                        )
-                        stats.dead_lettered += 1
-                    else:
-                        stats.failed += 1
-                    _log.warning(
-                        "post_commit.dispatch_failed",
-                        action_id=str(action.id),
-                        action_kind=action.action_kind,
-                        attempts=new_attempts,
-                        error=err[:200],
-                    )
+                    stats.dead_lettered += 1
                 else:
-                    await mark_action_processed(conn, action.id)
-                    stats.processed += 1
-    return stats
+                    stats.failed += 1
+                _log.warning(
+                    "post_commit.dispatch_failed",
+                    action_id=str(action.id),
+                    action_kind=action.action_kind,
+                    attempts=new_attempts,
+                    error=err[:200],
+                )
+            else:
+                await mark_action_processed(conn, action.id)
+                stats.processed += 1
+    return True
+
+
+async def _dispatch_action_in_transaction(
+    action: PendingAction,
+    conn: asyncpg.Connection,
+    *,
+    action_timeout_seconds: float | None,
+) -> None:
+    token = _DISPATCH_CONN.set(conn)
+    try:
+        dispatch = dispatch_action(action)
+        if action_timeout_seconds is not None and action_timeout_seconds > 0:
+            await asyncio.wait_for(dispatch, timeout=float(action_timeout_seconds))
+        else:
+            await dispatch
+    finally:
+        _DISPATCH_CONN.reset(token)
 
 
 async def post_commit_worker(
