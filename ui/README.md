@@ -45,4 +45,20 @@ Set `NEXT_PUBLIC_FYRALIS_API_BASE` when the gateway is not served from the same 
 NEXT_PUBLIC_FYRALIS_API_BASE=http://localhost:8000 npm run dev
 ```
 
+For real provider integrations, set the customer-cloud console and public
+provider ingress explicitly. OAuth providers need the provider ingress to be a
+public HTTPS URL, for example an ngrok URL during local rehearsal or a
+customer-owned DNS name in BYOC:
+
+```bash
+NEXT_PUBLIC_FYRALIS_LOCAL_CONSOLE_URL=https://fyralis.customer.internal \
+NEXT_PUBLIC_FYRALIS_PROVIDER_INGRESS_URL=https://fyralis-ingress.customer.com \
+NEXT_PUBLIC_FYRALIS_API_BASE=https://fyralis-ingress.customer.com \
+npm run dev
+```
+
+The onboarding source setup screen renders real gateway routes such as
+`/integrations/slack/install`, `/integrations/github/callback`, and
+`/webhooks/github` from that provider ingress URL.
+
 Bearer tokens entered into the host control panel are kept in component memory only and are not written to browser storage.

@@ -41,6 +41,34 @@ export type StepDefinition = {
 
 export type PlanId = "design-partner-byoc" | "commercial-byoc";
 
+export type OnboardingIntent = {
+  schema_version: "fyralis.platform.onboarding_intent.v1";
+  intent_id: string;
+  plan_code: "design_partner_byoc_pilot" | "enterprise_byoc";
+  procurement_channel:
+    | "design_partner"
+    | "sales"
+    | "direct"
+    | "aws_marketplace"
+    | "private_offer";
+  entrypoint: string;
+  status:
+    | "draft"
+    | "intake_submitted"
+    | "workspace_created"
+    | "commercial_review"
+    | "cancelled";
+  customer_id: string | null;
+  tenant_id: string | null;
+  deployment_id: string | null;
+  company_name: string | null;
+  setup_owner_email: string | null;
+  target_cloud: "aws" | null;
+  created_at: string;
+  updated_at: string;
+  stored_scope: "sanitized_onboarding_metadata_only";
+};
+
 export type Plan = {
   id: PlanId;
   label: string;
@@ -66,12 +94,37 @@ export type Workspace = {
 export type CloudReadiness = {
   region: "us-east-1" | "us-west-2" | "eu-west-1";
   environment: "pilot" | "staging" | "production";
-  kubernetes: "available" | "needs-guidance" | "unknown";
-  network: "existing-ready" | "needs-isolated-guidance" | "unknown";
-  secrets: "aws-secrets-manager" | "needs-guidance" | "unknown";
-  postgres: "pgvector-ready" | "needs-guidance" | "unknown";
-  objectStorage: "s3-compatible-ready" | "needs-guidance" | "unknown";
-  kafka: "kafka-msk-ready" | "needs-guidance" | "unknown";
+  setupAutomation: "agent-managed";
+  agentAccess: "customer-cloud-agent" | "aws-cross-account-role";
+  agentPermissionProfile: "byoc-bootstrap-provisioner" | "discovery-only";
+  agentApprovalMode: "approval-required" | "plan-only";
+  setupRoleArn: string;
+  kubernetes: "available" | "provision-eks" | "needs-guidance" | "unknown";
+  network:
+    | "existing-ready"
+    | "provision-isolated-vpc"
+    | "needs-isolated-guidance"
+    | "unknown";
+  secrets:
+    | "aws-secrets-manager"
+    | "provision-secret-refs"
+    | "needs-guidance"
+    | "unknown";
+  postgres:
+    | "pgvector-ready"
+    | "provision-rds-pgvector"
+    | "needs-guidance"
+    | "unknown";
+  objectStorage:
+    | "s3-compatible-ready"
+    | "provision-s3"
+    | "needs-guidance"
+    | "unknown";
+  kafka:
+    | "kafka-msk-ready"
+    | "provision-msk"
+    | "needs-guidance"
+    | "unknown";
 };
 
 export type SetupPackage = {
@@ -180,6 +233,20 @@ export type SyncJob = {
   errors: number;
 };
 
+export type SourceObservation = {
+  id: string;
+  sourceId: string;
+  title: string;
+  kind: "message" | "issue" | "pull-request" | "page" | "deployment" | "task";
+  occurredAt: string;
+  summary: string;
+  evidencePath: string;
+  status: "landed" | "queued" | "rejected";
+  origin?: "preview" | "gateway";
+  syncTrack?: "historical" | "live" | "mixed";
+  sourceChannel?: string;
+};
+
 export type OnboardingProgress = {
   currentStep: StepId;
   completedSteps: StepId[];
@@ -201,5 +268,6 @@ export type OnboardingSnapshot = {
   sourceValidation: Validation;
   deploymentValidation: Validation;
   syncJobs: SyncJob[];
+  sourceObservations: SourceObservation[];
   progress: OnboardingProgress;
 };

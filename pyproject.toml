@@ -60,6 +60,9 @@ dependencies = [
     "pypdf>=4.0",                               # IN-16: Google Drive PDF text extraction (pure-Python, no system deps)
 ]
 
+[project.scripts]
+fyralis = "services.platform.cli.fyralis:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.1",

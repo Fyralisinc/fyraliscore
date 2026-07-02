@@ -104,6 +104,14 @@ def test_static_gateway_route_inventory_classifies_security_boundaries() -> None
         by_path["/byoc/agent/desired-state"].policy.access
         is RouteAccess.SELF_AUTHENTICATED
     )
+    onboarding_intent = by_path["/platform/onboarding/intents"].policy
+    assert onboarding_intent.access is RouteAccess.SELF_AUTHENTICATED
+    assert onboarding_intent.gateway_bearer_required is False
+    design_partner_intake = by_path[
+        "/platform/onboarding/intents/{intent_id}/design-partner-intake"
+    ].policy
+    assert design_partner_intake.access is RouteAccess.SELF_AUTHENTICATED
+    assert design_partner_intake.gateway_bearer_required is False
     assert by_path["/api/admin/dead-letters"].policy.access is RouteAccess.ADMIN
     assert by_path["/api/admin/dead-letters"].policy.gateway_bearer_required is True
 

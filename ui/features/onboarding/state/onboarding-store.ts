@@ -3,12 +3,14 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
-import { ONBOARDING_STEPS } from "../data/mock-data";
+import { ONBOARDING_STEPS, SOURCE_OBSERVATIONS } from "../data/mock-data";
 import type {
   CloudReadiness,
   Customer,
+  OnboardingIntent,
   PlanId,
   SourceConnection,
+  SourceObservation,
   SourceStatus,
   StepId,
   SyncJob,
@@ -17,6 +19,7 @@ import type {
 
 type OnboardingStore = {
   selectedPlan: PlanId;
+  onboardingIntent: OnboardingIntent | null;
   customer: Customer;
   readiness: CloudReadiness;
   currentStep: StepId;
@@ -25,10 +28,12 @@ type OnboardingStore = {
   connections: SourceConnection[];
   sourceValidation: Validation;
   syncJobs: SyncJob[];
+  sourceObservations: SourceObservation[];
   launchReady: boolean;
   dirty: boolean;
   lastSavedAt: string | null;
   choosePlan: (plan: PlanId) => void;
+  setOnboardingIntent: (intent: OnboardingIntent) => void;
   updateCustomer: (customer: Customer) => void;
   updateReadiness: (readiness: CloudReadiness) => void;
   goToStep: (step: StepId) => void;
@@ -37,6 +42,10 @@ type OnboardingStore = {
   updateConnection: (sourceId: string, patch: Partial<SourceConnection>) => void;
   setSourceValidation: (validation: Validation) => void;
   upsertSyncJob: (job: SyncJob) => void;
+  landSourceObservations: (
+    sourceId: string,
+    observations: SourceObservation[]
+  ) => void;
   setLaunchReady: (ready: boolean) => void;
   markSaved: () => void;
 };
@@ -50,12 +59,17 @@ const defaultCustomer: Customer = {
 const defaultReadiness: CloudReadiness = {
   region: "us-east-1",
   environment: "pilot",
-  kubernetes: "available",
-  network: "existing-ready",
-  secrets: "aws-secrets-manager",
-  postgres: "pgvector-ready",
-  objectStorage: "s3-compatible-ready",
-  kafka: "kafka-msk-ready"
+  setupAutomation: "agent-managed",
+  agentAccess: "customer-cloud-agent",
+  agentPermissionProfile: "byoc-bootstrap-provisioner",
+  agentApprovalMode: "approval-required",
+  setupRoleArn: "arn:aws:iam::123456789012:role/FyralisByocSetupRole",
+  kubernetes: "provision-eks",
+  network: "provision-isolated-vpc",
+  secrets: "provision-secret-refs",
+  postgres: "provision-rds-pgvector",
+  objectStorage: "provision-s3",
+  kafka: "provision-msk"
 };
 
 const defaultConnections: SourceConnection[] = [
@@ -115,6 +129,7 @@ export const useOnboardingStore = create<OnboardingStore>()(
   persist(
     (set, get) => ({
       selectedPlan: "design-partner-byoc",
+      onboardingIntent: null,
       customer: defaultCustomer,
       readiness: defaultReadiness,
       currentStep: "get-fyralis",
@@ -123,10 +138,15 @@ export const useOnboardingStore = create<OnboardingStore>()(
       connections: defaultConnections,
       sourceValidation: defaultValidation,
       syncJobs: [],
+      sourceObservations: SOURCE_OBSERVATIONS.filter(
+        (observation) => observation.sourceId === "slack"
+      ),
       launchReady: false,
       dirty: false,
       lastSavedAt: null,
       choosePlan: (plan) => set({ selectedPlan: plan, dirty: true }),
+      setOnboardingIntent: (intent) =>
+        set({ onboardingIntent: intent, dirty: true }),
       updateCustomer: (customer) => set({ customer, dirty: true }),
       updateReadiness: (readiness) => set({ readiness, dirty: true }),
       goToStep: (step) => {
@@ -163,6 +183,16 @@ export const useOnboardingStore = create<OnboardingStore>()(
           ],
           dirty: true
         })),
+      landSourceObservations: (sourceId, observations) =>
+        set((state) => ({
+          sourceObservations: [
+            ...state.sourceObservations.filter(
+              (item) => item.sourceId !== sourceId
+            ),
+            ...observations
+          ],
+          dirty: true
+        })),
       setLaunchReady: (ready) => set({ launchReady: ready, dirty: true }),
       markSaved: () =>
         set({
@@ -175,6 +205,7 @@ export const useOnboardingStore = create<OnboardingStore>()(
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         selectedPlan: state.selectedPlan,
+        onboardingIntent: state.onboardingIntent,
         customer: state.customer,
         readiness: state.readiness,
         completedSteps: state.completedSteps,
@@ -182,6 +213,7 @@ export const useOnboardingStore = create<OnboardingStore>()(
         connections: state.connections,
         sourceValidation: state.sourceValidation,
         syncJobs: state.syncJobs,
+        sourceObservations: state.sourceObservations,
         launchReady: state.launchReady,
         lastSavedAt: state.lastSavedAt
       }),

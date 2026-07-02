@@ -31,6 +31,9 @@ def register_gateway_routes(
     from services.app.gateway.byoc_control_panel_router import (
         build_byoc_control_panel_router,
     )
+    from services.app.gateway.byoc_onboarding_router import (
+        build_byoc_onboarding_router,
+    )
     from services.app.gateway.dead_letter_router import build_dead_letter_admin_router
     from services.app.gateway.extension_router import build_extension_router
     from services.app.gateway.map_routes import register_map_routes
@@ -51,6 +54,7 @@ def register_gateway_routes(
     app.include_router(build_byoc_agent_router())
     app.include_router(build_byoc_control_plane_router())
     app.include_router(build_byoc_control_panel_router())
+    app.include_router(build_byoc_onboarding_router())
     app.include_router(build_dead_letter_admin_router())
     if settings.debug_endpoints_enabled:
         from services.app.gateway.document_ingest_router import build_document_ingest_router

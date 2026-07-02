@@ -44,6 +44,8 @@ ui/coverage/
 
 # ---- Local data / artifacts ----
 *.local
+.fyralis/
+.fyralis-*.pid
 Memory.md
 docker-compose.override.yml
 *.log

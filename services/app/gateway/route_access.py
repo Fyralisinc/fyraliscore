@@ -90,6 +90,14 @@ _BYOC_CONTROL_PLANE = RouteAccessPolicy(
     ),
     gateway_bearer_required=False,
 )
+_PLATFORM_ONBOARDING = RouteAccessPolicy(
+    access=RouteAccess.SELF_AUTHENTICATED,
+    reason=(
+        "customer-facing hosted onboarding entrypoint creates sanitized "
+        "commercial/BYOC setup metadata before a tenant session exists"
+    ),
+    gateway_bearer_required=False,
+)
 _INTERNAL_BEARER = RouteAccessPolicy(
     access=RouteAccess.INTERNAL,
     reason="internal API currently protected by gateway bearer auth; deployment boundary still required",
@@ -141,6 +149,7 @@ GATEWAY_BEARER_BYPASS_PREFIX_POLICIES: tuple[
     ("/ext/", _EXTENSION),
     ("/byoc/agent/", _BYOC_CONTROL_PLANE),
     ("/byoc/control-plane/", _BYOC_CONTROL_PLANE),
+    ("/platform/onboarding/", _PLATFORM_ONBOARDING),
 )
 
 GATEWAY_BEARER_BYPASS_PREFIXES = tuple(

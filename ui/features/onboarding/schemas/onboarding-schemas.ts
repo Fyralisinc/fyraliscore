@@ -9,12 +9,50 @@ export const customerSchema = z.object({
 export const cloudReadinessSchema = z.object({
   region: z.enum(["us-east-1", "us-west-2", "eu-west-1"]),
   environment: z.enum(["pilot", "staging", "production"]),
-  kubernetes: z.enum(["available", "needs-guidance", "unknown"]),
-  network: z.enum(["existing-ready", "needs-isolated-guidance", "unknown"]),
-  secrets: z.enum(["aws-secrets-manager", "needs-guidance", "unknown"]),
-  postgres: z.enum(["pgvector-ready", "needs-guidance", "unknown"]),
-  objectStorage: z.enum(["s3-compatible-ready", "needs-guidance", "unknown"]),
-  kafka: z.enum(["kafka-msk-ready", "needs-guidance", "unknown"])
+  setupAutomation: z.enum(["agent-managed"]),
+  agentAccess: z.enum(["customer-cloud-agent", "aws-cross-account-role"]),
+  agentPermissionProfile: z.enum([
+    "byoc-bootstrap-provisioner",
+    "discovery-only"
+  ]),
+  agentApprovalMode: z.enum(["approval-required", "plan-only"]),
+  setupRoleArn: z.string().max(220),
+  kubernetes: z.enum([
+    "available",
+    "provision-eks",
+    "needs-guidance",
+    "unknown"
+  ]),
+  network: z.enum([
+    "existing-ready",
+    "provision-isolated-vpc",
+    "needs-isolated-guidance",
+    "unknown"
+  ]),
+  secrets: z.enum([
+    "aws-secrets-manager",
+    "provision-secret-refs",
+    "needs-guidance",
+    "unknown"
+  ]),
+  postgres: z.enum([
+    "pgvector-ready",
+    "provision-rds-pgvector",
+    "needs-guidance",
+    "unknown"
+  ]),
+  objectStorage: z.enum([
+    "s3-compatible-ready",
+    "provision-s3",
+    "needs-guidance",
+    "unknown"
+  ]),
+  kafka: z.enum([
+    "kafka-msk-ready",
+    "provision-msk",
+    "needs-guidance",
+    "unknown"
+  ])
 });
 
 export const sourceScopeSchema = z.object({

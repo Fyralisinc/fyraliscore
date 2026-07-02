@@ -8,15 +8,13 @@ import {
   ClipboardCheck,
   CloudCog,
   Download,
-  KeyRound,
-  LockKeyhole,
   Play,
   RefreshCw,
   Rocket,
   ShieldCheck,
   TerminalSquare
 } from "lucide-react";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useForm, type UseFormRegisterReturn } from "react-hook-form";
 
 import { Badge } from "@/components/ui/badge";
@@ -37,10 +35,12 @@ import type {
   CloudReadiness,
   Customer,
   Deployment,
+  OnboardingIntent,
   OnboardingSnapshot,
   PlanId,
   Source,
   SourceConnection,
+  SourceObservation,
   StepId,
   SyncJob,
   Validation,
@@ -48,10 +48,20 @@ import type {
 } from "../types";
 import { SourceDetailPanel } from "../components/source-detail-panel";
 import { SourceMarketplace } from "../components/source-marketplace";
+import {
+  createDesignPartnerOnboardingIntent,
+  fetchSlackRehearsalStatus,
+  fetchGatewaySourceObservations,
+  prepareSlackRehearsal,
+  type SlackRehearsalPrepareResponse,
+  type SlackRehearsalStatus,
+  submitDesignPartnerIntake
+} from "../services/onboarding-service";
 
 export type StepViewProps = {
   snapshot: OnboardingSnapshot;
   selectedPlan: PlanId;
+  onboardingIntent: OnboardingIntent | null;
   customer: Customer;
   readiness: CloudReadiness;
   workspace: Workspace;
@@ -60,14 +70,20 @@ export type StepViewProps = {
   connections: SourceConnection[];
   sourceValidation: Validation;
   syncJobs: SyncJob[];
+  sourceObservations: SourceObservation[];
   launchReady: boolean;
   choosePlan: (plan: PlanId) => void;
+  setOnboardingIntent: (intent: OnboardingIntent) => void;
   updateCustomer: (customer: Customer) => void;
   updateReadiness: (readiness: CloudReadiness) => void;
   selectSource: (sourceId: string) => void;
   updateConnection: (sourceId: string, patch: Partial<SourceConnection>) => void;
   setSourceValidation: (validation: Validation) => void;
   upsertSyncJob: (job: SyncJob) => void;
+  landSourceObservations: (
+    sourceId: string,
+    observations: SourceObservation[]
+  ) => void;
   setLaunchReady: (ready: boolean) => void;
   goTo: (step: StepId) => void;
   advance: () => void;
@@ -112,7 +128,472 @@ export function StepView({ stepId, props }: { stepId: StepId; props: StepViewPro
   }
 }
 
-function PlanSelection({ snapshot, selectedPlan, choosePlan, advance }: StepViewProps) {
+type CapabilityKey = Exclude<keyof CloudReadiness, "region" | "environment">;
+type CapabilityStatus = "existing" | "provision" | "guidance" | "unknown";
+
+type CapabilityDefinition = {
+  key: CapabilityKey;
+  label: string;
+  existingValue: CloudReadiness[CapabilityKey];
+  provisionValue: CloudReadiness[CapabilityKey];
+  module: string;
+  requiredFor: string;
+  provisionAction: string;
+  existingAction: string;
+};
+
+const BYOC_CAPABILITIES: CapabilityDefinition[] = [
+  {
+    key: "kubernetes",
+    label: "Kubernetes runtime",
+    existingValue: "available",
+    provisionValue: "provision-eks",
+    module: "terraform/aws/eks + helm/fyralis",
+    requiredFor: "Running the gateway, workers, and local customer-cloud console.",
+    provisionAction: "Provision a dedicated EKS runtime and install Fyralis with Helm.",
+    existingAction: "Attach Fyralis to the approved Kubernetes runtime."
+  },
+  {
+    key: "network",
+    label: "Network/VPC",
+    existingValue: "existing-ready",
+    provisionValue: "provision-isolated-vpc",
+    module: "terraform/aws/network",
+    requiredFor: "Keeping ingress, egress, private DNS, and service access in the approved boundary.",
+    provisionAction: "Create an isolated VPC, subnets, security groups, and DNS shape.",
+    existingAction: "Use the approved VPC and generate network policy references."
+  },
+  {
+    key: "secrets",
+    label: "AWS Secrets Manager",
+    existingValue: "aws-secrets-manager",
+    provisionValue: "provision-secret-refs",
+    module: "terraform/aws/secrets",
+    requiredFor: "Storing customer-owned source tokens, database URLs, and provider secrets locally.",
+    provisionAction: "Create secret names, IAM access, and placeholder refs without secret values.",
+    existingAction: "Reference existing customer-owned secret names only."
+  },
+  {
+    key: "postgres",
+    label: "Postgres with pgvector",
+    existingValue: "pgvector-ready",
+    provisionValue: "provision-rds-pgvector",
+    module: "terraform/aws/rds-pgvector",
+    requiredFor: "Tenant data, model state, embeddings, and vector search.",
+    provisionAction: "Provision Postgres/RDS and enable the pgvector extension.",
+    existingAction: "Use the existing Postgres endpoint and pgvector validation check."
+  },
+  {
+    key: "objectStorage",
+    label: "S3-compatible storage",
+    existingValue: "s3-compatible-ready",
+    provisionValue: "provision-s3",
+    module: "terraform/aws/s3",
+    requiredFor: "Raw payload tier, deployment artifacts, and durable evidence receipts.",
+    provisionAction: "Create S3 buckets, retention policy, and least-privilege access.",
+    existingAction: "Use the approved bucket and generate object-storage refs."
+  },
+  {
+    key: "kafka",
+    label: "Kafka/MSK",
+    existingValue: "kafka-msk-ready",
+    provisionValue: "provision-msk",
+    module: "terraform/aws/msk",
+    requiredFor: "Kafka-first ingestion durability and worker orchestration.",
+    provisionAction: "Provision MSK/Kafka topics, ACL shape, and worker connectivity.",
+    existingAction: "Use the existing Kafka/MSK cluster and generate topic/ACL checks."
+  }
+];
+
+type SourceRehearsalConfig = {
+  sourceId: string;
+  providerKind: string;
+  needsPublicUrl: boolean;
+  providerConsoleUrl: string;
+  gatewayRoutes: Array<{
+    label: string;
+    method: "GET" | "POST";
+    path: string;
+    access: "bearer session" | "state-token callback" | "provider signed" | "local only";
+  }>;
+  generatedArtifacts: string[];
+  envKeys: string[];
+  manualGates: string[];
+};
+
+type SourceSignalConfig = {
+  historicalTrigger: string;
+  liveIngress: string;
+  liveWorker: string;
+  landedChannel: string;
+};
+
+const SOURCE_REHEARSAL_CONFIG: Record<string, SourceRehearsalConfig> = {
+  slack: {
+    sourceId: "slack",
+    providerKind: "OAuth app",
+    needsPublicUrl: true,
+    providerConsoleUrl: "https://api.slack.com/apps",
+    gatewayRoutes: [
+      {
+        label: "Install",
+        method: "GET",
+        path: "/integrations/slack/install",
+        access: "bearer session"
+      },
+      {
+        label: "OAuth callback",
+        method: "GET",
+        path: "/integrations/slack/callback",
+        access: "state-token callback"
+      },
+      {
+        label: "Events API webhook",
+        method: "POST",
+        path: "/webhooks/slack/events",
+        access: "provider signed"
+      }
+    ],
+    generatedArtifacts: [
+      "fyralis-slack-app-manifest.yaml",
+      "fyralis-slack-app-events-manifest.yaml",
+      "slack.env.example",
+      "slack-provider-setup.json"
+    ],
+    envKeys: [
+      "SLACK_CLIENT_ID",
+      "SLACK_CLIENT_SECRET",
+      "SLACK_SIGNING_SECRET",
+      "SLACK_REDIRECT_URI",
+      "OAUTH_STATE_HMAC_KEY"
+    ],
+    manualGates: ["Slack app/admin approval", "Slack OAuth consent"]
+  },
+  jira: {
+    sourceId: "jira",
+    providerKind: "API token connect",
+    needsPublicUrl: true,
+    providerConsoleUrl:
+      "https://id.atlassian.com/manage-profile/security/api-tokens",
+    gatewayRoutes: [
+      {
+        label: "Credential preflight",
+        method: "POST",
+        path: "/integrations/jira/connect/preflight",
+        access: "bearer session"
+      },
+      {
+        label: "Finalize connection",
+        method: "POST",
+        path: "/integrations/jira/connect/finalize",
+        access: "bearer session"
+      },
+      {
+        label: "Webhook",
+        method: "POST",
+        path: "/webhooks/jira/events",
+        access: "provider signed"
+      }
+    ],
+    generatedArtifacts: [
+      "jira-connect-payload.example.json",
+      "jira.env.example",
+      "jira-provider-setup.json"
+    ],
+    envKeys: ["JIRA_BASE_URL", "JIRA_ACCOUNT_EMAIL", "JIRA_API_TOKEN"],
+    manualGates: [
+      "Atlassian API token creation",
+      "Project scope selection",
+      "Jira webhook registration"
+    ]
+  },
+  github: {
+    sourceId: "github",
+    providerKind: "GitHub App",
+    needsPublicUrl: true,
+    providerConsoleUrl: "https://github.com/settings/apps",
+    gatewayRoutes: [
+      {
+        label: "Install",
+        method: "GET",
+        path: "/integrations/github/install",
+        access: "bearer session"
+      },
+      {
+        label: "GitHub callback",
+        method: "GET",
+        path: "/integrations/github/callback",
+        access: "state-token callback"
+      },
+      {
+        label: "Webhook",
+        method: "POST",
+        path: "/webhooks/github",
+        access: "provider signed"
+      }
+    ],
+    generatedArtifacts: [
+      "fyralis-github-app-manifest.json",
+      "github.env.example",
+      "github-provider-setup.json"
+    ],
+    envKeys: [
+      "GITHUB_APP_SLUG",
+      "GITHUB_APP_ID",
+      "GITHUB_APP_PRIVATE_KEY",
+      "WEBHOOK_SECRET_GITHUB",
+      "OAUTH_STATE_HMAC_KEY"
+    ],
+    manualGates: ["GitHub App creation/update", "Org installation approval"]
+  },
+  discord: {
+    sourceId: "discord",
+    providerKind: "OAuth app + gateway bot",
+    needsPublicUrl: true,
+    providerConsoleUrl: "https://discord.com/developers/applications",
+    gatewayRoutes: [
+      {
+        label: "Install",
+        method: "GET",
+        path: "/integrations/discord/install",
+        access: "bearer session"
+      },
+      {
+        label: "OAuth callback",
+        method: "GET",
+        path: "/integrations/discord/callback",
+        access: "state-token callback"
+      },
+      {
+        label: "Interactions/webhook",
+        method: "POST",
+        path: "/webhooks/discord",
+        access: "provider signed"
+      }
+    ],
+    generatedArtifacts: [
+      "fyralis-discord-app-setup.json",
+      "discord.env.example",
+      "discord-provider-setup.json"
+    ],
+    envKeys: [
+      "DISCORD_CLIENT_ID",
+      "DISCORD_CLIENT_SECRET",
+      "DISCORD_APPLICATION_ID",
+      "DISCORD_BOT_TOKEN",
+      "WEBHOOK_SECRET_DISCORD",
+      "OAUTH_STATE_HMAC_KEY"
+    ],
+    manualGates: ["Discord app/bot setup", "Server admin bot approval"]
+  },
+  notion: {
+    sourceId: "notion",
+    providerKind: "OAuth integration",
+    needsPublicUrl: true,
+    providerConsoleUrl: "https://www.notion.so/my-integrations",
+    gatewayRoutes: [
+      {
+        label: "Install",
+        method: "GET",
+        path: "/integrations/notion/install",
+        access: "bearer session"
+      },
+      {
+        label: "OAuth callback",
+        method: "GET",
+        path: "/integrations/notion/callback",
+        access: "state-token callback"
+      },
+      {
+        label: "Webhook",
+        method: "POST",
+        path: "/webhooks/notion",
+        access: "provider signed"
+      }
+    ],
+    generatedArtifacts: [
+      "fyralis-notion-app-setup.json",
+      "notion.env.example",
+      "notion-provider-setup.json"
+    ],
+    envKeys: [
+      "NOTION_CLIENT_ID",
+      "NOTION_CLIENT_SECRET",
+      "NOTION_REDIRECT_URI",
+      "OAUTH_STATE_HMAC_KEY"
+    ],
+    manualGates: [
+      "Notion integration setup",
+      "Workspace OAuth consent",
+      "Webhook verification token copy"
+    ]
+  },
+  telegram: {
+    sourceId: "telegram",
+    providerKind: "Local MTProto gateway session",
+    needsPublicUrl: false,
+    providerConsoleUrl: "https://my.telegram.org/apps",
+    gatewayRoutes: [
+      {
+        label: "Local session",
+        method: "POST",
+        path: ".fyralis/local-rehearsal/telegram/telegram.env",
+        access: "local only"
+      }
+    ],
+    generatedArtifacts: [
+      "telegram-session-plan.json",
+      "telegram.env.example",
+      "telegram-provider-setup.json"
+    ],
+    envKeys: [
+      "TELEGRAM_ACCOUNT_LABEL",
+      "TELEGRAM_API_ID",
+      "TELEGRAM_API_HASH",
+      "TELEGRAM_SESSION"
+    ],
+    manualGates: [
+      "Telegram API ID/hash creation",
+      "MTProto login code",
+      "Dialog scope approval"
+    ]
+  }
+};
+
+const SOURCE_SIGNAL_CONFIG: Record<string, SourceSignalConfig> = {
+  slack: {
+    historicalTrigger:
+      "OAuth callback writes provider_installations and onboarding_triggers(source='slack').",
+    liveIngress: "/webhooks/slack/events",
+    liveWorker: "Slack Events API -> webhook router -> ingestion pipeline.",
+    landedChannel: "slack:message"
+  },
+  jira: {
+    historicalTrigger:
+      "Jira finalize writes jira_installations/projects and onboarding_triggers(source='jira').",
+    liveIngress: "/webhooks/jira/events",
+    liveWorker: "Jira webhook -> signed webhook router -> ingestion pipeline.",
+    landedChannel: "jira:issue"
+  },
+  github: {
+    historicalTrigger:
+      "GitHub callback writes provider_installations and onboarding_triggers(source='github').",
+    liveIngress: "/webhooks/github",
+    liveWorker: "GitHub webhook -> signed webhook router -> ingestion pipeline.",
+    landedChannel: "github:event"
+  },
+  discord: {
+    historicalTrigger:
+      "Discord callback writes provider_installations and onboarding_triggers(source='discord').",
+    liveIngress: "/webhooks/discord",
+    liveWorker: "Discord gateway/bot events -> gateway dispatcher -> observations.",
+    landedChannel: "discord:message"
+  },
+  notion: {
+    historicalTrigger:
+      "Notion callback writes provider_installations and onboarding_triggers(source='notion').",
+    liveIngress: "/webhooks/notion",
+    liveWorker: "Notion webhook -> verified webhook router -> ingestion pipeline.",
+    landedChannel: "notion:object"
+  },
+  telegram: {
+    historicalTrigger:
+      "Telegram finalize writes telegram_installations/dialogs and onboarding_triggers(source='telegram').",
+    liveIngress: "Customer-cloud MTProto session",
+    liveWorker: "Telegram gateway worker reads updates and writes observations locally.",
+    landedChannel: "telegram:message"
+  }
+};
+
+const REHEARSAL_SOURCE_IDS = Object.keys(SOURCE_REHEARSAL_CONFIG);
+
+function capabilityStatus(
+  readiness: CloudReadiness,
+  capability: CapabilityDefinition
+): CapabilityStatus {
+  const value = readiness[capability.key];
+  if (value === capability.existingValue) {
+    return "existing";
+  }
+  if (value === capability.provisionValue) {
+    return "provision";
+  }
+  if (value === "unknown") {
+    return "unknown";
+  }
+  return "guidance";
+}
+
+function buildAutomationPlan(readiness: CloudReadiness) {
+  const rows = BYOC_CAPABILITIES.map((capability) => ({
+    ...capability,
+    status: capabilityStatus(readiness, capability)
+  }));
+  return {
+    rows,
+    existing: rows.filter((row) => row.status === "existing"),
+    provision: rows.filter((row) => row.status === "provision"),
+    needsDecision: rows.filter(
+      (row) => row.status === "guidance" || row.status === "unknown"
+    )
+  };
+}
+
+function normalizeReadiness(readiness: CloudReadiness): CloudReadiness {
+  const partial = readiness as Partial<CloudReadiness>;
+  return {
+    region: partial.region ?? "us-east-1",
+    environment: partial.environment ?? "pilot",
+    setupAutomation: "agent-managed",
+    agentAccess: partial.agentAccess ?? "customer-cloud-agent",
+    agentPermissionProfile:
+      partial.agentPermissionProfile ?? "byoc-bootstrap-provisioner",
+    agentApprovalMode: partial.agentApprovalMode ?? "approval-required",
+    setupRoleArn:
+      partial.setupRoleArn ??
+      "arn:aws:iam::123456789012:role/FyralisByocSetupRole",
+    kubernetes: partial.kubernetes ?? "provision-eks",
+    network: partial.network ?? "provision-isolated-vpc",
+    secrets: partial.secrets ?? "provision-secret-refs",
+    postgres: partial.postgres ?? "provision-rds-pgvector",
+    objectStorage: partial.objectStorage ?? "provision-s3",
+    kafka: partial.kafka ?? "provision-msk"
+  };
+}
+
+function PlanSelection({
+  snapshot,
+  selectedPlan,
+  onboardingIntent,
+  choosePlan,
+  setOnboardingIntent,
+  advance
+}: StepViewProps) {
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function startDesignPartner() {
+    setStarting(true);
+    setError(null);
+    try {
+      choosePlan("design-partner-byoc");
+      const intent =
+        onboardingIntent?.plan_code === "design_partner_byoc_pilot"
+          ? onboardingIntent
+          : await createDesignPartnerOnboardingIntent();
+      setOnboardingIntent(intent);
+      advance();
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Could not create the Design Partner BYOC intent."
+      );
+    } finally {
+      setStarting(false);
+    }
+  }
+
   return (
     <div className="rounded-lg border border-border bg-card p-5 text-card-foreground md:p-7">
       <div className="mx-auto max-w-5xl">
@@ -177,28 +658,41 @@ function PlanSelection({ snapshot, selectedPlan, choosePlan, advance }: StepView
                   ? "border-success bg-success text-success-foreground hover:bg-success/90"
                   : "border-info bg-info text-info-foreground hover:bg-info/90"
               )}
+              disabled={starting || plan.id !== "design-partner-byoc"}
               onClick={() => {
-                choosePlan(plan.id);
-                advance();
+                if (plan.id === "design-partner-byoc") {
+                  void startDesignPartner();
+                }
               }}
             >
               {plan.id === "design-partner-byoc"
-                ? "Start Design Partner BYOC"
-                : "Start Enterprise"}
+                ? starting
+                  ? "Creating intent..."
+                  : "Start Design Partner BYOC"
+                : "Enterprise path later"}
             </Button>
           </article>
         ))}
         </div>
+        {error ? (
+          <p className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            {error}
+          </p>
+        ) : null}
       </div>
     </div>
   );
 }
 
 function CustomerIntake({
+  onboardingIntent,
   customer,
+  setOnboardingIntent,
   updateCustomer,
   advance
 }: StepViewProps) {
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const form = useForm<CustomerFormValues>({
     resolver: zodResolver(customerSchema),
     defaultValues: customer,
@@ -218,9 +712,30 @@ function CustomerIntake({
   return (
     <form
       className="grid gap-5"
-      onSubmit={form.handleSubmit((values) => {
-        updateCustomer(values);
-        advance();
+      onSubmit={form.handleSubmit(async (values) => {
+        setSubmitting(true);
+        setSubmitError(null);
+        try {
+          const intent =
+            onboardingIntent?.plan_code === "design_partner_byoc_pilot"
+              ? onboardingIntent
+              : await createDesignPartnerOnboardingIntent();
+          const updatedIntent = await submitDesignPartnerIntake(
+            intent.intent_id,
+            values
+          );
+          setOnboardingIntent(updatedIntent);
+          updateCustomer(values);
+          advance();
+        } catch (caught) {
+          setSubmitError(
+            caught instanceof Error
+              ? caught.message
+              : "Could not submit Design Partner BYOC intake."
+          );
+        } finally {
+          setSubmitting(false);
+        }
       })}
     >
       <Card>
@@ -256,7 +771,34 @@ function CustomerIntake({
           </Field>
         </CardContent>
       </Card>
-      <ActionBar primaryLabel="Continue to cloud readiness" submit />
+      {onboardingIntent ? (
+        <Card>
+          <CardContent className="grid gap-2 p-4 text-sm text-muted-foreground md:grid-cols-3">
+            <span>
+              <strong className="block text-foreground">Intent</strong>
+              {onboardingIntent.intent_id}
+            </span>
+            <span>
+              <strong className="block text-foreground">Customer</strong>
+              {onboardingIntent.customer_id ?? "Created after intake"}
+            </span>
+            <span>
+              <strong className="block text-foreground">Deployment</strong>
+              {onboardingIntent.deployment_id ?? "Created after intake"}
+            </span>
+          </CardContent>
+        </Card>
+      ) : null}
+      {submitError ? (
+        <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {submitError}
+        </p>
+      ) : null}
+      <ActionBar
+        primaryLabel={submitting ? "Creating workspace..." : "Continue to cloud readiness"}
+        disabled={submitting}
+        submit
+      />
     </form>
   );
 }
@@ -266,15 +808,18 @@ function CloudReadinessStep({
   updateReadiness,
   advance
 }: StepViewProps) {
+  const initialReadiness = normalizeReadiness(readiness);
   const form = useForm<CloudReadinessFormValues>({
     resolver: zodResolver(cloudReadinessSchema),
-    defaultValues: readiness,
+    defaultValues: initialReadiness,
     mode: "onChange"
   });
 
   useEffect(() => {
     const subscription = form.watch((value) => {
-      const parsed = cloudReadinessSchema.safeParse(value);
+      const parsed = cloudReadinessSchema.safeParse(
+        normalizeReadiness(value as CloudReadiness)
+      );
       if (parsed.success) {
         updateReadiness(parsed.data);
       }
@@ -282,18 +827,28 @@ function CloudReadinessStep({
     return () => subscription.unsubscribe();
   }, [form, updateReadiness]);
 
+  const currentReadiness = normalizeReadiness(form.watch() as CloudReadiness);
+  const accessLabel =
+    currentReadiness.agentAccess === "customer-cloud-agent"
+      ? "Local agent"
+      : "Assume setup role";
+  const approvalLabel =
+    currentReadiness.agentApprovalMode === "approval-required"
+      ? "Approval required"
+      : "Plan only";
+
   return (
     <form
       className="grid gap-5"
       onSubmit={form.handleSubmit((values) => {
-        updateReadiness(values);
+        updateReadiness(normalizeReadiness(values));
         advance();
       })}
     >
       <Card>
         <CardHeader>
-          <CardTitle>Required BYOC components</CardTitle>
-          <Badge tone="info">No credentials</Badge>
+          <CardTitle>BYOC setup agent</CardTitle>
+          <Badge tone="info">Agent mode</Badge>
         </CardHeader>
         <CardContent className="grid gap-5 md:grid-cols-2">
           <SelectField label="Cloud region" register={form.register("region")} help="Used for deployment location and residency.">
@@ -306,53 +861,231 @@ function CloudReadinessStep({
             <option>staging</option>
             <option>production</option>
           </SelectField>
-          <SelectField label="Kubernetes runtime" register={form.register("kubernetes")} help="Fyralis first supports the Kubernetes BYOC install path.">
-            <option value="available">Kubernetes available</option>
-            <option value="needs-guidance">Need Kubernetes setup guidance</option>
-            <option value="unknown">Not sure yet</option>
+          <SelectField
+            label="Agent access"
+            register={form.register("agentAccess")}
+            help="The agent runs with scoped setup access, not customer source credentials."
+          >
+            <option value="customer-cloud-agent">Install agent inside customer cloud</option>
+            <option value="aws-cross-account-role">Allow Fyralis agent to assume setup role</option>
           </SelectField>
-          <SelectField label="Network/VPC" register={form.register("network")} help="Confirms whether Fyralis fits into an approved network boundary.">
-            <option value="existing-ready">Existing VPC/network ready</option>
-            <option value="needs-isolated-guidance">Need isolated VPC guidance</option>
-            <option value="unknown">Not sure yet</option>
+          <Field
+            label="Setup role ARN"
+            help="Role name/reference only. No secret keys or source tokens."
+            error={form.formState.errors.setupRoleArn?.message}
+          >
+            <Input {...form.register("setupRoleArn")} />
+          </Field>
+          <SelectField
+            label="Permission profile"
+            register={form.register("agentPermissionProfile")}
+            help="Controls whether the agent can only discover or can also provision BYOC infra."
+          >
+            <option value="byoc-bootstrap-provisioner">BYOC bootstrap provisioner</option>
+            <option value="discovery-only">Discovery only</option>
           </SelectField>
-          <SelectField label="AWS Secrets Manager" register={form.register("secrets")} help="Fyralis uses secret refs later, never secret values.">
-            <option value="aws-secrets-manager">AWS Secrets Manager available</option>
-            <option value="needs-guidance">Need setup guidance</option>
-            <option value="unknown">Not sure yet</option>
-          </SelectField>
-          <SelectField label="Postgres with pgvector" register={form.register("postgres")} help="Required for tenant data, model state, and vector search.">
-            <option value="pgvector-ready">Postgres with pgvector available</option>
-            <option value="needs-guidance">Need setup guidance</option>
-            <option value="unknown">Not sure yet</option>
-          </SelectField>
-          <SelectField label="S3-compatible storage" register={form.register("objectStorage")} help="Required for raw payload tier and artifacts.">
-            <option value="s3-compatible-ready">S3-compatible object storage available</option>
-            <option value="needs-guidance">Need bucket setup guidance</option>
-            <option value="unknown">Not sure yet</option>
-          </SelectField>
-          <SelectField label="Kafka/MSK" register={form.register("kafka")} help="Required for Kafka-first ingestion durability.">
-            <option value="kafka-msk-ready">Kafka/MSK available</option>
-            <option value="needs-guidance">Need Kafka/MSK setup guidance</option>
-            <option value="unknown">Not sure yet</option>
+          <SelectField
+            label="Apply policy"
+            register={form.register("agentApprovalMode")}
+            help="Recommended: require the customer setup owner to approve the plan before apply."
+          >
+            <option value="approval-required">Customer approves before apply</option>
+            <option value="plan-only">Plan only, no apply</option>
           </SelectField>
         </CardContent>
       </Card>
-      <ActionBar primaryLabel="Prepare setup package" submit />
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Agent runbook</CardTitle>
+          <Badge tone="success">No source data access</Badge>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-3">
+          <Metric
+            label="Access mode"
+            value={accessLabel}
+            detail="Agent uses scoped customer-approved setup access."
+          />
+          <Metric
+            label="Approval"
+            value={approvalLabel}
+            detail="Apply is gated by the setup owner."
+          />
+          <Metric
+            label="Discovery scope"
+            value="6 capabilities"
+            detail="Kubernetes, VPC, Secrets, Postgres, S3, and Kafka/MSK."
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>What the agent manages</CardTitle>
+          <Badge tone="info">Customer cloud only</Badge>
+        </CardHeader>
+        <CardContent className="grid gap-3 lg:grid-cols-2">
+          {BYOC_CAPABILITIES.map((capability) => (
+            <div key={capability.key} className="rounded-lg border border-border bg-background/70 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <span>
+                  <strong className="block">{capability.label}</strong>
+                  <span className="mt-1 block text-sm text-muted-foreground">
+                    Agent discovers existing resources, then provisions only what
+                    is missing and approved.
+                  </span>
+                </span>
+                <Badge tone="info">Agent-managed</Badge>
+              </div>
+              <code className="mt-3 block break-all text-xs text-muted-foreground">
+                {capability.module}
+              </code>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-5 lg:grid-cols-2">
+        <BoundaryPanel
+          title="Agent can"
+          items={[
+            "Discover required BYOC resources",
+            "Generate CloudFormation and Helm execution artifacts",
+            "Create missing approved infrastructure",
+            "Install Fyralis with Helm",
+            "Emit sanitized readiness status"
+          ]}
+          strong
+        />
+        <BoundaryPanel
+          title="Agent cannot"
+          items={[
+            "Read source credentials",
+            "Upload raw customer data",
+            "Export prompts, logs, or embeddings",
+            "Apply changes without approval",
+            "Create resources outside the setup policy"
+          ]}
+        />
+      </div>
+
+      <ActionBar primaryLabel="Generate agent setup package" submit />
     </form>
   );
 }
 
-function SetupPackageStep({ snapshot, advance }: StepViewProps) {
+function SetupPackageStep({ snapshot, readiness, advance }: StepViewProps) {
+  const effectiveReadiness = normalizeReadiness(readiness);
+  const automationPlan = buildAutomationPlan(effectiveReadiness);
+  const packageMode =
+    effectiveReadiness.agentApprovalMode === "plan-only"
+      ? "Discovery and plan only"
+      : "Agent setup package";
+  const accessCommand =
+    effectiveReadiness.agentAccess === "customer-cloud-agent"
+      ? `fyralis byoc agent install --bundle fyralis-byoc-acme-finance.zip --region ${effectiveReadiness.region}`
+      : `fyralis byoc agent register-role --role-arn ${effectiveReadiness.setupRoleArn} --external-id fyralis-acme-finance-pilot`;
+  const applyCommand =
+    effectiveReadiness.agentApprovalMode === "plan-only"
+      ? "fyralis byoc agent plan --no-apply --emit-review-bundle"
+      : "fyralis byoc agent apply --requires-approval --plan latest";
+  const providerExecutorCommand =
+    `fyralis byoc agent provider-executor --cloud aws --region ${effectiveReadiness.region} --stack-name fyralis-byoc-acme-finance --create-change-set --execute-change-set --execute-helm --confirm-cost-and-mutation --json`;
+  const autopilotCommand = [
+    "fyralis byoc agent autopilot",
+    "--cloud aws",
+    `--region ${effectiveReadiness.region}`,
+    "--external-id fyralis-acme-finance-pilot",
+    "--bundle fyralis-byoc-acme-finance.zip",
+    "--capabilities kubernetes,network,secrets,postgres,s3,kafka",
+    effectiveReadiness.agentApprovalMode === "plan-only"
+      ? "--plan-only"
+      : "--auto-approve",
+    "--run-readonly-api-probes",
+    "--run-provider-executor",
+    "--stack-name fyralis-byoc-acme-finance",
+    "--json"
+  ].join(" ");
+  const commands = [
+    {
+      label: "Zero-spend local rehearsal",
+      command:
+        `fyralis byoc agent local-rehearsal --region ${effectiveReadiness.region} --workdir .fyralis/local-rehearsal --json`
+    },
+    {
+      label: "Create setup role template",
+      command:
+        `fyralis byoc agent role-template --cloud aws --region ${effectiveReadiness.region} --external-id fyralis-acme-finance-pilot`
+    },
+    {
+      label: "Register setup agent",
+      command: accessCommand
+    },
+    {
+      label: "Discover and plan",
+      command:
+        `fyralis byoc agent discover --region ${effectiveReadiness.region} --capabilities kubernetes,network,secrets,postgres,s3,kafka --emit-plan`
+    },
+    {
+      label: "Apply approved plan",
+      command: applyCommand
+    },
+    {
+      label: "Execute AWS and Helm setup",
+      command: providerExecutorCommand
+    },
+    {
+      label: "Validate",
+      command:
+        "fyralis byoc agent validate --json --emit-sanitized-readiness-report"
+    }
+  ];
+
   return (
     <div className="grid gap-5">
       <Card>
         <CardHeader>
-          <CardTitle>Generated BYOC package</CardTitle>
-          <Badge tone="success">Package ready</Badge>
+          <CardTitle>Generated BYOC agent package</CardTitle>
+          <Badge tone="success">{packageMode}</Badge>
         </CardHeader>
-        <CardContent>
-          <div className="grid gap-3 md:grid-cols-2">
+        <CardContent className="grid gap-5">
+          <div className="rounded-lg border border-info/30 bg-info/10 p-4">
+            <div className="flex items-start gap-3">
+              <CloudCog className="mt-0.5 h-5 w-5 shrink-0 text-info" aria-hidden="true" />
+              <span>
+                <strong className="block text-sm">Agent runs with scoped setup access</strong>
+                <span className="mt-1 block text-sm leading-6 text-muted-foreground">
+                  The setup owner installs the agent or grants the setup role,
+                  reviews the discovered plan, approves apply, and sends back
+                  only sanitized readiness status.
+                </span>
+              </span>
+            </div>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            {automationPlan.rows.map((row) => (
+              <div key={row.key} className="rounded-lg border border-border bg-background/70 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <span>
+                    <strong className="block">{row.label}</strong>
+                    <span className="mt-1 block text-sm text-muted-foreground">
+                      Agent discovers current state, reuses approved resources,
+                      and provisions missing resources only after approval.
+                    </span>
+                  </span>
+                  <Badge tone="info">Agent-managed</Badge>
+                </div>
+                <code className="mt-3 block break-all text-xs text-muted-foreground">
+                  {row.module}
+                </code>
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <h3 className="text-sm font-semibold">Safe artifacts generated</h3>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
             {snapshot.setupPackage.artifacts.map((artifact) => (
               <div key={artifact.filename} className="rounded-lg border border-border bg-background/70 p-4">
                 <div className="flex items-start justify-between gap-3">
@@ -371,9 +1104,26 @@ function SetupPackageStep({ snapshot, advance }: StepViewProps) {
                 </code>
               </div>
             ))}
+            </div>
           </div>
-          <div className="mt-5 grid gap-3">
-            {snapshot.setupPackage.commands.map((command) => (
+
+          <div>
+            <h3 className="text-sm font-semibold">Customer-cloud autopilot</h3>
+            <div className="mt-3 rounded-lg border border-success/30 bg-success/10 p-4">
+              <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+                <TerminalSquare className="h-4 w-4" aria-hidden="true" />
+                Setup Fyralis command
+              </div>
+              <code className="block break-all text-xs text-muted-foreground">
+                {autopilotCommand}
+              </code>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-semibold">Advanced manual commands</h3>
+            <div className="mt-3 grid gap-3">
+            {commands.map((command) => (
               <div key={command.label} className="rounded-lg border border-border bg-primary p-4 text-primary-foreground">
                 <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
                   <TerminalSquare className="h-4 w-4" aria-hidden="true" />
@@ -384,6 +1134,7 @@ function SetupPackageStep({ snapshot, advance }: StepViewProps) {
                 </code>
               </div>
             ))}
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -495,38 +1246,514 @@ function DeploymentValidationStep({ snapshot, advance }: StepViewProps) {
   );
 }
 
+function sourceRehearsalCommand(sourceId: string, workspace: Workspace) {
+  const config = SOURCE_REHEARSAL_CONFIG[sourceId];
+  if (!config) {
+    return null;
+  }
+  return [
+    "fyralis byoc source rehearse",
+    `--source ${sourceId}`,
+    `--setup-dir .fyralis/local-rehearsal/${sourceId}`,
+    config.needsPublicUrl ? `--public-url ${workspace.providerIngressUrl}` : "",
+    "--no-start-tunnel",
+    "--json"
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function sourceApplyEnvCommand(sourceId: string, workspace: Workspace) {
+  const config = SOURCE_REHEARSAL_CONFIG[sourceId];
+  if (!config) {
+    return null;
+  }
+  return [
+    "fyralis byoc source rehearse",
+    `--source ${sourceId}`,
+    `--setup-dir .fyralis/local-rehearsal/${sourceId}`,
+    config.needsPublicUrl ? `--public-url ${workspace.providerIngressUrl}` : "",
+    `--provider-env .fyralis/local-rehearsal/${sourceId}/${sourceId}.env`,
+    "--apply-env",
+    config.providerKind === "API token connect" ||
+    config.providerKind === "Local MTProto gateway session"
+      ? ""
+      : "--print-install-url --tenant-id <tenant-id> --actor-id <actor-id>",
+    "--json"
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function sourceFirstSyncCommand({
+  sourceId,
+  workspace,
+  syncMode,
+  backfillWindow
+}: {
+  sourceId: string;
+  workspace: Workspace;
+  syncMode: SourceConnection["syncMode"];
+  backfillWindow: SourceConnection["backfillWindow"];
+}) {
+  return [
+    "fyralis byoc source activate",
+    `--source ${sourceId}`,
+    "--requires-approval",
+    "--start-first-sync",
+    `--sync-mode ${syncModeToCli(syncMode)}`,
+    `--backfill-window ${backfillWindowToCli(backfillWindow)}`,
+    `--admin-console-url ${workspace.localConsoleUrl}`,
+    `--provider-ingress-url ${workspace.providerIngressUrl}`,
+    "--provider-authorization-mode preauthorized-ref",
+    "--preauthorized-ref-manifest ./customer-source-refs.json",
+    "--json"
+  ].join(" ");
+}
+
+function syncModeToCli(syncMode: SourceConnection["syncMode"]) {
+  const modes: Record<SourceConnection["syncMode"], string> = {
+    "Dry run": "dry-run",
+    "Limited backfill": "limited-backfill",
+    "Live events": "live-events",
+    "Backfill plus live": "backfill-plus-live"
+  };
+  return modes[syncMode];
+}
+
+function backfillWindowToCli(backfillWindow: SourceConnection["backfillWindow"]) {
+  const windows: Record<SourceConnection["backfillWindow"], string> = {
+    "Last 7 days": "7d",
+    "Last 30 days": "30d",
+    "Last 90 days": "90d",
+    "No historical backfill": "none"
+  };
+  return windows[backfillWindow];
+}
+
+function gatewayRouteUrl(workspace: Workspace, path: string) {
+  if (path.startsWith(".")) {
+    return path;
+  }
+  return `${workspace.providerIngressUrl}${path}`;
+}
+
+function isPublicHttpsUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      !["localhost", "127.0.0.1", "0.0.0.0"].includes(url.hostname) &&
+      !url.hostname.endsWith(".example") &&
+      !value.includes("REPLACE_WITH")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function errorMessage(caught: unknown) {
+  if (caught instanceof Error) {
+    return caught.message;
+  }
+  return "Unexpected error while reading the customer gateway.";
+}
+
+function sourceObservationSamples(
+  source: Source,
+  syncMode: SourceConnection["syncMode"]
+): SourceObservation[] {
+  const summaries: Record<string, Array<[string, SourceObservation["kind"], string]>> = {
+    slack: [
+      [
+        "Finance launch thread",
+        "message",
+        "Approved Slack channels produced launch-readiness signals."
+      ],
+      [
+        "Customer-success escalation",
+        "message",
+        "A pilot allowlisted channel produced support-priority metadata."
+      ]
+    ],
+    jira: [
+      [
+        "Pilot issue movement",
+        "issue",
+        "Approved Jira projects produced issue status and comment metadata."
+      ],
+      [
+        "Release blocker changed",
+        "task",
+        "A tracked Jira issue moved into review during the first sync."
+      ]
+    ],
+    github: [
+      [
+        "Repository rollout activity",
+        "pull-request",
+        "Selected repositories produced pull-request and issue metadata."
+      ],
+      [
+        "Deployment branch updated",
+        "deployment",
+        "A tracked branch update landed as a code-workflow observation."
+      ]
+    ],
+    discord: [
+      [
+        "Community feedback channel",
+        "message",
+        "Approved Discord channels produced event metadata through the gateway."
+      ],
+      [
+        "Moderator follow-up",
+        "message",
+        "A scoped Discord thread produced a follow-up observation."
+      ]
+    ],
+    notion: [
+      [
+        "Launch checklist updates",
+        "page",
+        "Shared Notion pages produced page-change observations."
+      ],
+      [
+        "Runbook database edited",
+        "page",
+        "An approved Notion database update landed as a knowledge observation."
+      ]
+    ],
+    telegram: [
+      [
+        "Partner readiness chat",
+        "message",
+        "Approved Telegram dialogs produced MTProto session observations."
+      ],
+      [
+        "Pilot decision note",
+        "message",
+        "A scoped Telegram chat produced a decision-tracking observation."
+      ]
+    ]
+  };
+  const rows =
+    summaries[source.id] ??
+    [
+      [
+        `${source.name} pilot event`,
+        "task" as const,
+        `${source.name} produced a sanitized pilot observation.`
+      ]
+    ];
+  const now = new Date().toISOString();
+  return rows.map(([title, kind, summary], index) => ({
+    id: `obs_${source.id}_${index + 1}`,
+    sourceId: source.id,
+    title,
+    kind,
+    occurredAt: now,
+    summary: `${summary} Sync mode: ${syncMode}.`,
+    evidencePath: `s3://fyralis-byoc-pilot/raw/${source.id}/obs_${index + 1}.jsonl`,
+    status: "landed",
+    origin: "preview",
+    syncTrack:
+      syncMode === "Live events"
+        ? "live"
+        : syncMode === "Backfill plus live"
+          ? "mixed"
+          : "historical",
+    sourceChannel: SOURCE_SIGNAL_CONFIG[source.id]?.landedChannel ?? `${source.id}:sample`
+  }));
+}
+
 function SourceCatalogStep(props: StepViewProps) {
   const { snapshot, selectedSource, selectedConnection, selectSource, updateConnection, goTo } = props;
+  const allSourceCommands = [
+    [
+      "discover",
+      [
+        "fyralis byoc source discover",
+        "--source all",
+        "--scopes auto",
+        `--admin-console-url ${props.workspace.localConsoleUrl}`,
+        `--provider-ingress-url ${props.workspace.providerIngressUrl}`,
+        "--provider-authorization-mode preauthorized-ref",
+        "--preauthorized-ref-manifest ./customer-source-refs.json",
+        "--json"
+      ].join(" ")
+    ],
+    [
+      "plan",
+      [
+        "fyralis byoc source plan",
+        "--source all",
+        "--scopes auto",
+        "--sync-mode dry-run",
+        "--backfill-window 30d",
+        `--admin-console-url ${props.workspace.localConsoleUrl}`,
+        `--provider-ingress-url ${props.workspace.providerIngressUrl}`,
+        "--provider-authorization-mode preauthorized-ref",
+        "--preauthorized-ref-manifest ./customer-source-refs.json",
+        "--json"
+      ].join(" ")
+    ],
+    [
+      "apply",
+      [
+        "fyralis byoc source apply",
+        "--source all",
+        "--requires-approval",
+        "--plan latest",
+        "--sync-mode dry-run",
+        "--backfill-window 30d",
+        `--admin-console-url ${props.workspace.localConsoleUrl}`,
+        `--provider-ingress-url ${props.workspace.providerIngressUrl}`,
+        "--provider-authorization-mode preauthorized-ref",
+        "--preauthorized-ref-manifest ./customer-source-refs.json",
+        "--json"
+      ].join(" ")
+    ],
+    [
+      "validate",
+      [
+        "fyralis byoc source validate",
+        "--source all",
+        `--admin-console-url ${props.workspace.localConsoleUrl}`,
+        `--provider-ingress-url ${props.workspace.providerIngressUrl}`,
+        "--provider-authorization-mode preauthorized-ref",
+        "--preauthorized-ref-manifest ./customer-source-refs.json",
+        "--json"
+      ].join(" ")
+    ],
+    [
+      "activate",
+      [
+        "fyralis byoc source activate",
+        "--source all",
+        "--requires-approval",
+        "--start-first-sync",
+        "--sync-mode limited-backfill",
+        "--backfill-window 30d",
+        `--admin-console-url ${props.workspace.localConsoleUrl}`,
+        `--provider-ingress-url ${props.workspace.providerIngressUrl}`,
+        "--provider-authorization-mode preauthorized-ref",
+        "--preauthorized-ref-manifest ./customer-source-refs.json",
+        "--json"
+      ].join(" ")
+    ]
+  ];
   return (
-    <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
-      <SourceMarketplace
-        sources={snapshot.sources}
-        connections={props.connections}
-        selectedSourceId={selectedSource.id}
-        onSelect={selectSource}
-        onOpenSetup={(sourceId) => {
-          selectSource(sourceId);
-          updateConnection(sourceId, { status: "draft" });
-          goTo("source-setup");
-        }}
-      />
-      <SourceDetailPanel
-        source={selectedSource}
-        connection={selectedConnection}
-        workspace={props.workspace}
-        onOpenSetup={() => {
-          updateConnection(selectedSource.id, { status: "draft" });
-          goTo("source-setup");
-        }}
-      />
+    <div className="grid min-w-0 gap-5">
+      <Card>
+        <CardHeader>
+          <CardTitle>Source agent lifecycle</CardTitle>
+          <Badge tone="success">All supported sources</Badge>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-3 rounded-lg border border-success/30 bg-success/10 p-4">
+            <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+              <TerminalSquare className="h-4 w-4" aria-hidden="true" />
+              Discover, plan, apply, validate, and activate
+            </div>
+            {allSourceCommands.map(([label, command]) => (
+              <div key={label} className="grid gap-1">
+                <span className="text-xs font-semibold uppercase text-muted-foreground">{label}</span>
+                <code className="block break-all text-xs text-muted-foreground">
+                  {command}
+                </code>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Provider rehearsal automation</CardTitle>
+          <Badge tone="info">Setup owner path</Badge>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {REHEARSAL_SOURCE_IDS.map((sourceId) => {
+            const source = snapshot.sources.find((item) => item.id === sourceId);
+            const config = SOURCE_REHEARSAL_CONFIG[sourceId];
+            return (
+              <button
+                key={sourceId}
+                type="button"
+                className="rounded-lg border border-border bg-background/70 p-4 text-left transition-colors hover:border-ring"
+                onClick={() => {
+                  selectSource(sourceId);
+                  updateConnection(sourceId, { status: "draft" });
+                  goTo("source-setup");
+                }}
+              >
+                <span className="flex items-start justify-between gap-3">
+                  <span>
+                    <strong className="block">{source?.name ?? sourceId}</strong>
+                    <span className="mt-1 block text-sm text-muted-foreground">
+                      {config.providerKind}
+                    </span>
+                  </span>
+                  <Badge tone="success">
+                    {config.generatedArtifacts.length} files
+                  </Badge>
+                </span>
+                <code className="mt-3 block break-all text-xs text-muted-foreground">
+                  .fyralis/local-rehearsal/{sourceId}
+                </code>
+              </button>
+            );
+          })}
+        </CardContent>
+      </Card>
+      <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <SourceMarketplace
+          sources={snapshot.sources}
+          connections={props.connections}
+          selectedSourceId={selectedSource.id}
+          onSelect={selectSource}
+          onOpenSetup={(sourceId) => {
+            selectSource(sourceId);
+            updateConnection(sourceId, { status: "draft" });
+            goTo("source-setup");
+          }}
+        />
+        <SourceDetailPanel
+          source={selectedSource}
+          connection={selectedConnection}
+          workspace={props.workspace}
+          onOpenSetup={() => {
+            updateConnection(selectedSource.id, { status: "draft" });
+            goTo("source-setup");
+          }}
+        />
+      </div>
     </div>
   );
 }
 
-function SourceSetupStep({ selectedSource, selectedConnection, workspace, updateConnection, advance }: StepViewProps) {
+function SourceSetupStep({
+  selectedSource,
+  selectedConnection,
+  workspace,
+  updateConnection,
+  advance
+}: StepViewProps) {
+  const rehearsalConfig = SOURCE_REHEARSAL_CONFIG[selectedSource.id];
+  const [rehearsalStage, setRehearsalStage] = useState<
+    "idle" | "generated" | "provider-gates-done"
+  >(
+    selectedConnection?.status === "ready" || selectedConnection?.status === "connected"
+      ? "provider-gates-done"
+      : selectedConnection?.receiptId?.startsWith("rehearsal_")
+        ? "generated"
+        : "idle"
+  );
   const endpoints = selectedSource.providerIngressPaths.length
     ? selectedSource.providerIngressPaths.map((path) => `${workspace.providerIngressUrl}${path}`)
     : [selectedSource.noIngressReason ?? "No provider ingress required."];
+  const defaultScopes = sourceScopeChoices(selectedSource.id).slice(0, 3);
+  const rehearsalCommand = sourceRehearsalCommand(selectedSource.id, workspace);
+  const applyEnvCommand = sourceApplyEnvCommand(selectedSource.id, workspace);
+  const providerIngressIsPublic = isPublicHttpsUrl(workspace.providerIngressUrl);
+  const observationPreview = sourceObservationSamples(
+    selectedSource,
+    selectedConnection?.syncMode ?? "Limited backfill"
+  );
+  const sourceCommands = [
+    [
+      "discover",
+      [
+        "fyralis byoc source discover",
+        `--source ${selectedSource.id}`,
+        "--scopes auto",
+        `--admin-console-url ${workspace.localConsoleUrl}`,
+        `--provider-ingress-url ${workspace.providerIngressUrl}`,
+        "--provider-authorization-mode preauthorized-ref",
+        "--preauthorized-ref-manifest ./customer-source-refs.json",
+        "--json"
+      ].join(" ")
+    ],
+    [
+      "plan",
+      [
+        "fyralis byoc source plan",
+        `--source ${selectedSource.id}`,
+        "--scopes auto",
+        "--sync-mode limited-backfill",
+        "--backfill-window 30d",
+        `--admin-console-url ${workspace.localConsoleUrl}`,
+        `--provider-ingress-url ${workspace.providerIngressUrl}`,
+        "--provider-authorization-mode preauthorized-ref",
+        "--preauthorized-ref-manifest ./customer-source-refs.json",
+        "--json"
+      ].join(" ")
+    ],
+    [
+      "apply",
+      [
+        "fyralis byoc source apply",
+        `--source ${selectedSource.id}`,
+        "--requires-approval",
+        "--plan latest",
+        "--sync-mode limited-backfill",
+        "--backfill-window 30d",
+        `--admin-console-url ${workspace.localConsoleUrl}`,
+        `--provider-ingress-url ${workspace.providerIngressUrl}`,
+        "--provider-authorization-mode preauthorized-ref",
+        "--preauthorized-ref-manifest ./customer-source-refs.json",
+        "--json"
+      ].join(" ")
+    ],
+    [
+      "validate",
+      [
+        "fyralis byoc source validate",
+        `--source ${selectedSource.id}`,
+        `--admin-console-url ${workspace.localConsoleUrl}`,
+        `--provider-ingress-url ${workspace.providerIngressUrl}`,
+        "--provider-authorization-mode preauthorized-ref",
+        "--preauthorized-ref-manifest ./customer-source-refs.json",
+        "--json"
+      ].join(" ")
+    ],
+    [
+      "activate",
+      [
+        "fyralis byoc source activate",
+        `--source ${selectedSource.id}`,
+        "--requires-approval",
+        "--start-first-sync",
+        "--sync-mode limited-backfill",
+        "--backfill-window 30d",
+        `--admin-console-url ${workspace.localConsoleUrl}`,
+        `--provider-ingress-url ${workspace.providerIngressUrl}`,
+        "--provider-authorization-mode preauthorized-ref",
+        "--preauthorized-ref-manifest ./customer-source-refs.json",
+        "--json"
+      ].join(" ")
+    ]
+  ];
+
+  function generatePackage() {
+    setRehearsalStage("generated");
+    updateConnection(selectedSource.id, {
+      status: "draft",
+      receiptId: `rehearsal_${selectedSource.id}_package`
+    });
+  }
+
+  function markProviderGatesDone() {
+    setRehearsalStage("provider-gates-done");
+    updateConnection(selectedSource.id, {
+      status: "ready",
+      selectedScopes: defaultScopes,
+      backfillWindow: "Last 30 days",
+      syncMode: "Limited backfill",
+      receiptId: `rehearsal_${selectedSource.id}_provider_ready`
+    });
+  }
+
   return (
     <div className="grid gap-5">
       <Card>
@@ -544,10 +1771,181 @@ function SourceSetupStep({ selectedSource, selectedConnection, workspace, update
           />
         </CardContent>
       </Card>
+      {rehearsalConfig ? (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle>{selectedSource.name} provider rehearsal</CardTitle>
+              <Badge tone="success">{rehearsalConfig.providerKind}</Badge>
+            </CardHeader>
+            <CardContent className="grid gap-5">
+              <div className="grid gap-3 md:grid-cols-3">
+                <Metric
+                  label="Package"
+                  value={
+                    rehearsalStage === "idle" ? "Ready" : "Generated"
+                  }
+                  detail=".fyralis local setup artifacts."
+                />
+                <Metric
+                  label="Provider gates"
+                  value={
+                    rehearsalStage === "provider-gates-done"
+                      ? "Done"
+                      : String(rehearsalConfig.manualGates.length)
+                  }
+                  detail="Only provider approval screens remain manual."
+                />
+                <Metric
+                  label="Secrets"
+                  value="Local"
+                  detail="Env values apply to the customer-cloud gateway only."
+                />
+              </div>
+
+              <div
+                className={cn(
+                  "rounded-lg border p-4",
+                  providerIngressIsPublic
+                    ? "border-success/30 bg-success/10"
+                    : "border-warning/40 bg-warning/15"
+                )}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <span>
+                    <strong className="block text-sm">
+                      {providerIngressIsPublic
+                        ? "Provider callback URL is public HTTPS"
+                        : "Provider callback URL is local or not public HTTPS"}
+                    </strong>
+                    <span className="mt-1 block text-sm leading-6 text-muted-foreground">
+                      Real Slack, GitHub, Discord, and Notion installs require
+                      the provider ingress to be reachable by the provider.
+                      For local testing, expose the gateway with ngrok or a
+                      customer-owned DNS name and set
+                      NEXT_PUBLIC_FYRALIS_PROVIDER_INGRESS_URL.
+                    </span>
+                  </span>
+                  <Badge tone={providerIngressIsPublic ? "success" : "warning"}>
+                    {providerIngressIsPublic ? "Live URL" : "Local URL"}
+                  </Badge>
+                </div>
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_14rem]">
+                <ProviderRouteList
+                  workspace={workspace}
+                  config={rehearsalConfig}
+                />
+                <a
+                  href={rehearsalConfig.providerConsoleUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex min-h-10 items-center justify-center rounded-md border border-border bg-card px-4 text-sm font-semibold text-foreground transition-colors hover:border-ring hover:bg-accent"
+                >
+                  Open provider console
+                </a>
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div className="rounded-lg border border-success/30 bg-success/10 p-4">
+                  <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+                    <TerminalSquare className="h-4 w-4" aria-hidden="true" />
+                    Generate setup artifacts
+                  </div>
+                  <code className="block break-all text-xs text-muted-foreground">
+                    {rehearsalCommand}
+                  </code>
+                </div>
+                <div className="rounded-lg border border-info/30 bg-info/10 p-4">
+                  <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+                    <TerminalSquare className="h-4 w-4" aria-hidden="true" />
+                    Apply local provider env
+                  </div>
+                  <code className="block break-all text-xs text-muted-foreground">
+                    {applyEnvCommand}
+                  </code>
+                </div>
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-3">
+                <SetupList
+                  title="Generated files"
+                  items={rehearsalConfig.generatedArtifacts}
+                  tone="success"
+                />
+                <SetupList
+                  title="Local env keys"
+                  items={rehearsalConfig.envKeys}
+                  tone="info"
+                />
+                <SetupList
+                  title="Provider gates"
+                  items={rehearsalConfig.manualGates}
+                  tone="warning"
+                />
+              </div>
+
+              <div>
+                <h3 className="text-sm font-semibold">Observations expected after first sync</h3>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  {observationPreview.map((observation) => (
+                    <ObservationCard key={observation.id} observation={observation} />
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-3">
+                <Button type="button" variant="secondary" onClick={generatePackage}>
+                  Generate rehearsal package
+                </Button>
+                <Button type="button" onClick={markProviderGatesDone}>
+                  Mark provider gates complete
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      ) : (
+        <Card>
+          <CardHeader>
+            <CardTitle>{selectedSource.name} source agent</CardTitle>
+            <Badge tone="success">Customer cloud</Badge>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-3 rounded-lg border border-success/30 bg-success/10 p-4">
+              <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+                <TerminalSquare className="h-4 w-4" aria-hidden="true" />
+                Stop at each approval boundary
+              </div>
+              {sourceCommands.map(([label, command]) => (
+                <div key={label} className="grid gap-1">
+                  <span className="text-xs font-semibold uppercase text-muted-foreground">{label}</span>
+                  <code className="block break-all text-xs text-muted-foreground">
+                    {command}
+                  </code>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
       <ActionBar
-        primaryLabel="Mark source prepared"
+        primaryLabel={
+          rehearsalConfig
+            ? "Continue to connection validation"
+            : "Run source autopilot"
+        }
         onPrimary={() => {
-          updateConnection(selectedSource.id, { status: "ready" });
+          updateConnection(selectedSource.id, {
+            status: rehearsalConfig ? "ready" : "connected",
+            selectedScopes: defaultScopes,
+            backfillWindow: "Last 30 days",
+            syncMode: "Limited backfill",
+            receiptId: rehearsalConfig
+              ? `rehearsal_${selectedSource.id}_provider_ready`
+              : `srcval_${selectedSource.id}_autopilot`
+          });
           advance();
         }}
       />
@@ -681,37 +2079,278 @@ function SourceScopeStep({ selectedSource, selectedConnection, updateConnection,
   );
 }
 
-function FirstSyncStep({ selectedSource, selectedConnection, upsertSyncJob, advance }: StepViewProps) {
+function FirstSyncStep({
+  selectedSource,
+  selectedConnection,
+  workspace,
+  upsertSyncJob,
+  landSourceObservations,
+  advance
+}: StepViewProps) {
+  const syncMode = selectedConnection?.syncMode ?? "Limited backfill";
+  const backfillWindow = selectedConnection?.backfillWindow ?? "Last 30 days";
+  const signalConfig = SOURCE_SIGNAL_CONFIG[selectedSource.id];
+  const selectedCommand = sourceFirstSyncCommand({
+    sourceId: selectedSource.id,
+    workspace,
+    syncMode,
+    backfillWindow
+  });
+  const historicalCommand = sourceFirstSyncCommand({
+    sourceId: selectedSource.id,
+    workspace,
+    syncMode: "Limited backfill",
+    backfillWindow
+  });
+  const liveCommand = sourceFirstSyncCommand({
+    sourceId: selectedSource.id,
+    workspace,
+    syncMode: "Live events",
+    backfillWindow: "No historical backfill"
+  });
+  const bothCommand = sourceFirstSyncCommand({
+    sourceId: selectedSource.id,
+    workspace,
+    syncMode: "Backfill plus live",
+    backfillWindow
+  });
+
   return (
-    <OperationalStep
-      icon={<Play className="h-5 w-5" aria-hidden="true" />}
-      title={`Run ${selectedSource.name} first sync`}
-      badge={selectedConnection?.syncMode ?? "Limited backfill"}
-      description="Run a bounded source sync inside the customer data plane before activation."
-      cards={[
-        ["Scope", `${selectedConnection?.selectedScopes.length || 3} approved items`],
-        ["Backfill", selectedConnection?.backfillWindow ?? "Last 30 days"],
-        ["Mode", selectedConnection?.syncMode ?? "Limited backfill"],
-        ["Boundary", "Raw source payloads remain in BYOC"]
-      ]}
-      primaryLabel="Start first sync"
-      onPrimary={() => {
-        upsertSyncJob({
-          id: `sync_${selectedSource.id}_initial`,
-          sourceId: selectedSource.id,
-          mode: selectedConnection?.syncMode ?? "Limited backfill",
-          status: "completed",
-          eventsReceived: 80 + selectedSource.name.length * 8,
-          errors: 0
-        });
-        advance();
-      }}
-    />
+    <div className="grid gap-5">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent text-accent-foreground">
+              <Play className="h-5 w-5" aria-hidden="true" />
+            </span>
+            <div>
+              <CardTitle>Run {selectedSource.name} first sync</CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Use the customer-cloud source agent to start historical backfill,
+                live signals, or both after the source is authorized.
+              </p>
+            </div>
+          </div>
+          <Badge tone="info">{syncMode}</Badge>
+        </CardHeader>
+        <CardContent className="grid gap-5">
+          <div className="grid gap-3 md:grid-cols-4">
+            <Metric
+              label="Scope"
+              value={`${selectedConnection?.selectedScopes.length || 3} items`}
+              detail="Approved by the setup owner."
+            />
+            <Metric
+              label="Backfill"
+              value={backfillWindow}
+              detail="Only used for historical modes."
+            />
+            <Metric
+              label="Live edge"
+              value={signalConfig?.liveIngress ?? "source runner"}
+              detail="Provider callback, webhook, or local gateway."
+            />
+            <Metric
+              label="Landed channel"
+              value={signalConfig?.landedChannel ?? `${selectedSource.id}:*`}
+              detail="Observation source_channel prefix."
+            />
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-2">
+            <SignalPathCard
+              title="Historical backfill path"
+              detail={
+                signalConfig?.historicalTrigger ??
+                "Source activation emits the onboarding trigger consumed by the source-onboarding workers."
+              }
+              command={historicalCommand}
+            />
+            <SignalPathCard
+              title="Live signal path"
+              detail={
+                signalConfig?.liveWorker ??
+                "Provider live events enter the customer-cloud gateway and write observations."
+              }
+              command={liveCommand}
+            />
+          </div>
+
+          <div className="rounded-lg border border-success/30 bg-success/10 p-4">
+            <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+              <TerminalSquare className="h-4 w-4" aria-hidden="true" />
+              Recommended command for the selected mode
+            </div>
+            <code className="block break-all text-xs text-muted-foreground">
+              {selectedCommand}
+            </code>
+            {syncMode !== "Backfill plus live" ? (
+              <code className="mt-3 block break-all text-xs text-muted-foreground">
+                Both paths: {bothCommand}
+              </code>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
+      <ActionBar
+        primaryLabel="Record sync receipt and continue"
+        onPrimary={() => {
+          upsertSyncJob({
+            id: `sync_${selectedSource.id}_initial`,
+            sourceId: selectedSource.id,
+            mode: syncMode,
+            status: "completed",
+            eventsReceived: 80 + selectedSource.name.length * 8,
+            errors: 0
+          });
+          landSourceObservations(
+            selectedSource.id,
+            sourceObservationSamples(selectedSource, syncMode)
+          );
+          advance();
+        }}
+      />
+    </div>
   );
 }
 
-function IngestionHealthStep({ selectedSource, syncJobs, advance }: StepViewProps) {
+function IngestionHealthStep({
+  selectedSource,
+  workspace,
+  syncJobs,
+  sourceObservations,
+  landSourceObservations,
+  advance
+}: StepViewProps) {
   const job = syncJobs.find((item) => item.sourceId === selectedSource.id);
+  const observations = sourceObservations.filter(
+    (observation) => observation.sourceId === selectedSource.id
+  );
+  const isSlack = selectedSource.id === "slack";
+  const [apiBase, setApiBase] = useState(workspace.providerIngressUrl);
+  const [bearerToken, setBearerToken] = useState("");
+  const [fetchStatus, setFetchStatus] = useState<
+    "idle" | "loading" | "loaded" | "error"
+  >("idle");
+  const [fetchMessage, setFetchMessage] = useState(
+    "Fetch after the source authorization and first sync have run in the customer cloud."
+  );
+  const [slackRehearsal, setSlackRehearsal] =
+    useState<SlackRehearsalPrepareResponse | null>(null);
+  const [slackStatus, setSlackStatus] = useState<SlackRehearsalStatus | null>(
+    null
+  );
+  const [slackAutomationStatus, setSlackAutomationStatus] = useState<
+    "idle" | "preparing" | "polling" | "ready" | "error"
+  >("idle");
+  const [slackAutomationMessage, setSlackAutomationMessage] = useState(
+    "Prepare Slack from this UI. Fyralis will generate the OAuth URL, open Slack, poll the callback, and show observations when they land."
+  );
+
+  useEffect(() => {
+    if (!isSlack || !slackRehearsal) {
+      return;
+    }
+    let cancelled = false;
+    async function pollSlackStatus() {
+      try {
+        const status = await fetchSlackRehearsalStatus({
+          apiBase: slackRehearsal?.gatewayApiBase ?? apiBase
+        });
+        if (cancelled) {
+          return;
+        }
+        applySlackStatus(status);
+      } catch (caught) {
+        if (!cancelled) {
+          setSlackAutomationStatus("error");
+          setSlackAutomationMessage(errorMessage(caught));
+        }
+      }
+    }
+    const interval = window.setInterval(pollSlackStatus, 7000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [apiBase, isSlack, slackRehearsal]);
+
+  async function loadGatewayObservations() {
+    setFetchStatus("loading");
+    setFetchMessage("Reading gateway observations...");
+    try {
+      const gatewayObservations = await fetchGatewaySourceObservations({
+        apiBase,
+        bearerToken,
+        sourceId: selectedSource.id,
+        limit: 50
+      });
+      landSourceObservations(selectedSource.id, gatewayObservations);
+      setFetchStatus("loaded");
+      setFetchMessage(
+        gatewayObservations.length
+          ? `${gatewayObservations.length} ${selectedSource.name} observations loaded from the customer gateway.`
+          : `No ${selectedSource.name} observations were returned yet. Check the source_channel prefix ${SOURCE_SIGNAL_CONFIG[selectedSource.id]?.landedChannel ?? `${selectedSource.id}:*`}.`
+      );
+    } catch (caught) {
+      setFetchStatus("error");
+      setFetchMessage(errorMessage(caught));
+    }
+  }
+
+  function applySlackStatus(status: SlackRehearsalStatus) {
+    setSlackStatus(status);
+    if (status.bearerToken) {
+      setBearerToken(status.bearerToken);
+    }
+    if (status.observations.length) {
+      landSourceObservations("slack", status.observations);
+      setFetchStatus("loaded");
+      setFetchMessage(
+        `${status.observations.length} Slack observations loaded from the customer gateway.`
+      );
+    }
+    setSlackAutomationStatus(status.observationCount ? "ready" : "polling");
+    setSlackAutomationMessage(status.nextAction);
+  }
+
+  async function prepareAndOpenSlack() {
+    setSlackAutomationStatus("preparing");
+    setSlackAutomationMessage("Preparing Slack authorization...");
+    try {
+      const prepared = await prepareSlackRehearsal({ apiBase });
+      setSlackRehearsal(prepared);
+      setApiBase(prepared.gatewayApiBase);
+      setBearerToken(prepared.bearerToken);
+      applySlackStatus({
+        ...prepared.status,
+        bearerToken: prepared.bearerToken,
+        sessionExpiresAt: prepared.sessionExpiresAt
+      });
+      setSlackAutomationMessage(
+        "Slack authorization opened. Approve the app, then this page will keep checking for install, backfill, and live observations."
+      );
+      if (typeof window !== "undefined") {
+        window.open(prepared.installUrl, "_blank", "noopener,noreferrer");
+      }
+    } catch (caught) {
+      setSlackAutomationStatus("error");
+      setSlackAutomationMessage(errorMessage(caught));
+    }
+  }
+
+  async function refreshSlackAutomationStatus() {
+    setSlackAutomationStatus("polling");
+    setSlackAutomationMessage("Checking Slack install and observation status...");
+    try {
+      const status = await fetchSlackRehearsalStatus({ apiBase });
+      applySlackStatus(status);
+    } catch (caught) {
+      setSlackAutomationStatus("error");
+      setSlackAutomationMessage(errorMessage(caught));
+    }
+  }
+
   return (
     <div className="grid gap-5">
       <Card>
@@ -728,6 +2367,197 @@ function IngestionHealthStep({ selectedSource, syncJobs, advance }: StepViewProp
           <Metric label="Postgres writes" value="OK" detail="Metadata and state writes succeeded." />
           <Metric label="Object storage" value="OK" detail="Payload tier accepted test artifacts." />
           <Metric label="Bounded errors" value={String(job?.errors ?? 0)} detail="No raw logs shown." />
+        </CardContent>
+      </Card>
+      {isSlack ? (
+        <Card>
+          <CardHeader>
+            <div>
+              <CardTitle>Automated Slack setup</CardTitle>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Use this page as the setup owner. Fyralis prepares the OAuth
+                install, opens Slack, polls the gateway, and shows observations
+                after approval.
+              </p>
+            </div>
+            <Badge
+              tone={
+                slackAutomationStatus === "ready"
+                  ? "success"
+                  : slackAutomationStatus === "error"
+                    ? "error"
+                    : "info"
+              }
+            >
+              {slackAutomationStatus}
+            </Badge>
+          </CardHeader>
+          <CardContent className="grid gap-4">
+            <div className="grid gap-3 md:grid-cols-4">
+              <Metric
+                label="Slack install"
+                value={slackStatus?.installed ? "Done" : "Waiting"}
+                detail={
+                  slackStatus?.installation?.hasSecret
+                    ? "Workspace secret stored customer-side."
+                    : "Requires Slack approval."
+                }
+              />
+              <Metric
+                label="Backfill trigger"
+                value={String(slackStatus?.triggerCount ?? 0)}
+                detail="Created by Slack OAuth callback."
+              />
+              <Metric
+                label="Observations"
+                value={String(slackStatus?.observationCount ?? 0)}
+                detail="Read from gateway-backed Postgres."
+              />
+              <Metric
+                label="Open failures"
+                value={String(slackStatus?.unresolvedFailureCount ?? 0)}
+                detail="Unresolved ingestion failures."
+              />
+            </div>
+            {slackRehearsal ? (
+              <div className="grid gap-3 rounded-lg border border-border bg-background/70 p-4 text-sm md:grid-cols-2">
+                <InfoBlock
+                  title="OAuth redirect"
+                  value={slackRehearsal.oauthRedirectUrl}
+                />
+                <InfoBlock
+                  title="Events request URL"
+                  value={slackRehearsal.eventsRequestUrl}
+                />
+              </div>
+            ) : null}
+            <div
+              className={cn(
+                "rounded-lg border p-4 text-sm",
+                slackAutomationStatus === "error"
+                  ? "border-destructive/35 bg-destructive/10 text-destructive"
+                  : "border-border bg-background/70 text-muted-foreground"
+              )}
+            >
+              {slackAutomationMessage}
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <Button
+                type="button"
+                onClick={prepareAndOpenSlack}
+                disabled={slackAutomationStatus === "preparing"}
+              >
+                <Play className="h-4 w-4" aria-hidden="true" />
+                Prepare and open Slack
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={refreshSlackAutomationStatus}
+                disabled={slackAutomationStatus === "preparing"}
+              >
+                <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                Refresh status
+              </Button>
+              {slackRehearsal ? (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() =>
+                    window.open(
+                      slackRehearsal.installUrl,
+                      "_blank",
+                      "noopener,noreferrer"
+                    )
+                  }
+                >
+                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                  Reopen Slack approval
+                </Button>
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+      <Card>
+        <CardHeader>
+          <div>
+            <CardTitle>Fetch actual landed observations</CardTitle>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Reads the customer-cloud gateway observation list with an actor
+              session token held only in this browser memory.
+            </p>
+          </div>
+          <Badge
+            tone={
+              fetchStatus === "loaded"
+                ? "success"
+                : fetchStatus === "error"
+                  ? "error"
+                  : "info"
+            }
+          >
+            {fetchStatus === "idle" ? "gateway read" : fetchStatus}
+          </Badge>
+        </CardHeader>
+        <CardContent className="grid gap-4 lg:grid-cols-[1fr_1fr_auto]">
+          <Field label="Gateway API base" help="Customer-cloud gateway or public tunnel.">
+            <Input
+              value={apiBase}
+              onChange={(event) => setApiBase(event.target.value)}
+              placeholder="https://fyralis-ingress.customer.example"
+            />
+          </Field>
+          <Field label="Bearer token" help="Actor session token, not stored.">
+            <Input
+              value={bearerToken}
+              onChange={(event) => setBearerToken(event.target.value)}
+              type="password"
+              autoComplete="off"
+              placeholder="Paste customer-cloud token"
+            />
+          </Field>
+          <div className="flex items-end">
+            <Button
+              type="button"
+              onClick={loadGatewayObservations}
+              disabled={fetchStatus === "loading"}
+            >
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
+              Fetch observations
+            </Button>
+          </div>
+          <div
+            className={cn(
+              "rounded-lg border p-4 text-sm lg:col-span-3",
+              fetchStatus === "error"
+                ? "border-destructive/35 bg-destructive/10 text-destructive"
+                : "border-border bg-background/70 text-muted-foreground"
+            )}
+          >
+            {fetchMessage}
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Observations landed</CardTitle>
+          <Badge tone="success">
+            {observations.filter((item) => item.origin === "gateway").length ||
+              observations.length}{" "}
+            sanitized
+          </Badge>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-2">
+          {observations.length ? (
+            observations.map((observation) => (
+              <ObservationCard key={observation.id} observation={observation} />
+            ))
+          ) : (
+            <div className="rounded-lg border border-border bg-background/70 p-4 text-sm text-muted-foreground md:col-span-2">
+              Start the first sync to land sanitized observations for this source.
+            </div>
+          )}
         </CardContent>
       </Card>
       <ActionBar primaryLabel="Continue to activation" onPrimary={advance} secondaryLabel="Retry checks" secondaryIcon={<RefreshCw className="h-4 w-4" aria-hidden="true" />} />
@@ -779,11 +2609,22 @@ function WorkspaceLaunchStep({ selectedSource, selectedConnection, setLaunchRead
   );
 }
 
-function WorkspaceHomeStep({ snapshot, connections, launchReady, selectedSource, selectedConnection }: StepViewProps) {
+function WorkspaceHomeStep({
+  snapshot,
+  connections,
+  launchReady,
+  selectedSource,
+  selectedConnection,
+  sourceObservations
+}: StepViewProps) {
   const activeSources = snapshot.sources.filter((source) => {
     const connection = connections.find((item) => item.sourceId === source.id);
     return connection?.status === "connected" || source.id === selectedSource.id;
   });
+  const activeSourceIds = new Set(activeSources.map((source) => source.id));
+  const landedObservations = sourceObservations.filter(
+    (observation) => activeSourceIds.has(observation.sourceId)
+  );
   return (
     <div className="grid gap-5">
       <Card>
@@ -813,6 +2654,24 @@ function WorkspaceHomeStep({ snapshot, connections, launchReady, selectedSource,
               </span>
               <Badge tone="success">Active</Badge>
             </div>
+          ))}
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Recent observations landed</CardTitle>
+          <Badge tone="success">{landedObservations.length} in BYOC</Badge>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-2">
+          {landedObservations.map((observation) => (
+            <ObservationCard
+              key={observation.id}
+              observation={observation}
+              sourceName={
+                snapshot.sources.find((source) => source.id === observation.sourceId)
+                  ?.name
+              }
+            />
           ))}
         </CardContent>
       </Card>
@@ -929,6 +2788,7 @@ function ActionBar({
   secondaryLabel,
   secondaryIcon,
   submit,
+  disabled,
   compact
 }: {
   primaryLabel: string;
@@ -936,11 +2796,12 @@ function ActionBar({
   secondaryLabel?: string;
   secondaryIcon?: ReactNode;
   submit?: boolean;
+  disabled?: boolean;
   compact?: boolean;
 }) {
   return (
     <div className={cn("flex flex-wrap items-center gap-3", !compact && "rounded-lg border border-border bg-card p-4")}>
-      <Button type={submit ? "submit" : "button"} onClick={onPrimary}>
+      <Button type={submit ? "submit" : "button"} onClick={onPrimary} disabled={disabled}>
         {primaryLabel}
         {!submit ? <ArrowRight className="h-4 w-4" aria-hidden="true" /> : null}
       </Button>
@@ -1004,6 +2865,144 @@ function InfoBlock({ title, value, code }: { title: string; value: string; code?
       ) : (
         <span className="mt-2 block whitespace-pre-wrap text-sm text-muted-foreground">{value}</span>
       )}
+    </div>
+  );
+}
+
+function SetupList({
+  title,
+  items,
+  tone
+}: {
+  title: string;
+  items: string[];
+  tone: "success" | "info" | "warning";
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-background/70 p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <strong className="text-sm">{title}</strong>
+        <Badge tone={tone}>{items.length}</Badge>
+      </div>
+      <div className="grid gap-2">
+        {items.map((item) => (
+          <code
+            key={item}
+            className="break-all rounded-md border border-border bg-card px-2 py-1 text-xs text-muted-foreground"
+          >
+            {item}
+          </code>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SignalPathCard({
+  title,
+  detail,
+  command
+}: {
+  title: string;
+  detail: string;
+  command: string;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-background/70 p-4">
+      <strong className="block text-sm">{title}</strong>
+      <span className="mt-2 block text-sm leading-6 text-muted-foreground">
+        {detail}
+      </span>
+      <code className="mt-3 block break-all text-xs text-muted-foreground">
+        {command}
+      </code>
+    </div>
+  );
+}
+
+function ProviderRouteList({
+  workspace,
+  config
+}: {
+  workspace: Workspace;
+  config: SourceRehearsalConfig;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-background/70 p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <strong className="text-sm">Real gateway URLs</strong>
+        <Badge tone="info">{config.gatewayRoutes.length}</Badge>
+      </div>
+      <div className="grid gap-3">
+        {config.gatewayRoutes.map((route) => (
+          <div key={`${route.method}-${route.path}`} className="grid gap-1">
+            <span className="flex flex-wrap items-center gap-2 text-xs font-semibold text-muted-foreground">
+              <Badge tone={route.method === "GET" ? "info" : "success"}>
+                {route.method}
+              </Badge>
+              {route.label}
+              <span>{route.access}</span>
+            </span>
+            <code className="break-all text-xs text-muted-foreground">
+              {gatewayRouteUrl(workspace, route.path)}
+            </code>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ObservationCard({
+  observation,
+  sourceName
+}: {
+  observation: SourceObservation;
+  sourceName?: string;
+}) {
+  const isGateway = observation.origin === "gateway";
+  return (
+    <div
+      className={cn(
+        "rounded-lg border p-4",
+        isGateway
+          ? "border-success/25 bg-success/10"
+          : "border-info/25 bg-info/10"
+      )}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <span>
+          <strong className="block">{observation.title}</strong>
+          {sourceName ? (
+            <span className="mt-1 block text-xs font-semibold text-muted-foreground">
+              {sourceName}
+            </span>
+          ) : null}
+        </span>
+        <span className="flex shrink-0 flex-wrap justify-end gap-2">
+          <Badge tone={isGateway ? "success" : "info"}>
+            {isGateway ? "Gateway" : "Preview"}
+          </Badge>
+          <Badge tone="success">{observation.status}</Badge>
+        </span>
+      </div>
+      <p className="mt-3 text-sm leading-6 text-muted-foreground">
+        {observation.summary}
+      </p>
+      <div className="mt-3 grid gap-2">
+        <code className="break-all text-xs text-muted-foreground">
+          {observation.evidencePath}
+        </code>
+        {observation.sourceChannel ? (
+          <code className="break-all text-xs text-muted-foreground">
+            {observation.sourceChannel}
+          </code>
+        ) : null}
+        <span className="text-xs text-muted-foreground">
+          {observation.kind} · {observation.syncTrack ?? "mixed"} ·{" "}
+          {observation.occurredAt.replace("T", " ").replace("Z", " UTC")}
+        </span>
+      </div>
     </div>
   );
 }

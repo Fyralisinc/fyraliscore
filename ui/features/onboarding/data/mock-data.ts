@@ -8,6 +8,7 @@ import type {
   SetupPackage,
   Source,
   SourceConnection,
+  SourceObservation,
   StepDefinition,
   SyncJob,
   Validation,
@@ -218,19 +219,24 @@ export const CUSTOMER: Customer = {
 export const WORKSPACE: Workspace = {
   id: "wks_acme_finance_byoc",
   customerName: "Acme Finance",
-  localConsoleUrl: "https://fyralis.acme.internal",
-  providerIngressUrl: "https://fyralis-ingress.acme.com"
+  localConsoleUrl: "http://localhost:3003",
+  providerIngressUrl: "http://localhost:8000"
 };
 
 export const READINESS: CloudReadiness = {
   region: "us-east-1",
   environment: "pilot",
-  kubernetes: "available",
-  network: "existing-ready",
-  secrets: "aws-secrets-manager",
-  postgres: "pgvector-ready",
-  objectStorage: "s3-compatible-ready",
-  kafka: "kafka-msk-ready"
+  setupAutomation: "agent-managed",
+  agentAccess: "customer-cloud-agent",
+  agentPermissionProfile: "byoc-bootstrap-provisioner",
+  agentApprovalMode: "approval-required",
+  setupRoleArn: "arn:aws:iam::123456789012:role/FyralisByocSetupRole",
+  kubernetes: "provision-eks",
+  network: "provision-isolated-vpc",
+  secrets: "provision-secret-refs",
+  postgres: "provision-rds-pgvector",
+  objectStorage: "provision-s3",
+  kafka: "provision-msk"
 };
 
 export const SETUP_PACKAGE: SetupPackage = {
@@ -241,6 +247,30 @@ export const SETUP_PACKAGE: SetupPackage = {
       name: "Data-plane manifest",
       description: "Runtime, telemetry posture, service shape, and component refs.",
       filename: "customer-dataplane.yaml",
+      safeToShare: true
+    },
+    {
+      name: "Terraform/OpenTofu plan",
+      description: "Customer-cloud modules for missing BYOC capabilities.",
+      filename: "terraform/fyralis-byoc.auto.tfvars.json",
+      safeToShare: true
+    },
+    {
+      name: "Setup agent manifest",
+      description: "Customer-cloud agent install, discovery, plan, apply, and validation policy.",
+      filename: "agent/fyralis-setup-agent.yaml",
+      safeToShare: true
+    },
+    {
+      name: "AWS setup role template",
+      description: "Least-privilege setup role with external ID and approval boundary.",
+      filename: "iam/fyralis-byoc-setup-role.template.yaml",
+      safeToShare: true
+    },
+    {
+      name: "Helm values",
+      description: "Kubernetes install values that reference local customer resources.",
+      filename: "helm/fyralis-values.customer.yaml",
       safeToShare: true
     },
     {
@@ -266,12 +296,12 @@ export const SETUP_PACKAGE: SetupPackage = {
     {
       label: "Preflight",
       command:
-        "uv run python scripts/run_byoc_preflight_bundle.py --json --dataplane-manifest customer-dataplane.yaml --permissions-manifest customer-permissions.yaml --bootstrap-bundle customer-bootstrap-bundle.yaml --env-file customer-byoc.env"
+        "fyralis byoc preflight --bundle fyralis-byoc-acme-finance.zip --json"
     },
     {
       label: "Validation",
       command:
-        "uv run python scripts/run_byoc_post_deploy_validation.py --json --manifest customer-dataplane.yaml --env-file customer-byoc.env --require-live"
+        "fyralis byoc validate --json --emit-sanitized-readiness-report"
     }
   ]
 };
@@ -319,7 +349,7 @@ export const SOURCES: Source[] = [
   source("google-drive", "Google Drive", "Knowledge", "Files, metadata, and Drive watches.", "OAuth", ["drive.metadata.readonly", "drive.readonly"], "Workspace admin approval, Drive scopes, shared-drive scope, change watch setup, large-file policy.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/google_drive/push"]),
   source("github", "GitHub", "Engineering", "Repositories, pull requests, issues, and code intelligence.", "OAuth", ["repository metadata", "pull requests", "issues", "webhooks"], "GitHub App installation, repository selection, webhook secret, org admin approval, installation ID mapping.", ["Dry run", "Limited backfill", "Live events", "Backfill plus live"], ["/integrations/github/callback", "/webhooks/github"]),
   source("jira", "Jira", "Engineering", "Issues, projects, and work tracking signals.", "API token", ["read:jira-work", "read:jira-user", "webhook registration"], "Jira site URL, project scope, API token or OAuth app, webhook callback approval, issue/comment permissions.", ["Dry run", "Limited backfill", "Live events"], ["/webhooks/jira/events"]),
-  source("notion", "Notion", "Knowledge", "Pages, databases, and workspace knowledge.", "API token", ["read content", "read users", "database access"], "Workspace integration token, pages and databases shared to integration, workspace owner approval, selector scope.", ["Dry run", "Limited backfill"], ["/integrations/notion/callback", "/webhooks/notion"]),
+  source("notion", "Notion", "Knowledge", "Pages, databases, and workspace knowledge.", "OAuth", ["read content", "read users", "database access"], "Workspace integration token, pages and databases shared to integration, workspace owner approval, selector scope.", ["Dry run", "Limited backfill"], ["/integrations/notion/callback", "/webhooks/notion"]),
   source("discord", "Discord", "Communication", "Community and team message streams.", "Gateway", ["bot token", "message content intent", "guild read"], "Discord app or bot token, guild/channel allowlist, gateway intents, single-worker lease readiness.", ["Dry run", "Limited backfill", "Live events"], ["/integrations/discord/callback", "/webhooks/discord"]),
   source("telegram", "Telegram", "Communication", "MTProto user-account backfill and live updates.", "Gateway", ["api id", "api hash", "approved chats"], "Telegram API ID/hash, authorized user session, chats allowlist, backfill approval, gateway worker readiness.", ["Dry run", "Limited backfill", "Live events"], [], "Local MTProto gateway session runs from the customer cloud."),
   source("signal", "Signal", "Communication", "Linked-device message ingestion.", "Gateway", ["linked device session", "approved contacts", "approved groups"], "Linked-device session, account approval, contact or group scope, gateway worker readiness.", ["Dry run", "Live events"], [], "Linked-device gateway session runs from the customer cloud."),
@@ -396,6 +426,51 @@ export const SYNC_JOBS: SyncJob[] = [
   }
 ];
 
+export const SOURCE_OBSERVATIONS: SourceObservation[] = [
+  observation(
+    "slack_obs_001",
+    "slack",
+    "Finance launch thread",
+    "message",
+    "Leadership and finance-ops pilot channels produced bounded launch-readiness signals."
+  ),
+  observation(
+    "github_obs_001",
+    "github",
+    "Repository rollout activity",
+    "pull-request",
+    "Selected repositories produced pull-request and issue metadata for the first sync."
+  ),
+  observation(
+    "jira_obs_001",
+    "jira",
+    "Pilot issue movement",
+    "issue",
+    "Approved Jira projects produced issue status and comment metadata without raw attachments."
+  ),
+  observation(
+    "discord_obs_001",
+    "discord",
+    "Community feedback channel",
+    "message",
+    "Approved Discord channels produced event metadata through the customer-cloud gateway."
+  ),
+  observation(
+    "notion_obs_001",
+    "notion",
+    "Launch checklist updates",
+    "page",
+    "Shared Notion pages and databases produced page-change observations for the pilot."
+  ),
+  observation(
+    "telegram_obs_001",
+    "telegram",
+    "Partner readiness chat",
+    "message",
+    "Approved Telegram dialogs produced MTProto session observations inside the customer boundary."
+  )
+];
+
 export const PROGRESS: OnboardingProgress = {
   currentStep: "get-fyralis",
   completedSteps: [],
@@ -417,6 +492,7 @@ export const ONBOARDING_SNAPSHOT: OnboardingSnapshot = {
   sourceValidation: SOURCE_VALIDATION,
   deploymentValidation: DEPLOYMENT_VALIDATION,
   syncJobs: SYNC_JOBS,
+  sourceObservations: SOURCE_OBSERVATIONS,
   progress: PROGRESS
 };
 
@@ -443,5 +519,27 @@ function source(
     supportedSyncModes,
     providerIngressPaths,
     noIngressReason
+  };
+}
+
+function observation(
+  id: SourceObservation["id"],
+  sourceId: SourceObservation["sourceId"],
+  title: SourceObservation["title"],
+  kind: SourceObservation["kind"],
+  summary: SourceObservation["summary"]
+): SourceObservation {
+  return {
+    id,
+    sourceId,
+    title,
+    kind,
+    occurredAt: "2026-07-01T09:30:00Z",
+    summary,
+    evidencePath: `s3://fyralis-byoc-pilot/raw/${sourceId}/${id}.jsonl`,
+    status: "landed",
+    origin: "preview",
+    syncTrack: "mixed",
+    sourceChannel: `${sourceId}:sample`
   };
 }
