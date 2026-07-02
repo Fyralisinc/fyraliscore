@@ -50,11 +50,13 @@ import { SourceDetailPanel } from "../components/source-detail-panel";
 import { SourceMarketplace } from "../components/source-marketplace";
 import {
   createDesignPartnerOnboardingIntent,
-  fetchSlackRehearsalStatus,
   fetchGatewaySourceObservations,
-  prepareSlackRehearsal,
-  type SlackRehearsalPrepareResponse,
-  type SlackRehearsalStatus,
+  fetchSourceRehearsalStatus,
+  finalizeJiraRehearsal,
+  finalizeTelegramRehearsal,
+  prepareSourceRehearsal,
+  type SourceRehearsalPrepareResponse,
+  type SourceRehearsalStatus,
   submitDesignPartnerIntake
 } from "../services/onboarding-service";
 
@@ -407,7 +409,7 @@ const SOURCE_REHEARSAL_CONFIG: Record<string, SourceRehearsalConfig> = {
       {
         label: "Webhook",
         method: "POST",
-        path: "/webhooks/notion",
+        path: "/webhooks/notion/events",
         access: "provider signed"
       }
     ],
@@ -480,7 +482,7 @@ const SOURCE_SIGNAL_CONFIG: Record<string, SourceSignalConfig> = {
       "GitHub callback writes provider_installations and onboarding_triggers(source='github').",
     liveIngress: "/webhooks/github",
     liveWorker: "GitHub webhook -> signed webhook router -> ingestion pipeline.",
-    landedChannel: "github:event"
+    landedChannel: "github:webhook"
   },
   discord: {
     historicalTrigger:
@@ -2226,7 +2228,8 @@ function IngestionHealthStep({
   const observations = sourceObservations.filter(
     (observation) => observation.sourceId === selectedSource.id
   );
-  const isSlack = selectedSource.id === "slack";
+  const sourceAutomationConfig = SOURCE_REHEARSAL_CONFIG[selectedSource.id];
+  const hasSourceAutomation = Boolean(sourceAutomationConfig);
   const [apiBase, setApiBase] = useState(workspace.providerIngressUrl);
   const [bearerToken, setBearerToken] = useState("");
   const [fetchStatus, setFetchStatus] = useState<
@@ -2235,45 +2238,72 @@ function IngestionHealthStep({
   const [fetchMessage, setFetchMessage] = useState(
     "Fetch after the source authorization and first sync have run in the customer cloud."
   );
-  const [slackRehearsal, setSlackRehearsal] =
-    useState<SlackRehearsalPrepareResponse | null>(null);
-  const [slackStatus, setSlackStatus] = useState<SlackRehearsalStatus | null>(
+  const [sourceRehearsal, setSourceRehearsal] =
+    useState<SourceRehearsalPrepareResponse | null>(null);
+  const [sourceStatus, setSourceStatus] = useState<SourceRehearsalStatus | null>(
     null
   );
-  const [slackAutomationStatus, setSlackAutomationStatus] = useState<
-    "idle" | "preparing" | "polling" | "ready" | "error"
+  const [sourceAutomationStatus, setSourceAutomationStatus] = useState<
+    "idle" | "preparing" | "polling" | "ready" | "blocked" | "error"
   >("idle");
-  const [slackAutomationMessage, setSlackAutomationMessage] = useState(
-    "Prepare Slack from this UI. Fyralis will generate the OAuth URL, open Slack, poll the callback, and show observations when they land."
+  const [sourceAutomationMessage, setSourceAutomationMessage] = useState(
+    `Prepare ${selectedSource.name} from this UI. Fyralis will generate the provider handoff, open approval when available, poll the gateway, and show observations when they land.`
   );
+  const [jiraForm, setJiraForm] = useState({
+    baseUrl: "",
+    accountEmail: "",
+    apiToken: "",
+    webhookSecret: ""
+  });
+  const [telegramForm, setTelegramForm] = useState({
+    accountLabel: "",
+    apiId: "",
+    apiHash: "",
+    liveSession: "",
+    backfillSession: ""
+  });
 
   useEffect(() => {
-    if (!isSlack || !slackRehearsal) {
+    setSourceRehearsal(null);
+    setSourceStatus(null);
+    setSourceAutomationStatus("idle");
+    setSourceAutomationMessage(
+      `Prepare ${selectedSource.name} from this UI. Fyralis will generate the provider handoff, open approval when available, poll the gateway, and show observations when they land.`
+    );
+    setFetchMessage(
+      "Fetch after the source authorization and first sync have run in the customer cloud."
+    );
+    setFetchStatus("idle");
+  }, [selectedSource.id, selectedSource.name]);
+
+  useEffect(() => {
+    if (!hasSourceAutomation || !sourceRehearsal) {
       return;
     }
     let cancelled = false;
-    async function pollSlackStatus() {
+    async function pollSourceStatus() {
       try {
-        const status = await fetchSlackRehearsalStatus({
-          apiBase: slackRehearsal?.gatewayApiBase ?? apiBase
+        const status = await fetchSourceRehearsalStatus({
+          sourceId: selectedSource.id,
+          apiBase: sourceRehearsal?.gatewayApiBase ?? apiBase
         });
         if (cancelled) {
           return;
         }
-        applySlackStatus(status);
+        applySourceStatus(status);
       } catch (caught) {
         if (!cancelled) {
-          setSlackAutomationStatus("error");
-          setSlackAutomationMessage(errorMessage(caught));
+          setSourceAutomationStatus("error");
+          setSourceAutomationMessage(errorMessage(caught));
         }
       }
     }
-    const interval = window.setInterval(pollSlackStatus, 7000);
+    const interval = window.setInterval(pollSourceStatus, 7000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [apiBase, isSlack, slackRehearsal]);
+  }, [apiBase, hasSourceAutomation, selectedSource.id, sourceRehearsal]);
 
   async function loadGatewayObservations() {
     setFetchStatus("loading");
@@ -2298,56 +2328,122 @@ function IngestionHealthStep({
     }
   }
 
-  function applySlackStatus(status: SlackRehearsalStatus) {
-    setSlackStatus(status);
+  function applySourceStatus(status: SourceRehearsalStatus) {
+    setSourceStatus(status);
     if (status.bearerToken) {
       setBearerToken(status.bearerToken);
     }
     if (status.observations.length) {
-      landSourceObservations("slack", status.observations);
+      landSourceObservations(status.sourceId, status.observations);
       setFetchStatus("loaded");
       setFetchMessage(
-        `${status.observations.length} Slack observations loaded from the customer gateway.`
+        `${status.observations.length} ${selectedSource.name} observations loaded from the customer gateway.`
       );
     }
-    setSlackAutomationStatus(status.observationCount ? "ready" : "polling");
-    setSlackAutomationMessage(status.nextAction);
+    setSourceAutomationStatus(status.observationCount ? "ready" : "polling");
+    setSourceAutomationMessage(status.nextAction);
   }
 
-  async function prepareAndOpenSlack() {
-    setSlackAutomationStatus("preparing");
-    setSlackAutomationMessage("Preparing Slack authorization...");
+  async function prepareAndOpenSource() {
+    setSourceAutomationStatus("preparing");
+    setSourceAutomationMessage(`Preparing ${selectedSource.name} authorization...`);
     try {
-      const prepared = await prepareSlackRehearsal({ apiBase });
-      setSlackRehearsal(prepared);
+      const prepared = await prepareSourceRehearsal({
+        sourceId: selectedSource.id,
+        apiBase
+      });
+      setSourceRehearsal(prepared);
       setApiBase(prepared.gatewayApiBase);
       setBearerToken(prepared.bearerToken);
-      applySlackStatus({
+      applySourceStatus({
         ...prepared.status,
         bearerToken: prepared.bearerToken,
         sessionExpiresAt: prepared.sessionExpiresAt
       });
-      setSlackAutomationMessage(
-        "Slack authorization opened. Approve the app, then this page will keep checking for install, backfill, and live observations."
-      );
-      if (typeof window !== "undefined") {
+      if (prepared.missingConfiguration.length) {
+        setSourceAutomationStatus("blocked");
+        setSourceAutomationMessage(
+          `${selectedSource.name} provider app is not fully configured. Add ${prepared.missingConfiguration.join(", ")} in the customer-cloud runtime, then prepare again.`
+        );
+        return;
+      }
+      if (prepared.installUrl && typeof window !== "undefined") {
         window.open(prepared.installUrl, "_blank", "noopener,noreferrer");
+        setSourceAutomationMessage(
+          `${selectedSource.name} approval opened. Approve the provider app, then this page will keep checking for install, backfill, and live observations.`
+        );
+      } else {
+        setSourceAutomationMessage(
+          `${selectedSource.name} handoff prepared. Complete the connection details below and Fyralis will finalize the install customer-side.`
+        );
       }
     } catch (caught) {
-      setSlackAutomationStatus("error");
-      setSlackAutomationMessage(errorMessage(caught));
+      setSourceAutomationStatus("error");
+      setSourceAutomationMessage(errorMessage(caught));
     }
   }
 
-  async function refreshSlackAutomationStatus() {
-    setSlackAutomationStatus("polling");
-    setSlackAutomationMessage("Checking Slack install and observation status...");
+  async function refreshSourceAutomationStatus() {
+    setSourceAutomationStatus("polling");
+    setSourceAutomationMessage(
+      `Checking ${selectedSource.name} install and observation status...`
+    );
     try {
-      const status = await fetchSlackRehearsalStatus({ apiBase });
-      applySlackStatus(status);
+      const status = await fetchSourceRehearsalStatus({
+        sourceId: selectedSource.id,
+        apiBase
+      });
+      applySourceStatus(status);
     } catch (caught) {
-      setSlackAutomationStatus("error");
-      setSlackAutomationMessage(errorMessage(caught));
+      setSourceAutomationStatus("error");
+      setSourceAutomationMessage(errorMessage(caught));
+    }
+  }
+
+  async function finalizeJiraFromUi() {
+    setSourceAutomationStatus("preparing");
+    setSourceAutomationMessage("Verifying Jira credentials and finalizing install...");
+    try {
+      const response = await finalizeJiraRehearsal({
+        apiBase,
+        payload: {
+          baseUrl: jiraForm.baseUrl,
+          accountEmail: jiraForm.accountEmail,
+          apiToken: jiraForm.apiToken,
+          webhookSecret: jiraForm.webhookSecret || undefined
+        }
+      });
+      applySourceStatus(response.status);
+      setSourceAutomationMessage(
+        "Jira install finalized. Fyralis created local secret refs, install rows, and the onboarding trigger."
+      );
+    } catch (caught) {
+      setSourceAutomationStatus("error");
+      setSourceAutomationMessage(errorMessage(caught));
+    }
+  }
+
+  async function finalizeTelegramFromUi() {
+    setSourceAutomationStatus("preparing");
+    setSourceAutomationMessage("Verifying Telegram session and finalizing install...");
+    try {
+      const response = await finalizeTelegramRehearsal({
+        apiBase,
+        payload: {
+          accountLabel: telegramForm.accountLabel,
+          apiId: telegramForm.apiId,
+          apiHash: telegramForm.apiHash,
+          liveSession: telegramForm.liveSession,
+          backfillSession: telegramForm.backfillSession || undefined
+        }
+      });
+      applySourceStatus(response.status);
+      setSourceAutomationMessage(
+        "Telegram install finalized. Fyralis verified the session, enumerated dialogs, stored local refs, and emitted the onboarding trigger."
+      );
+    } catch (caught) {
+      setSourceAutomationStatus("error");
+      setSourceAutomationMessage(errorMessage(caught));
     }
   }
 
@@ -2369,110 +2465,283 @@ function IngestionHealthStep({
           <Metric label="Bounded errors" value={String(job?.errors ?? 0)} detail="No raw logs shown." />
         </CardContent>
       </Card>
-      {isSlack ? (
+      {hasSourceAutomation ? (
         <Card>
           <CardHeader>
             <div>
-              <CardTitle>Automated Slack setup</CardTitle>
+              <CardTitle>Automated {selectedSource.name} setup</CardTitle>
               <p className="mt-1 text-sm text-muted-foreground">
-                Use this page as the setup owner. Fyralis prepares the OAuth
-                install, opens Slack, polls the gateway, and shows observations
-                after approval.
+                Use this page as the setup owner. Fyralis prepares the provider
+                handoff, opens approval when the provider allows it, finalizes
+                local refs, polls the gateway, and shows observations after
+                authorization.
               </p>
             </div>
             <Badge
               tone={
-                slackAutomationStatus === "ready"
+                sourceAutomationStatus === "ready"
                   ? "success"
-                  : slackAutomationStatus === "error"
+                  : sourceAutomationStatus === "error"
                     ? "error"
+                    : sourceAutomationStatus === "blocked"
+                      ? "warning"
                     : "info"
               }
             >
-              {slackAutomationStatus}
+              {sourceAutomationStatus}
             </Badge>
           </CardHeader>
           <CardContent className="grid gap-4">
             <div className="grid gap-3 md:grid-cols-4">
               <Metric
-                label="Slack install"
-                value={slackStatus?.installed ? "Done" : "Waiting"}
+                label={`${selectedSource.name} install`}
+                value={sourceStatus?.installed ? "Done" : "Waiting"}
                 detail={
-                  slackStatus?.installation?.hasSecret
+                  sourceStatus?.installation?.hasSecret
                     ? "Workspace secret stored customer-side."
-                    : "Requires Slack approval."
+                    : "Requires provider authorization."
                 }
               />
               <Metric
                 label="Backfill trigger"
-                value={String(slackStatus?.triggerCount ?? 0)}
-                detail="Created by Slack OAuth callback."
+                value={String(sourceStatus?.triggerCount ?? 0)}
+                detail="Created by OAuth callback or finalize action."
               />
               <Metric
                 label="Observations"
-                value={String(slackStatus?.observationCount ?? 0)}
+                value={String(sourceStatus?.observationCount ?? 0)}
                 detail="Read from gateway-backed Postgres."
               />
               <Metric
                 label="Open failures"
-                value={String(slackStatus?.unresolvedFailureCount ?? 0)}
+                value={String(sourceStatus?.unresolvedFailureCount ?? 0)}
                 detail="Unresolved ingestion failures."
               />
             </div>
-            {slackRehearsal ? (
+            {sourceRehearsal ? (
               <div className="grid gap-3 rounded-lg border border-border bg-background/70 p-4 text-sm md:grid-cols-2">
                 <InfoBlock
-                  title="OAuth redirect"
-                  value={slackRehearsal.oauthRedirectUrl}
+                  title="Authorization mode"
+                  value={sourceRehearsal.authorizationMode}
                 />
                 <InfoBlock
-                  title="Events request URL"
-                  value={slackRehearsal.eventsRequestUrl}
+                  title="Provider ingress"
+                  value={sourceRehearsal.eventsRequestUrl ?? "No public provider ingress required."}
                 />
+                <InfoBlock
+                  title="OAuth redirect"
+                  value={sourceRehearsal.oauthRedirectUrl ?? "No OAuth redirect required."}
+                />
+                <InfoBlock
+                  title="Provider console"
+                  value={sourceRehearsal.providerConsoleUrl ?? sourceAutomationConfig?.providerConsoleUrl ?? "Provider console not required."}
+                />
+              </div>
+            ) : null}
+            {sourceRehearsal?.missingConfiguration.length ? (
+              <div className="rounded-lg border border-warning/40 bg-warning/15 p-4 text-sm text-muted-foreground">
+                <strong className="block text-foreground">Provider app configuration needed</strong>
+                <span className="mt-2 block">
+                  Add these runtime values before opening provider approval:
+                </span>
+                <code className="mt-2 block break-all text-xs">
+                  {sourceRehearsal.missingConfiguration.join(", ")}
+                </code>
+              </div>
+            ) : null}
+            {selectedSource.id === "jira" ? (
+              <div className="grid gap-3 rounded-lg border border-border bg-background/70 p-4 md:grid-cols-2">
+                <Field label="Jira site URL" help="Full Atlassian site URL.">
+                  <Input
+                    value={jiraForm.baseUrl}
+                    onChange={(event) =>
+                      setJiraForm((current) => ({
+                        ...current,
+                        baseUrl: event.target.value
+                      }))
+                    }
+                    placeholder="https://acme.atlassian.net"
+                  />
+                </Field>
+                <Field label="Account email" help="Atlassian account that can read the selected projects.">
+                  <Input
+                    value={jiraForm.accountEmail}
+                    onChange={(event) =>
+                      setJiraForm((current) => ({
+                        ...current,
+                        accountEmail: event.target.value
+                      }))
+                    }
+                    placeholder="owner@company.com"
+                  />
+                </Field>
+                <Field label="API token" help="Stored only as an encrypted customer-cloud ref.">
+                  <Input
+                    type="password"
+                    autoComplete="off"
+                    value={jiraForm.apiToken}
+                    onChange={(event) =>
+                      setJiraForm((current) => ({
+                        ...current,
+                        apiToken: event.target.value
+                      }))
+                    }
+                    placeholder="Atlassian API token"
+                  />
+                </Field>
+                <Field label="Webhook secret" help="Optional. Enables live Jira webhooks when configured.">
+                  <Input
+                    type="password"
+                    autoComplete="off"
+                    value={jiraForm.webhookSecret}
+                    onChange={(event) =>
+                      setJiraForm((current) => ({
+                        ...current,
+                        webhookSecret: event.target.value
+                      }))
+                    }
+                    placeholder="Optional Jira webhook secret"
+                  />
+                </Field>
+                <div className="md:col-span-2">
+                  <Button
+                    type="button"
+                    onClick={finalizeJiraFromUi}
+                    disabled={sourceAutomationStatus === "preparing"}
+                  >
+                    <Play className="h-4 w-4" aria-hidden="true" />
+                    Verify and connect Jira
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+            {selectedSource.id === "telegram" ? (
+              <div className="grid gap-3 rounded-lg border border-border bg-background/70 p-4 md:grid-cols-2">
+                <Field label="Account label" help="Phone, username, or internal label for this Telegram account.">
+                  <Input
+                    value={telegramForm.accountLabel}
+                    onChange={(event) =>
+                      setTelegramForm((current) => ({
+                        ...current,
+                        accountLabel: event.target.value
+                      }))
+                    }
+                    placeholder="+15551234567"
+                  />
+                </Field>
+                <Field label="API ID" help="From my.telegram.org/apps.">
+                  <Input
+                    value={telegramForm.apiId}
+                    onChange={(event) =>
+                      setTelegramForm((current) => ({
+                        ...current,
+                        apiId: event.target.value
+                      }))
+                    }
+                    placeholder="123456"
+                  />
+                </Field>
+                <Field label="API hash" help="Stored only as an encrypted customer-cloud ref.">
+                  <Input
+                    type="password"
+                    autoComplete="off"
+                    value={telegramForm.apiHash}
+                    onChange={(event) =>
+                      setTelegramForm((current) => ({
+                        ...current,
+                        apiHash: event.target.value
+                      }))
+                    }
+                    placeholder="Telegram API hash"
+                  />
+                </Field>
+                <Field label="Live StringSession" help="Authorized MTProto session for live gateway updates.">
+                  <Input
+                    type="password"
+                    autoComplete="off"
+                    value={telegramForm.liveSession}
+                    onChange={(event) =>
+                      setTelegramForm((current) => ({
+                        ...current,
+                        liveSession: event.target.value
+                      }))
+                    }
+                    placeholder="Telethon StringSession"
+                  />
+                </Field>
+                <Field label="Backfill StringSession" help="Optional second session for backfill. Defaults to live session in rehearsal.">
+                  <Input
+                    type="password"
+                    autoComplete="off"
+                    value={telegramForm.backfillSession}
+                    onChange={(event) =>
+                      setTelegramForm((current) => ({
+                        ...current,
+                        backfillSession: event.target.value
+                      }))
+                    }
+                    placeholder="Optional second StringSession"
+                  />
+                </Field>
+                <div className="flex items-end">
+                  <Button
+                    type="button"
+                    onClick={finalizeTelegramFromUi}
+                    disabled={sourceAutomationStatus === "preparing"}
+                  >
+                    <Play className="h-4 w-4" aria-hidden="true" />
+                    Verify and connect Telegram
+                  </Button>
+                </div>
               </div>
             ) : null}
             <div
               className={cn(
                 "rounded-lg border p-4 text-sm",
-                slackAutomationStatus === "error"
+                sourceAutomationStatus === "error"
                   ? "border-destructive/35 bg-destructive/10 text-destructive"
+                  : sourceAutomationStatus === "blocked"
+                    ? "border-warning/40 bg-warning/15 text-muted-foreground"
                   : "border-border bg-background/70 text-muted-foreground"
               )}
             >
-              {slackAutomationMessage}
+              {sourceAutomationMessage}
             </div>
             <div className="flex flex-wrap gap-3">
               <Button
                 type="button"
-                onClick={prepareAndOpenSlack}
-                disabled={slackAutomationStatus === "preparing"}
+                onClick={prepareAndOpenSource}
+                disabled={sourceAutomationStatus === "preparing"}
               >
                 <Play className="h-4 w-4" aria-hidden="true" />
-                Prepare and open Slack
+                {sourceAutomationConfig?.providerKind.includes("OAuth") ||
+                selectedSource.id === "github"
+                  ? `Prepare and open ${selectedSource.name}`
+                  : `Prepare ${selectedSource.name}`}
               </Button>
               <Button
                 type="button"
                 variant="secondary"
-                onClick={refreshSlackAutomationStatus}
-                disabled={slackAutomationStatus === "preparing"}
+                onClick={refreshSourceAutomationStatus}
+                disabled={sourceAutomationStatus === "preparing"}
               >
                 <RefreshCw className="h-4 w-4" aria-hidden="true" />
                 Refresh status
               </Button>
-              {slackRehearsal ? (
+              {sourceRehearsal?.installUrl ? (
                 <Button
                   type="button"
                   variant="secondary"
                   onClick={() =>
                     window.open(
-                      slackRehearsal.installUrl,
+                      sourceRehearsal.installUrl ?? "",
                       "_blank",
                       "noopener,noreferrer"
                     )
                   }
                 >
                   <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                  Reopen Slack approval
+                  Reopen {selectedSource.name} approval
                 </Button>
               ) : null}
             </div>

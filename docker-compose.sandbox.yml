@@ -43,6 +43,7 @@ x-sb-envfile: &sb-envfile
   environment:
     COMPANY_OS_ENV: dev
     FYRALIS_ENV: dev
+    FYRALIS_SOURCE_REHEARSAL_ENABLED: "1"
     FYRALIS_SLACK_REHEARSAL_ENABLED: "1"
   # GitHub App private key (multi-line PEM can't live in env_file) — mount
   # it read-only from the gitignored .secrets/ dir; .env.sandbox points

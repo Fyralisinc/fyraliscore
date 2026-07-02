@@ -665,26 +665,28 @@ fyralis byoc source activate --source all --requires-approval --start-first-sync
         <div class="grid cols-3">
           <article class="card">
             <span class="tag blue">OAuth</span>
-            <h3>Slack, GitHub, Google, QuickBooks, Gusto</h3>
+            <h3>Slack, GitHub, Discord, Notion</h3>
             <p>
-              The lifecycle agent generates callback contracts, token refs,
-              plans, validation, first-sync, and activation receipts.
+              The customer-cloud UI generates real provider approval URLs,
+              watches callbacks, stores refs locally, and polls for landed
+              observations.
             </p>
           </article>
           <article class="card">
             <span class="tag blue">API Token</span>
-            <h3>Jira, Notion, Figma, Grafana, Finance, HR</h3>
+            <h3>Jira</h3>
             <p>
-              The agent creates local secret refs, blocks on missing customer
-              tokens, and applies connection contracts after approval.
+              The UI verifies Atlassian credentials, enumerates projects,
+              stores encrypted refs, registers webhook state, and emits the
+              onboarding trigger.
             </p>
           </article>
           <article class="card">
-            <span class="tag blue">Gateway / Poll / IAM</span>
-            <h3>Discord, Telegram, Signal, AWS, LinkedIn</h3>
+            <span class="tag blue">Gateway Session</span>
+            <h3>Telegram</h3>
             <p>
-              The agent prepares local runner, polling, or IAM-role setup and
-              activates only after validation passes.
+              The UI verifies MTProto session material, enumerates dialogs,
+              stores local refs, and creates Telegram install and shard state.
             </p>
           </article>
         </div>
@@ -758,9 +760,19 @@ fyralis byoc source activate --source all --requires-approval --start-first-sync
             <span class="tag amber">Requires customer refs</span>
             <h3>Provider authorization</h3>
             <p>
-              OAuth consent, API-token creation, admin approval, and gateway
-              session authorization can be automated after the customer provides
-              preauthorized refs inside their own cloud.
+              OAuth consent, API-token creation, admin approval, and MTProto
+              session authorization still require customer action. After that,
+              Fyralis automates finalize, trigger creation, sync status, and
+              observation verification.
+            </p>
+          </article>
+          <article class="card">
+            <span class="tag">Done</span>
+            <h3>Multi-source setup-owner UI</h3>
+            <p>
+              Slack, GitHub, Discord, Notion, Jira, and Telegram now share the
+              same automated setup panel with real provider URLs, local secret
+              handling, gateway polling, and observation display.
             </p>
           </article>
         </div>

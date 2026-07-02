@@ -77,7 +77,7 @@ async def test_slack_rehearsal_is_not_enabled_by_default() -> None:
         )
 
     assert response.status_code == 404
-    assert response.json()["detail"]["error"] == "slack_rehearsal_not_enabled"
+    assert response.json()["detail"]["error"] == "source_rehearsal_not_enabled"
 
 
 @pytest.mark.asyncio

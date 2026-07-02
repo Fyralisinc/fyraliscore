@@ -51,13 +51,15 @@ type GatewayObservationResponse = {
   stub?: boolean;
 };
 
-type SlackRehearsalApiStatus = {
+type SourceRehearsalApiStatus = {
+  source: string;
   installed: boolean;
   installation: {
     installation_id: string;
     enabled: boolean;
     has_secret: boolean;
     installed_at: string;
+    details?: Record<string, unknown>;
   } | null;
   trigger_count: number;
   consumed_trigger_count: number;
@@ -71,28 +73,43 @@ type SlackRehearsalApiStatus = {
   next_action: string;
 };
 
-type SlackRehearsalPrepareApiResponse = {
+type SourceRehearsalPrepareApiResponse = {
   enabled: boolean;
+  source: string;
   tenant_id: string;
   actor_id: string;
   gateway_api_base: string;
   provider_ingress_url: string;
-  oauth_redirect_url: string;
-  events_request_url: string;
-  install_url: string;
+  oauth_redirect_url?: string | null;
+  events_request_url?: string | null;
+  install_url?: string | null;
+  provider_console_url?: string | null;
+  authorization_mode: string;
+  missing_configuration: string[];
+  required_inputs: string[];
   bearer_token: string;
   session_expires_at: string;
-  state_expires_in_seconds: number;
-  status: SlackRehearsalApiStatus;
+  state_expires_in_seconds?: number | null;
+  status: SourceRehearsalApiStatus;
 };
 
-export type SlackRehearsalStatus = {
+type SourceFinalizeApiResponse = {
+  ok: boolean;
+  source: string;
+  installation_id: string;
+  status: SourceRehearsalApiStatus;
+  [key: string]: unknown;
+};
+
+export type SourceRehearsalStatus = {
+  sourceId: string;
   installed: boolean;
   installation: {
     installationId: string;
     enabled: boolean;
     hasSecret: boolean;
     installedAt: string;
+    details: Record<string, unknown>;
   } | null;
   triggerCount: number;
   consumedTriggerCount: number;
@@ -106,20 +123,52 @@ export type SlackRehearsalStatus = {
   nextAction: string;
 };
 
-export type SlackRehearsalPrepareResponse = {
+export type SourceRehearsalPrepareResponse = {
   enabled: boolean;
+  sourceId: string;
   tenantId: string;
   actorId: string;
   gatewayApiBase: string;
   providerIngressUrl: string;
-  oauthRedirectUrl: string;
-  eventsRequestUrl: string;
-  installUrl: string;
+  oauthRedirectUrl: string | null;
+  eventsRequestUrl: string | null;
+  installUrl: string | null;
+  providerConsoleUrl: string | null;
+  authorizationMode: string;
+  missingConfiguration: string[];
+  requiredInputs: string[];
   bearerToken: string;
   sessionExpiresAt: string;
-  stateExpiresInSeconds: number;
-  status: SlackRehearsalStatus;
+  stateExpiresInSeconds: number | null;
+  status: SourceRehearsalStatus;
 };
+
+export type SourceRehearsalFinalizeResponse = {
+  ok: boolean;
+  sourceId: string;
+  installationId: string;
+  status: SourceRehearsalStatus;
+  raw: SourceFinalizeApiResponse;
+};
+
+export type JiraRehearsalFinalizePayload = {
+  baseUrl: string;
+  accountEmail: string;
+  apiToken: string;
+  webhookSecret?: string;
+  projectKeys?: string[];
+};
+
+export type TelegramRehearsalFinalizePayload = {
+  accountLabel: string;
+  apiId: string;
+  apiHash: string;
+  liveSession: string;
+  backfillSession?: string;
+};
+
+export type SlackRehearsalStatus = SourceRehearsalStatus;
+export type SlackRehearsalPrepareResponse = SourceRehearsalPrepareResponse;
 
 export async function fetchGatewaySourceObservations({
   apiBase,
@@ -168,14 +217,18 @@ export async function fetchGatewaySourceObservations({
     .map((item) => gatewayObservationToSourceObservation(item, sourceId));
 }
 
-export async function prepareSlackRehearsal({
+export async function prepareSourceRehearsal({
+  sourceId,
   apiBase
 }: {
+  sourceId: string;
   apiBase?: string;
-} = {}): Promise<SlackRehearsalPrepareResponse> {
+}): Promise<SourceRehearsalPrepareResponse> {
   const resolvedApiBase = resolveGatewayApiBase(apiBase);
   const response = await fetch(
-    `${resolvedApiBase}/platform/onboarding/slack/rehearsal/prepare`,
+    `${resolvedApiBase}/platform/onboarding/sources/${encodeURIComponent(
+      sourceId
+    )}/rehearsal/prepare`,
     {
       method: "POST",
       headers: {
@@ -186,19 +239,24 @@ export async function prepareSlackRehearsal({
   if (!response.ok) {
     throw new ApiError(response.status, await response.text());
   }
-  return mapSlackRehearsalPrepare(
-    (await response.json()) as SlackRehearsalPrepareApiResponse
+  return mapSourceRehearsalPrepare(
+    (await response.json()) as SourceRehearsalPrepareApiResponse,
+    sourceId
   );
 }
 
-export async function fetchSlackRehearsalStatus({
+export async function fetchSourceRehearsalStatus({
+  sourceId,
   apiBase
 }: {
+  sourceId: string;
   apiBase?: string;
-} = {}): Promise<SlackRehearsalStatus> {
+}): Promise<SourceRehearsalStatus> {
   const resolvedApiBase = resolveGatewayApiBase(apiBase);
   const response = await fetch(
-    `${resolvedApiBase}/platform/onboarding/slack/rehearsal/status`,
+    `${resolvedApiBase}/platform/onboarding/sources/${encodeURIComponent(
+      sourceId
+    )}/rehearsal/status`,
     {
       method: "GET",
       headers: {
@@ -209,9 +267,100 @@ export async function fetchSlackRehearsalStatus({
   if (!response.ok) {
     throw new ApiError(response.status, await response.text());
   }
-  return mapSlackRehearsalStatus(
-    (await response.json()) as SlackRehearsalApiStatus
+  return mapSourceRehearsalStatus(
+    (await response.json()) as SourceRehearsalApiStatus,
+    sourceId
   );
+}
+
+export function prepareSlackRehearsal({
+  apiBase
+}: {
+  apiBase?: string;
+} = {}): Promise<SlackRehearsalPrepareResponse> {
+  return prepareSourceRehearsal({ sourceId: "slack", apiBase });
+}
+
+export function fetchSlackRehearsalStatus({
+  apiBase
+}: {
+  apiBase?: string;
+} = {}): Promise<SlackRehearsalStatus> {
+  return fetchSourceRehearsalStatus({ sourceId: "slack", apiBase });
+}
+
+export async function finalizeJiraRehearsal({
+  apiBase,
+  payload
+}: {
+  apiBase?: string;
+  payload: JiraRehearsalFinalizePayload;
+}): Promise<SourceRehearsalFinalizeResponse> {
+  return finalizeSourceRehearsal({
+    apiBase,
+    sourceId: "jira",
+    payload: {
+      base_url: payload.baseUrl,
+      account_email: payload.accountEmail,
+      api_token: payload.apiToken,
+      webhook_secret: payload.webhookSecret,
+      project_keys: payload.projectKeys
+    }
+  });
+}
+
+export async function finalizeTelegramRehearsal({
+  apiBase,
+  payload
+}: {
+  apiBase?: string;
+  payload: TelegramRehearsalFinalizePayload;
+}): Promise<SourceRehearsalFinalizeResponse> {
+  return finalizeSourceRehearsal({
+    apiBase,
+    sourceId: "telegram",
+    payload: {
+      account_label: payload.accountLabel,
+      api_id: payload.apiId,
+      api_hash: payload.apiHash,
+      live_session: payload.liveSession,
+      backfill_session: payload.backfillSession
+    }
+  });
+}
+
+async function finalizeSourceRehearsal({
+  apiBase,
+  sourceId,
+  payload
+}: {
+  apiBase?: string;
+  sourceId: "jira" | "telegram";
+  payload: Record<string, unknown>;
+}): Promise<SourceRehearsalFinalizeResponse> {
+  const resolvedApiBase = resolveGatewayApiBase(apiBase);
+  const response = await fetch(
+    `${resolvedApiBase}/platform/onboarding/sources/${sourceId}/rehearsal/finalize`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    }
+  );
+  if (!response.ok) {
+    throw new ApiError(response.status, await response.text());
+  }
+  const raw = (await response.json()) as SourceFinalizeApiResponse;
+  return {
+    ok: raw.ok,
+    sourceId: raw.source,
+    installationId: raw.installation_id,
+    status: mapSourceRehearsalStatus(raw.status, raw.source),
+    raw
+  };
 }
 
 async function postJson<T>(
@@ -296,36 +445,47 @@ function resolveGatewayApiBase(apiBase?: string): string {
   return resolvedApiBase;
 }
 
-function mapSlackRehearsalPrepare(
-  payload: SlackRehearsalPrepareApiResponse
-): SlackRehearsalPrepareResponse {
+function mapSourceRehearsalPrepare(
+  payload: SourceRehearsalPrepareApiResponse,
+  fallbackSourceId: string
+): SourceRehearsalPrepareResponse {
+  const sourceId = payload.source || fallbackSourceId;
   return {
     enabled: payload.enabled,
+    sourceId,
     tenantId: payload.tenant_id,
     actorId: payload.actor_id,
     gatewayApiBase: payload.gateway_api_base,
     providerIngressUrl: payload.provider_ingress_url,
-    oauthRedirectUrl: payload.oauth_redirect_url,
-    eventsRequestUrl: payload.events_request_url,
-    installUrl: payload.install_url,
+    oauthRedirectUrl: payload.oauth_redirect_url ?? null,
+    eventsRequestUrl: payload.events_request_url ?? null,
+    installUrl: payload.install_url ?? null,
+    providerConsoleUrl: payload.provider_console_url ?? null,
+    authorizationMode: payload.authorization_mode,
+    missingConfiguration: payload.missing_configuration ?? [],
+    requiredInputs: payload.required_inputs ?? [],
     bearerToken: payload.bearer_token,
     sessionExpiresAt: payload.session_expires_at,
-    stateExpiresInSeconds: payload.state_expires_in_seconds,
-    status: mapSlackRehearsalStatus(payload.status)
+    stateExpiresInSeconds: payload.state_expires_in_seconds ?? null,
+    status: mapSourceRehearsalStatus(payload.status, sourceId)
   };
 }
 
-function mapSlackRehearsalStatus(
-  payload: SlackRehearsalApiStatus
-): SlackRehearsalStatus {
+function mapSourceRehearsalStatus(
+  payload: SourceRehearsalApiStatus,
+  fallbackSourceId: string
+): SourceRehearsalStatus {
+  const sourceId = payload.source || fallbackSourceId;
   return {
+    sourceId,
     installed: payload.installed,
     installation: payload.installation
       ? {
           installationId: payload.installation.installation_id,
           enabled: payload.installation.enabled,
           hasSecret: payload.installation.has_secret,
-          installedAt: payload.installation.installed_at
+          installedAt: payload.installation.installed_at,
+          details: payload.installation.details ?? {}
         }
       : null,
     triggerCount: payload.trigger_count,
@@ -342,8 +502,8 @@ function mapSlackRehearsalStatus(
     ),
     observationCount: payload.observation_count,
     observations: payload.observations
-      .filter((item) => observationBelongsToSource(item, "slack"))
-      .map((item) => gatewayObservationToSourceObservation(item, "slack")),
+      .filter((item) => observationBelongsToSource(item, sourceId))
+      .map((item) => gatewayObservationToSourceObservation(item, sourceId)),
     unresolvedFailureCount: payload.unresolved_failure_count,
     bearerToken: payload.bearer_token,
     sessionExpiresAt: payload.session_expires_at,
