@@ -980,10 +980,10 @@ Extension edge ingest:
 | Anomaly processor | Poll fresh observations, run detectors, compute significance, debounce/promote, enqueue T3 with region spec. |
 | Entity resolver | Resolve unresolved phrases from observations, write aliases/review rows, re-enqueue T1 for material resolutions. |
 | Housekeeper | Registry over deadline resolver, obligations, decay/archive, relationship maintenance, calibration, edge drift, topology, precipitation, ontology proposals, structural features. |
-| SAGE topology optimizer | Claims completed inquiry sessions with outcome events, evaluates outcomes, reinforces/decays retrieval/topology utility state. |
+| SAGE topology optimizer | Claims completed inquiry sessions with outcome events, evaluates outcomes, reinforces/decays retrieval/topology utility state; company profiles compact these tenant-scoped utilities, negative memories, drift/residuals, and salience-only source/actor reliability without granting read authority. |
 | Topology sweeper | Refreshes latent relationship candidates over bounded active model frontiers. |
 | Edge drift | Detects relationship drift and candidate changes. |
-| Precipitation | Clusters accumulated weak signals into background pattern candidates. |
+| Precipitation | Clusters accumulated weak signals into `pattern_candidates`, adds review features/counterexamples, and enqueues `T4:pattern_review`; semantic Think review must justify any explicit Pattern/Situation Model. |
 | Calibration updater | Updates prediction/forecast calibration summaries. |
 | Deadline resolver | Resolves or escalates due commitments/obligations. |
 | Relationship ontology proposals | Proposes new relationship ontology candidates from examples. |

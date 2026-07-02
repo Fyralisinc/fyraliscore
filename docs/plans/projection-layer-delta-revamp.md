@@ -303,3 +303,189 @@ queue works; it is about quality and operating efficiency:
 
 The next focused fix should be drain governance and retrieval efficiency, not
 the projection delta queue.
+
+## Post-Final Product-Quality Revamp
+
+The final projection-delta run proved operational health, but it did not prove
+enough product intelligence. The next optimizer pass therefore targets the
+measured product-value gaps without changing the model/projection boundary.
+
+Source run:
+- Run id: `projection-delta-10batch-final-20260630`.
+- Product-value overall: 0.664.
+- Average storyline score: 0.6334.
+- Company intelligence overall: 0.7933.
+
+### Noise And Negative Learning
+
+Measured weakness:
+- `noise_noop_score` was 0.0.
+- `negative_memory_count` and `negative_memory_inserts` were 0.
+- The noise wave still used main Think LLM time and produced a dropped self-edge
+  validation artifact.
+
+Fix:
+- Add a pre-retrieval noise-only T1 fast path.
+- Build an empty accepted RawDiff without LLM use for confirmed non-actionable
+  noise.
+- Record durable `negative_memory` for the skipped noisy path after validating
+  that the triggering observations are still non-actionable noise.
+- Surface `negative_memory_inserts` and `negative_memory_ops` in Think
+  `ops_applied`.
+
+Success signal:
+- Noise-only T1 waves should use zero main Think LLM latency, skip adaptive
+  retrieval, emit no durable positive model writes, and record one durable
+  negative-memory insert.
+- Product-value `negative_learning` should rise through real Think write events,
+  not topology-only accounting.
+
+Current proof:
+- Focused fake-backed tests cover the LLM no-op path, negative-memory write
+  summary, and scorecard aggregation from direct Think ops.
+- Full DB-backed noise fast-path integration has not been rerun in this
+  continuation because local Postgres access was unavailable in the Codex
+  sandbox.
+
+### Question Policy Learning
+
+Measured weakness:
+- `question_policy_probe_count` was 7, but `question_policy_events`,
+  `question_policy_stats`, and `question_policy_updates` were all 0.
+
+Fix:
+- Upsert `sage_question_policy_stats` directly when an accepted
+  question-policy probe survives validation, even when SAGE trace emission is
+  disabled or unavailable.
+- Surface direct Think `question_policy_updates` in `ops_applied`.
+- Count Think-origin question-policy updates separately from topology-origin
+  updates in the benchmark report.
+
+Success signal:
+- Accepted question-policy probe models should produce at least one durable
+  stats/update row.
+- Product-value `question_policy` should rise because the system learned a
+  reusable ask/don't-ask policy, not because a probe merely existed.
+
+Current proof:
+- Focused fake-backed tests verify direct update reporting and benchmark
+  aggregation.
+- Existing DB-backed applier tests cover policy stats, but they were not rerun
+  in this continuation.
+
+### Latent Bridge Structure
+
+Measured weakness:
+- `latent_bridge_inference` scored 0.678.
+- `transition_support_score` was 0.0 despite bridge models and later
+  confirmation.
+
+Fix:
+- Add structured `transition_support` to inferred bridge propositions with
+  `before_state_event_ids`, `after_state_event_ids`, and `gap_review_event_ids`.
+- Teach the benchmark scorer to read structured transition support instead of
+  relying only on raw supporting event ids.
+
+Success signal:
+- Bridge models should be counted as transition-supported only when they bind
+  before state plus after or gap evidence.
+- The scorer should still penalize fabricated specifics and unsupported bridge
+  claims.
+
+Current proof:
+- Unit tests cover structured bridge support generation and scorer recognition.
+- Old artifacts cannot retroactively show this runtime improvement.
+
+### Decision Impact
+
+Measured weakness:
+- `decision_impact` scored 0.7222.
+- Recommendation coverage was 0.6667 and there was only 1 act op across 9
+  storylines.
+
+Fix:
+- Inject a scoped decision-pressure recommendation when an accepted high-pressure
+  situation or concern has source evidence and the diff has no existing
+  recommendation.
+- Keep the recommendation inert: it is a durable model signal, not an automatic
+  Act mutation.
+
+Success signal:
+- More storylines should have recommendation models without increasing unsafe
+  act transitions.
+- Act ops remain conservative unless the trigger proves a real commitment or
+  decision state transition.
+
+Current proof:
+- Unit tests cover recommendation insertion, duplicate suppression, noise
+  suppression, and missing-source suppression.
+
+### Counterfactual And Alias Deferral Scoring
+
+Measured weakness:
+- `counterfactual_trap` scored 0.3819.
+- The alias story deferred most ambiguous relationship candidates, but the
+  scorer counted only `needs_review` rows as deferral and under-credited plain
+  `candidate` rows.
+
+Fix:
+- Count deferred alias candidates as `review_candidate_count -
+  accepted_candidate_count`.
+- Report `alias_deferred_candidate_count` and strong acceptance pressure
+  separately.
+
+Success signal:
+- Alias deferral should credit both `candidate` and `needs_review` as not yet
+  accepted, while separately penalizing strong accepted pollution pressure.
+
+Current proof:
+- Artifact-only rerender:
+  `projection-delta-10batch-final-20260630-rerender-current`.
+- Product-value overall moved from 0.664 to 0.6817 without Postgres or LLM use.
+- `counterfactual_trap` moved from 0.3819 to 0.5406.
+- Alias deferral is now 186/194 = 0.9588, with 8/194 strong accepted pressure.
+
+### Compression Context-Use Accounting
+
+Measured weakness:
+- `compression_loss` scored 0.8274.
+- `model_or_graph_context_use_score` was only 0.5714 even when claim payloads
+  embedded model references inside propositions and entries.
+
+Fix:
+- Count explicit model references embedded in claim entries and propositions,
+  including member, evidence, and source model id fields.
+- Count graph claim references even when the model id appears inside structured
+  payload fields rather than only on the top-level op.
+
+Success signal:
+- Later reasoning should get credit when compressed model/graph context is
+  actually used through structured references.
+- Unused selected context should still be reported when selected graph memory is
+  not referenced by the diff or rationale.
+
+Current proof:
+- Focused context-use tests cover situation member model references, evidence
+  model ids, unused selected models, and relation-frame graph work.
+
+## Current Verification Boundary
+
+Verified in this continuation:
+- Focused runtime and benchmark tests: 148 passed.
+- Touched-file ruff check: passed.
+- Touched runtime `py_compile`: passed.
+- `git diff --check`: passed.
+- Architecture ratchets: passed.
+- Production environment contract: passed.
+- Broad critical ruff selectors: passed.
+- Artifact-only rerender of the final 10-batch report: passed and produced a
+  sibling report with no LLM or Postgres use.
+
+Not yet verified:
+- A fresh DB-backed full integration run of the noise fast path and
+  negative-memory write.
+- A fresh DB-backed full integration run of direct question-policy stats.
+- A fresh 10-batch product-value run proving that runtime fixes improve the
+  actual final harness, not only unit tests and artifact-only rerender scoring.
+- The broad tech-debt budget still fails on repo-wide existing debt; this pass
+  did not attempt a repository-wide debt cleanup.

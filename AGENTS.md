@@ -10,6 +10,8 @@ must not import overlay, demo, or simulation code.
 - Use `CONTRIBUTING.md` for conventions, import rules, migrations, and PR checks.
 - Use `docs/reference/CODEBASE-ARCHITECTURE.md` for the end-to-end system map.
 - Use `docs/reference/CODEBASE-MANAGEMENT.md` when changing architecture or debt.
+- Use `docs/reference/CODEX-LEARNING-LOG.md` before deep debugging or benchmark
+  interpretation, and update it when a run teaches a reusable lesson.
 - For docs changes, follow `CLAUDE.md` and keep subsystem docs updated with code.
 
 ## Local and Cloud Setup
@@ -88,6 +90,8 @@ requires that evidence.
 ## Testing and Evidence Expectations
 
 - Be explicit about the validation boundary. Do not overclaim from a narrow test.
+- When a failed run, benchmark, migration, or debugging session reveals a durable
+  repo lesson, add a dated entry to `docs/reference/CODEX-LEARNING-LOG.md`.
 - For DB cleanup or contract questions, prefer a cheap production-shaped harness
   before expensive full replays unless the user asks for the full run.
 - For reasoning changes, inspect the Trigger -> retrieval/context -> validation

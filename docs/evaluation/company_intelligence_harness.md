@@ -10,6 +10,8 @@ useful model layer, and does that model layer improve future reasoning?
 
 - Benchmark runner:
   `scripts/run_storyline_batch_benchmark.py`
+- Long-term vitals proposal:
+  `docs/evaluation/company_understanding_vitals_harness.md`
 - Unit tests:
   `tests/unit/test_storyline_batch_benchmark.py`
 - Real-run reports:
@@ -159,10 +161,10 @@ Reusable seeded baseline for retrieval optimization:
 ```bash
 .venv/bin/python scripts/run_storyline_batch_benchmark.py \
   --mode seed-only \
-  --run-id retrieval-opt-seed-15000 \
+  --run-id retrieval-opt-seed-5000 \
   --target-t1-batches 0 \
-  --seed-models 15000 \
-  --seed-families 120
+  --seed-models 5000 \
+  --seed-families 100
 ```
 
 Before any expensive Codex-backed append validation, run the retrieval hot-path
@@ -171,8 +173,8 @@ probe against the seeded tenant:
 ```bash
 .venv/bin/python scripts/run_storyline_batch_benchmark.py \
   --mode retrieval-probe \
-  --append-to-run-id retrieval-opt-seed-15000 \
-  --run-id retrieval-opt-seed-15000-probe \
+  --append-to-run-id retrieval-opt-seed-5000 \
+  --run-id retrieval-opt-seed-5000-probe \
   --target-t1-batches 0 \
   --retrieval-probe-max-ms 1000 \
   --skip-migrations
@@ -191,13 +193,33 @@ because that means the focused scope paths were not exercised. Use
 `--retrieval-probe-allow-missing-scope` only for tiny local smoke tests, not as a
 gate before a full E2E run.
 
-Then run repeated append validations without paying the 15k-model seed cost:
+Before spending another full real-LLM batch on a previously reported run, use
+the artifact-only rerender gate. It recomputes the scorecard from saved
+`run_summary.json`, `waves.json`, and storyline scores using the current harness
+logic, then emits an explicit `rerun_readiness` block:
+
+```bash
+.venv/bin/python scripts/run_storyline_batch_benchmark.py \
+  --mode rerender-report \
+  --append-to-run-id projection-delta-10batch-final-20260630 \
+  --run-id projection-delta-10batch-final-20260630-rerender-current
+```
+
+The rerender mode does not touch Postgres and does not call an LLM. Treat
+`rerun_readiness.ready_for_fresh_10batch=false` as a blocker for another
+expensive batch; run the emitted targeted DB proof command first. The optional
+capability/noise canary starts at horizon batch 8 so it exercises
+`capability_probe_wave_009` and `background_noise_wave_010`; it is only a live
+health smoke and does not replace the DB assertions for noise negative-memory or
+question-policy stats.
+
+Then run repeated append validations without paying the 5k-model seed cost:
 
 ```bash
 RUN_REAL_LLM=1 LLM_PROVIDER=codex CODEX_TRANSPORT=cli \
 .venv/bin/python scripts/run_storyline_batch_benchmark.py \
   --mode run \
-  --append-to-run-id retrieval-opt-seed-15000 \
+  --append-to-run-id retrieval-opt-seed-5000 \
   --run-id retrieval-opt-validation-5batch-a \
   --target-t1-batches 5 \
   --signals-per-storyline 20 \
@@ -230,8 +252,8 @@ RUN_REAL_LLM=1 LLM_CACHE_BYPASS=1 \
   --signals-per-storyline 25 \
   --future-validation-signals-per-storyline 3 \
   --noise-signals 25 \
-  --seed-models 15000 \
-  --seed-families 120 \
+  --seed-models 5000 \
+  --seed-families 100 \
   --t1-batch-window-s 0.1 \
   --t1-batch-min-size 20 \
   --t1-batch-max-size 30 \

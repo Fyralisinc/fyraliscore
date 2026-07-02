@@ -23,7 +23,7 @@ Postgres tables/queues to enqueue Think triggers and maintain the substrate.
 | `entity_resolver` | Deferred LLM resolution of `content._unresolved_phrases` → inserts aliases, appends entities, re-enqueues `T1` (medium-confidence → `entity_review_queue`). | Compose service `entity_resolver_worker`. |
 | `calibration_updater` | Wave 4-C weekly. Turns the append-only `calibration_stats` log into the mutable `calibration_offsets` table. | Scheduled by `housekeeper_worker`. |
 | `deadline_resolver` | Wave 4-A. Polls prediction Models whose `evaluate_at` passed → enqueues `T2 prediction_overdue` (never writes `models` directly; Think's deterministic T2 handler owns the deltas). | Scheduled by `housekeeper_worker`. |
-| `precipitation` | Wave 4-C nightly. Clusters related `hypothesis`/`concern` Models into one `pattern_candidates` row per dense embedding cluster → promoted by Think `T4 pattern_review`. | Housekeeper opt-in. |
+| `precipitation` | Wave 4-C nightly. Clusters related `hypothesis`/`concern` Models into weak `pattern_candidates`, enriches them with review features/counterexamples, and enqueues `T4 pattern_review`; semantic Think review must justify any Pattern/Situation Model. | Housekeeper opt-in behind expensive-job flags; broad enablement requires the precipitation quality gate to reach `enablement_candidate`. |
 | `edge_drift` | Samples `model_edges` vs. legacy array columns to detect typed-edge drift parity (`EdgesRepo.get_drift_sample`). | Scheduled by `housekeeper_worker`. |
 | `maintenance` | Wave 4-D. `daily.py` (decay + archival + alias cleanup + orphan/think_runs/region-lock cleanup), `weekly.py` (relationship maintenance + calibration + partition extension + memory-fabric decay), `monthly.py` (vacuum analyze, cold-partition notes, reports), `scheduler.py` (in-process asyncio scheduler). | Partially scheduled by `housekeeper_worker`; full daily/monthly bundles remain separate scheduling decisions. |
 | `neighborhood_detector` | **No source on this branch** — only stale `__pycache__/` + `tests/`. Relates to the retired accepted-memory "neighborhood" topology. | Not present. |
@@ -55,8 +55,8 @@ graph TD
     ENT -->|"resolve phrases"| LLM
     ENT -->|"alias + re-enqueue T1"| TTQ
     DL -->|"T2 prediction_overdue"| TTQ
-    PREC -->|"pattern_candidates"| PG
-    PREC -->|"T4 pattern_review"| TTQ
+    PREC -->|"weak pattern_candidates + review features"| PG
+    PREC -->|"T4 pattern_review semantic gate"| TTQ
     CAL -->|"calibration_offsets"| PG
     DRIFT -->|"drift sample"| PG
     MAINT -->|"decay · cleanup · partition extend"| PG

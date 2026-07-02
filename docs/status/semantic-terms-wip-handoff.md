@@ -16,6 +16,11 @@ First-class Model `semantic_terms` are implemented.
   retrieval hydration, and `claim_ops.update` all preserve the field.
 - Retrieval adds pathway `L`, mapped to lexical RRF dimension
   `DIMENSION_LEXICAL`.
+- Migration `0181_model_representation_feature_postings.sql` mirrors lexical
+  `semantic_terms` into a unified typed feature-posting index as
+  `feature_type='lexical'`. Existing domain/retrieval/coverage tags and cheap
+  grammar/structural facets share that same posting surface, while
+  `model_semantic_terms` remains the canonical lexical sidecar.
 - `primary_retrieve(...)` runs `L` when enabled. It applies trigger
   actor/entity scope when scope exists so lexical overlap stays precise and does
   not collapse adjacent customers or commitments.
@@ -28,7 +33,9 @@ First-class Model `semantic_terms` are implemented.
 `semantic_terms` are belief-specific lexical handles, not ontology tags,
 projection labels, entity names, scope actors, or domain tags. They belong to
 the Model layer because they describe the belief itself and give retrieval one
-extra precise surface when embeddings or structural paths miss.
+extra precise surface when embeddings or structural paths miss. The merged
+representation-feature index unifies the posting substrate, not the semantics:
+lexical terms, representation tags, and structural facets stay typed separately.
 
 ## Verification
 
