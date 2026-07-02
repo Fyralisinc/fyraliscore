@@ -22,6 +22,8 @@ from services.platform.runtime.byoc_onboarding_intents import (
     UnsupportedOnboardingPlan,
 )
 
+from lib.shared.ids import uuid7
+
 _ALL_REHEARSAL_SOURCES = {
     "ashby",
     "aws",
@@ -93,11 +95,96 @@ _SOURCE_LIVE_INGRESS_PATHS = {
 }
 
 _SOURCE_REQUIRED_INPUTS = {
+    "ashby": [
+        "org_id",
+        "api_token",
+    ],
+    "aws": [
+        "account_id",
+        "region",
+        "role_arn",
+    ],
+    "brex": [
+        "organization_id",
+        "api_token",
+    ],
+    "carta": [
+        "firm_id",
+        "oauth_client",
+        "token_ref",
+    ],
+    "deel": [
+        "organization_id",
+        "api_token",
+    ],
+    "figma": [
+        "team_id",
+        "api_token",
+    ],
+    "fireflies": [
+        "workspace_id",
+        "token_ref",
+    ],
+    "gmail": [
+        "mailbox_scope",
+        "oauth_client",
+        "token_ref",
+        "pubsub_topic",
+    ],
+    "google_calendar": [
+        "calendar_scope",
+        "oauth_client",
+        "token_ref",
+    ],
+    "google_drive": [
+        "drive_scope",
+        "oauth_client",
+        "token_ref",
+    ],
+    "grafana": [
+        "instance_url",
+        "service_account_token",
+    ],
+    "gusto": [
+        "company_id",
+        "oauth_client",
+        "token_ref",
+    ],
+    "hibob": [
+        "company_id",
+        "service_user_token",
+    ],
     "jira": [
         "base_url",
         "account_email",
         "api_token",
         "webhook_secret",
+    ],
+    "linkedin": [
+        "organization_urn",
+        "oauth_client",
+        "token_ref",
+    ],
+    "mercury": [
+        "organization_id",
+        "api_token",
+    ],
+    "miro": [
+        "org_id",
+        "api_token",
+    ],
+    "quickbooks": [
+        "realm_id",
+        "oauth_client",
+        "token_ref",
+    ],
+    "ramp": [
+        "business_id",
+        "api_token",
+    ],
+    "signal": [
+        "account_label",
+        "linked_device_session",
     ],
     "telegram": [
         "account_label",
@@ -106,6 +193,34 @@ _SOURCE_REQUIRED_INPUTS = {
         "live_session",
         "backfill_session",
     ],
+    "whatsapp": [
+        "business_account_id",
+        "phone_number_id",
+        "access_token",
+        "verify_token",
+    ],
+}
+
+_SOURCE_OPTIONAL_INPUTS = {
+    "ashby": ["base_url", "webhook_secret"],
+    "brex": ["base_url", "account_ids", "webhook_secret"],
+    "carta": ["base_url", "refresh_token_ref"],
+    "deel": ["base_url", "contract_ids", "webhook_secret"],
+    "figma": ["base_url", "file_keys", "webhook_passcode"],
+    "fireflies": ["base_url", "oauth_client", "webhook_secret"],
+    "gmail": ["base_url", "watch_channel_id"],
+    "google_calendar": ["watch_channel_id"],
+    "google_drive": ["watch_channel_id"],
+    "grafana": ["webhook_secret"],
+    "gusto": ["base_url", "refresh_token_ref", "webhook_secret"],
+    "hibob": ["base_url", "webhook_secret"],
+    "linkedin": ["base_url", "refresh_token_ref"],
+    "mercury": ["base_url", "account_ids", "webhook_secret"],
+    "miro": ["base_url", "board_ids", "webhook_secret"],
+    "quickbooks": ["base_url", "refresh_token_ref", "webhook_secret"],
+    "ramp": ["base_url", "entity_scope", "webhook_secret"],
+    "signal": ["backfill_session", "thread_scope"],
+    "whatsapp": ["app_secret", "webhook_secret"],
 }
 
 _GENERIC_PROVIDER_CONSOLES = {
@@ -423,6 +538,123 @@ def build_byoc_onboarding_router(
             "status": status_payload,
         }
 
+    @router.post("/sources/{source_id}/rehearsal/finalize")
+    async def finalize_generic_source_rehearsal(
+        request: Request,
+        source_id: str,
+    ) -> dict[str, Any]:
+        source = _normalize_rehearsal_source(source_id)
+        if source in {"jira", "telegram"}:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "source_specific_finalize_required"},
+            )
+        _require_source_rehearsal_enabled(request)
+        pool = _pool_from_state(request)
+        tenant_id, actor_id = _rehearsal_actor_ids()
+        await _ensure_rehearsal_actor(pool, tenant_id=tenant_id, actor_id=actor_id)
+
+        body = await _json_body(request)
+        input_values = _source_finalize_inputs(body)
+        required_inputs = _SOURCE_REQUIRED_INPUTS.get(source, [])
+        missing_inputs = [
+            name
+            for name in required_inputs
+            if not str(input_values.get(name, "")).strip()
+        ]
+        if missing_inputs:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "source_rehearsal_missing_required_inputs",
+                    "source": source,
+                    "missing_inputs": missing_inputs,
+                },
+            )
+
+        secret_store = _secret_store_from_state(request, pool)
+        secret_refs: dict[str, str] = {}
+        visible_inputs: dict[str, str] = {}
+        for name, value in sorted(input_values.items()):
+            cleaned = str(value).strip()
+            if not cleaned:
+                continue
+            if _source_input_is_secret(name):
+                secret_refs[name] = await secret_store.put(
+                    cleaned,
+                    label=f"{source}_{name}",
+                    tenant_id=tenant_id,
+                )
+            else:
+                visible_inputs[name] = cleaned
+
+        primary_secret_ref = _primary_secret_ref(secret_refs)
+        installation_id = _source_installation_id(
+            source,
+            input_values,
+            fallback=body.get("installation_id"),
+        )
+        trigger_payload = {
+            "source": source,
+            "authorization_mode": _GENERIC_AUTHORIZATION_MODES.get(
+                source,
+                "customer_local_provider_refs",
+            ),
+            "installation_id": installation_id,
+            "inputs": visible_inputs,
+            "secret_refs": secret_refs,
+            "prepared_by": "fyralis_source_rehearsal_ui",
+        }
+
+        from lib.shared.errors import InstallationCollisionError
+        from lib.shared.provider_installations import (
+            upsert_provider_installation_for_tenant,
+        )
+
+        try:
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    installation_row_id = await upsert_provider_installation_for_tenant(
+                        conn,
+                        provider=source,
+                        tenant_id=tenant_id,
+                        installation_id=installation_id,
+                        secret_ref=primary_secret_ref,
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO onboarding_triggers (
+                            id, tenant_id, source, trigger_kind,
+                            installation_row_id, payload
+                        )
+                        VALUES ($1, $2, $3, 'install', $4, $5::jsonb)
+                        """,
+                        uuid7(),
+                        tenant_id,
+                        source,
+                        installation_row_id,
+                        json.dumps(trigger_payload),
+                    )
+        except InstallationCollisionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"error": "source_installation_already_bound"},
+            ) from exc
+
+        status_payload = await _source_rehearsal_status_payload(
+            pool,
+            tenant_id=tenant_id,
+            source=source,
+        )
+        return {
+            "ok": True,
+            "source": source,
+            "installation_id": installation_id,
+            "stored_secret_ref_count": len(secret_refs),
+            "stored_metadata_keys": sorted(visible_inputs),
+            "status": status_payload,
+        }
+
     @router.post("/slack/rehearsal/prepare")
     async def prepare_slack_rehearsal(request: Request) -> dict[str, Any]:
         return await _prepare_source_rehearsal_response(request, "slack")
@@ -540,6 +772,7 @@ async def _prepare_source_rehearsal_response(
         "authorization_mode": handoff["authorization_mode"],
         "missing_configuration": handoff["missing_configuration"],
         "required_inputs": _SOURCE_REQUIRED_INPUTS.get(source, []),
+        "optional_inputs": _SOURCE_OPTIONAL_INPUTS.get(source, []),
         "bearer_token": token,
         "session_expires_at": ctx.expires_at.isoformat(),
         "state_expires_in_seconds": 600 if source in _OAUTH_REHEARSAL_SOURCES else None,
@@ -721,6 +954,123 @@ async def _source_provider_handoff(
         }
 
     raise AssertionError(f"unsupported rehearsal source {source!r}")
+
+
+async def _json_body(request: Request) -> dict[str, Any]:
+    try:
+        body = await request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_json_body"},
+        ) from exc
+    if not isinstance(body, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "json_object_required"},
+        )
+    return body
+
+
+def _source_finalize_inputs(body: dict[str, Any]) -> dict[str, str]:
+    raw_inputs = body.get("inputs", body)
+    if not isinstance(raw_inputs, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "source_inputs_must_be_object"},
+        )
+    inputs: dict[str, str] = {}
+    for key, value in raw_inputs.items():
+        if value is None:
+            continue
+        name = str(key).strip()
+        if not name:
+            continue
+        if isinstance(value, (dict, list)):
+            cleaned = json.dumps(value, sort_keys=True)
+        else:
+            cleaned = str(value).strip()
+        if cleaned:
+            inputs[name] = cleaned
+    return inputs
+
+
+def _source_input_is_secret(name: str) -> bool:
+    lowered = name.strip().lower()
+    if lowered.endswith("_ref") or lowered in {"role_arn", "region"}:
+        return False
+    secret_terms = (
+        "token",
+        "secret",
+        "hash",
+        "session",
+        "password",
+        "private_key",
+        "credential",
+        "oauth_client",
+        "api_key",
+    )
+    return any(term in lowered for term in secret_terms)
+
+
+def _primary_secret_ref(secret_refs: dict[str, str]) -> str | None:
+    priority_terms = (
+        "webhook_secret",
+        "signing_secret",
+        "verify_token",
+        "api_token",
+        "service_user_token",
+        "service_account_token",
+        "access_token",
+        "bot_token",
+        "linked_device_session",
+        "session",
+        "oauth_client",
+        "api_hash",
+    )
+    for term in priority_terms:
+        for name, ref in secret_refs.items():
+            if term in name:
+                return ref
+    return next(iter(secret_refs.values()), None)
+
+
+def _source_installation_id(
+    source: str,
+    inputs: dict[str, str],
+    *,
+    fallback: Any = None,
+) -> str:
+    candidate_fields = (
+        "installation_id",
+        "company_id",
+        "organization_id",
+        "organization_urn",
+        "org_id",
+        "workspace_id",
+        "business_id",
+        "business_account_id",
+        "realm_id",
+        "account_id",
+        "account_label",
+        "phone_number_id",
+        "team_id",
+        "firm_id",
+        "instance_url",
+        "base_url",
+        "site_url",
+        "mailbox_scope",
+        "calendar_scope",
+        "drive_scope",
+    )
+    for field in candidate_fields:
+        value = str(inputs.get(field, "")).strip()
+        if value:
+            return value[:240]
+    fallback_value = str(fallback or "").strip()
+    if fallback_value:
+        return fallback_value[:240]
+    return f"{source}:customer-local-refs"
 
 
 def _secret_store_from_state(request: Request, pool: Any) -> Any:

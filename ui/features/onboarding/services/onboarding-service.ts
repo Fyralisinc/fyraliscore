@@ -87,6 +87,7 @@ type SourceRehearsalPrepareApiResponse = {
   authorization_mode: string;
   missing_configuration: string[];
   required_inputs: string[];
+  optional_inputs?: string[];
   bearer_token: string;
   session_expires_at: string;
   state_expires_in_seconds?: number | null;
@@ -137,6 +138,7 @@ export type SourceRehearsalPrepareResponse = {
   authorizationMode: string;
   missingConfiguration: string[];
   requiredInputs: string[];
+  optionalInputs: string[];
   bearerToken: string;
   sessionExpiresAt: string;
   stateExpiresInSeconds: number | null;
@@ -165,6 +167,11 @@ export type TelegramRehearsalFinalizePayload = {
   apiHash: string;
   liveSession: string;
   backfillSession?: string;
+};
+
+export type GenericSourceRehearsalFinalizePayload = {
+  inputs: Record<string, string>;
+  installationId?: string;
 };
 
 export type SlackRehearsalStatus = SourceRehearsalStatus;
@@ -329,13 +336,32 @@ export async function finalizeTelegramRehearsal({
   });
 }
 
+export async function finalizeGenericSourceRehearsal({
+  apiBase,
+  sourceId,
+  payload
+}: {
+  apiBase?: string;
+  sourceId: string;
+  payload: GenericSourceRehearsalFinalizePayload;
+}): Promise<SourceRehearsalFinalizeResponse> {
+  return finalizeSourceRehearsal({
+    apiBase,
+    sourceId,
+    payload: {
+      inputs: payload.inputs,
+      installation_id: payload.installationId
+    }
+  });
+}
+
 async function finalizeSourceRehearsal({
   apiBase,
   sourceId,
   payload
 }: {
   apiBase?: string;
-  sourceId: "jira" | "telegram";
+  sourceId: string;
   payload: Record<string, unknown>;
 }): Promise<SourceRehearsalFinalizeResponse> {
   const resolvedApiBase = resolveGatewayApiBase(apiBase);
@@ -464,6 +490,7 @@ function mapSourceRehearsalPrepare(
     authorizationMode: payload.authorization_mode,
     missingConfiguration: payload.missing_configuration ?? [],
     requiredInputs: payload.required_inputs ?? [],
+    optionalInputs: payload.optional_inputs ?? [],
     bearerToken: payload.bearer_token,
     sessionExpiresAt: payload.session_expires_at,
     stateExpiresInSeconds: payload.state_expires_in_seconds ?? null,

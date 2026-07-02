@@ -16,11 +16,29 @@ from services.platform.runtime.byoc_onboarding_intents import (
 )
 
 
+class _RecordingSecretStore:
+    def __init__(self) -> None:
+        self.values: list[tuple[str, str]] = []
+
+    async def put(self, plaintext, *, label, tenant_id):
+        self.values.append((label, str(plaintext)))
+        return f"secret-ref:{label}"
+
+
 def _app() -> tuple[FastAPI, InMemoryOnboardingIntentStore]:
     store = InMemoryOnboardingIntentStore()
     app = FastAPI()
     app.include_router(build_byoc_onboarding_router(store=store))
     return app, store
+
+
+def _gateway_app(gateway_pool, secret_store=None) -> FastAPI:
+    app = FastAPI()
+    app.state.pool = gateway_pool
+    if secret_store is not None:
+        app.state.secret_store = secret_store
+    app.include_router(build_byoc_onboarding_router(store=InMemoryOnboardingIntentStore()))
+    return app
 
 
 @pytest.mark.asyncio
@@ -82,6 +100,98 @@ async def test_slack_rehearsal_is_not_enabled_by_default() -> None:
 
     assert response.status_code == 404
     assert response.json()["detail"]["error"] == "source_rehearsal_not_enabled"
+
+
+@pytest.mark.asyncio
+async def test_generic_source_prepare_returns_actionable_inputs(
+    gateway_pool,
+    monkeypatch,
+) -> None:
+    tenant_id = uuid4()
+    actor_id = uuid4()
+    monkeypatch.setenv("FYRALIS_SOURCE_REHEARSAL_ENABLED", "1")
+    monkeypatch.setenv("COMPANY_OS_TENANT_ID", str(tenant_id))
+    monkeypatch.setenv("COMPANY_OS_CEO_ACTOR_ID", str(actor_id))
+
+    app = _gateway_app(gateway_pool, _RecordingSecretStore())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/platform/onboarding/sources/hibob/rehearsal/prepare"
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "hibob"
+    assert payload["authorization_mode"] == "customer_local_provider_refs"
+    assert payload["required_inputs"] == ["company_id", "service_user_token"]
+    assert "webhook_secret" in payload["optional_inputs"]
+    assert payload["status"]["next_action"] == (
+        "Submit the required HiBob connection details."
+    )
+
+
+@pytest.mark.asyncio
+async def test_generic_source_finalize_stores_refs_and_emits_trigger(
+    gateway_pool,
+    monkeypatch,
+) -> None:
+    tenant_id = uuid4()
+    actor_id = uuid4()
+    secret_store = _RecordingSecretStore()
+    monkeypatch.setenv("FYRALIS_SOURCE_REHEARSAL_ENABLED", "1")
+    monkeypatch.setenv("COMPANY_OS_TENANT_ID", str(tenant_id))
+    monkeypatch.setenv("COMPANY_OS_CEO_ACTOR_ID", str(actor_id))
+
+    app = _gateway_app(gateway_pool, secret_store)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/platform/onboarding/sources/hibob/rehearsal/finalize",
+            json={
+                "inputs": {
+                    "company_id": "hibob-company-1",
+                    "service_user_token": "super-secret-token",
+                    "webhook_secret": "webhook-super-secret",
+                }
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["installation_id"] == "hibob-company-1"
+    assert payload["status"]["installed"] is True
+    assert payload["status"]["trigger_count"] == 1
+    assert sorted(label for label, _value in secret_store.values) == [
+        "hibob_service_user_token",
+        "hibob_webhook_secret",
+    ]
+
+    install = await gateway_pool.fetchrow(
+        """
+        SELECT installation_id, secret_ref, enabled
+          FROM provider_installations
+         WHERE tenant_id = $1 AND provider = 'hibob'
+        """,
+        tenant_id,
+    )
+    assert install["installation_id"] == "hibob-company-1"
+    assert install["secret_ref"] == "secret-ref:hibob_webhook_secret"
+    assert install["enabled"] is True
+
+    trigger_payload = await gateway_pool.fetchval(
+        """
+        SELECT payload::text
+          FROM onboarding_triggers
+         WHERE tenant_id = $1 AND source = 'hibob'
+        """,
+        tenant_id,
+    )
+    assert "hibob-company-1" in trigger_payload
+    assert "secret-ref:hibob_service_user_token" in trigger_payload
+    assert "super-secret-token" not in trigger_payload
+    assert "webhook-super-secret" not in trigger_payload
 
 
 @pytest.mark.asyncio

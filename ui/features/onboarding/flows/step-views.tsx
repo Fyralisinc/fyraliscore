@@ -52,6 +52,7 @@ import {
   createDesignPartnerOnboardingIntent,
   fetchGatewaySourceObservations,
   fetchSourceRehearsalStatus,
+  finalizeGenericSourceRehearsal,
   finalizeJiraRehearsal,
   finalizeTelegramRehearsal,
   prepareSourceRehearsal,
@@ -2341,10 +2342,14 @@ function IngestionHealthStep({
     liveSession: "",
     backfillSession: ""
   });
+  const [genericSourceForm, setGenericSourceForm] = useState<Record<string, string>>(
+    {}
+  );
 
   useEffect(() => {
     setSourceRehearsal(null);
     setSourceStatus(null);
+    setGenericSourceForm({});
     setSourceAutomationStatus("idle");
     setSourceAutomationMessage(
       `Prepare ${selectedSource.name} from this UI. Fyralis will generate the provider handoff, open approval when available, poll the gateway, and show observations when they land.`
@@ -2354,6 +2359,25 @@ function IngestionHealthStep({
     );
     setFetchStatus("idle");
   }, [selectedSource.id, selectedSource.name]);
+
+  useEffect(() => {
+    if (!sourceRehearsal) {
+      return;
+    }
+    const inputNames = [
+      ...sourceRehearsal.requiredInputs,
+      ...sourceRehearsal.optionalInputs
+    ];
+    setGenericSourceForm((current) => {
+      const next = { ...current };
+      for (const name of inputNames) {
+        if (!(name in next)) {
+          next[name] = "";
+        }
+      }
+      return next;
+    });
+  }, [sourceRehearsal]);
 
   useEffect(() => {
     if (!hasSourceAutomation || !sourceRehearsal) {
@@ -2525,6 +2549,48 @@ function IngestionHealthStep({
       setSourceAutomationMessage(errorMessage(caught));
     }
   }
+
+  async function finalizeGenericSourceFromUi() {
+    setSourceAutomationStatus("preparing");
+    setSourceAutomationMessage(
+      `Creating customer-cloud refs and starting ${selectedSource.name} sync...`
+    );
+    try {
+      const inputs = Object.fromEntries(
+        Object.entries(genericSourceForm)
+          .map(([key, value]) => [key, value.trim()])
+          .filter(([, value]) => value)
+      );
+      const response = await finalizeGenericSourceRehearsal({
+        apiBase,
+        sourceId: selectedSource.id,
+        payload: { inputs }
+      });
+      applySourceStatus(response.status);
+      setSourceAutomationMessage(
+        `${selectedSource.name} connection finalized. Fyralis stored customer-cloud refs, registered the source, and emitted the onboarding trigger.`
+      );
+    } catch (caught) {
+      setSourceAutomationStatus("error");
+      setSourceAutomationMessage(errorMessage(caught));
+    }
+  }
+
+  const genericInputNames = sourceRehearsal
+    ? Array.from(
+        new Set([
+          ...sourceRehearsal.requiredInputs,
+          ...sourceRehearsal.optionalInputs
+        ])
+      )
+    : [];
+  const showGenericSourceForm =
+    Boolean(sourceRehearsal) &&
+    genericInputNames.length > 0 &&
+    selectedSource.id !== "jira" &&
+    selectedSource.id !== "telegram" &&
+    !sourceRehearsal?.installUrl &&
+    !sourceRehearsal?.missingConfiguration.length;
 
   return (
     <div className="grid gap-5">
@@ -2771,6 +2837,76 @@ function IngestionHealthStep({
                     <Play className="h-4 w-4" aria-hidden="true" />
                     Verify and connect Telegram
                   </Button>
+                </div>
+              </div>
+            ) : null}
+            {showGenericSourceForm ? (
+              <div className="grid gap-4 rounded-lg border border-border bg-background/70 p-4">
+                <div className="grid gap-2">
+                  <strong className="text-sm">
+                    {selectedSource.name} connection details
+                  </strong>
+                  <p className="text-sm text-muted-foreground">
+                    Enter the customer-cloud refs or provider values Fyralis cannot
+                    discover without provider approval. Secret-looking values are
+                    sent only to the customer-cloud gateway and stored as encrypted
+                    refs.
+                  </p>
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {genericInputNames.map((inputName) => {
+                    const required =
+                      sourceRehearsal?.requiredInputs.includes(inputName) ?? false;
+                    return (
+                      <Field
+                        key={inputName}
+                        label={`${sourceInputLabel(inputName)}${required ? "" : " (optional)"}`}
+                        help={sourceInputHelp(inputName, selectedSource.name)}
+                      >
+                        <Input
+                          type={sourceInputType(inputName)}
+                          autoComplete="off"
+                          value={genericSourceForm[inputName] ?? ""}
+                          onChange={(event) =>
+                            setGenericSourceForm((current) => ({
+                              ...current,
+                              [inputName]: event.target.value
+                            }))
+                          }
+                          placeholder={sourceInputPlaceholder(
+                            inputName,
+                            selectedSource.name
+                          )}
+                        />
+                      </Field>
+                    );
+                  })}
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  <Button
+                    type="button"
+                    onClick={finalizeGenericSourceFromUi}
+                    disabled={sourceAutomationStatus === "preparing"}
+                  >
+                    <Play className="h-4 w-4" aria-hidden="true" />
+                    Connect {selectedSource.name}
+                  </Button>
+                  {isExternalUrl(sourceRehearsal?.providerConsoleUrl) ? (
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() =>
+                        window.open(
+                          sourceRehearsal?.providerConsoleUrl ?? "",
+                          "_blank",
+                          "noopener,noreferrer"
+                        )
+                      }
+                    >
+                      <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                      Open provider console
+                    </Button>
+                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -3381,6 +3517,122 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
       <span className="mt-1 block text-sm text-muted-foreground">{detail}</span>
     </div>
   );
+}
+
+function sourceInputLabel(name: string) {
+  const labels: Record<string, string> = {
+    access_token: "Access token",
+    account_id: "AWS account ID",
+    account_ids: "Account IDs",
+    account_label: "Account label",
+    api_hash: "API hash",
+    api_token: "API token",
+    app_secret: "App secret",
+    backfill_session: "Backfill session",
+    base_url: "API base URL",
+    board_ids: "Board IDs",
+    business_account_id: "Business account ID",
+    business_id: "Business ID",
+    calendar_scope: "Calendar scope",
+    company_id: "Company ID",
+    contract_ids: "Contract IDs",
+    drive_scope: "Drive scope",
+    entity_scope: "Entity scope",
+    file_keys: "File keys",
+    firm_id: "Firm ID",
+    instance_url: "Instance URL",
+    linked_device_session: "Linked-device session",
+    mailbox_scope: "Mailbox scope",
+    oauth_client: "OAuth client",
+    organization_id: "Organization ID",
+    organization_urn: "Organization URN",
+    org_id: "Organization ID",
+    phone_number_id: "Phone number ID",
+    pubsub_topic: "Pub/Sub topic",
+    realm_id: "Realm ID",
+    refresh_token_ref: "Refresh token ref",
+    role_arn: "Role ARN",
+    service_account_token: "Service account token",
+    service_user_token: "Service user token",
+    team_id: "Team ID",
+    thread_scope: "Thread scope",
+    token_ref: "Token ref",
+    verify_token: "Verify token",
+    watch_channel_id: "Watch channel ID",
+    webhook_passcode: "Webhook passcode",
+    webhook_secret: "Webhook secret",
+    workspace_id: "Workspace ID"
+  };
+  return (
+    labels[name] ??
+    name
+      .split("_")
+      .filter(Boolean)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ")
+  );
+}
+
+function sourceInputHelp(name: string, sourceName: string) {
+  if (name.endsWith("_ref")) {
+    return "Reference to a secret already stored in the customer cloud.";
+  }
+  if (sourceInputType(name) === "password") {
+    return "Stored as an encrypted customer-cloud ref, not sent to Fyralis hosted control plane.";
+  }
+  const helps: Record<string, string> = {
+    account_ids: "Comma-separated list, or leave blank for provider discovery.",
+    base_url: `Provider API root for ${sourceName}; leave blank to use the default when supported.`,
+    board_ids: "Comma-separated board IDs, or leave blank for provider discovery.",
+    contract_ids: "Comma-separated contract IDs, or leave blank for provider discovery.",
+    entity_scope: "Comma-separated entities or scopes approved for ingestion.",
+    file_keys: "Comma-separated Figma file keys, or leave blank for provider discovery.",
+    mailbox_scope: "Mailbox, group, or allowlist label approved for ingestion.",
+    thread_scope: "Comma-separated contacts/groups, or leave blank for approved defaults."
+  };
+  return helps[name] ?? "Used to register the customer-cloud source connection.";
+}
+
+function sourceInputPlaceholder(name: string, sourceName: string) {
+  const placeholders: Record<string, string> = {
+    account_id: "123456789012",
+    account_ids: "acct_123, acct_456",
+    account_label: `${sourceName.toLowerCase()}-pilot`,
+    base_url: "https://api.provider.example",
+    board_ids: "board_123, board_456",
+    business_account_id: "business-account-id",
+    calendar_scope: "primary, team-calendar@example.com",
+    company_id: "company-id",
+    contract_ids: "contract_123, contract_456",
+    drive_scope: "shared-drive-id or folder allowlist",
+    file_keys: "figma-file-key-1, figma-file-key-2",
+    instance_url: "https://grafana.customer.example",
+    mailbox_scope: "pilot-users@example.com",
+    organization_urn: "urn:li:organization:123456",
+    phone_number_id: "whatsapp-phone-number-id",
+    pubsub_topic: "projects/acme/topics/fyralis-gmail",
+    realm_id: "quickbooks-realm-id",
+    role_arn: "arn:aws:iam::123456789012:role/fyralis-readonly",
+    token_ref: "aws-secretsmanager:/fyralis/sources/provider/token",
+    webhook_secret: "provider webhook signing secret"
+  };
+  return placeholders[name] ?? `${sourceName} ${sourceInputLabel(name).toLowerCase()}`;
+}
+
+function sourceInputType(name: string): "password" | "text" {
+  const lowered = name.toLowerCase();
+  if (lowered.endsWith("_ref") || lowered === "role_arn") {
+    return "text";
+  }
+  return /(token|secret|hash|session|password|private|credential|oauth_client|api_key)/.test(
+    lowered
+  )
+    ? "password"
+    : "text";
+}
+
+function isExternalUrl(value: string | null | undefined) {
+  return Boolean(value && /^https?:\/\//.test(value));
 }
 
 function sourceScopeChoices(sourceId: string) {
