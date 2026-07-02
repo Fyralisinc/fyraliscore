@@ -4,7 +4,14 @@ import pytest
 
 import services.domain.projections.catalog as catalog
 from services.domain.projections.constraints import ConstraintProjector
+from services.domain.projections.decision_surfaces import DecisionSurfaceProjector
 from services.domain.projections.employee_profiles import EmployeeProfileProjector
+from services.domain.projections.entity_surfaces import (
+    CommitmentProjector,
+    CustomerProjector,
+    DecisionProjector,
+    GoalProjector,
+)
 from services.domain.projections.resources import ResourceProjector
 from services.domain.projections.run import _projectors_for, parse_args
 
@@ -28,11 +35,21 @@ def test_projectors_for_all_dedupes_registered_projectors() -> None:
     projectors = _projectors_for(["all", "constraints"])
 
     assert {projector.name for projector in projectors} == {
+        "commitments",
         "constraints",
+        "customers",
+        "decisions",
+        "decision_surfaces",
         "employee_profiles",
+        "goals",
         "resources",
     }
+    assert any(isinstance(projector, CommitmentProjector) for projector in projectors)
+    assert any(isinstance(projector, CustomerProjector) for projector in projectors)
+    assert any(isinstance(projector, DecisionProjector) for projector in projectors)
+    assert any(isinstance(projector, DecisionSurfaceProjector) for projector in projectors)
     assert any(isinstance(projector, EmployeeProfileProjector) for projector in projectors)
+    assert any(isinstance(projector, GoalProjector) for projector in projectors)
     assert any(isinstance(projector, ResourceProjector) for projector in projectors)
 
 

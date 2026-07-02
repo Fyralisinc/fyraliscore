@@ -208,15 +208,17 @@ async def test_pathway_b_representation_tags_rescue_deep_tagged_model(
     assert "source_code" in result.notes["seed_tags"]
 
 
-async def test_pathway_b_representation_tags_uses_bounded_postings_when_present():
+async def test_pathway_b_representation_tags_uses_unified_feature_postings_when_present():
     tenant_id = uuid.uuid4()
 
     class FakeConn:
         def __init__(self) -> None:
             self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
 
-        async def fetchval(self, *_args: object) -> str:
-            return "model_representation_tag_postings"
+        async def fetchval(self, query: str, *_args: object) -> str | None:
+            if "model_representation_feature_postings" in query:
+                return "model_representation_feature_postings"
+            return None
 
         async def fetch(self, query: str, *args: object) -> list[object]:
             self.fetch_calls.append((query, args))
@@ -232,13 +234,18 @@ async def test_pathway_b_representation_tags_uses_bounded_postings_when_present(
     )
 
     assert result.notes["representation_postings_index"] is True
+    assert result.notes["representation_feature_postings_index"] is True
+    assert (
+        result.notes["representation_postings_table"]
+        == "model_representation_feature_postings"
+    )
     assert len(conn.fetch_calls) == 1
     query, args = conn.fetch_calls[0]
-    assert "model_representation_tag_postings post" in query
+    assert "model_representation_feature_postings post" in query
     assert "CROSS JOIN LATERAL" in query
     assert "post.status = 'active'" in query
-    assert "post.tag_type = qt.tag_type" in query
-    assert "post.tag = qt.tag" in query
+    assert "post.feature_type = qt.feature_type" in query
+    assert "post.feature = qt.feature" in query
     assert "LIMIT $4" in query
     assert "proposition->'retrieval_tags'" not in query
     assert "proposition->'coverage_roles'" not in query
@@ -246,6 +253,46 @@ async def test_pathway_b_representation_tags_uses_bounded_postings_when_present(
     assert args[0] == tenant_id
     assert args[3] == 48
     assert args[4] == 8
+
+
+async def test_pathway_b_representation_tags_falls_back_to_legacy_postings():
+    tenant_id = uuid.uuid4()
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
+
+        async def fetchval(self, query: str, *_args: object) -> str | None:
+            if "model_representation_feature_postings" in query:
+                return None
+            if "model_representation_tag_postings" in query:
+                return "model_representation_tag_postings"
+            return None
+
+        async def fetch(self, query: str, *args: object) -> list[object]:
+            self.fetch_calls.append((query, args))
+            return []
+
+    conn = FakeConn()
+
+    result = await pathway_b_representation_tags(
+        "github production deploy risk is recurring around PR review",
+        tenant_id,
+        conn,  # type: ignore[arg-type]
+        limit=8,
+    )
+
+    assert result.notes["representation_postings_index"] is True
+    assert result.notes["representation_feature_postings_index"] is False
+    assert (
+        result.notes["representation_postings_table"]
+        == "model_representation_tag_postings"
+    )
+    query, args = conn.fetch_calls[0]
+    assert "model_representation_tag_postings post" in query
+    assert "post.tag_type = qt.tag_type" in query
+    assert "post.tag = qt.tag" in query
+    assert args[3] == 48
 
 
 async def test_pathway_b_precomputed_vector_finds_clustered_models(
@@ -411,6 +458,17 @@ async def test_pathway_l_semantic_terms_uses_model_specific_lexical_tags(
         tenant,
         tagged_model_id,
     )
+    feature_posting_count = await tx_conn.fetchval(
+        """
+        SELECT count(*)::int
+        FROM model_representation_feature_postings
+        WHERE tenant_id = $1
+          AND model_id = $2
+          AND feature_type = 'lexical'
+        """,
+        tenant,
+        tagged_model_id,
+    )
 
     result = await pathway_l_semantic_terms(
         "refund replay drift caused an idempotency key collision",
@@ -420,7 +478,10 @@ async def test_pathway_l_semantic_terms_uses_model_specific_lexical_tags(
 
     assert result.source_pathway == "L"
     assert posting_count == 3
+    assert feature_posting_count == 3
     assert result.notes["postings_index"] is True
+    assert result.notes["feature_postings_index"] is True
+    assert result.notes["postings_table"] == "model_representation_feature_postings"
     assert tagged_model_id in {model.id for model in result.models}
     assert "refund replay drift" in result.notes["query_terms"]
 
@@ -433,8 +494,10 @@ async def test_pathway_l_semantic_terms_filters_active_scope_before_posting_limi
         def __init__(self) -> None:
             self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
 
-        async def fetchval(self, *_args: object) -> str:
-            return "model_semantic_term_postings"
+        async def fetchval(self, query: str, *_args: object) -> str | None:
+            if "model_representation_feature_postings" in query:
+                return "model_representation_feature_postings"
+            return None
 
         async def fetch(self, query: str, *args: object) -> list[object]:
             self.fetch_calls.append((query, args))
@@ -451,12 +514,16 @@ async def test_pathway_l_semantic_terms_filters_active_scope_before_posting_limi
     )
 
     assert result.notes["postings_index"] is True
+    assert result.notes["feature_postings_index"] is True
+    assert result.notes["postings_table"] == "model_representation_feature_postings"
     assert len(conn.fetch_calls) == 1
     query, args = conn.fetch_calls[0]
     lateral_sql = query.split("CROSS JOIN LATERAL (", 1)[1].split(") hit", 1)[0]
     assert "JOIN models m" in lateral_sql
     assert "m.status = 'active'" in lateral_sql
     assert "post.status = 'active'" in lateral_sql
+    assert "post.feature_type = 'lexical'" in lateral_sql
+    assert "post.feature = qt.term" in lateral_sql
     assert "m.scope_entities @>" in lateral_sql
     assert lateral_sql.index("m.scope_entities @>") < lateral_sql.index("LIMIT $4")
     assert args[0] == tenant_id

@@ -265,7 +265,7 @@ async def test_projection_repo_loads_context_and_detects_staleness(
     assert [entry.projection_name for entry in batched] == ["constraints", "resources"]
     assert [(entry.is_stale, entry.reason) for entry in batched] == [
         (False, "current"),
-        (True, "no_checkpoint"),
+        (True, "no_snapshot"),
     ]
 
     with notify_scope():
@@ -296,7 +296,7 @@ async def test_projection_repo_loads_context_and_detects_staleness(
     )
     assert [(entry.is_stale, entry.reason) for entry in batched_after_new_event] == [
         (True, "pending_model_events"),
-        (True, "no_checkpoint"),
+        (True, "no_snapshot"),
     ]
 
 

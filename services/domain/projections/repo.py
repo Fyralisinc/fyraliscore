@@ -59,11 +59,15 @@ class ProjectionStaleness:
     projection_version: str
     is_stale: bool
     reason: str
+    freshness_mode: str | None = None
     latest_model_event_id: UUID | None = None
     latest_model_event_created_at: datetime | None = None
     checkpoint_event_id: UUID | None = None
     checkpoint_event_created_at: datetime | None = None
     checkpoint_updated_at: datetime | None = None
+    snapshot_count: int = 0
+    pending_refresh_jobs: int = 0
+    failed_refresh_jobs: int = 0
 
 
 class ProjectionRepo:
@@ -325,12 +329,35 @@ class ProjectionRepo:
               r.projection_name,
               c.last_processed_event_id,
               c.last_processed_event_created_at,
-              c.updated_at
+              c.updated_at,
+              COALESCE(s.snapshot_count, 0)::integer AS snapshot_count,
+              COALESCE(j.pending_refresh_jobs, 0)::integer AS pending_refresh_jobs,
+              COALESCE(j.failed_refresh_jobs, 0)::integer AS failed_refresh_jobs
             FROM requested r
             LEFT JOIN projection_checkpoints c
               ON c.tenant_id = $1
              AND c.projection_name = r.projection_name
              AND c.projection_version = $3
+            LEFT JOIN LATERAL (
+              SELECT count(*) AS snapshot_count
+              FROM projection_snapshots s
+              WHERE s.tenant_id = $1
+                AND s.projection_name = r.projection_name
+                AND s.projection_version = $3
+            ) s ON TRUE
+            LEFT JOIN LATERAL (
+              SELECT
+                count(*) FILTER (
+                  WHERE status IN ('pending', 'leased')
+                ) AS pending_refresh_jobs,
+                count(*) FILTER (
+                  WHERE status IN ('failed', 'dead_letter')
+                ) AS failed_refresh_jobs
+              FROM projection_refresh_jobs j
+              WHERE j.tenant_id = $1
+                AND j.projection_name = r.projection_name
+                AND j.projection_version = $3
+            ) j ON TRUE
             ORDER BY r.ord ASC
             """,
             tenant_id,
@@ -339,37 +366,102 @@ class ProjectionRepo:
         )
         out: list[ProjectionStaleness] = []
         for row in rows:
+            pending_refresh_jobs = int(_record_get(row, "pending_refresh_jobs", 0) or 0)
+            failed_refresh_jobs = int(_record_get(row, "failed_refresh_jobs", 0) or 0)
+            snapshot_count = int(_record_get(row, "snapshot_count", 0) or 0)
             checkpoint_missing = (
                 row["last_processed_event_created_at"] is None
                 or row["last_processed_event_id"] is None
             )
-            pending_exists = (
-                _event_after(
-                    latest["id"],
-                    latest["created_at"],
-                    row["last_processed_event_id"],
-                    row["last_processed_event_created_at"],
+            if failed_refresh_jobs:
+                out.append(
+                    ProjectionStaleness(
+                        projection_name=row["projection_name"],
+                        projection_version=projection_version,
+                        is_stale=True,
+                        reason="failed_refresh_jobs",
+                        freshness_mode="delta_queue",
+                        latest_model_event_id=latest["id"],
+                        latest_model_event_created_at=latest["created_at"],
+                        checkpoint_event_id=row["last_processed_event_id"],
+                        checkpoint_event_created_at=row[
+                            "last_processed_event_created_at"
+                        ],
+                        checkpoint_updated_at=row["updated_at"],
+                        snapshot_count=snapshot_count,
+                        pending_refresh_jobs=pending_refresh_jobs,
+                        failed_refresh_jobs=failed_refresh_jobs,
+                    )
                 )
-                if not checkpoint_missing
-                else False
+                continue
+            if pending_refresh_jobs:
+                out.append(
+                    ProjectionStaleness(
+                        projection_name=row["projection_name"],
+                        projection_version=projection_version,
+                        is_stale=True,
+                        reason="pending_refresh_jobs",
+                        freshness_mode="delta_queue",
+                        latest_model_event_id=latest["id"],
+                        latest_model_event_created_at=latest["created_at"],
+                        checkpoint_event_id=row["last_processed_event_id"],
+                        checkpoint_event_created_at=row[
+                            "last_processed_event_created_at"
+                        ],
+                        checkpoint_updated_at=row["updated_at"],
+                        snapshot_count=snapshot_count,
+                        pending_refresh_jobs=pending_refresh_jobs,
+                        failed_refresh_jobs=failed_refresh_jobs,
+                    )
+                )
+                continue
+            if checkpoint_missing:
+                out.append(
+                    ProjectionStaleness(
+                        projection_name=row["projection_name"],
+                        projection_version=projection_version,
+                        is_stale=snapshot_count == 0,
+                        reason=(
+                            "delta_queue_current"
+                            if snapshot_count > 0
+                            else "no_snapshot"
+                        ),
+                        freshness_mode="delta_queue",
+                        latest_model_event_id=latest["id"],
+                        latest_model_event_created_at=latest["created_at"],
+                        checkpoint_event_id=row["last_processed_event_id"],
+                        checkpoint_event_created_at=row[
+                            "last_processed_event_created_at"
+                        ],
+                        checkpoint_updated_at=row["updated_at"],
+                        snapshot_count=snapshot_count,
+                        pending_refresh_jobs=pending_refresh_jobs,
+                        failed_refresh_jobs=failed_refresh_jobs,
+                    )
+                )
+                continue
+
+            pending_exists = _event_after(
+                latest["id"],
+                latest["created_at"],
+                row["last_processed_event_id"],
+                row["last_processed_event_created_at"],
             )
             out.append(
                 ProjectionStaleness(
                     projection_name=row["projection_name"],
                     projection_version=projection_version,
-                    is_stale=checkpoint_missing or pending_exists,
-                    reason=(
-                        "no_checkpoint"
-                        if checkpoint_missing
-                        else "pending_model_events"
-                        if pending_exists
-                        else "current"
-                    ),
+                    is_stale=pending_exists,
+                    reason="pending_model_events" if pending_exists else "current",
+                    freshness_mode="checkpoint",
                     latest_model_event_id=latest["id"],
                     latest_model_event_created_at=latest["created_at"],
                     checkpoint_event_id=row["last_processed_event_id"],
                     checkpoint_event_created_at=row["last_processed_event_created_at"],
                     checkpoint_updated_at=row["updated_at"],
+                    snapshot_count=snapshot_count,
+                    pending_refresh_jobs=pending_refresh_jobs,
+                    failed_refresh_jobs=failed_refresh_jobs,
                 )
             )
         return out
@@ -386,6 +478,15 @@ def _event_after(
     if event_created_at < checkpoint_event_created_at:
         return False
     return event_id.int > checkpoint_event_id.int
+
+
+def _record_get(row: Any, key: str, default: Any = None) -> Any:
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
 
 
 def _hydrate_projection(row: asyncpg.Record) -> ProjectionRecord:

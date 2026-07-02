@@ -842,6 +842,7 @@ def _plan_sage_primary_policy(
     effective_scope_actors: list[UUID],
     notes: dict[str, Any],
     route_utilities: tuple[SageRouteUtility, ...] = (),
+    company_profile: Any | None = None,
 ) -> tuple[dict[str, float], SageRetrievalPolicy | None]:
     if not bool(getattr(cfg, "sage_retrieval_policy_enabled", True)):
         notes["sage_retrieval_policy"] = {"enabled": False}
@@ -860,6 +861,7 @@ def _plan_sage_primary_policy(
             getattr(cfg, "sage_retrieval_policy_exploration_rate", 0.05)
         ),
         route_utilities=route_utilities,
+        company_profile=company_profile,
     )
     adjusted_weights = policy.apply_primary_weights(weights)
     policy_notes = policy.notes()
@@ -1649,6 +1651,7 @@ async def primary_retrieve(
     top_n: int = _DEFAULT_TOP_N,
     config: RetrievalConfig | None = None,
     sage_route_utilities: tuple[SageRouteUtility, ...] = (),
+    company_profile: Any | None = None,
 ) -> RetrievalResult:
     """
     Run the per-trigger pathway mix, merge results, reconsolidate the
@@ -1701,6 +1704,7 @@ async def primary_retrieve(
         effective_scope_actors=effective_scope_actors,
         notes=notes,
         route_utilities=sage_route_utilities,
+        company_profile=company_profile,
     )
     notes["weights"] = dict(weights)
 

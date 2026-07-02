@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """Incremental retrieval/model feedback-loop stress runner.
 
 This harness emulates one persistent company tenant. It seeds a large model
@@ -19,7 +20,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from uuid import UUID
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -475,81 +476,142 @@ async def _ensure_migrations(pool: asyncpg.Pool) -> None:
         await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
 
 
+_SEED_LEGACY_POSTING_TRIGGERS: tuple[tuple[str, str], ...] = (
+    ("models", "models_refresh_representation_tag_postings"),
+    ("model_semantic_terms", "model_semantic_terms_refresh_postings"),
+)
+
+
+async def _disable_seed_legacy_posting_triggers(
+    conn: asyncpg.Connection,
+) -> list[dict[str, str]]:
+    disabled: list[dict[str, str]] = []
+    for table, trigger in _SEED_LEGACY_POSTING_TRIGGERS:
+        row = await conn.fetchrow(
+            """
+            SELECT c.relname AS table_name,
+                   t.tgname AS trigger_name,
+                   pg_get_userbyid(c.relowner) = current_user AS owned_by_current_user
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN pg_trigger t ON t.tgrelid = c.oid
+            WHERE n.nspname = 'public'
+              AND c.relname = $1
+              AND t.tgname = $2
+              AND NOT t.tgisinternal
+              AND t.tgenabled <> 'D'
+            """,
+            table,
+            trigger,
+        )
+        if row is None or not bool(row["owned_by_current_user"]):
+            continue
+        await conn.execute(f"ALTER TABLE {table} DISABLE TRIGGER {trigger}")
+        disabled.append({"table": table, "trigger": trigger})
+    return disabled
+
+
+async def _restore_seed_legacy_posting_triggers(
+    conn: asyncpg.Connection,
+    disabled: Sequence[dict[str, str]],
+) -> None:
+    for item in disabled:
+        await conn.execute(
+            f"ALTER TABLE {item['table']} ENABLE TRIGGER {item['trigger']}"
+        )
+
+
 async def _seed_company(
     pool: asyncpg.Pool,
     *,
     tenant_id: UUID,
     families: int,
     total_models: int,
+    suppress_legacy_postings: bool = True,
 ) -> SeededCompany:
     models_per_family = max(1, math.ceil(total_models / families))
     now = datetime.now(timezone.utc)
     async with pool.acquire() as conn:
         await pgvector_pool_init(conn)
-        async with conn.transaction():
-            transaction_started = time.perf_counter()
-            await conn.execute("SET CONSTRAINTS ALL DEFERRED")
-            drafts: list[Any] = []
-            family_cases: list[Any] = []
-            scaffold_started = time.perf_counter()
-            for index in range(families):
-                archetype = ARCHETYPES[index % len(ARCHETYPES)]
-                scaffold = await _insert_scaffold(
-                    conn,
-                    tenant_id=tenant_id,
-                    index=index,
-                    archetype=archetype,
-                    now=now - timedelta(minutes=index),
-                )
-                family_drafts, case = _build_case_models(
-                    index=index,
-                    archetype=archetype,
-                    scaffold=scaffold,
-                    models_per_case=models_per_family,
-                )
-                drafts.extend(family_drafts)
-                family_cases.append(case)
-            scaffold_ms = (time.perf_counter() - scaffold_started) * 1000.0
+        disabled_legacy_triggers = (
+            await _disable_seed_legacy_posting_triggers(conn)
+            if suppress_legacy_postings
+            else []
+        )
+        try:
+            async with conn.transaction():
+                transaction_started = time.perf_counter()
+                await conn.execute("SET CONSTRAINTS ALL DEFERRED")
+                drafts: list[Any] = []
+                family_cases: list[Any] = []
+                scaffold_started = time.perf_counter()
+                for index in range(families):
+                    archetype = ARCHETYPES[index % len(ARCHETYPES)]
+                    scaffold = await _insert_scaffold(
+                        conn,
+                        tenant_id=tenant_id,
+                        index=index,
+                        archetype=archetype,
+                        now=now - timedelta(minutes=index),
+                    )
+                    family_drafts, case = _build_case_models(
+                        index=index,
+                        archetype=archetype,
+                        scaffold=scaffold,
+                        models_per_case=models_per_family,
+                    )
+                    drafts.extend(family_drafts)
+                    family_cases.append(case)
+                scaffold_ms = (time.perf_counter() - scaffold_started) * 1000.0
 
-            bulk_timing_events: list[dict[str, Any]] = []
-            repo = ModelsRepo(
-                pool,
-                embedder=None,
-                run_topology_on_insert=False,
-                bulk_timing_sink=bulk_timing_events.append,
-            )
-            started = time.perf_counter()
-            repo_started = time.perf_counter()
-            await repo.insert_many(
-                drafts,
-                conn=conn,
-                apply_confidence_calibration=False,
-            )
-            repo_insert_many_ms = (time.perf_counter() - repo_started) * 1000.0
-            graph_edges_started = time.perf_counter()
-            for case in family_cases:
-                await _insert_graph_edges(
-                    conn,
-                    tenant_id=tenant_id,
-                    case=case,
+                bulk_timing_events: list[dict[str, Any]] = []
+                repo = ModelsRepo(
+                    pool,
+                    embedder=None,
+                    run_topology_on_insert=False,
+                    bulk_timing_sink=bulk_timing_events.append,
                 )
-            graph_edges_ms = (time.perf_counter() - graph_edges_started) * 1000.0
-            sidecar_counts_started = time.perf_counter()
-            sidecars = await _sidecar_counts(conn, tenant_id)
-            sidecar_counts_ms = (
-                time.perf_counter() - sidecar_counts_started
-            ) * 1000.0
-            insert_ms = (time.perf_counter() - started) * 1000.0
-            transaction_ms = (time.perf_counter() - transaction_started) * 1000.0
-            timings = {
-                "scaffold_ms": _round_ms(scaffold_ms),
-                "repo_insert_many_ms": _round_ms(repo_insert_many_ms),
-                "graph_edges_ms": _round_ms(graph_edges_ms),
-                "sidecar_counts_ms": _round_ms(sidecar_counts_ms),
-                "insert_measured_ms": _round_ms(insert_ms),
-                "seed_transaction_ms": _round_ms(transaction_ms),
-                "bulk_insert": _summarize_seed_timing_events(bulk_timing_events),
-            }
+                started = time.perf_counter()
+                repo_started = time.perf_counter()
+                await repo.insert_many(
+                    drafts,
+                    conn=conn,
+                    apply_confidence_calibration=False,
+                )
+                repo_insert_many_ms = (time.perf_counter() - repo_started) * 1000.0
+                graph_edges_started = time.perf_counter()
+                for case in family_cases:
+                    await _insert_graph_edges(
+                        conn,
+                        tenant_id=tenant_id,
+                        case=case,
+                    )
+                graph_edges_ms = (time.perf_counter() - graph_edges_started) * 1000.0
+                sidecar_counts_started = time.perf_counter()
+                sidecars = await _sidecar_counts(conn, tenant_id)
+                sidecar_counts_ms = (
+                    time.perf_counter() - sidecar_counts_started
+                ) * 1000.0
+                insert_ms = (time.perf_counter() - started) * 1000.0
+                transaction_ms = (time.perf_counter() - transaction_started) * 1000.0
+                timings = {
+                    "scaffold_ms": _round_ms(scaffold_ms),
+                    "repo_insert_many_ms": _round_ms(repo_insert_many_ms),
+                    "graph_edges_ms": _round_ms(graph_edges_ms),
+                    "sidecar_counts_ms": _round_ms(sidecar_counts_ms),
+                    "insert_measured_ms": _round_ms(insert_ms),
+                    "seed_transaction_ms": _round_ms(transaction_ms),
+                    "legacy_posting_triggers_disabled": [
+                        f"{item['table']}.{item['trigger']}"
+                        for item in disabled_legacy_triggers
+                    ],
+                    "bulk_insert": _summarize_seed_timing_events(bulk_timing_events),
+                }
+        finally:
+            await _restore_seed_legacy_posting_triggers(
+                conn,
+                disabled_legacy_triggers,
+            )
 
     return SeededCompany(
         tenant_id=tenant_id,
@@ -927,6 +989,7 @@ async def _run_one_case(
             "canonical_split_candidates": len(optimizer.canonical_split_candidates),
             "canonical_promote_candidates": len(optimizer.canonical_promote_candidates),
             "canonical_demote_candidates": len(optimizer.canonical_demote_candidates),
+            "experience_loop": optimizer.experience_loop,
             "metrics": optimizer.metrics,
         },
         "learned_counts": learned_counts,

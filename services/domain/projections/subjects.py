@@ -24,7 +24,12 @@ log = logging.getLogger("domain.projections.subjects")
 ENTRY_POINT_GROUP = "company_os.projection_subject_resolvers"
 
 _CONSTRAINT_PROJECTION = "constraints"
+_COMMITMENT_PROJECTION = "commitments"
+_CUSTOMER_PROJECTION = "customers"
+_DECISION_SURFACE_PROJECTION = "decision_surfaces"
+_DECISION_PROJECTION = "decisions"
 _EMPLOYEE_PROFILE_PROJECTION = "employee_profiles"
+_GOAL_PROJECTION = "goals"
 _RESOURCE_PROJECTION = "resources"
 
 _FINANCIAL_TERMS = {
@@ -94,6 +99,56 @@ _CONSTRAINT_TERMS = {
     "obligation",
     "risk",
     "scarcity",
+}
+_DECISION_SURFACE_TERMS = {
+    "action",
+    "approval",
+    "assign",
+    "block",
+    "blocked",
+    "blocker",
+    "choose",
+    "decide",
+    "decision",
+    "escalation",
+    "go/no-go",
+    "owner",
+    "pressure",
+    "prioritize",
+    "review",
+    "risk",
+    "tradeoff",
+    "triage",
+}
+_COMMITMENT_TERMS = {
+    "commitment",
+    "commitments",
+    "deadline",
+    "deliverable",
+    "handoff",
+    "obligation",
+    "promise",
+    "ticket",
+}
+_GOAL_TERMS = {
+    "goal",
+    "goals",
+    "initiative",
+    "milestone",
+    "northstar",
+    "objective",
+    "outcome",
+    "roadmap",
+}
+_DECISION_TERMS = {
+    "approval",
+    "choice",
+    "decide",
+    "decision",
+    "decisions",
+    "option",
+    "prioritize",
+    "tradeoff",
 }
 
 
@@ -321,12 +376,133 @@ def _employee_profile_subjects(seed: ProjectionSubjectSeed) -> list[ProjectionSu
     return subjects
 
 
+def _commitment_subjects(seed: ProjectionSubjectSeed) -> list[ProjectionSubject]:
+    return _entity_family_subjects(
+        seed,
+        projection_name=_COMMITMENT_PROJECTION,
+        canonical_type="commitment",
+        suffix="commitments",
+        entity_types={
+            "candidate_commitment",
+            "commitment",
+            "jira",
+            "pr",
+            "pull_request",
+            "ticket",
+            "work_item",
+        },
+        text_terms=_COMMITMENT_TERMS,
+    )
+
+
+def _customer_subjects(seed: ProjectionSubjectSeed) -> list[ProjectionSubject]:
+    return _entity_family_subjects(
+        seed,
+        projection_name=_CUSTOMER_PROJECTION,
+        canonical_type="customer",
+        suffix="customers",
+        entity_types={
+            "account",
+            "candidate_customer",
+            "customer",
+            "customer_resource",
+            "org",
+            "organization",
+        },
+        text_terms=_RELATIONAL_TERMS,
+    )
+
+
+def _goal_subjects(seed: ProjectionSubjectSeed) -> list[ProjectionSubject]:
+    return _entity_family_subjects(
+        seed,
+        projection_name=_GOAL_PROJECTION,
+        canonical_type="goal",
+        suffix="goals",
+        entity_types={
+            "candidate_goal",
+            "goal",
+            "initiative",
+            "objective",
+            "project",
+            "workstream",
+        },
+        text_terms=_GOAL_TERMS,
+    )
+
+
+def _decision_subjects(seed: ProjectionSubjectSeed) -> list[ProjectionSubject]:
+    return _entity_family_subjects(
+        seed,
+        projection_name=_DECISION_PROJECTION,
+        canonical_type="decision",
+        suffix="decisions",
+        entity_types={"candidate_decision", "choice", "decision"},
+        text_terms=_DECISION_TERMS,
+    )
+
+
+def _decision_surface_subjects(seed: ProjectionSubjectSeed) -> list[ProjectionSubject]:
+    subjects: list[ProjectionSubject] = []
+    seen: set[ProjectionSubject] = set()
+    text = _token_text(seed)
+
+    for entity in seed.seed_entities:
+        entity_type = str(entity.get("type") or "").strip()
+        entity_id = str(entity.get("id") or "").strip()
+        if not entity_type or not entity_id:
+            continue
+        for variant in _entity_type_variants(entity_type):
+            _append_subject(
+                subjects,
+                seen,
+                _DECISION_SURFACE_PROJECTION,
+                f"{variant}:{entity_id}:decision_surface",
+            )
+
+    for actor_id in seed.scope_actors:
+        _append_subject(
+            subjects,
+            seen,
+            _DECISION_SURFACE_PROJECTION,
+            f"actor:{actor_id}:decision_surface",
+        )
+
+    for pressure_type in ("capacity", "compliance", "execution", "resource", "revenue"):
+        if pressure_type in text:
+            _append_subject(
+                subjects,
+                seen,
+                _DECISION_SURFACE_PROJECTION,
+                f"company:{pressure_type}:decision_surface",
+            )
+
+    if subjects:
+        return subjects
+    if _contains_any(text, _DECISION_SURFACE_TERMS):
+        _append_subject(
+            subjects,
+            seen,
+            _DECISION_SURFACE_PROJECTION,
+            f"tenant:{seed.tenant_id}:decision_surfaces",
+        )
+    return subjects
+
+
 CORE_SUBJECT_RESOLVERS = {
+    "commitments": ProjectionSubjectResolver("commitments", _commitment_subjects),
     "constraints": ProjectionSubjectResolver("constraints", _constraint_subjects),
+    "customers": ProjectionSubjectResolver("customers", _customer_subjects),
+    "decisions": ProjectionSubjectResolver("decisions", _decision_subjects),
+    "decision_surfaces": ProjectionSubjectResolver(
+        "decision_surfaces",
+        _decision_surface_subjects,
+    ),
     "employee_profiles": ProjectionSubjectResolver(
         "employee_profiles",
         _employee_profile_subjects,
     ),
+    "goals": ProjectionSubjectResolver("goals", _goal_subjects),
     "resources": ProjectionSubjectResolver("resources", _resource_subjects),
 }
 
@@ -450,6 +626,43 @@ def _append_subject(
         return
     seen.add(key)
     subjects.append(key)
+
+
+def _entity_family_subjects(
+    seed: ProjectionSubjectSeed,
+    *,
+    projection_name: str,
+    canonical_type: str,
+    suffix: str,
+    entity_types: set[str],
+    text_terms: set[str],
+) -> list[ProjectionSubject]:
+    subjects: list[ProjectionSubject] = []
+    seen: set[ProjectionSubject] = set()
+    text = _token_text(seed)
+
+    for entity in seed.seed_entities:
+        entity_type = str(entity.get("type") or "").strip().casefold()
+        entity_id = str(entity.get("id") or "").strip()
+        if entity_type not in entity_types or not entity_id:
+            continue
+        _append_subject(
+            subjects,
+            seen,
+            projection_name,
+            f"{canonical_type}:{entity_id}:{suffix}",
+        )
+
+    if subjects:
+        return subjects
+    if _contains_any(text, text_terms):
+        _append_subject(
+            subjects,
+            seen,
+            projection_name,
+            f"tenant:{seed.tenant_id}:{suffix}",
+        )
+    return subjects
 
 
 def _entity_type_variants(entity_type: str) -> tuple[str, ...]:

@@ -54,7 +54,16 @@ def test_core_subject_resolvers_use_text_and_entity_scope() -> None:
     assert ("resources", "company:relational") in subjects
     assert ("constraints", f"customer:{customer_id}:constraints") in subjects
     assert ("resources", f"customer:{customer_id}:resources") in subjects
+    assert (
+        "decision_surfaces",
+        f"customer:{customer_id}:decision_surface",
+    ) in subjects
+    assert (
+        "decision_surfaces",
+        f"actor:{actor_id}:decision_surface",
+    ) in subjects
     assert ("employee_profiles", f"employee:{actor_id}:profile") in subjects
+    assert ("customers", f"customer:{customer_id}:customers") in subjects
 
 
 def test_employee_profile_subject_resolver_uses_actor_and_employee_entity_scope() -> None:
@@ -75,38 +84,74 @@ def test_employee_profile_subject_resolver_uses_actor_and_employee_entity_scope(
     ]
 
 
+def test_entity_subject_resolvers_use_entity_scope_and_text_fallback() -> None:
+    tenant_id = uuid7()
+    commitment_id = uuid7()
+    goal_id = uuid7()
+    decision_id = uuid7()
+    seed = ProjectionSubjectSeed(
+        tenant_id=tenant_id,
+        seed_natural_text="The roadmap goal needs an approval decision.",
+        seed_entities=(
+            {"type": "commitment", "id": str(commitment_id)},
+            {"type": "goal", "id": str(goal_id)},
+            {"type": "decision", "id": str(decision_id)},
+        ),
+    )
+
+    subjects = resolve_projection_subjects(seed)
+
+    assert ("commitments", f"commitment:{commitment_id}:commitments") in subjects
+    assert ("goals", f"goal:{goal_id}:goals") in subjects
+    assert ("decisions", f"decision:{decision_id}:decisions") in subjects
+
+    fallback_subjects = resolve_projection_subjects(
+        ProjectionSubjectSeed(
+            tenant_id=tenant_id,
+            seed_natural_text="A commitment and customer renewal decision need review.",
+        ),
+        resolver_names=["commitments", "customers", "decisions"],
+    )
+
+    assert fallback_subjects == [
+        ("commitments", f"tenant:{tenant_id}:commitments"),
+        ("customers", f"tenant:{tenant_id}:customers"),
+        ("decisions", f"tenant:{tenant_id}:decisions"),
+    ]
+
+
 def test_core_subject_resolvers_dedupe_malformed_subjects() -> None:
     tenant_id = uuid7()
 
     def _resolver(seed: ProjectionSubjectSeed):
         return [
-            ("customers", "company:customers"),
-            ("customers", "company:customers"),
+            ("forecasts", "company:forecasts"),
+            ("forecasts", "company:forecasts"),
             ("", "missing-projection"),
-            ("customers", ""),
+            ("forecasts", ""),
         ]
 
-    register_subject_resolver("customers", _resolver)
+    register_subject_resolver("forecasts", _resolver)
 
     assert resolve_projection_subjects(
         ProjectionSubjectSeed(tenant_id=tenant_id),
-        resolver_names=["customers"],
-    ) == [("customers", "company:customers")]
+        resolver_names=["forecasts"],
+    ) == [("forecasts", "company:forecasts")]
 
 
 def test_register_subject_resolver_extends_resolver_set() -> None:
     tenant_id = uuid7()
 
     def _resolver(seed: ProjectionSubjectSeed):
-        return [("customers", f"tenant:{seed.tenant_id}:customers")]
+        return [("forecasts", f"tenant:{seed.tenant_id}:forecasts")]
 
-    register_subject_resolver("customers", _resolver)
+    register_subject_resolver("forecasts", _resolver)
 
-    assert "customers" in available_subject_resolver_names()
+    assert "forecasts" in available_subject_resolver_names()
     assert resolve_projection_subjects(
         ProjectionSubjectSeed(tenant_id=tenant_id),
-        resolver_names=["customers"],
-    ) == [("customers", f"tenant:{tenant_id}:customers")]
+        resolver_names=["forecasts"],
+    ) == [("forecasts", f"tenant:{tenant_id}:forecasts")]
 
 
 def test_register_subject_resolver_rejects_core_name() -> None:
@@ -127,20 +172,20 @@ def test_entry_point_subject_resolver_is_discovered(monkeypatch) -> None:
 
     def _factory() -> ProjectionSubjectResolver:
         return ProjectionSubjectResolver(
-            "customers",
-            lambda seed: [("customers", f"tenant:{seed.tenant_id}:customers")],
+            "forecasts",
+            lambda seed: [("forecasts", f"tenant:{seed.tenant_id}:forecasts")],
         )
 
     def _entry_points(group=None):
-        return [_FakeEP("customers", _factory)] if group == ENTRY_POINT_GROUP else []
+        return [_FakeEP("forecasts", _factory)] if group == ENTRY_POINT_GROUP else []
 
     monkeypatch.setattr(importlib_metadata, "entry_points", _entry_points)
     reset_for_tests()
 
     assert resolve_projection_subjects(
         ProjectionSubjectSeed(tenant_id=tenant_id),
-        resolver_names=["customers"],
-    ) == [("customers", f"tenant:{tenant_id}:customers")]
+        resolver_names=["forecasts"],
+    ) == [("forecasts", f"tenant:{tenant_id}:forecasts")]
 
 
 def test_bad_entry_point_subject_resolver_is_isolated(monkeypatch) -> None:
@@ -152,22 +197,27 @@ def test_bad_entry_point_subject_resolver_is_isolated(monkeypatch) -> None:
 
     def _factory() -> ProjectionSubjectResolver:
         return ProjectionSubjectResolver(
-            "customers",
-            lambda seed: [("customers", f"tenant:{seed.tenant_id}:customers")],
+            "forecasts",
+            lambda seed: [("forecasts", f"tenant:{seed.tenant_id}:forecasts")],
         )
 
     def _entry_points(group=None):
         if group != ENTRY_POINT_GROUP:
             return []
-        return [_Exploding(), _FakeEP("customers", _factory)]
+        return [_Exploding(), _FakeEP("forecasts", _factory)]
 
     monkeypatch.setattr(importlib_metadata, "entry_points", _entry_points)
     reset_for_tests()
 
     assert available_subject_resolver_names() == (
+        "commitments",
         "constraints",
         "customers",
+        "decision_surfaces",
+        "decisions",
         "employee_profiles",
+        "forecasts",
+        "goals",
         "resources",
     )
 
@@ -179,12 +229,12 @@ def test_resolver_runtime_failure_is_isolated() -> None:
         raise RuntimeError("resolver failed")
 
     def _good(seed: ProjectionSubjectSeed):
-        return [("customers", f"tenant:{seed.tenant_id}:customers")]
+        return [("forecasts", f"tenant:{seed.tenant_id}:forecasts")]
 
     register_subject_resolver("bad", _bad)
-    register_subject_resolver("customers", _good)
+    register_subject_resolver("forecasts", _good)
 
     assert projection_subject_candidates(ProjectionSubjectSeed(tenant_id=tenant_id))[-1] == (
-        "customers",
-        f"tenant:{tenant_id}:customers",
+        "forecasts",
+        f"tenant:{tenant_id}:forecasts",
     )

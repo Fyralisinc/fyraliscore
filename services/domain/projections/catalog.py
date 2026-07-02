@@ -17,7 +17,14 @@ from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 from services.domain.projections.constraints import ConstraintProjector
+from services.domain.projections.decision_surfaces import DecisionSurfaceProjector
 from services.domain.projections.employee_profiles import EmployeeProfileProjector
+from services.domain.projections.entity_surfaces import (
+    CommitmentProjector,
+    CustomerProjector,
+    DecisionProjector,
+    GoalProjector,
+)
 from services.domain.projections.resources import ResourceProjector
 from services.domain.projections.runtime import ProjectionRegistry
 from services.domain.projections.types import Projector
@@ -31,8 +38,13 @@ ENTRY_POINT_GROUP = "company_os.projections"
 DEFAULT_PROJECTION_NAMES = ("constraints",)
 
 CORE_PROJECTOR_FACTORIES: dict[str, ProjectorFactory] = {
+    "commitments": CommitmentProjector,
     "constraints": ConstraintProjector,
+    "customers": CustomerProjector,
+    "decisions": DecisionProjector,
+    "decision_surfaces": DecisionSurfaceProjector,
     "employee_profiles": EmployeeProfileProjector,
+    "goals": GoalProjector,
     "resources": ResourceProjector,
 }
 _REGISTERED_PROJECTOR_FACTORIES: dict[str, ProjectorFactory] = {}

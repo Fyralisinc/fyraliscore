@@ -722,7 +722,6 @@ async def test_employee_profile_is_retrievable_by_projection_and_specific_terms(
         tx_conn,
         tenant_id=tenant,
     )
-    subject_key = f"employee:{fixture.alice_id}:profile"
 
     semantic_result = await pathway_l_semantic_terms(
         "Need reversible architecture slicing with a quiet design window.",

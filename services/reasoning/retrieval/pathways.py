@@ -1938,24 +1938,7 @@ async def pathway_a_structural(
     read_fanout_chunk_size: int = 8,
     read_fanout_budget: ReadFanoutBudget | None = None,
 ) -> PathwayResult:
-    """
-    Walk the Acts graph (contributes_to / depends_on / constrained_by /
-    commitment_contributors / customer_commitments) up to `max_hops`
-    from each seed. Collect the touched entity set. Then fetch Models
-    scoped to any of those entities.
-
-    Seed shape: `[{'type': 'commitment', 'id': UUID}, ...]`. Types are
-    one of {commitment, goal, decision, actor, customer_resource,
-    resource}. Unknown types are skipped with a note.
-
-    Returns:
-      - `models`: Models whose `scope_entities` overlaps the touched
-        entity set, or whose `scope_actors` overlaps any actor seed.
-      - `acts`: dict of {goals, commitments, decisions} — every entity
-        encountered during the walk, for assembler use.
-      - `resources`: Customer and Capacity resources touched on the way.
-      - `notes`: hops_executed, seeds_by_type, entities_touched counts.
-    """
+    """Walk structural Acts context from seed entities, then fetch scoped Models."""
     notes: dict[str, Any] = {
         "seeds_by_type": {},
         "hops_executed": 0,
@@ -2557,6 +2540,7 @@ async def pathway_b_representation_tags(
     *,
     seed_signature: dict[str, Any] | None = None,
     limit: int = _TAG_RESCUE_LIMIT,
+    representation_feature_postings_available: bool | None = None,
     representation_postings_available: bool | None = None,
 ) -> PathwayResult:
     """Retrieve active models through representation tags and coverage roles."""
@@ -2570,14 +2554,117 @@ async def pathway_b_representation_tags(
     if not seed_tags and not coverage_roles:
         return PathwayResult(source_pathway="B", notes={**notes, "reason": "no_tags"})
 
-    if representation_postings_available is None:
+    if representation_feature_postings_available is None:
+        feature_postings_table = await conn.fetchval(
+            "SELECT to_regclass('public.model_representation_feature_postings')"
+        )
+        representation_feature_postings_available = (
+            feature_postings_table is not None
+        )
+    if representation_feature_postings_available:
+        per_tag_limit = max(32, min(240, max(1, int(limit)) * 6))
+        notes["representation_postings_index"] = True
+        notes["representation_feature_postings_index"] = True
+        notes["representation_postings_table"] = (
+            "model_representation_feature_postings"
+        )
+        notes["postings_per_tag_limit"] = per_tag_limit
+        rows = await conn.fetch(
+            f"""
+            WITH query_tags AS MATERIALIZED (
+              SELECT *
+              FROM (
+                SELECT 'domain'::text AS feature_type,
+                       tag::text AS feature,
+                       ord::int AS tag_ord
+                FROM unnest($2::text[]) WITH ORDINALITY AS q(tag, ord)
+
+                UNION ALL
+
+                SELECT 'retrieval'::text AS feature_type,
+                       tag::text AS feature,
+                       ord::int AS tag_ord
+                FROM unnest($2::text[]) WITH ORDINALITY AS q(tag, ord)
+
+                UNION ALL
+
+                SELECT 'coverage'::text AS feature_type,
+                       tag::text AS feature,
+                       (1000 + ord)::int AS tag_ord
+                FROM unnest($3::text[]) WITH ORDINALITY AS q(tag, ord)
+              ) raw
+              WHERE nullif(feature, '') IS NOT NULL
+            ),
+            tag_hits AS MATERIALIZED (
+              SELECT qt.feature_type,
+                     qt.feature,
+                     qt.tag_ord,
+                     hit.model_id
+              FROM query_tags qt
+              CROSS JOIN LATERAL (
+                SELECT post.model_id
+                FROM model_representation_feature_postings post
+                JOIN models m
+                  ON m.id = post.model_id
+                 AND m.tenant_id = $1
+                 AND m.status = 'active'
+                WHERE post.tenant_id = $1
+                  AND post.status = 'active'
+                  AND post.feature_type = qt.feature_type
+                  AND post.feature = qt.feature
+                ORDER BY m.activation DESC,
+                         m.confirmed_count DESC,
+                         m.created_at DESC,
+                         post.model_id
+                LIMIT $4
+              ) hit
+            ),
+            scored AS MATERIALIZED (
+              SELECT model_id,
+                     count(DISTINCT feature_type)::int AS _tag_match_rank,
+                     count(DISTINCT (feature_type, feature))::int AS _tag_match_count,
+                     min(tag_ord)::int AS _first_tag_ord
+              FROM tag_hits
+              GROUP BY model_id
+            )
+            SELECT {_MODEL_SELECT_SQL},
+                   scored._tag_match_rank
+            FROM scored
+            JOIN models
+              ON models.id = scored.model_id
+             AND models.tenant_id = $1
+            WHERE status = 'active'
+            ORDER BY scored._tag_match_rank DESC,
+                     scored._tag_match_count DESC,
+                     scored._first_tag_ord ASC,
+                     activation DESC,
+                     confirmed_count DESC,
+                     created_at DESC
+            LIMIT $5
+            """,
+            tenant_id,
+            seed_tags,
+            coverage_roles,
+            per_tag_limit,
+            max(1, int(limit)),
+        )
+    else:
+        notes["representation_feature_postings_index"] = False
+    if (
+        not representation_feature_postings_available
+        and representation_postings_available is None
+    ):
         postings_table = await conn.fetchval(
             "SELECT to_regclass('public.model_representation_tag_postings')"
         )
         representation_postings_available = postings_table is not None
-    if representation_postings_available:
+    if (
+        not representation_feature_postings_available
+        and representation_postings_available
+    ):
         per_tag_limit = max(32, min(240, max(1, int(limit)) * 6))
         notes["representation_postings_index"] = True
+        notes["representation_postings_table"] = "model_representation_tag_postings"
         notes["postings_per_tag_limit"] = per_tag_limit
         rows = await conn.fetch(
             f"""
@@ -2658,7 +2745,7 @@ async def pathway_b_representation_tags(
             per_tag_limit,
             max(1, int(limit)),
         )
-    else:
+    elif not representation_feature_postings_available:
         notes["representation_postings_index"] = False
         rows = await conn.fetch(
             f"""
@@ -2706,6 +2793,7 @@ async def pathway_b_representation_tag_candidates(
     *,
     seed_signature: dict[str, Any] | None = None,
     limit: int = _TAG_RESCUE_LIMIT,
+    representation_feature_postings_available: bool | None = None,
     representation_postings_available: bool | None = None,
 ) -> tuple[list[ModelCandidateHit], dict[str, Any]]:
     """Retrieve representation-tag candidates without hydrating ModelRows."""
@@ -2721,14 +2809,120 @@ async def pathway_b_representation_tag_candidates(
         notes["reason"] = "no_tags"
         return [], notes
 
-    if representation_postings_available is None:
+    if representation_feature_postings_available is None:
+        feature_postings_table = await conn.fetchval(
+            "SELECT to_regclass('public.model_representation_feature_postings')"
+        )
+        representation_feature_postings_available = (
+            feature_postings_table is not None
+        )
+    if representation_feature_postings_available:
+        per_tag_limit = max(32, min(240, max(1, int(limit)) * 6))
+        notes["representation_postings_index"] = True
+        notes["representation_feature_postings_index"] = True
+        notes["representation_postings_table"] = (
+            "model_representation_feature_postings"
+        )
+        notes["postings_per_tag_limit"] = per_tag_limit
+        rows = await conn.fetch(
+            """
+            WITH query_tags AS MATERIALIZED (
+              SELECT *
+              FROM (
+                SELECT 'domain'::text AS feature_type,
+                       tag::text AS feature,
+                       ord::int AS tag_ord
+                FROM unnest($2::text[]) WITH ORDINALITY AS q(tag, ord)
+
+                UNION ALL
+
+                SELECT 'retrieval'::text AS feature_type,
+                       tag::text AS feature,
+                       ord::int AS tag_ord
+                FROM unnest($2::text[]) WITH ORDINALITY AS q(tag, ord)
+
+                UNION ALL
+
+                SELECT 'coverage'::text AS feature_type,
+                       tag::text AS feature,
+                       (1000 + ord)::int AS tag_ord
+                FROM unnest($3::text[]) WITH ORDINALITY AS q(tag, ord)
+              ) raw
+              WHERE nullif(feature, '') IS NOT NULL
+            ),
+            tag_hits AS MATERIALIZED (
+              SELECT qt.feature_type,
+                     qt.feature,
+                     qt.tag_ord,
+                     hit.model_id
+              FROM query_tags qt
+              CROSS JOIN LATERAL (
+                SELECT post.model_id
+                FROM model_representation_feature_postings post
+                JOIN models m
+                  ON m.id = post.model_id
+                 AND m.tenant_id = $1
+                 AND m.status = 'active'
+                WHERE post.tenant_id = $1
+                  AND post.status = 'active'
+                  AND post.feature_type = qt.feature_type
+                  AND post.feature = qt.feature
+                ORDER BY m.activation DESC,
+                         m.confirmed_count DESC,
+                         m.created_at DESC,
+                         post.model_id
+                LIMIT $4
+              ) hit
+            ),
+            scored AS MATERIALIZED (
+              SELECT model_id,
+                     count(DISTINCT feature_type)::int AS _tag_match_rank,
+                     count(DISTINCT (feature_type, feature))::int AS _tag_match_count,
+                     min(tag_ord)::int AS _first_tag_ord
+              FROM tag_hits
+              GROUP BY model_id
+            )
+            SELECT scored.model_id,
+                   scored._tag_match_rank,
+                   scored._tag_match_count,
+                   scored._first_tag_ord,
+                   m.activation
+            FROM scored
+            JOIN models m
+              ON m.id = scored.model_id
+             AND m.tenant_id = $1
+             AND m.status = 'active'
+            ORDER BY scored._tag_match_rank DESC,
+                     scored._tag_match_count DESC,
+                     scored._first_tag_ord ASC,
+                     m.activation DESC,
+                     m.confirmed_count DESC,
+                     m.created_at DESC
+            LIMIT $5
+            """,
+            tenant_id,
+            seed_tags,
+            coverage_roles,
+            per_tag_limit,
+            max(1, int(limit)),
+        )
+    else:
+        notes["representation_feature_postings_index"] = False
+    if (
+        not representation_feature_postings_available
+        and representation_postings_available is None
+    ):
         postings_table = await conn.fetchval(
             "SELECT to_regclass('public.model_representation_tag_postings')"
         )
         representation_postings_available = postings_table is not None
-    if representation_postings_available:
+    if (
+        not representation_feature_postings_available
+        and representation_postings_available
+    ):
         per_tag_limit = max(32, min(240, max(1, int(limit)) * 6))
         notes["representation_postings_index"] = True
+        notes["representation_postings_table"] = "model_representation_tag_postings"
         notes["postings_per_tag_limit"] = per_tag_limit
         rows = await conn.fetch(
             """
@@ -2812,7 +3006,7 @@ async def pathway_b_representation_tag_candidates(
             per_tag_limit,
             max(1, int(limit)),
         )
-    else:
+    elif not representation_feature_postings_available:
         notes["representation_postings_index"] = False
         rows = await conn.fetch(
             """
@@ -2867,6 +3061,7 @@ async def pathway_l_semantic_terms(
     scope_actors: Sequence[UUID] | None = None,
     scope_entities: Sequence[dict[str, Any]] | None = None,
     limit: int = _SEMANTIC_TERMS_LIMIT,
+    semantic_feature_postings_available: bool | None = None,
     semantic_postings_available: bool | None = None,
     semantic_postings_status_column: bool | None = None,
 ) -> PathwayResult:
@@ -2901,12 +3096,94 @@ async def pathway_l_semantic_terms(
     if scope_clauses:
         scope_sql = "  AND (" + " OR ".join(scope_clauses) + ")\n"
 
-    if semantic_postings_available is None:
+    if semantic_feature_postings_available is None:
+        feature_postings_table = await conn.fetchval(
+            "SELECT to_regclass('public.model_representation_feature_postings')"
+        )
+        semantic_feature_postings_available = feature_postings_table is not None
+    if semantic_feature_postings_available:
+        posting_limit = max(32, min(240, max(1, int(limit)) * 6))
+        notes["postings_index"] = True
+        notes["feature_postings_index"] = True
+        notes["postings_table"] = "model_representation_feature_postings"
+        notes["postings_status_filter"] = True
+        notes["postings_per_term_limit"] = posting_limit
+        params = [tenant_id, query_terms, max(1, int(limit)), posting_limit]
+        lateral_scope_clauses = []
+        if actor_list:
+            params.append(actor_list)
+            lateral_scope_clauses.append(f"m.scope_actors && ${len(params)}::uuid[]")
+        for entity in entity_list:
+            params.append(_jsonb([entity]))
+            lateral_scope_clauses.append(f"m.scope_entities @> ${len(params)}::jsonb")
+        lateral_scope_sql = ""
+        if lateral_scope_clauses:
+            lateral_scope_sql = (
+                "                  AND ("
+                + " OR ".join(lateral_scope_clauses)
+                + ")\n"
+            )
+        rows = await conn.fetch(
+            f"""
+            WITH query_terms AS MATERIALIZED (
+              SELECT term::text,
+                     ord::int AS term_ord
+              FROM unnest($2::text[]) WITH ORDINALITY AS q(term, ord)
+            ),
+            term_hits AS MATERIALIZED (
+              SELECT qt.term,
+                     qt.term_ord,
+                     hit.model_id
+              FROM query_terms qt
+              CROSS JOIN LATERAL (
+                SELECT post.model_id
+                FROM model_representation_feature_postings post
+                JOIN models m
+                  ON m.id = post.model_id
+                 AND m.tenant_id = $1
+                 AND m.status = 'active'
+                WHERE post.tenant_id = $1
+                  AND post.status = 'active'
+                  AND post.feature_type = 'lexical'
+                  AND post.feature = qt.term
+{lateral_scope_sql}                ORDER BY m.activation DESC,
+                         m.confirmed_count DESC,
+                         m.created_at DESC,
+                         post.model_id
+                LIMIT $4
+              ) hit
+            ),
+            scored AS MATERIALIZED (
+              SELECT model_id,
+                     count(DISTINCT term)::int AS _semantic_term_overlap,
+                     min(term_ord)::int AS _first_term_ord
+              FROM term_hits
+              GROUP BY model_id
+            )
+            SELECT {_MODEL_SELECT_SQL},
+                   scored._semantic_term_overlap
+            FROM scored
+            JOIN models
+              ON models.id = scored.model_id
+             AND models.tenant_id = $1
+            WHERE status = 'active'
+            ORDER BY scored._semantic_term_overlap DESC,
+                     scored._first_term_ord ASC,
+                     activation DESC,
+                     confirmed_count DESC,
+                     created_at DESC
+            LIMIT $3
+            """,
+            *params,
+        )
+    else:
+        notes["feature_postings_index"] = False
+    if not semantic_feature_postings_available and semantic_postings_available is None:
         postings_table = await conn.fetchval(
             "SELECT to_regclass('public.model_semantic_term_postings')"
         )
         semantic_postings_available = postings_table is not None
-    if semantic_postings_available:
+    if not semantic_feature_postings_available and semantic_postings_available:
         if semantic_postings_status_column is None:
             semantic_postings_status_column = bool(
                 await conn.fetchval(
@@ -2924,6 +3201,7 @@ async def pathway_l_semantic_terms(
         postings_status_column = bool(semantic_postings_status_column)
         posting_limit = max(32, min(240, max(1, int(limit)) * 6))
         notes["postings_index"] = True
+        notes["postings_table"] = "model_semantic_term_postings"
         notes["postings_status_filter"] = postings_status_column
         notes["postings_per_term_limit"] = posting_limit
         params = [tenant_id, query_terms, max(1, int(limit)), posting_limit]
@@ -2998,7 +3276,7 @@ async def pathway_l_semantic_terms(
             """,
             *params,
         )
-    else:
+    elif not semantic_feature_postings_available:
         notes["postings_index"] = False
         rows = await conn.fetch(
             f"""
@@ -3047,6 +3325,7 @@ async def pathway_l_semantic_term_candidates(
     scope_actors: Sequence[UUID] | None = None,
     scope_entities: Sequence[dict[str, Any]] | None = None,
     limit: int = _SEMANTIC_TERMS_LIMIT,
+    semantic_feature_postings_available: bool | None = None,
     semantic_postings_available: bool | None = None,
     semantic_postings_status_column: bool | None = None,
 ) -> tuple[list[ModelCandidateHit], dict[str, Any]]:
@@ -3083,12 +3362,96 @@ async def pathway_l_semantic_term_candidates(
     if scope_clauses:
         scope_sql = "  AND (" + " OR ".join(scope_clauses) + ")\n"
 
-    if semantic_postings_available is None:
+    if semantic_feature_postings_available is None:
+        feature_postings_table = await conn.fetchval(
+            "SELECT to_regclass('public.model_representation_feature_postings')"
+        )
+        semantic_feature_postings_available = feature_postings_table is not None
+    if semantic_feature_postings_available:
+        posting_limit = max(32, min(240, max(1, int(limit)) * 6))
+        notes["postings_index"] = True
+        notes["feature_postings_index"] = True
+        notes["postings_table"] = "model_representation_feature_postings"
+        notes["postings_status_filter"] = True
+        notes["postings_per_term_limit"] = posting_limit
+        params = [tenant_id, query_terms, max(1, int(limit)), posting_limit]
+        lateral_scope_clauses = []
+        if actor_list:
+            params.append(actor_list)
+            lateral_scope_clauses.append(f"m.scope_actors && ${len(params)}::uuid[]")
+        for entity in entity_list:
+            params.append(_jsonb([entity]))
+            lateral_scope_clauses.append(f"m.scope_entities @> ${len(params)}::jsonb")
+        lateral_scope_sql = ""
+        if lateral_scope_clauses:
+            lateral_scope_sql = (
+                "                  AND ("
+                + " OR ".join(lateral_scope_clauses)
+                + ")\n"
+            )
+        rows = await conn.fetch(
+            f"""
+            WITH query_terms AS MATERIALIZED (
+              SELECT term::text,
+                     ord::int AS term_ord
+              FROM unnest($2::text[]) WITH ORDINALITY AS q(term, ord)
+            ),
+            term_hits AS MATERIALIZED (
+              SELECT qt.term,
+                     qt.term_ord,
+                     hit.model_id
+              FROM query_terms qt
+              CROSS JOIN LATERAL (
+                SELECT post.model_id
+                FROM model_representation_feature_postings post
+                JOIN models m
+                  ON m.id = post.model_id
+                 AND m.tenant_id = $1
+                 AND m.status = 'active'
+                WHERE post.tenant_id = $1
+                  AND post.status = 'active'
+                  AND post.feature_type = 'lexical'
+                  AND post.feature = qt.term
+{lateral_scope_sql}                ORDER BY m.activation DESC,
+                         m.confirmed_count DESC,
+                         m.created_at DESC,
+                         post.model_id
+                LIMIT $4
+              ) hit
+            ),
+            scored AS MATERIALIZED (
+              SELECT model_id,
+                     count(DISTINCT term)::int AS _semantic_term_overlap,
+                     min(term_ord)::int AS _first_term_ord
+              FROM term_hits
+              GROUP BY model_id
+            )
+            SELECT scored.model_id,
+                   scored._semantic_term_overlap,
+                   scored._first_term_ord,
+                   m.activation
+            FROM scored
+            JOIN models m
+              ON m.id = scored.model_id
+             AND m.tenant_id = $1
+             AND m.status = 'active'
+            ORDER BY scored._semantic_term_overlap DESC,
+                     scored._first_term_ord ASC,
+                     m.activation DESC,
+                     m.confirmed_count DESC,
+                     m.created_at DESC
+            LIMIT $3
+            """,
+            *params,
+        )
+    else:
+        notes["feature_postings_index"] = False
+    if not semantic_feature_postings_available and semantic_postings_available is None:
         postings_table = await conn.fetchval(
             "SELECT to_regclass('public.model_semantic_term_postings')"
         )
         semantic_postings_available = postings_table is not None
-    if semantic_postings_available:
+    if not semantic_feature_postings_available and semantic_postings_available:
         if semantic_postings_status_column is None:
             semantic_postings_status_column = bool(
                 await conn.fetchval(
@@ -3106,6 +3469,7 @@ async def pathway_l_semantic_term_candidates(
         postings_status_column = bool(semantic_postings_status_column)
         posting_limit = max(32, min(240, max(1, int(limit)) * 6))
         notes["postings_index"] = True
+        notes["postings_table"] = "model_semantic_term_postings"
         notes["postings_status_filter"] = postings_status_column
         notes["postings_per_term_limit"] = posting_limit
         params = [tenant_id, query_terms, max(1, int(limit)), posting_limit]
@@ -3182,7 +3546,7 @@ async def pathway_l_semantic_term_candidates(
             """,
             *params,
         )
-    else:
+    elif not semantic_feature_postings_available:
         notes["postings_index"] = False
         rows = await conn.fetch(
             f"""

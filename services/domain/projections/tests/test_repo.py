@@ -234,7 +234,7 @@ async def test_list_staleness_batches_names_and_preserves_requested_order() -> N
     assert "EXISTS" not in conn.fetch_calls[0][0]
     assert "FROM model_events e" not in conn.fetch_calls[0][0]
     assert [(entry.projection_name, entry.reason) for entry in staleness] == [
-        ("resources", "no_checkpoint"),
+        ("resources", "no_snapshot"),
         ("constraints", "pending_model_events"),
     ]
     assert all(entry.latest_model_event_id == latest_event_id for entry in staleness)
@@ -268,4 +268,106 @@ async def test_list_staleness_marks_checkpoint_current_without_event_scan() -> N
     assert len(staleness) == 1
     assert staleness[0].is_stale is False
     assert staleness[0].reason == "current"
+    assert staleness[0].freshness_mode == "checkpoint"
     assert "model_events e" not in conn.fetch_calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_list_staleness_marks_delta_queue_current_without_checkpoint() -> None:
+    tenant_id = uuid7()
+    latest_event_id = uuid7()
+    now = datetime.now(timezone.utc)
+    conn = _FakeConn(
+        fetchrow_rows=[{"id": latest_event_id, "created_at": now}],
+        fetch_rows=[
+            [
+                {
+                    "projection_name": "customers",
+                    "last_processed_event_id": None,
+                    "last_processed_event_created_at": None,
+                    "updated_at": None,
+                    "snapshot_count": 3,
+                    "pending_refresh_jobs": 0,
+                    "failed_refresh_jobs": 0,
+                },
+            ]
+        ],
+    )
+
+    staleness = await ProjectionRepo().list_staleness(
+        conn,  # type: ignore[arg-type]
+        tenant_id=tenant_id,
+        projection_names=["customers"],
+    )
+
+    assert len(staleness) == 1
+    assert staleness[0].is_stale is False
+    assert staleness[0].reason == "delta_queue_current"
+    assert staleness[0].freshness_mode == "delta_queue"
+    assert staleness[0].snapshot_count == 3
+
+
+@pytest.mark.asyncio
+async def test_list_staleness_marks_pending_delta_jobs_stale() -> None:
+    tenant_id = uuid7()
+    latest_event_id = uuid7()
+    now = datetime.now(timezone.utc)
+    conn = _FakeConn(
+        fetchrow_rows=[{"id": latest_event_id, "created_at": now}],
+        fetch_rows=[
+            [
+                {
+                    "projection_name": "commitments",
+                    "last_processed_event_id": None,
+                    "last_processed_event_created_at": None,
+                    "updated_at": None,
+                    "snapshot_count": 2,
+                    "pending_refresh_jobs": 1,
+                    "failed_refresh_jobs": 0,
+                },
+            ]
+        ],
+    )
+
+    staleness = await ProjectionRepo().list_staleness(
+        conn,  # type: ignore[arg-type]
+        tenant_id=tenant_id,
+        projection_names=["commitments"],
+    )
+
+    assert staleness[0].is_stale is True
+    assert staleness[0].reason == "pending_refresh_jobs"
+    assert staleness[0].pending_refresh_jobs == 1
+
+
+@pytest.mark.asyncio
+async def test_list_staleness_marks_failed_delta_jobs_stale() -> None:
+    tenant_id = uuid7()
+    latest_event_id = uuid7()
+    now = datetime.now(timezone.utc)
+    conn = _FakeConn(
+        fetchrow_rows=[{"id": latest_event_id, "created_at": now}],
+        fetch_rows=[
+            [
+                {
+                    "projection_name": "decisions",
+                    "last_processed_event_id": None,
+                    "last_processed_event_created_at": None,
+                    "updated_at": None,
+                    "snapshot_count": 2,
+                    "pending_refresh_jobs": 0,
+                    "failed_refresh_jobs": 1,
+                },
+            ]
+        ],
+    )
+
+    staleness = await ProjectionRepo().list_staleness(
+        conn,  # type: ignore[arg-type]
+        tenant_id=tenant_id,
+        projection_names=["decisions"],
+    )
+
+    assert staleness[0].is_stale is True
+    assert staleness[0].reason == "failed_refresh_jobs"
+    assert staleness[0].failed_refresh_jobs == 1

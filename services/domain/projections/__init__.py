@@ -10,7 +10,14 @@ from services.domain.projections.catalog import (
     register_projector_factory,
 )
 from services.domain.projections.constraints import ConstraintProjector
+from services.domain.projections.decision_surfaces import DecisionSurfaceProjector
 from services.domain.projections.employee_profiles import EmployeeProfileProjector
+from services.domain.projections.entity_surfaces import (
+    CommitmentProjector,
+    CustomerProjector,
+    DecisionProjector,
+    GoalProjector,
+)
 from services.domain.projections.repo import (
     ProjectionContext,
     ProjectionRecord,
@@ -51,6 +58,10 @@ from services.domain.projections.types import (
 
 __all__ = [
     "ConstraintProjector",
+    "CommitmentProjector",
+    "CustomerProjector",
+    "DecisionProjector",
+    "DecisionSurfaceProjector",
     "EmployeeProfileProjector",
     "ENTRY_POINT_GROUP",
     "ModelEvent",
@@ -74,6 +85,7 @@ __all__ = [
     "ProjectionDependencyRef",
     "ProjectionSubjectRef",
     "ProjectionWatchKey",
+    "GoalProjector",
     "ResourceProjector",
     "all_projectors",
     "available_projection_names",

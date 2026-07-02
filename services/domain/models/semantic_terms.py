@@ -2,7 +2,9 @@
 
 Semantic terms are compact lexical handles for a Model's belief content.
 They intentionally exclude scope actors/entities and broad domain tags, which
-already live in dedicated columns.
+already live in dedicated columns. Query-time lookup also mirrors them into the
+typed model representation feature postings table as the `lexical` feature
+family.
 """
 from __future__ import annotations
 
