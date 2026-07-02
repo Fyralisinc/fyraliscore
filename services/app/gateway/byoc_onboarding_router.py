@@ -22,9 +22,37 @@ from services.platform.runtime.byoc_onboarding_intents import (
     UnsupportedOnboardingPlan,
 )
 
+_ALL_REHEARSAL_SOURCES = {
+    "ashby",
+    "aws",
+    "brex",
+    "carta",
+    "deel",
+    "discord",
+    "figma",
+    "fireflies",
+    "github",
+    "gmail",
+    "google_calendar",
+    "google_drive",
+    "grafana",
+    "gusto",
+    "hibob",
+    "jira",
+    "linkedin",
+    "mercury",
+    "miro",
+    "notion",
+    "quickbooks",
+    "ramp",
+    "signal",
+    "slack",
+    "telegram",
+    "whatsapp",
+}
 _OAUTH_REHEARSAL_SOURCES = {"slack", "github", "discord", "notion"}
 _FORM_REHEARSAL_SOURCES = {"jira", "telegram"}
-_REHEARSAL_SOURCES = _OAUTH_REHEARSAL_SOURCES | _FORM_REHEARSAL_SOURCES
+_REHEARSAL_SOURCES = _ALL_REHEARSAL_SOURCES
 
 _SOURCE_CALLBACK_PATHS = {
     "slack": "/integrations/slack/callback",
@@ -34,12 +62,28 @@ _SOURCE_CALLBACK_PATHS = {
 }
 
 _SOURCE_LIVE_INGRESS_PATHS = {
+    "ashby": "/webhooks/ashby/{install-id}",
+    "brex": "/webhooks/brex",
+    "deel": "/webhooks/deel",
     "slack": "/webhooks/slack/events",
     "discord": "/webhooks/discord",
+    "figma": "/webhooks/figma",
+    "fireflies": "/webhooks/fireflies",
     "github": "/webhooks/github",
+    "gmail": "/webhooks/gmail/pubsub",
+    "google_calendar": "/webhooks/google_calendar/push",
+    "google_drive": "/webhooks/google_drive/push",
+    "grafana": "/webhooks/grafana/events",
+    "gusto": "/webhooks/gusto",
+    "hibob": "/webhooks/hibob",
     "notion": "/webhooks/notion/events",
     "jira": "/webhooks/jira/events",
+    "mercury": "/webhooks/mercury/events",
+    "miro": "/webhooks/miro",
+    "quickbooks": "/webhooks/quickbooks/events",
+    "ramp": "/webhooks/ramp",
     "telegram": "customer-cloud MTProto gateway worker",
+    "whatsapp": "/integrations/whatsapp/webhook",
 }
 
 _SOURCE_REQUIRED_INPUTS = {
@@ -56,6 +100,36 @@ _SOURCE_REQUIRED_INPUTS = {
         "live_session",
         "backfill_session",
     ],
+}
+
+_GENERIC_PROVIDER_CONSOLES = {
+    "ashby": "https://app.ashbyhq.com/admin/api",
+    "aws": "https://console.aws.amazon.com/iam/",
+    "brex": "https://developer.brex.com/",
+    "carta": "Customer Carta admin console",
+    "deel": "Customer Deel developer/admin console",
+    "figma": "https://www.figma.com/developers/api",
+    "fireflies": "https://app.fireflies.ai/integrations",
+    "gmail": "https://console.cloud.google.com/apis/credentials",
+    "google_calendar": "https://console.cloud.google.com/apis/credentials",
+    "google_drive": "https://console.cloud.google.com/apis/credentials",
+    "grafana": "Customer Grafana service account console",
+    "gusto": "https://dev.gusto.com/",
+    "hibob": "Customer HiBob API access console",
+    "linkedin": "https://www.linkedin.com/developers/apps",
+    "mercury": "Customer Mercury API console",
+    "miro": "https://developers.miro.com/",
+    "quickbooks": "https://developer.intuit.com/app/developer/myapps",
+    "ramp": "https://developers.ramp.com/",
+    "signal": "Customer-cloud linked-device setup",
+    "whatsapp": "https://developers.facebook.com/apps/",
+}
+
+_GENERIC_AUTHORIZATION_MODES = {
+    "aws": "customer_iam_role_ref",
+    "signal": "customer_linked_device_session",
+    "telegram": "customer_mtproto_session",
+    "whatsapp": "customer_webhook_app",
 }
 
 
@@ -624,6 +698,24 @@ async def _source_provider_handoff(
             "missing_configuration": [],
         }
 
+    if source in _ALL_REHEARSAL_SOURCES:
+        callback_path = _SOURCE_CALLBACK_PATHS.get(source)
+        return {
+            "authorization_mode": _GENERIC_AUTHORIZATION_MODES.get(
+                source,
+                "customer_local_provider_refs",
+            ),
+            "install_url": None,
+            "oauth_redirect_url": (
+                f"{public_url}{callback_path}" if callback_path else None
+            ),
+            "provider_console_url": _GENERIC_PROVIDER_CONSOLES.get(
+                source,
+                "Customer provider admin console",
+            ),
+            "missing_configuration": [],
+        }
+
     raise AssertionError(f"unsupported rehearsal source {source!r}")
 
 
@@ -878,7 +970,7 @@ async def _source_installation_row(
     tenant_id: UUID,
     source: str,
 ) -> dict[str, Any] | None:
-    if source in _OAUTH_REHEARSAL_SOURCES:
+    if source in _ALL_REHEARSAL_SOURCES - {"jira", "telegram"}:
         row = await pool.fetchrow(
             """
             SELECT installation_id, enabled, (secret_ref IS NOT NULL) AS has_secret,
@@ -965,18 +1057,43 @@ def _source_rehearsal_next_action(
     trigger_count: int,
     observation_count: int,
 ) -> str:
+    source_name = _source_display_name(source)
     if not installed:
         if source in _OAUTH_REHEARSAL_SOURCES:
-            return f"Approve {source.title()} in the provider browser window."
-        return f"Submit the required {source.title()} connection details."
+            return f"Approve {source_name} in the provider browser window."
+        return f"Submit the required {source_name} connection details."
     if trigger_count == 0:
-        return f"{source.title()} installed; waiting for onboarding trigger."
+        return f"{source_name} installed; waiting for onboarding trigger."
     if observation_count == 0:
         return (
-            f"{source.title()} installed; waiting for historical backfill "
+            f"{source_name} installed; waiting for historical backfill "
             "or live signals."
         )
-    return f"{source.title()} observations are landing in Fyralis."
+    return f"{source_name} observations are landing in Fyralis."
+
+
+def _source_display_name(source: str) -> str:
+    names = {
+        "aws": "AWS",
+        "brex": "Brex",
+        "figma": "Figma",
+        "gmail": "Gmail",
+        "github": "GitHub",
+        "google_calendar": "Google Calendar",
+        "google_drive": "Google Drive",
+        "grafana": "Grafana",
+        "hibob": "HiBob",
+        "jira": "Jira",
+        "miro": "Miro",
+        "notion": "Notion",
+        "quickbooks": "QuickBooks",
+        "slack": "Slack",
+        "whatsapp": "WhatsApp",
+    }
+    return names.get(
+        source,
+        " ".join(part.capitalize() for part in source.replace("_", "-").split("-")),
+    )
 
 
 __all__ = ["build_byoc_onboarding_router"]

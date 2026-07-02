@@ -52,7 +52,34 @@ DEFAULT_SLACK_GATEWAY_NAMESPACE = "fyralis-system"
 DEFAULT_SLACK_GATEWAY_LOCAL_PORT = 8000
 DEFAULT_KUBECTL = "/tmp/fyralis-byoc-tools/kubectl"
 DEFAULT_NGROK_API = "http://127.0.0.1:4040/api/tunnels"
-REHEARSABLE_SOURCES = ("slack", "jira", "github", "discord", "notion", "telegram")
+REHEARSABLE_SOURCES = (
+    "ashby",
+    "aws",
+    "brex",
+    "carta",
+    "deel",
+    "discord",
+    "figma",
+    "fireflies",
+    "github",
+    "gmail",
+    "google-calendar",
+    "google-drive",
+    "grafana",
+    "gusto",
+    "hibob",
+    "jira",
+    "linkedin",
+    "mercury",
+    "miro",
+    "notion",
+    "quickbooks",
+    "ramp",
+    "signal",
+    "slack",
+    "telegram",
+    "whatsapp",
+)
 SLACK_BOT_SCOPES = (
     "channels:read",
     "channels:history",
@@ -1410,9 +1437,89 @@ def _cmd_source_rehearse_slack(args: argparse.Namespace) -> int:
     return _cmd_source_rehearse(args)
 
 
+def _source_rehearsal_profile(source_id: str) -> dict[str, Any]:
+    if source_id in REHEARSAL_PROFILES:
+        return REHEARSAL_PROFILES[source_id]
+    source_profile = SOURCE_PROFILES[source_id]
+    ingress_paths = list(source_profile.get("ingress_paths", []))
+    callback_path = next((path for path in ingress_paths if "callback" in path), None)
+    webhook_path = next((path for path in ingress_paths if "webhook" in path), None)
+    return {
+        "kind": _generic_rehearsal_kind(str(source_profile["method"])),
+        "needs_public_url": bool(ingress_paths),
+        "callback_path": callback_path,
+        "webhook_path": webhook_path,
+        "env": _generic_source_env_keys(source_id, source_profile),
+        "required_env": _generic_source_required_env_keys(source_id, source_profile),
+        "manual_gate_names": _generic_source_manual_gates(source_id, source_profile),
+        "source_profile": source_profile,
+    }
+
+
+def _generic_rehearsal_kind(method: str) -> str:
+    return {
+        "api_token": "api_token_connect",
+        "gateway": "local_gateway_session",
+        "iam_role": "iam_role_ref",
+        "oauth": "oauth_or_preauthorized_ref",
+        "poll": "polling_ref",
+        "webhook": "webhook_endpoint",
+    }.get(method, method)
+
+
+def _source_env_prefix(source_id: str) -> str:
+    return source_id.replace("-", "_").upper()
+
+
+def _generic_source_env_keys(
+    source_id: str,
+    source_profile: dict[str, Any],
+) -> tuple[str, ...]:
+    prefix = _source_env_prefix(source_id)
+    keys = [f"{prefix}_{ref.upper()}" for ref in source_profile["required_refs"]]
+    if source_profile.get("ingress_paths"):
+        keys.append(f"{prefix}_WEBHOOK_URL")
+    return tuple(dict.fromkeys(keys))
+
+
+def _generic_source_required_env_keys(
+    source_id: str,
+    source_profile: dict[str, Any],
+) -> tuple[str, ...]:
+    prefix = _source_env_prefix(source_id)
+    return tuple(
+        dict.fromkeys(
+            f"{prefix}_{ref.upper()}" for ref in source_profile["required_refs"]
+        )
+    )
+
+
+def _generic_source_manual_gates(
+    source_id: str,
+    source_profile: dict[str, Any],
+) -> tuple[str, ...]:
+    method = str(source_profile["method"])
+    gates = [
+        f"{source_id}_provider_admin_approval",
+        f"{source_id}_scope_selection",
+    ]
+    if method in {"api_token", "iam_role", "gateway", "poll", "webhook"}:
+        gates.append(f"{source_id}_credential_ref_creation")
+    if method == "oauth":
+        gates.extend(
+            [
+                f"{source_id}_oauth_app_or_connection_approval",
+                f"{source_id}_oauth_consent",
+            ]
+        )
+    if source_profile.get("ingress_paths"):
+        gates.append(f"{source_id}_webhook_registration")
+    return tuple(dict.fromkeys(gates))
+
+
 def _cmd_source_rehearse(args: argparse.Namespace) -> int:
     source_id = str(args.source).strip().lower()
-    profile = REHEARSAL_PROFILES[source_id]
+    profile = _source_rehearsal_profile(source_id)
     setup_dir: Path = args.setup_dir or Path(".fyralis/local-rehearsal") / source_id
     setup_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1764,6 +1871,8 @@ def _write_source_rehearsal_files(
         files["connect_payload"] = setup_dir / "jira-connect-payload.example.json"
     elif source_id == "telegram":
         files["session_plan"] = setup_dir / "telegram-session-plan.json"
+    else:
+        files["connection_checklist"] = setup_dir / f"{source_id}-connection-checklist.json"
 
     setup_payload = _source_rehearsal_setup_payload(
         source_id,
@@ -1788,6 +1897,15 @@ def _write_source_rehearsal_files(
         _write_json(files["connect_payload"], _jira_connect_payload(public_url))
     elif source_id == "telegram":
         _write_json(files["session_plan"], _telegram_session_plan())
+    elif "connection_checklist" in files:
+        _write_json(
+            files["connection_checklist"],
+            _generic_source_connection_checklist(
+                source_id,
+                profile,
+                public_url=public_url,
+            ),
+        )
 
     files["env_example"].write_text(
         _source_env_example(source_id, profile, public_url=public_url),
@@ -1929,6 +2047,46 @@ def _generic_app_setup_manifest(
     }
 
 
+def _generic_source_connection_checklist(
+    source_id: str,
+    profile: dict[str, Any],
+    *,
+    public_url: str,
+) -> dict[str, Any]:
+    source_profile = profile.get("source_profile", SOURCE_PROFILES[source_id])
+    callback = (
+        f"{public_url}{profile['callback_path']}"
+        if profile.get("callback_path")
+        else None
+    )
+    webhook = (
+        f"{public_url}{profile['webhook_path']}"
+        if profile.get("webhook_path")
+        else None
+    )
+    return {
+        "schema_version": "fyralis.byoc.source.connection_checklist.v1",
+        "source": source_id,
+        "provider_kind": profile["kind"],
+        "method": source_profile["method"],
+        "generated_at": _now(),
+        "required_env": list(profile.get("required_env", profile.get("env", ()))),
+        "default_scopes": list(source_profile.get("default_scopes", ())),
+        "provider_permissions": list(source_profile.get("provider_permissions", ())),
+        "callback_url": callback,
+        "webhook_url": webhook,
+        "no_ingress_reason": source_profile.get("no_ingress_reason"),
+        "manual_gates": list(profile.get("manual_gate_names", ())),
+        "automation_boundary": (
+            "Fyralis generates local artifacts, validates required refs, applies "
+            "customer-cloud env to the gateway when requested, and starts local "
+            "validation/sync receipts. Provider admin consent and token creation "
+            "remain customer-side gates unless preauthorized refs already exist."
+        ),
+        "raw_secret_values_included": False,
+    }
+
+
 def _jira_connect_payload(public_url: str) -> dict[str, Any]:
     return {
         "base_url": "${JIRA_BASE_URL}",
@@ -1967,6 +2125,8 @@ def _source_env_example(
         value = ""
         if key.endswith("_REDIRECT_URI") and profile.get("callback_path"):
             value = f"{public_url}{profile['callback_path']}"
+        elif key.endswith("_WEBHOOK_URL") and profile.get("webhook_path"):
+            value = f"{public_url}{profile['webhook_path']}"
         elif key == "OAUTH_STATE_HMAC_KEY":
             value = secrets.token_hex(32)
         elif key == "JIRA_PROJECT_KEYS":
@@ -2303,6 +2463,22 @@ def _source_manual_gates(
 
 
 def _manual_gate_reason(source_id: str, gate_name: str) -> str:
+    display_name = _source_display_name(source_id)
+    if gate_name.endswith("_provider_admin_approval"):
+        return f"A {display_name} admin must approve this connection in the customer-owned provider."
+    if gate_name.endswith("_scope_selection"):
+        return f"The customer chooses which {display_name} resources Fyralis may ingest."
+    if gate_name.endswith("_credential_ref_creation"):
+        return (
+            f"The customer stores {display_name} credentials or references in the "
+            "customer-cloud secret manager; raw values are not sent to Fyralis."
+        )
+    if gate_name.endswith("_oauth_app_or_connection_approval"):
+        return f"The customer creates or approves the {display_name} OAuth app/connection."
+    if gate_name.endswith("_oauth_consent"):
+        return f"{display_name} OAuth requires a customer-side approval screen."
+    if gate_name.endswith("_webhook_registration"):
+        return f"The customer registers the generated {display_name} webhook URL when the provider requires it."
     reasons = {
         "slack_app_creation_or_admin_approval": (
             "Slack app creation can use manifests, but workspace app approval "
@@ -2346,6 +2522,28 @@ def _manual_gate_reason(source_id: str, gate_name: str) -> str:
     return reasons.get(gate_name, f"{source_id} requires provider-side approval.")
 
 
+def _source_display_name(source_id: str) -> str:
+    names = {
+        "aws": "AWS",
+        "brex": "Brex",
+        "figma": "Figma",
+        "gmail": "Gmail",
+        "github": "GitHub",
+        "grafana": "Grafana",
+        "hibob": "HiBob",
+        "jira": "Jira",
+        "miro": "Miro",
+        "notion": "Notion",
+        "quickbooks": "QuickBooks",
+        "slack": "Slack",
+        "whatsapp": "WhatsApp",
+    }
+    return names.get(
+        source_id,
+        " ".join(part.capitalize() for part in source_id.split("-")),
+    )
+
+
 def _source_rehearsal_automated_steps(
     source_id: str,
     profile: dict[str, Any],
@@ -2353,18 +2551,21 @@ def _source_rehearsal_automated_steps(
     steps = ["provider_setup_artifact_generation", "env_template_generation"]
     if profile["needs_public_url"]:
         steps.extend(["local_gateway_port_forward", "public_https_tunnel_discovery"])
-    if profile["kind"] in {"oauth_app", "github_app"}:
+    if profile["kind"] in {"oauth_app", "github_app", "oauth_or_preauthorized_ref"}:
         steps.extend(
             [
                 "oauth_state_key_template_generation",
                 "kubernetes_secret_apply_when_env_exists",
-                "oauth_install_url_generation",
             ]
         )
+        if profile.get("install_endpoint"):
+            steps.append("oauth_install_url_generation")
     elif profile["kind"] == "api_token_connect":
         steps.extend(["connect_payload_generation", "local_env_validation"])
     elif profile["kind"] == "local_gateway_session":
         steps.extend(["session_plan_generation", "local_env_validation"])
+    elif profile["kind"] in {"iam_role_ref", "polling_ref", "webhook_endpoint"}:
+        steps.extend(["connection_checklist_generation", "local_env_validation"])
     if source_id == "telegram":
         steps.append("public_tunnel_not_required")
     return steps
@@ -2385,7 +2586,19 @@ def _provider_setup_notes(source_id: str) -> list[str]:
             "Copy the webhook verification token into NOTION_WEBHOOK_VERIFICATION_TOKEN when Notion provides it.",
         ],
     }
-    return notes.get(source_id, [])
+    if source_id in notes:
+        return notes[source_id]
+    source_profile = SOURCE_PROFILES.get(source_id, {})
+    generic_notes = [
+        f"Use the customer-owned {source_id} admin console to approve the connection.",
+        "Store credentials in the customer-cloud secret manager or local env file only.",
+        "Run the generated Fyralis rehearsal command after the env file is filled.",
+    ]
+    if source_profile.get("ingress_paths"):
+        generic_notes.append("Register the generated webhook URL with the provider when required.")
+    if source_profile.get("no_ingress_reason"):
+        generic_notes.append(str(source_profile["no_ingress_reason"]))
+    return generic_notes
 
 
 def _source_ids_from_args(args: argparse.Namespace) -> tuple[list[str] | None, int]:

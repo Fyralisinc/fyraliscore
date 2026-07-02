@@ -507,7 +507,77 @@ const SOURCE_SIGNAL_CONFIG: Record<string, SourceSignalConfig> = {
   }
 };
 
-const REHEARSAL_SOURCE_IDS = Object.keys(SOURCE_REHEARSAL_CONFIG);
+function sourceEnvPrefix(sourceId: string) {
+  return sourceId.replaceAll("-", "_").toUpperCase();
+}
+
+function genericEnvKeys(source: Source) {
+  const prefix = sourceEnvPrefix(source.id);
+  if (source.method === "OAuth") {
+    return [
+      `${prefix}_OAUTH_CLIENT_ID`,
+      `${prefix}_OAUTH_CLIENT_SECRET`,
+      `${prefix}_TOKEN_REF`
+    ];
+  }
+  if (source.method === "API token") {
+    return [`${prefix}_API_TOKEN`];
+  }
+  if (source.method === "Gateway") {
+    return [`${prefix}_SESSION_REF`];
+  }
+  if (source.method === "IAM role") {
+    return [`${prefix}_ROLE_ARN`];
+  }
+  if (source.method === "Webhook") {
+    return [`${prefix}_ACCESS_TOKEN`, `${prefix}_WEBHOOK_SECRET`];
+  }
+  return [`${prefix}_TOKEN_REF`];
+}
+
+function sourceRehearsalConfig(source: Source): SourceRehearsalConfig {
+  const explicit = SOURCE_REHEARSAL_CONFIG[source.id];
+  if (explicit) {
+    return explicit;
+  }
+  const gatewayRoutes = source.providerIngressPaths.map((path) => ({
+    label: path.includes("callback") ? "Callback" : "Webhook",
+    method: (path.includes("callback") ? "GET" : "POST") as "GET" | "POST",
+    path,
+    access: (path.includes("callback")
+      ? "state-token callback"
+      : "provider signed") as SourceRehearsalConfig["gatewayRoutes"][number]["access"]
+  }));
+  return {
+    sourceId: source.id,
+    providerKind: `${source.method} connection`,
+    needsPublicUrl: source.providerIngressPaths.length > 0,
+    providerConsoleUrl: "Customer provider admin console",
+    gatewayRoutes,
+    generatedArtifacts: [
+      `${source.id}-provider-setup.json`,
+      `${source.id}.env.example`,
+      `${source.id}-connection-checklist.json`
+    ],
+    envKeys: genericEnvKeys(source),
+    manualGates: [
+      "Provider/admin approval",
+      "Scope selection",
+      source.providerIngressPaths.length ? "Webhook registration" : "Customer-local ref approval"
+    ]
+  };
+}
+
+function sourceSignalConfig(source: Source): SourceSignalConfig {
+  return (
+    SOURCE_SIGNAL_CONFIG[source.id] ?? {
+      historicalTrigger: `${source.name} setup writes local install refs and onboarding_triggers(source='${source.id}').`,
+      liveIngress: source.providerIngressPaths[0] ?? source.noIngressReason ?? "Customer-cloud local worker",
+      liveWorker: `${source.name} worker reads approved resources and writes sanitized observations locally.`,
+      landedChannel: `${source.id}:*`
+    }
+  );
+}
 
 function capabilityStatus(
   readiness: CloudReadiness,
@@ -1248,11 +1318,9 @@ function DeploymentValidationStep({ snapshot, advance }: StepViewProps) {
   );
 }
 
-function sourceRehearsalCommand(sourceId: string, workspace: Workspace) {
-  const config = SOURCE_REHEARSAL_CONFIG[sourceId];
-  if (!config) {
-    return null;
-  }
+function sourceRehearsalCommand(source: Source, workspace: Workspace) {
+  const sourceId = source.id;
+  const config = sourceRehearsalConfig(source);
   return [
     "fyralis byoc source rehearse",
     `--source ${sourceId}`,
@@ -1265,11 +1333,12 @@ function sourceRehearsalCommand(sourceId: string, workspace: Workspace) {
     .join(" ");
 }
 
-function sourceApplyEnvCommand(sourceId: string, workspace: Workspace) {
-  const config = SOURCE_REHEARSAL_CONFIG[sourceId];
-  if (!config) {
-    return null;
-  }
+function sourceApplyEnvCommand(source: Source, workspace: Workspace) {
+  const sourceId = source.id;
+  const config = sourceRehearsalConfig(source);
+  const hasInstallRoute = config.gatewayRoutes.some((route) =>
+    route.path.includes("/install")
+  );
   return [
     "fyralis byoc source rehearse",
     `--source ${sourceId}`,
@@ -1277,10 +1346,9 @@ function sourceApplyEnvCommand(sourceId: string, workspace: Workspace) {
     config.needsPublicUrl ? `--public-url ${workspace.providerIngressUrl}` : "",
     `--provider-env .fyralis/local-rehearsal/${sourceId}/${sourceId}.env`,
     "--apply-env",
-    config.providerKind === "API token connect" ||
-    config.providerKind === "Local MTProto gateway session"
-      ? ""
-      : "--print-install-url --tenant-id <tenant-id> --actor-id <actor-id>",
+    hasInstallRoute
+      ? "--print-install-url --tenant-id <tenant-id> --actor-id <actor-id>"
+      : "",
     "--json"
   ]
     .filter(Boolean)
@@ -1465,7 +1533,7 @@ function sourceObservationSamples(
         : syncMode === "Backfill plus live"
           ? "mixed"
           : "historical",
-    sourceChannel: SOURCE_SIGNAL_CONFIG[source.id]?.landedChannel ?? `${source.id}:sample`
+    sourceChannel: sourceSignalConfig(source).landedChannel
   }));
 }
 
@@ -1575,9 +1643,9 @@ function SourceCatalogStep(props: StepViewProps) {
           <Badge tone="info">Setup owner path</Badge>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {REHEARSAL_SOURCE_IDS.map((sourceId) => {
-            const source = snapshot.sources.find((item) => item.id === sourceId);
-            const config = SOURCE_REHEARSAL_CONFIG[sourceId];
+          {snapshot.sources.map((source) => {
+            const sourceId = source.id;
+            const config = sourceRehearsalConfig(source);
             return (
               <button
                 key={sourceId}
@@ -1591,7 +1659,7 @@ function SourceCatalogStep(props: StepViewProps) {
               >
                 <span className="flex items-start justify-between gap-3">
                   <span>
-                    <strong className="block">{source?.name ?? sourceId}</strong>
+                    <strong className="block">{source.name}</strong>
                     <span className="mt-1 block text-sm text-muted-foreground">
                       {config.providerKind}
                     </span>
@@ -1642,7 +1710,7 @@ function SourceSetupStep({
   goTo,
   advance
 }: StepViewProps) {
-  const rehearsalConfig = SOURCE_REHEARSAL_CONFIG[selectedSource.id];
+  const rehearsalConfig = sourceRehearsalConfig(selectedSource);
   const [rehearsalStage, setRehearsalStage] = useState<
     "idle" | "generated" | "provider-gates-done"
   >(
@@ -1656,8 +1724,8 @@ function SourceSetupStep({
     ? selectedSource.providerIngressPaths.map((path) => `${workspace.providerIngressUrl}${path}`)
     : [selectedSource.noIngressReason ?? "No provider ingress required."];
   const defaultScopes = sourceScopeChoices(selectedSource.id).slice(0, 3);
-  const rehearsalCommand = sourceRehearsalCommand(selectedSource.id, workspace);
-  const applyEnvCommand = sourceApplyEnvCommand(selectedSource.id, workspace);
+  const rehearsalCommand = sourceRehearsalCommand(selectedSource, workspace);
+  const applyEnvCommand = sourceApplyEnvCommand(selectedSource, workspace);
   const providerIngressIsPublic = isPublicHttpsUrl(workspace.providerIngressUrl);
   const observationPreview = sourceObservationSamples(
     selectedSource,
@@ -2102,7 +2170,7 @@ function FirstSyncStep({
 }: StepViewProps) {
   const syncMode = selectedConnection?.syncMode ?? "Limited backfill";
   const backfillWindow = selectedConnection?.backfillWindow ?? "Last 30 days";
-  const signalConfig = SOURCE_SIGNAL_CONFIG[selectedSource.id];
+  const signalConfig = sourceSignalConfig(selectedSource);
   const selectedCommand = sourceFirstSyncCommand({
     sourceId: selectedSource.id,
     workspace,
@@ -2239,8 +2307,8 @@ function IngestionHealthStep({
   const observations = sourceObservations.filter(
     (observation) => observation.sourceId === selectedSource.id
   );
-  const sourceAutomationConfig = SOURCE_REHEARSAL_CONFIG[selectedSource.id];
-  const hasSourceAutomation = Boolean(sourceAutomationConfig);
+  const sourceAutomationConfig = sourceRehearsalConfig(selectedSource);
+  const hasSourceAutomation = true;
   const [apiBase, setApiBase] = useState(workspace.providerIngressUrl);
   const [bearerToken, setBearerToken] = useState("");
   const [fetchStatus, setFetchStatus] = useState<
@@ -2331,7 +2399,7 @@ function IngestionHealthStep({
       setFetchMessage(
         gatewayObservations.length
           ? `${gatewayObservations.length} ${selectedSource.name} observations loaded from the customer gateway.`
-          : `No ${selectedSource.name} observations were returned yet. Check the source_channel prefix ${SOURCE_SIGNAL_CONFIG[selectedSource.id]?.landedChannel ?? `${selectedSource.id}:*`}.`
+          : `No ${selectedSource.name} observations were returned yet. Check the source_channel prefix ${sourceSignalConfig(selectedSource).landedChannel}.`
       );
     } catch (caught) {
       setFetchStatus("error");
