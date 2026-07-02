@@ -645,8 +645,8 @@ async def test_semantic_retrieval_session_caches_schema_capability_probes(
             source_pathway="B",
         )
 
-    semantic_capabilities: list[tuple[object, object]] = []
-    representation_capabilities: list[object] = []
+    semantic_capabilities: list[tuple[object, object, object]] = []
+    representation_capabilities: list[tuple[object, object]] = []
 
     async def fake_pathway_l_semantic_term_candidates(
         *_args: object,
@@ -654,6 +654,7 @@ async def test_semantic_retrieval_session_caches_schema_capability_probes(
     ) -> tuple[list[ModelCandidateHit], dict[str, object]]:
         semantic_capabilities.append(
             (
+                kwargs.get("semantic_feature_postings_available"),
                 kwargs.get("semantic_postings_available"),
                 kwargs.get("semantic_postings_status_column"),
             )
@@ -665,7 +666,10 @@ async def test_semantic_retrieval_session_caches_schema_capability_probes(
         **kwargs: object,
     ) -> tuple[list[ModelCandidateHit], dict[str, object]]:
         representation_capabilities.append(
-            kwargs.get("representation_postings_available")
+            (
+                kwargs.get("representation_feature_postings_available"),
+                kwargs.get("representation_postings_available"),
+            )
         )
         return [], {"source_pathway": "B"}
 
@@ -706,15 +710,22 @@ async def test_semantic_retrieval_session_caches_schema_capability_probes(
             model_limit=5,
         )
 
-    assert len(conn.fetchval_queries) == 3
-    assert sum("model_semantic_term_postings')" in q for q in conn.fetchval_queries) == 1
-    assert sum("information_schema.columns" in q for q in conn.fetchval_queries) == 1
+    assert len(conn.fetchval_queries) == 1
     assert (
-        sum("model_representation_tag_postings')" in q for q in conn.fetchval_queries)
+        sum(
+            "model_representation_feature_postings')" in q
+            for q in conn.fetchval_queries
+        )
         == 1
     )
-    assert semantic_capabilities == [(True, True), (True, True)]
-    assert representation_capabilities == [True, True]
+    assert sum("model_semantic_term_postings')" in q for q in conn.fetchval_queries) == 0
+    assert sum("information_schema.columns" in q for q in conn.fetchval_queries) == 0
+    assert (
+        sum("model_representation_tag_postings')" in q for q in conn.fetchval_queries)
+        == 0
+    )
+    assert semantic_capabilities == [(True, True, True), (True, True, True)]
+    assert representation_capabilities == [(True, True), (True, True)]
 
 
 @pytest.mark.asyncio

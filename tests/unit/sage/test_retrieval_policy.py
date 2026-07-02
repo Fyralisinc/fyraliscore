@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from services.platform.execution.types import RetrievalAction
+from services.reasoning.sage.company_profile import CompanyLearningProfile, LearningPrior
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.sage.retrieval_policy import (
     SageRouteOutcome,
@@ -168,6 +170,63 @@ def test_route_outcomes_compress_into_high_utility_memory():
     assert semantic.confidence > 0.5
 
 
+def test_repeated_route_outcomes_teach_later_primary_policy_without_canonical_truth():
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=uuid4(),
+        seed_natural_text="Audit export renewal blocker",
+    )
+    signature = build_signal_signature(
+        trigger=trigger,
+        question_primitive=None,
+        projection_enabled=True,
+    )
+    learned = route_utilities_from_outcomes(
+        signature,
+        [
+            SageRouteOutcome(
+                path="B",
+                elapsed_ms=40,
+                returned_models=14,
+                selected_evidence=3,
+                budget=20,
+                quality_credit=1.7,
+                cost_units=0.34,
+            )
+            for _ in range(7)
+        ],
+    )
+    baseline = plan_primary_retrieval(
+        trigger=trigger,
+        weights={"A": 0.28, "B": 0.18, "L": 0.18, "C": 0.18, "G": 0.18},
+        effective_seed_entities=[],
+        effective_scope_actors=[],
+        projection_enabled=True,
+        semantic_terms_enabled=True,
+        semantic_k=20,
+        exploration_rate=0.0,
+    )
+    rerun = plan_primary_retrieval(
+        trigger=trigger,
+        weights={"A": 0.28, "B": 0.18, "L": 0.18, "C": 0.18, "G": 0.18},
+        effective_seed_entities=[],
+        effective_scope_actors=[],
+        projection_enabled=True,
+        semantic_terms_enabled=True,
+        semantic_k=20,
+        exploration_rate=0.0,
+        route_utilities=learned,
+    )
+
+    assert baseline.decision_for("B") is not None
+    assert baseline.decision_for("B").mode == "probe"
+    dense = rerun.decision_for("B")
+    assert dense is not None
+    assert dense.mode == "preferred"
+    assert "positive_route_utility_promoted_path" in rerun.reasons
+    assert rerun.profile_effects == ()
+
+
 def test_primary_policy_uses_positive_route_utility_to_promote_dense_semantic():
     trigger = TriggerContext(
         kind="T2",
@@ -259,6 +318,290 @@ def test_primary_policy_uses_negative_route_utility_to_skip_costly_temporal():
     assert temporal.mode == "skip"
     assert policy.allows("C") is False
     assert "negative_route_utility_suppressed_path" in policy.reasons
+
+
+def test_primary_policy_uses_company_profile_route_prior_to_promote_path():
+    trigger = TriggerContext(
+        kind="T4",
+        tenant_id=uuid4(),
+        seed_natural_text="Recurring approval review blocker",
+    )
+    profile = _profile(
+        LearningPrior(
+            kind="route",
+            key="D",
+            score=0.82,
+            confidence=0.90,
+            sample_count=9,
+            metadata={"source": "unit_test"},
+        )
+    )
+
+    policy = plan_primary_retrieval(
+        trigger=trigger,
+        weights={"A": 0.2, "B": 0.2, "D": 0.2, "G": 0.4},
+        effective_seed_entities=[],
+        effective_scope_actors=[],
+        projection_enabled=False,
+        semantic_terms_enabled=True,
+        semantic_k=20,
+        exploration_rate=0.0,
+        company_profile=profile,
+    )
+
+    pattern = policy.decision_for("D")
+    assert pattern is not None
+    assert pattern.mode == "preferred"
+    assert pattern.stage == 1
+    assert pattern.weight_multiplier > 1.0
+    assert "positive_company_profile_promoted_path" in policy.reasons
+    effect = policy.notes()["profile_effects"][0]
+    assert effect["canonical_write"] is False
+    assert effect["authority_effect"] == "none"
+
+
+def test_primary_policy_uses_company_profile_route_prior_to_suppress_path():
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=uuid4(),
+        seed_natural_text="Launch dependency status",
+    )
+    profile = _profile(
+        LearningPrior(
+            kind="route",
+            key="C",
+            score=-0.82,
+            confidence=0.90,
+            sample_count=9,
+            metadata={"source": "unit_test"},
+        )
+    )
+
+    policy = plan_primary_retrieval(
+        trigger=trigger,
+        weights={"A": 0.3, "B": 0.26, "L": 0.12, "C": 0.16, "G": 0.16},
+        effective_seed_entities=[],
+        effective_scope_actors=[],
+        projection_enabled=True,
+        semantic_terms_enabled=True,
+        semantic_k=20,
+        exploration_rate=0.0,
+        company_profile=profile,
+    )
+
+    temporal = policy.decision_for("C")
+    assert temporal is not None
+    assert temporal.mode == "skip"
+    assert policy.allows("C") is False
+    assert "negative_company_profile_suppressed_path" in policy.reasons
+    assert policy.notes()["profile_effects"][0]["authority_effect"] == "none"
+
+
+def test_primary_policy_uses_negative_memory_alias_to_suppress_known_bad_path():
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=uuid4(),
+        seed_natural_text="Launch dependency status",
+    )
+    profile = _profile(
+        LearningPrior(
+            kind="negative_memory",
+            key="semantic",
+            score=-0.88,
+            confidence=0.92,
+            sample_count=6,
+            metadata={
+                "path": "semantic",
+                "memory_type": "noisy_path",
+                "source": "negative_memory",
+            },
+        )
+    )
+
+    policy = plan_primary_retrieval(
+        trigger=trigger,
+        weights={"A": 0.3, "B": 0.26, "L": 0.12, "C": 0.16, "G": 0.16},
+        effective_seed_entities=[],
+        effective_scope_actors=[],
+        projection_enabled=True,
+        semantic_terms_enabled=True,
+        semantic_k=20,
+        exploration_rate=0.0,
+        company_profile=profile,
+    )
+
+    semantic = policy.decision_for("B")
+    assert semantic is not None
+    assert semantic.mode == "skip"
+    assert policy.allows("B") is False
+    assert "negative_company_profile_suppressed_path" in policy.reasons
+    effect = policy.notes()["profile_effects"][0]
+    assert effect["kind"] == "negative_memory"
+    assert effect["authority_effect"] == "none"
+
+
+def test_primary_policy_uses_latent_pattern_prior_without_authority_effect():
+    trigger = TriggerContext(
+        kind="T4",
+        tenant_id=uuid4(),
+        seed_natural_text="Recurring renewal approval blocker",
+    )
+    profile = _profile(
+        LearningPrior(
+            kind="latent_pattern",
+            key="approval-loop",
+            score=0.82,
+            confidence=0.88,
+            sample_count=5,
+            metadata={"source": "sage_global_scout"},
+        )
+    )
+
+    policy = plan_primary_retrieval(
+        trigger=trigger,
+        weights={"A": 0.22, "B": 0.22, "D": 0.18, "G": 0.38},
+        effective_seed_entities=[],
+        effective_scope_actors=[],
+        projection_enabled=False,
+        semantic_terms_enabled=True,
+        semantic_k=20,
+        exploration_rate=0.0,
+        company_profile=profile,
+    )
+
+    pattern = policy.decision_for("D")
+    assert pattern is not None
+    assert pattern.mode == "preferred"
+    effect = policy.notes()["profile_effects"][0]
+    assert effect["kind"] == "latent_pattern"
+    assert effect["canonical_write"] is False
+    assert effect["authority_effect"] == "none"
+
+
+def test_primary_policy_uses_actor_reliability_as_salience_not_authority():
+    actor_id = uuid4()
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=uuid4(),
+        seed_natural_text="Launch dependency status",
+        scope_actors=[actor_id],
+    )
+    profile = _profile(
+        LearningPrior(
+            kind="actor_reliability",
+            key=f"{actor_id}:pattern",
+            score=0.74,
+            confidence=0.86,
+            sample_count=8,
+            metadata={
+                "actor_id": str(actor_id),
+                "source": "calibration_stats",
+                "salience_only": True,
+                "authority_effect": "none",
+            },
+        )
+    )
+
+    policy = plan_primary_retrieval(
+        trigger=trigger,
+        weights={"A": 0.3, "B": 0.26, "L": 0.12, "C": 0.16, "G": 0.16},
+        effective_seed_entities=[],
+        effective_scope_actors=[actor_id],
+        projection_enabled=True,
+        semantic_terms_enabled=True,
+        semantic_k=20,
+        exploration_rate=0.0,
+        company_profile=profile,
+    )
+
+    structural = policy.decision_for("A")
+    assert structural is not None
+    assert structural.mode != "skip"
+    assert structural.weight_multiplier > 1.0
+    assert "source_actor_reliability_raised_salience" in policy.reasons
+    effect = policy.notes()["profile_effects"][0]
+    assert effect["salience_only"] is True
+    assert effect["authority_effect"] == "none"
+
+
+def test_primary_policy_uses_source_reliability_only_when_source_key_matches():
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=uuid4(),
+        seed_natural_text="Launch dependency status",
+        seed_signature={"source_channel": "slack"},
+    )
+    profile = _profile(
+        LearningPrior(
+            kind="source_reliability",
+            key="slack",
+            score=0.69,
+            confidence=0.80,
+            sample_count=7,
+            metadata={
+                "source": "sage_reader_decision_attributions",
+                "salience_only": True,
+                "authority_effect": "none",
+            },
+        )
+    )
+
+    policy = plan_primary_retrieval(
+        trigger=trigger,
+        weights={"A": 0.3, "B": 0.26, "L": 0.12, "C": 0.16, "G": 0.16},
+        effective_seed_entities=[],
+        effective_scope_actors=[],
+        projection_enabled=True,
+        semantic_terms_enabled=True,
+        semantic_k=20,
+        exploration_rate=0.0,
+        company_profile=profile,
+    )
+
+    sparse = policy.decision_for("L")
+    assert sparse is not None
+    assert sparse.mode != "skip"
+    assert sparse.weight_multiplier > 1.0
+    effect = policy.notes()["profile_effects"][0]
+    assert effect["kind"] == "source_reliability"
+    assert effect["authority_effect"] == "none"
+
+
+def test_adapt_inquiry_actions_uses_company_profile_prior_in_notes():
+    actions = [
+        RetrievalAction("Q1", "focused_index", "question_answerability_scope", budget=48),
+        RetrievalAction("Q1", "semantic", "constraint_evidence", budget=30),
+    ]
+    profile = _profile(
+        LearningPrior(
+            kind="route",
+            key="semantic",
+            score=-0.75,
+            confidence=0.88,
+            sample_count=8,
+            metadata={"source": "unit_test"},
+        )
+    )
+
+    adapted, notes = adapt_inquiry_actions(
+        question_primitive="CONSTRAINT",
+        actions=actions,
+        company_profile=profile,
+    )
+
+    assert adapted[1].filters["_sage_policy_mode"] == "skip"
+    assert notes[1]["company_profile"]["canonical_write"] is False
+    assert "negative_company_profile" in notes[1]["reason"]
+
+
+def _profile(*priors: LearningPrior) -> CompanyLearningProfile:
+    return CompanyLearningProfile(
+        tenant_id=uuid4(),
+        built_at=datetime.now(timezone.utc),
+        priors=priors,
+        sample_count=sum(prior.sample_count for prior in priors),
+        confidence=0.8,
+    )
 
 
 def test_adapt_inquiry_actions_uses_negative_route_utility_for_admission_skip():

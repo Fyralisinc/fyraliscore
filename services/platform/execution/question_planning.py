@@ -141,12 +141,17 @@ async def candidate_questions_for_round(
         config=config,
         reflective_rules=reflective_rules,
     )
-    if trigger.kind != "T1":
+    config_note = _planner_config_note(
+        trigger,
+        config,
+        candidate_count=len(deterministic),
+    )
+    if trigger.kind not in config.llm_question_planning_trigger_kinds:
         return deterministic, {
             "round": round_index,
             "mode": "deterministic_fallback",
-            "reason": "non_t1_trigger_uses_seeded_retrieval",
-            "candidate_count": len(deterministic),
+            "reason": "llm_planning_disabled_for_trigger_kind",
+            **config_note,
             **_reconstruction_note(reconstruction_state),
             **deterministic_rule_note,
         }
@@ -155,7 +160,7 @@ async def candidate_questions_for_round(
             "round": round_index,
             "mode": "deterministic_fallback",
             "reason": "disabled_by_config",
-            "candidate_count": len(deterministic),
+            **config_note,
             **_reconstruction_note(reconstruction_state),
             **deterministic_rule_note,
         }
@@ -164,7 +169,7 @@ async def candidate_questions_for_round(
             "round": round_index,
             "mode": "deterministic_fallback",
             "reason": "llm_provider_missing",
-            "candidate_count": len(deterministic),
+            **config_note,
             **_reconstruction_note(reconstruction_state),
             **deterministic_rule_note,
         }
@@ -185,7 +190,7 @@ async def candidate_questions_for_round(
                 "round": round_index,
                 "mode": "deterministic_fallback",
                 "reason": "execution_utility_governor",
-                "candidate_count": len(deterministic),
+                **config_note,
                 "utility_governor": governor_decision.as_note(),
                 **_reconstruction_note(reconstruction_state),
                 **deterministic_rule_note,
@@ -211,7 +216,7 @@ async def candidate_questions_for_round(
                 "round": round_index,
                 "mode": "deterministic_fallback",
                 "reason": "question_planning_provider_in_backoff",
-                "candidate_count": len(deterministic),
+                **config_note,
                 "planner_provider_backoffs": provider_backoffs,
                 **_reconstruction_note(reconstruction_state),
                 **deterministic_rule_note,
@@ -319,7 +324,7 @@ async def candidate_questions_for_round(
                 "round": round_index,
                 "mode": "deterministic_fallback",
                 "reason": "llm_returned_no_valid_questions",
-                "candidate_count": len(deterministic),
+                **config_note,
                 "llm_rationale": plan.rationale,
                 "belief_delta_count": len(belief_delta_hypotheses),
                 **_reconstruction_note(reconstruction_state),
@@ -355,10 +360,16 @@ async def candidate_questions_for_round(
             "belief_delta_claims": [h.claim for h in belief_delta_hypotheses[:5]],
             "safety_candidate_count": safety_added,
             "candidate_count": len(merged),
+            "deterministic_candidate_count": len(deterministic),
             "llm_rationale": plan.rationale,
             "llm_primitives": [q.primitive for q in llm_questions],
             "llm_schema": question_planning_schema_name(planning_provider),
             "question_quality": question_quality_summary(question_quality_notes),
+            **_planner_config_note(
+                trigger,
+                config,
+                candidate_count=len(merged),
+            ),
             **_reconstruction_note(reconstruction_state),
             **rule_note,
             **provider_metadata,
@@ -370,7 +381,7 @@ async def candidate_questions_for_round(
             "mode": "deterministic_fallback",
             "reason": type(exc).__name__,
             "detail": _compact_question_planning_error_detail(exc),
-            "candidate_count": len(deterministic),
+            **config_note,
             **(
                 {
                     "planner_retry_count": len(provider_errors),
@@ -388,6 +399,48 @@ async def candidate_questions_for_round(
             **deterministic_rule_note,
             **provider_metadata,
         }
+
+
+def _planner_config_note(
+    trigger: TriggerContext,
+    config: InquiryConfig,
+    *,
+    candidate_count: int,
+) -> dict[str, Any]:
+    return {
+        "candidate_count": int(candidate_count),
+        "planner_profile": config.planner_profile,
+        "llm_question_planning_allowed_for_trigger_kind": (
+            trigger.kind in config.llm_question_planning_trigger_kinds
+        ),
+        "llm_question_planning_trigger_kinds": list(
+            config.llm_question_planning_trigger_kinds
+        ),
+        "configured_max_rounds": int(config.max_rounds),
+        "configured_questions_per_round": int(config.questions_per_round),
+    }
+
+
+def _planner_profile_instruction(config: InquiryConfig) -> str | None:
+    profile = str(config.planner_profile or "default")
+    if profile == "triage":
+        return (
+            "Triage profile: ask only the minimum questions needed to attach "
+            "the signal to existing memory, identify a no-op, or decide one "
+            "model update."
+        )
+    if profile == "verification":
+        return (
+            "Verification profile: ask questions that confirm whether a state "
+            "transition, contradiction, or missing evidence is real."
+        )
+    if profile == "investigative_pattern":
+        return (
+            "Investigative pattern profile: ask follow-ups that separate "
+            "recurrence, ownership, counterevidence, constraints, and "
+            "downstream impact."
+        )
+    return None
 
 
 async def _call_llm_question_plan(
@@ -520,6 +573,7 @@ async def generate_llm_question_plan(
         if config.reflective_rules_enabled and not config.reflective_rules_shadow_only
         else ()
     )
+    profile_instruction = _planner_profile_instruction(config)
     if use_compact_question_planning_schema(llm_provider):
         system = (
             "You compile retrieval questions for Fyralis model updates. "
@@ -527,9 +581,17 @@ async def generate_llm_question_plan(
             "questions needed to decide which models change. Keep text short. "
             "Never copy a full claim into a question. Return JSON only."
         )
+        if profile_instruction:
+            system = f"{system} {profile_instruction}"
         user = json.dumps(
             {
                 "task": "compile retrieval question plan",
+                "planner_profile": config.planner_profile,
+                **(
+                    {"profile_instruction": profile_instruction}
+                    if profile_instruction
+                    else {}
+                ),
                 "p": sorted(ALLOWED_QUESTION_PRIMITIVES),
                 "types": [
                     "create",
@@ -611,11 +673,19 @@ async def generate_llm_question_plan(
         "short. Never paste a whole belief_delta claim into a question; turn "
         "it into a compact noun phrase first. Return JSON only."
     )
+    if profile_instruction:
+        system = f"{system} {profile_instruction}"
     user = json.dumps(
         {
             "task": (
                 "Compile belief deltas and generate the next retrieval "
                 "questions for this signal."
+            ),
+            "planner_profile": config.planner_profile,
+            **(
+                {"profile_instruction": profile_instruction}
+                if profile_instruction
+                else {}
             ),
             "allowed_primitives": sorted(ALLOWED_QUESTION_PRIMITIVES),
             "allowed_delta_types": [

@@ -55,6 +55,7 @@ from services.reasoning.sage.affordances.repo import AffordanceProfilesRepo
 from services.reasoning.sage.discovery.negative_memory_repo import NegativeMemoryRepo
 from services.reasoning.sage.discovery.shortcuts_repo import DiscoveryShortcutsRepo
 from services.reasoning.sage.discovery.types import NegativeMemory
+from services.reasoning.sage.experience import build_experience_loop_report
 from services.reasoning.sage.inquiry_traces.repo import OutcomeEventsRepo
 from services.reasoning.sage.inquiry_traces.types import OutcomeEventRow
 from services.reasoning.sage.region_summaries.refresh import (
@@ -461,6 +462,72 @@ def _latest_quality_payload(events: Iterable[OutcomeEventRow]) -> dict[str, Any]
     return dict(latest.payload) if latest is not None else {}
 
 
+_EXPERIENCE_POLICY_EFFECT_KEYS = frozenset({
+    "affordance_reinforces",
+    "affordance_decays",
+    "shortcut_creates_or_bumps",
+    "shortcut_decays",
+    "negative_memory_inserts",
+    "question_policy_updates",
+    "region_refreshes",
+    "structural_models_written",
+    "structural_edges_written",
+})
+
+
+def _experience_policy_effects_from_events(
+    events: Iterable[OutcomeEventRow],
+) -> Counter[str]:
+    """Policy effects already applied by Think-side SAGE hooks."""
+    effects: Counter[str] = Counter()
+    for event in events:
+        raw = event.payload.get("policy_effects")
+        if not isinstance(raw, dict):
+            continue
+        for key, value in raw.items():
+            key_text = str(key)
+            if key_text not in _EXPERIENCE_POLICY_EFFECT_KEYS:
+                continue
+            try:
+                amount = int(value or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount > 0:
+                effects[key_text] += amount
+    return effects
+
+
+def _optimizer_experience_loop_report(
+    events: Iterable[OutcomeEventRow],
+    *,
+    affordance_reinforces: int,
+    affordance_decays: int,
+    shortcut_creates_or_bumps: int,
+    shortcut_decays: int,
+    negative_memory_inserts: int,
+    question_policy_updates: int,
+    region_refreshes: int,
+    structural_models_written: int,
+    structural_edges_written: int,
+    canonical_validation_enqueued: int,
+):
+    return build_experience_loop_report(
+        events,
+        policy_effects={
+            "affordance_reinforces": affordance_reinforces,
+            "affordance_decays": affordance_decays,
+            "shortcut_creates_or_bumps": shortcut_creates_or_bumps,
+            "shortcut_decays": shortcut_decays,
+            "negative_memory_inserts": negative_memory_inserts,
+            "question_policy_updates": question_policy_updates,
+            "region_refreshes": region_refreshes,
+            "structural_models_written": structural_models_written,
+            "structural_edges_written": structural_edges_written,
+        },
+        canonical_candidate_count=canonical_validation_enqueued,
+    )
+
+
 # ---------------------------------------------------------------------
 # TopologyOptimizer
 # ---------------------------------------------------------------------
@@ -598,6 +665,7 @@ class TopologyOptimizer:
             useful_paths=useful_path_events,
             conn=conn,
         )
+        event_policy_effects = _experience_policy_effects_from_events(events)
 
         # 4c. Question-policy credit assignment. This is the bridge
         # from writer success back to reader decision quality.
@@ -628,10 +696,45 @@ class TopologyOptimizer:
             session_id=inquiry_session_id,
         ))
 
-        validation_enqueued = await self._enqueue_for_validation(
+        canonical_validation_enqueued = await self._enqueue_for_validation(
             list(merge + split + promote + demote),
             session_id=inquiry_session_id,
             conn=conn,
+        )
+        structural_models_written = int(structural_counts.get("models_written", 0))
+        structural_edges_written = int(structural_counts.get("edges_written", 0))
+        experience_loop = _optimizer_experience_loop_report(
+            events,
+            affordance_reinforces=(
+                reinforces + event_policy_effects["affordance_reinforces"]
+            ),
+            affordance_decays=decays + event_policy_effects["affordance_decays"],
+            shortcut_creates_or_bumps=(
+                shortcut_creates
+                + event_policy_effects["shortcut_creates_or_bumps"]
+            ),
+            shortcut_decays=(
+                shortcut_failures + event_policy_effects["shortcut_decays"]
+            ),
+            negative_memory_inserts=(
+                negmem_inserts + event_policy_effects["negative_memory_inserts"]
+            ),
+            question_policy_updates=(
+                question_policy_updates
+                + event_policy_effects["question_policy_updates"]
+            ),
+            region_refreshes=(
+                region_refreshes + event_policy_effects["region_refreshes"]
+            ),
+            structural_models_written=(
+                structural_models_written
+                + event_policy_effects["structural_models_written"]
+            ),
+            structural_edges_written=(
+                structural_edges_written
+                + event_policy_effects["structural_edges_written"]
+            ),
+            canonical_validation_enqueued=canonical_validation_enqueued,
         )
 
         metrics: dict[str, float] = {
@@ -648,19 +751,19 @@ class TopologyOptimizer:
             "trigger_recognized": float(
                 1.0 if trigger_event in _TRIGGER_TO_REFRESH_REASON else 0.0
             ),
-            "structural_models_written": float(
-                structural_counts.get("models_written", 0)
-            ),
-            "structural_edges_written": float(
-                structural_counts.get("edges_written", 0)
-            ),
+            "structural_models_written": float(structural_models_written),
+            "structural_edges_written": float(structural_edges_written),
             "structural_missing_model_skips": float(
                 structural_counts.get("missing_model_skips", 0)
             ),
             "shortcut_missing_model_skips": float(shortcut_missing_model_skips),
             "question_policy_updates": float(question_policy_updates),
-            "canonical_validation_enqueued": float(validation_enqueued),
+            "canonical_validation_enqueued": float(canonical_validation_enqueued),
+            "experience_event_policy_effects": float(
+                sum(event_policy_effects.values())
+            ),
         }
+        metrics.update(experience_loop.optimizer_metrics())
 
         return OptimizationRunReport(
             inquiry_session_id=inquiry_session_id,
@@ -676,6 +779,7 @@ class TopologyOptimizer:
             canonical_promote_candidates=promote,
             canonical_demote_candidates=demote,
             metrics=metrics,
+            experience_loop=experience_loop.to_dict(),
         )
 
     # ------------------------------------------------------------------

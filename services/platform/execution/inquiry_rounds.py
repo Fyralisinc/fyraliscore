@@ -171,9 +171,19 @@ async def _select_questions_for_round(
     candidate_questions = apply_question_policy(
         candidate_questions,
         question_policy=state.question_policy,
+        company_profile=state.company_learning_profile,
+        primitive_weights=state.cfg.question_primitive_weights,
     )
+    if state.cfg.question_primitive_weights:
+        planning_note["planner_profile_primitive_weights"] = dict(
+            state.cfg.question_primitive_weights
+        )
     if state.question_policy:
         planning_note["policy_stats_applied"] = _question_policy_notes(state)
+    if state.company_learning_profile is not None:
+        planning_note["company_learning_profile_applied"] = (
+            state.company_learning_profile.to_policy_notes(max_priors=12)
+        )
     strong_context_limit, budget_note = _strong_context_question_budget(
         state,
         round_index=round_index,
@@ -278,6 +288,7 @@ def _build_question_read_plan(
             signal_type=trigger.kind,
             subkind=trigger.subkind,
             route_utilities=state.sage_route_utilities,
+            company_profile=state.company_learning_profile,
             shadow=state.cfg.sage_retrieval_policy_shadow_mode,
             semantic_budget_floor=state.cfg.sage_retrieval_policy_semantic_budget_floor,
         )

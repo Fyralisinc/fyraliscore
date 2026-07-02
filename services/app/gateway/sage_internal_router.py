@@ -120,6 +120,7 @@ def build_sage_internal_router() -> APIRouter:
                 "shortcut_decays": report.shortcut_decays,
                 "negative_memory_inserts": report.negative_memory_inserts,
                 "region_refreshes": report.region_refreshes,
+                "question_policy_updates": report.question_policy_updates,
             },
             "canonical_update_candidates": {
                 "merge": list(report.canonical_merge_candidates),
@@ -127,6 +128,7 @@ def build_sage_internal_router() -> APIRouter:
                 "promote": list(report.canonical_promote_candidates),
                 "demote": list(report.canonical_demote_candidates),
             },
+            "experience_loop": report.experience_loop,
             "metrics": report.metrics,
         })
 

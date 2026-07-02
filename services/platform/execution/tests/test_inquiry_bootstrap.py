@@ -6,7 +6,7 @@ import pytest
 
 from services.platform.execution import inquiry, inquiry_bootstrap
 from services.platform.execution.config import InquiryConfig
-from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext
 
 
 class _NoPolicyConn:
@@ -84,3 +84,51 @@ async def test_bootstrap_cold_weak_noop_skips_primary_retrieval(
         if note["stage"] == "primary_retrieve"
     )
     assert primary_note["skipped"] is True
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_passes_company_learning_profile_to_primary_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, object] = {}
+
+    async def _fake_primary_retrieve(
+        trigger: TriggerContext,
+        *_args: object,
+        **kwargs: object,
+    ) -> RetrievalResult:
+        seen["company_profile"] = kwargs.get("company_profile")
+        return RetrievalResult(trigger=trigger)
+
+    monkeypatch.setattr(
+        inquiry_bootstrap,
+        "primary_retrieve",
+        _fake_primary_retrieve,
+    )
+
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=UUID("00000000-0000-0000-0000-000000000001"),
+        seed_natural_text=(
+            "Customer Acme is blocked on contract approval and needs an owner "
+            "decision before renewal closes."
+        ),
+    )
+    state = await inquiry_bootstrap._bootstrap_inquiry_run(
+        trigger=trigger,
+        conn=_NoPolicyConn(),
+        embedder=None,
+        read_pool=None,
+        route=None,
+        mode="deep",
+        top_n=16,
+        config=InquiryConfig(
+            candidate_model_limit=10,
+            result_model_limit=5,
+            max_rounds=0,
+        ),
+    )
+
+    assert seen["company_profile"] is state.company_learning_profile
+    assert state.company_learning_profile is not None
+    assert state.company_learning_profile.notes == ("empty_company_learning_profile",)

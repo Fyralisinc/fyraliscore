@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
@@ -41,6 +41,14 @@ def _env_literal(name: str, default: str, allowed: set[str]) -> str:
     if value in allowed:
         return value
     return default
+
+
+def _env_csv_tuple(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    values = tuple(part.strip() for part in raw.split(",") if part.strip())
+    return values or default
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,10 +120,22 @@ class InquiryConfig:
     sage_retrieval_policy_semantic_budget_floor: int = 8
     persist_full_sage_reader_notes: bool = False
     persist: bool = True
+    planner_profile: str = "default"
+    llm_question_planning_trigger_kinds: tuple[str, ...] = ("T1",)
+    question_primitive_weights: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls) -> "InquiryConfig":
         return cls(
+            planner_profile=os.environ.get(
+                "INQUIRY_PLANNER_PROFILE",
+                "default",
+            ).strip()
+            or "default",
+            llm_question_planning_trigger_kinds=_env_csv_tuple(
+                "INQUIRY_LLM_QUESTION_PLANNING_TRIGGER_KINDS",
+                ("T1",),
+            ),
             max_rounds=int(os.environ.get("INQUIRY_MAX_ROUNDS", "2")),
             questions_per_round=int(os.environ.get("INQUIRY_QUESTIONS_PER_ROUND", "3")),
             evidence_reservoir_limit=int(

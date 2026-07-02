@@ -52,6 +52,105 @@ class RetrievalMotifPenalty:
     returned_observations: int = 0
 
 
+def profile_prior_outcomes_from_result(result: InquiryResult) -> list[dict[str, Any]]:
+    """Summarize whether SAGE profile-shaped actions predicted useful context.
+
+    These rows are diagnostic policy telemetry, not truth. They are designed to
+    be stored in inquiry notes so SAGE can later see whether a profile prior
+    actually led to selected context or aligned with downstream outcome reward.
+    """
+
+    sage_notes = (result.notes or {}).get("sage_reader")
+    if not isinstance(sage_notes, dict):
+        return []
+    policy_actions = sage_notes.get("retrieval_policy_actions")
+    if not isinstance(policy_actions, dict):
+        return []
+
+    timing_by_key: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for note in (result.notes or {}).get("retrieval_action_timings", []) or []:
+        if not isinstance(note, dict):
+            continue
+        question_id = str(note.get("question_id") or "")
+        path = str(note.get("path") or "")
+        target = str(note.get("target") or "")
+        if question_id and path:
+            timing_by_key[(question_id, path, target)] = note
+
+    used_ids = packet_used_evidence_ids(getattr(result, "context_packet", {}) or {})
+    evidence_by_question_path: dict[tuple[str, str], dict[str, int]] = {}
+    for card in getattr(result, "evidence_cards", ()) or ():
+        for question_id in card.retrieved_for_questions:
+            for path in card.retrieval_paths:
+                bucket = evidence_by_question_path.setdefault(
+                    (question_id, path),
+                    {"evidence": 0, "selected": 0},
+                )
+                bucket["evidence"] += 1
+                if str(card.evidence_id) in used_ids:
+                    bucket["selected"] += 1
+
+    outcome_reward = _outcome_reward_from_result_notes(result)
+    out: list[dict[str, Any]] = []
+    for raw_question_id, raw_actions in policy_actions.items():
+        question_id = str(raw_question_id)
+        if not isinstance(raw_actions, list):
+            continue
+        for action_note in raw_actions:
+            if not isinstance(action_note, dict):
+                continue
+            effect = action_note.get("company_profile")
+            if not isinstance(effect, dict):
+                continue
+            path = str(action_note.get("path") or "")
+            target = str(action_note.get("target") or "")
+            timing = timing_by_key.get((question_id, path, target), {})
+            evidence_bucket = evidence_by_question_path.get(
+                (question_id, path),
+                {"evidence": 0, "selected": 0},
+            )
+            skipped = (
+                str(action_note.get("mode") or "") == "skip"
+                or bool(timing.get("skipped"))
+            )
+            selected = int(evidence_bucket.get("selected") or 0)
+            evidence = int(evidence_bucket.get("evidence") or 0)
+            models = safe_int(timing.get("models"))
+            observations = safe_int(timing.get("observations"))
+            returned = bool(timing.get("returned")) or models > 0 or observations > 0
+            score = _safe_float(effect.get("score"))
+            out.append(
+                {
+                    "question_id": question_id,
+                    "path": path,
+                    "target": target,
+                    "prior_kind": str(effect.get("kind") or ""),
+                    "prior_key": str(effect.get("key") or ""),
+                    "prior_score": round(score, 4),
+                    "prior_confidence": round(_safe_float(effect.get("confidence")), 4),
+                    "salience_only": bool(effect.get("salience_only")),
+                    "authority_effect": effect.get("authority_effect", "none"),
+                    "mode": str(action_note.get("mode") or ""),
+                    "skipped": skipped,
+                    "returned": returned,
+                    "returned_models": models,
+                    "returned_observations": observations,
+                    "evidence_count": evidence,
+                    "selected_evidence": selected,
+                    "useful_context": selected > 0,
+                    "outcome_reward": outcome_reward,
+                    "prior_prediction_result": _profile_prior_prediction_result(
+                        score=score,
+                        skipped=skipped,
+                        returned=returned,
+                        selected_evidence=selected,
+                    ),
+                    "canonical_write": False,
+                }
+            )
+    return out
+
+
 async def load_sage_route_utilities(
     conn: asyncpg.Connection,
     trigger: TriggerContext,
@@ -204,6 +303,67 @@ async def learn_sage_route_utilities(
         """,
         [_route_utility_params(trigger.tenant_id, utility) for utility in utilities],
     )
+
+
+async def record_profile_prior_residuals(
+    conn: asyncpg.Connection,
+    result: InquiryResult,
+    trigger: TriggerContext,
+) -> int:
+    """Persist non-canonical residuals for contradicted SAGE profile priors."""
+
+    outcomes = (result.notes or {}).get("sage_profile_prior_outcomes")
+    if not isinstance(outcomes, list):
+        outcomes = profile_prior_outcomes_from_result(result)
+    contradicted = [
+        outcome
+        for outcome in outcomes
+        if isinstance(outcome, dict)
+        and str(outcome.get("prior_prediction_result") or "").startswith("contradicted")
+    ]
+    if not contradicted:
+        return 0
+    table_name = await conn.fetchval(
+        "SELECT to_regclass('public.model_residual_evidence')"
+    )
+    if table_name is None:
+        return 0
+    rows = []
+    for outcome in contradicted:
+        reason = _profile_prior_residual_reason(outcome)
+        rows.append(
+            (
+                uuid7(),
+                trigger.tenant_id,
+                trigger.observation_id,
+                trigger.model_id,
+                "compression_uncertain",
+                _profile_prior_residual_summary(outcome),
+                reason,
+                json.dumps(
+                    {
+                        "source": "sage_profile_prior_outcome",
+                        "canonical_write": False,
+                        "profile_prior_outcome": outcome,
+                    },
+                    default=str,
+                ),
+            )
+        )
+    await conn.executemany(
+        """
+        INSERT INTO model_residual_evidence (
+          id, tenant_id, source_observation_id, model_id,
+          residual_kind, compact_summary, reason, status, metadata
+        ) VALUES (
+          $1, $2, $3, $4,
+          $5, $6, $7, 'open', $8::jsonb
+        )
+        ON CONFLICT DO NOTHING
+        """,
+        rows,
+    )
+    return len(rows)
 
 
 async def decay_sage_route_utilities(
@@ -688,6 +848,7 @@ def _route_utilities_from_inquiry_result(
     trigger: TriggerContext,
 ) -> tuple[SageRouteUtility, ...]:
     by_signature: dict[tuple[str | None, str], list[SageRouteOutcome]] = {}
+    outcome_reward = _outcome_reward_from_result_notes(result)
     question_by_id = {question.question_id: question for question in result.questions}
     action_by_key: dict[tuple[str, str, str], RetrievalAction] = {}
     for action in result.retrieval_actions:
@@ -743,6 +904,7 @@ def _route_utilities_from_inquiry_result(
                     returned=returned,
                     models=models,
                     observations=observations,
+                    outcome_reward=outcome_reward,
                 ),
                 cost_units=_route_cost_units(
                     path,
@@ -756,7 +918,10 @@ def _route_utilities_from_inquiry_result(
         question_primitive=None,
         projection_enabled=True,
     )
-    primary_outcomes = _primary_route_outcomes_from_result_notes(result)
+    primary_outcomes = _primary_route_outcomes_from_result_notes(
+        result,
+        outcome_reward=outcome_reward,
+    )
     if primary_outcomes:
         by_signature.setdefault(
             (primary_signature.question_primitive, primary_signature.signal_type),
@@ -775,6 +940,8 @@ def _route_utilities_from_inquiry_result(
 
 def _primary_route_outcomes_from_result_notes(
     result: InquiryResult,
+    *,
+    outcome_reward: float | None = None,
 ) -> tuple[SageRouteOutcome, ...]:
     outcomes: list[SageRouteOutcome] = []
     for stage_note in (result.notes or {}).get("retrieval_stage_timings", []) or []:
@@ -805,6 +972,7 @@ def _primary_route_outcomes_from_result_notes(
                         returned=not skipped and (models > 0 or observations > 0),
                         models=models,
                         observations=observations,
+                        outcome_reward=outcome_reward,
                     ),
                     cost_units=_route_cost_units(path, elapsed_ms=elapsed_ms, budget=0),
                 )
@@ -827,12 +995,51 @@ def _route_quality_credit(
     returned: bool,
     models: int,
     observations: int,
+    outcome_reward: float | None = None,
 ) -> float:
+    base: float
     if selected > 0:
-        return min(4.0, 0.85 * selected)
-    if returned and (models > 0 or observations > 0):
-        return min(0.35, (models + observations) / 120.0)
-    return -0.15
+        base = min(4.0, 0.85 * selected)
+    elif returned and (models > 0 or observations > 0):
+        base = min(0.35, (models + observations) / 120.0)
+    else:
+        base = -0.15
+    return _shape_route_credit_by_outcome(base, outcome_reward)
+
+
+def _shape_route_credit_by_outcome(
+    base_credit: float,
+    outcome_reward: float | None,
+) -> float:
+    if outcome_reward is None:
+        return base_credit
+    reward = min(1.0, max(0.0, float(outcome_reward)))
+    if base_credit > 0:
+        return (base_credit * (0.25 + 1.5 * reward)) - (0.45 * (1.0 - reward))
+    return base_credit - (0.25 * (1.0 - reward))
+
+
+def _outcome_reward_from_result_notes(result: InquiryResult) -> float | None:
+    notes = result.notes or {}
+    candidates = [
+        notes.get("outcome_reward_features"),
+        notes.get("reward_features"),
+        notes.get("outcome_features"),
+    ]
+    outcome_quality = notes.get("outcome_quality")
+    if isinstance(outcome_quality, dict):
+        candidates.append(outcome_quality.get("reward_features"))
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        value = candidate.get("retrieval_outcome_reward")
+        if value is None:
+            continue
+        try:
+            return min(1.0, max(0.0, float(value)))
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 def _route_cost_units(path: str, *, elapsed_ms: int, budget: int) -> float:
@@ -862,6 +1069,53 @@ def _safe_int(value: Any) -> int:
         return 0
 
 
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _profile_prior_prediction_result(
+    *,
+    score: float,
+    skipped: bool,
+    returned: bool,
+    selected_evidence: int,
+) -> str:
+    if score >= 0:
+        if selected_evidence > 0:
+            return "confirmed_useful_context"
+        if returned:
+            return "weak_unselected_context"
+        return "contradicted_no_context"
+    if skipped or selected_evidence == 0:
+        return "confirmed_suppression"
+    return "contradicted_suppressed_useful_context"
+
+
+def _profile_prior_residual_reason(outcome: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            "sage_profile_prior_contradicted",
+            str(outcome.get("prior_kind") or ""),
+            str(outcome.get("prior_key") or ""),
+            str(outcome.get("question_id") or ""),
+            str(outcome.get("path") or ""),
+            str(outcome.get("prior_prediction_result") or ""),
+        ]
+    )
+
+
+def _profile_prior_residual_summary(outcome: dict[str, Any]) -> str:
+    return (
+        "SAGE profile prior contradicted during retrieval: "
+        f"{outcome.get('prior_kind')}:{outcome.get('prior_key')} "
+        f"on {outcome.get('path')} produced "
+        f"{outcome.get('prior_prediction_result')}."
+    )[:500]
+
+
 def _execute_row_count(status: str) -> int:
     try:
         return int(str(status).split()[-1])
@@ -880,4 +1134,6 @@ __all__ = [
     "load_sage_route_utilities",
     "motif_failure_penalties",
     "penalize_retrieval_motifs",
+    "profile_prior_outcomes_from_result",
+    "record_profile_prior_residuals",
 ]

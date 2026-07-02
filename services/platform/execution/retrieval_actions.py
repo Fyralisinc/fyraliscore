@@ -1342,14 +1342,24 @@ async def _semantic_term_candidate_rescue(
     async def run(
         read_conn: asyncpg.Connection,
     ) -> tuple[list[ModelCandidateHit], dict[str, Any]]:
-        postings_available = await _cached_schema_capability(
+        feature_postings_available = await _cached_schema_capability(
             read_conn,
             schema_capabilities,
-            key="model_semantic_term_postings",
-            query="SELECT to_regclass('public.model_semantic_term_postings')",
+            key="model_representation_feature_postings",
+            query="SELECT to_regclass('public.model_representation_feature_postings')",
         )
+        postings_available = feature_postings_available
         postings_status_column = None
-        if postings_available:
+        if feature_postings_available is True:
+            postings_status_column = True
+        elif feature_postings_available is False:
+            postings_available = await _cached_schema_capability(
+                read_conn,
+                schema_capabilities,
+                key="model_semantic_term_postings",
+                query="SELECT to_regclass('public.model_semantic_term_postings')",
+            )
+        if postings_available and feature_postings_available is not True:
             postings_status_column = await _cached_schema_capability(
                 read_conn,
                 schema_capabilities,
@@ -1374,6 +1384,7 @@ async def _semantic_term_candidate_rescue(
             scope_actors=trigger.scope_actors,
             scope_entities=seed_entities,
             limit=limit,
+            semantic_feature_postings_available=feature_postings_available,
             semantic_postings_available=postings_available,
             semantic_postings_status_column=postings_status_column,
         )
@@ -1408,12 +1419,20 @@ async def _representation_tag_candidate_rescue(
     async def run(
         read_conn: asyncpg.Connection,
     ) -> tuple[list[ModelCandidateHit], dict[str, Any]]:
-        postings_available = await _cached_schema_capability(
+        feature_postings_available = await _cached_schema_capability(
             read_conn,
             schema_capabilities,
-            key="model_representation_tag_postings",
-            query="SELECT to_regclass('public.model_representation_tag_postings')",
+            key="model_representation_feature_postings",
+            query="SELECT to_regclass('public.model_representation_feature_postings')",
         )
+        postings_available = feature_postings_available
+        if feature_postings_available is False:
+            postings_available = await _cached_schema_capability(
+                read_conn,
+                schema_capabilities,
+                key="model_representation_tag_postings",
+                query="SELECT to_regclass('public.model_representation_tag_postings')",
+            )
         return await pathway_b_representation_tag_candidates(
             query_text,
             trigger.tenant_id,
@@ -1422,6 +1441,7 @@ async def _representation_tag_candidate_rescue(
                 trigger.seed_signature if isinstance(trigger.seed_signature, dict) else None
             ),
             limit=limit,
+            representation_feature_postings_available=feature_postings_available,
             representation_postings_available=postings_available,
         )
 
@@ -1454,14 +1474,24 @@ async def _semantic_term_rescue(
     limit = max(1, min(80, int(model_limit) * 2))
 
     async def run(read_conn: asyncpg.Connection) -> PathwayResult:
-        postings_available = await _cached_schema_capability(
+        feature_postings_available = await _cached_schema_capability(
             read_conn,
             schema_capabilities,
-            key="model_semantic_term_postings",
-            query="SELECT to_regclass('public.model_semantic_term_postings')",
+            key="model_representation_feature_postings",
+            query="SELECT to_regclass('public.model_representation_feature_postings')",
         )
+        postings_available = feature_postings_available
         postings_status_column = None
-        if postings_available:
+        if feature_postings_available is True:
+            postings_status_column = True
+        elif feature_postings_available is False:
+            postings_available = await _cached_schema_capability(
+                read_conn,
+                schema_capabilities,
+                key="model_semantic_term_postings",
+                query="SELECT to_regclass('public.model_semantic_term_postings')",
+            )
+        if postings_available and feature_postings_available is not True:
             postings_status_column = await _cached_schema_capability(
                 read_conn,
                 schema_capabilities,
@@ -1488,6 +1518,7 @@ async def _semantic_term_rescue(
             scope_actors=trigger.scope_actors,
             scope_entities=seed_entities,
             limit=limit,
+            semantic_feature_postings_available=feature_postings_available,
             semantic_postings_available=postings_available,
             semantic_postings_status_column=postings_status_column,
         )
@@ -1520,12 +1551,20 @@ async def _representation_tag_rescue(
     limit = max(20, min(120, int(model_limit) * 2))
 
     async def run(read_conn: asyncpg.Connection) -> PathwayResult:
-        postings_available = await _cached_schema_capability(
+        feature_postings_available = await _cached_schema_capability(
             read_conn,
             schema_capabilities,
-            key="model_representation_tag_postings",
-            query="SELECT to_regclass('public.model_representation_tag_postings')",
+            key="model_representation_feature_postings",
+            query="SELECT to_regclass('public.model_representation_feature_postings')",
         )
+        postings_available = feature_postings_available
+        if feature_postings_available is False:
+            postings_available = await _cached_schema_capability(
+                read_conn,
+                schema_capabilities,
+                key="model_representation_tag_postings",
+                query="SELECT to_regclass('public.model_representation_tag_postings')",
+            )
         return await pathway_b_representation_tags(
             query_text,
             trigger.tenant_id,
@@ -1536,6 +1575,7 @@ async def _representation_tag_rescue(
                 else None
             ),
             limit=limit,
+            representation_feature_postings_available=feature_postings_available,
             representation_postings_available=postings_available,
         )
 

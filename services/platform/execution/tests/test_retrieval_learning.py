@@ -91,6 +91,139 @@ def test_retrieval_learning_helpers_keep_legacy_inquiry_identity() -> None:
     )
 
 
+def test_profile_prior_outcomes_track_useful_context_and_outcome_reward() -> None:
+    question = _question()
+    card = _evidence_card(question.question_id)
+    result = SimpleNamespace(
+        questions=(question,),
+        retrieval_actions=(),
+        evidence_cards=(card,),
+        context_packet={
+            "tiers": {
+                "decisive_evidence": [{"evidence_id": str(card.evidence_id)}],
+            }
+        },
+        notes={
+            "outcome_reward_features": {"retrieval_outcome_reward": 0.82},
+            "sage_reader": {
+                "retrieval_policy_actions": {
+                    question.question_id: [
+                        {
+                            "path": "semantic",
+                            "target": "constraint_evidence",
+                            "mode": "preferred",
+                            "company_profile": {
+                                "kind": "source_reliability",
+                                "key": "slack",
+                                "score": 0.54,
+                                "confidence": 0.8,
+                                "salience_only": True,
+                                "authority_effect": "none",
+                            },
+                        }
+                    ]
+                }
+            },
+            "retrieval_action_timings": [
+                {
+                    "question_id": question.question_id,
+                    "path": "semantic",
+                    "target": "constraint_evidence",
+                    "returned": True,
+                    "models": 3,
+                    "observations": 1,
+                }
+            ],
+        },
+    )
+
+    outcomes = retrieval_learning.profile_prior_outcomes_from_result(
+        result  # type: ignore[arg-type]
+    )
+
+    assert outcomes == [
+        {
+            "question_id": question.question_id,
+            "path": "semantic",
+            "target": "constraint_evidence",
+            "prior_kind": "source_reliability",
+            "prior_key": "slack",
+            "prior_score": 0.54,
+            "prior_confidence": 0.8,
+            "salience_only": True,
+            "authority_effect": "none",
+            "mode": "preferred",
+            "skipped": False,
+            "returned": True,
+            "returned_models": 3,
+            "returned_observations": 1,
+            "evidence_count": 1,
+            "selected_evidence": 1,
+            "useful_context": True,
+            "outcome_reward": 0.82,
+            "prior_prediction_result": "confirmed_useful_context",
+            "canonical_write": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_record_profile_prior_residuals_writes_contradicted_prior_only() -> None:
+    trigger = _trigger()
+    calls: list[list[tuple[object, ...]]] = []
+
+    class FakeConn:
+        async def fetchval(self, query, *args):
+            assert "model_residual_evidence" in query
+            return "model_residual_evidence"
+
+        async def executemany(self, query, params):
+            assert "INSERT INTO model_residual_evidence" in query
+            assert "ON CONFLICT DO NOTHING" in query
+            calls.append(list(params))
+
+    result = SimpleNamespace(
+        notes={
+            "sage_profile_prior_outcomes": [
+                {
+                    "question_id": "Q1",
+                    "path": "semantic",
+                    "prior_kind": "source_reliability",
+                    "prior_key": "slack",
+                    "prior_prediction_result": "contradicted_no_context",
+                    "canonical_write": False,
+                },
+                {
+                    "question_id": "Q2",
+                    "path": "semantic",
+                    "prior_kind": "negative_memory",
+                    "prior_key": "semantic",
+                    "prior_prediction_result": "confirmed_suppression",
+                    "canonical_write": False,
+                },
+            ]
+        },
+        evidence_cards=(),
+        context_packet={},
+    )
+
+    count = await retrieval_learning.record_profile_prior_residuals(
+        FakeConn(),  # type: ignore[arg-type]
+        result,  # type: ignore[arg-type]
+        trigger,
+    )
+
+    assert count == 1
+    row = calls[0][0]
+    assert row[1] == trigger.tenant_id
+    assert row[4] == "compression_uncertain"
+    assert "source_reliability:slack" in str(row[5])
+    assert "sage_profile_prior_contradicted" in str(row[6])
+    metadata = json.loads(str(row[7]))
+    assert metadata["canonical_write"] is False
+    assert metadata["source"] == "sage_profile_prior_outcome"
+
+
 @pytest.mark.asyncio
 async def test_load_question_policy_stats_normalizes_rows() -> None:
     tenant_id = uuid4()
@@ -357,6 +490,63 @@ async def test_learn_sage_route_utilities_writes_action_and_primary_outcomes() -
     assert semantic[6] == 1
     assert semantic[11] >= 1
     assert float(semantic[17]) > 0
+
+
+@pytest.mark.asyncio
+async def test_learn_sage_route_utilities_uses_downstream_outcome_reward() -> None:
+    trigger = _trigger()
+    question = _question()
+    card = _evidence_card(question.question_id)
+    calls: list[list[tuple[object, ...]]] = []
+
+    class FakeConn:
+        async def fetchval(self, query, *args):
+            assert "sage_retrieval_route_utilities" in query
+            return "sage_retrieval_route_utilities"
+
+        async def executemany(self, query, params):
+            calls.append(list(params))
+
+    result = SimpleNamespace(
+        session_id=uuid4(),
+        questions=(question,),
+        retrieval_actions=(
+            RetrievalAction(
+                question.question_id,
+                "semantic",
+                "constraint_evidence",
+                budget=30,
+            ),
+        ),
+        evidence_cards=(card,),
+        notes={
+            "outcome_reward_features": {"retrieval_outcome_reward": 0.02},
+            "retrieval_action_timings": [
+                {
+                    "question_id": question.question_id,
+                    "path": "semantic",
+                    "target": "constraint_evidence",
+                    "elapsed_ms": 42,
+                    "returned": True,
+                    "models": 8,
+                    "observations": 1,
+                }
+            ],
+        },
+    )
+
+    await retrieval_learning.learn_sage_route_utilities(
+        FakeConn(),  # type: ignore[arg-type]
+        result,  # type: ignore[arg-type]
+        trigger,
+    )
+
+    semantic = calls[0][0]
+    assert semantic[5] == "semantic"
+    assert semantic[7] == 0
+    assert semantic[11] == 1
+    assert float(semantic[16]) < 0
+    assert float(semantic[17]) < 0.45
 
 
 @pytest.mark.asyncio

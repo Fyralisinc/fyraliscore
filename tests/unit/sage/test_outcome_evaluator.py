@@ -486,6 +486,14 @@ async def test_reward_features_contain_all_expected_keys_within_range(
         "noise_introduced",
         "token_cost",
         "permission_risk",
+        "durable_fate_rate",
+        "selected_context_use",
+        "selected_unused_rate",
+        "validation_drop_rate",
+        "residual_creation_rate",
+        "omitted_later_requested_rate",
+        "token_per_useful_fate",
+        "retrieval_outcome_reward",
     }
     assert set(summary.reward_features.keys()) == expected_keys
     for k, v in summary.reward_features.items():
@@ -500,6 +508,21 @@ async def test_reward_features_contain_all_expected_keys_within_range(
     assert summary.events_by_type.get("outcome_quality_assessed") == 1
     assert summary.quality_signal.primary_bottleneck == "none"
     assert summary.quality_signal.objective_alignment_score > 0.80
+    async with gateway_pool.acquire() as conn:
+        payload = await conn.fetchval(
+            """
+            SELECT payload
+            FROM inquiry_outcome_events
+            WHERE tenant_id = $1
+              AND inquiry_session_id = $2
+              AND event_type = 'outcome_quality_assessed'
+            """,
+            tenant_id,
+            session_id,
+        )
+    assert payload["reward_features"]["retrieval_outcome_reward"] == pytest.approx(
+        summary.reward_features["retrieval_outcome_reward"]
+    )
 
 
 @pytest.mark.asyncio

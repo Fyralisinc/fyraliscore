@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import asdict
-from typing import Any, Callable, Literal
+from dataclasses import asdict, is_dataclass
+from typing import Any, Callable, Literal, Mapping
 
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.synthesis.state_contract import (
@@ -34,9 +34,14 @@ from .types import (
     InquiryQuestion,
     MemoryDecisionCandidate,
     QuestionAnswer,
+    ResidualDebtCard,
     SignalRoute,
     SufficiencyVerdict,
 )
+
+MAX_RESIDUAL_SPINE_ITEMS = 5
+MAX_RESIDUAL_SPINE_TEXT_CHARS = 360
+MAX_RESIDUAL_SPINE_REASON_CHARS = 220
 
 
 def rank_evidence(cards: list[EvidenceCard], *, limit: int) -> list[EvidenceCard]:
@@ -523,6 +528,7 @@ def compile_context_packet(
     *,
     token_budget: int,
     evidence_mode: str = "model_first",
+    residuals: list[ResidualDebtCard | Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     packet_evidence, evidence_policy, answer_required_ids = (
         filter_context_packet_evidence(
@@ -636,6 +642,10 @@ def compile_context_packet(
         unknowns=set(important_unknowns),
         round_index=max((question.round_index for question in questions), default=0),
     )
+    residual_spine, residual_spine_policy = residual_spine_for_packet(
+        residuals or [],
+        token_budget=token_budget,
+    )
     return {
         "signal_summary": compact(trigger_text(trigger), 1000),
         "source_metadata": {
@@ -676,6 +686,7 @@ def compile_context_packet(
             "missing_slots": state_contract.get("missing_slots", []),
             "premise_status": state_contract.get("premise_check", {}).get("status"),
         },
+        "model_residual_spine": residual_spine,
         "tiers": {
             "decisive_evidence": decisive,
             "supporting_evidence_groups": supporting,
@@ -688,6 +699,7 @@ def compile_context_packet(
             "reservoir_evidence_count": len(evidence),
             "packet_evidence_count": len(packet_evidence),
             "evidence_policy": evidence_policy,
+            "residual_spine": residual_spine_policy,
         },
     }
 
@@ -1768,6 +1780,111 @@ def background_summaries(evidence: list[EvidenceCard]) -> list[dict[str, Any]]:
     return out[:8]
 
 
+def residual_spine_for_packet(
+    residuals: list[ResidualDebtCard | Mapping[str, Any]],
+    *,
+    token_budget: int,
+    max_items: int = MAX_RESIDUAL_SPINE_ITEMS,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Compile compact open residuals into a non-canonical packet sidecar."""
+
+    token_cap = min(1200, max(240, int(token_budget or 0) // 20))
+    normalized = [
+        item
+        for item in (_residual_spine_item(raw) for raw in residuals)
+        if item is not None
+    ]
+    normalized.sort(
+        key=lambda item: (
+            str(item.get("residual_kind") or ""),
+            str(item.get("source_observation_id") or ""),
+            str(item.get("residual_id") or ""),
+        )
+    )
+    selected: list[dict[str, Any]] = []
+    used_tokens = 0
+    for item in normalized:
+        if len(selected) >= max(0, int(max_items)):
+            break
+        cost = int(item["token_estimate"])
+        if selected and used_tokens + cost > token_cap:
+            break
+        selected.append(item)
+        used_tokens += cost
+
+    for item in selected:
+        item.pop("token_estimate", None)
+
+    policy = {
+        "mode": "compact_open_residuals",
+        "non_canonical": True,
+        "input_residual_count": len(residuals),
+        "open_residual_count": len(normalized),
+        "packet_residual_count": len(selected),
+        "suppressed_residual_count": max(0, len(normalized) - len(selected)),
+        "token_cap": token_cap,
+        "estimated_tokens_used": used_tokens,
+        "max_items": max_items,
+    }
+    return selected, policy
+
+
+def _residual_spine_item(
+    raw: ResidualDebtCard | Mapping[str, Any],
+) -> dict[str, Any] | None:
+    data = _residual_mapping(raw)
+    status = str(data.get("status") or "open").strip().lower()
+    if status != "open":
+        return None
+    residual_kind = str(data.get("residual_kind") or "").strip()
+    summary = compact(
+        data.get("compact_summary") or data.get("summary") or "",
+        MAX_RESIDUAL_SPINE_TEXT_CHARS,
+    )
+    if not residual_kind or not summary:
+        return None
+    reason = compact(data.get("reason") or "", MAX_RESIDUAL_SPINE_REASON_CHARS)
+    item = {
+        "residual_id": _string_or_none(data.get("residual_id") or data.get("id")),
+        "residual_kind": residual_kind,
+        "status": "open",
+        "source_observation_id": _string_or_none(
+            data.get("source_observation_id") or data.get("observation_id")
+        ),
+        "model_id": _string_or_none(data.get("model_id")),
+        "compact_summary": summary,
+        "reason": reason,
+        "non_canonical": True,
+        "use": (
+            "repair, absorb, reject, or ask a question only through ordinary "
+            "model-layer evidence"
+        ),
+    }
+    item = {key: value for key, value in item.items() if value not in {None, ""}}
+    item["token_estimate"] = estimate_tokens(
+        " ".join(
+            str(item.get(key) or "")
+            for key in ("residual_kind", "compact_summary", "reason", "use")
+        )
+    )
+    return item
+
+
+def _residual_mapping(raw: ResidualDebtCard | Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    if is_dataclass(raw):
+        return asdict(raw)
+    return {}
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 __all__ = [
     "background_summaries",
     "candidate_state_changes",
@@ -1784,6 +1901,7 @@ __all__ = [
     "protected_answer_ref_count",
     "rank_evidence",
     "redundancy_penalty",
+    "residual_spine_for_packet",
     "select_minimal_sufficient_evidence",
     "state_contract_for_context_packet",
 ]

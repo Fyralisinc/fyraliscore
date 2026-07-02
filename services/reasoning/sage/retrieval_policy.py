@@ -17,6 +17,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Literal, Sequence
 from uuid import UUID
 
+from services.reasoning.sage.company_profile.types import CompanyLearningProfile
+
 
 PrimaryPathway = Literal["projection_context", "A", "B", "L", "C", "D", "G"]
 InquiryActionPath = Literal[
@@ -193,6 +195,7 @@ class SageRetrievalPolicy:
     reasons: tuple[str, ...] = ()
     shadow: bool = False
     exploration_rate: float = 0.0
+    profile_effects: tuple[dict[str, Any], ...] = ()
 
     def decision_for(self, path: str) -> SagePathwayDecision | None:
         for decision in self.decisions:
@@ -237,6 +240,7 @@ class SageRetrievalPolicy:
             "reasons": list(self.reasons),
             "decisions": [asdict(decision) for decision in self.decisions],
             "stages": [asdict(stage) for stage in self.stages],
+            "profile_effects": [dict(effect) for effect in self.profile_effects],
         }
 
 
@@ -318,6 +322,7 @@ def plan_primary_retrieval(
     shadow: bool = False,
     exploration_rate: float = 0.0,
     route_utilities: Sequence[SageRouteUtility] | None = None,
+    company_profile: CompanyLearningProfile | None = None,
 ) -> SageRetrievalPolicy:
     """Plan the low-level primary retrievers for a trigger.
 
@@ -403,6 +408,15 @@ def plan_primary_retrieval(
         exploration_rate=exploration_rate,
     )
     reasons.extend(route_reasons)
+    decisions, profile_reasons, profile_effects = _apply_company_profile_to_decisions(
+        signature=signature,
+        decisions=decisions,
+        company_profile=company_profile,
+        shadow=shadow,
+        actor_refs=effective_scope_actors,
+        source_keys=_source_keys_from_trigger(trigger),
+    )
+    reasons.extend(profile_reasons)
     stage_one, stage_two = _stage_paths_for_decisions(decisions, shadow=shadow)
     stages = _build_stages(stage_one, stage_two)
     confidence = _policy_confidence(signature, decisions)
@@ -414,6 +428,7 @@ def plan_primary_retrieval(
         reasons=tuple(dict.fromkeys(reasons)),
         shadow=shadow,
         exploration_rate=exploration_rate,
+        profile_effects=tuple(profile_effects),
     )
 
 
@@ -424,6 +439,7 @@ def adapt_inquiry_actions(
     signal_type: str | None = None,
     subkind: str | None = None,
     route_utilities: Sequence[SageRouteUtility] | None = None,
+    company_profile: CompanyLearningProfile | None = None,
     shadow: bool = False,
     semantic_budget_floor: int = 8,
 ) -> tuple[list[Any], list[dict[str, Any]]]:
@@ -497,6 +513,23 @@ def adapt_inquiry_actions(
                 shadow=shadow,
                 semantic_budget_floor=semantic_budget_floor,
             )
+        profile_effect = _profile_effect_for_path(
+            company_profile,
+            path,
+            signal_type=signature.signal_type,
+            question_primitive=signature.question_primitive,
+        )
+        if profile_effect is not None:
+            mode, stage, budget, reason = _apply_profile_effect_to_action(
+                path=path,
+                mode=mode,
+                stage=stage,
+                budget=budget,
+                reason=reason,
+                profile_effect=profile_effect,
+                shadow=shadow,
+                semantic_budget_floor=semantic_budget_floor,
+            )
         filters.setdefault("_sage_policy_stage", stage)
         filters["_sage_policy_mode"] = mode
         filters["_sage_policy_reason"] = reason
@@ -525,6 +558,7 @@ def adapt_inquiry_actions(
                 "budget": budget,
                 "reason": reason,
                 **({"route_utility": utility_note} if utility_note else {}),
+                **({"company_profile": profile_effect} if profile_effect else {}),
             }
         )
     return adapted, notes
@@ -609,11 +643,7 @@ def route_utilities_from_outcomes(
     for path, bucket in grouped.items():
         attempts = sum(1 for item in bucket if item.admitted and not item.skipped)
         skips = sum(1 for item in bucket if item.skipped or not item.admitted)
-        wins = sum(
-            1
-            for item in bucket
-            if item.selected_evidence > 0 or float(item.quality_credit) > 0
-        )
+        wins = sum(1 for item in bucket if _route_outcome_is_win(item))
         elapsed_values = sorted(
             max(0, int(item.elapsed_ms))
             for item in bucket
@@ -742,6 +772,14 @@ def primary_route_outcomes_from_notes(
             for outcome in outcomes
         ]
     return tuple(outcomes)
+
+
+def _route_outcome_is_win(outcome: SageRouteOutcome) -> bool:
+    if float(outcome.quality_credit) < 0:
+        return False
+    if float(outcome.quality_credit) > 0:
+        return True
+    return outcome.selected_evidence > 0
 
 
 def _plan_dense_semantic(
@@ -900,6 +938,340 @@ def _apply_route_utilities_to_decisions(
         if reason:
             reasons.append(reason)
     return adjusted, list(dict.fromkeys(reasons))
+
+
+def _apply_company_profile_to_decisions(
+    *,
+    signature: SageSignalSignature,
+    decisions: list[SagePathwayDecision],
+    company_profile: CompanyLearningProfile | None,
+    shadow: bool,
+    actor_refs: Sequence[UUID] = (),
+    source_keys: Sequence[str] = (),
+) -> tuple[list[SagePathwayDecision], list[str], list[dict[str, Any]]]:
+    if company_profile is None:
+        return decisions, [], []
+    adjusted: list[SagePathwayDecision] = []
+    reasons: list[str] = []
+    effects: list[dict[str, Any]] = []
+    latent_pattern_effect = _latent_pattern_profile_effect(company_profile)
+    salience_effect = _source_actor_salience_profile_effect(
+        company_profile,
+        actor_refs=actor_refs,
+        source_keys=source_keys,
+    )
+    for decision in decisions:
+        effect = _profile_effect_for_path(
+            company_profile,
+            decision.path,
+            signal_type=signature.signal_type,
+            question_primitive=signature.question_primitive,
+        )
+        if effect is None and decision.path == "D":
+            effect = latent_pattern_effect
+        if effect is None and salience_effect is not None:
+            effect = salience_effect
+        if effect is None:
+            adjusted.append(decision)
+            continue
+        new_decision, reason = _apply_profile_effect_to_primary_decision(
+            decision,
+            profile_effect=effect,
+            shadow=shadow,
+        )
+        adjusted.append(new_decision)
+        effects.append(effect)
+        if reason:
+            reasons.append(reason)
+    return adjusted, list(dict.fromkeys(reasons)), effects
+
+
+def _profile_effect_for_path(
+    company_profile: CompanyLearningProfile | None,
+    path: str,
+    *,
+    signal_type: str | None = None,
+    question_primitive: str | None = None,
+) -> dict[str, Any] | None:
+    if company_profile is None:
+        return None
+    prior = company_profile.best_prior(kind="route", key=path)
+    if prior is not None and prior.confidence >= 0.20:
+        return {
+            "kind": prior.kind,
+            "key": prior.key,
+            "score": round(float(prior.effective_score), 4),
+            "confidence": round(float(prior.confidence), 4),
+            "sample_count": int(prior.sample_count),
+            "source": prior.metadata.get("source", "company_profile"),
+            "canonical_write": False,
+            "authority_effect": "none",
+        }
+    negative = _negative_memory_profile_effect_for_path(
+        company_profile,
+        path,
+        signal_type=signal_type,
+        question_primitive=question_primitive,
+    )
+    if negative is not None:
+        return negative
+    return None
+
+
+def _negative_memory_profile_effect_for_path(
+    company_profile: CompanyLearningProfile,
+    path: str,
+    *,
+    signal_type: str | None,
+    question_primitive: str | None,
+) -> dict[str, Any] | None:
+    aliases = _path_aliases(path)
+    candidates = []
+    for prior in company_profile.priors_for_kind("negative_memory"):
+        prior_path = str(prior.metadata.get("path") or prior.key or "").strip()
+        if prior_path and prior_path not in aliases:
+            continue
+        prior_signal = str(prior.metadata.get("signal_type") or "").strip()
+        if prior_signal and signal_type and prior_signal != signal_type:
+            continue
+        prior_primitive = str(prior.metadata.get("question_primitive") or "").upper()
+        if prior_primitive and question_primitive and prior_primitive != question_primitive:
+            continue
+        if prior.confidence >= 0.20:
+            candidates.append(prior)
+    if not candidates:
+        return None
+    prior = min(candidates, key=lambda item: item.effective_score)
+    return {
+        "kind": prior.kind,
+        "key": prior.key,
+        "score": round(float(prior.effective_score), 4),
+        "confidence": round(float(prior.confidence), 4),
+        "sample_count": int(prior.sample_count),
+        "path": prior.metadata.get("path") or path,
+        "memory_type": prior.metadata.get("memory_type"),
+        "source": prior.metadata.get("source", "company_profile"),
+        "canonical_write": False,
+        "authority_effect": "none",
+    }
+
+
+def _source_actor_salience_profile_effect(
+    company_profile: CompanyLearningProfile,
+    *,
+    actor_refs: Sequence[UUID],
+    source_keys: Sequence[str],
+) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    source_key_set = {str(key).strip() for key in source_keys if str(key).strip()}
+    for prior in company_profile.priors_for_kind("source_reliability"):
+        if prior.confidence < 0.20:
+            continue
+        if source_key_set and prior.key not in source_key_set:
+            continue
+        if not source_key_set:
+            continue
+        candidates.append(_salience_effect_from_prior(prior))
+
+    actor_key_set = {str(actor_id) for actor_id in actor_refs}
+    for prior in company_profile.priors_for_kind("actor_reliability"):
+        if prior.confidence < 0.20:
+            continue
+        actor_id = str(prior.metadata.get("actor_id") or "").strip()
+        if actor_id and actor_id in actor_key_set:
+            candidates.append(_salience_effect_from_prior(prior))
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda effect: abs(float(effect["score"])))
+
+
+def _salience_effect_from_prior(prior: Any) -> dict[str, Any]:
+    return {
+        "kind": prior.kind,
+        "key": prior.key,
+        "score": round(float(prior.effective_score), 4),
+        "confidence": round(float(prior.confidence), 4),
+        "sample_count": int(prior.sample_count),
+        "source": prior.metadata.get("source", "company_profile"),
+        "canonical_write": False,
+        "salience_only": True,
+        "authority_effect": "none",
+    }
+
+
+def _latent_pattern_profile_effect(
+    company_profile: CompanyLearningProfile,
+) -> dict[str, Any] | None:
+    latent_priors = company_profile.priors_for_kind("latent_pattern")
+    if not latent_priors:
+        return None
+    best = max(latent_priors, key=lambda prior: prior.effective_score)
+    if best.effective_score < 0.28 or best.confidence < 0.20:
+        return None
+    return {
+        "kind": "latent_pattern",
+        "key": best.key,
+        "score": round(float(best.effective_score), 4),
+        "confidence": round(float(best.confidence), 4),
+        "sample_count": int(best.sample_count),
+        "source": best.metadata.get("source", "company_profile"),
+        "canonical_write": False,
+        "authority_effect": "none",
+    }
+
+
+def _apply_profile_effect_to_primary_decision(
+    decision: SagePathwayDecision,
+    *,
+    profile_effect: dict[str, Any],
+    shadow: bool,
+) -> tuple[SagePathwayDecision, str | None]:
+    score = float(profile_effect.get("score") or 0.0)
+    confidence = float(profile_effect.get("confidence") or 0.0)
+    if confidence < 0.20:
+        return decision, None
+    if profile_effect.get("salience_only") is True:
+        return _apply_salience_effect_to_primary_decision(
+            decision,
+            profile_effect=profile_effect,
+        )
+    reason_suffix = (
+        f"company_profile(kind={profile_effect.get('kind')},"
+        f"score={score:.3f},confidence={confidence:.3f})"
+    )
+    if score >= 0.22:
+        mode: PolicyMode = "preferred" if decision.mode != "required" else "required"
+        stage = min(decision.stage, 1 if score >= 0.52 else decision.stage)
+        multiplier = max(
+            float(decision.weight_multiplier),
+            1.0 + min(0.35, max(0.0, score) * 0.28),
+        )
+        return (
+            SagePathwayDecision(
+                path=decision.path,
+                mode=mode,
+                stage=stage,
+                budget=decision.budget,
+                weight_multiplier=multiplier,
+                reason=f"{decision.reason}; positive_{reason_suffix}",
+                exploration=decision.exploration,
+            ),
+            "positive_company_profile_promoted_path",
+        )
+    if score <= -0.22 and decision.mode != "required":
+        if shadow:
+            mode = "probe"
+            multiplier = min(float(decision.weight_multiplier), 0.16)
+        else:
+            mode = "skip" if score <= -0.42 else "probe"
+            multiplier = 0.0 if mode == "skip" else 0.25
+        return (
+            SagePathwayDecision(
+                path=decision.path,
+                mode=mode,
+                stage=max(decision.stage, 2),
+                budget=max(1, min(int(decision.budget or 6), 6)),
+                weight_multiplier=multiplier,
+                reason=f"negative_{reason_suffix}",
+                exploration=decision.exploration,
+            ),
+            "negative_company_profile_suppressed_path",
+        )
+    return decision, None
+
+
+def _apply_salience_effect_to_primary_decision(
+    decision: SagePathwayDecision,
+    *,
+    profile_effect: dict[str, Any],
+) -> tuple[SagePathwayDecision, str | None]:
+    score = float(profile_effect.get("score") or 0.0)
+    confidence = float(profile_effect.get("confidence") or 0.0)
+    reason_suffix = (
+        f"company_profile_salience(kind={profile_effect.get('kind')},"
+        f"score={score:.3f},confidence={confidence:.3f},authority=none)"
+    )
+    if score >= 0.22:
+        multiplier = max(
+            float(decision.weight_multiplier),
+            1.0 + min(0.18, score * 0.16),
+        )
+        return (
+            SagePathwayDecision(
+                path=decision.path,
+                mode=decision.mode,
+                stage=decision.stage,
+                budget=decision.budget,
+                weight_multiplier=multiplier,
+                reason=f"{decision.reason}; positive_{reason_suffix}",
+                exploration=decision.exploration,
+            ),
+            "source_actor_reliability_raised_salience",
+        )
+    if score <= -0.22:
+        multiplier = min(float(decision.weight_multiplier), max(0.45, 1.0 + score * 0.35))
+        mode = decision.mode
+        if mode == "preferred":
+            mode = "probe"
+        return (
+            SagePathwayDecision(
+                path=decision.path,
+                mode=mode,
+                stage=max(decision.stage, 2 if mode == "probe" else decision.stage),
+                budget=decision.budget,
+                weight_multiplier=multiplier,
+                reason=f"{decision.reason}; negative_{reason_suffix}",
+                exploration=decision.exploration,
+            ),
+            "source_actor_reliability_lowered_salience",
+        )
+    return decision, None
+
+
+def _apply_profile_effect_to_action(
+    *,
+    path: str,
+    mode: PolicyMode,
+    stage: int,
+    budget: int,
+    reason: str,
+    profile_effect: dict[str, Any],
+    shadow: bool,
+    semantic_budget_floor: int,
+) -> tuple[PolicyMode, int, int, str]:
+    score = float(profile_effect.get("score") or 0.0)
+    confidence = float(profile_effect.get("confidence") or 0.0)
+    if confidence < 0.20:
+        return mode, stage, budget, reason
+    if profile_effect.get("salience_only") is True:
+        reason_suffix = (
+            f"company_profile_salience(path={path},score={score:.3f},"
+            f"confidence={confidence:.3f},authority=none)"
+        )
+        if score >= 0.22:
+            return mode, stage, budget, f"{reason}; positive_{reason_suffix}"
+        if score <= -0.22 and mode != "required":
+            return "probe", max(stage, 2), budget, f"{reason}; negative_{reason_suffix}"
+        return mode, stage, budget, reason
+    reason_suffix = (
+        f"company_profile(path={path},score={score:.3f},"
+        f"confidence={confidence:.3f})"
+    )
+    if score >= 0.22:
+        if mode != "required":
+            mode = "preferred"
+        stage = min(stage, 1 if score >= 0.52 else stage)
+        return mode, stage, budget, f"{reason}; positive_{reason_suffix}"
+    if score <= -0.22 and mode != "required":
+        if shadow:
+            mode = "probe"
+            budget = max(semantic_budget_floor, min(budget, 6))
+        else:
+            mode = "skip" if score <= -0.42 else "probe"
+            budget = max(1, min(budget, 6))
+        return mode, max(stage, 2), budget, f"negative_{reason_suffix}"
+    return mode, stage, budget, reason
 
 
 def _apply_route_utility_to_primary_decision(
@@ -1109,6 +1481,50 @@ def _route_utility_note(utility: SageRouteUtility) -> dict[str, Any]:
         "confidence": round(float(utility.confidence), 4),
         "match_score": round(float(utility.match_score), 4),
     }
+
+
+def _path_aliases(path: str) -> set[str]:
+    aliases = {
+        "A": {"A", "structural", "focused_index", "scope"},
+        "B": {"B", "semantic", "dense_semantic", "hybrid_semantic"},
+        "L": {"L", "semantic_terms", "sparse_terms", "lexical"},
+        "C": {"C", "temporal", "freshness"},
+        "D": {"D", "pattern", "pattern_models", "precipitation"},
+        "G": {"G", "model_edge", "graph", "typed_edges"},
+        "projection_context": {"projection_context", "projection"},
+    }
+    return aliases.get(path, {path})
+
+
+def _source_keys_from_trigger(trigger: Any) -> tuple[str, ...]:
+    seed_signature = getattr(trigger, "seed_signature", None)
+    keys: set[str] = set()
+    if isinstance(seed_signature, dict):
+        _collect_source_keys(seed_signature, keys)
+    for attr in ("source_channel", "source_kind", "source", "channel"):
+        value = getattr(trigger, attr, None)
+        if value:
+            keys.add(str(value).strip())
+    return tuple(sorted(key for key in keys if key))
+
+
+def _collect_source_keys(value: Any, out: set[str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if lowered in {
+                "source",
+                "source_key",
+                "source_kind",
+                "source_channel",
+                "channel",
+            } and item:
+                out.add(str(item).strip())
+            elif isinstance(item, (dict, list, tuple)):
+                _collect_source_keys(item, out)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _collect_source_keys(item, out)
 
 
 def _primary_reason(path: str, signature: SageSignalSignature) -> str:

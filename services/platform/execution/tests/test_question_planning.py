@@ -354,12 +354,105 @@ async def test_candidate_questions_for_round_falls_back_when_disabled() -> None:
         "mode": "deterministic_fallback",
         "reason": "disabled_by_config",
         "candidate_count": len(questions),
+        "planner_profile": "default",
+        "llm_question_planning_allowed_for_trigger_kind": True,
+        "llm_question_planning_trigger_kinds": ["T1"],
+        "configured_max_rounds": 2,
+        "configured_questions_per_round": 3,
     }
     assert {question.primitive for question in questions} >= {
         "COUNTEREVIDENCE",
         "DEPENDENCY",
         "OWNERSHIP",
     }
+
+
+@pytest.mark.asyncio
+async def test_candidate_questions_keeps_default_t4_deterministic() -> None:
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="representation_repair",
+        tenant_id=uuid4(),
+        seed_natural_text="Repair validator dropped a malformed update.",
+    )
+
+    questions, note = await question_planning.candidate_questions_for_round(
+        trigger,
+        RetrievalResult(trigger=trigger),
+        (_hypothesis(),),
+        {},
+        {"valid mutation shape"},
+        llm_provider=object(),  # type: ignore[arg-type]
+        config=InquiryConfig(),
+        round_index=1,
+    )
+
+    assert questions
+    assert note["mode"] == "deterministic_fallback"
+    assert note["reason"] == "llm_planning_disabled_for_trigger_kind"
+    assert note["llm_question_planning_allowed_for_trigger_kind"] is False
+    assert note["llm_question_planning_trigger_kinds"] == ["T1"]
+
+
+@pytest.mark.asyncio
+async def test_candidate_questions_allows_investigative_t4_profile(monkeypatch) -> None:
+    class Provider:
+        config = SimpleNamespace(provider="test", model="planner-test")
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def structured(self, **_kwargs: object):
+            self.calls += 1
+            return LLMInquiryQuestionPlan(
+                rationale="Recurring ownership and counterevidence decide the pattern.",
+                belief_deltas=[],
+                questions=[
+                    LLMInquiryQuestionSpec(
+                        primitive="RECURRENCE",
+                        question="Where has this blocker recurred before?",
+                        retrieval_target="pattern+model_edges",
+                        expected_value=0.92,
+                        expected_cost=0.20,
+                        tests_hypotheses=["H1"],
+                        stop_condition="recurrence found or ruled out",
+                    )
+                ],
+            )
+
+    provider = Provider()
+    monkeypatch.setattr(
+        question_planning,
+        "select_question_planning_provider",
+        lambda selected: selected,
+    )
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="open_question_search",
+        tenant_id=uuid4(),
+        seed_natural_text="Find whether this ownership blocker is a recurring pattern.",
+    )
+
+    questions, note = await question_planning.candidate_questions_for_round(
+        trigger,
+        RetrievalResult(trigger=trigger),
+        (_hypothesis(),),
+        {},
+        {"recurrence"},
+        llm_provider=provider,  # type: ignore[arg-type]
+        config=InquiryConfig(
+            planner_profile="investigative_pattern",
+            llm_question_planning_trigger_kinds=("T4",),
+            utility_governor_enabled=False,
+        ),
+        round_index=1,
+    )
+
+    assert provider.calls == 1
+    assert note["mode"] == "llm"
+    assert note["planner_profile"] == "investigative_pattern"
+    assert note["llm_question_planning_allowed_for_trigger_kind"] is True
+    assert "RECURRENCE" in {question.primitive for question in questions}
 
 
 @pytest.mark.asyncio
@@ -812,3 +905,58 @@ async def test_generate_llm_question_plan_includes_reconstruction_state() -> Non
         "counterevidence",
     ]
     assert provider.payload["recon"]["known_model_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_llm_question_plan_includes_profile_instruction() -> None:
+    class Provider:
+        config = SimpleNamespace(provider="codex", model="gpt-5.3-codex-spark")
+
+        def __init__(self) -> None:
+            self.system = ""
+            self.payload: dict[str, object] = {}
+
+        async def structured(
+            self,
+            *,
+            system: str,
+            user: str,
+            schema: object,
+            **_kwargs: object,
+        ):
+            self.system = system
+            self.payload = json.loads(user)
+            return LLMCompactQuestionPlan(
+                r="Recurrence matters.",
+                d=[],
+                q=[
+                    LLMCompactQuestionSpec(
+                        p="RECURRENCE",
+                        q="Where has this blocker recurred before?",
+                        v=0.9,
+                        c=0.2,
+                    )
+                ],
+            )
+
+    provider = Provider()
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="open_question_search",
+        tenant_id=uuid4(),
+        seed_natural_text="Find whether this ownership blocker is recurring.",
+    )
+
+    await question_planning.generate_llm_question_plan(
+        trigger,
+        RetrievalResult(trigger=trigger),
+        (_hypothesis(),),
+        {},
+        {"recurrence"},
+        llm_provider=provider,
+        config=InquiryConfig(planner_profile="investigative_pattern"),
+    )
+
+    assert "Investigative pattern profile" in provider.system
+    assert provider.payload["planner_profile"] == "investigative_pattern"
+    assert "profile_instruction" in provider.payload

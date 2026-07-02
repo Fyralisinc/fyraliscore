@@ -195,6 +195,15 @@ class _NegativeMemorySignal:
 
 
 @dataclass(frozen=True, slots=True)
+class _ReaderPolicyMemory:
+    shortcut_hits: int
+    contextual_affordance_hits: int
+    negative_memory: _NegativeMemorySignal
+    learned_plan: _LearnedReadPlan
+    stage_started: float
+
+
+@dataclass(frozen=True, slots=True)
 class _ReaderGraphRows:
     candidate_count_before_edge_seed: int
     edge_seed_limit: int
@@ -425,47 +434,20 @@ class SynthesisReader:
         _add_explicit_trigger_models(candidates, trigger)
         _add_substrate_seed_models(candidates, substrate, self._budget)
         stage_started = _mark_reader_stage(timings, "explicit_seed_ms", stage_started)
-        shortcut_hits = await self._activate_from_shortcuts(
-            conn,
-            tenant_id,
-            signature,
-            candidates,
-            degraded_sources,
-        )
-        stage_started = _mark_reader_stage(
-            timings, "shortcut_activation_ms", stage_started
-        )
-        contextual_affordance_hits = await self._activate_from_affordances(
-            conn,
-            tenant_id,
-            primitive,
-            signature,
-            candidates,
-            degraded_sources,
-        )
-        stage_started = _mark_reader_stage(
-            timings, "affordance_activation_ms", stage_started
-        )
-        negative_memory = await self._suppress_from_negative_memory(
-            conn,
-            tenant_id,
-            signature,
-            candidates,
-            degraded_sources,
-        )
-        stage_started = _mark_reader_stage(timings, "negative_memory_ms", stage_started)
-
-        learned_plan = _learned_read_plan(
-            budget=self._budget,
+        policy_memory = await self._activate_policy_memory(
+            conn=conn,
+            tenant_id=tenant_id,
+            trigger=trigger,
+            primitive=primitive,
             signature=signature,
             candidates=candidates,
-            shortcut_hits=shortcut_hits,
-            contextual_affordance_hits=contextual_affordance_hits,
-            negative_memory_count=negative_memory.count,
-            suppressed_count=negative_memory.suppressed_count,
-            explicit_model_count=_explicit_model_count(trigger),
-            substrate_model_count=substrate.model_count if substrate else 0,
+            substrate=substrate,
+            timings=timings,
+            degraded_sources=degraded_sources,
+            stage_started=stage_started,
         )
+        stage_started = policy_memory.stage_started
+        learned_plan = policy_memory.learned_plan
         if learned_plan.abstain_early:
             return _empty_reader_result(
                 question_id=question_id,
@@ -920,6 +902,55 @@ class SynthesisReader:
                 cache[oid] = by_id.get(oid)
             self._cache_stats["observation_misses"] += len(missing)
         return [obs for oid in ids if (obs := cache.get(oid)) is not None]
+
+    async def _activate_policy_memory(
+        self,
+        *,
+        conn: asyncpg.Connection,
+        tenant_id: UUID,
+        trigger: TriggerContext,
+        primitive: str,
+        signature: dict[str, Any],
+        candidates: "_CandidateAccumulator",
+        substrate: SageReadSubstrate | None,
+        timings: dict[str, int],
+        degraded_sources: list[dict[str, Any]],
+        stage_started: float,
+    ) -> _ReaderPolicyMemory:
+        shortcut_hits = await self._activate_from_shortcuts(
+            conn, tenant_id, signature, candidates, degraded_sources,
+        )
+        stage_started = _mark_reader_stage(
+            timings, "shortcut_activation_ms", stage_started,
+        )
+        contextual_affordance_hits = await self._activate_from_affordances(
+            conn, tenant_id, primitive, signature, candidates, degraded_sources,
+        )
+        stage_started = _mark_reader_stage(
+            timings, "affordance_activation_ms", stage_started,
+        )
+        negative_memory = await self._suppress_from_negative_memory(
+            conn, tenant_id, signature, candidates, degraded_sources,
+        )
+        stage_started = _mark_reader_stage(timings, "negative_memory_ms", stage_started)
+        learned_plan = _learned_read_plan(
+            budget=self._budget,
+            signature=signature,
+            candidates=candidates,
+            shortcut_hits=shortcut_hits,
+            contextual_affordance_hits=contextual_affordance_hits,
+            negative_memory_count=negative_memory.count,
+            suppressed_count=negative_memory.suppressed_count,
+            explicit_model_count=_explicit_model_count(trigger),
+            substrate_model_count=substrate.model_count if substrate else 0,
+        )
+        return _ReaderPolicyMemory(
+            shortcut_hits=shortcut_hits,
+            contextual_affordance_hits=contextual_affordance_hits,
+            negative_memory=negative_memory,
+            learned_plan=learned_plan,
+            stage_started=stage_started,
+        )
 
     async def _activate_from_shortcuts(
         self,
