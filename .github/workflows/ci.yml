@@ -246,7 +246,7 @@ jobs:
         run: .venv/bin/pip-audit --local --strict
 
       - name: Scan repository filesystem
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.24.0
         with:
           scan-type: fs
           scan-ref: .
@@ -258,7 +258,7 @@ jobs:
         run: docker build -t fyraliscore-ci:${{ github.sha }} .
 
       - name: Scan container image
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.24.0
         with:
           image-ref: fyraliscore-ci:${{ github.sha }}
           severity: HIGH,CRITICAL
@@ -273,7 +273,7 @@ jobs:
           output-file: fyraliscore-source.spdx.json
 
       - name: Generate image SBOM
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.24.0
         with:
           image-ref: fyraliscore-ci:${{ github.sha }}
           format: cyclonedx

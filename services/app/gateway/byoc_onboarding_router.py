@@ -53,6 +53,12 @@ _ALL_REHEARSAL_SOURCES = {
 _OAUTH_REHEARSAL_SOURCES = {"slack", "github", "discord", "notion"}
 _FORM_REHEARSAL_SOURCES = {"jira", "telegram"}
 _REHEARSAL_SOURCES = _ALL_REHEARSAL_SOURCES
+_SAFE_PROVIDER_ERROR_CODES = {
+    "telegram_connect_failed",
+    "telegram_dialogs_must_be_list",
+    "telegram_missing_api_credentials",
+    "telegram_missing_backfill_session",
+}
 
 _SOURCE_CALLBACK_PATHS = {
     "slack": "/integrations/slack/callback",
@@ -155,10 +161,7 @@ def build_byoc_onboarding_router(
         except UnsupportedOnboardingPlan as exc:
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
-                detail={
-                    "error": "unsupported_onboarding_plan",
-                    "message": str(exc),
-                },
+                detail={"error": "unsupported_onboarding_plan"},
             ) from exc
 
     @router.post("/intents/{intent_id}/design-partner-intake")
@@ -179,15 +182,12 @@ def build_byoc_onboarding_router(
         except UnsupportedOnboardingPlan as exc:
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
-                detail={
-                    "error": "unsupported_onboarding_plan",
-                    "message": str(exc),
-                },
+                detail={"error": "unsupported_onboarding_plan"},
             ) from exc
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"error": "invalid_onboarding_intake", "message": str(exc)},
+                detail={"error": "invalid_onboarding_intake"},
             ) from exc
 
     @router.post("/sources/{source_id}/rehearsal/prepare")
@@ -368,10 +368,7 @@ def build_byoc_onboarding_router(
         except TelegramApiError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail={
-                    "error": getattr(exc, "code", "telegram_connect_failed"),
-                    "message": str(exc),
-                },
+                detail={"error": _bounded_telegram_error_code(exc)},
             ) from exc
         finally:
             await client.aclose()
@@ -466,7 +463,7 @@ def _pool_from_state(request: Request) -> Any:
     if pool is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"error": "gateway_pool_unavailable"},
+            detail={"error": "onboarding_store_unavailable"},
         )
     return pool
 
@@ -482,6 +479,13 @@ def _normalize_rehearsal_source(source_id: str) -> str:
             },
         )
     return source
+
+
+def _bounded_telegram_error_code(exc: Exception) -> str:
+    code = str(getattr(exc, "code", "") or "").strip()
+    if code in _SAFE_PROVIDER_ERROR_CODES:
+        return code
+    return "telegram_connect_failed"
 
 
 async def _prepare_source_rehearsal_response(

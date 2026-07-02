@@ -555,46 +555,46 @@ def check_env_contract(path: Path = DEFAULT_ENV_TEMPLATE) -> list[EnvContractVio
             )
 
         for key, expected in sorted(BYOC_REQUIRED_EXACT_VALUES.items()):
-            entry = values_by_key.get(key)
-            if entry is None:
+            exact_entry = values_by_key.get(key)
+            if exact_entry is None:
                 continue
-            if entry.value != expected:
+            if exact_entry.value != expected:
                 violations.append(
                     EnvContractViolation(
                         path=path,
                         key=key,
-                        line_number=entry.line_number,
-                        message=f"expected {expected!r}, found {entry.value!r}",
+                        line_number=exact_entry.line_number,
+                        message=f"expected {expected!r}, found {exact_entry.value!r}",
                     )
                 )
 
         for key, allowed_values in sorted(BYOC_REQUIRED_ALLOWED_VALUES.items()):
-            entry = values_by_key.get(key)
-            if entry is None:
+            allowed_entry = values_by_key.get(key)
+            if allowed_entry is None:
                 continue
-            if entry.value not in allowed_values:
+            if allowed_entry.value not in allowed_values:
                 allowed = ", ".join(repr(value) for value in sorted(allowed_values))
                 violations.append(
                     EnvContractViolation(
                         path=path,
                         key=key,
-                        line_number=entry.line_number,
+                        line_number=allowed_entry.line_number,
                         message=(
-                            f"expected one of {allowed}; found {entry.value!r}"
+                            f"expected one of {allowed}; found {allowed_entry.value!r}"
                         ),
                     )
                 )
 
         for key in sorted(BYOC_REQUIRED_NONEMPTY_KEYS):
-            entry = values_by_key.get(key)
-            if entry is None:
+            nonempty_entry = values_by_key.get(key)
+            if nonempty_entry is None:
                 continue
-            if not entry.value:
+            if not nonempty_entry.value:
                 violations.append(
                     EnvContractViolation(
                         path=path,
                         key=key,
-                        line_number=entry.line_number,
+                        line_number=nonempty_entry.line_number,
                         message="must not be blank for BYOC production",
                     )
                 )

@@ -44,7 +44,7 @@ from lib.shared.errors import CompanyOSError
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
 
-from services.app.gateway.product_workflow_metrics import (
+from lib.shared.product_workflow_metrics import (
     ProductWorkflowEvent,
     ProductWorkflowOutcome,
     record_product_workflow_event,

@@ -84,6 +84,9 @@ CREATE INDEX IF NOT EXISTS fyralis_onboarding_intents_customer_idx
   ON fyralis_onboarding_intents (customer_id, created_at DESC)
   WHERE customer_id IS NOT NULL;
 
+ALTER TABLE fyralis_onboarding_intents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fyralis_onboarding_intents FORCE ROW LEVEL SECURITY;
+
 CREATE TABLE IF NOT EXISTS fyralis_byoc_deployments (
   deployment_id TEXT PRIMARY KEY CHECK (
     deployment_id ~ '^dep_[A-Za-z0-9][A-Za-z0-9_-]{5,79}$'
@@ -123,6 +126,9 @@ CREATE INDEX IF NOT EXISTS fyralis_byoc_deployments_customer_idx
 
 CREATE INDEX IF NOT EXISTS fyralis_byoc_deployments_tenant_idx
   ON fyralis_byoc_deployments (tenant_id, status);
+
+ALTER TABLE fyralis_byoc_deployments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fyralis_byoc_deployments FORCE ROW LEVEL SECURITY;
 
 CREATE TABLE IF NOT EXISTS fyralis_onboarding_events (
   event_id UUID PRIMARY KEY,

@@ -30,4 +30,7 @@ CREATE INDEX IF NOT EXISTS byoc_control_panel_access_deployment_idx
 CREATE INDEX IF NOT EXISTS byoc_control_panel_access_customer_idx
   ON byoc_control_panel_access_grants (tenant_id, customer_id, deployment_id);
 
+ALTER TABLE byoc_control_panel_access_grants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE byoc_control_panel_access_grants FORCE ROW LEVEL SECURITY;
+
 COMMIT;

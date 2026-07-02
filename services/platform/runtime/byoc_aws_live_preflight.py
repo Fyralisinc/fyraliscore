@@ -13,7 +13,7 @@ import json
 import re
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -867,14 +867,14 @@ def _partition_matches(
 
 
 def _identity_value(
-    field: str,
+    field_name: str,
     dataplane: ByocDataPlaneManifest | None,
     permissions: ByocPermissionsManifest | None,
 ) -> str | None:
     if dataplane is not None:
-        return str(getattr(dataplane, field))
+        return str(getattr(dataplane, field_name))
     if permissions is not None:
-        return str(getattr(permissions, field))
+        return str(getattr(permissions, field_name))
     return None
 
 

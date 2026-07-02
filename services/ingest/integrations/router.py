@@ -21,7 +21,7 @@ from typing import Any, Awaitable, Callable
 from fastapi import APIRouter, Request
 from starlette.responses import Response
 
-from services.app.gateway.product_workflow_metrics import (
+from lib.shared.product_workflow_metrics import (
     ProductWorkflowEvent,
     ProductWorkflowOutcome,
     record_product_workflow_event,

@@ -27,7 +27,6 @@ from services.platform.runtime.byoc_evidence_ledger import (
     ByocDeploymentEvidenceLedger,
     ByocEvidenceEnvelope,
     ByocEvidencePrivacyContract,
-    load_byoc_evidence_ledger,
     load_evidence_envelope,
     validate_evidence_ledger_contract,
 )

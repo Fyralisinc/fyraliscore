@@ -41,7 +41,7 @@ import pytest
 
 from lib.observability import counter, reset_default_for_tests
 from lib.shared.ids import uuid7
-from services.app.gateway.product_workflow_metrics import (
+from lib.shared.product_workflow_metrics import (
     PRODUCT_WORKFLOW_EVENT_OUTCOMES,
     PRODUCT_WORKFLOW_EVENTS,
     PRODUCT_WORKFLOWS,
