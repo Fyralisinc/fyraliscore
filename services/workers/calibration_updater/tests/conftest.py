@@ -88,6 +88,18 @@ async def tx_conn(fresh_db: asyncpg.Pool) -> AsyncGenerator[asyncpg.Connection, 
             await fresh_db.release(conn)
 
 
+async def ensure_tenant(conn: asyncpg.Connection, tenant: uuid.UUID) -> None:
+    await conn.execute(
+        """
+        INSERT INTO tenants (id, name, is_demo)
+        VALUES ($1, $2, TRUE)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        tenant,
+        f"worker-fixture-{tenant}",
+    )
+
+
 # ---------------------------------------------------------------------
 # Actor / observation builders
 # ---------------------------------------------------------------------
@@ -101,6 +113,7 @@ async def insert_actor(
     email: str | None = None,
     actor_type: str = "human_internal",
 ) -> uuid.UUID:
+    await ensure_tenant(conn, tenant)
     aid = uuid7()
     await conn.execute(
         """
@@ -127,6 +140,7 @@ async def insert_observation(
     source_channel: str = "test:signal",
     content_text: str = "test observation",
 ) -> uuid.UUID:
+    await ensure_tenant(conn, tenant)
     oid = uuid7()
     await conn.execute(
         """
@@ -215,6 +229,7 @@ async def insert_model(
 ) -> uuid.UUID:
     import json
 
+    await ensure_tenant(conn, tenant)
     mid = uuid7()
     cfa = confidence_at_assertion if confidence_at_assertion is not None else confidence
     await conn.execute(

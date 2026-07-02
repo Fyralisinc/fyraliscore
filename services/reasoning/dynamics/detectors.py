@@ -342,6 +342,58 @@ _VOLATILE_AUDIT_FIELDS: frozenset[str] = frozenset(
 )
 
 
+_REINFORCEMENT_AUDIT_FIELDS: frozenset[str] = frozenset(
+    {
+        "confidence",
+        "confidence_at_assertion",
+        "confirmed_count",
+        "contested_count",
+        "last_confirmed_at",
+        "signal_readings",
+        "reading_contestable",
+        "supporting_event_ids",
+        "supporting_model_ids",
+        "evidential_weight",
+        "contributing_models",
+        "domain_tags",
+        "semantic_terms",
+        "open_questions",
+        "activation_coefficient",
+    }
+)
+
+
+_IDENTITY_AUDIT_FIELDS: frozenset[str] = frozenset(
+    {
+        "id",
+        "tenant_id",
+        "born_from_event_id",
+        "created_at",
+    }
+)
+
+
+_MISSING_TRANSITION_IGNORED_FIELDS: frozenset[str] = frozenset(
+    {
+        *_VOLATILE_AUDIT_FIELDS,
+        *_REINFORCEMENT_AUDIT_FIELDS,
+        *_IDENTITY_AUDIT_FIELDS,
+    }
+)
+
+
+_FULL_SNAPSHOT_MARKER_FIELDS: frozenset[str] = frozenset(
+    {
+        "id",
+        "tenant_id",
+        "proposition",
+        "natural",
+        "confidence",
+        "status",
+    }
+)
+
+
 @dataclass(frozen=True)
 class MissingTransitionDiscontinuity:
     """Structured payload describing one detected substrate discontinuity.
@@ -399,17 +451,42 @@ def _coerce_state_jsonb(value: Any) -> dict[str, Any]:
 def _material_diff(
     prev_new: dict[str, Any], next_prev: dict[str, Any]
 ) -> tuple[str, ...]:
-    """Return the sorted tuple of fields that differ between the two
-    snapshots, excluding volatile fields. The substrate invariant is
-    `prev_new == next_prev`; any non-volatile diff is a discontinuity."""
-    keys = set(prev_new.keys()) | set(next_prev.keys())
+    """Return material fields that differ between two audit observations.
+
+    Audit events are not all the same shape: model creation records a full
+    snapshot, while most Think/applier updates record only the fields that
+    operation touched. A missing transition can only be inferred across fields
+    both events actually observed, unless both sides are full model snapshots.
+
+    Support/reinforcement fields are intentionally ignored. They describe the
+    evidence history of a memory, not a hidden semantic or lifecycle transition
+    that T3 should ask Think to explain.
+    """
+    prev_keys = set(prev_new.keys())
+    next_keys = set(next_prev.keys())
+    if _is_full_model_snapshot(prev_new) and _is_full_model_snapshot(next_prev):
+        keys = prev_keys | next_keys
+    else:
+        keys = prev_keys & next_keys
     differing: list[str] = []
     for key in keys:
-        if key in _VOLATILE_AUDIT_FIELDS:
+        if key in _MISSING_TRANSITION_IGNORED_FIELDS:
             continue
         if prev_new.get(key) != next_prev.get(key):
             differing.append(key)
     return tuple(sorted(differing))
+
+
+def _is_full_model_snapshot(state: dict[str, Any]) -> bool:
+    """Best-effort discriminator for full Model snapshots.
+
+    The audit table does not carry an explicit full/partial flag. These fields
+    are present in normal `model_state_snapshot` output and absent from sparse
+    update diffs, giving the detector enough structure to avoid comparing a
+    full create snapshot against a later partial update as if missing keys were
+    semantic deletes.
+    """
+    return _FULL_SNAPSHOT_MARKER_FIELDS.issubset(state.keys())
 
 
 def _missing_transition_strength(
@@ -473,10 +550,14 @@ async def _detect_missing_transition_anomalies(
     Excluded by design:
       - `confidence_update` events (confidence-only changes are tracked
         by recurring_update; they're not state discontinuities).
-      - `create` events as the prior in a pair (previous_state is NULL).
-      - Volatile fields (`activation`, `last_retrieved_at`, etc.) — these
-        churn under normal reconsolidation and would otherwise create
+      - Fields absent from the next sparse event after `create`; creation is a
+        full snapshot, while most later updates are partial observations.
+      - Volatile/reinforcement fields (`activation`, `confirmed_count`,
+        `supporting_event_ids`, etc.) — these churn under normal
+        reconsolidation and evidence attachment, and would otherwise create
         false positives.
+      - Non-overlapping sparse snapshots — an absent key in a partial update is
+        "not observed," not a semantic deletion.
     """
     rows = await conn.fetch(
         """

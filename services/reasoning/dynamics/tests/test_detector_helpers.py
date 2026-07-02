@@ -14,6 +14,7 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from services.reasoning.dynamics.detectors import (
+    _MISSING_TRANSITION_IGNORED_FIELDS,
     _VOLATILE_AUDIT_FIELDS,
     _coerce_state_jsonb,
     _material_diff,
@@ -36,8 +37,21 @@ def test_material_diff_ignores_volatile_field(volatile_field: str) -> None:
     assert _material_diff(prev, nxt) == ()
 
 
+@pytest.mark.parametrize(
+    "ignored_field", sorted(_MISSING_TRANSITION_IGNORED_FIELDS)
+)
+def test_material_diff_ignores_non_semantic_field(
+    ignored_field: str,
+) -> None:
+    """Evidence/reinforcement fields must not create T3 missing-transition
+    work. They are support history, not a hidden semantic transition."""
+    prev = {ignored_field: "old", "status": "active"}
+    nxt = {ignored_field: "new", "status": "active"}
+    assert _material_diff(prev, nxt) == ()
+
+
 _key_strategy = st.text(min_size=1, max_size=20).filter(
-    lambda s: s not in _VOLATILE_AUDIT_FIELDS
+    lambda s: s not in _MISSING_TRANSITION_IGNORED_FIELDS
 )
 
 _value_strategy = st.one_of(
@@ -81,24 +95,52 @@ def test_material_diff_self_is_empty(a: dict) -> None:
 
 @settings(max_examples=200)
 @given(
+    key=_key_strategy,
+    old_value=_value_strategy,
+    new_value=_value_strategy,
+)
+def test_material_diff_detects_shared_field_changes(
+    key: str, old_value, new_value
+) -> None:
+    """A semantic key observed on both sides must register when its value
+    changes. This is the core missing-transition signal."""
+    if old_value == new_value:
+        return
+    assert _material_diff({key: old_value}, {key: new_value}) == (key,)
+
+
+@settings(max_examples=200)
+@given(
     a=st.dictionaries(_key_strategy, _value_strategy, min_size=1, max_size=4),
     extra_key=_key_strategy,
     extra_value=_value_strategy,
 )
-def test_material_diff_grows_with_keys(
+def test_material_diff_does_not_compare_sparse_unobserved_keys(
     a: dict, extra_key: str, extra_value
 ) -> None:
-    """Adding a non-volatile key to b that isn't in a (and isn't equal
-    to a's default `None`) must register as a diff."""
+    """Sparse audit snapshots only compare shared observations. A key
+    appearing on one side may simply be outside the other event's touched
+    field set, not an unrecorded mutation."""
     if extra_key in a:
-        return  # property doesn't apply when extra_key overwrites
+        return
     b = {**a, extra_key: extra_value}
-    diff = _material_diff(a, b)
-    if extra_value is None and a.get(extra_key) is None:
-        # Both treat the field as missing/None; not a real diff.
-        assert extra_key not in diff
-    else:
-        assert extra_key in diff
+    assert extra_key not in _material_diff(a, b)
+
+
+def test_material_diff_full_snapshots_detect_semantic_removal() -> None:
+    """When both sides look like full Model snapshots, an absent semantic
+    field is meaningful and should still count."""
+    base = {
+        "id": "model-1",
+        "tenant_id": "tenant-1",
+        "proposition": {"kind": "belief", "assertion": "x"},
+        "natural": "x is true",
+        "confidence": 0.7,
+        "status": "active",
+    }
+    prev = {**base, "evaluate_at": "2026-07-02T00:00:00Z"}
+    nxt = dict(base)
+    assert _material_diff(prev, nxt) == ("evaluate_at",)
 
 
 # ---------------------------------------------------------------------
