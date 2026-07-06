@@ -33,7 +33,7 @@ zeroes the encrypted secrets, writes an audit row.
 
 ## Ingress (live)
 
-`gateway /webhooks/slack` → signature verified
+`gateway /webhooks/slack/events` → signature verified
 ([signatures/slack.py](../../../services/app/webhooks/signatures/slack.py)) → tenant
 resolved → `shadow_write_raw` → `ingestion.raw` (`ingress_kind="webhook"`). In
 `_CUTOVER_ENABLED_PROVIDERS`: flag `ingestion.kafka_path_enabled` TRUE → `202`;

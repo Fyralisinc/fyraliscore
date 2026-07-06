@@ -334,6 +334,7 @@ def test_byoc_source_rehearse_slack_generates_real_setup_files(
     assert "message.channels" in events_manifest
     assert "SLACK_CLIENT_SECRET=" in env_example
     assert "OAUTH_STATE_HMAC_KEY=replace-with" not in env_example
+    assert "OAUTH_STATE_HMAC_KEY=customer-cloud-secret-ref://oauth-state-hmac-key" in env_example
 
 
 def test_byoc_source_rehearse_slack_reports_missing_env_when_apply_requested(
@@ -369,6 +370,7 @@ def test_byoc_source_rehearse_supports_core_provider_set(
     capsys,
 ) -> None:
     expected = {
+        "ashby": ("ashby-connection-checklist.json", "ashby.env.example"),
         "jira": ("jira-provider-setup.json", "jira.env.example"),
         "github": ("fyralis-github-app-manifest.json", "github.env.example"),
         "discord": ("fyralis-discord-app-setup.json", "discord.env.example"),
@@ -473,12 +475,233 @@ def test_byoc_source_autopilot_redacts_credential_ref(
     assert payload["source"] == "slack"
     assert payload["source_count"] == 1
     assert "credential_ref_sha256" in payload["sources"][0]
+    assert payload["sources"][0]["browser_agent"]["source"] == "slack"
+    assert payload["sources"][0]["browser_agent_run"]["source"] == "slack"
     assert "aws-secretsmanager:/fyralis/sources/slack/oauth" not in output
-    assert (tmp_path / "sources" / "slack" / "connection.json").is_file()
+    connection_path = tmp_path / "sources" / "slack" / "connection.json"
+    assert connection_path.is_file()
+    connection = json.loads(connection_path.read_text(encoding="utf-8"))
+    secret_refs_path = tmp_path / "sources" / "slack" / "secret-refs.json"
+    secret_refs_text = secret_refs_path.read_text(encoding="utf-8")
+    secret_refs = json.loads(secret_refs_text)
+    connection_text = connection_path.read_text(encoding="utf-8")
+    assert "credential_ref" not in connection
+    assert "aws-secretsmanager:/fyralis/sources/slack/oauth" not in connection_text
+    assert "aws-secretsmanager:/fyralis/sources/slack/oauth" not in secret_refs_text
+    assert secret_refs["credential_ref_hint"] == (
+        "aws-secretsmanager:/fyralis/sources/slack/[provided]"
+    )
+    assert secret_refs["required_refs"]["bot_token"]["ref_hint"].endswith("/[provided]")
+    assert connection["browser_agent"]["source"] == "slack"
+    assert connection["browser_agent_run"]["source"] == "slack"
+    assert connection["browser_agent_run"]["handoff_url"] == "https://api.slack.com/apps"
+    assert connection["browser_agent_run"]["native_connect"]["kind"] == (
+        "oauth_callback_native_connect"
+    )
+    assert any(
+        action["id"] == "run_native_preflight"
+        for action in connection["browser_agent_run"]["action_queue"]
+    )
+    setup_bundle = connection["browser_agent_run"]["provider_setup_bundle"]
+    assert setup_bundle["kind"] == "slack_app_manifest"
+    assert setup_bundle["native_connect"]["preflight_path"] == (
+        "/integrations/slack/connect/preflight"
+    )
+    assert setup_bundle["oauth_redirect_url"] == (
+        "https://fyralis-ingress.customer.example/integrations/slack/callback"
+    )
+    assert setup_bundle["events_request_url"] == (
+        "https://fyralis-ingress.customer.example/webhooks/slack/events"
+    )
+    assert setup_bundle["browser_dom_plan"]["schema_version"] == (
+        "fyralis.byoc.source.browser_dom_plan.v1"
+    )
+    assert setup_bundle["browser_dom_plan"]["steps"]
+    assert any(
+        action["id"] == "generate_slack_app_manifest"
+        for action in connection["browser_agent_run"]["action_queue"]
+    )
+    assert connection["browser_agent"]["provider_console_url"] == "https://api.slack.com/apps"
     assert (tmp_path / "sources" / "slack" / "provider-setup.json").is_file()
     assert (tmp_path / "sources" / "slack" / "secret-refs.json").is_file()
     assert (tmp_path / "sources" / "slack" / "readiness-receipt.json").is_file()
     assert (tmp_path / "sources" / "slack" / "activation.json").is_file()
+
+    code = main(
+        [
+            "byoc",
+            "source",
+            "browser-agent",
+            "--source",
+            "slack",
+            "--workdir",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    browser_agent = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert browser_agent["schema_version"] == (
+        "fyralis.byoc.source.browser_agent_runner_receipt.v1"
+    )
+    assert browser_agent["source"] == "slack"
+    assert browser_agent["status"] == "waiting_for_admin"
+    assert browser_agent["handoff_url"] == "https://api.slack.com/apps"
+    assert any(
+        action["id"] == "execute_slack_browser_dom_plan"
+        and action["status"] == "ready"
+        for action in browser_agent["action_results"]
+    )
+    assert "fyralis-slack-app-manifest" in json.dumps(
+        browser_agent["generated_artifacts"]
+    )
+    assert "browser-dom-plan" in browser_agent["generated_artifacts"]
+    generated_manifest = (
+        tmp_path
+        / "sources"
+        / "slack"
+        / "browser-agent-provider-setup"
+        / "fyralis-slack-app-manifest.yaml"
+    )
+    generated_events_manifest = (
+        tmp_path
+        / "sources"
+        / "slack"
+        / "browser-agent-provider-setup"
+        / "fyralis-slack-app-events-manifest.yaml"
+    )
+    assert generated_manifest.is_file()
+    assert generated_events_manifest.is_file()
+    generated_dom_plan = (
+        tmp_path
+        / "sources"
+        / "slack"
+        / "browser-agent-provider-setup"
+        / "browser-dom-plan.json"
+    )
+    assert generated_dom_plan.is_file()
+    dom_plan = json.loads(generated_dom_plan.read_text(encoding="utf-8"))
+    assert dom_plan["source"] == "slack"
+    assert any(step["action"] == "paste_or_upload_manifest" for step in dom_plan["steps"])
+    generated_launcher = (
+        tmp_path
+        / "sources"
+        / "slack"
+        / "browser-agent-provider-setup"
+        / "run-provider-browser-agent.sh"
+    )
+    generated_refs = (
+        tmp_path
+        / "sources"
+        / "slack"
+        / "browser-agent-provider-setup"
+        / "customer-cloud-generated-refs.json"
+    )
+    assert generated_launcher.is_file()
+    assert "--execute-browser-dom" in generated_launcher.read_text(encoding="utf-8")
+    assert generated_refs.is_file()
+    refs_payload = json.loads(generated_refs.read_text(encoding="utf-8"))
+    assert refs_payload["raw_secret_values_included"] is False
+    assert "https://fyralis-ingress.customer.example/integrations/slack/callback" in (
+        generated_manifest.read_text(encoding="utf-8")
+    )
+    assert "https://fyralis-ingress.customer.example/webhooks/slack/events" in (
+        generated_events_manifest.read_text(encoding="utf-8")
+    )
+    assert (
+        tmp_path / "sources" / "slack" / "browser-agent-receipt.json"
+    ).is_file()
+
+
+def test_byoc_source_browser_agent_maps_oauth_callback_waiting(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+) -> None:
+    run_path = tmp_path / "slack-run.json"
+    native_payload_path = tmp_path / "native-payload.json"
+    native_payload_path.write_text("{}\n", encoding="utf-8")
+    run_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "fyralis.byoc.source.browser_agent_run.v1",
+                "source": "slack",
+                "state": "waiting_for_admin",
+                "handoff_url": None,
+                "native_connect": {
+                    "kind": "oauth_callback_native_connect",
+                    "preflight_path": "/integrations/slack/connect/preflight",
+                    "finalize_path": "/integrations/slack/connect/finalize",
+                    "payload_fields": ["installation_id"],
+                },
+                "action_queue": [
+                    {
+                        "id": "run_native_finalize",
+                        "owner": "fyralis_agent",
+                        "status": "pending",
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class _Response:
+        status_code = 202
+
+        def json(self):
+            return {
+                "ok": True,
+                "state": "waiting_for_provider_callback",
+                "message": "Provider callback is still pending.",
+            }
+
+    class _Client:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, endpoint, *, json, headers):
+            assert endpoint == "https://gateway.example/integrations/slack/connect/finalize"
+            assert json == {}
+            return _Response()
+
+    monkeypatch.setattr(
+        "services.platform.runtime.source_browser_agent_runner.httpx.AsyncClient",
+        _Client,
+    )
+
+    code = main(
+        [
+            "byoc",
+            "source",
+            "browser-agent",
+            "--source",
+            "slack",
+            "--run-artifact",
+            str(run_path),
+            "--gateway-api-base",
+            "https://gateway.example",
+            "--native-payload",
+            str(native_payload_path),
+            "--execute-native",
+            "--admin-approved",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["status"] == "waiting_for_admin"
+    assert payload["waiting_action_count"] == 1
+    assert payload["action_results"][0]["status"] == "waiting"
+    assert payload["action_results"][0]["detail"] == "Provider callback is still pending."
 
 
 def test_byoc_source_autopilot_uses_preauthorized_ref_manifest(
@@ -567,7 +790,216 @@ def test_byoc_source_autopilot_can_prepare_all_sources(
         "quickbooks",
     }
     assert "aws-secretsmanager:/fyralis/sources" not in output
+    expected_bundle_kinds = {
+        "ashby": "api_token_provider_setup",
+        "aws": "aws_iam_role_setup",
+        "brex": "api_token_provider_setup",
+        "carta": "oauth_provider_setup",
+        "deel": "api_token_provider_setup",
+        "discord": "discord_application_setup",
+        "figma": "api_token_provider_setup",
+        "fireflies": "api_token_provider_setup",
+        "github": "github_app_manifest",
+        "gmail": "google_workspace_dwd_setup",
+        "google-calendar": "google_workspace_dwd_setup",
+        "google-drive": "google_workspace_dwd_setup",
+        "grafana": "api_token_provider_setup",
+        "gusto": "oauth_provider_setup",
+        "hibob": "api_token_provider_setup",
+        "jira": "jira_api_token_webhook_setup",
+        "linkedin": "oauth_provider_setup",
+        "mercury": "api_token_provider_setup",
+        "miro": "api_token_provider_setup",
+        "notion": "notion_integration_setup",
+        "quickbooks": "oauth_provider_setup",
+        "ramp": "api_token_provider_setup",
+        "signal": "local_gateway_session_setup",
+        "slack": "slack_app_manifest",
+        "telegram": "local_gateway_session_setup",
+        "whatsapp": "whatsapp_webhook_setup",
+    }
+    for source_id, expected_kind in expected_bundle_kinds.items():
+        connection = json.loads(
+            (tmp_path / "sources" / source_id / "connection.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        bundle = connection["browser_agent_run"]["provider_setup_bundle"]
+        assert bundle["kind"] == expected_kind
+        assert bundle["kind"] != "generic_provider_setup_contract"
+        assert bundle["artifacts"]
+        assert bundle["browser_tasks"]
+        assert bundle["browser_dom_plan"]["schema_version"] == (
+            "fyralis.byoc.source.browser_dom_plan.v1"
+        )
+        assert bundle["browser_dom_plan"]["steps"]
+        assert any(
+            action["kind"] == "materialize_provider_setup_bundle"
+            for action in bundle["agent_actions"]
+        )
+        assert any(
+            action["kind"] == "materialize_browser_dom_plan"
+            for action in bundle["agent_actions"]
+        )
+    expected_native_sources = {
+        "ashby",
+        "aws",
+        "brex",
+        "carta",
+        "deel",
+        "discord",
+        "figma",
+        "fireflies",
+        "github",
+        "gmail",
+        "google-calendar",
+        "google-drive",
+        "grafana",
+        "gusto",
+        "hibob",
+        "jira",
+        "linkedin",
+        "mercury",
+        "miro",
+        "notion",
+        "quickbooks",
+        "ramp",
+        "signal",
+        "slack",
+        "telegram",
+        "whatsapp",
+    }
+    for source_id in expected_native_sources:
+        connection = json.loads(
+            (tmp_path / "sources" / source_id / "connection.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        native_connect = connection["browser_agent_run"]["native_connect"]
+        assert native_connect["preflight_path"].startswith(
+            f"/integrations/{source_id.replace('-', '_')}/connect/"
+        )
+        assert native_connect["finalize_path"].endswith("/connect/finalize")
+        assert native_connect["payload_fields"]
+        assert any(
+            action["id"] == "run_native_preflight"
+            for action in connection["browser_agent_run"]["action_queue"]
+        )
     assert (tmp_path / "sources" / "slack" / "connection.json").is_file()
+    google_calendar_connection = json.loads(
+        (tmp_path / "sources" / "google-calendar" / "connection.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    discord_connection = json.loads(
+        (tmp_path / "sources" / "discord" / "connection.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    notion_connection = json.loads(
+        (tmp_path / "sources" / "notion" / "connection.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert google_calendar_connection["method"] == "dwd"
+    assert google_calendar_connection["native_connect"]["kind"] == "google_workspace_dwd"
+    assert google_calendar_connection["native_connect"]["preflight_path"] == (
+        "/integrations/google_calendar/connect/preflight"
+    )
+    assert google_calendar_connection["provider_ingress_endpoints"] == []
+    assert google_calendar_connection["browser_agent_run"]["events_request_url"] is None
+    assert "Google Calendar DWD install is poll-only" in json.dumps(
+        google_calendar_connection
+    )
+    assert discord_connection["method"] == "oauth_plus_gateway"
+    assert notion_connection["method"] == "oauth"
+    assert (
+        "https://fyralis-ingress.customer.example/webhooks/notion/events"
+        in notion_connection["provider_ingress_endpoints"]
+    )
+    assert "oauth_client" not in json.dumps(google_calendar_connection)
+    code = main(
+        [
+            "byoc",
+            "source",
+            "browser-agent",
+            "--source",
+            "google-calendar",
+            "--workdir",
+            str(tmp_path),
+            "--gateway-api-base",
+            "https://fyralis-ingress.customer.example",
+            "--json",
+        ]
+    )
+    google_agent = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert google_agent["native_connect_kind"] == "google_workspace_dwd"
+    assert any(
+        action["id"] == "run_native_preflight" and action["status"] == "ready"
+        for action in google_agent["action_results"]
+    )
+    assert (
+        tmp_path / "sources" / "google-calendar" / "browser-agent-receipt.json"
+    ).is_file()
+    code = main(
+        [
+            "byoc",
+            "source",
+            "browser-agent",
+            "--source",
+            "all",
+            "--workdir",
+            str(tmp_path),
+            "--gateway-api-base",
+            "https://fyralis-ingress.customer.example",
+            "--json",
+        ]
+    )
+    browser_agents = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert browser_agents["schema_version"] == (
+        "fyralis.byoc.source.browser_agent_run_set.v1"
+    )
+    assert browser_agents["orchestration_mode"] == "parallel_per_source_browser_agents"
+    assert browser_agents["source_count"] == 26
+    assert browser_agents["waiting_source_count"] >= 1
+    assert browser_agents["automated_action_count"] >= 26
+    assert (
+        tmp_path / "sources" / "latest-browser-agent.json"
+    ).is_file()
+    assert (
+        tmp_path / "sources" / "google-drive" / "browser-agent-receipt.json"
+    ).is_file()
+    assert (
+        tmp_path
+        / "sources"
+        / "google-drive"
+        / "browser-agent-provider-setup"
+        / "fyralis-google-drive-dwd-preflight.json"
+    ).is_file()
+    assert (
+        tmp_path
+        / "sources"
+        / "quickbooks"
+        / "browser-agent-provider-setup"
+        / "fyralis-quickbooks-oauth-setup.json"
+    ).is_file()
+    assert (
+        tmp_path
+        / "sources"
+        / "aws"
+        / "browser-agent-provider-setup"
+        / "fyralis-aws-iam-role-setup.json"
+    ).is_file()
+    for source_id in expected_bundle_kinds:
+        assert (
+            tmp_path
+            / "sources"
+            / source_id
+            / "browser-agent-provider-setup"
+            / "browser-dom-plan.json"
+        ).is_file()
     assert (tmp_path / "sources" / "quickbooks" / "provider-setup.json").is_file()
     assert (tmp_path / "sources" / "aws" / "readiness-receipt.json").is_file()
 

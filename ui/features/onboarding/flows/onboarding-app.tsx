@@ -1,6 +1,5 @@
 "use client";
 
-import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo } from "react";
@@ -33,6 +32,16 @@ export function OnboardingApp({
     const candidate = pathname.split("/").filter(Boolean).at(-1) as
       | StepId
       | undefined;
+    if (
+      candidate === "source-setup" ||
+      candidate === "source-validation" ||
+      candidate === "source-scope" ||
+      candidate === "first-sync" ||
+      candidate === "ingestion-health" ||
+      candidate === "activation"
+    ) {
+      return "source-catalog";
+    }
     return ONBOARDING_STEPS.some((step) => step.id === candidate)
       ? candidate
       : initialStep;
@@ -99,6 +108,10 @@ export function OnboardingApp({
 
   const snapshot = snapshotQuery.data;
   const sourceIdFromRoute = initialSourceId?.trim().toLowerCase();
+  const sourceHubRoute =
+    routeStep === "source-catalog" ||
+    pathname === "/onboarding/sources" ||
+    pathname.startsWith("/onboarding/sources/");
 
   const selectedSource = useMemo(() => {
     const sources = snapshot?.sources ?? [];
@@ -188,21 +201,19 @@ export function OnboardingApp({
   };
 
   return (
-    <main className="min-h-screen bg-background">
-      <OnboardingProgressLine steps={flow.steps} onStepSelect={goTo} />
+    <main className="min-h-screen overflow-x-hidden bg-background">
+      {sourceHubRoute ? null : (
+        <OnboardingProgressLine steps={flow.steps} onStepSelect={goTo} />
+      )}
 
-      <section className="mx-auto max-w-6xl px-5 py-6 md:px-7">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={flow.currentStep.id}
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.18, ease: "easeOut" }}
-          >
-            <StepView stepId={flow.currentStep.id} props={props} />
-          </motion.div>
-        </AnimatePresence>
+      <section
+        className={
+          sourceHubRoute
+            ? "mx-auto w-full min-w-0 max-w-7xl px-5 py-5 md:px-7"
+            : "mx-auto w-full min-w-0 max-w-6xl px-5 py-6 md:px-7"
+        }
+      >
+        <StepView stepId={flow.currentStep.id} props={props} />
       </section>
     </main>
   );

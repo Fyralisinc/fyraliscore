@@ -180,6 +180,7 @@ export type ConnectionMethod =
   | "API token"
   | "Gateway"
   | "IAM role"
+  | "Workspace DWD"
   | "Poll";
 
 export type SourceStatus =
@@ -187,6 +188,7 @@ export type SourceStatus =
   | "draft"
   | "ready"
   | "validating"
+  | "waiting-admin"
   | "connected"
   | "error";
 

@@ -31,10 +31,10 @@ export function OnboardingProgressLine({
 
   return (
     <nav
-      className="overflow-x-auto border-b border-border bg-background/90 px-5 py-4 md:px-7"
+      className="overflow-x-hidden border-b border-border bg-background/90 px-3 py-4 md:px-7"
       aria-label="Onboarding milestones"
     >
-      <ol className="mx-auto flex min-w-[42rem] max-w-5xl items-center">
+      <ol className="mx-auto flex min-w-0 max-w-5xl items-center">
         {MILESTONES.map((milestone, index) => {
           const stepIndex = steps.findIndex((step) => step.id === milestone.id);
           const step = steps[stepIndex];
@@ -44,12 +44,12 @@ export function OnboardingProgressLine({
           const disabled = !step || step.state === "locked";
 
           return (
-            <li key={milestone.id} className="flex flex-1 items-center last:flex-none">
+            <li key={milestone.id} className="flex min-w-0 flex-1 items-center last:flex-none">
               <button
                 type="button"
                 disabled={disabled}
                 onClick={() => onStepSelect(milestone.id)}
-                className="group grid min-w-16 justify-items-center gap-2 disabled:pointer-events-none disabled:opacity-45"
+                className="group grid min-w-10 justify-items-center gap-2 disabled:pointer-events-none disabled:opacity-45 sm:min-w-16"
               >
                 <span
                   className={cn(
@@ -73,7 +73,7 @@ export function OnboardingProgressLine({
               {index < MILESTONES.length - 1 ? (
                 <span
                   className={cn(
-                    "mx-2 h-px flex-1 bg-border",
+                    "mx-1 h-px min-w-2 flex-1 bg-border sm:mx-2",
                     completed && "bg-success"
                   )}
                   aria-hidden="true"

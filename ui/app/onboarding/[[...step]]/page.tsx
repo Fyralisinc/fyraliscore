@@ -14,9 +14,12 @@ type PageProps = {
 const STEP_ALIASES: Record<string, StepId> = {
   sources: "source-catalog",
   integrations: "source-catalog",
-  "connect-source": "source-setup",
-  "source-connect": "source-setup",
-  "source-automated": "ingestion-health"
+  "connect-source": "source-catalog",
+  "source-connect": "source-catalog",
+  "source-automated": "source-catalog",
+  "first-sync": "source-catalog",
+  "ingestion-health": "source-catalog",
+  activation: "source-catalog"
 };
 
 export function generateStaticParams() {
@@ -24,6 +27,12 @@ export function generateStaticParams() {
     ...ONBOARDING_STEPS.map((step) => ({
       step: [step.id]
     })),
+    { step: ["source-setup"] },
+    { step: ["source-validation"] },
+    { step: ["source-scope"] },
+    { step: ["first-sync"] },
+    { step: ["ingestion-health"] },
+    { step: ["activation"] },
     { step: ["sources"] },
     { step: ["sources", "discord"] },
     { step: ["sources", "discord", "automated"] }
@@ -50,10 +59,20 @@ function resolveOnboardingStep(parts: string[] | undefined): StepId {
     return "get-fyralis";
   }
   if (requested === "sources" && parts?.[2] === "automated") {
-    return "ingestion-health";
+    return "source-catalog";
+  }
+  if (
+    requested === "source-setup" ||
+    requested === "source-validation" ||
+    requested === "source-scope" ||
+    requested === "first-sync" ||
+    requested === "ingestion-health" ||
+    requested === "activation"
+  ) {
+    return "source-catalog";
   }
   if (requested === "sources" && parts?.[1]) {
-    return "source-setup";
+    return "source-catalog";
   }
   if (ONBOARDING_STEPS.some((item) => item.id === requested)) {
     return requested as StepId;

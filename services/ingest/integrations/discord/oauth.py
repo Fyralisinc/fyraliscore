@@ -62,6 +62,9 @@ from services.ingest.integrations.slack.oauth import (
     issue_state_token as _generic_issue_state_token,
     verify_and_consume_state as _generic_verify_and_consume_state,
 )
+from services.ingest.integrations.oauth_native_connect import (
+    build_oauth_native_connect_router,
+)
 
 
 log = structlog.get_logger("integrations.discord.oauth")
@@ -180,6 +183,50 @@ async def install_handler(request: Request) -> RedirectResponse:
     return RedirectResponse(
         url=f"{_DISCORD_AUTHORIZE_URL}?{qs}", status_code=302,
     )
+
+
+async def _connect_handoff(
+    tenant_id: UUID,
+    pool: asyncpg.Pool,
+    request: Request,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    client_id = str(body.get("client_id") or os.environ.get("DISCORD_CLIENT_ID") or "").strip()
+    redirect_uri = os.environ.get("DISCORD_REDIRECT_URI", "").strip()
+    missing = [
+        name
+        for name, value in {
+            "DISCORD_CLIENT_ID": client_id,
+            "DISCORD_REDIRECT_URI": redirect_uri,
+            "DISCORD_CLIENT_SECRET": load_app_secret_text_from_env("DISCORD_CLIENT_SECRET"),
+            "DISCORD_APPLICATION_ID": os.environ.get("DISCORD_APPLICATION_ID", ""),
+            "DISCORD_BOT_TOKEN": load_app_secret_text_from_env("DISCORD_BOT_TOKEN"),
+            "WEBHOOK_SECRET_DISCORD": load_app_secret_text_from_env("WEBHOOK_SECRET_DISCORD"),
+        }.items()
+        if not value
+    ]
+    install_url = None
+    if not missing:
+        from urllib.parse import urlencode
+
+        state_token = await issue_state_token(tenant_id, pool)
+        install_url = f"{_DISCORD_AUTHORIZE_URL}?" + urlencode(
+            {
+                "client_id": client_id,
+                "scope": _DISCORD_SCOPES,
+                "permissions": _DISCORD_PERMISSIONS,
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "state": state_token,
+            }
+        )
+    return {
+        "install_url": install_url,
+        "oauth_redirect_url": redirect_uri,
+        "events_request_url": str(body.get("events_request_url") or "").strip() or None,
+        "provider_console_url": "https://discord.com/developers/applications",
+        "missing_configuration": missing,
+    }
 
 
 # ---------------------------------------------------------------------
@@ -623,10 +670,26 @@ async def callback_handler(request: Request) -> Any:
     )
 
 
+router = build_oauth_native_connect_router(
+    source="discord",
+    authorization_mode="oauth_plus_gateway",
+    provider_console_url="https://discord.com/developers/applications",
+    payload_fields=[
+        "guild_id",
+        "application_id",
+        "approved_channel_ids",
+        "oauth_redirect_url",
+        "events_request_url",
+    ],
+    build_handoff=_connect_handoff,
+)
+
+
 __all__ = [
     "short_guild_hash",
     "issue_state_token",
     "verify_and_consume_state",
     "install_handler",
     "callback_handler",
+    "router",
 ]

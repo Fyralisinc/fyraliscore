@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import hashlib
 import json
 import os
-import secrets
+import re
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,16 @@ from services.platform.runtime.byoc_aws_provider_executor import (
 from services.platform.runtime.byoc_permissions import (
     load_byoc_aws_iam_template,
     load_byoc_permissions_manifest,
+)
+from services.platform.runtime.source_browser_agent_recipes import (
+    browser_agent_recipe_for_source,
+)
+from services.platform.runtime.source_browser_agent_runner import (
+    SourceBrowserAgentRunnerInputs,
+    run_source_browser_agent,
+)
+from services.platform.runtime.source_browser_agent_workflow import (
+    build_source_browser_agent_run,
 )
 
 
@@ -144,7 +155,7 @@ REHEARSAL_PROFILES: dict[str, dict[str, Any]] = {
             "OAUTH_STATE_HMAC_KEY",
         ),
         "manual_gate_names": (
-            "github_app_creation_or_update",
+            "github_provider_admin_approval",
             "github_app_installation_approval",
         ),
     },
@@ -182,7 +193,7 @@ REHEARSAL_PROFILES: dict[str, dict[str, Any]] = {
         "needs_public_url": True,
         "install_endpoint": "/integrations/notion/install",
         "callback_path": "/integrations/notion/callback",
-        "webhook_path": "/webhooks/notion",
+        "webhook_path": "/webhooks/notion/events",
         "env": (
             "NOTION_CLIENT_ID",
             "NOTION_CLIENT_SECRET",
@@ -211,19 +222,19 @@ REHEARSAL_PROFILES: dict[str, dict[str, Any]] = {
         "env": (
             "JIRA_BASE_URL",
             "JIRA_ACCOUNT_EMAIL",
-            "JIRA_API_TOKEN",
+            "JIRA_API_TOKEN_REF",
             "JIRA_PROJECT_KEYS",
-            "JIRA_WEBHOOK_SECRET",
+            "JIRA_WEBHOOK_SECRET_REF",
         ),
         "required_env": (
             "JIRA_BASE_URL",
             "JIRA_ACCOUNT_EMAIL",
-            "JIRA_API_TOKEN",
+            "JIRA_API_TOKEN_REF",
         ),
         "manual_gate_names": (
             "jira_api_token_creation",
-            "jira_project_scope_selection",
-            "jira_webhook_registration",
+            "jira_project_scope_admin_approval",
+            "jira_webhook_admin_approval",
         ),
     },
     "telegram": {
@@ -267,6 +278,19 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
         "provider_permissions": ["jobs read", "candidates read", "interviews read"],
         "ingress_paths": ["/webhooks/ashby/{install-id}"],
         "required_refs": ["api_token"],
+        "native_connect": {
+            "kind": "api_token_native_connect",
+            "preflight_path": "/integrations/ashby/connect/preflight",
+            "finalize_path": "/integrations/ashby/connect/finalize",
+            "preflight_payload_fields": ["api_token", "base_url", "org_id"],
+            "payload_fields": [
+                "api_token",
+                "base_url",
+                "org_id",
+                "entities",
+                "webhook_secret",
+            ],
+        },
     },
     "aws": {
         "method": "iam_role",
@@ -275,6 +299,19 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
         "ingress_paths": [],
         "required_refs": ["role_arn"],
         "no_ingress_reason": "Fyralis polls customer-authorized AWS APIs locally.",
+        "native_connect": {
+            "kind": "aws_iam_native_connect",
+            "preflight_path": "/integrations/aws/connect/preflight",
+            "finalize_path": "/integrations/aws/connect/finalize",
+            "payload_fields": [
+                "account_id",
+                "region",
+                "credential_kind",
+                "role_arn",
+                "external_id",
+                "backfill_window_days",
+            ],
+        },
     },
     "brex": {
         "method": "api_token",
@@ -282,6 +319,19 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
         "provider_permissions": ["accounts read", "transactions read", "cards read"],
         "ingress_paths": ["/webhooks/brex"],
         "required_refs": ["api_token", "webhook_secret"],
+        "native_connect": {
+            "kind": "api_token_native_connect",
+            "preflight_path": "/integrations/brex/connect/preflight",
+            "finalize_path": "/integrations/brex/connect/finalize",
+            "preflight_payload_fields": ["api_token", "base_url"],
+            "payload_fields": [
+                "api_token",
+                "base_url",
+                "account_ids",
+                "organization_id",
+                "webhook_secret",
+            ],
+        },
     },
     "carta": {
         "method": "oauth",
@@ -290,6 +340,20 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
         "ingress_paths": [],
         "required_refs": ["oauth_client", "token_ref"],
         "no_ingress_reason": "Carta is poll-only from the customer data plane.",
+        "native_connect": {
+            "kind": "access_token_native_connect",
+            "preflight_path": "/integrations/carta/connect/preflight",
+            "finalize_path": "/integrations/carta/connect/finalize",
+            "payload_fields": [
+                "access_token",
+                "base_url",
+                "issuer_id",
+                "firm_id",
+                "client_secret",
+                "refresh_token",
+                "entities",
+            ],
+        },
     },
     "deel": {
         "method": "api_token",
@@ -297,27 +361,78 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
         "provider_permissions": ["workers read", "contracts read", "payments read"],
         "ingress_paths": ["/webhooks/deel"],
         "required_refs": ["api_token"],
+        "native_connect": {
+            "kind": "api_token_native_connect",
+            "preflight_path": "/integrations/deel/connect/preflight",
+            "finalize_path": "/integrations/deel/connect/finalize",
+            "preflight_payload_fields": ["api_token", "base_url"],
+            "payload_fields": [
+                "api_token",
+                "base_url",
+                "contract_ids",
+                "organization_id",
+                "webhook_secret",
+            ],
+        },
     },
     "discord": {
-        "method": "gateway",
+        "method": "oauth_plus_gateway",
         "default_scopes": ["pilot-guilds", "approved-channels"],
         "provider_permissions": ["bot token", "message content intent", "guild read"],
         "ingress_paths": ["/integrations/discord/callback", "/webhooks/discord"],
         "required_refs": ["bot_token", "signing_secret"],
+        "native_connect": {
+            "kind": "oauth_gateway_native_connect",
+            "preflight_path": "/integrations/discord/connect/preflight",
+            "finalize_path": "/integrations/discord/connect/finalize",
+            "payload_fields": [
+                "guild_id",
+                "application_id",
+                "approved_channel_ids",
+                "oauth_redirect_url",
+                "events_request_url",
+            ],
+        },
     },
     "figma": {
         "method": "api_token",
         "default_scopes": ["team-files", "approved-file-keys"],
         "provider_permissions": ["file read", "team read", "webhook read"],
         "ingress_paths": ["/webhooks/figma"],
-        "required_refs": ["api_token", "webhook_passcode"],
+        "required_refs": ["api_token", "webhook_secret"],
+        "native_connect": {
+            "kind": "api_token_native_connect",
+            "preflight_path": "/integrations/figma/connect/preflight",
+            "finalize_path": "/integrations/figma/connect/finalize",
+            "preflight_payload_fields": ["api_token", "base_url", "team_id"],
+            "payload_fields": [
+                "api_token",
+                "team_id",
+                "base_url",
+                "file_keys",
+                "webhook_id",
+                "webhook_secret",
+            ],
+        },
     },
     "fireflies": {
-        "method": "oauth",
+        "method": "api_token",
         "default_scopes": ["transcripts", "meetings"],
         "provider_permissions": ["transcripts read", "meetings read"],
         "ingress_paths": ["/webhooks/fireflies"],
-        "required_refs": ["oauth_client", "token_ref"],
+        "required_refs": ["api_token", "webhook_secret"],
+        "native_connect": {
+            "kind": "api_token_native_connect",
+            "preflight_path": "/integrations/fireflies/connect/preflight",
+            "finalize_path": "/integrations/fireflies/connect/finalize",
+            "preflight_payload_fields": ["api_token", "base_url"],
+            "payload_fields": [
+                "api_token",
+                "base_url",
+                "workspace_id",
+                "webhook_secret",
+            ],
+        },
     },
     "github": {
         "method": "oauth",
@@ -325,34 +440,102 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
         "provider_permissions": ["repository metadata", "pull requests", "issues", "webhooks"],
         "ingress_paths": ["/integrations/github/callback", "/webhooks/github"],
         "required_refs": ["github_app_private_key", "webhook_secret"],
+        "native_connect": {
+            "kind": "github_app_native_connect",
+            "preflight_path": "/integrations/github/connect/preflight",
+            "finalize_path": "/integrations/github/connect/finalize",
+            "payload_fields": [
+                "installation_id",
+                "organization",
+                "repository_selection",
+                "oauth_redirect_url",
+                "events_request_url",
+            ],
+        },
     },
     "gmail": {
-        "method": "oauth",
-        "default_scopes": ["pilot-mailboxes", "approved-labels"],
-        "provider_permissions": ["gmail.readonly", "pubsub.topics.attachSubscription"],
+        "method": "dwd",
+        "default_scopes": ["gmail.metadata", "approved-mailboxes"],
+        "provider_permissions": [
+            "Domain-Wide Delegation",
+            "gmail.metadata",
+            "directory users/groups read",
+            "pubsub.topics.attachSubscription",
+        ],
         "ingress_paths": ["/webhooks/gmail/pubsub"],
-        "required_refs": ["oauth_client", "token_ref", "pubsub_topic"],
+        "required_refs": ["workspace_domain", "admin_email", "dwd_grant_receipt"],
+        "native_connect": {
+            "kind": "google_workspace_dwd",
+            "preflight_path": "/integrations/gmail/connect/preflight",
+            "finalize_path": "/integrations/gmail/connect/finalize",
+            "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
+            "payload_fields": ["workspace_domain", "admin_email", "scope", "inclusion_spec"],
+            "scope_aliases": ["gmail.metadata"],
+        },
     },
     "google-calendar": {
-        "method": "oauth",
-        "default_scopes": ["pilot-calendars"],
-        "provider_permissions": ["calendar.readonly", "calendar.events.readonly"],
-        "ingress_paths": ["/webhooks/google_calendar/push"],
-        "required_refs": ["oauth_client", "token_ref"],
+        "method": "dwd",
+        "default_scopes": ["calendar.readonly", "pilot-calendars"],
+        "provider_permissions": [
+            "Domain-Wide Delegation",
+            "calendar.readonly",
+            "directory users/groups read",
+        ],
+        "ingress_paths": [],
+        "no_ingress_reason": "Google Calendar DWD install is poll-only; no webhook or push watch is configured.",
+        "required_refs": ["workspace_domain", "admin_email", "dwd_grant_receipt"],
+        "native_connect": {
+            "kind": "google_workspace_dwd",
+            "preflight_path": "/integrations/google_calendar/connect/preflight",
+            "finalize_path": "/integrations/google_calendar/connect/finalize",
+            "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
+            "payload_fields": ["workspace_domain", "admin_email", "scope", "inclusion_spec"],
+            "scope_aliases": ["calendar.readonly"],
+        },
     },
     "google-drive": {
-        "method": "oauth",
-        "default_scopes": ["shared-drives", "approved-folders"],
-        "provider_permissions": ["drive.metadata.readonly", "drive.readonly"],
+        "method": "dwd",
+        "default_scopes": ["drive.readonly", "shared-drives", "approved-folders"],
+        "provider_permissions": [
+            "Domain-Wide Delegation",
+            "drive.readonly",
+            "directory users/groups read",
+        ],
         "ingress_paths": ["/webhooks/google_drive/push"],
-        "required_refs": ["oauth_client", "token_ref"],
+        "required_refs": ["workspace_domain", "admin_email", "dwd_grant_receipt"],
+        "native_connect": {
+            "kind": "google_workspace_dwd",
+            "preflight_path": "/integrations/google_drive/connect/preflight",
+            "finalize_path": "/integrations/google_drive/connect/finalize",
+            "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
+            "payload_fields": [
+                "workspace_domain",
+                "admin_email",
+                "scope",
+                "inclusion_spec",
+                "include_shared_drives",
+            ],
+            "scope_aliases": ["drive.readonly"],
+        },
     },
     "grafana": {
         "method": "api_token",
         "default_scopes": ["dashboards", "alerts", "folders"],
         "provider_permissions": ["dashboards read", "alerts read", "folders read"],
         "ingress_paths": ["/webhooks/grafana/events"],
-        "required_refs": ["service_account_token", "instance_url"],
+        "required_refs": ["service_account_token", "base_url", "webhook_secret"],
+        "native_connect": {
+            "kind": "api_token_native_connect",
+            "preflight_path": "/integrations/grafana/connect/preflight",
+            "finalize_path": "/integrations/grafana/connect/finalize",
+            "preflight_payload_fields": ["base_url", "service_account_token", "org_id"],
+            "payload_fields": [
+                "base_url",
+                "service_account_token",
+                "org_id",
+                "webhook_secret",
+            ],
+        },
     },
     "gusto": {
         "method": "oauth",
@@ -360,13 +543,45 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
         "provider_permissions": ["company read", "employee read", "payroll read"],
         "ingress_paths": ["/webhooks/gusto"],
         "required_refs": ["oauth_client", "token_ref"],
+        "native_connect": {
+            "kind": "access_token_native_connect",
+            "preflight_path": "/integrations/gusto/connect/preflight",
+            "finalize_path": "/integrations/gusto/connect/finalize",
+            "payload_fields": [
+                "company_uuid",
+                "access_token",
+                "base_url",
+                "refresh_token",
+                "webhook_verifier_token",
+                "entities",
+            ],
+        },
     },
     "hibob": {
         "method": "api_token",
         "default_scopes": ["people", "fields", "reports"],
         "provider_permissions": ["people read", "fields read", "reports read"],
         "ingress_paths": ["/webhooks/hibob"],
-        "required_refs": ["service_user_token"],
+        "required_refs": ["service_user_id", "service_user_token"],
+        "native_connect": {
+            "kind": "api_token_native_connect",
+            "preflight_path": "/integrations/hibob/connect/preflight",
+            "finalize_path": "/integrations/hibob/connect/finalize",
+            "preflight_payload_fields": [
+                "company_id",
+                "service_user_id",
+                "service_user_token",
+                "base_url",
+            ],
+            "payload_fields": [
+                "company_id",
+                "service_user_id",
+                "service_user_token",
+                "base_url",
+                "entities",
+                "webhook_secret",
+            ],
+        },
     },
     "jira": {
         "method": "api_token",
@@ -374,6 +589,19 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
         "provider_permissions": ["read:jira-work", "read:jira-user", "webhook registration"],
         "ingress_paths": ["/webhooks/jira/events"],
         "required_refs": ["api_token", "site_url"],
+        "native_connect": {
+            "kind": "jira_api_token_native_connect",
+            "preflight_path": "/integrations/jira/connect/preflight",
+            "finalize_path": "/integrations/jira/connect/finalize",
+            "preflight_payload_fields": ["base_url", "account_email", "api_token"],
+            "payload_fields": [
+                "base_url",
+                "account_email",
+                "api_token",
+                "project_keys",
+                "webhook_secret",
+            ],
+        },
     },
     "linkedin": {
         "method": "poll",
@@ -382,6 +610,19 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
         "ingress_paths": [],
         "required_refs": ["oauth_client", "token_ref"],
         "no_ingress_reason": "LinkedIn is poll-only from the customer data plane.",
+        "native_connect": {
+            "kind": "access_token_native_connect",
+            "preflight_path": "/integrations/linkedin/connect/preflight",
+            "finalize_path": "/integrations/linkedin/connect/finalize",
+            "preflight_payload_fields": ["organization_urn", "access_token", "base_url"],
+            "payload_fields": [
+                "organization_urn",
+                "access_token",
+                "base_url",
+                "refresh_token",
+                "entities",
+            ],
+        },
     },
     "mercury": {
         "method": "api_token",
@@ -389,20 +630,58 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
         "provider_permissions": ["accounts read", "transactions read"],
         "ingress_paths": ["/webhooks/mercury/events"],
         "required_refs": ["api_token", "webhook_secret"],
+        "native_connect": {
+            "kind": "api_token_native_connect",
+            "preflight_path": "/integrations/mercury/connect/preflight",
+            "finalize_path": "/integrations/mercury/connect/finalize",
+            "preflight_payload_fields": ["api_token", "base_url"],
+            "payload_fields": [
+                "api_token",
+                "base_url",
+                "account_ids",
+                "organization_id",
+                "webhook_secret",
+            ],
+        },
     },
     "miro": {
         "method": "api_token",
         "default_scopes": ["team", "approved-boards"],
-        "provider_permissions": ["boards read", "team read", "webhooks"],
-        "ingress_paths": ["/webhooks/miro"],
-        "required_refs": ["api_token", "webhook_secret"],
+        "provider_permissions": ["boards read", "team read"],
+        "ingress_paths": [],
+        "required_refs": ["api_token"],
+        "no_ingress_reason": "Miro is poll-only from the customer data plane; provider webhooks are not configured.",
+        "native_connect": {
+            "kind": "api_token_native_connect",
+            "preflight_path": "/integrations/miro/connect/preflight",
+            "finalize_path": "/integrations/miro/connect/finalize",
+            "preflight_payload_fields": ["api_token", "base_url"],
+            "payload_fields": [
+                "api_token",
+                "base_url",
+                "board_ids",
+            ],
+        },
     },
     "notion": {
-        "method": "api_token",
+        "method": "oauth",
         "default_scopes": ["shared-pages", "shared-databases"],
         "provider_permissions": ["read content", "read users", "database access"],
-        "ingress_paths": ["/integrations/notion/callback", "/webhooks/notion"],
-        "required_refs": ["integration_token"],
+        "ingress_paths": ["/integrations/notion/callback", "/webhooks/notion/events"],
+        "required_refs": ["oauth_client", "token_ref"],
+        "native_connect": {
+            "kind": "oauth_callback_native_connect",
+            "preflight_path": "/integrations/notion/connect/preflight",
+            "finalize_path": "/integrations/notion/connect/finalize",
+            "payload_fields": [
+                "workspace_id",
+                "shared_page_ids",
+                "shared_database_ids",
+                "oauth_redirect_url",
+                "events_request_url",
+                "installation_id",
+            ],
+        },
     },
     "quickbooks": {
         "method": "oauth",
@@ -410,13 +689,54 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
         "provider_permissions": ["accounting read", "company info", "webhooks"],
         "ingress_paths": ["/webhooks/quickbooks/events"],
         "required_refs": ["oauth_client", "token_ref", "realm_id"],
+        "native_connect": {
+            "kind": "access_token_native_connect",
+            "preflight_path": "/integrations/quickbooks/connect/preflight",
+            "finalize_path": "/integrations/quickbooks/connect/finalize",
+            "preflight_payload_fields": ["realm_id", "access_token", "base_url"],
+            "payload_fields": [
+                "realm_id",
+                "access_token",
+                "base_url",
+                "refresh_token",
+                "webhook_verifier_token",
+                "entities",
+            ],
+        },
     },
     "ramp": {
-        "method": "api_token",
-        "default_scopes": ["transactions", "cards", "vendors"],
-        "provider_permissions": ["transactions read", "cards read", "vendors read"],
+        "method": "oauth_client_credentials",
+        "default_scopes": ["transactions", "reimbursements", "cards", "users", "business"],
+        "provider_permissions": [
+            "transactions read",
+            "reimbursements read",
+            "cards read",
+            "users read",
+            "business read",
+        ],
         "ingress_paths": ["/webhooks/ramp"],
-        "required_refs": ["api_token"],
+        "required_refs": ["access_token_or_client_credentials"],
+        "native_connect": {
+            "kind": "ramp_native_connect",
+            "preflight_path": "/integrations/ramp/connect/preflight",
+            "finalize_path": "/integrations/ramp/connect/finalize",
+            "preflight_payload_fields": [
+                "access_token",
+                "client_id",
+                "client_secret",
+                "scopes",
+                "base_url",
+            ],
+            "payload_fields": [
+                "access_token",
+                "client_id",
+                "client_secret",
+                "base_url",
+                "business_id",
+                "entities",
+                "webhook_verifier_token",
+            ],
+        },
     },
     "signal": {
         "method": "gateway",
@@ -425,28 +745,78 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
         "ingress_paths": [],
         "required_refs": ["linked_device_session"],
         "no_ingress_reason": "Linked-device gateway session runs from the customer cloud.",
+        "native_connect": {
+            "kind": "local_session_native_connect",
+            "preflight_path": "/integrations/signal/connect/preflight",
+            "finalize_path": "/integrations/signal/connect/finalize",
+            "payload_fields": [
+                "account_label",
+                "linked_device_session",
+                "backfill_session",
+                "threads",
+            ],
+        },
     },
     "slack": {
         "method": "oauth",
         "default_scopes": ["#leadership", "#finance-ops", "#customer-success"],
-        "provider_permissions": ["channels:history", "groups:history", "team:read", "app_mentions:read"],
+        "provider_permissions": ["channels:history", "groups:history", "users:read", "team:read"],
         "ingress_paths": ["/integrations/slack/callback", "/webhooks/slack/events"],
         "required_refs": ["oauth_client", "bot_token", "signing_secret"],
+        "native_connect": {
+            "kind": "oauth_callback_native_connect",
+            "preflight_path": "/integrations/slack/connect/preflight",
+            "finalize_path": "/integrations/slack/connect/finalize",
+            "payload_fields": [
+                "workspace_id",
+                "approved_channel_ids",
+                "oauth_redirect_url",
+                "events_request_url",
+                "installation_id",
+            ],
+        },
     },
     "telegram": {
         "method": "gateway",
         "default_scopes": ["approved-chats"],
         "provider_permissions": ["api id", "api hash", "approved chats"],
         "ingress_paths": [],
-        "required_refs": ["api_id", "api_hash", "user_session"],
+        "required_refs": ["api_id", "api_hash", "live_session"],
         "no_ingress_reason": "Local MTProto gateway session runs from the customer cloud.",
+        "native_connect": {
+            "kind": "local_session_native_connect",
+            "preflight_path": "/integrations/telegram/connect/preflight",
+            "finalize_path": "/integrations/telegram/connect/finalize",
+            "payload_fields": [
+                "account_label",
+                "api_id",
+                "api_hash",
+                "live_session",
+                "backfill_session",
+                "dialogs",
+            ],
+        },
     },
     "whatsapp": {
         "method": "webhook",
         "default_scopes": ["business-account", "approved-phone-ids"],
         "provider_permissions": ["business account read", "messages webhook", "phone id"],
         "ingress_paths": ["/integrations/whatsapp/webhook"],
-        "required_refs": ["access_token", "webhook_secret", "verify_token"],
+        "required_refs": ["phone_number_id", "app_secret", "verify_token"],
+        "native_connect": {
+            "kind": "whatsapp_native_connect",
+            "preflight_path": "/integrations/whatsapp/connect/preflight",
+            "finalize_path": "/integrations/whatsapp/connect/finalize",
+            "preflight_payload_fields": ["phone_number_id", "app_secret", "verify_token"],
+            "payload_fields": [
+                "phone_number_id",
+                "business_account_id",
+                "display_phone_number",
+                "app_secret",
+                "verify_token",
+                "access_token",
+            ],
+        },
     },
 }
 
@@ -500,6 +870,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_source_validate_command(source_subcommands)
     _add_source_activate_command(source_subcommands)
     _add_source_autopilot_command(source_subcommands)
+    _add_source_browser_agent_command(source_subcommands)
     _add_source_rehearse_command(source_subcommands)
     _add_source_rehearse_slack_command(source_subcommands)
     return parser
@@ -874,6 +1245,47 @@ def _add_source_autopilot_command(subcommands: argparse._SubParsersAction) -> No
     )
     parser.add_argument("--auto-activate", action="store_true")
     parser.set_defaults(handler=_cmd_source_autopilot)
+
+
+def _add_source_browser_agent_command(subcommands: argparse._SubParsersAction) -> None:
+    parser = subcommands.add_parser(
+        "browser-agent",
+        help="Run the customer-cloud browser agent from a source connection artifact.",
+    )
+    _add_common_workdir(parser)
+    parser.add_argument("--source", required=True)
+    parser.add_argument(
+        "--run-artifact",
+        type=Path,
+        help="Path to a browser_agent_run JSON object or source connection artifact.",
+    )
+    parser.add_argument("--gateway-api-base")
+    parser.add_argument("--bearer-token")
+    parser.add_argument("--native-payload", type=Path)
+    parser.add_argument("--execute-native", action="store_true")
+    parser.add_argument("--admin-approved", action="store_true")
+    parser.add_argument("--open-browser", action="store_true")
+    parser.add_argument(
+        "--execute-browser-dom",
+        action="store_true",
+        help="Drive the provider settings page with the BYOC browser DOM agent.",
+    )
+    parser.add_argument(
+        "--interactive-admin",
+        action="store_true",
+        help="Pause in the terminal for provider sign-in, MFA, and approval gates.",
+    )
+    parser.add_argument(
+        "--headless-browser",
+        action="store_true",
+        help="Run the browser DOM agent headless. Default is a visible admin-present browser.",
+    )
+    parser.add_argument("--browser-timeout-s", type=float, default=120.0)
+    parser.add_argument("--browser-slow-mo-ms", type=int, default=0)
+    parser.add_argument("--browser-storage-state", type=Path)
+    parser.add_argument("--timeout-s", type=float, default=10.0)
+    parser.add_argument("--output", type=Path)
+    parser.set_defaults(handler=_cmd_source_browser_agent)
 
 
 def _add_source_rehearse_slack_command(
@@ -1431,6 +1843,105 @@ def _cmd_source_autopilot(args: argparse.Namespace) -> int:
     return _emit(args, payload, f"{requested} source autopilot artifacts written.")
 
 
+def _cmd_source_browser_agent(args: argparse.Namespace) -> int:
+    requested = str(args.source).strip().lower()
+    source_ids = list(SOURCE_PROFILES) if requested == "all" else [requested]
+    invalid = [source_id for source_id in source_ids if source_id not in SOURCE_PROFILES]
+    if invalid:
+        print(f"unsupported source: {', '.join(invalid)}", file=sys.stderr)
+        return 2
+    if len(source_ids) > 1 and args.run_artifact:
+        print("--run-artifact is only valid for one source", file=sys.stderr)
+        return 2
+
+    receipts: list[dict[str, Any]] = []
+    blocked = False
+    for source_id in source_ids:
+        run_artifact = args.run_artifact or _source_connection_path(
+            args.workdir,
+            source_id,
+        )
+        if not run_artifact.is_file():
+            print(f"missing source browser-agent artifact: {run_artifact}", file=sys.stderr)
+            return 2
+
+    try:
+        results = asyncio_run(_run_source_browser_agent_batch(args, source_ids))
+    except Exception as exc:  # noqa: BLE001
+        print(f"source browser-agent failed: {type(exc).__name__}", file=sys.stderr)
+        return 1
+
+    for source_id, receipt_payload in results:
+        try:
+            _write_json(
+                _source_browser_agent_receipt_path(args.workdir, source_id),
+                receipt_payload,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"source browser-agent failed: {type(exc).__name__}", file=sys.stderr)
+            return 1
+        receipts.append(receipt_payload)
+        if receipt_payload.get("status") in {"failed", "blocked"}:
+            blocked = True
+
+    if len(receipts) == 1:
+        payload = receipts[0]
+        output = args.output or _source_browser_agent_receipt_path(
+            args.workdir,
+            source_ids[0],
+        )
+        if args.output:
+            _write_json(output, payload)
+        message = f"Source browser-agent receipt written to {output}"
+    else:
+        payload = _source_browser_agent_stage_payload(requested, receipts)
+        output = args.output or _source_stage_aggregate_path(
+            args.workdir,
+            "browser-agent",
+        )
+        _write_json(output, payload)
+        message = f"Source browser-agent receipts written to {output}"
+
+    emitted = payload if args.json else {"browser_agent_receipt": str(output)}
+    _emit(args, emitted, message)
+    return 1 if blocked else 0
+
+
+async def _run_source_browser_agent_batch(
+    args: argparse.Namespace,
+    source_ids: list[str],
+) -> list[tuple[str, dict[str, Any]]]:
+    return await asyncio.gather(
+        *(_run_source_browser_agent_single(args, source_id) for source_id in source_ids)
+    )
+
+
+async def _run_source_browser_agent_single(
+    args: argparse.Namespace,
+    source_id: str,
+) -> tuple[str, dict[str, Any]]:
+    run_artifact = args.run_artifact or _source_connection_path(args.workdir, source_id)
+    receipt = await run_source_browser_agent(
+        SourceBrowserAgentRunnerInputs(
+            run_path=run_artifact,
+            gateway_api_base=args.gateway_api_base,
+            bearer_token=args.bearer_token,
+            native_payload_path=args.native_payload,
+            execute_native=args.execute_native,
+            admin_approved=args.admin_approved,
+            open_browser=args.open_browser,
+            timeout_s=args.timeout_s,
+            execute_browser_dom=args.execute_browser_dom,
+            browser_headless=args.headless_browser,
+            browser_timeout_s=args.browser_timeout_s,
+            browser_slow_mo_ms=args.browser_slow_mo_ms,
+            browser_storage_state_path=args.browser_storage_state,
+            interactive_admin=args.interactive_admin,
+        )
+    )
+    return source_id, receipt.as_json()
+
+
 def _cmd_source_rehearse_slack(args: argparse.Namespace) -> int:
     setattr(args, "source", "slack")
     setattr(args, "provider_env", args.slack_env)
@@ -1459,9 +1970,12 @@ def _source_rehearsal_profile(source_id: str) -> dict[str, Any]:
 def _generic_rehearsal_kind(method: str) -> str:
     return {
         "api_token": "api_token_connect",
+        "dwd": "google_workspace_dwd",
         "gateway": "local_gateway_session",
         "iam_role": "iam_role_ref",
         "oauth": "oauth_or_preauthorized_ref",
+        "oauth_client_credentials": "oauth_client_credentials_connect",
+        "oauth_plus_gateway": "oauth_plus_local_gateway",
         "poll": "polling_ref",
         "webhook": "webhook_endpoint",
     }.get(method, method)
@@ -1469,6 +1983,103 @@ def _generic_rehearsal_kind(method: str) -> str:
 
 def _source_env_prefix(source_id: str) -> str:
     return source_id.replace("-", "_").upper()
+
+
+def _source_browser_agent_recipe(source_id: str) -> dict[str, Any]:
+    return browser_agent_recipe_for_source(source_id.replace("-", "_"))
+
+
+def asyncio_run(coro):
+    return asyncio.run(coro)
+
+
+def _source_browser_agent_run(
+    args: argparse.Namespace,
+    source_id: str,
+    profile: dict[str, Any],
+    *,
+    preauthorized_refs_present: bool = False,
+    installed: bool = False,
+) -> dict[str, Any]:
+    authorization_mode = getattr(
+        args,
+        "provider_authorization_mode",
+        "customer-owned-ref",
+    )
+    provider_ingress_url = (
+        getattr(args, "provider_ingress_url", None)
+        or getattr(args, "public_url", None)
+        or "https://fyralis-ingress.customer.example"
+    )
+    oauth_redirect_url, events_request_url = _source_browser_agent_ingress_urls(
+        profile,
+        provider_ingress_url=provider_ingress_url,
+    )
+    customer_actions = _source_customer_action_required(
+        profile,
+        authorization_mode=authorization_mode,
+        preauthorized_refs_present=preauthorized_refs_present,
+    )
+    run = build_source_browser_agent_run(
+        source=source_id,
+        recipe=_source_browser_agent_recipe(source_id),
+        installed=installed,
+        human_steps=[
+            {
+                "id": action,
+                "label": _source_human_gate_reason(action),
+                "reason": _source_human_gate_reason(action),
+                "can_agent_complete": False,
+            }
+            for action in customer_actions
+        ],
+        automated_actions=_source_automated_steps(profile),
+        provider_console_url=_source_browser_agent_recipe(source_id).get(
+            "provider_console_url"
+        ),
+        oauth_redirect_url=oauth_redirect_url,
+        events_request_url=events_request_url,
+        finalize_mode="generic_customer_refs",
+        native_connect=profile.get("native_connect"),
+    )
+    return run
+
+
+def _source_browser_agent_ingress_urls(
+    profile: dict[str, Any],
+    *,
+    provider_ingress_url: str,
+) -> tuple[str | None, str | None]:
+    base_url = provider_ingress_url.rstrip("/")
+    paths = [str(path) for path in profile.get("ingress_paths", ()) if str(path)]
+    callback_path = str(profile.get("callback_path") or "")
+    webhook_path = str(profile.get("webhook_path") or "")
+    if not callback_path:
+        callback_path = next((path for path in paths if "callback" in path), "")
+    if not webhook_path:
+        webhook_path = next(
+            (
+                path
+                for path in paths
+                if path != callback_path
+                and any(token in path for token in ("webhook", "events", "pubsub", "push"))
+            ),
+            "",
+        )
+    if not webhook_path and paths and not callback_path:
+        webhook_path = paths[0]
+    return _source_ingress_url(base_url, callback_path), _source_ingress_url(
+        base_url,
+        webhook_path,
+    )
+
+
+def _source_ingress_url(base_url: str, path: str) -> str | None:
+    if not path:
+        return None
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    return f"{base_url}{path if path.startswith('/') else '/' + path}"
 
 
 def _generic_source_env_keys(
@@ -1503,15 +2114,32 @@ def _generic_source_manual_gates(
         f"{source_id}_provider_admin_approval",
         f"{source_id}_scope_selection",
     ]
-    if method in {"api_token", "iam_role", "gateway", "poll", "webhook"}:
+    if method in {
+        "api_token",
+        "dwd",
+        "iam_role",
+        "gateway",
+        "oauth_client_credentials",
+        "poll",
+        "webhook",
+    }:
         gates.append(f"{source_id}_credential_ref_creation")
-    if method == "oauth":
+    if method == "dwd":
+        gates.extend(
+            [
+                f"{source_id}_workspace_dwd_authorization",
+                f"{source_id}_workspace_scope_selection",
+            ]
+        )
+    if method in {"oauth", "oauth_plus_gateway"}:
         gates.extend(
             [
                 f"{source_id}_oauth_app_or_connection_approval",
                 f"{source_id}_oauth_consent",
             ]
         )
+    if method == "oauth_plus_gateway":
+        gates.append(f"{source_id}_gateway_session_authorization")
     if source_profile.get("ingress_paths"):
         gates.append(f"{source_id}_webhook_registration")
     return tuple(dict.fromkeys(gates))
@@ -1612,6 +2240,12 @@ def _cmd_source_rehearse(args: argparse.Namespace) -> int:
         "files": files,
         "provider_env": env_report,
         "install": install_report,
+        "browser_agent": _source_browser_agent_recipe(source_id),
+        "browser_agent_run": _source_browser_agent_run(
+            args,
+            source_id,
+            profile.get("source_profile", SOURCE_PROFILES[source_id]),
+        ),
         "automated": _source_rehearsal_automated_steps(source_id, profile),
         "manual_gates": _source_manual_gates(source_id, profile, public_url=public_url),
         "raw_secret_values_exported": False,
@@ -1695,6 +2329,14 @@ def _run_source_autopilot(
         "provider_authorization_mode": args.provider_authorization_mode,
         "preauthorized_refs_present": preauthorized_refs_present,
         "automation_level": _source_automation_level(profile),
+        "browser_agent": _source_browser_agent_recipe(source_id),
+        "browser_agent_run": _source_browser_agent_run(
+            args,
+            source_id,
+            profile,
+            preauthorized_refs_present=preauthorized_refs_present,
+            installed=bool(activation),
+        ),
         "customer_action_required": _source_customer_action_required(
             profile,
             authorization_mode=args.provider_authorization_mode,
@@ -2054,15 +2696,9 @@ def _generic_source_connection_checklist(
     public_url: str,
 ) -> dict[str, Any]:
     source_profile = profile.get("source_profile", SOURCE_PROFILES[source_id])
-    callback = (
-        f"{public_url}{profile['callback_path']}"
-        if profile.get("callback_path")
-        else None
-    )
-    webhook = (
-        f"{public_url}{profile['webhook_path']}"
-        if profile.get("webhook_path")
-        else None
+    callback, webhook = _source_browser_agent_ingress_urls(
+        profile,
+        provider_ingress_url=public_url,
     )
     return {
         "schema_version": "fyralis.byoc.source.connection_checklist.v1",
@@ -2076,6 +2712,12 @@ def _generic_source_connection_checklist(
         "callback_url": callback,
         "webhook_url": webhook,
         "no_ingress_reason": source_profile.get("no_ingress_reason"),
+        "browser_agent": _source_browser_agent_recipe(source_id),
+        "browser_agent_run": _source_rehearsal_browser_agent_run(
+            source_id,
+            source_profile=source_profile,
+            provider_ingress_url=public_url,
+        ),
         "manual_gates": list(profile.get("manual_gate_names", ())),
         "automation_boundary": (
             "Fyralis generates local artifacts, validates required refs, applies "
@@ -2087,15 +2729,52 @@ def _generic_source_connection_checklist(
     }
 
 
+def _source_rehearsal_browser_agent_run(
+    source_id: str,
+    *,
+    source_profile: dict[str, Any],
+    provider_ingress_url: str,
+) -> dict[str, Any]:
+    oauth_redirect_url, events_request_url = _source_browser_agent_ingress_urls(
+        source_profile,
+        provider_ingress_url=provider_ingress_url,
+    )
+    return build_source_browser_agent_run(
+        source=source_id,
+        recipe=_source_browser_agent_recipe(source_id),
+        human_steps=[
+            {
+                "id": action,
+                "label": _source_human_gate_reason(action),
+                "reason": _source_human_gate_reason(action),
+                "can_agent_complete": False,
+            }
+            for action in _source_customer_action_required(
+                source_profile,
+                authorization_mode="customer-owned-ref",
+                preauthorized_refs_present=False,
+            )
+        ],
+        automated_actions=_source_automated_steps(source_profile),
+        provider_console_url=_source_browser_agent_recipe(source_id).get(
+            "provider_console_url"
+        ),
+        oauth_redirect_url=oauth_redirect_url,
+        events_request_url=events_request_url,
+        finalize_mode="generic_customer_refs",
+        native_connect=source_profile.get("native_connect"),
+    )
+
+
 def _jira_connect_payload(public_url: str) -> dict[str, Any]:
     return {
         "base_url": "${JIRA_BASE_URL}",
         "account_email": "${JIRA_ACCOUNT_EMAIL}",
-        "api_token": "${JIRA_API_TOKEN}",
+        "api_token_ref": "${JIRA_API_TOKEN_REF}",
         "project_keys": "${JIRA_PROJECT_KEYS comma-separated or blank for all}",
-        "webhook_secret": "${JIRA_WEBHOOK_SECRET optional}",
+        "webhook_secret_ref": "${JIRA_WEBHOOK_SECRET_REF optional}",
         "webhook_url": f"{public_url}/webhooks/jira/events",
-        "note": "Submit this to /integrations/jira/connect/finalize from the customer-cloud console after preflight passes.",
+        "note": "Resolve refs inside customer cloud before submitting finalize; do not export raw token values.",
     }
 
 
@@ -2128,7 +2807,7 @@ def _source_env_example(
         elif key.endswith("_WEBHOOK_URL") and profile.get("webhook_path"):
             value = f"{public_url}{profile['webhook_path']}"
         elif key == "OAUTH_STATE_HMAC_KEY":
-            value = secrets.token_hex(32)
+            value = "customer-cloud-secret-ref://oauth-state-hmac-key"
         elif key == "JIRA_PROJECT_KEYS":
             lines.append("# Optional comma-separated Jira project keys.")
         elif key == "TELEGRAM_DIALOGS_JSON":
@@ -2485,8 +3164,8 @@ def _manual_gate_reason(source_id: str, gate_name: str) -> str:
             "belongs to the customer's Slack admin policy."
         ),
         "slack_oauth_consent": "Slack OAuth requires a user/admin approval screen.",
-        "github_app_creation_or_update": (
-            "A GitHub App must be created or updated in the customer's GitHub org."
+        "github_provider_admin_approval": (
+            "A GitHub org admin must approve the generated GitHub App configuration."
         ),
         "github_app_installation_approval": (
             "A GitHub org owner must approve/install the GitHub App on selected repositories."
@@ -2504,6 +3183,12 @@ def _manual_gate_reason(source_id: str, gate_name: str) -> str:
         ),
         "jira_api_token_creation": (
             "A Jira user must create an Atlassian API token for the approved site."
+        ),
+        "jira_project_scope_admin_approval": (
+            "A Jira admin must approve which projects Fyralis may ingest."
+        ),
+        "jira_webhook_admin_approval": (
+            "A Jira admin must approve the generated webhook target for live events."
         ),
         "jira_project_scope_selection": "The customer chooses which Jira projects are in scope.",
         "jira_webhook_registration": (
@@ -2560,7 +3245,7 @@ def _source_rehearsal_automated_steps(
         )
         if profile.get("install_endpoint"):
             steps.append("oauth_install_url_generation")
-    elif profile["kind"] == "api_token_connect":
+    elif profile["kind"] in {"api_token_connect", "oauth_client_credentials_connect"}:
         steps.extend(["connect_payload_generation", "local_env_validation"])
     elif profile["kind"] == "local_gateway_session":
         steps.extend(["session_plan_generation", "local_env_validation"])
@@ -2658,6 +3343,14 @@ def _source_discovery(args: argparse.Namespace, source_id: str) -> dict[str, Any
         "credential_ref_sha256": _sha256(credential_ref),
         "provider_authorization_mode": args.provider_authorization_mode,
         "ref_state": refs_state,
+        "browser_agent": _source_browser_agent_recipe(source_id),
+        "browser_agent_run": _source_browser_agent_run(
+            args,
+            source_id,
+            profile,
+            preauthorized_refs_present=refs_state["required_refs_complete"],
+        ),
+        "native_connect": profile.get("native_connect"),
         "provider_actions": _source_provider_actions(profile),
         "human_gates": human_gates,
         "can_generate_plan": True,
@@ -2688,6 +3381,17 @@ def _source_contract(
             discovery.get("provider_ingress_endpoints", [])
         ),
         "no_ingress_reason": profile.get("no_ingress_reason"),
+        "browser_agent": _source_browser_agent_recipe(source_id),
+        "browser_agent_run": discovery.get("browser_agent_run")
+        or _source_browser_agent_run(
+            args,
+            source_id,
+            profile,
+            preauthorized_refs_present=bool(
+                (discovery.get("ref_state") or {}).get("required_refs_complete")
+            ),
+        ),
+        "native_connect": profile.get("native_connect"),
         "provider_actions": _source_provider_actions(profile),
         "local_agent_actions": _source_local_agent_actions(profile),
         "human_gates": list(discovery.get("human_gates", [])),
@@ -2732,6 +3436,10 @@ def _source_setup_plan(
         "contract_path": str(_source_contract_path(args.workdir, source_id)),
         "discovery_path": str(_source_discovery_path(args.workdir, source_id)),
         "automated_actions": _source_automated_steps(SOURCE_PROFILES[source_id]),
+        "browser_agent": _source_browser_agent_recipe(source_id),
+        "browser_agent_run": contract.get("browser_agent_run")
+        or _source_browser_agent_run(args, source_id, SOURCE_PROFILES[source_id]),
+        "native_connect": SOURCE_PROFILES[source_id].get("native_connect"),
         "provider_actions": list(contract["provider_actions"]),
         "local_agent_actions": list(contract["local_agent_actions"]),
         "human_gates": human_gates,
@@ -2850,16 +3558,16 @@ def _source_validate_result(args: argparse.Namespace, source_id: str) -> dict[st
         _source_check("raw_payload_not_exported", True, required=True),
         _source_check("customer_cloud_boundary", True, required=True),
     ]
-    if profile["method"] in {"oauth", "webhook"}:
-        endpoints = (
-            connection.get("provider_ingress_endpoints", [])
-            if isinstance(connection, dict)
-            else []
-        )
+    endpoints = (
+        connection.get("provider_ingress_endpoints", [])
+        if isinstance(connection, dict)
+        else []
+    )
+    if profile["method"] in {"oauth", "webhook"} or endpoints:
         checks.append(
             _source_check("provider_callback_declared", bool(endpoints), required=True)
         )
-    if profile["method"] in {"gateway", "poll", "iam_role"}:
+    if profile["method"] in {"dwd", "gateway", "poll", "iam_role"}:
         checks.append(_source_check("local_runner_declared", True, required=True))
     if args.live:
         checks.append(
@@ -3023,8 +3731,16 @@ def _source_human_gate_reason(action_id: str) -> str:
         "authorize_oauth_app_or_dwd_locally": (
             "The provider requires admin consent or OAuth authorization."
         ),
+        "authorize_google_workspace_dwd_and_scope": (
+            "Google Workspace requires an admin to authorize the Fyralis service "
+            "account client ID, scopes, and inclusion boundary."
+        ),
         "store_provider_api_token_in_customer_secret_manager": (
             "The provider token must be created and stored by the customer."
+        ),
+        "store_provider_oauth_client_credentials_in_customer_secret_manager": (
+            "The provider OAuth client credential or access token must be created "
+            "and stored by the customer."
         ),
         "approve_provider_webhook_target": (
             "The provider must be configured to send events to customer ingress."
@@ -3049,10 +3765,27 @@ def _source_provider_actions(profile: dict[str, Any]) -> list[str]:
         "generate_secret_ref_contract",
         "register_connection_metadata",
     ]
-    if method == "oauth":
+    if method in {"oauth", "oauth_plus_gateway"}:
         actions.extend(["generate_oauth_callback_urls", "prepare_oauth_state"])
+        if method == "oauth_plus_gateway":
+            actions.append("prepare_local_gateway_runner")
+    elif method == "dwd":
+        actions.extend(
+            [
+                "generate_google_dwd_preflight_payload",
+                "generate_google_dwd_finalize_payload",
+                "prepare_workspace_scope_contract",
+            ]
+        )
     elif method == "api_token":
         actions.extend(["validate_api_token_ref_shape", "prepare_poll_or_webhook"])
+    elif method == "oauth_client_credentials":
+        actions.extend(
+            [
+                "validate_oauth_client_credentials_or_access_token_ref_shape",
+                "prepare_client_credentials_or_token_exchange",
+            ]
+        )
     elif method == "webhook":
         actions.extend(["generate_webhook_endpoint", "prepare_signature_verifier"])
     elif method == "gateway":
@@ -3073,10 +3806,12 @@ def _source_local_agent_actions(profile: dict[str, Any]) -> list[str]:
         "run_local_validation",
         "emit_sanitized_readiness_receipt",
     ]
-    if profile["method"] in {"oauth", "webhook"}:
+    if profile["method"] in {"oauth", "oauth_client_credentials", "webhook"}:
         actions.append("validate_customer_ingress_contract")
-    if profile["method"] in {"gateway", "poll", "iam_role"}:
+    if profile["method"] in {"dwd", "gateway", "poll", "iam_role"}:
         actions.append("validate_customer_local_runner_contract")
+    if profile["method"] == "dwd":
+        actions.append("validate_native_dwd_connect_contract")
     return actions
 
 
@@ -3108,6 +3843,41 @@ def _source_stage_payload(
         "raw_secret_values_included": False,
         "raw_payloads_exported": False,
         "stored_scope": "sanitized_source_status_only",
+    }
+
+
+def _source_browser_agent_stage_payload(
+    requested: str,
+    receipts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    statuses = [str(receipt.get("status") or "") for receipt in receipts]
+    failed_or_blocked = sum(
+        1 for status in statuses if status in {"failed", "blocked"}
+    )
+    waiting = sum(1 for status in statuses if status == "waiting_for_admin")
+    running = sum(1 for status in statuses if status == "running")
+    connected = sum(1 for status in statuses if status == "connected")
+    return {
+        "schema_version": "fyralis.byoc.source.browser_agent_run_set.v1",
+        "stage": "browser-agent",
+        "orchestration_mode": "parallel_per_source_browser_agents",
+        "status": "blocked" if failed_or_blocked else "waiting_for_admin" if waiting else "running",
+        "source": requested,
+        "source_count": len(receipts),
+        "connected_source_count": connected,
+        "running_source_count": running,
+        "waiting_source_count": waiting,
+        "blocked_source_count": failed_or_blocked,
+        "automated_action_count": sum(
+            int(receipt.get("automated_action_count") or 0) for receipt in receipts
+        ),
+        "human_action_count": sum(
+            int(receipt.get("human_action_count") or 0) for receipt in receipts
+        ),
+        "sources": receipts,
+        "raw_secret_values_included": False,
+        "raw_payloads_exported": False,
+        "stored_scope": "sanitized_browser_agent_runner_metadata_only",
     }
 
 
@@ -3192,6 +3962,14 @@ def _source_provider_setup(
         "selected_scopes": scopes,
         "authorization_mode": args.provider_authorization_mode,
         "preauthorized_refs_present": preauthorized_refs_present,
+        "browser_agent": _source_browser_agent_recipe(source_id),
+        "browser_agent_run": _source_browser_agent_run(
+            args,
+            source_id,
+            profile,
+            preauthorized_refs_present=preauthorized_refs_present,
+        ),
+        "native_connect": profile.get("native_connect"),
         "automated_steps": _source_automated_steps(profile),
         "customer_action_required": _source_customer_action_required(
             profile,
@@ -3223,17 +4001,44 @@ def _source_secret_refs(
             name: f"{credential_ref.rstrip('/')}/{name}"
             for name in profile["required_refs"]
         }
+    ref_metadata = {
+        name: _source_ref_metadata(value)
+        for name, value in refs.items()
+    }
     return {
         "schema_version": "fyralis.byoc.source.secret_refs.v1",
         "source": source_id,
         "generated_at": _now(),
-        "credential_ref": credential_ref,
+        "credential_ref_hint": _redacted_ref_hint(credential_ref),
         "credential_ref_sha256": _sha256(credential_ref),
-        "required_refs": refs,
+        "required_ref_names": list(ref_metadata),
+        "required_refs": ref_metadata,
         "preauthorized_refs_present": bool(preauthorized_refs),
         "secret_values_included": False,
         "stored_scope": "customer_cloud_local_source_state",
     }
+
+
+def _source_ref_metadata(value: str) -> dict[str, Any]:
+    return {
+        "ref_hint": _redacted_ref_hint(value),
+        "ref_sha256": _sha256(value),
+        "raw_secret_value_included": False,
+    }
+
+
+def _redacted_ref_hint(value: str) -> str:
+    text = str(value).strip()
+    if not text:
+        return ""
+    source_match = re.match(r"(.*/sources/[^/]+)/.+", text)
+    if source_match:
+        return f"{source_match.group(1)}/[provided]"
+    separator = "/" if "/" in text else ":"
+    parts = text.rsplit(separator, 1)
+    if len(parts) == 1:
+        return "[provided]"
+    return f"{parts[0]}{separator}[provided]"
 
 
 def _source_connection(
@@ -3250,7 +4055,7 @@ def _source_connection(
         "source": source_id,
         "method": profile["method"],
         "prepared_at": _now(),
-        "credential_ref": credential_ref,
+        "credential_ref_hint": _redacted_ref_hint(credential_ref),
         "credential_ref_sha256": _sha256(credential_ref),
         "selected_scopes": scopes,
         "provider_permissions": list(profile["provider_permissions"]),
@@ -3258,7 +4063,12 @@ def _source_connection(
         "backfill_window": args.backfill_window,
         "admin_console_url": args.admin_console_url,
         "provider_ingress_endpoints": provider_setup["provider_ingress_endpoints"],
+        "no_ingress_reason": profile.get("no_ingress_reason"),
         "authorization_mode": args.provider_authorization_mode,
+        "browser_agent": _source_browser_agent_recipe(source_id),
+        "browser_agent_run": provider_setup.get("browser_agent_run")
+        or _source_browser_agent_run(args, source_id, profile),
+        "native_connect": profile.get("native_connect"),
         "raw_secret_values_included": False,
         "stored_scope": "customer_cloud_local_source_state",
     }
@@ -3282,9 +4092,9 @@ def _source_validation(
         _validation_check("raw_secret_not_exported", True, required=True),
         _validation_check("raw_payload_not_exported", True, required=True),
     ]
-    if method in {"oauth", "webhook"}:
+    if method in {"oauth", "oauth_client_credentials", "oauth_plus_gateway", "webhook"}:
         checks.append(_validation_check("provider_callback_declared", True, required=True))
-    if method in {"gateway", "poll", "iam_role"}:
+    if method in {"gateway", "oauth_plus_gateway", "poll", "iam_role"}:
         checks.append(_validation_check("local_runner_declared", True, required=True))
     required_passed = all(
         check["status"] == "pass" for check in checks if check["required"]
@@ -3382,8 +4192,16 @@ def _source_automated_steps(profile: dict[str, Any]) -> list[str]:
         "write_scope_receipt",
         "run_first_sync_receipt",
     ]
-    if method == "oauth":
+    if method in {"oauth", "oauth_plus_gateway"}:
         steps.insert(1, "generate_oauth_callback_and_state_contract")
+        if method == "oauth_plus_gateway":
+            steps.insert(2, "generate_local_gateway_session_contract")
+    elif method == "dwd":
+        steps.insert(1, "generate_google_workspace_dwd_contract")
+        steps.insert(2, "prepare_native_preflight_and_finalize_payloads")
+    elif method == "oauth_client_credentials":
+        steps.insert(1, "generate_oauth_client_credentials_contract")
+        steps.insert(2, "prepare_native_preflight_and_finalize_payloads")
     elif method == "webhook":
         steps.insert(1, "generate_webhook_endpoint_and_verifier_ref")
     elif method == "gateway":
@@ -3406,10 +4224,14 @@ def _source_customer_action_required(
     if authorization_mode == "preauthorized-ref":
         return ["provide_preauthorized_customer_cloud_refs"]
     method = profile["method"]
-    if method == "oauth":
+    if method in {"oauth", "oauth_plus_gateway"}:
         return ["authorize_oauth_app_or_dwd_locally"]
+    if method == "dwd":
+        return ["authorize_google_workspace_dwd_and_scope"]
     if method == "api_token":
         return ["store_provider_api_token_in_customer_secret_manager"]
+    if method == "oauth_client_credentials":
+        return ["store_provider_oauth_client_credentials_in_customer_secret_manager"]
     if method == "webhook":
         return ["approve_provider_webhook_target"]
     if method == "gateway":
@@ -3423,9 +4245,11 @@ def _source_customer_action_required(
 
 def _source_automation_level(profile: dict[str, Any]) -> str:
     method = profile["method"]
-    if method in {"api_token", "poll", "iam_role"}:
+    if method in {"api_token", "oauth_client_credentials", "poll", "iam_role"}:
         return "fully_automated_after_customer_ref"
-    if method in {"oauth", "webhook"}:
+    if method == "dwd":
+        return "automated_after_workspace_dwd_authorization"
+    if method in {"oauth", "oauth_plus_gateway", "webhook"}:
         return "automated_after_provider_authorization"
     return "automated_after_local_session_authorization"
 
@@ -4049,6 +4873,10 @@ def _source_secret_refs_path(workdir: Path, source_id: str) -> Path:
 
 def _source_connection_path(workdir: Path, source_id: str) -> Path:
     return _source_dir(workdir, source_id) / "connection.json"
+
+
+def _source_browser_agent_receipt_path(workdir: Path, source_id: str) -> Path:
+    return _source_dir(workdir, source_id) / "browser-agent-receipt.json"
 
 
 def _source_scope_path(workdir: Path, source_id: str) -> Path:

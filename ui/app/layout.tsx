@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import type { ReactNode } from "react";
 
@@ -14,6 +14,11 @@ export const metadata: Metadata = {
   title: "Fyralis",
   description:
     "Customer-cloud AI workspace with BYOC onboarding and separated host operations."
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

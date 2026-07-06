@@ -1,180 +1,155 @@
 "use client";
 
-import { Search, SlidersHorizontal } from "lucide-react";
-import { useMemo, useState } from "react";
-
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/form";
 import { cn } from "@/lib/utils";
 
 import { sourceStatusLabel } from "../state/onboarding-store";
-import type { Source, SourceCategory, SourceConnection } from "../types";
+import type { Source, SourceConnection } from "../types";
 
-const CATEGORY_OPTIONS: Array<SourceCategory | "All"> = [
-  "All",
-  "Communication",
-  "Engineering",
-  "Productivity",
-  "Knowledge",
-  "CRM",
-  "Meetings",
-  "Finance",
-  "People",
-  "Cloud",
-  "Design",
-  "Operations"
-];
+export type SourceAutomationCardState = {
+  status: "idle" | "connecting" | "waiting_admin" | "connected" | "blocked" | "error";
+  label: string;
+  message?: string;
+};
 
 export function SourceMarketplace({
   sources,
   connections,
   selectedSourceId,
+  automationStates = {},
   onSelect,
-  onOpenSetup
+  onConnect
 }: {
   sources: Source[];
   connections: SourceConnection[];
   selectedSourceId: string;
+  automationStates?: Record<string, SourceAutomationCardState>;
   onSelect: (sourceId: string) => void;
-  onOpenSetup: (sourceId: string) => void;
+  onConnect: (sourceId: string) => void;
 }) {
-  const [query, setQuery] = useState("");
-  const [category, setCategory] = useState<SourceCategory | "All">("All");
-
-  const filtered = useMemo(
-    () =>
-      sources.filter((source) => {
-        const matchesQuery =
-          source.name.toLowerCase().includes(query.toLowerCase()) ||
-          source.description.toLowerCase().includes(query.toLowerCase()) ||
-          source.requiredPermissions.some((permission) =>
-            permission.toLowerCase().includes(query.toLowerCase())
-          );
-        const matchesCategory =
-          category === "All" || source.category === category;
-        return matchesQuery && matchesCategory;
-      }),
-    [category, query, sources]
-  );
-
   return (
-    <div className="grid min-w-0 gap-5">
-      <div className="flex min-w-0 flex-col gap-3 rounded-lg border border-border bg-card p-4 md:flex-row md:items-center">
-        <label className="relative min-w-0 flex-1 md:max-w-sm">
-          <span className="sr-only">Search integrations</span>
-          <Search
-            className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <Input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search Slack, GitHub, Google, finance, people..."
-            className="pl-9"
-          />
-        </label>
-        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto pb-1 md:pb-0">
-          <SlidersHorizontal
-            className="h-4 w-4 shrink-0 text-muted-foreground"
-            aria-hidden="true"
-          />
-          {CATEGORY_OPTIONS.map((item) => (
-            <Button
-              key={item}
-              type="button"
-              variant={category === item ? "primary" : "secondary"}
-              className="min-h-9 shrink-0 px-3"
-              onClick={() => setCategory(item)}
-            >
-              {item}
-            </Button>
-          ))}
-        </div>
-      </div>
-
-      {filtered.length ? (
-        <div className="grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {filtered.map((source) => {
+    <div className="grid w-full min-w-0 max-w-full">
+      {sources.length ? (
+        <div className="w-full min-w-0 overflow-hidden rounded-lg border border-border bg-card">
+          {sources.map((source) => {
             const connection = connections.find(
               (item) => item.sourceId === source.id
             );
             const status = connection?.status ?? "not-configured";
+            const automation = automationStates[source.id];
+            const effectiveStatus = automation?.status ?? status;
             const selected = selectedSourceId === source.id;
+            const waiting =
+              automation?.status === "waiting_admin" || status === "waiting-admin";
+            const busy = automation?.status === "connecting" || waiting;
+            const connected =
+              automation?.status === "connected" || status === "connected";
 
             return (
-              <Card
+              <div
                 key={source.id}
                 className={cn(
-                  "group transition-colors hover:border-ring",
-                  selected && "border-success ring-2 ring-success/15"
+                  "grid min-h-16 min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border px-3 py-3 last:border-b-0 sm:grid-cols-[minmax(0,1fr)_auto_auto]",
+                  selected ? "bg-success/5" : "bg-card"
                 )}
               >
-                <CardContent className="grid min-h-64 content-between gap-4 p-4">
-                  <button
-                    type="button"
-                    className="text-left"
-                    onClick={() => onSelect(source.id)}
-                  >
-                    <span className="flex items-start justify-between gap-3">
-                      <span>
-                        <strong className="block text-lg">{source.name}</strong>
-                        <span className="mt-1 block text-sm leading-6 text-muted-foreground">
-                          {source.description}
-                        </span>
-                      </span>
-                      <Badge tone={statusTone(status)}>
-                        {sourceStatusLabel(status)}
-                      </Badge>
+                <button
+                  type="button"
+                  className="min-w-0 text-left"
+                  onClick={() => onSelect(source.id)}
+                >
+                  <span className="block min-w-0 truncate text-sm font-medium">
+                    {source.name}
+                  </span>
+                  {automation?.message ? (
+                    <span className="mt-1 block min-w-0 break-words text-xs leading-5 text-muted-foreground">
+                      {automation.message}
                     </span>
-                    <span className="mt-4 flex flex-wrap gap-2">
-                      <Badge tone="muted">{source.category}</Badge>
-                      <Badge tone="info">{source.method}</Badge>
-                    </span>
-                  </button>
+                  ) : null}
+                </button>
 
-                  <div className="border-t border-border pt-4">
-                    <p className="line-clamp-2 text-xs font-medium leading-5 text-muted-foreground">
-                      {source.setupRequirements}
-                    </p>
-                    <Button
-                      type="button"
-                      className="mt-4 w-full"
-                      variant={status === "connected" ? "secondary" : "primary"}
-                      onClick={() => onOpenSetup(source.id)}
-                    >
-                      {status === "connected" ? "View setup" : "Open setup"}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
+                {automation || status !== "not-configured" ? (
+                  <Badge
+                    tone={statusTone(effectiveStatus)}
+                    className="w-fit max-w-full justify-self-end"
+                  >
+                    {automation?.label ?? sourceStatusLabel(status)}
+                  </Badge>
+                ) : null}
+
+                <Button
+                  type="button"
+                  className="col-span-2 w-full sm:col-span-1 sm:w-32"
+                  variant={connected ? "secondary" : "primary"}
+                  disabled={busy || connected}
+                  onClick={() => onConnect(source.id)}
+                  aria-label={sourceActionLabel({
+                    sourceName: source.name,
+                    waiting,
+                    busy,
+                    connected
+                  })}
+                >
+                  {waiting
+                    ? "Waiting"
+                    : busy
+                      ? "Connecting..."
+                      : connected
+                        ? "Connected"
+                        : "Connect"}
+                </Button>
+              </div>
             );
           })}
         </div>
       ) : (
-        <Card>
-          <CardContent className="p-8 text-center">
-            <strong>No integrations match that search.</strong>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Clear the search or switch category filters to continue.
-            </p>
-          </CardContent>
-        </Card>
+        <div className="rounded-lg border border-border bg-card p-6 text-center">
+          <strong>No sources available.</strong>
+        </div>
       )}
     </div>
   );
 }
 
-function statusTone(status: SourceConnection["status"]) {
+function statusTone(status: SourceConnection["status"] | SourceAutomationCardState["status"]) {
   if (status === "connected" || status === "ready") {
     return "success" as const;
   }
-  if (status === "validating" || status === "draft") {
+  if (
+    status === "validating" ||
+    status === "draft" ||
+    status === "connecting" ||
+    status === "waiting_admin" ||
+    status === "waiting-admin"
+  ) {
     return "info" as const;
   }
-  if (status === "error") {
+  if (status === "error" || status === "blocked") {
     return "error" as const;
   }
   return "muted" as const;
+}
+
+function sourceActionLabel({
+  sourceName,
+  waiting,
+  busy,
+  connected
+}: {
+  sourceName: string;
+  waiting: boolean;
+  busy: boolean;
+  connected: boolean;
+}) {
+  if (waiting) {
+    return `${sourceName} waiting for approval`;
+  }
+  if (busy) {
+    return `${sourceName} connecting`;
+  }
+  if (connected) {
+    return `${sourceName} connected`;
+  }
+  return `Connect ${sourceName}`;
 }
