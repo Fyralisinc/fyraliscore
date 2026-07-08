@@ -128,3 +128,73 @@ async def test_entity_kind_and_org_namespace_external_id() -> None:
 
     assert candidate.external_id != application.external_id
     assert candidate.external_id != other_org.external_id
+
+
+async def test_application_feedback_is_company_intelligence_signal() -> None:
+    draft = await handle_ashby_object(
+        _tagged(
+            "application_feedback",
+            {
+                "id": "fb-1",
+                "applicationId": "app-1",
+                "interviewId": "int-1",
+                "submittedAt": "2026-05-21T14:00:00Z",
+                "submittedByUser": {
+                    "id": "usr-1",
+                    "firstName": "Grace",
+                    "lastName": "Hopper",
+                    "email": "grace@example.com",
+                },
+                "submittedValues": {"overall_recommendation": "hire"},
+            },
+        ),
+        {},
+    )
+
+    assert draft.external_id == f"ashby:{_ORG}:application_feedback:fb-1"
+    assert draft.content["object_type"] == "application_feedback"
+    assert draft.content["application_id"] == "app-1"
+    assert draft.content["submitted_values"] == {"overall_recommendation": "hire"}
+    assert draft.source_actor_ref == "ashby:user:usr-1"
+    assert {"type": "person", "role": "submitter", "id": "Grace Hopper", "source_id": "usr-1"} in draft.entities_hint
+
+
+async def test_job_posting_and_user_records_are_supported() -> None:
+    posting = await handle_ashby_object(
+        _tagged(
+            "job_posting",
+            {
+                "id": "jp-1",
+                "title": "Staff Engineer",
+                "jobId": "job-1",
+                "departmentName": "Engineering",
+                "locationName": "Remote",
+                "employmentType": "FullTime",
+                "isListed": True,
+                "updatedAt": "2026-05-21T10:00:00Z",
+            },
+        ),
+        {},
+    )
+    user = await handle_ashby_object(
+        _tagged(
+            "user",
+            {
+                "id": "usr-2",
+                "firstName": "Ada",
+                "lastName": "Lovelace",
+                "email": "ada@example.com",
+                "isEnabled": False,
+                "updatedAt": "2026-05-21T11:00:00Z",
+            },
+        ),
+        {},
+    )
+
+    assert posting.external_id == f"ashby:{_ORG}:job_posting:jp-1"
+    assert posting.content["job_id"] == "job-1"
+    assert posting.content["department_name"] == "Engineering"
+    assert user.external_id == f"ashby:{_ORG}:user:usr-2"
+    assert user.kind == "state_change"
+    assert user.content["status"] == "disabled"
+    assert user.source_actor_ref == "ashby:user:usr-2"

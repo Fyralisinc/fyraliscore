@@ -8,8 +8,11 @@ calls.
 ============================================================
 ONE SHARD KIND, TWO SYNC MODES
 ============================================================
-An `ashby_entity` shard streams one recruiting entity type (candidate /
-application / job / interview / offer) for the org.
+An `ashby_entity` shard streams one Ashby read-model entity type for the org.
+The default set includes the ATS spine (candidate / application / job /
+interview / offer) plus organization-level intelligence surfaces such as users,
+openings, job postings, feedback, interview plans/schedules, sources, surveys,
+and approvals.
 
   - FULL (initial backfill): `POST /<Category>.list` walked by the response
     CURSOR — each call carries the prior `nextCursor`, terminating when
@@ -104,8 +107,13 @@ async def _open_ashby_client(install: asyncpg.Record):  # noqa: ANN202
 
 
 def _entity_updated(row: dict[str, Any]) -> str | None:
-    """Ashby entities carry an `updatedAt` (ISO8601). Fall back to `createdAt`."""
-    for key in ("updatedAt", "updated_at", "createdAt", "created_at"):
+    """Return the best source timestamp for cursor diagnostics."""
+    for key in (
+        "updatedAt", "updated_at", "submittedAt", "submitted_at",
+        "publishedDate", "published_date", "openedAt", "opened_at",
+        "closedAt", "closed_at", "archivedAt", "archived_at",
+        "createdAt", "created_at",
+    ):
         v = row.get(key)
         if isinstance(v, str) and v:
             return v

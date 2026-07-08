@@ -10,11 +10,12 @@ the life of the client. No token refresh (API-key archetype, like Brex/Jira).
 
 Read surface (CONFIRMED): Ashby exposes an RPC-style API — every call is an
 HTTP ``POST`` to ``/<Category>.list`` or ``/<Category>.info`` with a JSON body.
-``.list`` paginates with a CURSOR: the request body carries ``cursor`` (and
-``syncToken`` for incremental delta polls); the response carries ``results``,
-``moreDataAvailable`` (bool), ``nextCursor`` (string|null), and — when a
-``syncToken`` was supplied or the listing supports sync — a refreshed
-``syncToken`` to persist for the next incremental poll.
+Most ``.list`` endpoints paginate with a CURSOR: the request body carries
+``cursor`` (and ``syncToken`` for incremental delta polls); the response carries
+``results``, ``moreDataAvailable`` (bool), ``nextCursor`` (string|null), and —
+when a ``syncToken`` was supplied or the listing supports sync — a refreshed
+``syncToken`` to persist for the next incremental poll. A few metadata endpoints
+are single-shot lists and omit cursor/syncToken request fields.
 
 TODO(human): confirm Ashby concurrent rate-limit numbers + the exact rate-limit
     signal. UNVERIFIED. The default below is 429 + ``Retry-After`` (env knobs
@@ -213,6 +214,7 @@ class AshbyClient:
         cursor: str | None = None,
         sync_token: str | None = None,
         limit: int = _DEFAULT_PAGE_SIZE,
+        request_options: dict[str, Any] | None = None,
     ) -> tuple[list[dict[str, Any]], str | None, str | None]:
         """`POST /<Category>.list` — one cursor page of one entity category.
 
@@ -226,14 +228,22 @@ class AshbyClient:
             next incremental poll (None when the listing did not return one).
 
         ``category`` is the Ashby RPC category (e.g. ``candidate`` -> POSTs to
-        ``candidate.list``). The caller passes the lowercase entity_type.
+        ``candidate.list``). Fyralis also accepts canonical snake_case entity
+        kinds (e.g. ``job_posting`` -> ``jobPosting.list``).
         """
-        payload: dict[str, Any] = {"limit": limit}
-        if cursor:
+        spec = _LIST_SPECS.get(category, {})
+        payload: dict[str, Any] = {}
+        payload.update(spec.get("request_options", {}))
+        if request_options:
+            payload.update(request_options)
+        if bool(spec.get("supports_pagination", True)):
+            payload["limit"] = limit
+        if cursor and bool(spec.get("supports_cursor", True)):
             payload["cursor"] = cursor
-        if sync_token:
+        if sync_token and bool(spec.get("supports_sync_token", True)):
             payload["syncToken"] = sync_token
-        resp = await self._rpc(f"{category}.list", payload)
+        method = str(spec.get("method") or category)
+        resp = await self._rpc(f"{method}.list", payload)
 
         results = resp.get("results")
         results = [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
@@ -303,10 +313,101 @@ def _api_error_from_response(
     )
 
 
-# The entity types we shard on (per the cross-agent CONTRACT). Ashby is
-# recruiting-ATS-shaped (NOT transactional), so the entity_kind discriminates
-# the external_id.
-DEFAULT_ENTITIES = ("candidate", "application", "job", "interview", "offer")
+# The entity types we shard on. Ashby is recruiting-ATS-shaped (NOT
+# transactional), so the entity_kind discriminates the external_id.
+CORE_ENTITIES = ("candidate", "application", "job", "interview", "offer")
+
+# Company-intelligence read model: organization-level list endpoints that can be
+# fetched without parent fanout. Parent-scoped surfaces such as
+# application.listHistory and candidate.listNotes need a separate shard family.
+INTELLIGENCE_ENTITIES = (
+    "application_feedback",
+    "approval",
+    "candidate_tag",
+    "department",
+    "feedback_form_definition",
+    "interview_plan",
+    "interview_schedule",
+    "interview_stage_group",
+    "job_posting",
+    "location",
+    "opening",
+    "project",
+    "source",
+    "source_tracking_link",
+    "survey_form_definition",
+    "survey_request",
+    "survey_submission_candidate_experience",
+    "survey_submission_questionnaire",
+    "user",
+)
+
+DEFAULT_ENTITIES = CORE_ENTITIES + INTELLIGENCE_ENTITIES
+
+_LIST_SPECS: dict[str, dict[str, Any]] = {
+    "application_feedback": {"method": "applicationFeedback"},
+    "approval": {"method": "approval"},
+    "candidate_tag": {
+        "method": "candidateTag",
+        "request_options": {"includeArchived": True},
+    },
+    "department": {
+        "method": "department",
+        "request_options": {"includeArchived": True},
+    },
+    "feedback_form_definition": {
+        "method": "feedbackFormDefinition",
+        "request_options": {"includeArchived": True},
+    },
+    "interview_plan": {
+        "method": "interviewPlan",
+        "request_options": {"includeArchived": True},
+    },
+    "interview_schedule": {"method": "interviewSchedule"},
+    "interview_stage_group": {
+        "method": "interviewStageGroup",
+        "supports_pagination": False,
+        "supports_cursor": False,
+        "supports_sync_token": False,
+    },
+    "job_posting": {
+        "method": "jobPosting",
+        "request_options": {
+            "includeUnpublishedJobPostings": True,
+            "listedOnly": False,
+        },
+        "supports_pagination": False,
+        "supports_cursor": False,
+        "supports_sync_token": False,
+    },
+    "location": {"method": "location"},
+    "opening": {"method": "opening"},
+    "project": {"method": "project"},
+    "source": {
+        "method": "source",
+        "request_options": {"includeArchived": True},
+    },
+    "source_tracking_link": {"method": "sourceTrackingLink"},
+    "survey_form_definition": {"method": "surveyFormDefinition"},
+    "survey_request": {"method": "surveyRequest"},
+    "survey_submission_candidate_experience": {
+        "method": "surveySubmission",
+        "request_options": {"surveyType": "CandidateExperience"},
+    },
+    "survey_submission_questionnaire": {
+        "method": "surveySubmission",
+        "request_options": {"surveyType": "Questionnaire"},
+    },
+    "user": {
+        "method": "user",
+        "request_options": {"includeDeactivated": True},
+    },
+}
 
 
-__all__ = ["AshbyClient", "DEFAULT_ENTITIES"]
+__all__ = [
+    "AshbyClient",
+    "CORE_ENTITIES",
+    "DEFAULT_ENTITIES",
+    "INTELLIGENCE_ENTITIES",
+]

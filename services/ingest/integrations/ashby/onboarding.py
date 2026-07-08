@@ -5,8 +5,8 @@ host. Onboarding mirrors the Gusto entity-model shape (one shard per entity
 type), but with API-key auth (NO OAuth refresh token):
 
   finalize_install() — UPSERT an ashby_installations row, INSERT one
-  ashby_entities row per entity type to shard (candidate / application / job /
-  interview / offer), and emit an onboarding_triggers row (source='ashby') so
+  ashby_entities row per entity type to shard (ATS spine + org-level recruiting
+  intelligence objects), and emit an onboarding_triggers row (source='ashby') so
   the existing M6 backfill chain fires. All in one tenant-scoped transaction.
 
   register_webhook_installation() — register the LIVE-path row in
