@@ -108,6 +108,9 @@ docs = [
 telegram = [
     "telethon>=1.36",          # pure-Python asyncio MTProto client
 ]
+browser-agent = [
+    "playwright>=1.45",        # customer-cloud admin-present source setup browser driver
+]
 
 [tool.setuptools.packages.find]
 where = ["."]

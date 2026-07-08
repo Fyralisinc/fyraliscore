@@ -72,30 +72,7 @@ const defaultReadiness: CloudReadiness = {
   kafka: "provision-msk"
 };
 
-const defaultConnections: SourceConnection[] = [
-  {
-    sourceId: "slack",
-    status: "connected",
-    selectedScopes: ["#leadership", "#finance-ops", "#customer-success"],
-    backfillWindow: "Last 30 days",
-    syncMode: "Limited backfill",
-    receiptId: "srcval_slack_20260629"
-  },
-  {
-    sourceId: "gmail",
-    status: "draft",
-    selectedScopes: [],
-    backfillWindow: "Last 30 days",
-    syncMode: "Limited backfill"
-  },
-  {
-    sourceId: "github",
-    status: "ready",
-    selectedScopes: [],
-    backfillWindow: "Last 30 days",
-    syncMode: "Limited backfill"
-  }
-];
+const defaultConnections: SourceConnection[] = [];
 
 const defaultValidation: Validation = {
   id: "val_source_slack",
@@ -237,6 +214,9 @@ export function nextStep(step: StepId): StepId {
 }
 
 export function sourceStatusLabel(status: SourceStatus) {
+  if (status === "waiting-admin") {
+    return "Approval needed";
+  }
   return status
     .split("-")
     .map((part) => part[0]?.toUpperCase() + part.slice(1))

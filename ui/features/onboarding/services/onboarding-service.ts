@@ -70,6 +70,7 @@ type SourceRehearsalApiStatus = {
   unresolved_failure_count: number;
   bearer_token?: string | null;
   session_expires_at?: string | null;
+  auto_connect_run?: SourceAutoConnectRunApi | null;
   next_action: string;
 };
 
@@ -88,19 +89,108 @@ type SourceRehearsalPrepareApiResponse = {
   missing_configuration: string[];
   required_inputs: string[];
   optional_inputs?: string[];
+  finalize_mode?: SourceFinalizeMode;
+  automation_profile?: SourceAutomationProfileApi;
+  browser_agent?: SourceBrowserAgentRecipeApi;
+  browser_agent_run?: SourceBrowserAgentRunApi;
   bearer_token: string;
   session_expires_at: string;
   state_expires_in_seconds?: number | null;
   status: SourceRehearsalApiStatus;
 };
 
-type SourceFinalizeApiResponse = {
-  ok: boolean;
-  source: string;
-  installation_id: string;
-  status: SourceRehearsalApiStatus;
-  [key: string]: unknown;
+type SourceAutoConnectApiState = {
+  state: "connected" | "running" | "admin_gate" | "blocked" | "error";
+  label: string;
+  message: string;
+  human_step_count: number;
+  human_steps: SourceAutomationProfileApi["human_steps"];
+  automated_actions: string[];
+  browser_agent?: SourceBrowserAgentRecipeApi;
+  browser_agent_run?: SourceBrowserAgentRunApi;
+  automation_run?: SourceAutoConnectRunApi;
+  install_url?: string | null;
 };
+
+type SourceAutoConnectApiResponse = SourceRehearsalPrepareApiResponse & {
+  auto_connect: SourceAutoConnectApiState;
+};
+
+type SourceAutomationProfileApi = {
+  automation_level: string;
+  method: string;
+  minimum_human_inputs: string[];
+  optional_hints: string[];
+  automated_actions: string[];
+  human_steps: Array<{
+    id: string;
+    label: string;
+    reason: string;
+    can_agent_complete: boolean;
+  }>;
+  agent_discovery_target: string;
+  post_connect_actions: string[];
+  human_step_count: number;
+};
+
+type SourceBrowserAgentRecipeApi = {
+  source: string;
+  provider_console_url: string;
+  settings_targets: string[];
+  agent_collects: string[];
+  agent_generates: string[];
+  human_gates: string[];
+  completion_checks: string[];
+};
+
+type SourceBrowserAgentRunActionApi = {
+  id: string;
+  owner: "fyralis_agent" | "provider_admin";
+  status: string;
+  label: string;
+  reason?: string;
+};
+
+type SourceBrowserAgentRunGateApi = {
+  id: string;
+  label: string;
+  reason: string;
+  status: string;
+  can_agent_complete: boolean;
+};
+
+type SourceBrowserAgentRunCheckApi = {
+  name: string;
+  status: string;
+};
+
+type SourceBrowserAgentRunApi = {
+  schema_version: string;
+  source: string;
+  state: "connected" | "running" | "waiting_for_admin" | "blocked";
+  launch_mode: string;
+  can_start: boolean;
+  handoff_url?: string | null;
+  handoff_kind: string;
+  provider_console_url?: string | null;
+  oauth_redirect_url?: string | null;
+  events_request_url?: string | null;
+  settings_targets: string[];
+  agent_collects: string[];
+  agent_generates: string[];
+  human_gates: SourceBrowserAgentRunGateApi[];
+  completion_checks: SourceBrowserAgentRunCheckApi[];
+  action_queue: SourceBrowserAgentRunActionApi[];
+  current_action?: SourceBrowserAgentRunActionApi | null;
+  automated_action_count: number;
+  human_action_count: number;
+};
+
+export type SourceFinalizeMode =
+  | "provider_callback"
+  | "source_specific"
+  | "native_finalizer_required"
+  | "generic_customer_refs";
 
 export type SourceRehearsalStatus = {
   sourceId: string;
@@ -121,6 +211,7 @@ export type SourceRehearsalStatus = {
   unresolvedFailureCount: number;
   bearerToken?: string | null;
   sessionExpiresAt?: string | null;
+  autoConnectRun: SourceAutoConnectRun | null;
   nextAction: string;
 };
 
@@ -139,43 +230,145 @@ export type SourceRehearsalPrepareResponse = {
   missingConfiguration: string[];
   requiredInputs: string[];
   optionalInputs: string[];
+  finalizeMode: SourceFinalizeMode;
+  automationProfile: SourceAutomationProfile;
+  browserAgent: SourceBrowserAgentRecipe | null;
+  browserAgentRun: SourceBrowserAgentRun | null;
   bearerToken: string;
   sessionExpiresAt: string;
   stateExpiresInSeconds: number | null;
   status: SourceRehearsalStatus;
 };
 
-export type SourceRehearsalFinalizeResponse = {
-  ok: boolean;
+export type SourceAutoConnectState = {
+  state: "connected" | "running" | "admin_gate" | "blocked" | "error";
+  label: string;
+  message: string;
+  humanStepCount: number;
+  humanSteps: SourceAutomationProfile["humanSteps"];
+  automatedActions: string[];
+  browserAgent: SourceBrowserAgentRecipe | null;
+  browserAgentRun: SourceBrowserAgentRun | null;
+  automationRun: SourceAutoConnectRun | null;
+  installUrl: string | null;
+};
+
+export type SourceAutoConnectResponse = SourceRehearsalPrepareResponse & {
+  autoConnect: SourceAutoConnectState;
+};
+
+export type SourceAutomationProfile = {
+  automationLevel: string;
+  method: string;
+  minimumHumanInputs: string[];
+  optionalHints: string[];
+  automatedActions: string[];
+  humanSteps: Array<{
+    id: string;
+    label: string;
+    reason: string;
+    canAgentComplete: boolean;
+  }>;
+  agentDiscoveryTarget: string;
+  postConnectActions: string[];
+  humanStepCount: number;
+};
+
+export type SourceBrowserAgentRecipe = {
   sourceId: string;
-  installationId: string;
-  status: SourceRehearsalStatus;
-  raw: SourceFinalizeApiResponse;
+  providerConsoleUrl: string;
+  settingsTargets: string[];
+  agentCollects: string[];
+  agentGenerates: string[];
+  humanGates: string[];
+  completionChecks: string[];
 };
 
-export type JiraRehearsalFinalizePayload = {
-  baseUrl: string;
-  accountEmail: string;
-  apiToken: string;
-  webhookSecret?: string;
-  projectKeys?: string[];
+export type SourceBrowserAgentRunAction = {
+  id: string;
+  owner: "fyralis_agent" | "provider_admin";
+  status: string;
+  label: string;
+  reason?: string;
 };
 
-export type TelegramRehearsalFinalizePayload = {
-  accountLabel: string;
-  apiId: string;
-  apiHash: string;
-  liveSession: string;
-  backfillSession?: string;
+export type SourceBrowserAgentRunGate = {
+  id: string;
+  label: string;
+  reason: string;
+  status: string;
+  canAgentComplete: boolean;
 };
 
-export type GenericSourceRehearsalFinalizePayload = {
-  inputs: Record<string, string>;
-  installationId?: string;
+export type SourceBrowserAgentRun = {
+  schemaVersion: string;
+  sourceId: string;
+  state: "connected" | "running" | "waiting_for_admin" | "blocked";
+  launchMode: string;
+  canStart: boolean;
+  handoffUrl: string | null;
+  handoffKind: string;
+  providerConsoleUrl: string | null;
+  oauthRedirectUrl: string | null;
+  eventsRequestUrl: string | null;
+  settingsTargets: string[];
+  agentCollects: string[];
+  agentGenerates: string[];
+  humanGates: SourceBrowserAgentRunGate[];
+  completionChecks: Array<{ name: string; status: string }>;
+  actionQueue: SourceBrowserAgentRunAction[];
+  currentAction: SourceBrowserAgentRunAction | null;
+  automatedActionCount: number;
+  humanActionCount: number;
 };
 
-export type SlackRehearsalStatus = SourceRehearsalStatus;
-export type SlackRehearsalPrepareResponse = SourceRehearsalPrepareResponse;
+type SourceAutoConnectRunApi = {
+  schema_version: string;
+  source: string;
+  status: string;
+  launch_mode: string;
+  can_start: boolean;
+  handoff_url?: string | null;
+  current_action_id?: string | null;
+  automated_action_count: number;
+  human_action_count: number;
+  native_connect_kind?: string | null;
+  native_payload_template_path_hint?: string | null;
+  provider_setup_output_dir_hint?: string | null;
+  receipt_path_hint?: string | null;
+  background_status?: string | null;
+  background_queued_at?: string | null;
+  background_started_at?: string | null;
+  background_finished_at?: string | null;
+  background_runner_mode?: string | null;
+  run_artifact_path_hint?: string | null;
+  command_preview: string;
+  command_args: string[];
+};
+
+export type SourceAutoConnectRun = {
+  schemaVersion: string;
+  sourceId: string;
+  status: string;
+  launchMode: string;
+  canStart: boolean;
+  handoffUrl: string | null;
+  currentActionId: string | null;
+  automatedActionCount: number;
+  humanActionCount: number;
+  nativeConnectKind: string | null;
+  nativePayloadTemplatePathHint: string | null;
+  providerSetupOutputDirHint: string | null;
+  receiptPathHint: string | null;
+  backgroundStatus: string | null;
+  backgroundQueuedAt: string | null;
+  backgroundStartedAt: string | null;
+  backgroundFinishedAt: string | null;
+  backgroundRunnerMode: string | null;
+  runArtifactPathHint: string | null;
+  commandPreview: string;
+  commandArgs: string[];
+};
 
 export async function fetchGatewaySourceObservations({
   apiBase,
@@ -205,7 +398,7 @@ export async function fetchGatewaySourceObservations({
 
   const query = new URLSearchParams({
     limit: String(limit),
-    source: sourceId
+    source: gatewaySourceId(sourceId)
   });
   const response = await fetch(`${resolvedApiBase}/observations?${query}`, {
     method: "GET",
@@ -224,18 +417,18 @@ export async function fetchGatewaySourceObservations({
     .map((item) => gatewayObservationToSourceObservation(item, sourceId));
 }
 
-export async function prepareSourceRehearsal({
+export async function autoConnectSourceRehearsal({
   sourceId,
   apiBase
 }: {
   sourceId: string;
   apiBase?: string;
-}): Promise<SourceRehearsalPrepareResponse> {
+}): Promise<SourceAutoConnectResponse> {
   const resolvedApiBase = resolveGatewayApiBase(apiBase);
   const response = await fetch(
     `${resolvedApiBase}/platform/onboarding/sources/${encodeURIComponent(
-      sourceId
-    )}/rehearsal/prepare`,
+      gatewaySourceId(sourceId)
+    )}/rehearsal/auto-connect`,
     {
       method: "POST",
       headers: {
@@ -246,8 +439,8 @@ export async function prepareSourceRehearsal({
   if (!response.ok) {
     throw new ApiError(response.status, await response.text());
   }
-  return mapSourceRehearsalPrepare(
-    (await response.json()) as SourceRehearsalPrepareApiResponse,
+  return mapSourceAutoConnect(
+    (await response.json()) as SourceAutoConnectApiResponse,
     sourceId
   );
 }
@@ -262,7 +455,7 @@ export async function fetchSourceRehearsalStatus({
   const resolvedApiBase = resolveGatewayApiBase(apiBase);
   const response = await fetch(
     `${resolvedApiBase}/platform/onboarding/sources/${encodeURIComponent(
-      sourceId
+      gatewaySourceId(sourceId)
     )}/rehearsal/status`,
     {
       method: "GET",
@@ -278,115 +471,6 @@ export async function fetchSourceRehearsalStatus({
     (await response.json()) as SourceRehearsalApiStatus,
     sourceId
   );
-}
-
-export function prepareSlackRehearsal({
-  apiBase
-}: {
-  apiBase?: string;
-} = {}): Promise<SlackRehearsalPrepareResponse> {
-  return prepareSourceRehearsal({ sourceId: "slack", apiBase });
-}
-
-export function fetchSlackRehearsalStatus({
-  apiBase
-}: {
-  apiBase?: string;
-} = {}): Promise<SlackRehearsalStatus> {
-  return fetchSourceRehearsalStatus({ sourceId: "slack", apiBase });
-}
-
-export async function finalizeJiraRehearsal({
-  apiBase,
-  payload
-}: {
-  apiBase?: string;
-  payload: JiraRehearsalFinalizePayload;
-}): Promise<SourceRehearsalFinalizeResponse> {
-  return finalizeSourceRehearsal({
-    apiBase,
-    sourceId: "jira",
-    payload: {
-      base_url: payload.baseUrl,
-      account_email: payload.accountEmail,
-      api_token: payload.apiToken,
-      webhook_secret: payload.webhookSecret,
-      project_keys: payload.projectKeys
-    }
-  });
-}
-
-export async function finalizeTelegramRehearsal({
-  apiBase,
-  payload
-}: {
-  apiBase?: string;
-  payload: TelegramRehearsalFinalizePayload;
-}): Promise<SourceRehearsalFinalizeResponse> {
-  return finalizeSourceRehearsal({
-    apiBase,
-    sourceId: "telegram",
-    payload: {
-      account_label: payload.accountLabel,
-      api_id: payload.apiId,
-      api_hash: payload.apiHash,
-      live_session: payload.liveSession,
-      backfill_session: payload.backfillSession
-    }
-  });
-}
-
-export async function finalizeGenericSourceRehearsal({
-  apiBase,
-  sourceId,
-  payload
-}: {
-  apiBase?: string;
-  sourceId: string;
-  payload: GenericSourceRehearsalFinalizePayload;
-}): Promise<SourceRehearsalFinalizeResponse> {
-  return finalizeSourceRehearsal({
-    apiBase,
-    sourceId,
-    payload: {
-      inputs: payload.inputs,
-      installation_id: payload.installationId
-    }
-  });
-}
-
-async function finalizeSourceRehearsal({
-  apiBase,
-  sourceId,
-  payload
-}: {
-  apiBase?: string;
-  sourceId: string;
-  payload: Record<string, unknown>;
-}): Promise<SourceRehearsalFinalizeResponse> {
-  const resolvedApiBase = resolveGatewayApiBase(apiBase);
-  const response = await fetch(
-    `${resolvedApiBase}/platform/onboarding/sources/${sourceId}/rehearsal/finalize`,
-    {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload)
-    }
-  );
-  if (!response.ok) {
-    throw new ApiError(response.status, await response.text());
-  }
-  const raw = (await response.json()) as SourceFinalizeApiResponse;
-  return {
-    ok: raw.ok,
-    sourceId: raw.source,
-    installationId: raw.installation_id,
-    status: mapSourceRehearsalStatus(raw.status, raw.source),
-    raw
-  };
 }
 
 async function postJson<T>(
@@ -453,7 +537,9 @@ function observationBelongsToSource(
   return (
     sourceChannel === normalized ||
     sourceChannel.startsWith(`${normalized}:`) ||
-    sourceChannel.startsWith(`${sourceId.toLowerCase()}:`)
+    sourceChannel.startsWith(`${sourceId.toLowerCase()}:`) ||
+    sourceChannel.startsWith(`gateway:${normalized}:`) ||
+    sourceChannel.startsWith(`gateway:${sourceId.toLowerCase()}:`)
   );
 }
 
@@ -475,7 +561,7 @@ function mapSourceRehearsalPrepare(
   payload: SourceRehearsalPrepareApiResponse,
   fallbackSourceId: string
 ): SourceRehearsalPrepareResponse {
-  const sourceId = payload.source || fallbackSourceId;
+  const sourceId = fallbackSourceId;
   return {
     enabled: payload.enabled,
     sourceId,
@@ -491,6 +577,13 @@ function mapSourceRehearsalPrepare(
     missingConfiguration: payload.missing_configuration ?? [],
     requiredInputs: payload.required_inputs ?? [],
     optionalInputs: payload.optional_inputs ?? [],
+    finalizeMode: payload.finalize_mode ?? "generic_customer_refs",
+    automationProfile: mapSourceAutomationProfile(
+      payload.automation_profile,
+      sourceId
+    ),
+    browserAgent: mapSourceBrowserAgentRecipe(payload.browser_agent),
+    browserAgentRun: mapSourceBrowserAgentRun(payload.browser_agent_run),
     bearerToken: payload.bearer_token,
     sessionExpiresAt: payload.session_expires_at,
     stateExpiresInSeconds: payload.state_expires_in_seconds ?? null,
@@ -498,11 +591,178 @@ function mapSourceRehearsalPrepare(
   };
 }
 
+function mapSourceAutoConnect(
+  payload: SourceAutoConnectApiResponse,
+  fallbackSourceId: string
+): SourceAutoConnectResponse {
+  const prepared = mapSourceRehearsalPrepare(payload, fallbackSourceId);
+  const autoConnect = payload.auto_connect;
+  return {
+    ...prepared,
+    autoConnect: {
+      state: autoConnect.state,
+      label: autoConnect.label,
+      message: autoConnect.message,
+      humanStepCount: autoConnect.human_step_count ?? 0,
+      humanSteps: (autoConnect.human_steps ?? []).map((step) => ({
+        id: step.id,
+        label: step.label,
+        reason: step.reason,
+        canAgentComplete: step.can_agent_complete
+      })),
+      automatedActions: autoConnect.automated_actions ?? [],
+      browserAgent: mapSourceBrowserAgentRecipe(
+        autoConnect.browser_agent ?? payload.browser_agent
+      ),
+      browserAgentRun: mapSourceBrowserAgentRun(
+        autoConnect.browser_agent_run ?? payload.browser_agent_run
+      ),
+      automationRun: mapSourceAutoConnectRun(autoConnect.automation_run),
+      installUrl: autoConnect.install_url ?? null
+    }
+  };
+}
+
+function mapSourceAutoConnectRun(
+  payload: SourceAutoConnectRunApi | undefined
+): SourceAutoConnectRun | null {
+  if (!payload) {
+    return null;
+  }
+  return {
+    schemaVersion: payload.schema_version,
+    sourceId: payload.source,
+    status: payload.status,
+    launchMode: payload.launch_mode,
+    canStart: payload.can_start,
+    handoffUrl: payload.handoff_url ?? null,
+    currentActionId: payload.current_action_id ?? null,
+    automatedActionCount: payload.automated_action_count ?? 0,
+    humanActionCount: payload.human_action_count ?? 0,
+    nativeConnectKind: payload.native_connect_kind ?? null,
+    nativePayloadTemplatePathHint:
+      payload.native_payload_template_path_hint ?? null,
+    providerSetupOutputDirHint: payload.provider_setup_output_dir_hint ?? null,
+    receiptPathHint: payload.receipt_path_hint ?? null,
+    backgroundStatus: payload.background_status ?? null,
+    backgroundQueuedAt: payload.background_queued_at ?? null,
+    backgroundStartedAt: payload.background_started_at ?? null,
+    backgroundFinishedAt: payload.background_finished_at ?? null,
+    backgroundRunnerMode: payload.background_runner_mode ?? null,
+    runArtifactPathHint: payload.run_artifact_path_hint ?? null,
+    commandPreview: payload.command_preview,
+    commandArgs: payload.command_args ?? []
+  };
+}
+
+function mapSourceBrowserAgentRun(
+  payload: SourceBrowserAgentRunApi | undefined
+): SourceBrowserAgentRun | null {
+  if (!payload) {
+    return null;
+  }
+  const mapAction = (
+    action: SourceBrowserAgentRunActionApi
+  ): SourceBrowserAgentRunAction => ({
+    id: action.id,
+    owner: action.owner,
+    status: action.status,
+    label: action.label,
+    reason: action.reason
+  });
+  return {
+    schemaVersion: payload.schema_version,
+    sourceId: payload.source,
+    state: payload.state,
+    launchMode: payload.launch_mode,
+    canStart: payload.can_start,
+    handoffUrl: payload.handoff_url ?? null,
+    handoffKind: payload.handoff_kind,
+    providerConsoleUrl: payload.provider_console_url ?? null,
+    oauthRedirectUrl: payload.oauth_redirect_url ?? null,
+    eventsRequestUrl: payload.events_request_url ?? null,
+    settingsTargets: payload.settings_targets ?? [],
+    agentCollects: payload.agent_collects ?? [],
+    agentGenerates: payload.agent_generates ?? [],
+    humanGates: (payload.human_gates ?? []).map((gate) => ({
+      id: gate.id,
+      label: gate.label,
+      reason: gate.reason,
+      status: gate.status,
+      canAgentComplete: gate.can_agent_complete
+    })),
+    completionChecks: payload.completion_checks ?? [],
+    actionQueue: (payload.action_queue ?? []).map(mapAction),
+    currentAction: payload.current_action ? mapAction(payload.current_action) : null,
+    automatedActionCount: payload.automated_action_count ?? 0,
+    humanActionCount: payload.human_action_count ?? 0
+  };
+}
+
+function mapSourceBrowserAgentRecipe(
+  payload: SourceBrowserAgentRecipeApi | undefined
+): SourceBrowserAgentRecipe | null {
+  if (!payload) {
+    return null;
+  }
+  return {
+    sourceId: payload.source,
+    providerConsoleUrl: payload.provider_console_url,
+    settingsTargets: payload.settings_targets ?? [],
+    agentCollects: payload.agent_collects ?? [],
+    agentGenerates: payload.agent_generates ?? [],
+    humanGates: payload.human_gates ?? [],
+    completionChecks: payload.completion_checks ?? []
+  };
+}
+
+function mapSourceAutomationProfile(
+  payload: SourceAutomationProfileApi | undefined,
+  sourceId: string
+): SourceAutomationProfile {
+  if (!payload) {
+    return {
+      automationLevel: "automated_after_customer_authorization",
+      method: "unknown",
+      minimumHumanInputs: [],
+      optionalHints: [],
+      automatedActions: ["prepare source handoff", "register source metadata"],
+      humanSteps: [
+        {
+          id: "approve_source_connection",
+          label: `Approve ${sourceId} connection.`,
+          reason: "The source owner must approve the boundary and scope.",
+          canAgentComplete: false
+        }
+      ],
+      agentDiscoveryTarget: "approved source scope",
+      postConnectActions: ["poll for observations"],
+      humanStepCount: 1
+    };
+  }
+  return {
+    automationLevel: payload.automation_level,
+    method: payload.method,
+    minimumHumanInputs: payload.minimum_human_inputs ?? [],
+    optionalHints: payload.optional_hints ?? [],
+    automatedActions: payload.automated_actions ?? [],
+    humanSteps: (payload.human_steps ?? []).map((step) => ({
+      id: step.id,
+      label: step.label,
+      reason: step.reason,
+      canAgentComplete: step.can_agent_complete
+    })),
+    agentDiscoveryTarget: payload.agent_discovery_target,
+    postConnectActions: payload.post_connect_actions ?? [],
+    humanStepCount: payload.human_step_count ?? payload.human_steps?.length ?? 0
+  };
+}
+
 function mapSourceRehearsalStatus(
   payload: SourceRehearsalApiStatus,
   fallbackSourceId: string
 ): SourceRehearsalStatus {
-  const sourceId = payload.source || fallbackSourceId;
+  const sourceId = fallbackSourceId;
   return {
     sourceId,
     installed: payload.installed,
@@ -534,6 +794,7 @@ function mapSourceRehearsalStatus(
     unresolvedFailureCount: payload.unresolved_failure_count,
     bearerToken: payload.bearer_token,
     sessionExpiresAt: payload.session_expires_at,
+    autoConnectRun: mapSourceAutoConnectRun(payload.auto_connect_run ?? undefined),
     nextAction: payload.next_action
   };
 }
@@ -586,7 +847,9 @@ function mapGatewayObservationKind(
   if (
     lowerChannel.startsWith("slack:") ||
     lowerChannel.startsWith("discord:") ||
-    lowerChannel.startsWith("telegram:")
+    lowerChannel.startsWith("telegram:") ||
+    lowerChannel.startsWith("signal:") ||
+    lowerChannel.startsWith("whatsapp:")
   ) {
     return "message";
   }
@@ -681,6 +944,10 @@ function randomUuid(): string {
 
 function trimTrailingSlash(value: string): string {
   return value.trim().replace(/\/+$/, "");
+}
+
+function gatewaySourceId(sourceId: string): string {
+  return sourceId.trim().toLowerCase().replaceAll("-", "_");
 }
 
 function withRuntimeWorkspaceUrls(

@@ -46,16 +46,16 @@ import type {
   Validation,
   Workspace
 } from "../types";
-import { SourceDetailPanel } from "../components/source-detail-panel";
-import { SourceMarketplace } from "../components/source-marketplace";
 import {
+  SourceMarketplace,
+  type SourceAutomationCardState
+} from "../components/source-marketplace";
+import {
+  autoConnectSourceRehearsal,
   createDesignPartnerOnboardingIntent,
   fetchGatewaySourceObservations,
   fetchSourceRehearsalStatus,
-  finalizeGenericSourceRehearsal,
-  finalizeJiraRehearsal,
-  finalizeTelegramRehearsal,
-  prepareSourceRehearsal,
+  type SourceAutoConnectResponse,
   type SourceRehearsalPrepareResponse,
   type SourceRehearsalStatus,
   submitDesignPartnerIntake
@@ -111,19 +111,13 @@ export function StepView({ stepId, props }: { stepId: StepId; props: StepViewPro
     case "deployment-validation":
       return <DeploymentValidationStep {...props} />;
     case "source-catalog":
-      return <SourceCatalogStep {...props} />;
     case "source-setup":
-      return <SourceSetupStep {...props} />;
     case "source-validation":
-      return <SourceValidationStep {...props} />;
     case "source-scope":
-      return <SourceScopeStep {...props} />;
     case "first-sync":
-      return <FirstSyncStep {...props} />;
     case "ingestion-health":
-      return <IngestionHealthStep {...props} />;
     case "activation":
-      return <ActivationStep {...props} />;
+      return <SourceCatalogStep {...props} />;
     case "workspace-launch":
       return <WorkspaceLaunchStep {...props} />;
     case "workspace-home":
@@ -495,7 +489,7 @@ const SOURCE_SIGNAL_CONFIG: Record<string, SourceSignalConfig> = {
   notion: {
     historicalTrigger:
       "Notion callback writes provider_installations and onboarding_triggers(source='notion').",
-    liveIngress: "/webhooks/notion",
+    liveIngress: "/webhooks/notion/events",
     liveWorker: "Notion webhook -> verified webhook router -> ingestion pipeline.",
     landedChannel: "notion:object"
   },
@@ -521,6 +515,13 @@ function genericEnvKeys(source: Source) {
       `${prefix}_TOKEN_REF`
     ];
   }
+  if (source.method === "Workspace DWD") {
+    return [
+      `${prefix}_WORKSPACE_DOMAIN`,
+      `${prefix}_ADMIN_EMAIL`,
+      `${prefix}_DWD_CLIENT_ID`
+    ];
+  }
   if (source.method === "API token") {
     return [`${prefix}_API_TOKEN`];
   }
@@ -531,6 +532,13 @@ function genericEnvKeys(source: Source) {
     return [`${prefix}_ROLE_ARN`];
   }
   if (source.method === "Webhook") {
+    if (source.id === "whatsapp") {
+      return [
+        `${prefix}_PHONE_NUMBER_ID`,
+        `${prefix}_APP_SECRET`,
+        `${prefix}_VERIFY_TOKEN`
+      ];
+    }
     return [`${prefix}_ACCESS_TOKEN`, `${prefix}_WEBHOOK_SECRET`];
   }
   return [`${prefix}_TOKEN_REF`];
@@ -570,12 +578,13 @@ function sourceRehearsalConfig(source: Source): SourceRehearsalConfig {
 }
 
 function sourceSignalConfig(source: Source): SourceSignalConfig {
+  const channelSourceId = source.id.replaceAll("-", "_");
   return (
     SOURCE_SIGNAL_CONFIG[source.id] ?? {
       historicalTrigger: `${source.name} setup writes local install refs and onboarding_triggers(source='${source.id}').`,
       liveIngress: source.providerIngressPaths[0] ?? source.noIngressReason ?? "Customer-cloud local worker",
       liveWorker: `${source.name} worker reads approved resources and writes sanitized observations locally.`,
-      landedChannel: `${source.id}:*`
+      landedChannel: `${channelSourceId}:*`
     }
   );
 }
@@ -1319,43 +1328,6 @@ function DeploymentValidationStep({ snapshot, advance }: StepViewProps) {
   );
 }
 
-function sourceRehearsalCommand(source: Source, workspace: Workspace) {
-  const sourceId = source.id;
-  const config = sourceRehearsalConfig(source);
-  return [
-    "fyralis byoc source rehearse",
-    `--source ${sourceId}`,
-    `--setup-dir .fyralis/local-rehearsal/${sourceId}`,
-    config.needsPublicUrl ? `--public-url ${workspace.providerIngressUrl}` : "",
-    "--no-start-tunnel",
-    "--json"
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
-function sourceApplyEnvCommand(source: Source, workspace: Workspace) {
-  const sourceId = source.id;
-  const config = sourceRehearsalConfig(source);
-  const hasInstallRoute = config.gatewayRoutes.some((route) =>
-    route.path.includes("/install")
-  );
-  return [
-    "fyralis byoc source rehearse",
-    `--source ${sourceId}`,
-    `--setup-dir .fyralis/local-rehearsal/${sourceId}`,
-    config.needsPublicUrl ? `--public-url ${workspace.providerIngressUrl}` : "",
-    `--provider-env .fyralis/local-rehearsal/${sourceId}/${sourceId}.env`,
-    "--apply-env",
-    hasInstallRoute
-      ? "--print-install-url --tenant-id <tenant-id> --actor-id <actor-id>"
-      : "",
-    "--json"
-  ]
-    .filter(Boolean)
-    .join(" ");
-}
-
 function sourceFirstSyncCommand({
   sourceId,
   workspace,
@@ -1400,27 +1372,6 @@ function backfillWindowToCli(backfillWindow: SourceConnection["backfillWindow"])
     "No historical backfill": "none"
   };
   return windows[backfillWindow];
-}
-
-function gatewayRouteUrl(workspace: Workspace, path: string) {
-  if (path.startsWith(".")) {
-    return path;
-  }
-  return `${workspace.providerIngressUrl}${path}`;
-}
-
-function isPublicHttpsUrl(value: string) {
-  try {
-    const url = new URL(value);
-    return (
-      url.protocol === "https:" &&
-      !["localhost", "127.0.0.1", "0.0.0.0"].includes(url.hostname) &&
-      !url.hostname.endsWith(".example") &&
-      !value.includes("REPLACE_WITH")
-    );
-  } catch {
-    return false;
-  }
 }
 
 function errorMessage(caught: unknown) {
@@ -1517,13 +1468,13 @@ function sourceObservationSamples(
         `${source.name} produced a sanitized pilot observation.`
       ]
     ];
-  const now = new Date().toISOString();
+  const previewOccurredAt = "2026-07-05T09:00:00.000Z";
   return rows.map(([title, kind, summary], index) => ({
     id: `obs_${source.id}_${index + 1}`,
     sourceId: source.id,
     title,
     kind,
-    occurredAt: now,
+    occurredAt: previewOccurredAt,
     summary: `${summary} Sync mode: ${syncMode}.`,
     evidencePath: `s3://fyralis-byoc-pilot/raw/${source.id}/obs_${index + 1}.jsonl`,
     status: "landed",
@@ -1538,1537 +1489,367 @@ function sourceObservationSamples(
   }));
 }
 
+type SourceConnectRun = SourceAutomationCardState & {
+  apiBase?: string;
+  installUrl?: string | null;
+  observationCount?: number;
+  receiptPathHint?: string | null;
+};
+
+function sourceBackgroundRunView(
+  run: SourceRehearsalStatus["autoConnectRun"] | null | undefined
+): Pick<SourceConnectRun, "status" | "label" | "message"> | null {
+  const runStatus = run?.backgroundStatus ?? run?.status;
+  if (!runStatus) {
+    return null;
+  }
+  if (runStatus === "queued") {
+    return {
+      status: "connecting",
+      label: "Queued",
+      message: "Source setup is queued in the customer cloud."
+    };
+  }
+  if (runStatus === "running") {
+    return {
+      status: "connecting",
+      label: "Running",
+      message: "Source setup is running in the customer cloud."
+    };
+  }
+  if (runStatus === "waiting_for_admin" || runStatus === "admin_gate") {
+    return {
+      status: "waiting_admin",
+      label: "Approval needed",
+      message:
+        "Approve in the customer-cloud browser if asked. Fyralis keeps checking."
+    };
+  }
+  if (runStatus === "failed" || runStatus === "blocked" || runStatus === "error") {
+    return {
+      status: "blocked",
+      label: "Needs attention",
+      message: "Source setup needs attention. Retry when the provider task is ready."
+    };
+  }
+  if (runStatus === "connected" || runStatus === "completed") {
+    return {
+      status: "connecting",
+      label: "Finalizing",
+      message: "Source setup finished. Fyralis is waiting for connection proof."
+    };
+  }
+  return null;
+}
+
 function SourceCatalogStep(props: StepViewProps) {
-  const { snapshot, selectedSource, selectedConnection, selectSource, updateConnection, goTo } = props;
-  const allSourceCommands = [
-    [
-      "discover",
-      [
-        "fyralis byoc source discover",
-        "--source all",
-        "--scopes auto",
-        `--admin-console-url ${props.workspace.localConsoleUrl}`,
-        `--provider-ingress-url ${props.workspace.providerIngressUrl}`,
-        "--provider-authorization-mode preauthorized-ref",
-        "--preauthorized-ref-manifest ./customer-source-refs.json",
-        "--json"
-      ].join(" ")
-    ],
-    [
-      "plan",
-      [
-        "fyralis byoc source plan",
-        "--source all",
-        "--scopes auto",
-        "--sync-mode dry-run",
-        "--backfill-window 30d",
-        `--admin-console-url ${props.workspace.localConsoleUrl}`,
-        `--provider-ingress-url ${props.workspace.providerIngressUrl}`,
-        "--provider-authorization-mode preauthorized-ref",
-        "--preauthorized-ref-manifest ./customer-source-refs.json",
-        "--json"
-      ].join(" ")
-    ],
-    [
-      "apply",
-      [
-        "fyralis byoc source apply",
-        "--source all",
-        "--requires-approval",
-        "--plan latest",
-        "--sync-mode dry-run",
-        "--backfill-window 30d",
-        `--admin-console-url ${props.workspace.localConsoleUrl}`,
-        `--provider-ingress-url ${props.workspace.providerIngressUrl}`,
-        "--provider-authorization-mode preauthorized-ref",
-        "--preauthorized-ref-manifest ./customer-source-refs.json",
-        "--json"
-      ].join(" ")
-    ],
-    [
-      "validate",
-      [
-        "fyralis byoc source validate",
-        "--source all",
-        `--admin-console-url ${props.workspace.localConsoleUrl}`,
-        `--provider-ingress-url ${props.workspace.providerIngressUrl}`,
-        "--provider-authorization-mode preauthorized-ref",
-        "--preauthorized-ref-manifest ./customer-source-refs.json",
-        "--json"
-      ].join(" ")
-    ],
-    [
-      "activate",
-      [
-        "fyralis byoc source activate",
-        "--source all",
-        "--requires-approval",
-        "--start-first-sync",
-        "--sync-mode limited-backfill",
-        "--backfill-window 30d",
-        `--admin-console-url ${props.workspace.localConsoleUrl}`,
-        `--provider-ingress-url ${props.workspace.providerIngressUrl}`,
-        "--provider-authorization-mode preauthorized-ref",
-        "--preauthorized-ref-manifest ./customer-source-refs.json",
-        "--json"
-      ].join(" ")
-    ]
-  ];
-  return (
-    <div className="grid min-w-0 gap-5">
-      <Card>
-        <CardHeader>
-          <CardTitle>Source agent lifecycle</CardTitle>
-          <Badge tone="success">All supported sources</Badge>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-3 rounded-lg border border-success/30 bg-success/10 p-4">
-            <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
-              <TerminalSquare className="h-4 w-4" aria-hidden="true" />
-              Discover, plan, apply, validate, and activate
-            </div>
-            {allSourceCommands.map(([label, command]) => (
-              <div key={label} className="grid gap-1">
-                <span className="text-xs font-semibold uppercase text-muted-foreground">{label}</span>
-                <code className="block break-all text-xs text-muted-foreground">
-                  {command}
-                </code>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Provider rehearsal automation</CardTitle>
-          <Badge tone="info">Setup owner path</Badge>
-        </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {snapshot.sources.map((source) => {
-            const sourceId = source.id;
-            const config = sourceRehearsalConfig(source);
-            return (
-              <button
-                key={sourceId}
-                type="button"
-                className="rounded-lg border border-border bg-background/70 p-4 text-left transition-colors hover:border-ring"
-                onClick={() => {
-                  selectSource(sourceId);
-                  updateConnection(sourceId, { status: "draft" });
-                  goTo("source-setup");
-                }}
-              >
-                <span className="flex items-start justify-between gap-3">
-                  <span>
-                    <strong className="block">{source.name}</strong>
-                    <span className="mt-1 block text-sm text-muted-foreground">
-                      {config.providerKind}
-                    </span>
-                  </span>
-                  <Badge tone="success">
-                    {config.generatedArtifacts.length} files
-                  </Badge>
-                </span>
-                <code className="mt-3 block break-all text-xs text-muted-foreground">
-                  .fyralis/local-rehearsal/{sourceId}
-                </code>
-              </button>
-            );
-          })}
-        </CardContent>
-      </Card>
-      <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
-        <SourceMarketplace
-          sources={snapshot.sources}
-          connections={props.connections}
-          selectedSourceId={selectedSource.id}
-          onSelect={selectSource}
-          onOpenSetup={(sourceId) => {
-            selectSource(sourceId);
-            updateConnection(sourceId, { status: "draft" });
-            goTo("source-setup");
-          }}
-        />
-        <SourceDetailPanel
-          source={selectedSource}
-          connection={selectedConnection}
-          workspace={props.workspace}
-          onOpenSetup={() => {
-            updateConnection(selectedSource.id, { status: "draft" });
-            goTo("source-setup");
-          }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function SourceSetupStep({
-  selectedSource,
-  selectedConnection,
-  workspace,
-  updateConnection,
-  goTo,
-  advance
-}: StepViewProps) {
-  const rehearsalConfig = sourceRehearsalConfig(selectedSource);
-  const [rehearsalStage, setRehearsalStage] = useState<
-    "idle" | "generated" | "provider-gates-done"
-  >(
-    selectedConnection?.status === "ready" || selectedConnection?.status === "connected"
-      ? "provider-gates-done"
-      : selectedConnection?.receiptId?.startsWith("rehearsal_")
-        ? "generated"
-        : "idle"
-  );
-  const endpoints = selectedSource.providerIngressPaths.length
-    ? selectedSource.providerIngressPaths.map((path) => `${workspace.providerIngressUrl}${path}`)
-    : [selectedSource.noIngressReason ?? "No provider ingress required."];
-  const defaultScopes = sourceScopeChoices(selectedSource.id).slice(0, 3);
-  const rehearsalCommand = sourceRehearsalCommand(selectedSource, workspace);
-  const applyEnvCommand = sourceApplyEnvCommand(selectedSource, workspace);
-  const providerIngressIsPublic = isPublicHttpsUrl(workspace.providerIngressUrl);
-  const observationPreview = sourceObservationSamples(
+  const {
+    snapshot,
     selectedSource,
-    selectedConnection?.syncMode ?? "Limited backfill"
-  );
-  const sourceCommands = [
-    [
-      "discover",
-      [
-        "fyralis byoc source discover",
-        `--source ${selectedSource.id}`,
-        "--scopes auto",
-        `--admin-console-url ${workspace.localConsoleUrl}`,
-        `--provider-ingress-url ${workspace.providerIngressUrl}`,
-        "--provider-authorization-mode preauthorized-ref",
-        "--preauthorized-ref-manifest ./customer-source-refs.json",
-        "--json"
-      ].join(" ")
-    ],
-    [
-      "plan",
-      [
-        "fyralis byoc source plan",
-        `--source ${selectedSource.id}`,
-        "--scopes auto",
-        "--sync-mode limited-backfill",
-        "--backfill-window 30d",
-        `--admin-console-url ${workspace.localConsoleUrl}`,
-        `--provider-ingress-url ${workspace.providerIngressUrl}`,
-        "--provider-authorization-mode preauthorized-ref",
-        "--preauthorized-ref-manifest ./customer-source-refs.json",
-        "--json"
-      ].join(" ")
-    ],
-    [
-      "apply",
-      [
-        "fyralis byoc source apply",
-        `--source ${selectedSource.id}`,
-        "--requires-approval",
-        "--plan latest",
-        "--sync-mode limited-backfill",
-        "--backfill-window 30d",
-        `--admin-console-url ${workspace.localConsoleUrl}`,
-        `--provider-ingress-url ${workspace.providerIngressUrl}`,
-        "--provider-authorization-mode preauthorized-ref",
-        "--preauthorized-ref-manifest ./customer-source-refs.json",
-        "--json"
-      ].join(" ")
-    ],
-    [
-      "validate",
-      [
-        "fyralis byoc source validate",
-        `--source ${selectedSource.id}`,
-        `--admin-console-url ${workspace.localConsoleUrl}`,
-        `--provider-ingress-url ${workspace.providerIngressUrl}`,
-        "--provider-authorization-mode preauthorized-ref",
-        "--preauthorized-ref-manifest ./customer-source-refs.json",
-        "--json"
-      ].join(" ")
-    ],
-    [
-      "activate",
-      [
-        "fyralis byoc source activate",
-        `--source ${selectedSource.id}`,
-        "--requires-approval",
-        "--start-first-sync",
-        "--sync-mode limited-backfill",
-        "--backfill-window 30d",
-        `--admin-console-url ${workspace.localConsoleUrl}`,
-        `--provider-ingress-url ${workspace.providerIngressUrl}`,
-        "--provider-authorization-mode preauthorized-ref",
-        "--preauthorized-ref-manifest ./customer-source-refs.json",
-        "--json"
-      ].join(" ")
-    ]
-  ];
+    selectSource,
+    updateConnection,
+    landSourceObservations,
+    connections,
+    workspace
+  } = props;
+  const [automationStates, setAutomationStates] = useState<
+    Record<string, SourceConnectRun>
+  >({});
 
-  function generatePackage() {
-    setRehearsalStage("generated");
-    updateConnection(selectedSource.id, {
-      status: "draft",
-      receiptId: `rehearsal_${selectedSource.id}_package`
-    });
-  }
-
-  function markProviderGatesDone() {
-    setRehearsalStage("provider-gates-done");
-    updateConnection(selectedSource.id, {
-      status: "ready",
-      selectedScopes: defaultScopes,
-      backfillWindow: "Last 30 days",
-      syncMode: "Limited backfill",
-      receiptId: `rehearsal_${selectedSource.id}_provider_ready`
-    });
-  }
-
-  return (
-    <div className="grid gap-5">
-      <Card>
-        <CardHeader>
-          <CardTitle>Connect {selectedSource.name}</CardTitle>
-          <Badge tone="info">{selectedConnection?.status ?? "draft"}</Badge>
-        </CardHeader>
-        <CardContent className="grid gap-5 lg:grid-cols-2">
-          <InfoBlock title="Admin console URL" value={workspace.localConsoleUrl} />
-          <InfoBlock title="Provider ingress" value={endpoints.join("\n")} />
-          <InfoBlock title="Setup requirements" value={selectedSource.setupRequirements} />
-          <InfoBlock
-            title="Secret refs created locally"
-            value={`${selectedSource.id}_credential_ref\n${selectedSource.id}_connection_policy_ref`}
-          />
-        </CardContent>
-      </Card>
-      {rehearsalConfig ? (
-        <>
-          <Card>
-            <CardHeader>
-              <CardTitle>{selectedSource.name} provider setup package</CardTitle>
-              <Badge tone="success">{rehearsalConfig.providerKind}</Badge>
-            </CardHeader>
-            <CardContent className="grid gap-5">
-              <div className="rounded-lg border border-info/30 bg-info/10 p-4 text-sm text-muted-foreground">
-                Use this package view for CLI handoff details. Continue to the
-                automated setup screen to prepare the live provider install,
-                open the approval URL, poll gateway status, and load landed
-                observations.
-              </div>
-              <div className="grid gap-3 md:grid-cols-3">
-                <Metric
-                  label="Package"
-                  value={
-                    rehearsalStage === "idle" ? "Ready" : "Generated"
-                  }
-                  detail=".fyralis local setup artifacts."
-                />
-                <Metric
-                  label="Provider gates"
-                  value={
-                    rehearsalStage === "provider-gates-done"
-                      ? "Done"
-                      : String(rehearsalConfig.manualGates.length)
-                  }
-                  detail="Only provider approval screens remain manual."
-                />
-                <Metric
-                  label="Secrets"
-                  value="Local"
-                  detail="Env values apply to the customer-cloud gateway only."
-                />
-              </div>
-
-              <div
-                className={cn(
-                  "rounded-lg border p-4",
-                  providerIngressIsPublic
-                    ? "border-success/30 bg-success/10"
-                    : "border-warning/40 bg-warning/15"
-                )}
-              >
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <span>
-                    <strong className="block text-sm">
-                      {providerIngressIsPublic
-                        ? "Provider callback URL is public HTTPS"
-                        : "Provider callback URL is local or not public HTTPS"}
-                    </strong>
-                    <span className="mt-1 block text-sm leading-6 text-muted-foreground">
-                      Real Slack, GitHub, Discord, and Notion installs require
-                      the provider ingress to be reachable by the provider.
-                      For local testing, expose the gateway with ngrok or a
-                      customer-owned DNS name and set
-                      NEXT_PUBLIC_FYRALIS_PROVIDER_INGRESS_URL.
-                    </span>
-                  </span>
-                  <Badge tone={providerIngressIsPublic ? "success" : "warning"}>
-                    {providerIngressIsPublic ? "Live URL" : "Local URL"}
-                  </Badge>
-                </div>
-              </div>
-
-              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_14rem]">
-                <ProviderRouteList
-                  workspace={workspace}
-                  config={rehearsalConfig}
-                />
-                <a
-                  href={rehearsalConfig.providerConsoleUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex min-h-10 items-center justify-center rounded-md border border-border bg-card px-4 text-sm font-semibold text-foreground transition-colors hover:border-ring hover:bg-accent"
-                >
-                  Open provider console
-                </a>
-              </div>
-
-              <div className="grid gap-3 lg:grid-cols-2">
-                <div className="rounded-lg border border-success/30 bg-success/10 p-4">
-                  <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
-                    <TerminalSquare className="h-4 w-4" aria-hidden="true" />
-                    Generate setup artifacts
-                  </div>
-                  <code className="block break-all text-xs text-muted-foreground">
-                    {rehearsalCommand}
-                  </code>
-                </div>
-                <div className="rounded-lg border border-info/30 bg-info/10 p-4">
-                  <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
-                    <TerminalSquare className="h-4 w-4" aria-hidden="true" />
-                    Apply local provider env
-                  </div>
-                  <code className="block break-all text-xs text-muted-foreground">
-                    {applyEnvCommand}
-                  </code>
-                </div>
-              </div>
-
-              <div className="grid gap-3 lg:grid-cols-3">
-                <SetupList
-                  title="Generated files"
-                  items={rehearsalConfig.generatedArtifacts}
-                  tone="success"
-                />
-                <SetupList
-                  title="Local env keys"
-                  items={rehearsalConfig.envKeys}
-                  tone="info"
-                />
-                <SetupList
-                  title="Provider gates"
-                  items={rehearsalConfig.manualGates}
-                  tone="warning"
-                />
-              </div>
-
-              <div>
-                <h3 className="text-sm font-semibold">Observations expected after first sync</h3>
-                <div className="mt-3 grid gap-3 md:grid-cols-2">
-                  {observationPreview.map((observation) => (
-                    <ObservationCard key={observation.id} observation={observation} />
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-3">
-                <Button type="button" variant="secondary" onClick={generatePackage}>
-                  Generate CLI package
-                </Button>
-                <Button type="button" onClick={markProviderGatesDone}>
-                  Mark provider gates complete
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        </>
-      ) : (
-        <Card>
-          <CardHeader>
-            <CardTitle>{selectedSource.name} source agent</CardTitle>
-            <Badge tone="success">Customer cloud</Badge>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-3 rounded-lg border border-success/30 bg-success/10 p-4">
-              <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
-                <TerminalSquare className="h-4 w-4" aria-hidden="true" />
-                Stop at each approval boundary
-              </div>
-              {sourceCommands.map(([label, command]) => (
-                <div key={label} className="grid gap-1">
-                  <span className="text-xs font-semibold uppercase text-muted-foreground">{label}</span>
-                  <code className="block break-all text-xs text-muted-foreground">
-                    {command}
-                  </code>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-      <ActionBar
-        primaryLabel={
-          rehearsalConfig
-            ? "Continue to automated setup"
-            : "Run source autopilot"
+  function patchAutomationState(sourceId: string, patch: Partial<SourceConnectRun>) {
+    setAutomationStates((current) => {
+      const existing = current[sourceId] ?? {
+        status: "idle" as const,
+        label: "Ready"
+      };
+      return {
+        ...current,
+        [sourceId]: {
+          ...existing,
+          ...patch
         }
-        onPrimary={() => {
-          updateConnection(selectedSource.id, {
-            status: rehearsalConfig ? "ready" : "connected",
-            selectedScopes: defaultScopes,
-            backfillWindow: "Last 30 days",
-            syncMode: "Limited backfill",
-            receiptId: rehearsalConfig
-              ? `rehearsal_${selectedSource.id}_provider_ready`
-              : `srcval_${selectedSource.id}_autopilot`
-          });
-          if (rehearsalConfig) {
-            goTo("ingestion-health");
-          } else {
-            advance();
-          }
-        }}
-      />
-    </div>
-  );
-}
-
-function SourceValidationStep({
-  selectedSource,
-  sourceValidation,
-  setSourceValidation,
-  updateConnection,
-  advance
-}: StepViewProps) {
-  function pass() {
-    setSourceValidation({
-      ...sourceValidation,
-      status: "passed",
-      checks: sourceValidation.checks.map((check) => ({
-        ...check,
-        status: "passed",
-        detail: `${selectedSource.name} ${check.label.toLowerCase()} passed.`
-      }))
-    });
-    updateConnection(selectedSource.id, {
-      status: "ready",
-      receiptId: `srcval_${selectedSource.id}_20260629`
+      };
     });
   }
 
-  function fail() {
-    setSourceValidation({
-      ...sourceValidation,
-      status: "failed",
-      checks: sourceValidation.checks.map((check, index) => ({
-        ...check,
-        status: index === 1 ? "failed" : "passed",
-        detail:
-          index === 1
-            ? "SOURCE_CALLBACK_MISMATCH. Fix locally, then retry."
-            : `${selectedSource.name} ${check.label.toLowerCase()} passed.`
-      }))
-    });
-    updateConnection(selectedSource.id, {
-      status: "error",
-      lastIssueCode: "SOURCE_CALLBACK_MISMATCH"
-    });
-  }
-
-  return (
-    <ValidationCard
-      title={`Validate ${selectedSource.name}`}
-      validation={sourceValidation}
-      primaryLabel="Run connection test"
-      onPrimary={pass}
-      secondaryLabel="Show failed state"
-      onSecondary={fail}
-      footer={<ActionBar primaryLabel="Continue to scope" onPrimary={advance} compact />}
-    />
-  );
-}
-
-function SourceScopeStep({ selectedSource, selectedConnection, updateConnection, advance }: StepViewProps) {
-  const choices = sourceScopeChoices(selectedSource.id);
-  const form = useForm<SourceScopeFormValues>({
-    resolver: zodResolver(sourceScopeSchema),
-    defaultValues: {
-      selectedScopes: selectedConnection?.selectedScopes.length
-        ? selectedConnection.selectedScopes
-        : choices.slice(0, 3),
-      backfillWindow: selectedConnection?.backfillWindow ?? "Last 30 days",
-      syncMode: selectedConnection?.syncMode ?? "Limited backfill"
+  function applyCatalogSourceStatus({
+    source,
+    status,
+    apiBase,
+    installUrl,
+    waitingForAdmin
+  }: {
+    source: Source;
+    status: SourceRehearsalStatus;
+    apiBase?: string;
+    installUrl?: string | null;
+    waitingForAdmin?: boolean;
+  }) {
+    if (status.observations.length) {
+      landSourceObservations(status.sourceId, status.observations);
     }
-  });
-
-  return (
-    <form
-      className="grid gap-5"
-      onSubmit={form.handleSubmit((values) => {
-        updateConnection(selectedSource.id, values);
-        advance();
-      })}
-    >
-      <Card>
-        <CardHeader>
-          <CardTitle>Approve {selectedSource.name} scope</CardTitle>
-          <Badge tone="success">Customer approved</Badge>
-        </CardHeader>
-        <CardContent className="grid gap-5">
-          <div className="grid gap-2 md:grid-cols-2">
-            {choices.map((choice) => (
-              <label key={choice} className="flex gap-3 rounded-lg border border-border bg-background/70 p-3 text-sm">
-                <input
-                  type="checkbox"
-                  value={choice}
-                  className="mt-1 h-4 w-4 accent-success"
-                  {...form.register("selectedScopes")}
-                />
-                <span>
-                  <strong className="block">{choice}</strong>
-                  <span className="text-xs text-muted-foreground">
-                    Included only when approved for this pilot batch.
-                  </span>
-                </span>
-              </label>
-            ))}
-          </div>
-          {form.formState.errors.selectedScopes?.message ? (
-            <p className="text-sm font-medium text-destructive">
-              {form.formState.errors.selectedScopes.message}
-            </p>
-          ) : null}
-          <div className="grid gap-4 md:grid-cols-2">
-            <SelectField label="Backfill window" register={form.register("backfillWindow")}>
-              <option>Last 7 days</option>
-              <option>Last 30 days</option>
-              <option>Last 90 days</option>
-              <option>No historical backfill</option>
-            </SelectField>
-            <SelectField label="Sync mode" register={form.register("syncMode")}>
-              <option>Dry run</option>
-              <option>Limited backfill</option>
-              <option>Live events</option>
-              <option>Backfill plus live</option>
-            </SelectField>
-          </div>
-        </CardContent>
-      </Card>
-      <ActionBar primaryLabel="Save scope and continue" submit />
-    </form>
-  );
-}
-
-function FirstSyncStep({
-  selectedSource,
-  selectedConnection,
-  workspace,
-  upsertSyncJob,
-  landSourceObservations,
-  advance
-}: StepViewProps) {
-  const syncMode = selectedConnection?.syncMode ?? "Limited backfill";
-  const backfillWindow = selectedConnection?.backfillWindow ?? "Last 30 days";
-  const signalConfig = sourceSignalConfig(selectedSource);
-  const selectedCommand = sourceFirstSyncCommand({
-    sourceId: selectedSource.id,
-    workspace,
-    syncMode,
-    backfillWindow
-  });
-  const historicalCommand = sourceFirstSyncCommand({
-    sourceId: selectedSource.id,
-    workspace,
-    syncMode: "Limited backfill",
-    backfillWindow
-  });
-  const liveCommand = sourceFirstSyncCommand({
-    sourceId: selectedSource.id,
-    workspace,
-    syncMode: "Live events",
-    backfillWindow: "No historical backfill"
-  });
-  const bothCommand = sourceFirstSyncCommand({
-    sourceId: selectedSource.id,
-    workspace,
-    syncMode: "Backfill plus live",
-    backfillWindow
-  });
-
-  return (
-    <div className="grid gap-5">
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-3">
-            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent text-accent-foreground">
-              <Play className="h-5 w-5" aria-hidden="true" />
-            </span>
-            <div>
-              <CardTitle>Run {selectedSource.name} first sync</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Use the customer-cloud source agent to start historical backfill,
-                live signals, or both after the source is authorized.
-              </p>
-            </div>
-          </div>
-          <Badge tone="info">{syncMode}</Badge>
-        </CardHeader>
-        <CardContent className="grid gap-5">
-          <div className="grid gap-3 md:grid-cols-4">
-            <Metric
-              label="Scope"
-              value={`${selectedConnection?.selectedScopes.length || 3} items`}
-              detail="Approved by the setup owner."
-            />
-            <Metric
-              label="Backfill"
-              value={backfillWindow}
-              detail="Only used for historical modes."
-            />
-            <Metric
-              label="Live edge"
-              value={signalConfig?.liveIngress ?? "source runner"}
-              detail="Provider callback, webhook, or local gateway."
-            />
-            <Metric
-              label="Landed channel"
-              value={signalConfig?.landedChannel ?? `${selectedSource.id}:*`}
-              detail="Observation source_channel prefix."
-            />
-          </div>
-
-          <div className="grid gap-3 lg:grid-cols-2">
-            <SignalPathCard
-              title="Historical backfill path"
-              detail={
-                signalConfig?.historicalTrigger ??
-                "Source activation emits the onboarding trigger consumed by the source-onboarding workers."
-              }
-              command={historicalCommand}
-            />
-            <SignalPathCard
-              title="Live signal path"
-              detail={
-                signalConfig?.liveWorker ??
-                "Provider live events enter the customer-cloud gateway and write observations."
-              }
-              command={liveCommand}
-            />
-          </div>
-
-          <div className="rounded-lg border border-success/30 bg-success/10 p-4">
-            <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
-              <TerminalSquare className="h-4 w-4" aria-hidden="true" />
-              Recommended command for the selected mode
-            </div>
-            <code className="block break-all text-xs text-muted-foreground">
-              {selectedCommand}
-            </code>
-            {syncMode !== "Backfill plus live" ? (
-              <code className="mt-3 block break-all text-xs text-muted-foreground">
-                Both paths: {bothCommand}
-              </code>
-            ) : null}
-          </div>
-        </CardContent>
-      </Card>
-      <ActionBar
-        primaryLabel="Record sync receipt and continue"
-        onPrimary={() => {
-          upsertSyncJob({
-            id: `sync_${selectedSource.id}_initial`,
-            sourceId: selectedSource.id,
-            mode: syncMode,
-            status: "completed",
-            eventsReceived: 80 + selectedSource.name.length * 8,
-            errors: 0
-          });
-          landSourceObservations(
-            selectedSource.id,
-            sourceObservationSamples(selectedSource, syncMode)
-          );
-          advance();
-        }}
-      />
-    </div>
-  );
-}
-
-function IngestionHealthStep({
-  selectedSource,
-  workspace,
-  syncJobs,
-  sourceObservations,
-  landSourceObservations,
-  advance
-}: StepViewProps) {
-  const job = syncJobs.find((item) => item.sourceId === selectedSource.id);
-  const observations = sourceObservations.filter(
-    (observation) => observation.sourceId === selectedSource.id
-  );
-  const sourceAutomationConfig = sourceRehearsalConfig(selectedSource);
-  const hasSourceAutomation = true;
-  const [apiBase, setApiBase] = useState(workspace.providerIngressUrl);
-  const [bearerToken, setBearerToken] = useState("");
-  const [fetchStatus, setFetchStatus] = useState<
-    "idle" | "loading" | "loaded" | "error"
-  >("idle");
-  const [fetchMessage, setFetchMessage] = useState(
-    "Fetch after the source authorization and first sync have run in the customer cloud."
-  );
-  const [sourceRehearsal, setSourceRehearsal] =
-    useState<SourceRehearsalPrepareResponse | null>(null);
-  const [sourceStatus, setSourceStatus] = useState<SourceRehearsalStatus | null>(
-    null
-  );
-  const [sourceAutomationStatus, setSourceAutomationStatus] = useState<
-    "idle" | "preparing" | "polling" | "ready" | "blocked" | "error"
-  >("idle");
-  const [sourceAutomationMessage, setSourceAutomationMessage] = useState(
-    `Prepare ${selectedSource.name} from this UI. Fyralis will generate the provider handoff, open approval when available, poll the gateway, and show observations when they land.`
-  );
-  const [jiraForm, setJiraForm] = useState({
-    baseUrl: "",
-    accountEmail: "",
-    apiToken: "",
-    webhookSecret: ""
-  });
-  const [telegramForm, setTelegramForm] = useState({
-    accountLabel: "",
-    apiId: "",
-    apiHash: "",
-    liveSession: "",
-    backfillSession: ""
-  });
-  const [genericSourceForm, setGenericSourceForm] = useState<Record<string, string>>(
-    {}
-  );
-
-  useEffect(() => {
-    setSourceRehearsal(null);
-    setSourceStatus(null);
-    setGenericSourceForm({});
-    setSourceAutomationStatus("idle");
-    setSourceAutomationMessage(
-      `Prepare ${selectedSource.name} from this UI. Fyralis will generate the provider handoff, open approval when available, poll the gateway, and show observations when they land.`
-    );
-    setFetchMessage(
-      "Fetch after the source authorization and first sync have run in the customer cloud."
-    );
-    setFetchStatus("idle");
-  }, [selectedSource.id, selectedSource.name]);
-
-  useEffect(() => {
-    if (!sourceRehearsal) {
+    if (status.installed) {
+      updateConnection(source.id, {
+        status: "connected",
+        selectedScopes: sourceScopeChoices(source.id).slice(0, 3),
+        backfillWindow: "Last 30 days",
+        syncMode: "Limited backfill",
+        receiptId:
+          status.autoConnectRun?.receiptPathHint ??
+          `source_agent_${source.id}_connected`
+      });
+      patchAutomationState(source.id, {
+        status: "connected",
+        label: "Connected",
+        message: status.observationCount
+          ? `${status.observationCount} sanitized observation${status.observationCount === 1 ? "" : "s"} landed.`
+          : "Install created. Fyralis is waiting for the first sync proof.",
+        apiBase,
+        installUrl,
+        observationCount: status.observationCount
+      });
       return;
     }
-    const inputNames = [
-      ...sourceRehearsal.requiredInputs,
-      ...sourceRehearsal.optionalInputs
-    ];
-    setGenericSourceForm((current) => {
-      const next = { ...current };
-      for (const name of inputNames) {
-        if (!(name in next)) {
-          next[name] = "";
-        }
-      }
-      return next;
+    const backgroundView = sourceBackgroundRunView(status.autoConnectRun);
+    const receiptPathHint = status.autoConnectRun?.receiptPathHint;
+    const nextRunStatus =
+      backgroundView?.status ?? (waitingForAdmin ? "waiting_admin" : "connecting");
+    if (nextRunStatus === "blocked") {
+      updateConnection(source.id, {
+        status: "error",
+        ...(receiptPathHint ? { receiptId: receiptPathHint } : {})
+      });
+    } else if (nextRunStatus === "waiting_admin") {
+      updateConnection(source.id, {
+        status: "waiting-admin",
+        ...(receiptPathHint ? { receiptId: receiptPathHint } : {})
+      });
+    }
+    patchAutomationState(source.id, {
+      status: nextRunStatus,
+      label:
+        backgroundView?.label ?? (waitingForAdmin ? "Approval needed" : "Running"),
+      message:
+        backgroundView?.message ??
+        (waitingForAdmin
+          ? "Approve in the customer-cloud browser if asked. Fyralis keeps checking."
+          : status.nextAction),
+      apiBase,
+      installUrl,
+      observationCount: status.observationCount,
+      ...(receiptPathHint ? { receiptPathHint } : {})
     });
-  }, [sourceRehearsal]);
+  }
+
+  async function connectSource(sourceId: string) {
+    const source = snapshot.sources.find((item) => item.id === sourceId);
+    if (!source) {
+      return;
+    }
+    selectSource(sourceId);
+    updateConnection(sourceId, { status: "validating" });
+    patchAutomationState(sourceId, {
+      status: "connecting",
+      label: "Connecting",
+      message: "Starting customer-cloud connection..."
+    });
+    try {
+      const prepared = await autoConnectSourceRehearsal({
+        sourceId,
+        apiBase: workspace.providerIngressUrl
+      });
+      const preparedApiBase = prepared.gatewayApiBase || workspace.providerIngressUrl;
+      applyCatalogSourceStatus({
+        source,
+        status: prepared.status,
+        apiBase: preparedApiBase,
+        installUrl: prepared.installUrl
+      });
+      if (
+        prepared.autoConnect.state === "blocked" ||
+        prepared.autoConnect.state === "error"
+      ) {
+        updateConnection(sourceId, { status: "error" });
+        patchAutomationState(sourceId, {
+          status:
+            prepared.autoConnect.state === "blocked" ? "blocked" : "error",
+          label: prepared.autoConnect.label,
+          message: prepared.autoConnect.message,
+          apiBase: preparedApiBase,
+          installUrl: prepared.autoConnect.installUrl ?? prepared.installUrl
+        });
+        return;
+      }
+      if (prepared.autoConnect.state === "connected" || prepared.status.installed) {
+        return;
+      }
+      const installUrl = prepared.autoConnect.installUrl ?? prepared.installUrl;
+      const providerConsoleUrl =
+        prepared.autoConnect.browserAgent?.providerConsoleUrl ??
+        prepared.browserAgent?.providerConsoleUrl ??
+        prepared.providerConsoleUrl;
+      const handoffUrl =
+        prepared.autoConnect.browserAgentRun?.handoffUrl ??
+        prepared.browserAgentRun?.handoffUrl ??
+        installUrl ??
+        (isExternalUrl(providerConsoleUrl) ? providerConsoleUrl : null);
+      if (prepared.autoConnect.state === "admin_gate") {
+        const waiting = sourceWaitingAdminCard(prepared);
+        updateConnection(sourceId, {
+          status: "waiting-admin",
+          receiptId:
+            prepared.autoConnect.automationRun?.receiptPathHint ??
+            `source_agent_${sourceId}_waiting_admin`
+        });
+        patchAutomationState(sourceId, {
+          status: "waiting_admin",
+          label: waiting.label,
+          message: waiting.message,
+          apiBase: preparedApiBase,
+          installUrl: handoffUrl,
+          receiptPathHint: prepared.autoConnect.automationRun?.receiptPathHint
+        });
+        return;
+      }
+      patchAutomationState(sourceId, {
+        status: "connecting",
+        label: sourceRunningLabel(prepared),
+        message: sourceRunningMessage(prepared),
+        apiBase: preparedApiBase,
+        installUrl: handoffUrl,
+        receiptPathHint: prepared.autoConnect.automationRun?.receiptPathHint
+      });
+    } catch (caught) {
+      updateConnection(sourceId, { status: "error" });
+      patchAutomationState(sourceId, {
+        status: "error",
+        label: "Retry",
+        message: errorMessage(caught)
+      });
+    }
+  }
 
   useEffect(() => {
-    if (!hasSourceAutomation || !sourceRehearsal) {
+    const activeRunMap = new Map<string, SourceConnectRun>();
+    for (const connection of connections) {
+      if (connection.status === "waiting-admin") {
+        activeRunMap.set(connection.sourceId, {
+          status: "waiting_admin",
+          label: "Approval needed",
+          message:
+            "Approve in the customer-cloud browser if asked. Fyralis keeps checking.",
+          apiBase: workspace.providerIngressUrl
+        });
+      }
+      if (connection.status === "validating") {
+        activeRunMap.set(connection.sourceId, {
+          status: "connecting",
+          label: "Connecting",
+          message: "Fyralis is checking source setup status.",
+          apiBase: workspace.providerIngressUrl
+        });
+      }
+    }
+    for (const [sourceId, state] of Object.entries(automationStates)) {
+      if (state.status === "connecting" || state.status === "waiting_admin") {
+        activeRunMap.set(sourceId, state);
+      }
+    }
+    const activeRuns = Array.from(activeRunMap.entries());
+    if (!activeRuns.length) {
       return;
     }
     let cancelled = false;
-    async function pollSourceStatus() {
-      try {
-        const status = await fetchSourceRehearsalStatus({
-          sourceId: selectedSource.id,
-          apiBase: sourceRehearsal?.gatewayApiBase ?? apiBase
-        });
-        if (cancelled) {
-          return;
+    async function pollActiveSources() {
+      for (const [sourceId, state] of activeRuns) {
+        const source = snapshot.sources.find((item) => item.id === sourceId);
+        if (!source) {
+          continue;
         }
-        applySourceStatus(status);
-      } catch (caught) {
-        if (!cancelled) {
-          setSourceAutomationStatus("error");
-          setSourceAutomationMessage(errorMessage(caught));
+        try {
+          const status = await fetchSourceRehearsalStatus({
+            sourceId,
+            apiBase: state.apiBase ?? workspace.providerIngressUrl
+          });
+          if (!cancelled) {
+            applyCatalogSourceStatus({
+              source,
+              status,
+              apiBase: state.apiBase,
+              installUrl: state.installUrl,
+              waitingForAdmin: state.status === "waiting_admin"
+            });
+          }
+        } catch (caught) {
+          if (!cancelled) {
+            patchAutomationState(sourceId, {
+              status: "error",
+              label: "Retry",
+              message: errorMessage(caught)
+            });
+          }
         }
       }
     }
-    const interval = window.setInterval(pollSourceStatus, 7000);
+    const interval = window.setInterval(pollActiveSources, 8000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [apiBase, hasSourceAutomation, selectedSource.id, sourceRehearsal]);
-
-  async function loadGatewayObservations() {
-    setFetchStatus("loading");
-    setFetchMessage("Reading gateway observations...");
-    try {
-      const gatewayObservations = await fetchGatewaySourceObservations({
-        apiBase,
-        bearerToken,
-        sourceId: selectedSource.id,
-        limit: 50
-      });
-      landSourceObservations(selectedSource.id, gatewayObservations);
-      setFetchStatus("loaded");
-      setFetchMessage(
-        gatewayObservations.length
-          ? `${gatewayObservations.length} ${selectedSource.name} observations loaded from the customer gateway.`
-          : `No ${selectedSource.name} observations were returned yet. Check the source_channel prefix ${sourceSignalConfig(selectedSource).landedChannel}.`
-      );
-    } catch (caught) {
-      setFetchStatus("error");
-      setFetchMessage(errorMessage(caught));
-    }
-  }
-
-  function applySourceStatus(status: SourceRehearsalStatus) {
-    setSourceStatus(status);
-    if (status.bearerToken) {
-      setBearerToken(status.bearerToken);
-    }
-    if (status.observations.length) {
-      landSourceObservations(status.sourceId, status.observations);
-      setFetchStatus("loaded");
-      setFetchMessage(
-        `${status.observations.length} ${selectedSource.name} observations loaded from the customer gateway.`
-      );
-    }
-    setSourceAutomationStatus(status.observationCount ? "ready" : "polling");
-    setSourceAutomationMessage(status.nextAction);
-  }
-
-  async function prepareAndOpenSource() {
-    setSourceAutomationStatus("preparing");
-    setSourceAutomationMessage(`Preparing ${selectedSource.name} authorization...`);
-    try {
-      const prepared = await prepareSourceRehearsal({
-        sourceId: selectedSource.id,
-        apiBase
-      });
-      setSourceRehearsal(prepared);
-      setApiBase(prepared.gatewayApiBase);
-      setBearerToken(prepared.bearerToken);
-      applySourceStatus({
-        ...prepared.status,
-        bearerToken: prepared.bearerToken,
-        sessionExpiresAt: prepared.sessionExpiresAt
-      });
-      if (prepared.missingConfiguration.length) {
-        setSourceAutomationStatus("blocked");
-        setSourceAutomationMessage(
-          `${selectedSource.name} provider app is not fully configured. Add ${prepared.missingConfiguration.join(", ")} in the customer-cloud runtime, then prepare again.`
-        );
-        return;
-      }
-      if (prepared.installUrl && typeof window !== "undefined") {
-        window.open(prepared.installUrl, "_blank", "noopener,noreferrer");
-        setSourceAutomationMessage(
-          `${selectedSource.name} approval opened. Approve the provider app, then this page will keep checking for install, backfill, and live observations.`
-        );
-      } else {
-        setSourceAutomationMessage(
-          `${selectedSource.name} handoff prepared. Complete the connection details below and Fyralis will finalize the install customer-side.`
-        );
-      }
-    } catch (caught) {
-      setSourceAutomationStatus("error");
-      setSourceAutomationMessage(errorMessage(caught));
-    }
-  }
-
-  async function refreshSourceAutomationStatus() {
-    setSourceAutomationStatus("polling");
-    setSourceAutomationMessage(
-      `Checking ${selectedSource.name} install and observation status...`
-    );
-    try {
-      const status = await fetchSourceRehearsalStatus({
-        sourceId: selectedSource.id,
-        apiBase
-      });
-      applySourceStatus(status);
-    } catch (caught) {
-      setSourceAutomationStatus("error");
-      setSourceAutomationMessage(errorMessage(caught));
-    }
-  }
-
-  async function finalizeJiraFromUi() {
-    setSourceAutomationStatus("preparing");
-    setSourceAutomationMessage("Verifying Jira credentials and finalizing install...");
-    try {
-      const response = await finalizeJiraRehearsal({
-        apiBase,
-        payload: {
-          baseUrl: jiraForm.baseUrl,
-          accountEmail: jiraForm.accountEmail,
-          apiToken: jiraForm.apiToken,
-          webhookSecret: jiraForm.webhookSecret || undefined
-        }
-      });
-      applySourceStatus(response.status);
-      setSourceAutomationMessage(
-        "Jira install finalized. Fyralis created local secret refs, install rows, and the onboarding trigger."
-      );
-    } catch (caught) {
-      setSourceAutomationStatus("error");
-      setSourceAutomationMessage(errorMessage(caught));
-    }
-  }
-
-  async function finalizeTelegramFromUi() {
-    setSourceAutomationStatus("preparing");
-    setSourceAutomationMessage("Verifying Telegram session and finalizing install...");
-    try {
-      const response = await finalizeTelegramRehearsal({
-        apiBase,
-        payload: {
-          accountLabel: telegramForm.accountLabel,
-          apiId: telegramForm.apiId,
-          apiHash: telegramForm.apiHash,
-          liveSession: telegramForm.liveSession,
-          backfillSession: telegramForm.backfillSession || undefined
-        }
-      });
-      applySourceStatus(response.status);
-      setSourceAutomationMessage(
-        "Telegram install finalized. Fyralis verified the session, enumerated dialogs, stored local refs, and emitted the onboarding trigger."
-      );
-    } catch (caught) {
-      setSourceAutomationStatus("error");
-      setSourceAutomationMessage(errorMessage(caught));
-    }
-  }
-
-  async function finalizeGenericSourceFromUi() {
-    setSourceAutomationStatus("preparing");
-    setSourceAutomationMessage(
-      `Creating customer-cloud refs and starting ${selectedSource.name} sync...`
-    );
-    try {
-      const inputs = Object.fromEntries(
-        Object.entries(genericSourceForm)
-          .map(([key, value]) => [key, value.trim()])
-          .filter(([, value]) => value)
-      );
-      const response = await finalizeGenericSourceRehearsal({
-        apiBase,
-        sourceId: selectedSource.id,
-        payload: { inputs }
-      });
-      applySourceStatus(response.status);
-      setSourceAutomationMessage(
-        `${selectedSource.name} connection finalized. Fyralis stored customer-cloud refs, registered the source, and emitted the onboarding trigger.`
-      );
-    } catch (caught) {
-      setSourceAutomationStatus("error");
-      setSourceAutomationMessage(errorMessage(caught));
-    }
-  }
-
-  const genericInputNames = sourceRehearsal
-    ? Array.from(
-        new Set([
-          ...sourceRehearsal.requiredInputs,
-          ...sourceRehearsal.optionalInputs
-        ])
-      )
-    : [];
-  const showGenericSourceForm =
-    Boolean(sourceRehearsal) &&
-    genericInputNames.length > 0 &&
-    selectedSource.id !== "jira" &&
-    selectedSource.id !== "telegram" &&
-    !sourceRehearsal?.installUrl &&
-    !sourceRehearsal?.missingConfiguration.length;
+  }, [automationStates, connections, snapshot.sources, workspace.providerIngressUrl]);
 
   return (
-    <div className="grid gap-5">
-      <Card>
-        <CardHeader>
-          <CardTitle>{selectedSource.name} ingestion health</CardTitle>
-          <Badge tone={job?.errors ? "warning" : "success"}>
-            {job?.errors ? "Needs retry" : "Healthy"}
-          </Badge>
-        </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-3">
-          <Metric label="Events received" value={String(job?.eventsReceived ?? 0)} detail="From allowed source scope." />
-          <Metric label="Kafka/MSK publish" value="OK" detail="Customer broker accepted messages." />
-          <Metric label="Workers" value="OK" detail="Ingestion workers processed the batch." />
-          <Metric label="Postgres writes" value="OK" detail="Metadata and state writes succeeded." />
-          <Metric label="Object storage" value="OK" detail="Payload tier accepted test artifacts." />
-          <Metric label="Bounded errors" value={String(job?.errors ?? 0)} detail="No raw logs shown." />
-        </CardContent>
-      </Card>
-      {hasSourceAutomation ? (
-        <Card>
-          <CardHeader>
-            <div>
-              <CardTitle>Automated {selectedSource.name} setup</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Use this page as the setup owner. Fyralis prepares the provider
-                handoff, opens approval when the provider allows it, finalizes
-                local refs, polls the gateway, and shows observations after
-                authorization.
-              </p>
-            </div>
-            <Badge
-              tone={
-                sourceAutomationStatus === "ready"
-                  ? "success"
-                  : sourceAutomationStatus === "error"
-                    ? "error"
-                    : sourceAutomationStatus === "blocked"
-                      ? "warning"
-                    : "info"
-              }
-            >
-              {sourceAutomationStatus}
-            </Badge>
-          </CardHeader>
-          <CardContent className="grid gap-4">
-            <div className="grid gap-3 md:grid-cols-4">
-              <Metric
-                label={`${selectedSource.name} install`}
-                value={sourceStatus?.installed ? "Done" : "Waiting"}
-                detail={
-                  sourceStatus?.installation?.hasSecret
-                    ? "Workspace secret stored customer-side."
-                    : "Requires provider authorization."
-                }
-              />
-              <Metric
-                label="Backfill trigger"
-                value={String(sourceStatus?.triggerCount ?? 0)}
-                detail="Created by OAuth callback or finalize action."
-              />
-              <Metric
-                label="Observations"
-                value={String(sourceStatus?.observationCount ?? 0)}
-                detail="Read from gateway-backed Postgres."
-              />
-              <Metric
-                label="Open failures"
-                value={String(sourceStatus?.unresolvedFailureCount ?? 0)}
-                detail="Unresolved ingestion failures."
-              />
-            </div>
-            {sourceRehearsal ? (
-              <div className="grid gap-3 rounded-lg border border-border bg-background/70 p-4 text-sm md:grid-cols-2">
-                <InfoBlock
-                  title="Authorization mode"
-                  value={sourceRehearsal.authorizationMode}
-                />
-                <InfoBlock
-                  title="Provider ingress"
-                  value={sourceRehearsal.eventsRequestUrl ?? "No public provider ingress required."}
-                />
-                <InfoBlock
-                  title="OAuth redirect"
-                  value={sourceRehearsal.oauthRedirectUrl ?? "No OAuth redirect required."}
-                />
-                <InfoBlock
-                  title="Provider console"
-                  value={sourceRehearsal.providerConsoleUrl ?? sourceAutomationConfig?.providerConsoleUrl ?? "Provider console not required."}
-                />
-              </div>
-            ) : null}
-            {sourceRehearsal?.missingConfiguration.length ? (
-              <div className="rounded-lg border border-warning/40 bg-warning/15 p-4 text-sm text-muted-foreground">
-                <strong className="block text-foreground">Provider app configuration needed</strong>
-                <span className="mt-2 block">
-                  Add these runtime values before opening provider approval:
-                </span>
-                <code className="mt-2 block break-all text-xs">
-                  {sourceRehearsal.missingConfiguration.join(", ")}
-                </code>
-              </div>
-            ) : null}
-            {selectedSource.id === "jira" ? (
-              <div className="grid gap-3 rounded-lg border border-border bg-background/70 p-4 md:grid-cols-2">
-                <Field label="Jira site URL" help="Full Atlassian site URL.">
-                  <Input
-                    value={jiraForm.baseUrl}
-                    onChange={(event) =>
-                      setJiraForm((current) => ({
-                        ...current,
-                        baseUrl: event.target.value
-                      }))
-                    }
-                    placeholder="https://acme.atlassian.net"
-                  />
-                </Field>
-                <Field label="Account email" help="Atlassian account that can read the selected projects.">
-                  <Input
-                    value={jiraForm.accountEmail}
-                    onChange={(event) =>
-                      setJiraForm((current) => ({
-                        ...current,
-                        accountEmail: event.target.value
-                      }))
-                    }
-                    placeholder="owner@company.com"
-                  />
-                </Field>
-                <Field label="API token" help="Stored only as an encrypted customer-cloud ref.">
-                  <Input
-                    type="password"
-                    autoComplete="off"
-                    value={jiraForm.apiToken}
-                    onChange={(event) =>
-                      setJiraForm((current) => ({
-                        ...current,
-                        apiToken: event.target.value
-                      }))
-                    }
-                    placeholder="Atlassian API token"
-                  />
-                </Field>
-                <Field label="Webhook secret" help="Optional. Enables live Jira webhooks when configured.">
-                  <Input
-                    type="password"
-                    autoComplete="off"
-                    value={jiraForm.webhookSecret}
-                    onChange={(event) =>
-                      setJiraForm((current) => ({
-                        ...current,
-                        webhookSecret: event.target.value
-                      }))
-                    }
-                    placeholder="Optional Jira webhook secret"
-                  />
-                </Field>
-                <div className="md:col-span-2">
-                  <Button
-                    type="button"
-                    onClick={finalizeJiraFromUi}
-                    disabled={sourceAutomationStatus === "preparing"}
-                  >
-                    <Play className="h-4 w-4" aria-hidden="true" />
-                    Verify and connect Jira
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-            {selectedSource.id === "telegram" ? (
-              <div className="grid gap-3 rounded-lg border border-border bg-background/70 p-4 md:grid-cols-2">
-                <Field label="Account label" help="Phone, username, or internal label for this Telegram account.">
-                  <Input
-                    value={telegramForm.accountLabel}
-                    onChange={(event) =>
-                      setTelegramForm((current) => ({
-                        ...current,
-                        accountLabel: event.target.value
-                      }))
-                    }
-                    placeholder="+15551234567"
-                  />
-                </Field>
-                <Field label="API ID" help="From my.telegram.org/apps.">
-                  <Input
-                    value={telegramForm.apiId}
-                    onChange={(event) =>
-                      setTelegramForm((current) => ({
-                        ...current,
-                        apiId: event.target.value
-                      }))
-                    }
-                    placeholder="123456"
-                  />
-                </Field>
-                <Field label="API hash" help="Stored only as an encrypted customer-cloud ref.">
-                  <Input
-                    type="password"
-                    autoComplete="off"
-                    value={telegramForm.apiHash}
-                    onChange={(event) =>
-                      setTelegramForm((current) => ({
-                        ...current,
-                        apiHash: event.target.value
-                      }))
-                    }
-                    placeholder="Telegram API hash"
-                  />
-                </Field>
-                <Field label="Live StringSession" help="Authorized MTProto session for live gateway updates.">
-                  <Input
-                    type="password"
-                    autoComplete="off"
-                    value={telegramForm.liveSession}
-                    onChange={(event) =>
-                      setTelegramForm((current) => ({
-                        ...current,
-                        liveSession: event.target.value
-                      }))
-                    }
-                    placeholder="Telethon StringSession"
-                  />
-                </Field>
-                <Field label="Backfill StringSession" help="Optional second session for backfill. Defaults to live session in rehearsal.">
-                  <Input
-                    type="password"
-                    autoComplete="off"
-                    value={telegramForm.backfillSession}
-                    onChange={(event) =>
-                      setTelegramForm((current) => ({
-                        ...current,
-                        backfillSession: event.target.value
-                      }))
-                    }
-                    placeholder="Optional second StringSession"
-                  />
-                </Field>
-                <div className="flex items-end">
-                  <Button
-                    type="button"
-                    onClick={finalizeTelegramFromUi}
-                    disabled={sourceAutomationStatus === "preparing"}
-                  >
-                    <Play className="h-4 w-4" aria-hidden="true" />
-                    Verify and connect Telegram
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-            {showGenericSourceForm ? (
-              <div className="grid gap-4 rounded-lg border border-border bg-background/70 p-4">
-                <div className="grid gap-2">
-                  <strong className="text-sm">
-                    {selectedSource.name} connection details
-                  </strong>
-                  <p className="text-sm text-muted-foreground">
-                    Enter the customer-cloud refs or provider values Fyralis cannot
-                    discover without provider approval. Secret-looking values are
-                    sent only to the customer-cloud gateway and stored as encrypted
-                    refs.
-                  </p>
-                </div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  {genericInputNames.map((inputName) => {
-                    const required =
-                      sourceRehearsal?.requiredInputs.includes(inputName) ?? false;
-                    return (
-                      <Field
-                        key={inputName}
-                        label={`${sourceInputLabel(inputName)}${required ? "" : " (optional)"}`}
-                        help={sourceInputHelp(inputName, selectedSource.name)}
-                      >
-                        <Input
-                          type={sourceInputType(inputName)}
-                          autoComplete="off"
-                          value={genericSourceForm[inputName] ?? ""}
-                          onChange={(event) =>
-                            setGenericSourceForm((current) => ({
-                              ...current,
-                              [inputName]: event.target.value
-                            }))
-                          }
-                          placeholder={sourceInputPlaceholder(
-                            inputName,
-                            selectedSource.name
-                          )}
-                        />
-                      </Field>
-                    );
-                  })}
-                </div>
-                <div className="flex flex-wrap gap-3">
-                  <Button
-                    type="button"
-                    onClick={finalizeGenericSourceFromUi}
-                    disabled={sourceAutomationStatus === "preparing"}
-                  >
-                    <Play className="h-4 w-4" aria-hidden="true" />
-                    Connect {selectedSource.name}
-                  </Button>
-                  {isExternalUrl(sourceRehearsal?.providerConsoleUrl) ? (
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      onClick={() =>
-                        window.open(
-                          sourceRehearsal?.providerConsoleUrl ?? "",
-                          "_blank",
-                          "noopener,noreferrer"
-                        )
-                      }
-                    >
-                      <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                      Open provider console
-                    </Button>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-            <div
-              className={cn(
-                "rounded-lg border p-4 text-sm",
-                sourceAutomationStatus === "error"
-                  ? "border-destructive/35 bg-destructive/10 text-destructive"
-                  : sourceAutomationStatus === "blocked"
-                    ? "border-warning/40 bg-warning/15 text-muted-foreground"
-                  : "border-border bg-background/70 text-muted-foreground"
-              )}
-            >
-              {sourceAutomationMessage}
-            </div>
-            <div className="flex flex-wrap gap-3">
-              <Button
-                type="button"
-                onClick={prepareAndOpenSource}
-                disabled={sourceAutomationStatus === "preparing"}
-              >
-                <Play className="h-4 w-4" aria-hidden="true" />
-                {sourceAutomationConfig?.providerKind.includes("OAuth") ||
-                selectedSource.id === "github"
-                  ? `Prepare and open ${selectedSource.name}`
-                  : `Prepare ${selectedSource.name}`}
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                onClick={refreshSourceAutomationStatus}
-                disabled={sourceAutomationStatus === "preparing"}
-              >
-                <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                Refresh status
-              </Button>
-              {sourceRehearsal?.installUrl ? (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() =>
-                    window.open(
-                      sourceRehearsal.installUrl ?? "",
-                      "_blank",
-                      "noopener,noreferrer"
-                    )
-                  }
-                >
-                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                  Reopen {selectedSource.name} approval
-                </Button>
-              ) : null}
-            </div>
-          </CardContent>
-        </Card>
-      ) : null}
-      <Card>
-        <CardHeader>
-          <div>
-            <CardTitle>Fetch actual landed observations</CardTitle>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Reads the customer-cloud gateway observation list with an actor
-              session token held only in this browser memory.
-            </p>
-          </div>
-          <Badge
-            tone={
-              fetchStatus === "loaded"
-                ? "success"
-                : fetchStatus === "error"
-                  ? "error"
-                  : "info"
-            }
-          >
-            {fetchStatus === "idle" ? "gateway read" : fetchStatus}
-          </Badge>
-        </CardHeader>
-        <CardContent className="grid gap-4 lg:grid-cols-[1fr_1fr_auto]">
-          <Field label="Gateway API base" help="Customer-cloud gateway or public tunnel.">
-            <Input
-              value={apiBase}
-              onChange={(event) => setApiBase(event.target.value)}
-              placeholder="https://fyralis-ingress.customer.example"
-            />
-          </Field>
-          <Field label="Bearer token" help="Actor session token, not stored.">
-            <Input
-              value={bearerToken}
-              onChange={(event) => setBearerToken(event.target.value)}
-              type="password"
-              autoComplete="off"
-              placeholder="Paste customer-cloud token"
-            />
-          </Field>
-          <div className="flex items-end">
-            <Button
-              type="button"
-              onClick={loadGatewayObservations}
-              disabled={fetchStatus === "loading"}
-            >
-              <RefreshCw className="h-4 w-4" aria-hidden="true" />
-              Fetch observations
-            </Button>
-          </div>
-          <div
-            className={cn(
-              "rounded-lg border p-4 text-sm lg:col-span-3",
-              fetchStatus === "error"
-                ? "border-destructive/35 bg-destructive/10 text-destructive"
-                : "border-border bg-background/70 text-muted-foreground"
-            )}
-          >
-            {fetchMessage}
-          </div>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Observations landed</CardTitle>
-          <Badge tone="success">
-            {observations.filter((item) => item.origin === "gateway").length ||
-              observations.length}{" "}
-            sanitized
-          </Badge>
-        </CardHeader>
-        <CardContent className="grid gap-3 md:grid-cols-2">
-          {observations.length ? (
-            observations.map((observation) => (
-              <ObservationCard key={observation.id} observation={observation} />
-            ))
-          ) : (
-            <div className="rounded-lg border border-border bg-background/70 p-4 text-sm text-muted-foreground md:col-span-2">
-              Start the first sync to land sanitized observations for this source.
-            </div>
-          )}
-        </CardContent>
-      </Card>
-      <ActionBar primaryLabel="Continue to activation" onPrimary={advance} secondaryLabel="Retry checks" secondaryIcon={<RefreshCw className="h-4 w-4" aria-hidden="true" />} />
+    <div className="grid w-full min-w-0 max-w-full gap-4">
+      <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold tracking-normal">Sources</h1>
+        </div>
+      </div>
+      <SourceMarketplace
+        sources={snapshot.sources}
+        connections={connections}
+        selectedSourceId={selectedSource.id}
+        automationStates={automationStates}
+        onSelect={selectSource}
+        onConnect={(sourceId) => void connectSource(sourceId)}
+      />
     </div>
   );
 }
 
-function ActivationStep({ selectedSource, updateConnection, advance }: StepViewProps) {
-  return (
-    <OperationalStep
-      icon={<Rocket className="h-5 w-5" aria-hidden="true" />}
-      title={`Activate ${selectedSource.name} for pilot`}
-      badge="Pilot gate"
-      description="The source can move into the pilot after setup, validation, scope, first sync, and ingestion health are complete."
-      cards={[
-        ["Connection", "Validated"],
-        ["Scope", "Customer approved"],
-        ["First sync", "Completed"],
-        ["Health", "Acceptable"]
-      ]}
-      primaryLabel="Activate source"
-      onPrimary={() => {
-        updateConnection(selectedSource.id, { status: "connected" });
-        advance();
-      }}
-    />
-  );
+function sourceWaitingAdminCard(prepared: SourceAutoConnectResponse) {
+  const run = prepared.autoConnect.automationRun;
+  if (run) {
+    const backgroundVerb = run.backgroundStatus === "queued" ? "queued" : "started";
+    return {
+      label: "Approval needed",
+      message:
+        run.automatedActionCount > 0
+          ? `Fyralis ${backgroundVerb} ${run.automatedActionCount} background step${run.automatedActionCount === 1 ? "" : "s"}. Approve in the customer-cloud browser if asked.`
+          : "Approve in the customer-cloud browser if asked. Fyralis keeps checking."
+    };
+  }
+  return {
+    label: "Approval needed",
+    message: prepared.autoConnect.message
+  };
+}
+
+function sourceRunningLabel(prepared: SourceAutoConnectResponse) {
+  return prepared.autoConnect.automationRun?.canStart === false
+    ? prepared.autoConnect.label
+    : "Running";
+}
+
+function sourceRunningMessage(prepared: SourceAutoConnectResponse) {
+  const run = prepared.autoConnect.automationRun;
+  if (!run) {
+    return prepared.autoConnect.message;
+  }
+  if (run.receiptPathHint) {
+    return "Fyralis is running source setup in the customer cloud.";
+  }
+  return prepared.autoConnect.message;
 }
 
 function WorkspaceLaunchStep({ selectedSource, selectedConnection, setLaunchReady, advance }: StepViewProps) {
@@ -3271,6 +2052,7 @@ function ActionBar({
   onPrimary,
   secondaryLabel,
   secondaryIcon,
+  onSecondary,
   submit,
   disabled,
   compact
@@ -3279,6 +2061,7 @@ function ActionBar({
   onPrimary?: () => void;
   secondaryLabel?: string;
   secondaryIcon?: ReactNode;
+  onSecondary?: () => void;
   submit?: boolean;
   disabled?: boolean;
   compact?: boolean;
@@ -3289,8 +2072,8 @@ function ActionBar({
         {primaryLabel}
         {!submit ? <ArrowRight className="h-4 w-4" aria-hidden="true" /> : null}
       </Button>
-      {secondaryLabel ? (
-        <Button type="button" variant="secondary">
+      {secondaryLabel && onSecondary ? (
+        <Button type="button" variant="secondary" onClick={onSecondary}>
           {secondaryIcon}
           {secondaryLabel}
         </Button>
@@ -3353,35 +2136,6 @@ function InfoBlock({ title, value, code }: { title: string; value: string; code?
   );
 }
 
-function SetupList({
-  title,
-  items,
-  tone
-}: {
-  title: string;
-  items: string[];
-  tone: "success" | "info" | "warning";
-}) {
-  return (
-    <div className="rounded-lg border border-border bg-background/70 p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <strong className="text-sm">{title}</strong>
-        <Badge tone={tone}>{items.length}</Badge>
-      </div>
-      <div className="grid gap-2">
-        {items.map((item) => (
-          <code
-            key={item}
-            className="break-all rounded-md border border-border bg-card px-2 py-1 text-xs text-muted-foreground"
-          >
-            {item}
-          </code>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function SignalPathCard({
   title,
   detail,
@@ -3400,39 +2154,6 @@ function SignalPathCard({
       <code className="mt-3 block break-all text-xs text-muted-foreground">
         {command}
       </code>
-    </div>
-  );
-}
-
-function ProviderRouteList({
-  workspace,
-  config
-}: {
-  workspace: Workspace;
-  config: SourceRehearsalConfig;
-}) {
-  return (
-    <div className="rounded-lg border border-border bg-background/70 p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <strong className="text-sm">Real gateway URLs</strong>
-        <Badge tone="info">{config.gatewayRoutes.length}</Badge>
-      </div>
-      <div className="grid gap-3">
-        {config.gatewayRoutes.map((route) => (
-          <div key={`${route.method}-${route.path}`} className="grid gap-1">
-            <span className="flex flex-wrap items-center gap-2 text-xs font-semibold text-muted-foreground">
-              <Badge tone={route.method === "GET" ? "info" : "success"}>
-                {route.method}
-              </Badge>
-              {route.label}
-              <span>{route.access}</span>
-            </span>
-            <code className="break-all text-xs text-muted-foreground">
-              {gatewayRouteUrl(workspace, route.path)}
-            </code>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -3517,118 +2238,6 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
       <span className="mt-1 block text-sm text-muted-foreground">{detail}</span>
     </div>
   );
-}
-
-function sourceInputLabel(name: string) {
-  const labels: Record<string, string> = {
-    access_token: "Access token",
-    account_id: "AWS account ID",
-    account_ids: "Account IDs",
-    account_label: "Account label",
-    api_hash: "API hash",
-    api_token: "API token",
-    app_secret: "App secret",
-    backfill_session: "Backfill session",
-    base_url: "API base URL",
-    board_ids: "Board IDs",
-    business_account_id: "Business account ID",
-    business_id: "Business ID",
-    calendar_scope: "Calendar scope",
-    company_id: "Company ID",
-    contract_ids: "Contract IDs",
-    drive_scope: "Drive scope",
-    entity_scope: "Entity scope",
-    file_keys: "File keys",
-    firm_id: "Firm ID",
-    instance_url: "Instance URL",
-    linked_device_session: "Linked-device session",
-    mailbox_scope: "Mailbox scope",
-    oauth_client: "OAuth client",
-    organization_id: "Organization ID",
-    organization_urn: "Organization URN",
-    org_id: "Organization ID",
-    phone_number_id: "Phone number ID",
-    pubsub_topic: "Pub/Sub topic",
-    realm_id: "Realm ID",
-    refresh_token_ref: "Refresh token ref",
-    role_arn: "Role ARN",
-    service_account_token: "Service account token",
-    service_user_token: "Service user token",
-    team_id: "Team ID",
-    thread_scope: "Thread scope",
-    token_ref: "Token ref",
-    verify_token: "Verify token",
-    watch_channel_id: "Watch channel ID",
-    webhook_passcode: "Webhook passcode",
-    webhook_secret: "Webhook secret",
-    workspace_id: "Workspace ID"
-  };
-  return (
-    labels[name] ??
-    name
-      .split("_")
-      .filter(Boolean)
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(" ")
-  );
-}
-
-function sourceInputHelp(name: string, sourceName: string) {
-  if (name.endsWith("_ref")) {
-    return "Reference to a secret already stored in the customer cloud.";
-  }
-  if (sourceInputType(name) === "password") {
-    return "Stored as an encrypted customer-cloud ref, not sent to Fyralis hosted control plane.";
-  }
-  const helps: Record<string, string> = {
-    account_ids: "Comma-separated list, or leave blank for provider discovery.",
-    base_url: `Provider API root for ${sourceName}; leave blank to use the default when supported.`,
-    board_ids: "Comma-separated board IDs, or leave blank for provider discovery.",
-    contract_ids: "Comma-separated contract IDs, or leave blank for provider discovery.",
-    entity_scope: "Comma-separated entities or scopes approved for ingestion.",
-    file_keys: "Comma-separated Figma file keys, or leave blank for provider discovery.",
-    mailbox_scope: "Mailbox, group, or allowlist label approved for ingestion.",
-    thread_scope: "Comma-separated contacts/groups, or leave blank for approved defaults."
-  };
-  return helps[name] ?? "Used to register the customer-cloud source connection.";
-}
-
-function sourceInputPlaceholder(name: string, sourceName: string) {
-  const placeholders: Record<string, string> = {
-    account_id: "123456789012",
-    account_ids: "acct_123, acct_456",
-    account_label: `${sourceName.toLowerCase()}-pilot`,
-    base_url: "https://api.provider.example",
-    board_ids: "board_123, board_456",
-    business_account_id: "business-account-id",
-    calendar_scope: "primary, team-calendar@example.com",
-    company_id: "company-id",
-    contract_ids: "contract_123, contract_456",
-    drive_scope: "shared-drive-id or folder allowlist",
-    file_keys: "figma-file-key-1, figma-file-key-2",
-    instance_url: "https://grafana.customer.example",
-    mailbox_scope: "pilot-users@example.com",
-    organization_urn: "urn:li:organization:123456",
-    phone_number_id: "whatsapp-phone-number-id",
-    pubsub_topic: "projects/acme/topics/fyralis-gmail",
-    realm_id: "quickbooks-realm-id",
-    role_arn: "arn:aws:iam::123456789012:role/fyralis-readonly",
-    token_ref: "aws-secretsmanager:/fyralis/sources/provider/token",
-    webhook_secret: "provider webhook signing secret"
-  };
-  return placeholders[name] ?? `${sourceName} ${sourceInputLabel(name).toLowerCase()}`;
-}
-
-function sourceInputType(name: string): "password" | "text" {
-  const lowered = name.toLowerCase();
-  if (lowered.endsWith("_ref") || lowered === "role_arn") {
-    return "text";
-  }
-  return /(token|secret|hash|session|password|private|credential|oauth_client|api_key)/.test(
-    lowered
-  )
-    ? "password"
-    : "text";
 }
 
 function isExternalUrl(value: string | null | undefined) {

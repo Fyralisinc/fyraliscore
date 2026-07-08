@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, status
 
 from services.app.gateway.auth import create_session
 from services.platform.runtime.byoc_onboarding_intents import (
@@ -20,6 +21,16 @@ from services.platform.runtime.byoc_onboarding_intents import (
     PostgresOnboardingIntentStore,
     SubmitDesignPartnerIntakeRequest,
     UnsupportedOnboardingPlan,
+)
+from services.platform.runtime.source_browser_agent_recipes import (
+    browser_agent_recipe_for_source,
+)
+from services.platform.runtime.source_browser_agent_runner import (
+    SourceBrowserAgentRunnerInputs,
+    run_source_browser_agent,
+)
+from services.platform.runtime.source_browser_agent_workflow import (
+    source_browser_agent_run_for_payload,
 )
 
 from lib.shared.ids import uuid7
@@ -53,13 +64,38 @@ _ALL_REHEARSAL_SOURCES = {
     "whatsapp",
 }
 _OAUTH_REHEARSAL_SOURCES = {"slack", "github", "discord", "notion"}
-_FORM_REHEARSAL_SOURCES = {"jira", "telegram"}
+_FORM_REHEARSAL_SOURCES = {"jira", "telegram", "whatsapp"}
+_SOURCE_SPECIFIC_FINALIZE_SOURCES = {"jira", "telegram", "whatsapp"}
+_GENERIC_FINALIZE_BLOCKED_SOURCES = (
+    _OAUTH_REHEARSAL_SOURCES
+    | _SOURCE_SPECIFIC_FINALIZE_SOURCES
+    | {
+        "ashby",
+        "aws",
+        "brex",
+        "carta",
+        "deel",
+        "figma",
+        "fireflies",
+        "gmail",
+        "google_calendar",
+        "google_drive",
+        "grafana",
+        "gusto",
+        "hibob",
+        "linkedin",
+        "mercury",
+        "miro",
+        "quickbooks",
+        "ramp",
+        "signal",
+    }
+)
 _REHEARSAL_SOURCES = _ALL_REHEARSAL_SOURCES
 _SAFE_PROVIDER_ERROR_CODES = {
     "telegram_connect_failed",
     "telegram_dialogs_must_be_list",
     "telegram_missing_api_credentials",
-    "telegram_missing_backfill_session",
 }
 
 _SOURCE_CALLBACK_PATHS = {
@@ -79,7 +115,6 @@ _SOURCE_LIVE_INGRESS_PATHS = {
     "fireflies": "/webhooks/fireflies",
     "github": "/webhooks/github",
     "gmail": "/webhooks/gmail/pubsub",
-    "google_calendar": "/webhooks/google_calendar/push",
     "google_drive": "/webhooks/google_drive/push",
     "grafana": "/webhooks/grafana/events",
     "gusto": "/webhooks/gusto",
@@ -87,7 +122,6 @@ _SOURCE_LIVE_INGRESS_PATHS = {
     "notion": "/webhooks/notion/events",
     "jira": "/webhooks/jira/events",
     "mercury": "/webhooks/mercury/events",
-    "miro": "/webhooks/miro",
     "quickbooks": "/webhooks/quickbooks/events",
     "ramp": "/webhooks/ramp",
     "telegram": "customer-cloud MTProto gateway worker",
@@ -96,94 +130,74 @@ _SOURCE_LIVE_INGRESS_PATHS = {
 
 _SOURCE_REQUIRED_INPUTS = {
     "ashby": [
-        "org_id",
         "api_token",
     ],
     "aws": [
-        "account_id",
-        "region",
         "role_arn",
     ],
     "brex": [
-        "organization_id",
         "api_token",
     ],
     "carta": [
-        "firm_id",
-        "oauth_client",
         "token_ref",
     ],
     "deel": [
-        "organization_id",
         "api_token",
     ],
     "figma": [
-        "team_id",
         "api_token",
     ],
     "fireflies": [
-        "workspace_id",
-        "token_ref",
+        "api_token",
     ],
     "gmail": [
-        "mailbox_scope",
-        "oauth_client",
-        "token_ref",
-        "pubsub_topic",
+        "workspace_domain",
+        "admin_email",
+        "dwd_grant",
     ],
     "google_calendar": [
-        "calendar_scope",
-        "oauth_client",
-        "token_ref",
+        "workspace_domain",
+        "admin_email",
+        "dwd_grant",
     ],
     "google_drive": [
-        "drive_scope",
-        "oauth_client",
-        "token_ref",
+        "workspace_domain",
+        "admin_email",
+        "dwd_grant",
     ],
     "grafana": [
-        "instance_url",
+        "base_url",
         "service_account_token",
     ],
     "gusto": [
-        "company_id",
-        "oauth_client",
         "token_ref",
     ],
     "hibob": [
-        "company_id",
+        "service_user_id",
         "service_user_token",
     ],
     "jira": [
         "base_url",
         "account_email",
         "api_token",
-        "webhook_secret",
     ],
     "linkedin": [
-        "organization_urn",
-        "oauth_client",
         "token_ref",
     ],
     "mercury": [
-        "organization_id",
         "api_token",
     ],
     "miro": [
-        "org_id",
         "api_token",
     ],
     "quickbooks": [
         "realm_id",
-        "oauth_client",
         "token_ref",
     ],
     "ramp": [
-        "business_id",
-        "api_token",
+        "access_token_or_client_credentials",
     ],
     "signal": [
-        "account_label",
         "linked_device_session",
     ],
     "telegram": [
@@ -191,58 +205,65 @@ _SOURCE_REQUIRED_INPUTS = {
         "api_id",
         "api_hash",
         "live_session",
-        "backfill_session",
     ],
     "whatsapp": [
-        "business_account_id",
         "phone_number_id",
-        "access_token",
         "verify_token",
+        "app_secret",
     ],
 }
 
 _SOURCE_OPTIONAL_INPUTS = {
-    "ashby": ["base_url", "webhook_secret"],
-    "brex": ["base_url", "account_ids", "webhook_secret"],
-    "carta": ["base_url", "refresh_token_ref"],
-    "deel": ["base_url", "contract_ids", "webhook_secret"],
-    "figma": ["base_url", "file_keys", "webhook_passcode"],
-    "fireflies": ["base_url", "oauth_client", "webhook_secret"],
-    "gmail": ["base_url", "watch_channel_id"],
-    "google_calendar": ["watch_channel_id"],
-    "google_drive": ["watch_channel_id"],
+    "ashby": ["org_id", "base_url", "webhook_secret"],
+    "aws": ["account_id", "region"],
+    "brex": ["organization_id", "base_url", "account_ids", "webhook_secret"],
+    "carta": ["firm_id", "oauth_client", "base_url", "refresh_token_ref"],
+    "deel": ["organization_id", "base_url", "contract_ids", "webhook_secret"],
+    "figma": ["team_id", "base_url", "file_keys", "webhook_secret"],
+    "fireflies": ["workspace_id", "base_url", "webhook_secret"],
+    "gmail": ["scope", "inclusion_spec", "pubsub_topic", "watch_channel_id"],
+    "google_calendar": ["scope", "inclusion_spec"],
+    "google_drive": ["scope", "inclusion_spec", "include_shared_drives", "watch_channel_id"],
     "grafana": ["webhook_secret"],
-    "gusto": ["base_url", "refresh_token_ref", "webhook_secret"],
-    "hibob": ["base_url", "webhook_secret"],
-    "linkedin": ["base_url", "refresh_token_ref"],
-    "mercury": ["base_url", "account_ids", "webhook_secret"],
-    "miro": ["base_url", "board_ids", "webhook_secret"],
-    "quickbooks": ["base_url", "refresh_token_ref", "webhook_secret"],
-    "ramp": ["base_url", "entity_scope", "webhook_secret"],
-    "signal": ["backfill_session", "thread_scope"],
-    "whatsapp": ["app_secret", "webhook_secret"],
+    "gusto": [
+        "company_uuid",
+        "oauth_client",
+        "base_url",
+        "refresh_token_ref",
+        "webhook_verifier_token",
+    ],
+    "hibob": ["company_id", "base_url", "webhook_secret"],
+    "jira": ["project_keys", "webhook_secret"],
+    "linkedin": ["organization_urn", "oauth_client", "base_url", "refresh_token_ref"],
+    "mercury": ["organization_id", "base_url", "account_ids", "webhook_secret"],
+    "miro": ["base_url", "board_ids"],
+    "quickbooks": ["oauth_client", "base_url", "refresh_token_ref", "webhook_verifier_token"],
+    "ramp": ["business_id", "base_url", "entity_scope", "webhook_verifier_token"],
+    "signal": ["account_label", "backfill_session", "thread_scope"],
+    "telegram": ["backfill_session", "dialogs"],
+    "whatsapp": ["business_account_id", "display_phone_number", "access_token"],
 }
 
 _GENERIC_PROVIDER_CONSOLES = {
     "ashby": "https://app.ashbyhq.com/admin/api",
     "aws": "https://console.aws.amazon.com/iam/",
     "brex": "https://developer.brex.com/",
-    "carta": "Customer Carta admin console",
-    "deel": "Customer Deel developer/admin console",
+    "carta": "https://developers.app.carta.com/",
+    "deel": "https://app.deel.com/",
     "figma": "https://www.figma.com/developers/api",
     "fireflies": "https://app.fireflies.ai/integrations",
-    "gmail": "https://console.cloud.google.com/apis/credentials",
-    "google_calendar": "https://console.cloud.google.com/apis/credentials",
-    "google_drive": "https://console.cloud.google.com/apis/credentials",
-    "grafana": "Customer Grafana service account console",
+    "gmail": "https://admin.google.com/ac/owl/domainwidedelegation",
+    "google_calendar": "https://admin.google.com/ac/owl/domainwidedelegation",
+    "google_drive": "https://admin.google.com/ac/owl/domainwidedelegation",
+    "grafana": "https://grafana.com/auth/sign-in/",
     "gusto": "https://dev.gusto.com/",
-    "hibob": "Customer HiBob API access console",
+    "hibob": "https://app.hibob.com/",
     "linkedin": "https://www.linkedin.com/developers/apps",
-    "mercury": "Customer Mercury API console",
+    "mercury": "https://app.mercury.com/settings/tokens",
     "miro": "https://developers.miro.com/",
     "quickbooks": "https://developer.intuit.com/app/developer/myapps",
     "ramp": "https://developers.ramp.com/",
-    "signal": "Customer-cloud linked-device setup",
+    "signal": "https://signal.org/download/",
     "whatsapp": "https://developers.facebook.com/apps/",
 }
 
@@ -251,6 +272,405 @@ _GENERIC_AUTHORIZATION_MODES = {
     "signal": "customer_linked_device_session",
     "telegram": "customer_mtproto_session",
     "whatsapp": "customer_webhook_app",
+}
+
+_SOURCE_METHODS = {
+    "ashby": "api_token",
+    "aws": "iam_role",
+    "brex": "api_token",
+    "carta": "oauth",
+    "deel": "api_token",
+    "discord": "oauth_plus_gateway",
+    "figma": "api_token",
+    "fireflies": "api_token",
+    "github": "oauth",
+    "gmail": "dwd",
+    "google_calendar": "dwd",
+    "google_drive": "dwd",
+    "grafana": "api_token",
+    "gusto": "oauth",
+    "hibob": "api_token",
+    "jira": "api_token",
+    "linkedin": "poll",
+    "mercury": "api_token",
+    "miro": "api_token",
+    "notion": "oauth",
+    "quickbooks": "oauth",
+    "ramp": "oauth_client_credentials",
+    "signal": "gateway",
+    "slack": "oauth",
+    "telegram": "gateway",
+    "whatsapp": "webhook",
+}
+
+_SOURCE_DISCOVERY_TARGETS = {
+    "ashby": "jobs, candidates, interviews, and organization metadata",
+    "aws": "account, region, CloudTrail, and inventory scope",
+    "brex": "cash accounts, cards, and transaction scopes",
+    "carta": "issuer, securities, and stakeholder scopes",
+    "deel": "contracts, workers, and payment scopes",
+    "discord": "guilds, text channels, private channels the bot can access, and threads",
+    "figma": "teams, projects, files, and webhook-capable file scopes",
+    "fireflies": "workspace, meetings, and transcripts",
+    "github": "installations, repositories, pull requests, issues, and webhooks",
+    "gmail": "mailboxes, labels, watch channels, and Pub/Sub topic readiness",
+    "google_calendar": "calendars and shared calendar inclusion scope",
+    "google_drive": "shared drives, folders, files, and change tokens",
+    "grafana": "folders, dashboards, alert rules, and org metadata",
+    "gusto": "company, employees, and payroll scopes",
+    "hibob": "people fields, reports, and company metadata",
+    "jira": "projects, issue types, comments, and webhook registration",
+    "linkedin": "organization/page scope and polling windows",
+    "mercury": "organization, accounts, and transaction scopes",
+    "miro": "teams, boards, and board items",
+    "notion": "shared pages, databases, users, and webhook eligibility",
+    "quickbooks": "company realm, accounting entities, and webhook verifier",
+    "ramp": "business scope, transactions, reimbursements, cards, and users",
+    "signal": "linked account, approved contacts, groups, and threads",
+    "slack": "workspace, public/private channels the app can access, users, and events",
+    "telegram": "account, dialogs, channels, groups, and live update cursor",
+    "whatsapp": "business account, phone numbers, webhook verification, and message events",
+}
+
+_SOURCE_NATIVE_CONNECT_CONTRACTS = {
+    "ashby": {
+        "kind": "api_token_native_connect",
+        "preflight_path": "/integrations/ashby/connect/preflight",
+        "finalize_path": "/integrations/ashby/connect/finalize",
+        "preflight_payload_fields": ["api_token", "base_url", "org_id"],
+        "payload_fields": [
+            "api_token",
+            "base_url",
+            "org_id",
+            "entities",
+            "webhook_secret",
+        ],
+    },
+    "aws": {
+        "kind": "aws_iam_native_connect",
+        "preflight_path": "/integrations/aws/connect/preflight",
+        "finalize_path": "/integrations/aws/connect/finalize",
+        "payload_fields": [
+            "account_id",
+            "region",
+            "credential_kind",
+            "role_arn",
+            "external_id",
+            "backfill_window_days",
+        ],
+    },
+    "brex": {
+        "kind": "api_token_native_connect",
+        "preflight_path": "/integrations/brex/connect/preflight",
+        "finalize_path": "/integrations/brex/connect/finalize",
+        "preflight_payload_fields": ["api_token", "base_url"],
+        "payload_fields": [
+            "api_token",
+            "base_url",
+            "account_ids",
+            "organization_id",
+            "webhook_secret",
+        ],
+    },
+    "carta": {
+        "kind": "access_token_native_connect",
+        "preflight_path": "/integrations/carta/connect/preflight",
+        "finalize_path": "/integrations/carta/connect/finalize",
+        "payload_fields": [
+            "access_token",
+            "base_url",
+            "issuer_id",
+            "firm_id",
+            "client_secret",
+            "refresh_token",
+            "entities",
+        ],
+    },
+    "deel": {
+        "kind": "api_token_native_connect",
+        "preflight_path": "/integrations/deel/connect/preflight",
+        "finalize_path": "/integrations/deel/connect/finalize",
+        "preflight_payload_fields": ["api_token", "base_url"],
+        "payload_fields": [
+            "api_token",
+            "base_url",
+            "contract_ids",
+            "organization_id",
+            "webhook_secret",
+        ],
+    },
+    "discord": {
+        "kind": "oauth_gateway_native_connect",
+        "preflight_path": "/integrations/discord/connect/preflight",
+        "finalize_path": "/integrations/discord/connect/finalize",
+        "payload_fields": [
+            "guild_id",
+            "application_id",
+            "approved_channel_ids",
+            "oauth_redirect_url",
+            "events_request_url",
+        ],
+    },
+    "figma": {
+        "kind": "api_token_native_connect",
+        "preflight_path": "/integrations/figma/connect/preflight",
+        "finalize_path": "/integrations/figma/connect/finalize",
+        "preflight_payload_fields": ["api_token", "base_url", "team_id"],
+        "payload_fields": [
+            "api_token",
+            "team_id",
+            "base_url",
+            "file_keys",
+            "webhook_id",
+            "webhook_secret",
+        ],
+    },
+    "fireflies": {
+        "kind": "api_token_native_connect",
+        "preflight_path": "/integrations/fireflies/connect/preflight",
+        "finalize_path": "/integrations/fireflies/connect/finalize",
+        "preflight_payload_fields": ["api_token", "base_url"],
+        "payload_fields": [
+            "api_token",
+            "base_url",
+            "workspace_id",
+            "webhook_secret",
+        ],
+    },
+    "github": {
+        "kind": "github_app_native_connect",
+        "preflight_path": "/integrations/github/connect/preflight",
+        "finalize_path": "/integrations/github/connect/finalize",
+        "payload_fields": [
+            "installation_id",
+            "organization",
+            "repository_selection",
+            "oauth_redirect_url",
+            "events_request_url",
+        ],
+    },
+    "gmail": {
+        "kind": "google_workspace_dwd",
+        "preflight_path": "/integrations/gmail/connect/preflight",
+        "finalize_path": "/integrations/gmail/connect/finalize",
+        "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
+        "payload_fields": ["workspace_domain", "admin_email", "scope", "inclusion_spec"],
+        "scope_aliases": ["gmail.metadata"],
+    },
+    "google_calendar": {
+        "kind": "google_workspace_dwd",
+        "preflight_path": "/integrations/google_calendar/connect/preflight",
+        "finalize_path": "/integrations/google_calendar/connect/finalize",
+        "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
+        "payload_fields": ["workspace_domain", "admin_email", "scope", "inclusion_spec"],
+        "scope_aliases": ["calendar.readonly"],
+    },
+    "google_drive": {
+        "kind": "google_workspace_dwd",
+        "preflight_path": "/integrations/google_drive/connect/preflight",
+        "finalize_path": "/integrations/google_drive/connect/finalize",
+        "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
+        "payload_fields": [
+            "workspace_domain",
+            "admin_email",
+            "scope",
+            "inclusion_spec",
+            "include_shared_drives",
+        ],
+        "scope_aliases": ["drive.readonly"],
+    },
+    "grafana": {
+        "kind": "api_token_native_connect",
+        "preflight_path": "/integrations/grafana/connect/preflight",
+        "finalize_path": "/integrations/grafana/connect/finalize",
+        "preflight_payload_fields": ["base_url", "service_account_token", "org_id"],
+        "payload_fields": [
+            "base_url",
+            "service_account_token",
+            "org_id",
+            "webhook_secret",
+        ],
+    },
+    "gusto": {
+        "kind": "access_token_native_connect",
+        "preflight_path": "/integrations/gusto/connect/preflight",
+        "finalize_path": "/integrations/gusto/connect/finalize",
+        "payload_fields": [
+            "company_uuid",
+            "access_token",
+            "base_url",
+            "refresh_token",
+            "webhook_verifier_token",
+            "entities",
+        ],
+    },
+    "hibob": {
+        "kind": "api_token_native_connect",
+        "preflight_path": "/integrations/hibob/connect/preflight",
+        "finalize_path": "/integrations/hibob/connect/finalize",
+        "preflight_payload_fields": [
+            "company_id",
+            "service_user_id",
+            "service_user_token",
+            "base_url",
+        ],
+        "payload_fields": [
+            "company_id",
+            "service_user_id",
+            "service_user_token",
+            "base_url",
+            "entities",
+            "webhook_secret",
+        ],
+    },
+    "linkedin": {
+        "kind": "access_token_native_connect",
+        "preflight_path": "/integrations/linkedin/connect/preflight",
+        "finalize_path": "/integrations/linkedin/connect/finalize",
+        "preflight_payload_fields": ["organization_urn", "access_token", "base_url"],
+        "payload_fields": [
+            "organization_urn",
+            "access_token",
+            "base_url",
+            "refresh_token",
+            "entities",
+        ],
+    },
+    "jira": {
+        "kind": "jira_api_token_native_connect",
+        "preflight_path": "/integrations/jira/connect/preflight",
+        "finalize_path": "/integrations/jira/connect/finalize",
+        "preflight_payload_fields": ["base_url", "account_email", "api_token"],
+        "payload_fields": [
+            "base_url",
+            "account_email",
+            "api_token",
+            "project_keys",
+            "webhook_secret",
+        ],
+    },
+    "mercury": {
+        "kind": "api_token_native_connect",
+        "preflight_path": "/integrations/mercury/connect/preflight",
+        "finalize_path": "/integrations/mercury/connect/finalize",
+        "preflight_payload_fields": ["api_token", "base_url"],
+        "payload_fields": [
+            "api_token",
+            "base_url",
+            "account_ids",
+            "organization_id",
+            "webhook_secret",
+        ],
+    },
+    "miro": {
+        "kind": "api_token_native_connect",
+        "preflight_path": "/integrations/miro/connect/preflight",
+        "finalize_path": "/integrations/miro/connect/finalize",
+        "preflight_payload_fields": ["api_token", "base_url"],
+        "payload_fields": [
+            "api_token",
+            "base_url",
+            "board_ids",
+        ],
+    },
+    "notion": {
+        "kind": "oauth_callback_native_connect",
+        "preflight_path": "/integrations/notion/connect/preflight",
+        "finalize_path": "/integrations/notion/connect/finalize",
+        "payload_fields": [
+            "workspace_id",
+            "shared_page_ids",
+            "shared_database_ids",
+            "oauth_redirect_url",
+            "events_request_url",
+            "installation_id",
+        ],
+    },
+    "quickbooks": {
+        "kind": "access_token_native_connect",
+        "preflight_path": "/integrations/quickbooks/connect/preflight",
+        "finalize_path": "/integrations/quickbooks/connect/finalize",
+        "preflight_payload_fields": ["realm_id", "access_token", "base_url"],
+        "payload_fields": [
+            "realm_id",
+            "access_token",
+            "base_url",
+            "refresh_token",
+            "webhook_verifier_token",
+            "entities",
+        ],
+    },
+    "signal": {
+        "kind": "local_session_native_connect",
+        "preflight_path": "/integrations/signal/connect/preflight",
+        "finalize_path": "/integrations/signal/connect/finalize",
+        "payload_fields": [
+            "account_label",
+            "linked_device_session",
+            "backfill_session",
+            "threads",
+        ],
+    },
+    "slack": {
+        "kind": "oauth_callback_native_connect",
+        "preflight_path": "/integrations/slack/connect/preflight",
+        "finalize_path": "/integrations/slack/connect/finalize",
+        "payload_fields": [
+            "workspace_id",
+            "approved_channel_ids",
+            "oauth_redirect_url",
+            "events_request_url",
+            "installation_id",
+        ],
+    },
+    "telegram": {
+        "kind": "local_session_native_connect",
+        "preflight_path": "/integrations/telegram/connect/preflight",
+        "finalize_path": "/integrations/telegram/connect/finalize",
+        "payload_fields": [
+            "account_label",
+            "api_id",
+            "api_hash",
+            "live_session",
+            "backfill_session",
+            "dialogs",
+        ],
+    },
+    "ramp": {
+        "kind": "ramp_native_connect",
+        "preflight_path": "/integrations/ramp/connect/preflight",
+        "finalize_path": "/integrations/ramp/connect/finalize",
+        "preflight_payload_fields": [
+            "access_token",
+            "client_id",
+            "client_secret",
+            "scopes",
+            "base_url",
+        ],
+        "payload_fields": [
+            "access_token",
+            "client_id",
+            "client_secret",
+            "base_url",
+            "business_id",
+            "entities",
+            "webhook_verifier_token",
+        ],
+    },
+    "whatsapp": {
+        "kind": "whatsapp_native_connect",
+        "preflight_path": "/integrations/whatsapp/connect/preflight",
+        "finalize_path": "/integrations/whatsapp/connect/finalize",
+        "preflight_payload_fields": ["phone_number_id", "app_secret", "verify_token"],
+        "payload_fields": [
+            "phone_number_id",
+            "business_account_id",
+            "display_phone_number",
+            "app_secret",
+            "verify_token",
+            "access_token",
+        ],
+    },
 }
 
 
@@ -322,11 +742,60 @@ def build_byoc_onboarding_router(
         _require_source_rehearsal_enabled(request)
         pool = _pool_from_state(request)
         tenant_id, _actor_id = _rehearsal_actor_ids()
-        return await _source_rehearsal_status_payload(
+        payload = await _source_rehearsal_status_payload(
             pool,
             tenant_id=tenant_id,
             source=source,
         )
+        run_record = _source_auto_connect_run_store(request).get(
+            _source_auto_connect_run_key(source)
+        ) or _source_auto_connect_persisted_run_record(source)
+        if run_record:
+            _source_auto_connect_run_store(request)[
+                _source_auto_connect_run_key(source)
+            ] = dict(run_record)
+            payload["auto_connect_run"] = dict(run_record)
+        return payload
+
+    @router.post("/sources/{source_id}/rehearsal/auto-connect")
+    async def auto_connect_source_rehearsal(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        source_id: str,
+    ) -> dict[str, Any]:
+        source = _normalize_rehearsal_source(source_id)
+        payload = await _prepare_source_rehearsal_response(request, source)
+        payload["auto_connect"] = _source_auto_connect_state(source, payload)
+        payload["browser_agent_run"] = source_browser_agent_run_for_payload(
+            source,
+            payload,
+            auto_state=payload["auto_connect"],
+        )
+        payload["auto_connect"]["browser_agent_run"] = payload["browser_agent_run"]
+        payload["auto_connect"]["automation_run"] = _source_auto_connect_run_descriptor(
+            source,
+            payload,
+            payload["browser_agent_run"],
+        )
+        run_record = _materialize_source_auto_connect_run(
+            source,
+            payload["browser_agent_run"],
+            payload["auto_connect"]["automation_run"],
+        )
+        payload["auto_connect"]["automation_run"].update(run_record)
+        _source_auto_connect_run_store(request)[
+            _source_auto_connect_run_key(source)
+        ] = run_record
+        background_tasks.add_task(
+            _execute_source_auto_connect_background_run,
+            source,
+            Path(run_record["run_artifact_path_hint"]),
+            Path(run_record["receipt_path_hint"]),
+            payload["gateway_api_base"],
+            _source_auto_connect_run_store(request),
+            _source_auto_connect_run_key(source),
+        )
+        return payload
 
     @router.post("/sources/jira/rehearsal/finalize")
     async def finalize_jira_rehearsal(request: Request) -> dict[str, Any]:
@@ -413,6 +882,24 @@ def build_byoc_onboarding_router(
                 tenant_id=tenant_id,
                 base_url=base_url,
                 webhook_secret_ref=webhook_secret_ref,
+            )
+        async with pool.acquire() as conn:
+            await _emit_source_connection_proof(
+                conn,
+                tenant_id=tenant_id,
+                actor_id=actor_id,
+                source="jira",
+                installation_id=base_url,
+                visible_inputs={
+                    "base_url": base_url,
+                    "account_email": account_email,
+                    "project_count": str(len(project_keys)),
+                },
+                secret_ref_names=(
+                    ["api_token", "webhook_secret"]
+                    if webhook_secret_ref
+                    else ["api_token"]
+                ),
             )
 
         status_payload = await _source_rehearsal_status_payload(
@@ -524,6 +1011,24 @@ def build_byoc_onboarding_router(
             session_secret_ref=live_session_ref,
             backfill_session_secret_ref=backfill_session_ref,
         )
+        async with pool.acquire() as conn:
+            await _emit_source_connection_proof(
+                conn,
+                tenant_id=tenant_id,
+                actor_id=actor_id,
+                source="telegram",
+                installation_id=account_label,
+                visible_inputs={
+                    "account_label": account_label,
+                    "api_id": api_id,
+                    "dialog_count": str(len(dialogs)),
+                },
+                secret_ref_names=[
+                    "api_hash",
+                    "live_session",
+                    "backfill_session",
+                ],
+            )
         status_payload = await _source_rehearsal_status_payload(
             pool,
             tenant_id=tenant_id,
@@ -538,16 +1043,174 @@ def build_byoc_onboarding_router(
             "status": status_payload,
         }
 
+    @router.post("/sources/whatsapp/rehearsal/finalize")
+    async def finalize_whatsapp_rehearsal(request: Request) -> dict[str, Any]:
+        _require_source_rehearsal_enabled(request)
+        pool = _pool_from_state(request)
+        tenant_id, actor_id = _rehearsal_actor_ids()
+        await _ensure_rehearsal_actor(pool, tenant_id=tenant_id, actor_id=actor_id)
+
+        body = await _json_body(request)
+        inputs = _source_finalize_inputs(body)
+        missing_inputs = [
+            name
+            for name in _SOURCE_REQUIRED_INPUTS["whatsapp"]
+            if not str(inputs.get(name, "")).strip()
+        ]
+        if missing_inputs:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "source_rehearsal_missing_required_inputs",
+                    "source": "whatsapp",
+                    "missing_inputs": missing_inputs,
+                },
+            )
+
+        phone_number_id = inputs["phone_number_id"].strip()
+        waba_id = (
+            inputs.get("business_account_id")
+            or inputs.get("waba_id")
+            or ""
+        ).strip() or None
+        display_phone_number = inputs.get("display_phone_number", "").strip() or None
+
+        secret_store = _secret_store_from_state(request, pool)
+        app_secret_ref = await secret_store.put(
+            inputs["app_secret"],
+            label=f"whatsapp_app_secret:{phone_number_id}",
+            tenant_id=tenant_id,
+        )
+        verify_token_ref = await secret_store.put(
+            inputs["verify_token"],
+            label=f"whatsapp_verify_token:{phone_number_id}",
+            tenant_id=tenant_id,
+        )
+        access_token_ref = None
+        if inputs.get("access_token"):
+            access_token_ref = await secret_store.put(
+                inputs["access_token"],
+                label=f"whatsapp_access_token:{phone_number_id}",
+                tenant_id=tenant_id,
+            )
+
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO whatsapp_installations
+                        (tenant_id, phone_number_id, waba_id, display_phone_number,
+                         app_secret_ref, verify_token_ref, access_token_ref,
+                         app_secret, verify_token, access_token, enabled, updated_at)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,NULL,NULL,true, now())
+                    ON CONFLICT (phone_number_id) DO UPDATE SET
+                        tenant_id            = EXCLUDED.tenant_id,
+                        waba_id              = COALESCE(
+                                                 EXCLUDED.waba_id,
+                                                 whatsapp_installations.waba_id
+                                               ),
+                        display_phone_number = COALESCE(
+                                                 EXCLUDED.display_phone_number,
+                                                 whatsapp_installations.display_phone_number
+                                               ),
+                        app_secret_ref       = EXCLUDED.app_secret_ref,
+                        verify_token_ref     = EXCLUDED.verify_token_ref,
+                        access_token_ref     = COALESCE(
+                                                 EXCLUDED.access_token_ref,
+                                                 whatsapp_installations.access_token_ref
+                                               ),
+                        app_secret           = NULL,
+                        verify_token         = NULL,
+                        access_token         = CASE
+                                                 WHEN EXCLUDED.access_token_ref IS NOT NULL THEN NULL
+                                                 ELSE whatsapp_installations.access_token
+                                               END,
+                        enabled              = true,
+                        updated_at           = now()
+                    RETURNING id, phone_number_id
+                    """,
+                    tenant_id,
+                    phone_number_id,
+                    waba_id,
+                    display_phone_number,
+                    app_secret_ref,
+                    verify_token_ref,
+                    access_token_ref,
+                )
+                await _emit_source_connection_proof(
+                    conn,
+                    tenant_id=tenant_id,
+                    actor_id=actor_id,
+                    source="whatsapp",
+                    installation_id=phone_number_id,
+                    visible_inputs={
+                        key: value
+                        for key, value in {
+                            "phone_number_id": phone_number_id,
+                            "business_account_id": waba_id,
+                            "display_phone_number": display_phone_number,
+                        }.items()
+                        if value
+                    },
+                    secret_ref_names=[
+                        name
+                        for name, ref in {
+                            "app_secret": app_secret_ref,
+                            "verify_token": verify_token_ref,
+                            "access_token": access_token_ref,
+                        }.items()
+                        if ref
+                    ],
+                )
+
+        status_payload = await _source_rehearsal_status_payload(
+            pool,
+            tenant_id=tenant_id,
+            source="whatsapp",
+        )
+        return {
+            "ok": True,
+            "source": "whatsapp",
+            "installation_id": str(row["phone_number_id"]),
+            "installation_row_id": str(row["id"]),
+            "status": status_payload,
+        }
+
     @router.post("/sources/{source_id}/rehearsal/finalize")
     async def finalize_generic_source_rehearsal(
         request: Request,
         source_id: str,
     ) -> dict[str, Any]:
         source = _normalize_rehearsal_source(source_id)
-        if source in {"jira", "telegram"}:
+        if source in _SOURCE_SPECIFIC_FINALIZE_SOURCES:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"error": "source_specific_finalize_required"},
+            )
+        if source in _OAUTH_REHEARSAL_SOURCES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "provider_callback_finalize_required",
+                    "source": source,
+                    "message": (
+                        f"{_source_display_name(source)} must be finalized by "
+                        "the provider callback after customer approval."
+                    ),
+                },
+            )
+        if source in _GENERIC_FINALIZE_BLOCKED_SOURCES:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail={
+                    "error": "source_native_finalize_required",
+                    "source": source,
+                    "message": (
+                        f"{_source_display_name(source)} needs a source-native "
+                        "finalizer before the ingestion workers can consume "
+                        "the install."
+                    ),
+                },
             )
         _require_source_rehearsal_enabled(request)
         pool = _pool_from_state(request)
@@ -634,6 +1297,15 @@ def build_byoc_onboarding_router(
                         source,
                         installation_row_id,
                         json.dumps(trigger_payload),
+                    )
+                    await _emit_source_connection_proof(
+                        conn,
+                        tenant_id=tenant_id,
+                        actor_id=actor_id,
+                        source=source,
+                        installation_id=installation_id,
+                        visible_inputs=visible_inputs,
+                        secret_ref_names=sorted(secret_refs),
                     )
         except InstallationCollisionError as exc:
             raise HTTPException(
@@ -751,7 +1423,7 @@ async def _prepare_source_rehearsal_response(
     public_url = _public_url_from_env_or_request(request)
     callback_path = _SOURCE_CALLBACK_PATHS.get(source)
     live_path = _SOURCE_LIVE_INGRESS_PATHS.get(source)
-    return {
+    payload = {
         "enabled": True,
         "source": source,
         "tenant_id": str(tenant_id),
@@ -773,11 +1445,20 @@ async def _prepare_source_rehearsal_response(
         "missing_configuration": handoff["missing_configuration"],
         "required_inputs": _SOURCE_REQUIRED_INPUTS.get(source, []),
         "optional_inputs": _SOURCE_OPTIONAL_INPUTS.get(source, []),
+        "finalize_mode": _source_finalize_mode(source),
+        "automation_profile": _source_automation_profile(source),
+        "browser_agent": browser_agent_recipe_for_source(source),
+        "native_connect": _SOURCE_NATIVE_CONNECT_CONTRACTS.get(source),
         "bearer_token": token,
         "session_expires_at": ctx.expires_at.isoformat(),
         "state_expires_in_seconds": 600 if source in _OAUTH_REHEARSAL_SOURCES else None,
         "status": status_payload,
     }
+    payload["browser_agent_run"] = source_browser_agent_run_for_payload(
+        source,
+        payload,
+    )
+    return payload
 
 
 async def _source_provider_handoff(
@@ -798,10 +1479,10 @@ async def _source_provider_handoff(
             for name, value in {
                 "SLACK_CLIENT_ID": client_id,
                 "SLACK_REDIRECT_URI": redirect_uri,
-                "SLACK_CLIENT_SECRET": os.environ.get("SLACK_CLIENT_SECRET", ""),
-                "SLACK_SIGNING_SECRET": os.environ.get("SLACK_SIGNING_SECRET", ""),
+                "SLACK_CLIENT_SECRET": _env_or_secret_ref_configured("SLACK_CLIENT_SECRET"),
+                "SLACK_SIGNING_SECRET": _env_or_secret_ref_configured("SLACK_SIGNING_SECRET"),
             }.items()
-            if not str(value).strip()
+            if not value
         ]
         install_url = None
         if client_id and redirect_uri:
@@ -833,10 +1514,12 @@ async def _source_provider_handoff(
             for name, value in {
                 "DISCORD_CLIENT_ID": client_id,
                 "DISCORD_REDIRECT_URI": redirect_uri,
-                "DISCORD_CLIENT_SECRET": os.environ.get("DISCORD_CLIENT_SECRET", ""),
-                "WEBHOOK_SECRET_DISCORD": os.environ.get("WEBHOOK_SECRET_DISCORD", ""),
+                "DISCORD_CLIENT_SECRET": _env_or_secret_ref_configured("DISCORD_CLIENT_SECRET"),
+                "DISCORD_APPLICATION_ID": os.environ.get("DISCORD_APPLICATION_ID", ""),
+                "DISCORD_BOT_TOKEN": _env_or_secret_ref_configured("DISCORD_BOT_TOKEN"),
+                "WEBHOOK_SECRET_DISCORD": _env_or_secret_ref_configured("WEBHOOK_SECRET_DISCORD"),
             }.items()
-            if not str(value).strip()
+            if not value
         ]
         install_url = None
         if client_id and redirect_uri:
@@ -852,7 +1535,7 @@ async def _source_provider_handoff(
                 }
             )
         return {
-            "authorization_mode": "oauth",
+            "authorization_mode": "oauth_plus_gateway",
             "install_url": install_url,
             "oauth_redirect_url": redirect_uri or f"{public_url}/integrations/discord/callback",
             "provider_console_url": "https://discord.com/developers/applications",
@@ -863,7 +1546,30 @@ async def _source_provider_handoff(
         from services.ingest.integrations.github import oauth as github_oauth
 
         app_slug = os.environ.get("GITHUB_APP_SLUG", "").strip()
-        missing = ["GITHUB_APP_SLUG"] if not app_slug else []
+        private_key_sources = [
+            name
+            for name in (
+                "GITHUB_APP_PRIVATE_KEY_SECRET_REF",
+                "GITHUB_APP_PRIVATE_KEY",
+                "GITHUB_APP_PRIVATE_KEY_PATH",
+            )
+            if os.environ.get(name, "").strip()
+        ]
+        missing = [
+            name
+            for name, configured in {
+                "GITHUB_APP_SLUG": bool(app_slug),
+                "GITHUB_APP_ID": bool(os.environ.get("GITHUB_APP_ID", "").strip()),
+                "WEBHOOK_SECRET_GITHUB": _env_or_secret_ref_configured(
+                    "WEBHOOK_SECRET_GITHUB"
+                ),
+            }.items()
+            if not configured
+        ]
+        if not private_key_sources:
+            missing.append("GITHUB_APP_PRIVATE_KEY_SOURCE")
+        elif len(private_key_sources) > 1:
+            missing.append("GITHUB_APP_PRIVATE_KEY_SOURCE_CONFLICT")
         install_url = None
         if app_slug:
             state_token = await github_oauth.issue_state_token(tenant_id, pool)
@@ -889,9 +1595,9 @@ async def _source_provider_handoff(
             for name, value in {
                 "NOTION_CLIENT_ID": client_id,
                 "NOTION_REDIRECT_URI": redirect_uri,
-                "NOTION_CLIENT_SECRET": os.environ.get("NOTION_CLIENT_SECRET", ""),
+                "NOTION_CLIENT_SECRET": _env_or_secret_ref_configured("NOTION_CLIENT_SECRET"),
             }.items()
-            if not str(value).strip()
+            if not value
         ]
         install_url = None
         if client_id and redirect_uri:
@@ -1073,6 +1779,597 @@ def _source_installation_id(
     return f"{source}:customer-local-refs"
 
 
+async def _emit_source_connection_proof(
+    conn: Any,
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+    source: str,
+    installation_id: str,
+    visible_inputs: dict[str, str],
+    secret_ref_names: list[str],
+) -> None:
+    source_name = _source_display_name(source)
+    content = {
+        "source": source,
+        "installation_id": installation_id,
+        "proof_type": "source_connection_rehearsal",
+        "visible_input_keys": sorted(visible_inputs),
+        "secret_ref_names": secret_ref_names,
+        "raw_secret_values_included": False,
+        "next_stage": "historical_backfill_or_live_signal_worker",
+    }
+    await conn.execute(
+        """
+        INSERT INTO observations (
+            id, tenant_id, actor_id, occurred_at, kind, source_channel,
+            source_actor_ref, content, content_text, trust_tier, external_id
+        ) VALUES (
+            $1, $2, $3, now(), 'source_connection',
+            $4, $5, $6::jsonb, $7, 'system', $8
+        )
+        """,
+        uuid7(),
+        tenant_id,
+        actor_id,
+        f"{source}:connection",
+        "fyralis:onboarding",
+        json.dumps(content, sort_keys=True),
+        (
+            f"{source_name} connection finalized in the customer-cloud "
+            "onboarding flow. Sanitized proof only; raw secrets were not stored "
+            "in this observation."
+        ),
+        f"source-connection:{source}:{installation_id}",
+    )
+
+
+def _source_finalize_mode(source: str) -> str:
+    if source in _OAUTH_REHEARSAL_SOURCES:
+        return "provider_callback"
+    if source in _SOURCE_SPECIFIC_FINALIZE_SOURCES:
+        return "source_specific"
+    if source in _GENERIC_FINALIZE_BLOCKED_SOURCES:
+        return "native_finalizer_required"
+    return "generic_customer_refs"
+
+
+def _source_automation_profile(source: str) -> dict[str, Any]:
+    method = _SOURCE_METHODS.get(source, "api_token")
+    source_name = _source_display_name(source)
+    human_steps = _source_human_steps(source, method)
+    required_inputs = list(_SOURCE_REQUIRED_INPUTS.get(source, []))
+    optional_inputs = list(_SOURCE_OPTIONAL_INPUTS.get(source, []))
+    return {
+        "automation_level": _source_automation_level(method),
+        "method": method,
+        "minimum_human_inputs": required_inputs,
+        "optional_hints": optional_inputs,
+        "automated_actions": _source_automated_actions(source, method),
+        "human_steps": human_steps,
+        "agent_discovery_target": _SOURCE_DISCOVERY_TARGETS.get(
+            source,
+            f"{source_name} approved workspace and source scope",
+        ),
+        "post_connect_actions": [
+            "store encrypted customer-cloud refs",
+            "register source installation metadata",
+            "emit onboarding trigger",
+            "write sanitized connection-proof observation",
+            "poll for historical backfill and live observations",
+        ],
+        "human_step_count": len(human_steps),
+    }
+
+
+def _source_auto_connect_state(source: str, payload: dict[str, Any]) -> dict[str, Any]:
+    source_name = _source_display_name(source)
+    status_payload = payload.get("status") or {}
+    automation_profile = payload.get("automation_profile") or {}
+    browser_agent = payload.get("browser_agent") or browser_agent_recipe_for_source(source)
+    browser_agent_run = payload.get("browser_agent_run") or source_browser_agent_run_for_payload(
+        source,
+        payload,
+    )
+    missing_configuration = list(payload.get("missing_configuration") or [])
+    human_steps = list(automation_profile.get("human_steps") or [])
+    human_step_count = int(automation_profile.get("human_step_count") or len(human_steps))
+    installed = bool(status_payload.get("installed"))
+    observation_count = int(status_payload.get("observation_count") or 0)
+    install_url = payload.get("install_url")
+    finalize_mode = payload.get("finalize_mode")
+
+    if installed:
+        return {
+            "state": "connected",
+            "label": "Connected",
+            "message": (
+                f"{source_name} is connected; {observation_count} sanitized "
+                f"observation{' has' if observation_count == 1 else 's have'} landed."
+                if observation_count
+                else f"{source_name} install exists; Fyralis is waiting for first sync proof."
+            ),
+            "human_step_count": 0,
+            "human_steps": [],
+            "automated_actions": automation_profile.get("automated_actions") or [],
+            "browser_agent": browser_agent,
+            "browser_agent_run": browser_agent_run,
+            "install_url": install_url,
+        }
+
+    if missing_configuration:
+        return {
+            "state": "blocked",
+            "label": "Needs config",
+            "message": (
+                "Add "
+                + ", ".join(missing_configuration)
+                + " in the customer-cloud runtime, then connect again."
+            ),
+            "human_step_count": len(missing_configuration),
+            "human_steps": [
+                {
+                    "id": f"configure_{name.lower()}",
+                    "label": f"Configure {name}.",
+                    "reason": "The customer-cloud gateway needs this runtime value.",
+                    "can_agent_complete": False,
+                }
+                for name in missing_configuration
+            ],
+            "automated_actions": automation_profile.get("automated_actions") or [],
+            "browser_agent": browser_agent,
+            "browser_agent_run": browser_agent_run,
+            "install_url": install_url,
+        }
+
+    if install_url or finalize_mode == "provider_callback":
+        return {
+            "state": "admin_gate",
+            "label": "Admin gate",
+            "message": (
+                f"{source_name} approval is ready. Fyralis opened the provider "
+                "handoff and will poll in the background after approval."
+            ),
+            "human_step_count": max(1, human_step_count),
+            "human_steps": human_steps,
+            "automated_actions": automation_profile.get("automated_actions") or [],
+            "browser_agent": browser_agent,
+            "browser_agent_run": browser_agent_run,
+            "install_url": install_url,
+        }
+
+    if finalize_mode in {"source_specific", "native_finalizer_required"} or human_step_count:
+        return {
+            "state": "admin_gate",
+            "label": "Admin gate",
+            "message": (
+                f"Fyralis prepared {source_name}. Only provider-required "
+                "approval or credential creation remains."
+            ),
+            "human_step_count": max(1, human_step_count),
+            "human_steps": human_steps,
+            "automated_actions": automation_profile.get("automated_actions") or [],
+            "browser_agent": browser_agent,
+            "browser_agent_run": browser_agent_run,
+            "install_url": install_url,
+        }
+
+    return {
+        "state": "running",
+        "label": "Running",
+        "message": (
+            f"Fyralis prepared {source_name} and is polling for install proof."
+        ),
+        "human_step_count": human_step_count,
+        "human_steps": human_steps,
+        "automated_actions": automation_profile.get("automated_actions") or [],
+        "browser_agent": browser_agent,
+        "browser_agent_run": browser_agent_run,
+        "install_url": install_url,
+    }
+
+
+def _source_auto_connect_run_descriptor(
+    source: str,
+    payload: dict[str, Any],
+    browser_agent_run: dict[str, Any],
+) -> dict[str, Any]:
+    source_cli = source.replace("_", "-")
+    native_connect = payload.get("native_connect")
+    command_args = [
+        "fyralis",
+        "byoc",
+        "source",
+        "browser-agent",
+        "--source",
+        source_cli,
+        "--execute-browser-dom",
+        "--interactive-admin",
+    ]
+    if native_connect:
+        command_args.append("--execute-native")
+    action_queue = [
+        item for item in browser_agent_run.get("action_queue") or [] if isinstance(item, dict)
+    ]
+    provider_admin_actions = [
+        item for item in action_queue if item.get("owner") == "provider_admin"
+    ]
+    agent_actions = [
+        item for item in action_queue if item.get("owner") == "fyralis_agent"
+    ]
+    return {
+        "schema_version": "fyralis.byoc.source.auto_connect_run.v1",
+        "source": source,
+        "status": browser_agent_run.get("state") or "running",
+        "launch_mode": browser_agent_run.get("launch_mode")
+        or "customer_cloud_admin_present_browser",
+        "can_start": bool(browser_agent_run.get("can_start", True)),
+        "handoff_url": browser_agent_run.get("handoff_url"),
+        "current_action_id": (
+            (browser_agent_run.get("current_action") or {}).get("id")
+            if isinstance(browser_agent_run.get("current_action"), dict)
+            else None
+        ),
+        "automated_action_count": len(agent_actions),
+        "human_action_count": len(provider_admin_actions),
+        "native_connect_kind": (
+            native_connect.get("kind") if isinstance(native_connect, dict) else None
+        ),
+        "native_payload_template_path_hint": (
+            f".fyralis/sources/{source_cli}/browser-agent-provider-setup/"
+            "native-payload-template.json"
+            if native_connect
+            else None
+        ),
+        "provider_setup_output_dir_hint": (
+            f".fyralis/sources/{source_cli}/browser-agent-provider-setup"
+        ),
+        "receipt_path_hint": f".fyralis/sources/{source_cli}/browser-agent-receipt.json",
+        "command_preview": " ".join(command_args),
+        "command_args": command_args,
+        "raw_secret_values_included": False,
+        "raw_payloads_exported": False,
+        "stored_scope": "sanitized_auto_connect_run_metadata_only",
+    }
+
+
+def _source_auto_connect_workdir() -> Path:
+    return Path(os.environ.get("FYRALIS_SOURCE_AUTO_CONNECT_WORKDIR") or ".fyralis")
+
+
+def _source_auto_connect_run_key(source: str) -> str:
+    return source.replace("-", "_")
+
+
+def _source_auto_connect_run_store(request: Request) -> dict[str, dict[str, Any]]:
+    existing = getattr(request.app.state, "source_auto_connect_runs", None)
+    if isinstance(existing, dict):
+        return existing
+    created: dict[str, dict[str, Any]] = {}
+    request.app.state.source_auto_connect_runs = created
+    return created
+
+
+def _source_auto_connect_source_dir(source: str) -> Path:
+    return _source_auto_connect_workdir() / "sources" / source.replace("_", "-")
+
+
+def _materialize_source_auto_connect_run(
+    source: str,
+    browser_agent_run: dict[str, Any],
+    descriptor: dict[str, Any],
+) -> dict[str, Any]:
+    generated_at = datetime.now(UTC).isoformat()
+    source_dir = _source_auto_connect_source_dir(source)
+    run_artifact_path = source_dir / "connection.json"
+    receipt_path = source_dir / "browser-agent-receipt.json"
+    run_record = {
+        "background_status": "queued",
+        "background_queued_at": generated_at,
+        "background_runner_mode": _source_auto_connect_runner_mode(),
+        "run_artifact_path_hint": str(run_artifact_path),
+        "receipt_path_hint": str(receipt_path),
+    }
+    payload = {
+        "schema_version": "fyralis.byoc.source.connection_artifact.v1",
+        "source": source,
+        "generated_at": generated_at,
+        "auto_connect_run": {**descriptor, **run_record},
+        "browser_agent_run": browser_agent_run,
+        "raw_secret_values_included": False,
+        "raw_payloads_exported": False,
+        "stored_scope": "sanitized_source_auto_connect_artifact_only",
+    }
+    _write_json_file(run_artifact_path, payload)
+    return run_record
+
+
+def _source_auto_connect_persisted_run_record(source: str) -> dict[str, Any] | None:
+    source_dir = _source_auto_connect_source_dir(source)
+    run_artifact_path = source_dir / "connection.json"
+    if not run_artifact_path.is_file():
+        return None
+    try:
+        artifact = json.loads(run_artifact_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    descriptor = artifact.get("auto_connect_run")
+    if not isinstance(descriptor, dict):
+        descriptor = {}
+    record = dict(descriptor)
+    record["run_artifact_path_hint"] = str(run_artifact_path)
+    receipt_path = Path(
+        str(record.get("receipt_path_hint") or source_dir / "browser-agent-receipt.json")
+    )
+    record["receipt_path_hint"] = str(receipt_path)
+    record.setdefault("background_queued_at", artifact.get("generated_at"))
+    if receipt_path.is_file():
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            receipt = {}
+        receipt_status = str(receipt.get("status") or "").strip()
+        if receipt_status:
+            record["background_status"] = receipt_status
+            record["status"] = receipt_status
+        receipt_generated_at = receipt.get("generated_at")
+        if isinstance(receipt_generated_at, str):
+            record["background_finished_at"] = receipt_generated_at
+    else:
+        record.setdefault("background_status", "queued")
+    record.setdefault("background_runner_mode", _source_auto_connect_runner_mode())
+    return record
+
+
+async def _execute_source_auto_connect_background_run(
+    source: str,
+    run_artifact_path: Path,
+    receipt_path: Path,
+    gateway_api_base: str,
+    store: dict[str, dict[str, Any]],
+    store_key: str,
+) -> None:
+    record = store.setdefault(store_key, {})
+    record.update(
+        {
+            "background_status": "running",
+            "background_started_at": datetime.now(UTC).isoformat(),
+        }
+    )
+    try:
+        receipt = await run_source_browser_agent(
+            SourceBrowserAgentRunnerInputs(
+                run_path=run_artifact_path,
+                gateway_api_base=gateway_api_base,
+                execute_native=_truthy(
+                    os.environ.get("FYRALIS_SOURCE_AUTO_CONNECT_EXECUTE_NATIVE")
+                ),
+                open_browser=_truthy(
+                    os.environ.get("FYRALIS_SOURCE_AUTO_CONNECT_OPEN_BROWSER")
+                ),
+                execute_browser_dom=_truthy(
+                    os.environ.get("FYRALIS_SOURCE_AUTO_CONNECT_EXECUTE_BROWSER_DOM")
+                ),
+                browser_headless=_truthy(
+                    os.environ.get("FYRALIS_SOURCE_AUTO_CONNECT_HEADLESS_BROWSER")
+                ),
+                interactive_admin=_truthy(
+                    os.environ.get("FYRALIS_SOURCE_AUTO_CONNECT_INTERACTIVE_ADMIN")
+                ),
+            )
+        )
+        receipt_payload = receipt.as_json()
+        _write_json_file(receipt_path, receipt_payload)
+        record.update(
+            {
+                "background_status": receipt.status,
+                "background_finished_at": datetime.now(UTC).isoformat(),
+                "receipt_path_hint": str(receipt_path),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - background receipt must be bounded
+        failed_payload = {
+            "schema_version": "fyralis.byoc.source.browser_agent_runner_receipt.v1",
+            "source": source,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "status": "failed",
+            "run_state": "failed",
+            "handoff_url": None,
+            "handoff_opened": False,
+            "native_connect_kind": None,
+            "automated_action_count": 0,
+            "human_action_count": 0,
+            "completed_action_count": 0,
+            "waiting_action_count": 0,
+            "generated_artifacts": {},
+            "action_results": [
+                {
+                    "id": "source_auto_connect_background_run",
+                    "owner": "fyralis_agent",
+                    "status": "failed",
+                    "detail": f"Background source auto-connect failed: {type(exc).__name__}",
+                    "endpoint": str(run_artifact_path),
+                    "http_status": None,
+                }
+            ],
+            "raw_secret_values_included": False,
+            "raw_payloads_exported": False,
+            "stored_scope": "sanitized_browser_agent_runner_metadata_only",
+        }
+        _write_json_file(receipt_path, failed_payload)
+        record.update(
+            {
+                "background_status": "failed",
+                "background_finished_at": datetime.now(UTC).isoformat(),
+                "receipt_path_hint": str(receipt_path),
+            }
+        )
+
+
+def _source_auto_connect_runner_mode() -> str:
+    if _truthy(os.environ.get("FYRALIS_SOURCE_AUTO_CONNECT_EXECUTE_BROWSER_DOM")):
+        return "admin_present_browser_dom"
+    return "artifact_materialization"
+
+
+def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _source_automation_level(method: str) -> str:
+    if method in {"api_token", "oauth_client_credentials", "iam_role", "poll"}:
+        return "fully_automated_after_customer_ref"
+    if method == "dwd":
+        return "automated_after_workspace_dwd_authorization"
+    if method in {"oauth", "oauth_plus_gateway", "webhook"}:
+        return "automated_after_provider_authorization"
+    if method == "gateway":
+        return "automated_after_local_session_authorization"
+    return "automated_after_customer_authorization"
+
+
+def _source_automated_actions(source: str, method: str) -> list[str]:
+    actions = [
+        "prepare provider handoff and gateway routes",
+        "validate required customer-owned refs are present",
+        f"discover {_SOURCE_DISCOVERY_TARGETS.get(source, 'approved source scope')}",
+        "generate least-privilege connection contract",
+        "create encrypted secret refs in the customer cloud",
+        "register install metadata and source trigger",
+    ]
+    if method == "oauth":
+        actions.insert(1, "mint OAuth state and open provider approval")
+    elif method == "oauth_plus_gateway":
+        actions.insert(1, "mint OAuth state and open provider approval")
+        actions.insert(2, "prepare local gateway runner contract")
+    elif method == "dwd":
+        actions.insert(1, "prepare Google Workspace DWD preflight and finalize contract")
+        actions.insert(2, "open Workspace Admin DWD authorization target")
+    elif method == "oauth_client_credentials":
+        actions.insert(1, "prepare OAuth client-credentials or access-token contract")
+    elif method == "webhook":
+        actions.insert(1, "prepare webhook verifier and callback route")
+    elif method == "gateway":
+        actions.insert(1, "prepare local session/gateway runner contract")
+    elif method == "iam_role":
+        actions.insert(1, "validate role ARN shape and generate read-only policy")
+    elif method == "poll":
+        actions.insert(1, "prepare local polling schedule and rate-limit guard")
+    return actions
+
+
+def _source_human_steps(source: str, method: str) -> list[dict[str, Any]]:
+    source_name = _source_display_name(source)
+    if method == "oauth":
+        steps = [
+            (
+                "provider_admin_approval",
+                f"Approve the {source_name} app or provide a preauthorized token ref.",
+                "Providers require a workspace/org admin consent screen.",
+            )
+        ]
+    elif method == "oauth_plus_gateway":
+        steps = [
+            (
+                "provider_admin_approval",
+                f"Approve the {source_name} app or provide a preauthorized token ref.",
+                "Providers require a workspace/org admin consent screen.",
+            ),
+            (
+                "authorize_local_gateway",
+                f"Authorize the local {source_name} gateway or bot session.",
+                "Gateway-backed providers need a customer-approved runtime to receive events.",
+            ),
+        ]
+    elif method == "api_token":
+        steps = [
+            (
+                "create_provider_token",
+                f"Create a least-privilege {source_name} token or service user.",
+                "Fyralis cannot mint provider-owned credentials without customer approval.",
+            )
+        ]
+    elif method == "oauth_client_credentials":
+        steps = [
+            (
+                "create_provider_client_credentials",
+                f"Create a least-privilege {source_name} OAuth client credential or access token.",
+                "The provider requires customer-approved credential material before Fyralis can verify access.",
+            )
+        ]
+    elif method == "dwd":
+        steps = [
+            (
+                "authorize_workspace_dwd",
+                f"Approve {source_name} Domain-Wide Delegation scopes in Google Workspace.",
+                "Google Workspace requires an admin to authorize the service account client ID and scopes.",
+            ),
+            (
+                "approve_workspace_scope",
+                f"Confirm {source_name} workspace domain and inclusion scope.",
+                "The admin owns which users, calendars, drives, or org units are in scope.",
+            ),
+        ]
+    elif method == "webhook":
+        steps = [
+            (
+                "approve_webhook_app",
+                f"Approve the {source_name} webhook app and verify token.",
+                "The provider must accept the customer-cloud callback endpoint.",
+            )
+        ]
+    elif method == "gateway":
+        steps = [
+            (
+                "authorize_local_session",
+                f"Authorize the local {source_name} gateway session.",
+                "Linked-device and MTProto sessions require a human login or device approval.",
+            )
+        ]
+    elif method == "iam_role":
+        steps = [
+            (
+                "approve_iam_role",
+                f"Approve the read-only {source_name} role ref.",
+                "Cloud access must be granted by the customer account owner.",
+            )
+        ]
+    elif method == "poll":
+        steps = [
+            (
+                "approve_polling_scope",
+                f"Approve {source_name} polling scope and rate-limit posture.",
+                "Some providers do not expose a webhook/OAuth callback for fully silent setup.",
+            )
+        ]
+    else:
+        steps = [
+            (
+                "approve_source_connection",
+                f"Approve the {source_name} connection.",
+                "The source owner must approve the boundary and scope.",
+            )
+        ]
+    if _SOURCE_LIVE_INGRESS_PATHS.get(source, "").startswith("/"):
+        steps.append(
+            (
+                "provider_webhook_enablement",
+                f"Provider admin approval is required to enable {source_name} events to the customer-cloud ingress when live sync is needed.",
+                "Providers only deliver live events after an admin-approved callback/webhook target is configured.",
+            )
+        )
+    return [
+        {
+            "id": step_id,
+            "label": label,
+            "reason": reason,
+            "can_agent_complete": False,
+        }
+        for step_id, label, reason in steps
+    ]
+
+
 def _secret_store_from_state(request: Request, pool: Any) -> Any:
     runtime = getattr(request.app.state, "integration_runtime", None)
     store = getattr(runtime, "secret_store", None) if runtime is not None else None
@@ -1112,6 +2409,13 @@ def _require_source_rehearsal_enabled(request: Request) -> None:
 
 def _truthy(raw: str | None) -> bool:
     return (raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_or_secret_ref_configured(name: str) -> bool:
+    return bool(
+        os.environ.get(name, "").strip()
+        or os.environ.get(f"{name}_SECRET_REF", "").strip()
+    )
 
 
 def _rehearsal_actor_ids() -> tuple[UUID, UUID]:
@@ -1240,21 +2544,25 @@ async def _source_rehearsal_status_payload(
         """
         SELECT id, kind, source_channel, occurred_at, content_text
           FROM observations
-         WHERE tenant_id = $1 AND source_channel LIKE $2
+         WHERE tenant_id = $1
+           AND (source_channel LIKE $2 OR source_channel LIKE $3)
          ORDER BY occurred_at DESC
          LIMIT 25
         """,
         tenant_id,
         f"{source}:%",
+        f"gateway:{source}:%",
     )
     observation_count = await pool.fetchval(
         """
         SELECT count(*)::int
           FROM observations
-         WHERE tenant_id = $1 AND source_channel LIKE $2
+         WHERE tenant_id = $1
+           AND (source_channel LIKE $2 OR source_channel LIKE $3)
         """,
         tenant_id,
         f"{source}:%",
+        f"gateway:{source}:%",
     )
     failures = await pool.fetchrow(
         """
@@ -1266,6 +2574,7 @@ async def _source_rehearsal_status_payload(
         source,
     )
     installed = install is not None and bool(install["enabled"])
+    has_secret = install is not None and bool(install["has_secret"])
     trigger_total = int(triggers["total"] if triggers else 0)
     observations = [
         {
@@ -1312,6 +2621,7 @@ async def _source_rehearsal_status_payload(
         "next_action": _source_rehearsal_next_action(
             source=source,
             installed=installed,
+            has_secret=has_secret,
             trigger_count=trigger_total,
             observation_count=int(observation_count or 0),
         ),
@@ -1324,7 +2634,7 @@ async def _source_installation_row(
     tenant_id: UUID,
     source: str,
 ) -> dict[str, Any] | None:
-    if source in _ALL_REHEARSAL_SOURCES - {"jira", "telegram"}:
+    if source in _OAUTH_REHEARSAL_SOURCES:
         row = await pool.fetchrow(
             """
             SELECT installation_id, enabled, (secret_ref IS NOT NULL) AS has_secret,
@@ -1337,7 +2647,119 @@ async def _source_installation_row(
             tenant_id,
             source,
         )
-        return dict(row, details={}) if row else None
+        if row is None:
+            return None
+        data = dict(row, details={})
+        if source == "github" and data["enabled"]:
+            data["has_secret"] = True
+            data["details"] = {
+                "credential_scope": "github_app_level_private_key_and_webhook_secret",
+            }
+        return data
+
+    if source == "gmail":
+        row = await pool.fetchrow(
+            """
+            SELECT workspace_domain AS installation_id,
+                   (disabled_at IS NULL) AS enabled,
+                   (service_account_email IS NOT NULL) AS has_secret,
+                   created_at AS installed_at,
+                   service_account_email,
+                   scope,
+                   resolved_user_count,
+                   resolved_at
+              FROM gmail_installations
+             WHERE tenant_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            tenant_id,
+        )
+        if row is None:
+            return None
+        data = dict(row)
+        return {
+            "installation_id": data["installation_id"],
+            "enabled": data["enabled"],
+            "has_secret": data["has_secret"],
+            "installed_at": data["installed_at"],
+            "details": {
+                "service_account_email": data.get("service_account_email"),
+                "scope": data.get("scope"),
+                "resolved_user_count": data.get("resolved_user_count"),
+                "resolved_at": data.get("resolved_at"),
+            },
+        }
+
+    if source == "google_calendar":
+        row = await pool.fetchrow(
+            """
+            SELECT workspace_domain AS installation_id,
+                   (disabled_at IS NULL) AS enabled,
+                   (service_account_email IS NOT NULL) AS has_secret,
+                   created_at AS installed_at,
+                   service_account_email,
+                   scope,
+                   resolved_calendar_count,
+                   resolved_at
+              FROM google_calendar_installations
+             WHERE tenant_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            tenant_id,
+        )
+        if row is None:
+            return None
+        data = dict(row)
+        return {
+            "installation_id": data["installation_id"],
+            "enabled": data["enabled"],
+            "has_secret": data["has_secret"],
+            "installed_at": data["installed_at"],
+            "details": {
+                "service_account_email": data.get("service_account_email"),
+                "scope": data.get("scope"),
+                "resolved_calendar_count": data.get("resolved_calendar_count"),
+                "resolved_at": data.get("resolved_at"),
+            },
+        }
+
+    if source == "google_drive":
+        row = await pool.fetchrow(
+            """
+            SELECT workspace_domain AS installation_id,
+                   (disabled_at IS NULL) AS enabled,
+                   (service_account_email IS NOT NULL) AS has_secret,
+                   created_at AS installed_at,
+                   service_account_email,
+                   scope,
+                   include_shared_drives,
+                   resolved_target_count,
+                   resolved_at
+              FROM google_drive_installations
+             WHERE tenant_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            tenant_id,
+        )
+        if row is None:
+            return None
+        data = dict(row)
+        return {
+            "installation_id": data["installation_id"],
+            "enabled": data["enabled"],
+            "has_secret": data["has_secret"],
+            "installed_at": data["installed_at"],
+            "details": {
+                "service_account_email": data.get("service_account_email"),
+                "scope": data.get("scope"),
+                "include_shared_drives": data.get("include_shared_drives"),
+                "resolved_target_count": data.get("resolved_target_count"),
+                "resolved_at": data.get("resolved_at"),
+            },
+        }
 
     if source == "jira":
         row = await pool.fetchrow(
@@ -1401,6 +2823,72 @@ async def _source_installation_row(
             },
         }
 
+    if source == "whatsapp":
+        row = await pool.fetchrow(
+            """
+            SELECT phone_number_id AS installation_id,
+                   enabled,
+                   (app_secret_ref IS NOT NULL AND verify_token_ref IS NOT NULL)
+                       AS has_secret,
+                   updated_at AS installed_at,
+                   waba_id,
+                   display_phone_number,
+                   (access_token_ref IS NOT NULL) AS has_access_token
+              FROM whatsapp_installations
+             WHERE tenant_id = $1
+             ORDER BY updated_at DESC
+             LIMIT 1
+            """,
+            tenant_id,
+        )
+        if row is None:
+            return None
+        data = dict(row)
+        return {
+            "installation_id": data["installation_id"],
+            "enabled": data["enabled"],
+            "has_secret": data["has_secret"],
+            "installed_at": data["installed_at"],
+            "details": {
+                "business_account_id": data.get("waba_id"),
+                "display_phone_number": data.get("display_phone_number"),
+                "has_access_token": data.get("has_access_token"),
+            },
+        }
+
+    if source == "ramp":
+        row = await pool.fetchrow(
+            """
+            SELECT business_id AS installation_id,
+                   (disabled_at IS NULL) AS enabled,
+                   (secret_ref IS NOT NULL OR refresh_secret_ref IS NOT NULL)
+                       AS has_secret,
+                   created_at AS installed_at,
+                   base_url,
+                   token_expires_at,
+                   (webhook_secret_ref IS NOT NULL) AS webhook_registered
+              FROM ramp_installations
+             WHERE tenant_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            tenant_id,
+        )
+        if row is None:
+            return None
+        data = dict(row)
+        return {
+            "installation_id": data["installation_id"],
+            "enabled": data["enabled"],
+            "has_secret": data["has_secret"],
+            "installed_at": data["installed_at"],
+            "details": {
+                "base_url": data.get("base_url"),
+                "token_expires_at": data.get("token_expires_at"),
+                "webhook_registered": data.get("webhook_registered"),
+            },
+        }
+
     return None
 
 
@@ -1408,6 +2896,7 @@ def _source_rehearsal_next_action(
     *,
     source: str,
     installed: bool,
+    has_secret: bool,
     trigger_count: int,
     observation_count: int,
 ) -> str:
@@ -1416,6 +2905,12 @@ def _source_rehearsal_next_action(
         if source in _OAUTH_REHEARSAL_SOURCES:
             return f"Approve {source_name} in the provider browser window."
         return f"Submit the required {source_name} connection details."
+    if not has_secret:
+        return f"{source_name} install is present but required secret refs are missing."
+    if source == "whatsapp":
+        if observation_count == 0:
+            return f"{source_name} install is present; send webhook events to the customer-cloud ingress."
+        return f"{source_name} observations are landing in Fyralis."
     if trigger_count == 0:
         return f"{source_name} installed; waiting for onboarding trigger."
     if observation_count == 0:
