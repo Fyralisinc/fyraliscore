@@ -63,7 +63,7 @@ const defaultReadiness: CloudReadiness = {
   agentAccess: "customer-cloud-agent",
   agentPermissionProfile: "byoc-bootstrap-provisioner",
   agentApprovalMode: "approval-required",
-  setupRoleArn: "arn:aws:iam::123456789012:role/FyralisByocSetupRole",
+  setupRoleArn: "",
   kubernetes: "provision-eks",
   network: "provision-isolated-vpc",
   secrets: "provision-secret-refs",

@@ -44,6 +44,7 @@ def source_browser_agent_run_for_payload(
         finalize_mode=payload.get("finalize_mode"),
         native_connect=payload.get("native_connect"),
         provider_setup_bundle=payload.get("provider_setup_bundle"),
+        deployment_context=payload.get("deployment_context"),
     )
 
 
@@ -64,6 +65,7 @@ def build_source_browser_agent_run(
     finalize_mode: str | None = None,
     native_connect: dict[str, Any] | None = None,
     provider_setup_bundle: dict[str, Any] | None = None,
+    deployment_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the sanitized contract consumed by a customer-cloud browser agent."""
     normalized_source = _normalize_source(source)
@@ -94,6 +96,7 @@ def build_source_browser_agent_run(
         events_request_url=events_request_url,
         install_url=install_url,
         native_connect=native_connect,
+        deployment_context=deployment_context,
     )
     action_queue = _action_queue(
         state=state,
@@ -119,6 +122,7 @@ def build_source_browser_agent_run(
         "oauth_redirect_url": oauth_redirect_url,
         "events_request_url": events_request_url,
         "provider_setup_bundle": setup_bundle,
+        "deployment_context": _sanitized_deployment_context(deployment_context),
         "settings_targets": list(recipe_payload.get("settings_targets") or []),
         "agent_collects": list(recipe_payload.get("agent_collects") or []),
         "agent_generates": list(recipe_payload.get("agent_generates") or []),
@@ -167,6 +171,25 @@ def build_source_browser_agent_run(
             1 for action in run["action_queue"] if action["owner"] == "provider_admin"
         )
     return run
+
+
+def _sanitized_deployment_context(
+    deployment_context: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(deployment_context, dict):
+        return None
+    allowed = {
+        "aws_region",
+        "region",
+        "aws_assuming_principal_arn",
+        "setup_role_arn",
+    }
+    out = {
+        key: str(value).strip()
+        for key, value in deployment_context.items()
+        if key in allowed and str(value).strip()
+    }
+    return out or None
 
 
 def _agent_state(

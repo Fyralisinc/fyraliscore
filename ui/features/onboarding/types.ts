@@ -92,7 +92,7 @@ export type Workspace = {
 };
 
 export type CloudReadiness = {
-  region: "us-east-1" | "us-west-2" | "eu-west-1";
+  region: "us-east-1" | "us-west-2" | "eu-west-1" | "ap-south-1";
   environment: "pilot" | "staging" | "production";
   setupAutomation: "agent-managed";
   agentAccess: "customer-cloud-agent" | "aws-cross-account-role";

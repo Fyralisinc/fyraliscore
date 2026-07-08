@@ -363,6 +363,93 @@ def test_native_payload_template_uses_redacted_generated_secret_ref(
     ) is None
 
 
+def test_aws_native_payload_template_defaults_to_assume_role(
+    tmp_path: Path,
+) -> None:
+    run_path = tmp_path / "aws-run.json"
+    run_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "fyralis.byoc.source.browser_agent_run.v1",
+                "source": "aws",
+                "agent_generates": ["external id", "role trust contract"],
+                "native_connect": {
+                    "kind": "aws_iam_native_connect",
+                    "preflight_path": "/integrations/aws/connect/preflight",
+                    "finalize_path": "/integrations/aws/connect/finalize",
+                    "payload_fields": [
+                        "account_id",
+                        "region",
+                        "credential_kind",
+                        "role_arn",
+                        "external_id",
+                        "backfill_window_days",
+                    ],
+                },
+                "deployment_context": {"aws_region": "us-west-2"},
+                "action_queue": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    setup_dir = tmp_path / "browser-agent-provider-setup"
+    setup_dir.mkdir()
+    (setup_dir / "browser-dom-collections.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "fyralis.byoc.source.browser_dom_collection.v1",
+                "fields": ["role arn"],
+                "snippets": [
+                    "Role ARN: arn:aws:iam::123456789012:role/fyralis-source-readonly",
+                ],
+                "raw_secret_values_included": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    generated_values = {"external_id": "fyralis-test-external-id"}
+    generated_refs = {
+        "external_id": "customer-cloud://fyralis/sources/aws/external-id"
+    }
+
+    template_path = _materialize_native_payload_template(
+        run_path=run_path,
+        native_connect={
+            "kind": "aws_iam_native_connect",
+            "preflight_path": "/integrations/aws/connect/preflight",
+            "finalize_path": "/integrations/aws/connect/finalize",
+            "payload_fields": [
+                "account_id",
+                "region",
+                "credential_kind",
+                "role_arn",
+                "external_id",
+                "backfill_window_days",
+            ],
+        },
+        generated_secret_values=generated_values,
+        generated_secret_refs=generated_refs,
+    )
+    template_text = template_path.read_text(encoding="utf-8")
+    template = json.loads(template_text)
+
+    assert "fyralis-test-external-id" not in template_text
+    assert template["payload"]["account_id"] == "123456789012"
+    assert template["payload"]["region"] == "us-west-2"
+    assert template["payload"]["credential_kind"] == "assume_role"
+    assert template["payload"]["role_arn"] == (
+        "arn:aws:iam::123456789012:role/fyralis-source-readonly"
+    )
+    assert template["payload"]["external_id"]["local_ref_hint"] == (
+        "customer-cloud://fyralis/sources/aws/[generated]"
+    )
+    assert template["field_status"]["external_id"] == (
+        "auto_generated_secret_in_browser_session"
+    )
+
+
 @pytest.mark.asyncio
 async def test_native_execution_without_payload_generates_local_template(
     tmp_path: Path,

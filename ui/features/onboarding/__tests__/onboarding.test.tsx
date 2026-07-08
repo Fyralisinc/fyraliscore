@@ -64,7 +64,8 @@ describe("onboarding workflow contract", () => {
     expect(onConnect).toHaveBeenCalledWith("github");
   });
 
-  it("shows persisted waiting approval state without another connect prompt", () => {
+  it("lets persisted waiting approval state recover the provider handoff link", async () => {
+    const user = userEvent.setup();
     const onSelect = vi.fn();
     const onConnect = vi.fn();
     const connections: SourceConnection[] = [
@@ -88,9 +89,222 @@ describe("onboarding workflow contract", () => {
     );
 
     expect(screen.getByText("Approval needed")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", {
+        name: "Get Ramp provider settings link for approval"
+      })
+    );
+    expect(onConnect).toHaveBeenCalledWith("ramp");
+  });
+
+  it("turns approval waiting state into an open settings action when a handoff URL exists", async () => {
+    const user = userEvent.setup();
+    const openMock = vi.fn();
+    vi.spyOn(window, "open").mockImplementation(openMock);
+
+    render(
+      <SourceMarketplace
+        sources={SOURCES.filter((source) => source.id === "ramp")}
+        connections={[]}
+        selectedSourceId="ramp"
+        automationStates={{
+          ramp: {
+            status: "waiting_admin",
+            label: "Approval needed",
+            message: "Provider admin approval is blocking completion.",
+            actionUrl: "https://developers.ramp.com/",
+            actionLabel: "Open settings",
+            receiptPathHint: ".fyralis/sources/ramp/browser-agent-receipt.json"
+          }
+        }}
+        onSelect={vi.fn()}
+        onConnect={vi.fn()}
+      />
+    );
+
     expect(
-      screen.getByRole("button", { name: "Ramp waiting for approval" })
-    ).toBeDisabled();
+      screen.getByText(
+        "Next: approve the provider prompt or create the requested least-privilege credential, then return here."
+      )
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Open Ramp provider settings for approval"
+      })
+    );
+
+    expect(openMock).toHaveBeenCalledWith(
+      "https://developers.ramp.com/",
+      "_blank",
+      "noopener,noreferrer"
+    );
+  });
+
+  it("shows AWS IAM role instructions instead of a generic approval wait", async () => {
+    const user = userEvent.setup();
+    const openMock = vi.fn();
+    vi.spyOn(window, "open").mockImplementation(openMock);
+
+    render(
+      <SourceMarketplace
+        sources={SOURCES.filter((source) => source.id === "aws")}
+        connections={[]}
+        selectedSourceId="aws"
+        automationStates={{
+          aws: {
+            status: "waiting_admin",
+            label: "Approval needed",
+            message:
+              "Fyralis queued 22 background steps. Provider admin approval is blocking completion.",
+            actionUrl:
+              "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
+          }
+        }}
+        onSelect={vi.fn()}
+        onConnect={vi.fn()}
+      />
+    );
+
+    expect(
+      screen.getByText(
+        "Next: sign in to AWS, review the generated read-only CloudFormation role stack, approve IAM creation, then return here."
+      )
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Open AWS provider settings for approval"
+      })
+    );
+
+    expect(openMock).toHaveBeenCalledWith(
+      "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template",
+      "_blank",
+      "noopener,noreferrer"
+    );
+    expect(screen.getByText("Open AWS approval")).toBeInTheDocument();
+  });
+
+  it("turns missing AWS BYOC runtime into a create-runtime-role action", async () => {
+    const user = userEvent.setup();
+    const openMock = vi.fn();
+    const runtimeRoleUrl =
+      "https://ap-south-1.console.aws.amazon.com/cloudformation/home?region=ap-south-1#/stacks/create/template";
+    vi.spyOn(window, "open").mockImplementation(openMock);
+
+    render(
+      <SourceMarketplace
+        sources={SOURCES.filter((source) => source.id === "aws")}
+        connections={[]}
+        selectedSourceId="aws"
+        automationStates={{
+          aws: {
+            status: "blocked",
+            label: "BYOC runtime missing",
+            message:
+              "Create the Fyralis BYOC source runtime role first. Use the generated CloudFormation template.",
+            actionUrl: runtimeRoleUrl,
+            actionLabel: "Create runtime role"
+          }
+        }}
+        onSelect={vi.fn()}
+        onConnect={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("BYOC runtime missing")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Next: create the Fyralis BYOC source runtime role, then connect AWS again."
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByText("Create runtime role")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Create runtime role for AWS"
+      })
+    );
+
+    expect(openMock).toHaveBeenCalledWith(
+      runtimeRoleUrl,
+      "_blank",
+      "noopener,noreferrer"
+    );
+  });
+
+  it("registers an AWS runtime role from account id after stack approval", async () => {
+    const user = userEvent.setup();
+    const onRegisterAwsRuntimeRole = vi.fn();
+
+    render(
+      <SourceMarketplace
+        sources={SOURCES.filter((source) => source.id === "aws")}
+        connections={[]}
+        selectedSourceId="aws"
+        automationStates={{
+          aws: {
+            status: "blocked",
+            label: "BYOC runtime missing",
+            message:
+              "Create the Fyralis BYOC source runtime role first. Use the generated CloudFormation template.",
+            actionUrl:
+              "https://ap-south-1.console.aws.amazon.com/cloudformation/home?region=ap-south-1#/stacks/create/template",
+            actionLabel: "Create runtime role"
+          }
+        }}
+        onSelect={vi.fn()}
+        onConnect={vi.fn()}
+        onRegisterAwsRuntimeRole={onRegisterAwsRuntimeRole}
+      />
+    );
+
+    await user.type(
+      screen.getByLabelText("SourceRuntimeRoleArn or AWS account id"),
+      "587628268464"
+    );
+    await user.click(screen.getByRole("button", { name: "Use runtime role" }));
+
+    expect(onRegisterAwsRuntimeRole).toHaveBeenCalledWith(
+      "arn:aws:iam::587628268464:role/fyralis-source-runtime"
+    );
+  });
+
+  it("finalizes AWS from the CloudFormation RoleArn output", async () => {
+    const user = userEvent.setup();
+    const onFinalizeAwsSourceRole = vi.fn();
+
+    render(
+      <SourceMarketplace
+        sources={SOURCES.filter((source) => source.id === "aws")}
+        connections={[]}
+        selectedSourceId="aws"
+        automationStates={{
+          aws: {
+            status: "waiting_admin",
+            label: "Approval needed",
+            message: "AWS stack approval is complete.",
+            actionUrl:
+              "https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/template",
+            actionLabel: "Open AWS approval"
+          }
+        }}
+        onSelect={vi.fn()}
+        onConnect={vi.fn()}
+        onFinalizeAwsSourceRole={onFinalizeAwsSourceRole}
+      />
+    );
+
+    await user.type(
+      screen.getByLabelText("RoleArn from CloudFormation Outputs"),
+      "587628268464"
+    );
+    await user.click(screen.getByRole("button", { name: "Finalize AWS" }));
+
+    expect(onFinalizeAwsSourceRole).toHaveBeenCalledWith(
+      "arn:aws:iam::587628268464:role/fyralis-source-readonly"
+    );
   });
 
   it("keeps idle source rows minimal", () => {
@@ -882,6 +1096,98 @@ describe("onboarding service recovery", () => {
     expect(prepared.autoConnect.automatedActions).toEqual([
       "open provider settings"
     ]);
+  });
+
+  it("sends AWS deployment context when starting AWS auto-connect", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          enabled: true,
+          source: "aws",
+          tenant_id: "00000000-0000-7000-8000-000000000001",
+          actor_id: "00000000-0000-7000-8000-000000000002",
+          gateway_api_base: "https://fyralis-ingress.acme.example",
+          provider_ingress_url: "https://fyralis-ingress.acme.example",
+          oauth_redirect_url: null,
+          events_request_url: null,
+          install_url: null,
+          provider_console_url:
+            "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template",
+          authorization_mode: "customer_local_provider_refs",
+          missing_configuration: [],
+          required_inputs: ["role_arn"],
+          optional_inputs: [],
+          finalize_mode: "native_finalizer_required",
+          automation_profile: {
+            automation_level: "admin_present_browser_agent",
+            method: "iam_role",
+            minimum_human_inputs: ["aws_console_approval"],
+            optional_hints: [],
+            automated_actions: [],
+            human_steps: [],
+            agent_discovery_target: "account inventory",
+            post_connect_actions: [],
+            human_step_count: 0
+          },
+          bearer_token: "session-token",
+          session_expires_at: "2026-07-01T10:30:00Z",
+          state_expires_in_seconds: null,
+          status: {
+            source: "aws",
+            installed: false,
+            installation: null,
+            trigger_count: 0,
+            consumed_trigger_count: 0,
+            run_status_counts: {},
+            shard_state_counts: {},
+            observation_count: 0,
+            observations: [],
+            unresolved_failure_count: 0,
+            bearer_token: "session-token",
+            session_expires_at: "2026-07-01T10:30:00Z",
+            next_action: "Approve the AWS source role stack."
+          },
+          auto_connect: {
+            state: "running",
+            label: "Running",
+            message: "Fyralis is preparing AWS approval.",
+            human_step_count: 0,
+            human_steps: [],
+            automated_actions: [],
+            install_url: null
+          }
+        }),
+        { status: 200 }
+      )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await autoConnectSourceRehearsal({
+      apiBase: "https://fyralis-ingress.acme.example",
+      sourceId: "aws",
+      deploymentContext: {
+        awsRegion: "us-west-2",
+        awsAssumingPrincipalArn:
+          "arn:aws:iam::587628268464:role/fyralis-runtime"
+      }
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://fyralis-ingress.acme.example/platform/onboarding/sources/aws/rehearsal/auto-connect",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json"
+        }),
+        body: JSON.stringify({
+          deployment_context: {
+            aws_region: "us-west-2",
+            aws_assuming_principal_arn:
+              "arn:aws:iam::587628268464:role/fyralis-runtime"
+          }
+        })
+      })
+    );
   });
 
   it("recreates stale backend intent records before resubmitting intake", async () => {

@@ -20,6 +20,7 @@ from services.app.gateway.byoc_onboarding_router import (
     _source_auto_connect_persisted_run_record,
     _source_auto_connect_run_descriptor,
     _source_auto_connect_state,
+    _source_deployment_context,
     _source_installation_row,
     _source_rehearsal_status_payload,
     build_byoc_onboarding_router,
@@ -69,6 +70,8 @@ class _GatewayPrefixedObservationPool:
             return {"total": 0, "consumed": 0}
         if "FROM ingestion_failures" in query:
             return {"total": 0}
+        if "FROM onboarding_shards" in query:
+            return {"failure": None}
         raise AssertionError(f"unexpected fetchrow query: {query}")
 
     async def fetch(self, query, *args):
@@ -607,6 +610,152 @@ def test_browser_agent_provider_setup_bundles_are_specific_for_all_sources() -> 
             action["kind"] == "materialize_browser_dom_plan"
             for action in bundle["agent_actions"]
         )
+        if source == "aws":
+            expected_aws_url = (
+                "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
+            )
+            artifact_filenames = {artifact["filename"] for artifact in bundle["artifacts"]}
+            assert bundle["provider_console_url"] == (
+                expected_aws_url
+            )
+            assert bundle["browser_dom_plan"]["provider_console_url"] == (
+                expected_aws_url
+            )
+            assert "fyralis-aws-source-role-cloudformation.json" in artifact_filenames
+
+
+def test_aws_browser_agent_bundle_autofills_cloudformation_deployment_context():
+    assuming_principal_arn = "arn:aws:iam::587628268464:role/fyralis-runtime"
+    run = source_browser_agent_run_for_payload(
+        "aws",
+        {
+            "browser_agent": browser_agent_recipe_for_source("aws"),
+            "provider_console_url": (
+                "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
+            ),
+            "native_connect": _SOURCE_NATIVE_CONNECT_CONTRACTS["aws"],
+            "deployment_context": {
+                "aws_region": "us-west-2",
+                "aws_assuming_principal_arn": assuming_principal_arn,
+            },
+            "status": {
+                "installed": False,
+                "observation_count": 0,
+            },
+            "missing_configuration": [],
+            "automation_profile": {
+                "human_steps": [],
+                "automated_actions": [],
+            },
+        },
+    )
+    bundle = run["provider_setup_bundle"]
+    setup_artifact = next(
+        artifact
+        for artifact in bundle["artifacts"]
+        if artifact["filename"] == "fyralis-aws-iam-role-setup.json"
+    )
+    cloudformation_artifact = next(
+        artifact
+        for artifact in bundle["artifacts"]
+        if artifact["filename"] == "fyralis-aws-source-role-cloudformation.json"
+    )
+    template = cloudformation_artifact["json"]
+    parameter = template["Parameters"]["FyralisAssumingPrincipalArn"]
+    assume_statement = template["Resources"]["FyralisSourceReadOnlyRole"][
+        "Properties"
+    ]["AssumeRolePolicyDocument"]["Statement"][0]
+    parameter_fields = next(
+        step["fields"]
+        for step in bundle["browser_dom_plan"]["steps"]
+        if step["id"] == "fill_aws_source_role_stack_details"
+    )
+
+    assert parameter["Default"] == assuming_principal_arn
+    assert assume_statement["Principal"] == {"AWS": "*"}
+    assert assume_statement["Condition"]["ArnEquals"] == {
+        "aws:PrincipalArn": {"Ref": "FyralisAssumingPrincipalArn"}
+    }
+    assert "FyralisAssumingPrincipalArn" not in (
+        setup_artifact["json"]["cloudformation"]["required_admin_parameters"]
+    )
+    assert {
+        "name": "FyralisAssumingPrincipalArn",
+        "value": assuming_principal_arn,
+        "selectors": [
+            "input[name*=FyralisAssumingPrincipalArn]",
+            "input[id*=FyralisAssumingPrincipalArn]",
+            "input",
+        ],
+    } in parameter_fields
+    assert run["deployment_context"] == {
+        "aws_region": "us-west-2",
+        "aws_assuming_principal_arn": assuming_principal_arn,
+    }
+
+
+def test_aws_deployment_context_ignores_demo_role_and_resolves_outputs():
+    assert _source_deployment_context(
+        {
+            "deployment_context": {
+                "aws_region": "ap-south-1",
+                "aws_assuming_principal_arn": (
+                    "arn:aws:iam::123456789012:role/FyralisByocSetupRole"
+                ),
+                "deployment_outputs": {
+                    "SourceRuntimeRoleArn": (
+                        "arn:aws:iam::587628268464:role/fyralis-runtime"
+                    )
+                },
+            }
+        }
+    ) == {
+        "aws_region": "ap-south-1",
+        "aws_assuming_principal_arn": (
+            "arn:aws:iam::587628268464:role/fyralis-runtime"
+        ),
+        "setup_role_arn": "arn:aws:iam::587628268464:role/fyralis-runtime",
+        "source_runtime_role_source": "request_deployment_context",
+    }
+
+
+def test_aws_auto_connect_blocks_until_byoc_runtime_role_is_known(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.chdir(tmp_path)
+    payload = {
+        "status": {
+            "installed": False,
+            "observation_count": 0,
+        },
+        "automation_profile": {
+            "human_steps": [],
+            "automated_actions": [],
+        },
+        "missing_configuration": [],
+        "install_url": None,
+        "finalize_mode": "native_finalizer_required",
+        "browser_agent": browser_agent_recipe_for_source("aws"),
+        "native_connect": _SOURCE_NATIVE_CONNECT_CONTRACTS["aws"],
+        "deployment_context": {"aws_region": "ap-south-1"},
+    }
+
+    state = _source_auto_connect_state("aws", payload)
+
+    assert state["state"] == "blocked"
+    assert state["label"] == "BYOC runtime missing"
+    assert "SourceRuntimeRoleArn" in state["message"]
+    assert state["install_url"] == (
+        "https://ap-south-1.console.aws.amazon.com/cloudformation/home"
+        "?region=ap-south-1#/stacks/create/template"
+    )
+    template_path = (
+        tmp_path
+        / ".fyralis/sources/aws/byoc-runtime/"
+        "fyralis-byoc-source-runtime-role-cloudformation.json"
+    )
+    assert template_path.is_file()
 
 
 @pytest.mark.asyncio
@@ -781,7 +930,7 @@ async def test_generic_source_prepare_returns_actionable_inputs(
     payload = response.json()
     assert payload["source"] == "hibob"
     assert payload["authorization_mode"] == "customer_local_provider_refs"
-    assert payload["required_inputs"] == ["service_user_token"]
+    assert payload["required_inputs"] == ["service_user_id", "service_user_token"]
     assert "company_id" in payload["optional_inputs"]
     assert "webhook_secret" in payload["optional_inputs"]
     assert payload["finalize_mode"] == "native_finalizer_required"

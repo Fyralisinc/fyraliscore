@@ -692,14 +692,25 @@ def _native_payload_template_value(
     if field == "backfill_window_days":
         return 30, "auto_default"
     if field == "credential_kind":
+        if str(run.get("source") or "").strip().lower().replace("-", "_") == "aws":
+            return "assume_role", "auto_default"
         return "customer_admin_approved", "auto_default"
     if field == "repository_selection":
         return "selected", "customer_admin_value_required"
     if field in {"entities", "approved_channel_ids", "shared_page_ids", "shared_database_ids", "account_ids", "contract_ids", "file_keys", "project_keys", "board_ids", "threads", "dialogs"}:
         return [], "customer_admin_value_required"
+    deployment_value = _deployment_context_value_for_native_field(field, run)
+    if deployment_value:
+        return deployment_value, "auto_from_deployment_context"
     collected = _collection_value_for_field(field, collections)
     if collected:
         return collected, "auto_from_provider_page_collection"
+    if field == "account_id":
+        account_id = _account_id_from_role_arn(
+            _collection_value_for_field("role_arn", collections)
+        )
+        if account_id:
+            return account_id, "auto_from_provider_page_collection"
     if _field_can_use_agent_generated_secret(field, run):
         generated_value = generated_secret_values.get(field)
         if generated_value:
@@ -719,6 +730,32 @@ def _native_payload_template_value(
     if _native_payload_field_is_secret(field):
         return "", "customer_admin_secret_required"
     return "", "customer_admin_value_required"
+
+
+def _deployment_context_value_for_native_field(
+    field: str,
+    run: dict[str, Any],
+) -> str | None:
+    context = run.get("deployment_context")
+    if not isinstance(context, dict):
+        return None
+    aliases = {
+        "region": ("aws_region", "region"),
+    }.get(field, (field,))
+    for alias in aliases:
+        value = str(context.get(alias) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _account_id_from_role_arn(role_arn: str | None) -> str | None:
+    if not role_arn:
+        return None
+    match = re.match(r"^arn:aws:iam::([0-9]{12}):role/.+", role_arn.strip())
+    if not match:
+        return None
+    return match.group(1)
 
 
 def _native_payload_field_is_secret(field: str) -> bool:
@@ -774,6 +811,8 @@ def _generated_secret_field_for_ref(source: str, label: str) -> str | None:
         return "webhook_secret"
     if "webhook-verifier" in slug and normalized_source not in {"slack"}:
         return "webhook_verifier_token"
+    if "external-id" in slug:
+        return "external_id"
     return None
 
 
@@ -1171,6 +1210,9 @@ async def _dom_set_config_values(
             for selector in (field_spec.get("selectors") or step.get("selectors") or [])
             if str(selector).strip()
         ]
+        if await _fill_labeled_field(page, field_name, value, timeout_ms):
+            filled += 1
+            continue
         if await _fill_first_match(page, selectors or ["input", "textarea"], value, timeout_ms):
             filled += 1
             continue
@@ -1311,6 +1353,25 @@ async def _fill_first_match(
     for selector in selectors:
         try:
             locator = _first_locator(page.locator(str(selector)))
+            await locator.fill(value, timeout=timeout_ms)
+            return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
+async def _fill_labeled_field(
+    page: Any,
+    label: str,
+    value: str,
+    timeout_ms: int,
+) -> bool:
+    labels = [label, label.replace("_", " ")]
+    for candidate in labels:
+        try:
+            locator = _first_locator(
+                page.get_by_label(re.compile(re.escape(candidate), re.I))
+            )
             await locator.fill(value, timeout=timeout_ms)
             return True
         except Exception:  # noqa: BLE001

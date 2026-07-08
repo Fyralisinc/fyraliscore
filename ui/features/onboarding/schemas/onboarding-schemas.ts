@@ -7,7 +7,7 @@ export const customerSchema = z.object({
 });
 
 export const cloudReadinessSchema = z.object({
-  region: z.enum(["us-east-1", "us-west-2", "eu-west-1"]),
+  region: z.enum(["us-east-1", "us-west-2", "eu-west-1", "ap-south-1"]),
   environment: z.enum(["pilot", "staging", "production"]),
   setupAutomation: z.enum(["agent-managed"]),
   agentAccess: z.enum(["customer-cloud-agent", "aws-cross-account-role"]),

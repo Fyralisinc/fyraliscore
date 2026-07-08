@@ -33,6 +33,12 @@ def test_provider_executor_renders_aws_and_helm_artifacts(tmp_path: Path) -> Non
         "AWS::MSK::Cluster",
         "AWS::SecretsManager::Secret",
     }.issubset(resource_types)
+    assert template["Outputs"]["SourceRuntimeRoleArn"]["Value"] == {
+        "Fn::GetAtt": ["EksNodeRole", "Arn"]
+    }
+    assert report["expected_outputs"]["source_runtime_role_arn"] == (
+        "SourceRuntimeRoleArn"
+    )
     assert Path(artifacts["parameters"]).is_file()
     assert Path(artifacts["helm_values"]).is_file()
     assert "helm upgrade --install" in Path(artifacts["helm_command"]).read_text()
@@ -77,6 +83,9 @@ def test_provider_executor_can_create_and_execute_change_set(
     assert report["change_set_id_present"] is True
     assert client.created_change_sets[0]["ChangeSetType"] == "CREATE"
     assert client.executed_change_sets == ["cs-123"]
+    assert report["deployment_outputs"]["SourceRuntimeRoleArn"] == (
+        "arn:aws:iam::587628268464:role/fyralis-runtime"
+    )
 
 
 def test_provider_executor_can_run_helm_install(
@@ -120,9 +129,25 @@ class _FakeCloudFormationClient:
     def __init__(self) -> None:
         self.created_change_sets: list[dict[str, Any]] = []
         self.executed_change_sets: list[str] = []
+        self.stack_created = False
 
-    def describe_stacks(self, *, StackName: str) -> None:  # noqa: N803
-        raise RuntimeError(f"stack not found: {StackName}")
+    def describe_stacks(self, *, StackName: str) -> dict[str, Any]:  # noqa: N803
+        if not self.stack_created:
+            raise RuntimeError(f"stack not found: {StackName}")
+        return {
+            "Stacks": [
+                {
+                    "Outputs": [
+                        {
+                            "OutputKey": "SourceRuntimeRoleArn",
+                            "OutputValue": (
+                                "arn:aws:iam::587628268464:role/fyralis-runtime"
+                            ),
+                        }
+                    ]
+                }
+            ]
+        }
 
     def create_change_set(self, **kwargs: Any) -> dict[str, str]:
         self.created_change_sets.append(kwargs)
@@ -130,3 +155,4 @@ class _FakeCloudFormationClient:
 
     def execute_change_set(self, *, ChangeSetName: str) -> None:  # noqa: N803
         self.executed_change_sets.append(ChangeSetName)
+        self.stack_created = True

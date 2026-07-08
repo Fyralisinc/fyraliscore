@@ -55,6 +55,8 @@ import {
   createDesignPartnerOnboardingIntent,
   fetchGatewaySourceObservations,
   fetchSourceRehearsalStatus,
+  finalizeAwsSourceRehearsal,
+  retryAwsFirstSyncRehearsal,
   type SourceAutoConnectResponse,
   type SourceRehearsalPrepareResponse,
   type SourceRehearsalStatus,
@@ -631,9 +633,7 @@ function normalizeReadiness(readiness: CloudReadiness): CloudReadiness {
     agentPermissionProfile:
       partial.agentPermissionProfile ?? "byoc-bootstrap-provisioner",
     agentApprovalMode: partial.agentApprovalMode ?? "approval-required",
-    setupRoleArn:
-      partial.setupRoleArn ??
-      "arn:aws:iam::123456789012:role/FyralisByocSetupRole",
+    setupRoleArn: partial.setupRoleArn ?? "",
     kubernetes: partial.kubernetes ?? "provision-eks",
     network: partial.network ?? "provision-isolated-vpc",
     secrets: partial.secrets ?? "provision-secret-refs",
@@ -937,6 +937,7 @@ function CloudReadinessStep({
             <option>us-east-1</option>
             <option>us-west-2</option>
             <option>eu-west-1</option>
+            <option>ap-south-1</option>
           </SelectField>
           <SelectField label="Deployment environment" register={form.register("environment")} help="Controls naming, safety gates, and rollout strictness.">
             <option>pilot</option>
@@ -952,11 +953,14 @@ function CloudReadinessStep({
             <option value="aws-cross-account-role">Allow Fyralis agent to assume setup role</option>
           </SelectField>
           <Field
-            label="Setup role ARN"
-            help="Role name/reference only. No secret keys or source tokens."
+            label="Source runtime role"
+            help="Filled from BYOC deployment output SourceRuntimeRoleArn. No secret keys or source tokens."
             error={form.formState.errors.setupRoleArn?.message}
           >
-            <Input {...form.register("setupRoleArn")} />
+            <Input
+              {...form.register("setupRoleArn")}
+              placeholder="Detected after BYOC deployment"
+            />
           </Field>
           <SelectField
             label="Permission profile"
@@ -1493,12 +1497,11 @@ type SourceConnectRun = SourceAutomationCardState & {
   apiBase?: string;
   installUrl?: string | null;
   observationCount?: number;
-  receiptPathHint?: string | null;
 };
 
 function sourceBackgroundRunView(
   run: SourceRehearsalStatus["autoConnectRun"] | null | undefined
-): Pick<SourceConnectRun, "status" | "label" | "message"> | null {
+): Pick<SourceConnectRun, "status" | "label" | "message" | "actionUrl"> | null {
   const runStatus = run?.backgroundStatus ?? run?.status;
   if (!runStatus) {
     return null;
@@ -1522,7 +1525,8 @@ function sourceBackgroundRunView(
       status: "waiting_admin",
       label: "Approval needed",
       message:
-        "Approve in the customer-cloud browser if asked. Fyralis keeps checking."
+        "Provider admin approval is blocking completion. Fyralis keeps checking.",
+      actionUrl: run?.handoffUrl
     };
   }
   if (runStatus === "failed" || runStatus === "blocked" || runStatus === "error") {
@@ -1548,10 +1552,13 @@ function SourceCatalogStep(props: StepViewProps) {
     selectedSource,
     selectSource,
     updateConnection,
+    updateReadiness,
     landSourceObservations,
     connections,
+    readiness,
     workspace
   } = props;
+  const effectiveReadiness = normalizeReadiness(readiness);
   const [automationStates, setAutomationStates] = useState<
     Record<string, SourceConnectRun>
   >({});
@@ -1589,6 +1596,17 @@ function SourceCatalogStep(props: StepViewProps) {
       landSourceObservations(status.sourceId, status.observations);
     }
     if (status.installed) {
+      const failedShardCount = status.shardStateCounts.failed?.count ?? 0;
+      const activeRunCount =
+        (status.runStatusCounts.pending ?? 0) +
+        (status.runStatusCounts.running ?? 0);
+      const replayQueued = status.triggerCount > status.consumedTriggerCount;
+      const firstSyncActive = status.observationCount === 0 && (activeRunCount > 0 || replayQueued);
+      const hasFirstSyncFailure =
+        !firstSyncActive &&
+        (failedShardCount > 0 ||
+          (status.runStatusCounts.failed ?? 0) > 0 ||
+          Boolean(status.latestFailure));
       updateConnection(source.id, {
         status: "connected",
         selectedScopes: sourceScopeChoices(source.id).slice(0, 3),
@@ -1599,11 +1617,23 @@ function SourceCatalogStep(props: StepViewProps) {
           `source_agent_${source.id}_connected`
       });
       patchAutomationState(source.id, {
-        status: "connected",
-        label: "Connected",
+        status: hasFirstSyncFailure
+          ? "error"
+          : firstSyncActive
+            ? "connecting"
+            : "connected",
+        label: hasFirstSyncFailure
+          ? "Sync blocked"
+          : firstSyncActive
+            ? "Sync running"
+            : "Connected",
         message: status.observationCount
           ? `${status.observationCount} sanitized observation${status.observationCount === 1 ? "" : "s"} landed.`
-          : "Install created. Fyralis is waiting for the first sync proof.",
+          : firstSyncActive
+            ? "AWS first sync is queued or running. Fyralis is checking for CloudTrail proof."
+          : hasFirstSyncFailure
+            ? status.nextAction || status.latestFailure || "AWS first sync failed."
+            : "Install created. Fyralis is waiting for the first sync proof.",
         apiBase,
         installUrl,
         observationCount: status.observationCount
@@ -1612,6 +1642,7 @@ function SourceCatalogStep(props: StepViewProps) {
     }
     const backgroundView = sourceBackgroundRunView(status.autoConnectRun);
     const receiptPathHint = status.autoConnectRun?.receiptPathHint;
+    const handoffUrl = status.autoConnectRun?.handoffUrl ?? installUrl ?? null;
     const nextRunStatus =
       backgroundView?.status ?? (waitingForAdmin ? "waiting_admin" : "connecting");
     if (nextRunStatus === "blocked") {
@@ -1632,16 +1663,24 @@ function SourceCatalogStep(props: StepViewProps) {
       message:
         backgroundView?.message ??
         (waitingForAdmin
-          ? "Approve in the customer-cloud browser if asked. Fyralis keeps checking."
+          ? "Provider admin approval is blocking completion. Fyralis keeps checking."
           : status.nextAction),
       apiBase,
       installUrl,
+      actionUrl: backgroundView?.actionUrl ?? handoffUrl,
+      actionLabel:
+        nextRunStatus === "waiting_admin"
+          ? sourceApprovalActionLabel(source)
+          : undefined,
       observationCount: status.observationCount,
       ...(receiptPathHint ? { receiptPathHint } : {})
     });
   }
 
-  async function connectSource(sourceId: string) {
+  async function connectSource(
+    sourceId: string,
+    options?: { awsAssumingPrincipalArn?: string }
+  ) {
     const source = snapshot.sources.find((item) => item.id === sourceId);
     if (!source) {
       return;
@@ -1656,7 +1695,15 @@ function SourceCatalogStep(props: StepViewProps) {
     try {
       const prepared = await autoConnectSourceRehearsal({
         sourceId,
-        apiBase: workspace.providerIngressUrl
+        apiBase: workspace.providerIngressUrl,
+        deploymentContext:
+          source.id === "aws"
+            ? {
+                awsRegion: effectiveReadiness.region,
+                awsAssumingPrincipalArn:
+                  options?.awsAssumingPrincipalArn ?? effectiveReadiness.setupRoleArn
+              }
+            : undefined
       });
       const preparedApiBase = prepared.gatewayApiBase || workspace.providerIngressUrl;
       applyCatalogSourceStatus({
@@ -1669,6 +1716,16 @@ function SourceCatalogStep(props: StepViewProps) {
         prepared.autoConnect.state === "blocked" ||
         prepared.autoConnect.state === "error"
       ) {
+        const providerConsoleUrl =
+          prepared.autoConnect.browserAgent?.providerConsoleUrl ??
+          prepared.browserAgent?.providerConsoleUrl ??
+          prepared.providerConsoleUrl;
+        const handoffUrl =
+          prepared.autoConnect.browserAgentRun?.handoffUrl ??
+          prepared.browserAgentRun?.handoffUrl ??
+          prepared.autoConnect.installUrl ??
+          prepared.installUrl ??
+          (isExternalUrl(providerConsoleUrl) ? providerConsoleUrl : null);
         updateConnection(sourceId, { status: "error" });
         patchAutomationState(sourceId, {
           status:
@@ -1676,7 +1733,12 @@ function SourceCatalogStep(props: StepViewProps) {
           label: prepared.autoConnect.label,
           message: prepared.autoConnect.message,
           apiBase: preparedApiBase,
-          installUrl: prepared.autoConnect.installUrl ?? prepared.installUrl
+          installUrl: handoffUrl,
+          actionUrl: prepared.autoConnect.state === "blocked" ? handoffUrl : null,
+          actionLabel:
+            prepared.autoConnect.state === "blocked" && source.id === "aws"
+              ? "Create runtime role"
+              : undefined
         });
         return;
       }
@@ -1707,6 +1769,8 @@ function SourceCatalogStep(props: StepViewProps) {
           message: waiting.message,
           apiBase: preparedApiBase,
           installUrl: handoffUrl,
+          actionUrl: handoffUrl,
+          actionLabel: sourceApprovalActionLabel(source),
           receiptPathHint: prepared.autoConnect.automationRun?.receiptPathHint
         });
         return;
@@ -1717,11 +1781,81 @@ function SourceCatalogStep(props: StepViewProps) {
         message: sourceRunningMessage(prepared),
         apiBase: preparedApiBase,
         installUrl: handoffUrl,
+        actionUrl: handoffUrl,
         receiptPathHint: prepared.autoConnect.automationRun?.receiptPathHint
       });
     } catch (caught) {
       updateConnection(sourceId, { status: "error" });
       patchAutomationState(sourceId, {
+        status: "error",
+        label: "Retry",
+        message: errorMessage(caught)
+      });
+    }
+  }
+
+  async function registerAwsRuntimeRole(roleArn: string) {
+    const nextReadiness = normalizeReadiness({
+      ...effectiveReadiness,
+      setupRoleArn: roleArn
+    });
+    updateReadiness(nextReadiness);
+    await connectSource("aws", { awsAssumingPrincipalArn: roleArn });
+  }
+
+  async function finalizeAwsSourceRole(roleArn: string) {
+    const source = snapshot.sources.find((item) => item.id === "aws");
+    if (!source) {
+      return;
+    }
+    patchAutomationState("aws", {
+      status: "connecting",
+      label: "Finalizing",
+      message: "Registering the approved AWS source role..."
+    });
+    try {
+      const status = await finalizeAwsSourceRehearsal({
+        apiBase: workspace.providerIngressUrl,
+        roleArn,
+        region: effectiveReadiness.region
+      });
+      applyCatalogSourceStatus({
+        source,
+        status,
+        apiBase: workspace.providerIngressUrl
+      });
+      updateConnection("aws", { status: "connected" });
+    } catch (caught) {
+      patchAutomationState("aws", {
+        status: "error",
+        label: "Retry",
+        message: errorMessage(caught)
+      });
+      updateConnection("aws", { status: "error" });
+    }
+  }
+
+  async function retryAwsFirstSync() {
+    const source = snapshot.sources.find((item) => item.id === "aws");
+    if (!source) {
+      return;
+    }
+    patchAutomationState("aws", {
+      status: "connecting",
+      label: "Retrying",
+      message: "Queueing a fresh AWS first sync..."
+    });
+    try {
+      const status = await retryAwsFirstSyncRehearsal({
+        apiBase: workspace.providerIngressUrl
+      });
+      applyCatalogSourceStatus({
+        source,
+        status,
+        apiBase: workspace.providerIngressUrl
+      });
+    } catch (caught) {
+      patchAutomationState("aws", {
         status: "error",
         label: "Retry",
         message: errorMessage(caught)
@@ -1737,7 +1871,7 @@ function SourceCatalogStep(props: StepViewProps) {
           status: "waiting_admin",
           label: "Approval needed",
           message:
-            "Approve in the customer-cloud browser if asked. Fyralis keeps checking.",
+            "Provider admin approval is blocking completion. Fyralis keeps checking.",
           apiBase: workspace.providerIngressUrl
         });
       }
@@ -1812,6 +1946,9 @@ function SourceCatalogStep(props: StepViewProps) {
         automationStates={automationStates}
         onSelect={selectSource}
         onConnect={(sourceId) => void connectSource(sourceId)}
+        onRegisterAwsRuntimeRole={(roleArn) => void registerAwsRuntimeRole(roleArn)}
+        onFinalizeAwsSourceRole={(roleArn) => void finalizeAwsSourceRole(roleArn)}
+        onRetryAwsFirstSync={() => void retryAwsFirstSync()}
       />
     </div>
   );
@@ -1825,14 +1962,21 @@ function sourceWaitingAdminCard(prepared: SourceAutoConnectResponse) {
       label: "Approval needed",
       message:
         run.automatedActionCount > 0
-          ? `Fyralis ${backgroundVerb} ${run.automatedActionCount} background step${run.automatedActionCount === 1 ? "" : "s"}. Approve in the customer-cloud browser if asked.`
-          : "Approve in the customer-cloud browser if asked. Fyralis keeps checking."
+          ? `Fyralis ${backgroundVerb} ${run.automatedActionCount} background step${run.automatedActionCount === 1 ? "" : "s"}. Provider admin approval is blocking completion.`
+          : "Provider admin approval is blocking completion. Fyralis keeps checking."
     };
   }
   return {
     label: "Approval needed",
     message: prepared.autoConnect.message
   };
+}
+
+function sourceApprovalActionLabel(source: Source) {
+  if (source.id === "aws") {
+    return "Open AWS approval";
+  }
+  return "Open settings";
 }
 
 function sourceRunningLabel(prepared: SourceAutoConnectResponse) {

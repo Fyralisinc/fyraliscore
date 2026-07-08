@@ -169,6 +169,12 @@ def run_byoc_aws_provider_executor(
             for check in checks
         ),
         "change_set_id_present": change_set_id is not None,
+        "expected_outputs": {
+            "source_runtime_role_arn": "SourceRuntimeRoleArn",
+        },
+        "deployment_outputs": (
+            _describe_stack_outputs(inputs) if resource_mutation_executed else {}
+        ),
         "artifacts": {
             "cloudformation_template": str(template_path),
             "parameters": str(parameters_path),
@@ -220,6 +226,13 @@ def build_byoc_aws_cloudformation_template(
             "ClusterName": {"Value": {"Ref": "FyralisEksCluster"}},
             "RawPayloadBucketName": {"Value": {"Ref": "RawPayloadBucket"}},
             "ArtifactBucketName": {"Value": {"Ref": "ArtifactBucket"}},
+            "SourceRuntimeRoleArn": {
+                "Description": (
+                    "IAM role ARN used by Fyralis BYOC source workers to assume "
+                    "customer-approved source read roles."
+                ),
+                "Value": {"Fn::GetAtt": ["EksNodeRole", "Arn"]},
+            },
             "PostgresEndpoint": {
                 "Value": {"Fn::GetAtt": ["FyralisPostgres", "Endpoint.Address"]}
             },
@@ -703,6 +716,29 @@ def _execute_change_set(
             metrics={"error_type": type(exc).__name__},
         )
     return _check("cloudformation_change_set_executed", "pass", required=True)
+
+
+def _describe_stack_outputs(inputs: ByocAwsProviderExecutorInputs) -> dict[str, str]:
+    try:
+        client = _cloudformation_client(inputs)
+        response = client.describe_stacks(StackName=inputs.stack_name)
+    except Exception:  # noqa: BLE001
+        return {}
+    stacks = response.get("Stacks") if isinstance(response, dict) else None
+    if not isinstance(stacks, list) or not stacks:
+        return {}
+    outputs = stacks[0].get("Outputs") if isinstance(stacks[0], dict) else None
+    if not isinstance(outputs, list):
+        return {}
+    out: dict[str, str] = {}
+    for item in outputs:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("OutputKey") or "").strip()
+        value = str(item.get("OutputValue") or "").strip()
+        if key and value:
+            out[key] = value
+    return out
 
 
 def _execute_helm_install(

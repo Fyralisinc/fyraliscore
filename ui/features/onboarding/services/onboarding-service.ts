@@ -68,6 +68,7 @@ type SourceRehearsalApiStatus = {
   observation_count: number;
   observations: GatewayObservation[];
   unresolved_failure_count: number;
+  latest_failure?: string | null;
   bearer_token?: string | null;
   session_expires_at?: string | null;
   auto_connect_run?: SourceAutoConnectRunApi | null;
@@ -209,6 +210,7 @@ export type SourceRehearsalStatus = {
   observationCount: number;
   observations: SourceObservation[];
   unresolvedFailureCount: number;
+  latestFailure: string | null;
   bearerToken?: string | null;
   sessionExpiresAt?: string | null;
   autoConnectRun: SourceAutoConnectRun | null;
@@ -419,12 +421,27 @@ export async function fetchGatewaySourceObservations({
 
 export async function autoConnectSourceRehearsal({
   sourceId,
-  apiBase
+  apiBase,
+  deploymentContext
 }: {
   sourceId: string;
   apiBase?: string;
+  deploymentContext?: {
+    awsRegion?: string;
+    awsAssumingPrincipalArn?: string;
+  };
 }): Promise<SourceAutoConnectResponse> {
   const resolvedApiBase = resolveGatewayApiBase(apiBase);
+  const requestBody =
+    deploymentContext?.awsRegion || deploymentContext?.awsAssumingPrincipalArn
+      ? {
+          deployment_context: {
+            aws_region: deploymentContext.awsRegion,
+            aws_assuming_principal_arn:
+              deploymentContext.awsAssumingPrincipalArn
+          }
+        }
+      : undefined;
   const response = await fetch(
     `${resolvedApiBase}/platform/onboarding/sources/${encodeURIComponent(
       gatewaySourceId(sourceId)
@@ -432,8 +449,10 @@ export async function autoConnectSourceRehearsal({
     {
       method: "POST",
       headers: {
-        Accept: "application/json"
-      }
+        Accept: "application/json",
+        ...(requestBody ? { "Content-Type": "application/json" } : {})
+      },
+      ...(requestBody ? { body: JSON.stringify(requestBody) } : {})
     }
   );
   if (!response.ok) {
@@ -471,6 +490,65 @@ export async function fetchSourceRehearsalStatus({
     (await response.json()) as SourceRehearsalApiStatus,
     sourceId
   );
+}
+
+export async function finalizeAwsSourceRehearsal({
+  apiBase,
+  roleArn,
+  region
+}: {
+  apiBase?: string;
+  roleArn: string;
+  region?: string;
+}): Promise<SourceRehearsalStatus> {
+  const resolvedApiBase = resolveGatewayApiBase(apiBase);
+  const response = await fetch(
+    `${resolvedApiBase}/platform/onboarding/sources/aws/rehearsal/finalize`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        role_arn: roleArn,
+        region: region || "us-east-1",
+        credential_kind: "assume_role",
+        backfill_window_days: 90
+      })
+    }
+  );
+  if (!response.ok) {
+    throw new ApiError(response.status, await response.text());
+  }
+  const payload = (await response.json()) as {
+    status: SourceRehearsalApiStatus;
+  };
+  return mapSourceRehearsalStatus(payload.status, "aws");
+}
+
+export async function retryAwsFirstSyncRehearsal({
+  apiBase
+}: {
+  apiBase?: string;
+}): Promise<SourceRehearsalStatus> {
+  const resolvedApiBase = resolveGatewayApiBase(apiBase);
+  const response = await fetch(
+    `${resolvedApiBase}/platform/onboarding/sources/aws/rehearsal/retry`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json"
+      }
+    }
+  );
+  if (!response.ok) {
+    throw new ApiError(response.status, await response.text());
+  }
+  const payload = (await response.json()) as {
+    status: SourceRehearsalApiStatus;
+  };
+  return mapSourceRehearsalStatus(payload.status, "aws");
 }
 
 async function postJson<T>(
@@ -792,6 +870,7 @@ function mapSourceRehearsalStatus(
       .filter((item) => observationBelongsToSource(item, sourceId))
       .map((item) => gatewayObservationToSourceObservation(item, sourceId)),
     unresolvedFailureCount: payload.unresolved_failure_count,
+    latestFailure: payload.latest_failure ?? null,
     bearerToken: payload.bearer_token,
     sessionExpiresAt: payload.session_expires_at,
     autoConnectRun: mapSourceAutoConnectRun(payload.auto_connect_run ?? undefined),

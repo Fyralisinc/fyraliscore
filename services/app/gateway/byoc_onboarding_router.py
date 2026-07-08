@@ -246,7 +246,7 @@ _SOURCE_OPTIONAL_INPUTS = {
 
 _GENERIC_PROVIDER_CONSOLES = {
     "ashby": "https://app.ashbyhq.com/admin/api",
-    "aws": "https://console.aws.amazon.com/iam/",
+    "aws": "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template",
     "brex": "https://developer.brex.com/",
     "carta": "https://developers.app.carta.com/",
     "deel": "https://app.deel.com/",
@@ -266,6 +266,37 @@ _GENERIC_PROVIDER_CONSOLES = {
     "signal": "https://signal.org/download/",
     "whatsapp": "https://developers.facebook.com/apps/",
 }
+
+_AWS_RUNTIME_ROLE_ENV_KEYS = (
+    "FYRALIS_BYOC_SOURCE_RUNTIME_ROLE_ARN",
+    "FYRALIS_BYOC_RUNTIME_ROLE_ARN",
+    "FYRALIS_AWS_SOURCE_RUNTIME_ROLE_ARN",
+    "FYRALIS_AWS_RUNTIME_ROLE_ARN",
+)
+_AWS_RUNTIME_ROLE_CONTEXT_KEYS = (
+    "aws_assuming_principal_arn",
+    "aws_source_runtime_role_arn",
+    "source_runtime_role_arn",
+    "byoc_runtime_role_arn",
+    "runtime_role_arn",
+    "setup_role_arn",
+    "setupRoleArn",
+)
+_AWS_RUNTIME_ROLE_OUTPUT_KEYS = (
+    "SourceRuntimeRoleArn",
+    "source_runtime_role_arn",
+    "ByocRuntimeRoleArn",
+    "RuntimeRoleArn",
+    "SetupRoleArn",
+    "EksNodeRoleArn",
+)
+_AWS_SOURCE_RUNTIME_TEMPLATE_PATH = (
+    ".fyralis/sources/aws/byoc-runtime/"
+    "fyralis-byoc-source-runtime-role-cloudformation.json"
+)
+_AWS_SOURCE_EXTERNAL_ID_PATH = (
+    ".fyralis/sources/aws/browser-agent-provider-setup/external-id.txt"
+)
 
 _GENERIC_AUTHORIZATION_MODES = {
     "aws": "customer_iam_role_ref",
@@ -731,7 +762,12 @@ def build_byoc_onboarding_router(
         source_id: str,
     ) -> dict[str, Any]:
         source = _normalize_rehearsal_source(source_id)
-        return await _prepare_source_rehearsal_response(request, source)
+        request_payload = await _optional_json_body(request)
+        return await _prepare_source_rehearsal_response(
+            request,
+            source,
+            request_payload=request_payload,
+        )
 
     @router.get("/sources/{source_id}/rehearsal/status")
     async def source_rehearsal_status(
@@ -764,7 +800,12 @@ def build_byoc_onboarding_router(
         source_id: str,
     ) -> dict[str, Any]:
         source = _normalize_rehearsal_source(source_id)
-        payload = await _prepare_source_rehearsal_response(request, source)
+        request_payload = await _optional_json_body(request)
+        payload = await _prepare_source_rehearsal_response(
+            request,
+            source,
+            request_payload=request_payload,
+        )
         payload["auto_connect"] = _source_auto_connect_state(source, payload)
         payload["browser_agent_run"] = source_browser_agent_run_for_payload(
             source,
@@ -1176,6 +1217,113 @@ def build_byoc_onboarding_router(
             "status": status_payload,
         }
 
+    @router.post("/sources/aws/rehearsal/finalize")
+    async def finalize_aws_rehearsal(request: Request) -> dict[str, Any]:
+        _require_source_rehearsal_enabled(request)
+        pool = _pool_from_state(request)
+        tenant_id, actor_id = _rehearsal_actor_ids()
+        await _ensure_rehearsal_actor(pool, tenant_id=tenant_id, actor_id=actor_id)
+
+        from services.ingest.integrations.aws.onboarding import finalize_install
+
+        body = await _json_body(request)
+        role_arn = _valid_aws_role_arn(body.get("role_arn"))
+        if not role_arn:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "aws_role_arn_required"},
+            )
+        account_id = _aws_account_id_from_role_arn(role_arn)
+        if not account_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "aws_account_id_required"},
+            )
+        region = _bounded_context_value(body.get("region")) or "us-east-1"
+        external_id = _aws_source_external_id(body.get("external_id"))
+        if not external_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "error": "aws_external_id_missing",
+                    "message": (
+                        "Fyralis could not find the generated AWS ExternalId. "
+                        "Run AWS Connect again or pass external_id explicitly."
+                    ),
+                },
+            )
+        secret_store = _secret_store_from_state(request, pool)
+        secret_ref = await secret_store.put(
+            json.dumps(
+                {
+                    "role_arn": role_arn,
+                    "external_id": external_id,
+                },
+                sort_keys=True,
+            ),
+            label=f"aws_assume_role:{account_id}:{region}",
+            tenant_id=tenant_id,
+        )
+        install_id = await finalize_install(
+            pool,
+            tenant_id=tenant_id,
+            account_id=account_id,
+            region=region,
+            credential_kind="assume_role",
+            secret_ref=secret_ref,
+            backfill_window_days=int(body.get("backfill_window_days") or 90),
+        )
+        status_payload = await _source_rehearsal_status_payload(
+            pool,
+            tenant_id=tenant_id,
+            source="aws",
+        )
+        return {
+            "ok": True,
+            "source": "aws",
+            "installation_id": str(install_id),
+            "account_id": account_id,
+            "region": region,
+            "status": status_payload,
+        }
+
+    @router.post("/sources/aws/rehearsal/retry")
+    async def retry_aws_rehearsal(request: Request) -> dict[str, Any]:
+        _require_source_rehearsal_enabled(request)
+        pool = _pool_from_state(request)
+        tenant_id, actor_id = _rehearsal_actor_ids()
+        await _ensure_rehearsal_actor(pool, tenant_id=tenant_id, actor_id=actor_id)
+
+        install = await _source_installation_row(pool, tenant_id=tenant_id, source="aws")
+        if not install or not install["enabled"] or not install["has_secret"]:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"error": "aws_install_not_ready"},
+            )
+        details = install.get("details", {})
+        trigger_id = await _enqueue_source_manual_replay(
+            pool,
+            tenant_id=tenant_id,
+            source="aws",
+            payload={
+                "reason": "ui_retry_first_sync",
+                "account_id": details.get("account_id"),
+                "region": details.get("region"),
+                "installation_id": install.get("installation_id"),
+            },
+        )
+        status_payload = await _source_rehearsal_status_payload(
+            pool,
+            tenant_id=tenant_id,
+            source="aws",
+        )
+        return {
+            "ok": True,
+            "source": "aws",
+            "trigger_id": str(trigger_id),
+            "status": status_payload,
+        }
+
     @router.post("/sources/{source_id}/rehearsal/finalize")
     async def finalize_generic_source_rehearsal(
         request: Request,
@@ -1395,6 +1543,8 @@ def _bounded_telegram_error_code(exc: Exception) -> str:
 async def _prepare_source_rehearsal_response(
     request: Request,
     source: str,
+    *,
+    request_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     _require_source_rehearsal_enabled(request)
     pool = _pool_from_state(request)
@@ -1407,12 +1557,17 @@ async def _prepare_source_rehearsal_response(
         tenant_id=tenant_id,
         ttl=timedelta(hours=24),
     )
+    deployment_context = _source_deployment_context(request_payload or {})
     handoff = await _source_provider_handoff(
         source,
         pool=pool,
         tenant_id=tenant_id,
         request=request,
     )
+    if source == "aws":
+        handoff["provider_console_url"] = _aws_source_approval_url(
+            deployment_context.get("aws_region")
+        )
     status_payload = await _source_rehearsal_status_payload(
         pool,
         tenant_id=tenant_id,
@@ -1449,6 +1604,7 @@ async def _prepare_source_rehearsal_response(
         "automation_profile": _source_automation_profile(source),
         "browser_agent": browser_agent_recipe_for_source(source),
         "native_connect": _SOURCE_NATIVE_CONNECT_CONTRACTS.get(source),
+        "deployment_context": deployment_context,
         "bearer_token": token,
         "session_expires_at": ctx.expires_at.isoformat(),
         "state_expires_in_seconds": 600 if source in _OAUTH_REHEARSAL_SOURCES else None,
@@ -1678,6 +1834,285 @@ async def _json_body(request: Request) -> dict[str, Any]:
     return body
 
 
+async def _optional_json_body(request: Request) -> dict[str, Any]:
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return {}
+    if body in (None, b"", ""):
+        return {}
+    if not isinstance(body, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "json_object_required"},
+        )
+    return body
+
+
+def _source_deployment_context(body: dict[str, Any]) -> dict[str, str]:
+    raw = body.get("deployment_context") or body.get("deploymentContext") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    context: dict[str, str] = {}
+    region = _bounded_context_value(raw.get("aws_region") or raw.get("region"))
+    if region:
+        context["aws_region"] = region
+    assuming_principal_arn = _known_aws_source_runtime_role_arn(raw)
+    if assuming_principal_arn:
+        context["aws_assuming_principal_arn"] = assuming_principal_arn
+        context["setup_role_arn"] = assuming_principal_arn
+        context["source_runtime_role_source"] = _aws_runtime_role_source(raw)
+    return context
+
+
+def _aws_source_approval_url(region: str | None) -> str:
+    clean_region = _bounded_context_value(region)
+    if clean_region:
+        return (
+            f"https://{clean_region}.console.aws.amazon.com/cloudformation/home"
+            f"?region={clean_region}#/stacks/create/template"
+        )
+    return _GENERIC_PROVIDER_CONSOLES["aws"]
+
+
+def _materialize_aws_source_runtime_bootstrap() -> Path:
+    path = Path(_AWS_SOURCE_RUNTIME_TEMPLATE_PATH)
+    _write_json_file(path, _aws_source_runtime_role_cloudformation_template())
+    return path
+
+
+def _aws_source_runtime_role_cloudformation_template() -> dict[str, Any]:
+    return {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Description": (
+            "Fyralis BYOC source runtime identity bootstrap. Creates the IAM "
+            "role that AWS source roles trust; no data-plane resources are created."
+        ),
+        "Parameters": {
+            "RuntimeRoleName": {
+                "Type": "String",
+                "Default": "fyralis-source-runtime",
+                "Description": "Name for the Fyralis source runtime IAM role.",
+            },
+            "SourceReadRoleName": {
+                "Type": "String",
+                "Default": "fyralis-source-readonly",
+                "Description": (
+                    "Name of the AWS source read role this runtime is allowed to assume."
+                ),
+            },
+            "PermissionsBoundaryArn": {
+                "Type": "String",
+                "Default": "",
+                "Description": "Optional customer-owned IAM permissions boundary ARN.",
+            },
+        },
+        "Conditions": {
+            "HasPermissionsBoundary": {
+                "Fn::Not": [{"Fn::Equals": [{"Ref": "PermissionsBoundaryArn"}, ""]}]
+            }
+        },
+        "Resources": {
+            "FyralisSourceRuntimeRole": {
+                "Type": "AWS::IAM::Role",
+                "Properties": {
+                    "RoleName": {"Ref": "RuntimeRoleName"},
+                    "PermissionsBoundary": {
+                        "Fn::If": [
+                            "HasPermissionsBoundary",
+                            {"Ref": "PermissionsBoundaryArn"},
+                            {"Ref": "AWS::NoValue"},
+                        ]
+                    },
+                    "AssumeRolePolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Principal": {
+                                    "Service": [
+                                        "ec2.amazonaws.com",
+                                        "pods.eks.amazonaws.com",
+                                    ]
+                                },
+                                "Action": "sts:AssumeRole",
+                            }
+                        ],
+                    },
+                    "Policies": [
+                        {
+                            "PolicyName": "fyralis-source-runtime-assume-source",
+                            "PolicyDocument": {
+                                "Version": "2012-10-17",
+                                "Statement": [
+                                    {
+                                        "Sid": "AssumeFyralisSourceReadRole",
+                                        "Effect": "Allow",
+                                        "Action": "sts:AssumeRole",
+                                        "Resource": {
+                                            "Fn::Sub": (
+                                                "arn:${AWS::Partition}:iam::"
+                                                "${AWS::AccountId}:role/"
+                                                "${SourceReadRoleName}"
+                                            )
+                                        },
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "Tags": [
+                        {"Key": "fyralis:managed", "Value": "true"},
+                        {"Key": "fyralis:purpose", "Value": "source-runtime"},
+                    ],
+                },
+            }
+        },
+        "Outputs": {
+            "SourceRuntimeRoleArn": {
+                "Description": (
+                    "Role ARN Fyralis AWS source stacks use as "
+                    "FyralisAssumingPrincipalArn."
+                ),
+                "Value": {"Fn::GetAtt": ["FyralisSourceRuntimeRole", "Arn"]},
+            }
+        },
+    }
+
+
+def _bounded_context_value(value: Any) -> str:
+    return str(value or "").strip()[:300]
+
+
+def _known_aws_source_runtime_role_arn(raw_context: dict[str, Any]) -> str | None:
+    candidate = _aws_runtime_role_from_mapping(raw_context)
+    if candidate:
+        return candidate
+    for env_key in _AWS_RUNTIME_ROLE_ENV_KEYS:
+        candidate = _valid_aws_role_arn(os.environ.get(env_key))
+        if candidate:
+            return candidate
+    for path in _aws_runtime_role_context_paths():
+        candidate = _aws_runtime_role_from_json_file(path)
+        if candidate:
+            return candidate
+    return None
+
+
+def _aws_runtime_role_source(raw_context: dict[str, Any]) -> str:
+    if _aws_runtime_role_from_mapping(raw_context):
+        return "request_deployment_context"
+    for env_key in _AWS_RUNTIME_ROLE_ENV_KEYS:
+        if _valid_aws_role_arn(os.environ.get(env_key)):
+            return f"env:{env_key}"
+    for path in _aws_runtime_role_context_paths():
+        if _aws_runtime_role_from_json_file(path):
+            return str(path)
+    return "missing"
+
+
+def _aws_runtime_role_context_paths() -> list[Path]:
+    paths = [
+        ".fyralis/deployment-context.json",
+        ".fyralis/byoc-deployment-context.json",
+        ".fyralis/local-rehearsal/provider/aws-cloudformation/provider-executor-report.json",
+    ]
+    configured = os.environ.get("FYRALIS_BYOC_DEPLOYMENT_CONTEXT_PATH", "").strip()
+    if configured:
+        paths.insert(0, configured)
+    return [Path(path) for path in paths]
+
+
+def _aws_runtime_role_from_json_file(path: Path) -> str | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _aws_runtime_role_from_mapping(payload)
+
+
+def _aws_runtime_role_from_mapping(payload: dict[str, Any]) -> str | None:
+    for key in _AWS_RUNTIME_ROLE_CONTEXT_KEYS:
+        candidate = _valid_aws_role_arn(payload.get(key))
+        if candidate:
+            return candidate
+    for key in ("deployment_outputs", "outputs", "stack_outputs"):
+        candidate = _aws_runtime_role_from_outputs(payload.get(key))
+        if candidate:
+            return candidate
+    for key in ("aws", "byoc", "deployment", "runtime"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            candidate = _aws_runtime_role_from_mapping(nested)
+            if candidate:
+                return candidate
+    return None
+
+
+def _aws_runtime_role_from_outputs(outputs: Any) -> str | None:
+    if isinstance(outputs, dict):
+        for key in _AWS_RUNTIME_ROLE_OUTPUT_KEYS:
+            candidate = _valid_aws_role_arn(outputs.get(key))
+            if candidate:
+                return candidate
+        for value in outputs.values():
+            if isinstance(value, dict):
+                candidate = _aws_runtime_role_from_outputs(value)
+                if candidate:
+                    return candidate
+        return None
+    if isinstance(outputs, list):
+        for item in outputs:
+            if not isinstance(item, dict):
+                continue
+            output_key = str(item.get("OutputKey") or item.get("key") or "").strip()
+            if output_key not in _AWS_RUNTIME_ROLE_OUTPUT_KEYS:
+                continue
+            candidate = _valid_aws_role_arn(
+                item.get("OutputValue") or item.get("value")
+            )
+            if candidate:
+                return candidate
+    return None
+
+
+def _valid_aws_role_arn(value: Any) -> str | None:
+    candidate = _bounded_context_value(value)
+    if not candidate.startswith("arn:aws:iam::"):
+        return None
+    parts = candidate.split(":", 5)
+    if len(parts) < 6 or not parts[4].isdigit() or len(parts[4]) != 12:
+        return None
+    if parts[4] == "123456789012":
+        return None
+    if not parts[5].startswith("role/"):
+        return None
+    return candidate
+
+
+def _aws_account_id_from_role_arn(role_arn: str) -> str | None:
+    candidate = _valid_aws_role_arn(role_arn)
+    if not candidate:
+        return None
+    parts = candidate.split(":", 5)
+    return parts[4] if len(parts) >= 5 else None
+
+
+def _aws_source_external_id(value: Any) -> str | None:
+    direct = _bounded_context_value(value)
+    if direct:
+        return direct
+    try:
+        from_file = Path(_AWS_SOURCE_EXTERNAL_ID_PATH).read_text(
+            encoding="utf-8"
+        ).strip()
+    except OSError:
+        return None
+    return from_file[:300] if from_file else None
+
+
 def _source_finalize_inputs(body: dict[str, Any]) -> dict[str, str]:
     raw_inputs = body.get("inputs", body)
     if not isinstance(raw_inputs, dict):
@@ -1897,6 +2332,40 @@ def _source_auto_connect_state(source: str, payload: dict[str, Any]) -> dict[str
             "install_url": install_url,
         }
 
+    if source == "aws" and not _aws_source_runtime_role_from_payload(payload):
+        bootstrap_template_path = _materialize_aws_source_runtime_bootstrap()
+        bootstrap_url = _aws_source_approval_url(
+            (payload.get("deployment_context") or {}).get("aws_region")
+            if isinstance(payload.get("deployment_context"), dict)
+            else None
+        )
+        return {
+            "state": "blocked",
+            "label": "BYOC runtime missing",
+            "message": (
+                "Create the Fyralis BYOC source runtime role first. Use the "
+                f"generated CloudFormation template at {bootstrap_template_path}; "
+                "its SourceRuntimeRoleArn output becomes the trusted runtime "
+                "principal for the AWS source role."
+            ),
+            "human_step_count": 1,
+            "human_steps": [
+                {
+                    "id": "deploy_fyralis_byoc_runtime",
+                    "label": "Create Fyralis BYOC source runtime role.",
+                    "reason": (
+                        "AWS source connection needs SourceRuntimeRoleArn before "
+                        "the read-only source role can be created."
+                    ),
+                    "can_agent_complete": False,
+                }
+            ],
+            "automated_actions": automation_profile.get("automated_actions") or [],
+            "browser_agent": browser_agent,
+            "browser_agent_run": browser_agent_run,
+            "install_url": bootstrap_url,
+        }
+
     if missing_configuration:
         return {
             "state": "blocked",
@@ -1967,6 +2436,16 @@ def _source_auto_connect_state(source: str, payload: dict[str, Any]) -> dict[str
         "browser_agent_run": browser_agent_run,
         "install_url": install_url,
     }
+
+
+def _aws_source_runtime_role_from_payload(payload: dict[str, Any]) -> str | None:
+    deployment_context = payload.get("deployment_context")
+    if not isinstance(deployment_context, dict):
+        return None
+    return _valid_aws_role_arn(
+        deployment_context.get("aws_assuming_principal_arn")
+        or deployment_context.get("setup_role_arn")
+    )
 
 
 def _source_auto_connect_run_descriptor(
@@ -2573,6 +3052,20 @@ async def _source_rehearsal_status_payload(
         tenant_id,
         source,
     )
+    latest_failure = await pool.fetchrow(
+        """
+        SELECT last_error AS failure
+          FROM onboarding_shards
+         WHERE tenant_id = $1
+           AND source = $2
+           AND state = 'failed'
+           AND last_error IS NOT NULL
+         ORDER BY completed_at DESC NULLS LAST, created_at DESC
+         LIMIT 1
+        """,
+        tenant_id,
+        source,
+    )
     installed = install is not None and bool(install["enabled"])
     has_secret = install is not None and bool(install["has_secret"])
     trigger_total = int(triggers["total"] if triggers else 0)
@@ -2616,6 +3109,7 @@ async def _source_rehearsal_status_payload(
         "observation_count": int(observation_count or 0),
         "observations": observations,
         "unresolved_failure_count": int(failures["total"] if failures else 0),
+        "latest_failure": latest_failure["failure"] if latest_failure else None,
         "bearer_token": bearer_token,
         "session_expires_at": session_expires_at,
         "next_action": _source_rehearsal_next_action(
@@ -2624,8 +3118,33 @@ async def _source_rehearsal_status_payload(
             has_secret=has_secret,
             trigger_count=trigger_total,
             observation_count=int(observation_count or 0),
+            latest_failure=latest_failure["failure"] if latest_failure else None,
         ),
     }
+
+
+async def _enqueue_source_manual_replay(
+    pool: Any,
+    *,
+    tenant_id: UUID,
+    source: str,
+    payload: dict[str, Any],
+) -> UUID:
+    trigger_id = uuid7()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO onboarding_triggers (
+                    id, tenant_id, source, trigger_kind, payload
+                ) VALUES ($1, $2, $3, 'manual_replay', $4::jsonb)
+                """,
+                trigger_id,
+                tenant_id,
+                source,
+                json.dumps(payload, sort_keys=True),
+            )
+    return trigger_id
 
 
 async def _source_installation_row(
@@ -2793,6 +3312,40 @@ async def _source_installation_row(
             },
         }
 
+    if source == "aws":
+        row = await pool.fetchrow(
+            """
+            SELECT account_id || ':' || region AS installation_id,
+                   (disabled_at IS NULL) AS enabled,
+                   (secret_ref IS NOT NULL) AS has_secret,
+                   created_at AS installed_at,
+                   account_id,
+                   region,
+                   credential_kind,
+                   backfill_window_days
+              FROM aws_installations
+             WHERE tenant_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1
+            """,
+            tenant_id,
+        )
+        if row is None:
+            return None
+        data = dict(row)
+        return {
+            "installation_id": data["installation_id"],
+            "enabled": data["enabled"],
+            "has_secret": data["has_secret"],
+            "installed_at": data["installed_at"],
+            "details": {
+                "account_id": data.get("account_id"),
+                "region": data.get("region"),
+                "credential_kind": data.get("credential_kind"),
+                "backfill_window_days": data.get("backfill_window_days"),
+            },
+        }
+
     if source == "telegram":
         row = await pool.fetchrow(
             """
@@ -2899,6 +3452,7 @@ def _source_rehearsal_next_action(
     has_secret: bool,
     trigger_count: int,
     observation_count: int,
+    latest_failure: str | None = None,
 ) -> str:
     source_name = _source_display_name(source)
     if not installed:
@@ -2913,6 +3467,8 @@ def _source_rehearsal_next_action(
         return f"{source_name} observations are landing in Fyralis."
     if trigger_count == 0:
         return f"{source_name} installed; waiting for onboarding trigger."
+    if latest_failure and observation_count == 0:
+        return f"{source_name} fetch failed: {latest_failure}"
     if observation_count == 0:
         return (
             f"{source_name} installed; waiting for historical backfill "

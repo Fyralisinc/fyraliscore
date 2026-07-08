@@ -42,6 +42,9 @@ API_TOKEN_SOURCES = {
 }
 OAUTH_SOURCES = {"carta", "gusto", "linkedin", "quickbooks"}
 LOCAL_SESSION_SOURCES = {"signal", "telegram"}
+AWS_SOURCE_APPROVAL_URL = (
+    "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
+)
 
 GOOGLE_DWD_SCOPES = {
     "gmail": [
@@ -71,6 +74,7 @@ def build_source_provider_setup_bundle(
     events_request_url: str | None = None,
     install_url: str | None = None,
     native_connect: dict[str, Any] | None = None,
+    deployment_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a provider-specific setup bundle for a browser-agent run."""
     normalized = _normalize_source(source)
@@ -125,6 +129,7 @@ def build_source_provider_setup_bundle(
             recipe=recipe,
             provider_console_url=provider_console_url,
             native_connect=native_connect,
+            deployment_context=deployment_context,
         )
     if normalized in LOCAL_SESSION_SOURCES:
         return _local_session_setup_bundle(
@@ -574,12 +579,43 @@ def _aws_setup_bundle(
     recipe: dict[str, Any],
     provider_console_url: str | None,
     native_connect: dict[str, Any] | None,
+    deployment_context: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    assuming_principal_arn = _deployment_context_value(
+        deployment_context,
+        "aws_assuming_principal_arn",
+        "setup_role_arn",
+    )
+    region = _deployment_context_value(
+        deployment_context,
+        "aws_region",
+        "region",
+    )
+    cloudformation_template = _aws_source_role_cloudformation_template(
+        fyralis_assuming_principal_arn=assuming_principal_arn,
+    )
+    required_parameters = ["ExternalId"]
+    if not assuming_principal_arn:
+        required_parameters.insert(0, "FyralisAssumingPrincipalArn")
     setup = {
+        "automation_mode": "cloudformation_admin_approval",
+        "cloudformation": {
+            "stack_name": "fyralis-source-readonly",
+            "template_filename": "fyralis-aws-source-role-cloudformation.json",
+            "approval_url": provider_console_url or AWS_SOURCE_APPROVAL_URL,
+            "capabilities": ["CAPABILITY_NAMED_IAM"],
+            "required_admin_parameters": required_parameters,
+            "outputs": ["RoleArn"],
+        },
         "iam_role": {
             "role_name": "fyralis-source-readonly",
+            "fyralis_assuming_principal_arn_included": bool(assuming_principal_arn),
             "external_id_ref": "customer-cloud generated external ID",
             "trust_boundary": "customer-approved Fyralis BYOC source agent only",
+        },
+        "deployment_context": {
+            "aws_region": region,
+            "aws_assuming_principal_arn_included": bool(assuming_principal_arn),
         },
         "readonly_policy_outline": [
             "List/read inventory metadata",
@@ -597,13 +633,214 @@ def _aws_setup_bundle(
         source="aws",
         kind="aws_iam_role_setup",
         recipe=recipe,
-        provider_console_url=provider_console_url or "https://console.aws.amazon.com/iam/",
+        provider_console_url=provider_console_url
+        or AWS_SOURCE_APPROVAL_URL,
         setup_payload=setup,
         primary_filename="fyralis-aws-iam-role-setup.json",
         primary_artifact_name="aws_iam_role_setup",
         primary_payload=setup,
         action_label="Generate AWS read-only role trust and policy setup contract.",
+        deployment_context=deployment_context,
+        extra_artifacts=[
+            _exact_json_artifact(
+                "aws_source_role_cloudformation",
+                "fyralis-aws-source-role-cloudformation.json",
+                cloudformation_template,
+            )
+        ],
     )
+
+
+def _aws_source_role_cloudformation_template(
+    *,
+    fyralis_assuming_principal_arn: str | None = None,
+) -> dict[str, Any]:
+    assuming_principal_parameter = {
+        "Type": "String",
+        "Description": (
+            "ARN of the customer-cloud Fyralis runtime role allowed to "
+            "assume this source read-only role."
+        ),
+        "AllowedPattern": r"^arn:aws:iam::[0-9]{12}:role/.+",
+    }
+    if fyralis_assuming_principal_arn:
+        assuming_principal_parameter["Default"] = fyralis_assuming_principal_arn
+    return {
+        "AWSTemplateFormatVersion": "2010-09-09",
+        "Description": (
+            "Fyralis source automation read-only AWS role. Creates no data-plane "
+            "resources and grants read/list access only."
+        ),
+        "Parameters": {
+            "RoleName": {
+                "Type": "String",
+                "Default": "fyralis-source-readonly",
+                "Description": "Name for the read-only Fyralis source role.",
+            },
+            "FyralisAssumingPrincipalArn": assuming_principal_parameter,
+            "ExternalId": {
+                "Type": "String",
+                "NoEcho": True,
+                "Description": "Customer-cloud generated external ID for STS AssumeRole.",
+                "MinLength": 16,
+            },
+            "PermissionsBoundaryArn": {
+                "Type": "String",
+                "Default": "",
+                "Description": "Optional customer-owned IAM permissions boundary ARN.",
+            },
+            "EnableCloudTrailRead": {
+                "Type": "String",
+                "Default": "true",
+                "AllowedValues": ["true", "false"],
+                "Description": "Allow CloudTrail LookupEvents for approved regions.",
+            },
+            "EnableEventBridgeRead": {
+                "Type": "String",
+                "Default": "true",
+                "AllowedValues": ["true", "false"],
+                "Description": "Allow read-only EventBridge rule discovery.",
+            },
+        },
+        "Conditions": {
+            "HasPermissionsBoundary": {
+                "Fn::Not": [{"Fn::Equals": [{"Ref": "PermissionsBoundaryArn"}, ""]}]
+            },
+            "AllowCloudTrailRead": {
+                "Fn::Equals": [{"Ref": "EnableCloudTrailRead"}, "true"]
+            },
+            "AllowEventBridgeRead": {
+                "Fn::Equals": [{"Ref": "EnableEventBridgeRead"}, "true"]
+            },
+        },
+        "Resources": {
+            "FyralisSourceReadOnlyRole": {
+                "Type": "AWS::IAM::Role",
+                "Properties": {
+                    "RoleName": {"Ref": "RoleName"},
+                    "PermissionsBoundary": {
+                        "Fn::If": [
+                            "HasPermissionsBoundary",
+                            {"Ref": "PermissionsBoundaryArn"},
+                            {"Ref": "AWS::NoValue"},
+                        ]
+                    },
+                    "AssumeRolePolicyDocument": {
+                        "Version": "2012-10-17",
+                        "Statement": [
+                            {
+                                "Effect": "Allow",
+                                "Principal": {"AWS": "*"},
+                                "Action": "sts:AssumeRole",
+                                "Condition": {
+                                    "StringEquals": {
+                                        "sts:ExternalId": {"Ref": "ExternalId"}
+                                    },
+                                    "ArnEquals": {
+                                        "aws:PrincipalArn": {
+                                            "Ref": "FyralisAssumingPrincipalArn"
+                                        }
+                                    }
+                                },
+                            }
+                        ],
+                    },
+                    "Policies": [
+                        {
+                            "PolicyName": "fyralis-source-inventory-readonly",
+                            "PolicyDocument": {
+                                "Version": "2012-10-17",
+                                "Statement": [
+                                    {
+                                        "Sid": "ReadAccountAndInventoryMetadata",
+                                        "Effect": "Allow",
+                                        "Action": [
+                                            "sts:GetCallerIdentity",
+                                            "ec2:Describe*",
+                                            "tag:GetResources",
+                                            "tag:GetTagKeys",
+                                            "tag:GetTagValues",
+                                            "cloudwatch:Describe*",
+                                            "cloudwatch:GetMetricData",
+                                            "cloudwatch:GetMetricStatistics",
+                                            "cloudwatch:List*",
+                                            "organizations:DescribeOrganization",
+                                            "organizations:ListAccounts",
+                                        ],
+                                        "Resource": "*",
+                                    }
+                                ],
+                            },
+                        },
+                        {
+                            "Fn::If": [
+                                "AllowCloudTrailRead",
+                                {
+                                    "PolicyName": "fyralis-source-cloudtrail-readonly",
+                                    "PolicyDocument": {
+                                        "Version": "2012-10-17",
+                                        "Statement": [
+                                            {
+                                                "Sid": "ReadCloudTrailEvents",
+                                                "Effect": "Allow",
+                                                "Action": [
+                                                    "cloudtrail:DescribeTrails",
+                                                    "cloudtrail:GetTrailStatus",
+                                                    "cloudtrail:ListTrails",
+                                                    "cloudtrail:LookupEvents",
+                                                ],
+                                                "Resource": "*",
+                                            }
+                                        ],
+                                    },
+                                },
+                                {"Ref": "AWS::NoValue"},
+                            ]
+                        },
+                        {
+                            "Fn::If": [
+                                "AllowEventBridgeRead",
+                                {
+                                    "PolicyName": "fyralis-source-eventbridge-readonly",
+                                    "PolicyDocument": {
+                                        "Version": "2012-10-17",
+                                        "Statement": [
+                                            {
+                                                "Sid": "ReadEventBridgeRules",
+                                                "Effect": "Allow",
+                                                "Action": [
+                                                    "events:DescribeRule",
+                                                    "events:ListRules",
+                                                    "events:ListTargetsByRule",
+                                                ],
+                                                "Resource": "*",
+                                            }
+                                        ],
+                                    },
+                                },
+                                {"Ref": "AWS::NoValue"},
+                            ]
+                        },
+                    ],
+                    "Tags": [
+                        {"Key": "fyralis:managed", "Value": "true"},
+                        {"Key": "fyralis:source", "Value": "aws"},
+                        {"Key": "fyralis:purpose", "Value": "source-readonly"},
+                    ],
+                },
+            }
+        },
+        "Outputs": {
+            "RoleArn": {
+                "Description": "Role ARN to paste back into Fyralis AWS source setup.",
+                "Value": {"Fn::GetAtt": ["FyralisSourceReadOnlyRole", "Arn"]},
+            },
+            "RoleName": {
+                "Description": "Created role name.",
+                "Value": {"Ref": "FyralisSourceReadOnlyRole"},
+            },
+        },
+    }
 
 
 def _local_session_setup_bundle(
@@ -814,6 +1051,8 @@ def _provider_bundle(
     oauth_redirect_url: str | None = None,
     events_request_url: str | None = None,
     install_url: str | None = None,
+    extra_artifacts: list[dict[str, Any]] | None = None,
+    deployment_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     settings_targets = list(recipe.get("settings_targets") or [])
     collected_non_secret_fields = list(recipe.get("agent_collects") or [])
@@ -839,6 +1078,8 @@ def _provider_bundle(
                 },
             )
         )
+    if extra_artifacts:
+        artifacts.extend(extra_artifacts)
     browser_dom_plan = _browser_dom_plan(
         source=source,
         kind=kind,
@@ -849,6 +1090,7 @@ def _provider_bundle(
         collected_non_secret_fields=collected_non_secret_fields,
         generated_refs=generated_refs,
         primary_artifacts=[artifact["filename"] for artifact in artifacts],
+        deployment_context=deployment_context,
     )
     return {
         "schema_version": "fyralis.byoc.source.provider_setup_bundle.v1",
@@ -922,6 +1164,20 @@ def _json_artifact(
     }
 
 
+def _exact_json_artifact(
+    name: str,
+    filename: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "filename": filename,
+        "media_type": "application/json",
+        "json": payload,
+        "raw_secret_values_included": False,
+    }
+
+
 def _browser_dom_plan(
     *,
     source: str,
@@ -933,6 +1189,7 @@ def _browser_dom_plan(
     collected_non_secret_fields: list[str],
     generated_refs: list[str],
     primary_artifacts: list[str],
+    deployment_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": "fyralis.byoc.source.browser_dom_plan.v1",
@@ -953,6 +1210,7 @@ def _browser_dom_plan(
             collected_non_secret_fields=collected_non_secret_fields,
             generated_refs=generated_refs,
             primary_artifacts=primary_artifacts,
+            deployment_context=deployment_context,
         ),
         "completion_evidence": [
             "provider settings page accepted generated callback/webhook/scope configuration",
@@ -992,6 +1250,7 @@ def _browser_dom_steps(
     collected_non_secret_fields: list[str],
     generated_refs: list[str],
     primary_artifacts: list[str],
+    deployment_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     steps = [
         _dom_step(
@@ -1015,7 +1274,7 @@ def _browser_dom_steps(
     elif kind == "google_workspace_dwd_setup":
         steps.extend(_google_dwd_dom_steps(source, primary_artifacts))
     elif kind == "aws_iam_role_setup":
-        steps.extend(_aws_dom_steps(primary_artifacts))
+        steps.extend(_aws_dom_steps(primary_artifacts, deployment_context))
     elif kind == "jira_api_token_webhook_setup":
         steps.extend(_jira_dom_steps(primary_artifacts, events_request_url))
     elif kind == "whatsapp_webhook_setup":
@@ -1152,21 +1411,104 @@ def _google_dwd_dom_steps(source: str, primary_artifacts: list[str]) -> list[dic
     ]
 
 
-def _aws_dom_steps(primary_artifacts: list[str]) -> list[dict[str, Any]]:
+def _aws_dom_steps(
+    primary_artifacts: list[str],
+    deployment_context: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    cloudformation_artifacts = [
+        artifact
+        for artifact in primary_artifacts
+        if artifact == "fyralis-aws-source-role-cloudformation.json"
+    ]
+    assuming_principal_arn = _deployment_context_value(
+        deployment_context,
+        "aws_assuming_principal_arn",
+        "setup_role_arn",
+    )
     return [
         _dom_step(
-            "create_or_update_aws_role",
+            "choose_aws_upload_template_file_source",
+            "click",
+            selectors=_selectors("input[type=radio]", "label", "[role=radio]"),
+            text_targets=_text_targets("Upload a template file"),
+        ),
+        _dom_step(
+            "upload_aws_source_role_stack_template",
             "fill_from_artifact",
-            artifacts=primary_artifacts,
-            selectors=_selectors("textarea", "input[name=roleName]", "button"),
-            text_targets=_text_targets("Create role", "Trust policy", "Permissions policy", "External ID"),
+            artifacts=cloudformation_artifacts or primary_artifacts,
+            selectors=_selectors("input[type=file]", "textarea", "button"),
+            text_targets=_text_targets(
+                "Upload a template file",
+                "Template is ready",
+                "Choose file",
+                "Next",
+            ),
+        ),
+        _dom_step(
+            "fill_aws_source_role_stack_details",
+            "set_config_values",
+            fields=[
+                {
+                    "name": "Stack name",
+                    "value": "fyralis-source-readonly",
+                    "selectors": [
+                        "input[name*=stackName]",
+                        "input[id*=stackName]",
+                        "input[name*=StackName]",
+                        "input[id*=StackName]",
+                    ],
+                },
+                {
+                    "name": "RoleName",
+                    "value": "fyralis-source-readonly",
+                    "selectors": [
+                        "input[name*=RoleName]",
+                        "input[id*=RoleName]",
+                        "input",
+                    ],
+                },
+                {
+                    "name": "FyralisAssumingPrincipalArn",
+                    "value": assuming_principal_arn,
+                    "selectors": [
+                        "input[name*=FyralisAssumingPrincipalArn]",
+                        "input[id*=FyralisAssumingPrincipalArn]",
+                        "input",
+                    ],
+                },
+                {
+                    "name": "ExternalId",
+                    "generated_secret_field": "external_id",
+                    "selectors": [
+                        "input[name*=ExternalId]",
+                        "input[id*=ExternalId]",
+                        "input[type=password]",
+                        "input",
+                    ],
+                },
+            ],
+            selectors=_selectors("input", "button"),
+            text_targets=_text_targets("Stack name", "Parameters", "Next"),
+        ),
+        _dom_step(
+            "approve_aws_source_role_stack",
+            "human_pause",
+            text_targets=_text_targets(
+                "I acknowledge",
+                "CAPABILITY_NAMED_IAM",
+                "Create stack",
+            ),
+            human_reason=(
+                "AWS requires the customer admin to approve IAM role creation. "
+                "Review the generated read-only stack and choose Create stack."
+            ),
         ),
         _dom_step(
             "collect_aws_role_arn",
             "collect_text",
             fields=["role ARN", "account id", "regions"],
-            selectors=_selectors("code", "input[readonly]", "[data-testid]", "dd"),
-            text_targets=_text_targets("ARN", "Account ID", "Role summary"),
+            selectors=_selectors("code", "input[readonly]", "[data-testid]", "dd", "table"),
+            text_targets=_text_targets("Outputs", "RoleArn", "Account ID", "Stack info"),
         ),
     ]
 
@@ -1346,6 +1688,19 @@ def _selectors(*values: str) -> list[str]:
 
 def _text_targets(*values: str) -> list[str]:
     return [value for value in values if value]
+
+
+def _deployment_context_value(
+    deployment_context: dict[str, Any] | None,
+    *keys: str,
+) -> str | None:
+    if not isinstance(deployment_context, dict):
+        return None
+    for key in keys:
+        value = str(deployment_context.get(key) or "").strip()
+        if value:
+            return value
+    return None
 
 
 def _origin_from_url(value: str, fallback: str) -> str:

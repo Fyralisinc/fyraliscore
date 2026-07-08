@@ -95,7 +95,7 @@ BROWSER_AGENT_RECIPES: dict[str, BrowserAgentRecipe] = {
     ),
     "aws": _recipe(
         "aws",
-        "https://console.aws.amazon.com/iam/",
+        "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template",
         ("IAM roles", "CloudTrail", "EventBridge", "AWS Organizations"),
         ("account id", "region list", "role ARN", "event source availability"),
         ("read-only IAM policy template", "external id", "role trust contract"),
