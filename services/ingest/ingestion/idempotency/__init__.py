@@ -203,6 +203,13 @@ def telegram_message(
     )
 
 
+# --- Facebook Pages --------------------------------------------------
+def facebook_page_message(page_id: str, message_id: str) -> str:
+    """`facebook_pages:{page_id}:{message_id}` — immutable Meta message id,
+    namespaced by Page so webhook and backfill twins collapse."""
+    return f"facebook_pages:{page_id}:{message_id}"
+
+
 # --- Brex (Bearer / Mercury archetype) -------------------------------
 def brex_transaction(account_id: str, txn_id: str, status: str) -> str:
     """`brex:{account}:txn:{id}:{status}` — VERSIONED by status so a
@@ -416,6 +423,7 @@ __all__ = [
     "deel_payment",
     "discord_event",
     "figma_event",
+    "facebook_page_message",
     "fireflies_transcript",
     "github_push",
     "github_object",

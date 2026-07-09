@@ -921,6 +921,35 @@ async def build_linkedin_client(
     return await _wrap_source_client("linkedin", client)
 
 
+async def build_facebook_pages_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Facebook Pages read-client. The Page access token lives behind
+    `facebook_page_installations.page_access_token_ref`; in spammer mode a
+    deterministic token is preset and the Graph base URL points at the local
+    source mock."""
+    from services.ingest.integrations.facebook_pages.client import (
+        FacebookPagesClient,
+        graph_api_base_url,
+    )
+
+    spammer = _spammer_mode()
+    page_id = str(install["page_id"]) if "page_id" in install else ""
+    client = FacebookPagesClient(
+        base_url=graph_api_base_url(),
+        access_token=(f"spam-facebook-pages::{page_id}" if spammer else None),
+        page_access_token_ref=(
+            install["page_access_token_ref"]
+            if "page_access_token_ref" in install else None
+        ),
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        http_client=await _get_http(),
+    )
+    return await _wrap_source_client("facebook_pages", client)
+
+
 # ---------------------------------------------------------------------
 # Fetcher / reconciler openers — return (client, close).
 # ---------------------------------------------------------------------
@@ -1030,6 +1059,10 @@ async def open_linkedin_client(install: asyncpg.Record) -> Opener:
     return await build_linkedin_client(install), _noop
 
 
+async def open_facebook_pages_client(install: asyncpg.Record) -> Opener:
+    return await build_facebook_pages_client(install), _noop
+
+
 async def open_signal_client(install: asyncpg.Record) -> Opener:
     return await build_signal_client(install), _noop
 
@@ -1056,6 +1089,7 @@ __all__ = [
     "build_fireflies_client", "build_miro_client", "build_figma_client",
     "build_carta_client", "build_signal_client", "build_aws_client",
     "build_hibob_client", "build_ashby_client", "build_linkedin_client",
+    "build_facebook_pages_client",
     "open_github_client", "open_slack_client", "open_slack_user_client",
     "open_discord_client",
     "open_notion_client", "open_jira_client",
@@ -1065,4 +1099,5 @@ __all__ = [
     "open_fireflies_client", "open_miro_client", "open_figma_client",
     "open_carta_client", "open_signal_client", "open_aws_client",
     "open_hibob_client", "open_ashby_client", "open_linkedin_client",
+    "open_facebook_pages_client",
 ]

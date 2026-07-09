@@ -642,6 +642,23 @@ SELECT id, tenant_id, organization_urn, base_url, secret_ref,
  LIMIT 1
 """
 
+_LOAD_FACEBOOK_PAGES_INSTALL_SQL = """
+SELECT id, tenant_id, page_id, page_name, page_access_token_ref,
+       app_secret_ref, verify_token_ref, enabled
+  FROM facebook_page_installations
+ WHERE tenant_id = $1 AND enabled = true
+ ORDER BY updated_at DESC
+ LIMIT 1
+"""
+
+_LOAD_FACEBOOK_PAGES_INSTALL_BY_ID_SQL = """
+SELECT id, tenant_id, page_id, page_name, page_access_token_ref,
+       app_secret_ref, verify_token_ref, enabled
+  FROM facebook_page_installations
+ WHERE id = $1 AND tenant_id = $2 AND enabled = true
+ LIMIT 1
+"""
+
 
 # ---------------------------------------------------------------------
 # Config.
@@ -799,6 +816,15 @@ async def _load_install(
         return await pool.fetchrow(_LOAD_ASHBY_INSTALL_SQL, tenant_id)
     if source == "linkedin":
         return await pool.fetchrow(_LOAD_LINKEDIN_INSTALL_SQL, tenant_id)
+    if source == "facebook_pages":
+        installation_id = (shard_identifier or {}).get("installation_id")
+        if isinstance(installation_id, str) and installation_id.strip():
+            return await pool.fetchrow(
+                _LOAD_FACEBOOK_PAGES_INSTALL_BY_ID_SQL,
+                UUID(installation_id),
+                tenant_id,
+            )
+        return await pool.fetchrow(_LOAD_FACEBOOK_PAGES_INSTALL_SQL, tenant_id)
     if source == "discord":
         guild_id = (shard_identifier or {}).get("guild_id")
         if isinstance(guild_id, str) and guild_id.strip():

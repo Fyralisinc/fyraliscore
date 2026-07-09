@@ -200,7 +200,7 @@ TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin", "whatsapp")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin", "whatsapp", "facebook_pages")
 
 
 # ---------------------------------------------------------------------
@@ -723,6 +723,29 @@ SELECT li.id, li.tenant_id, li.organization_urn, li.base_url, li.secret_ref,
  LIMIT 1
 """
 
+_LOAD_FACEBOOK_PAGES_INSTALL_SQL = """
+SELECT id, tenant_id, page_id, page_name, page_access_token_ref,
+       app_secret_ref, verify_token_ref, granted_scopes, subscribed_fields,
+       webhook_subscribed_at, enabled, oldest_message_at,
+       backfill_exhausted_at, backfill_exhausted_reason,
+       conversation_count, message_count
+  FROM facebook_page_installations
+ WHERE tenant_id = $1 AND enabled = true
+ ORDER BY updated_at DESC
+ LIMIT 1
+"""
+
+_LOAD_FACEBOOK_PAGES_INSTALL_BY_ID_SQL = """
+SELECT id, tenant_id, page_id, page_name, page_access_token_ref,
+       app_secret_ref, verify_token_ref, granted_scopes, subscribed_fields,
+       webhook_subscribed_at, enabled, oldest_message_at,
+       backfill_exhausted_at, backfill_exhausted_reason,
+       conversation_count, message_count
+  FROM facebook_page_installations
+ WHERE id = $1 AND tenant_id = $2 AND enabled = true
+ LIMIT 1
+"""
+
 _MARK_SOURCE_RUN_IN_PROGRESS_SQL = """
 UPDATE source_onboarding_runs
    SET status = 'in_progress', started_at = COALESCE(started_at, now())
@@ -878,6 +901,14 @@ async def _load_install(
         return await conn.fetchrow(_LOAD_ASHBY_INSTALL_SQL, tenant_id)
     if source == "linkedin":
         return await conn.fetchrow(_LOAD_LINKEDIN_INSTALL_SQL, tenant_id)
+    if source == "facebook_pages":
+        if installation_row_id is not None:
+            return await conn.fetchrow(
+                _LOAD_FACEBOOK_PAGES_INSTALL_BY_ID_SQL,
+                installation_row_id,
+                tenant_id,
+            )
+        return await conn.fetchrow(_LOAD_FACEBOOK_PAGES_INSTALL_SQL, tenant_id)
     if installation_row_id is not None:
         return await conn.fetchrow(
             _LOAD_PROVIDER_INSTALL_BY_ID_SQL,
@@ -934,6 +965,8 @@ async def _build_source_client(
     # list pre-aggregated by the loader, like gusto/carta), so no plan-time
     # source client is needed.
     if source in ("hibob", "ashby", "linkedin"):
+        return None
+    if source == "facebook_pages":
         return None
     return None
 

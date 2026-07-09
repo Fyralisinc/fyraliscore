@@ -30,6 +30,9 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     ("discord", "backfill"): "discord:message",     # M6.7 (A27.2) — same
                                                     # handler as the gateway
                                                     # MESSAGE_CREATE path.
+    # Facebook Pages — live Meta webhooks + all Graph-paginated history.
+    ("facebook_pages", "webhook"): "facebook_pages:message",
+    ("facebook_pages", "backfill"): "facebook_pages:message",
     # GitHub — webhook + backfill.
     ("github", "webhook"): "github:webhook",
     ("github", "backfill"): "github:webhook",       # M6.7 (A27.2)

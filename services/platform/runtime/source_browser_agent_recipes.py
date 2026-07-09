@@ -139,6 +139,17 @@ BROWSER_AGENT_RECIPES: dict[str, BrowserAgentRecipe] = {
             "server admin approves bot install and gateway intents",
         ),
     ),
+    "facebook_pages": _recipe(
+        "facebook_pages",
+        "https://developers.facebook.com/apps/",
+        ("Meta app settings", "Messenger API settings", "Page access settings", "webhook settings"),
+        ("page id", "Page message scope", "webhook callback URL"),
+        ("verify token ref", "app secret ref", "Facebook Page message scope contract"),
+        (
+            "Meta admin signs in and completes MFA when prompted",
+            "Meta admin approves Page messaging scopes and webhook subscription",
+        ),
+    ),
     "figma": _recipe(
         "figma",
         "https://www.figma.com/developers/api",

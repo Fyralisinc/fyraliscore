@@ -133,6 +133,10 @@ GATEWAY_BEARER_BYPASS_PATH_POLICIES: dict[str, RouteAccessPolicy] = {
     "/integrations/notion/installed": _OAUTH_CALLBACK,
     "/integrations/notion/install-error": _OAUTH_CALLBACK,
     "/integrations/whatsapp/webhook": _PROVIDER_SIGNED,
+    "/integrations/facebook_pages/callback": _OAUTH_CALLBACK,
+    "/integrations/facebook_pages/installed": _OAUTH_CALLBACK,
+    "/integrations/facebook_pages/install-error": _OAUTH_CALLBACK,
+    "/integrations/facebook_pages/webhook": _PROVIDER_SIGNED,
 }
 
 GATEWAY_BEARER_BYPASS_PATHS = frozenset(GATEWAY_BEARER_BYPASS_PATH_POLICIES)

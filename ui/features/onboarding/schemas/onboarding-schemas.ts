@@ -61,6 +61,7 @@ export const sourceScopeSchema = z.object({
     "Last 7 days",
     "Last 30 days",
     "Last 90 days",
+    "All available history",
     "No historical backfill"
   ]),
   syncMode: z.enum([

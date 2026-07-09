@@ -209,7 +209,12 @@ export type SourceConnection = {
   sourceId: string;
   status: SourceStatus;
   selectedScopes: string[];
-  backfillWindow: "Last 7 days" | "Last 30 days" | "Last 90 days" | "No historical backfill";
+  backfillWindow:
+    | "Last 7 days"
+    | "Last 30 days"
+    | "Last 90 days"
+    | "All available history"
+    | "No historical backfill";
   syncMode: "Dry run" | "Limited backfill" | "Live events" | "Backfill plus live";
   lastIssueCode?: string;
   receiptId?: string;

@@ -780,8 +780,8 @@ def test_byoc_source_autopilot_can_prepare_all_sources(
 
     assert code == 0
     assert payload["source"] == "all"
-    assert payload["source_count"] == 26
-    assert payload["active_source_count"] == 26
+    assert payload["source_count"] == 27
+    assert payload["active_source_count"] == 27
     assert {item["source"] for item in payload["sources"]} >= {
         "slack",
         "github",
@@ -797,6 +797,7 @@ def test_byoc_source_autopilot_can_prepare_all_sources(
         "carta": "oauth_provider_setup",
         "deel": "api_token_provider_setup",
         "discord": "discord_application_setup",
+        "facebook_pages": "oauth_provider_setup",
         "figma": "api_token_provider_setup",
         "fireflies": "api_token_provider_setup",
         "github": "github_app_manifest",
@@ -848,6 +849,7 @@ def test_byoc_source_autopilot_can_prepare_all_sources(
         "carta",
         "deel",
         "discord",
+        "facebook_pages",
         "figma",
         "fireflies",
         "github",
@@ -962,9 +964,9 @@ def test_byoc_source_autopilot_can_prepare_all_sources(
         "fyralis.byoc.source.browser_agent_run_set.v1"
     )
     assert browser_agents["orchestration_mode"] == "parallel_per_source_browser_agents"
-    assert browser_agents["source_count"] == 26
+    assert browser_agents["source_count"] == 27
     assert browser_agents["waiting_source_count"] >= 1
-    assert browser_agents["automated_action_count"] >= 26
+    assert browser_agents["automated_action_count"] >= 27
     assert (
         tmp_path / "sources" / "latest-browser-agent.json"
     ).is_file()
@@ -1198,7 +1200,7 @@ def test_byoc_source_plan_generates_contracts_for_all_sources(
 
     assert code == 0
     assert payload["schema_version"] == "fyralis.byoc.source.plan_run.v1"
-    assert payload["source_count"] == 26
+    assert payload["source_count"] == 27
     assert payload["status"] == "blocked_on_human_gates"
     assert "aws-secretsmanager:/fyralis/sources" not in output
     assert (tmp_path / "sources" / "slack" / "source-contract.json").is_file()

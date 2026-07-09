@@ -1475,6 +1475,7 @@ function backfillWindowToCli(
     "Last 7 days": "7d",
     "Last 30 days": "30d",
     "Last 90 days": "90d",
+    "All available history": "all-available",
     "No historical backfill": "none",
   };
   return windows[backfillWindow];
@@ -1746,8 +1747,10 @@ function SourceCatalogStep(props: StepViewProps) {
       updateConnection(source.id, {
         status: "connected",
         selectedScopes: sourceScopeChoices(source.id).slice(0, 3),
-        backfillWindow: "Last 30 days",
-        syncMode: "Limited backfill",
+        backfillWindow:
+          source.id === "facebook_pages" ? "All available history" : "Last 30 days",
+        syncMode:
+          source.id === "facebook_pages" ? "Backfill plus live" : "Limited backfill",
         receiptId:
           status.autoConnectRun?.receiptPathHint ??
           `source_agent_${source.id}_connected`,
@@ -2805,6 +2808,14 @@ function sourceScopeChoices(sourceId: string) {
       "Last 30 days",
       "Exclude personal labels",
       "Metadata-first crawl",
+    ],
+    facebook_pages: [
+      "Selected Facebook Page",
+      "Messenger conversations",
+      "All available history",
+      "Live messages webhook",
+      "Page-authored echoes",
+      "Unavailable/deleted gaps noted",
     ],
   };
   return (

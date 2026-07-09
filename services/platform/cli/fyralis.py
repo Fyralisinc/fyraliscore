@@ -70,6 +70,7 @@ REHEARSABLE_SOURCES = (
     "carta",
     "deel",
     "discord",
+    "facebook_pages",
     "figma",
     "fireflies",
     "github",
@@ -186,6 +187,34 @@ REHEARSAL_PROFILES: dict[str, dict[str, Any]] = {
         "manual_gate_names": (
             "discord_application_creation_or_update",
             "discord_oauth_consent",
+        ),
+    },
+    "facebook_pages": {
+        "kind": "oauth_app",
+        "needs_public_url": True,
+        "install_endpoint": "/integrations/facebook_pages/install",
+        "callback_path": "/integrations/facebook_pages/callback",
+        "webhook_path": "/integrations/facebook_pages/webhook",
+        "env": (
+            "FACEBOOK_APP_ID",
+            "FACEBOOK_APP_SECRET",
+            "FACEBOOK_REDIRECT_URI",
+            "FACEBOOK_WEBHOOK_VERIFY_TOKEN",
+            "FACEBOOK_PAGE_ID",
+            "FACEBOOK_GRAPH_API_VERSION",
+            "OAUTH_STATE_HMAC_KEY",
+        ),
+        "required_env": (
+            "FACEBOOK_APP_ID",
+            "FACEBOOK_APP_SECRET",
+            "FACEBOOK_REDIRECT_URI",
+            "FACEBOOK_WEBHOOK_VERIFY_TOKEN",
+            "OAUTH_STATE_HMAC_KEY",
+        ),
+        "manual_gate_names": (
+            "facebook_pages_app_creation_or_update",
+            "facebook_pages_oauth_consent",
+            "facebook_pages_webhook_subscription_approval",
         ),
     },
     "notion": {
@@ -389,6 +418,47 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
                 "guild_id",
                 "application_id",
                 "approved_channel_ids",
+                "oauth_redirect_url",
+                "events_request_url",
+            ],
+        },
+    },
+    "facebook_pages": {
+        "method": "oauth",
+        "default_scopes": [
+            "pages_show_list",
+            "pages_messaging",
+            "pages_manage_metadata",
+            "pages_read_engagement",
+        ],
+        "provider_permissions": [
+            "pages_show_list",
+            "pages_messaging",
+            "pages_manage_metadata",
+            "pages_read_engagement",
+        ],
+        "ingress_paths": [
+            "/integrations/facebook_pages/callback",
+            "/integrations/facebook_pages/webhook",
+        ],
+        "required_refs": [
+            "oauth_client",
+            "page_access_token",
+            "app_secret",
+            "verify_token",
+        ],
+        "native_connect": {
+            "kind": "oauth_native_connect",
+            "preflight_path": "/integrations/facebook_pages/connect/preflight",
+            "finalize_path": "/integrations/facebook_pages/connect/finalize",
+            "preflight_payload_fields": [
+                "page_id",
+                "oauth_redirect_url",
+                "events_request_url",
+            ],
+            "payload_fields": [
+                "page_id",
+                "installation_id",
                 "oauth_redirect_url",
                 "events_request_url",
             ],
@@ -2507,7 +2577,7 @@ def _write_source_rehearsal_files(
         files["events_manifest"] = setup_dir / "fyralis-slack-app-events-manifest.yaml"
     elif source_id == "github":
         files["manifest"] = setup_dir / "fyralis-github-app-manifest.json"
-    elif source_id in {"discord", "notion"}:
+    elif source_id in {"discord", "facebook_pages", "notion"}:
         files["manifest"] = setup_dir / f"fyralis-{source_id}-app-setup.json"
     elif source_id == "jira":
         files["connect_payload"] = setup_dir / "jira-connect-payload.example.json"
@@ -2530,7 +2600,7 @@ def _write_source_rehearsal_files(
         files["events_manifest"].write_text(events_manifest, encoding="utf-8")
     elif source_id == "github":
         _write_json(files["manifest"], _github_app_manifest(public_url))
-    elif source_id in {"discord", "notion"}:
+    elif source_id in {"discord", "facebook_pages", "notion"}:
         _write_json(
             files["manifest"],
             _generic_app_setup_manifest(source_id, profile, public_url=public_url),
@@ -3174,6 +3244,15 @@ def _manual_gate_reason(source_id: str, gate_name: str) -> str:
             "A Discord application/bot must exist with the generated callback and interaction URLs."
         ),
         "discord_oauth_consent": "A Discord server admin must approve the bot install.",
+        "facebook_pages_app_creation_or_update": (
+            "A Meta app must exist with the generated OAuth callback and Messenger webhook URL."
+        ),
+        "facebook_pages_oauth_consent": (
+            "A Page admin must approve the Facebook Page messaging permissions."
+        ),
+        "facebook_pages_webhook_subscription_approval": (
+            "The Page must be subscribed to the Messenger messages webhook field."
+        ),
         "notion_integration_creation_or_update": (
             "A Notion integration must be created or updated in the customer's workspace."
         ),
@@ -3211,6 +3290,7 @@ def _source_display_name(source_id: str) -> str:
     names = {
         "aws": "AWS",
         "brex": "Brex",
+        "facebook_pages": "Facebook Page Messages",
         "figma": "Figma",
         "gmail": "Gmail",
         "github": "GitHub",
@@ -3263,6 +3343,12 @@ def _provider_setup_notes(source_id: str) -> list[str]:
             "Set the OAuth redirect URL to the callback URL.",
             "Set the interactions endpoint to the webhook URL.",
             "Copy client ID, client secret, application ID, app public key, and bot token into the local env file.",
+        ],
+        "facebook_pages": [
+            "Use Meta for Developers to create or update the Facebook app.",
+            "Set the OAuth redirect URL to the callback URL.",
+            "Set the Messenger webhook callback URL and verify token.",
+            "Copy app ID, app secret, redirect URI, and webhook verify token into the local env file.",
         ],
         "notion": [
             "Use Notion integrations settings to create an OAuth integration.",

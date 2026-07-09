@@ -71,6 +71,7 @@ _ALL_REHEARSAL_SOURCES = {
     "carta",
     "deel",
     "discord",
+    "facebook_pages",
     "figma",
     "fireflies",
     "github",
@@ -92,7 +93,7 @@ _ALL_REHEARSAL_SOURCES = {
     "telegram",
     "whatsapp",
 }
-_OAUTH_REHEARSAL_SOURCES = {"slack", "github", "discord", "notion"}
+_OAUTH_REHEARSAL_SOURCES = {"slack", "github", "discord", "notion", "facebook_pages"}
 _FORM_REHEARSAL_SOURCES = {"jira", "telegram", "whatsapp"}
 _SOURCE_SPECIFIC_FINALIZE_SOURCES = {"jira", "telegram", "whatsapp"}
 _GENERIC_FINALIZE_BLOCKED_SOURCES = (
@@ -152,6 +153,7 @@ _SOURCE_CALLBACK_PATHS = {
     "discord": "/integrations/discord/callback",
     "github": "/integrations/github/callback",
     "notion": "/integrations/notion/callback",
+    "facebook_pages": "/integrations/facebook_pages/callback",
 }
 
 _SOURCE_LIVE_INGRESS_PATHS = {
@@ -160,6 +162,7 @@ _SOURCE_LIVE_INGRESS_PATHS = {
     "deel": "/webhooks/deel",
     "slack": "/webhooks/slack/events",
     "discord": "/webhooks/discord",
+    "facebook_pages": "/integrations/facebook_pages/webhook",
     "figma": "/webhooks/figma",
     "fireflies": "/webhooks/fireflies",
     "github": "/webhooks/github",
@@ -192,6 +195,9 @@ _SOURCE_REQUIRED_INPUTS = {
     ],
     "deel": [
         "api_token",
+    ],
+    "facebook_pages": [
+        "page_id",
     ],
     "figma": [
         "api_token",
@@ -268,6 +274,7 @@ _SOURCE_OPTIONAL_INPUTS = {
     "brex": ["organization_id", "base_url", "account_ids", "webhook_secret"],
     "carta": ["firm_id", "oauth_client", "base_url", "refresh_token_ref"],
     "deel": ["organization_id", "base_url", "contract_ids", "webhook_secret"],
+    "facebook_pages": ["oauth_redirect_url", "events_request_url"],
     "figma": ["team_id", "base_url", "file_keys", "webhook_secret"],
     "fireflies": ["workspace_id", "base_url", "webhook_secret"],
     "gmail": ["scope", "inclusion_spec", "pubsub_topic", "watch_channel_id"],
@@ -299,6 +306,7 @@ _GENERIC_PROVIDER_CONSOLES = {
     "brex": "https://developer.brex.com/",
     "carta": "https://developers.app.carta.com/",
     "deel": "https://app.deel.com/",
+    "facebook_pages": "https://developers.facebook.com/apps/",
     "figma": "https://www.figma.com/developers/api",
     "fireflies": "https://app.fireflies.ai/integrations",
     "gmail": "https://admin.google.com/ac/owl/domainwidedelegation",
@@ -361,6 +369,7 @@ _SOURCE_METHODS = {
     "carta": "oauth",
     "deel": "api_token",
     "discord": "oauth_plus_gateway",
+    "facebook_pages": "oauth",
     "figma": "api_token",
     "fireflies": "api_token",
     "github": "oauth",
@@ -390,6 +399,7 @@ _SOURCE_DISCOVERY_TARGETS = {
     "carta": "issuer, securities, and stakeholder scopes",
     "deel": "contracts, workers, and payment scopes",
     "discord": "guilds, message channels, private channels, forum/media posts, and threads",
+    "facebook_pages": "Facebook Pages, Messenger conversations, Page message history, and webhooks",
     "figma": "teams, projects, files, and webhook-capable file scopes",
     "fireflies": "workspace, meetings, and transcripts",
     "github": "installations, repositories, pull requests, issues, and webhooks",
@@ -750,6 +760,22 @@ _SOURCE_NATIVE_CONNECT_CONTRACTS = {
             "app_secret",
             "verify_token",
             "access_token",
+        ],
+    },
+    "facebook_pages": {
+        "kind": "oauth_native_connect",
+        "preflight_path": "/integrations/facebook_pages/connect/preflight",
+        "finalize_path": "/integrations/facebook_pages/connect/finalize",
+        "preflight_payload_fields": [
+            "page_id",
+            "oauth_redirect_url",
+            "events_request_url",
+        ],
+        "payload_fields": [
+            "page_id",
+            "installation_id",
+            "oauth_redirect_url",
+            "events_request_url",
         ],
     },
 }
@@ -4053,6 +4079,45 @@ async def _source_installation_rows(
     tenant_id: UUID,
     source: str,
 ) -> list[dict[str, Any]]:
+    if source == "facebook_pages":
+        rows = await pool.fetch(
+            """
+            SELECT page_id AS installation_id,
+                   enabled,
+                   (page_access_token_ref IS NOT NULL
+                    AND app_secret_ref IS NOT NULL
+                    AND verify_token_ref IS NOT NULL) AS has_secret,
+                   created_at AS installed_at,
+                   page_name,
+                   oldest_message_at,
+                   backfill_exhausted_at,
+                   backfill_exhausted_reason,
+                   conversation_count,
+                   message_count
+              FROM facebook_page_installations
+             WHERE tenant_id = $1
+             ORDER BY enabled DESC, updated_at DESC
+            """,
+            tenant_id,
+        )
+        return [
+            {
+                "installation_id": row["installation_id"],
+                "enabled": row["enabled"],
+                "has_secret": row["has_secret"],
+                "installed_at": row["installed_at"],
+                "details": {
+                    "page_name": row["page_name"],
+                    "coverage": "All available history",
+                    "oldest_message_at": _iso_or_none(row["oldest_message_at"]),
+                    "backfill_exhausted_at": _iso_or_none(row["backfill_exhausted_at"]),
+                    "backfill_exhausted_reason": row["backfill_exhausted_reason"],
+                    "conversation_count": row["conversation_count"],
+                    "message_count": row["message_count"],
+                },
+            }
+            for row in rows
+        ]
     if source in _OAUTH_REHEARSAL_SOURCES:
         rows = await pool.fetch(
             """
@@ -4093,6 +4158,14 @@ async def _source_installation_row(
     tenant_id: UUID,
     source: str,
 ) -> dict[str, Any] | None:
+    if source == "facebook_pages":
+        rows = await _source_installation_rows(
+            pool,
+            tenant_id=tenant_id,
+            source=source,
+        )
+        return rows[0] if rows else None
+
     if source in _OAUTH_REHEARSAL_SOURCES:
         row = await pool.fetchrow(
             """
@@ -4422,6 +4495,7 @@ def _source_display_name(source: str) -> str:
         "aws": "AWS",
         "brex": "Brex",
         "figma": "Figma",
+        "facebook_pages": "Facebook Page Messages",
         "gmail": "Gmail",
         "github": "GitHub",
         "google_calendar": "Google Calendar",

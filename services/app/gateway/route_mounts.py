@@ -38,6 +38,7 @@ def register_gateway_routes(
     )
     from services.app.gateway.dead_letter_router import build_dead_letter_admin_router
     from services.app.gateway.extension_router import build_extension_router
+    from services.app.gateway.facebook_pages_router import build_facebook_pages_router
     from services.app.gateway.map_routes import register_map_routes
     from services.app.gateway.recommendations_router import (
         build_recommendations_router,
@@ -67,6 +68,7 @@ def register_gateway_routes(
             debug_endpoints_enabled=settings.debug_endpoints_enabled,
         )
     )
+    app.include_router(build_facebook_pages_router())
     app.include_router(build_sage_internal_router())
     app.include_router(build_recommendations_router())
     app.include_router(build_structure_router())
@@ -159,6 +161,7 @@ def _mount_native_connect_routers(
         "discord",
         "figma",
         "fireflies",
+        "facebook_pages",
         "github",
         "gmail",
         "google_calendar",

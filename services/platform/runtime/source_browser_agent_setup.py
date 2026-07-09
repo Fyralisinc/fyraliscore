@@ -40,7 +40,7 @@ API_TOKEN_SOURCES = {
     "miro",
     "ramp",
 }
-OAUTH_SOURCES = {"carta", "gusto", "linkedin", "quickbooks"}
+OAUTH_SOURCES = {"carta", "facebook_pages", "gusto", "linkedin", "quickbooks"}
 LOCAL_SESSION_SOURCES = {"signal", "telegram"}
 AWS_SOURCE_APPROVAL_URL = (
     "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"

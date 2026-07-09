@@ -38,6 +38,7 @@ def test_native_connect_routers_are_mounted() -> None:
         "slack",
         "telegram",
         "whatsapp",
+        "facebook_pages",
     ):
         assert f"/integrations/{source}/connect/preflight" in paths
         assert f"/integrations/{source}/connect/finalize" in paths
