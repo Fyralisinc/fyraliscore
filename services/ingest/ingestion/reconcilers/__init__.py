@@ -222,7 +222,13 @@ def register_pool_provider(pool: asyncpg.Pool) -> list[str]:
 
     registered: list[str] = []
     for source in RECONCILER_DISPATCH:
-        module = importlib.import_module(f"{__name__}.{source}")
+        module_name = f"{__name__}.{source}"
+        try:
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError as exc:
+            if exc.name == module_name:
+                continue
+            raise
         setter = getattr(module, "set_pool_provider", None)
         if setter is not None:
             setter(pool)

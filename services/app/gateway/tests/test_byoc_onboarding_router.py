@@ -523,7 +523,7 @@ def test_slack_browser_agent_run_includes_generated_setup_bundle() -> None:
         "fyralis.byoc.source.browser_dom_plan.v1"
     )
     assert any(
-        step["action"] == "paste_or_upload_manifest"
+        step["action"] == "slack_app_config_token_auto_connect"
         for step in bundle["browser_dom_plan"]["steps"]
     )
     assert any(
@@ -531,6 +531,104 @@ def test_slack_browser_agent_run_includes_generated_setup_bundle() -> None:
         for action in run["action_queue"]
     )
     assert "channels:history" in bundle["artifacts"][0]["content"]
+
+
+def test_slack_missing_config_token_is_browser_agent_assisted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FYRALIS_SOURCE_AUTO_CONNECT_EXECUTE_BROWSER_DOM", "1")
+    auto_state = _source_auto_connect_state(
+        "slack",
+        {
+            "browser_agent": browser_agent_recipe_for_source("slack"),
+            "provider_console_url": "https://api.slack.com/apps",
+            "oauth_redirect_url": (
+                "https://fyralis-ingress.customer.example/integrations/slack/callback"
+            ),
+            "events_request_url": (
+                "https://fyralis-ingress.customer.example/webhooks/slack/events"
+            ),
+            "install_url": None,
+            "finalize_mode": "provider_callback",
+            "status": {
+                "installed": False,
+                "observation_count": 0,
+            },
+            "missing_configuration": ["slack_app_config_token"],
+            "automation_profile": {
+                "human_steps": [],
+                "automated_actions": ["prepare provider handoff and gateway routes"],
+            },
+        },
+    )
+    run = source_browser_agent_run_for_payload(
+        "slack",
+        {
+            "browser_agent": browser_agent_recipe_for_source("slack"),
+            "provider_console_url": "https://api.slack.com/apps",
+            "oauth_redirect_url": (
+                "https://fyralis-ingress.customer.example/integrations/slack/callback"
+            ),
+            "events_request_url": (
+                "https://fyralis-ingress.customer.example/webhooks/slack/events"
+            ),
+            "install_url": None,
+            "finalize_mode": "provider_callback",
+            "status": {
+                "installed": False,
+                "observation_count": 0,
+            },
+            "missing_configuration": ["slack_app_config_token"],
+            "automation_profile": {
+                "human_steps": auto_state["human_steps"],
+                "automated_actions": ["prepare provider handoff and gateway routes"],
+            },
+        },
+        auto_state=auto_state,
+    )
+
+    assert auto_state["state"] == "admin_gate"
+    assert auto_state["human_steps"][0]["can_agent_complete"] is True
+    assert run["state"] == "waiting_for_admin"
+    assert run["can_start"] is True
+    assert any(
+        action["id"] == "execute_slack_app_config_token_plan"
+        for action in run["action_queue"]
+    )
+
+
+def test_slack_missing_config_token_blocks_when_browser_agent_is_not_executing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("FYRALIS_SOURCE_AUTO_CONNECT_EXECUTE_BROWSER_DOM", raising=False)
+    auto_state = _source_auto_connect_state(
+        "slack",
+        {
+            "browser_agent": browser_agent_recipe_for_source("slack"),
+            "provider_console_url": "https://api.slack.com/apps",
+            "oauth_redirect_url": (
+                "https://fyralis-ingress.customer.example/integrations/slack/callback"
+            ),
+            "events_request_url": (
+                "https://fyralis-ingress.customer.example/webhooks/slack/events"
+            ),
+            "install_url": None,
+            "finalize_mode": "provider_callback",
+            "status": {
+                "installed": False,
+                "observation_count": 0,
+            },
+            "missing_configuration": ["slack_app_config_token"],
+            "automation_profile": {
+                "human_steps": [],
+                "automated_actions": ["prepare provider handoff and gateway routes"],
+            },
+        },
+    )
+
+    assert auto_state["state"] == "blocked"
+    assert auto_state["label"] == "Not connected"
+    assert auto_state["human_steps"][0]["can_agent_complete"] is True
 
 
 def test_browser_agent_provider_setup_bundles_are_specific_for_all_sources() -> None:

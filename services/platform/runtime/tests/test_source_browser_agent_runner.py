@@ -14,11 +14,16 @@ from services.platform.runtime.source_browser_agent_runner import (
     _dom_collect_text,
     _dom_fill_values,
     _dom_generate_refs,
+    _dom_slack_app_config_token_auto_connect,
     _dom_set_config_values,
+    _extract_slack_app_config_token,
     _generated_provider_setup_artifacts,
     _materialize_native_payload_template,
     run_source_browser_agent,
 )
+
+
+_SLACK_CONFIG_TOKEN = "xo" + "xe" + "-1-ABCdefghi0123456789"
 
 
 class _FakeLocator:
@@ -65,6 +70,7 @@ class _FakePage:
         self.text_contents: dict[str, list[str]] = {}
         self.fills: list[tuple[str, str]] = []
         self.clicks: list[tuple[str, str]] = []
+        self.navigations: list[str] = []
         self.uploads: list[tuple[str, str]] = []
 
     def locator(self, selector: str) -> _FakeLocator:
@@ -72,6 +78,24 @@ class _FakePage:
 
     def get_by_text(self, text: Any) -> _FakeLocator:
         return _FakeLocator(self, text=text)
+
+    async def goto(
+        self,
+        url: str,
+        *,
+        wait_until: str = "domcontentloaded",
+        timeout: int,
+    ) -> None:
+        self.navigations.append(url)
+
+    async def wait_for_load_state(self, state: str, *, timeout: int) -> None:
+        return None
+
+    async def wait_for_timeout(self, timeout: int) -> None:
+        return None
+
+    async def evaluate(self, script: str) -> list[str]:
+        return []
 
 
 @pytest.mark.asyncio
@@ -162,6 +186,122 @@ async def test_browser_dom_collection_persists_only_targeted_non_secret_fields(
     ]
     assert "should-not-survive" not in json.dumps(payload)
     assert "nooo" not in json.dumps(payload)
+
+
+def test_extract_slack_app_config_token_requires_real_token_shape() -> None:
+    assert _extract_slack_app_config_token("placeholder xoxe...") is None
+    assert _extract_slack_app_config_token(
+        f"Configuration token: {_SLACK_CONFIG_TOKEN}"
+    ) == _SLACK_CONFIG_TOKEN
+
+
+@pytest.mark.asyncio
+async def test_slack_config_token_step_submits_token_without_receipt_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _FakePage()
+    page.text_contents["code"] = [
+        f"Slack app configuration token {_SLACK_CONFIG_TOKEN}"
+    ]
+    posted: dict[str, Any] = {}
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "install_url": "https://slack.com/oauth/v2/authorize?client_id=C123",
+            }
+
+    class _Client:
+        def __init__(self, *, timeout: float):
+            self.timeout = timeout
+
+        async def __aenter__(self) -> "_Client":
+            return self
+
+        async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            return False
+
+        async def post(
+            self,
+            endpoint: str,
+            *,
+            json: dict[str, Any],
+            headers: dict[str, str],
+        ) -> _Response:
+            posted["endpoint"] = endpoint
+            posted["json"] = json
+            posted["headers"] = headers
+            return _Response()
+
+    monkeypatch.setattr(
+        "services.platform.runtime.source_browser_agent_runner.httpx.AsyncClient",
+        _Client,
+    )
+
+    result = await _dom_slack_app_config_token_auto_connect(
+        page=page,
+        step={
+            "id": "generate_slack_app_configuration_token",
+            "action": "slack_app_config_token_auto_connect",
+            "target_url": "https://api.slack.com/apps",
+            "gateway_finalize_path": (
+                "/platform/onboarding/sources/slack/rehearsal/"
+                "browser-agent/configuration"
+            ),
+            "token_selectors": ["code"],
+            "text_targets": ["Generate Token"],
+        },
+        timeout_ms=1000,
+        admin_approved=True,
+        interactive_admin=False,
+        gateway_api_base="https://gateway.example",
+        bearer_token="session-token",
+        extra_headers={},
+        http_timeout_s=5,
+    )
+
+    serialized = json.dumps(result, sort_keys=True)
+    assert result["status"] == "waiting"
+    assert result["raw_secret_values_included"] is False
+    assert _SLACK_CONFIG_TOKEN not in serialized
+    assert posted["endpoint"] == (
+        "https://gateway.example/platform/onboarding/sources/slack/"
+        "rehearsal/browser-agent/configuration"
+    )
+    assert posted["json"] == {
+        "inputs": {"slack_app_config_token": _SLACK_CONFIG_TOKEN}
+    }
+    assert posted["headers"]["Authorization"] == "Bearer session-token"
+    assert page.navigations == [
+        "https://api.slack.com/apps",
+        "https://slack.com/oauth/v2/authorize?client_id=C123",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_slack_config_token_step_waits_when_token_not_visible() -> None:
+    result = await _dom_slack_app_config_token_auto_connect(
+        page=_FakePage(),
+        step={
+            "id": "generate_slack_app_configuration_token",
+            "action": "slack_app_config_token_auto_connect",
+            "target_url": "https://api.slack.com/apps",
+            "token_selectors": ["code"],
+        },
+        timeout_ms=1000,
+        admin_approved=False,
+        interactive_admin=False,
+        gateway_api_base="https://gateway.example",
+        bearer_token=None,
+        extra_headers={},
+        http_timeout_s=5,
+    )
+
+    assert result["status"] == "waiting"
+    assert result["raw_secret_values_included"] is False
 
 
 def test_generated_artifact_index_excludes_browser_storage_state(

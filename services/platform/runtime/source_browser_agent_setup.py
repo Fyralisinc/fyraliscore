@@ -20,6 +20,10 @@ SLACK_BOT_SCOPES = (
     "team:read",
 )
 SLACK_USER_SCOPES = (
+    "channels:read",
+    "channels:history",
+    "groups:read",
+    "groups:history",
     "im:read",
     "im:history",
     "mpim:read",
@@ -79,6 +83,7 @@ def build_source_provider_setup_bundle(
             provider_console_url=provider_console_url or "https://api.slack.com/apps",
             oauth_redirect_url=oauth_redirect_url,
             events_request_url=events_request_url,
+            install_url=install_url,
             native_connect=native_connect,
         )
     if normalized == "github":
@@ -201,14 +206,68 @@ def _slack_setup_bundle(
     provider_console_url: str,
     oauth_redirect_url: str | None,
     events_request_url: str | None,
+    install_url: str | None,
     native_connect: dict[str, Any] | None,
 ) -> dict[str, Any]:
     redirect = oauth_redirect_url or "https://fyralis-ingress.customer.example/integrations/slack/callback"
     event_url = events_request_url or "https://fyralis-ingress.customer.example/webhooks/slack/events"
+    app_config_required = not bool(install_url)
     base_manifest, events_manifest = slack_manifest_text(
         oauth_redirect_url=redirect,
         events_request_url=event_url,
     )
+    settings_targets = [
+        "Slack app configuration token",
+        "Slack App Manifest API",
+        "OAuth scopes",
+        "event subscriptions",
+    ] if app_config_required else [
+        "Slack OAuth approval",
+        "workspace app authorization",
+    ]
+    browser_tasks = [
+        {
+            "id": "open_provider_settings",
+            "target": provider_console_url,
+            "agent_role": "open Slack app settings in customer BYOC browser",
+        },
+        {
+            "id": "generate_slack_app_config_token",
+            "fields": ["Slack app configuration token"],
+            "agent_role": (
+                "generate a Slack app configuration token in-memory and send it "
+                "to the customer-cloud gateway"
+            ),
+        },
+        {
+            "id": "open_slack_oauth_install",
+            "target": install_url,
+            "agent_role": "open Slack OAuth approval after the manifest API creates the app",
+        },
+    ] if app_config_required else [
+        {
+            "id": "open_slack_oauth_install",
+            "target": install_url,
+            "agent_role": "open Slack OAuth approval for the created BYOC app",
+        },
+    ]
+    agent_actions = [
+        {
+            "id": "generate_slack_app_manifest",
+            "kind": "materialize_provider_setup_bundle",
+            "label": "Generate Slack app manifest and event subscription bundle.",
+        },
+        {
+            "id": "prepare_slack_app_config_token_plan",
+            "kind": "materialize_browser_dom_plan",
+            "label": "Prepare Slack app configuration token browser DOM action plan.",
+        },
+        {
+            "id": "execute_slack_app_config_token_plan",
+            "kind": "execute_browser_dom_plan",
+            "label": "Run the admin-present Slack configuration token browser agent.",
+        },
+    ] if app_config_required else []
     return {
         "schema_version": "fyralis.byoc.source.provider_setup_bundle.v1",
         "source": "slack",
@@ -216,11 +275,7 @@ def _slack_setup_bundle(
         "provider_console_url": provider_console_url,
         "oauth_redirect_url": redirect,
         "events_request_url": event_url,
-        "settings_targets": [
-            "Slack app manifest",
-            "OAuth scopes",
-            "event subscriptions",
-        ],
+        "settings_targets": settings_targets,
         "collected_non_secret_fields": [
             "workspace id",
             "team domain",
@@ -232,43 +287,15 @@ def _slack_setup_bundle(
             "signing secret ref",
             "OAuth state HMAC key ref",
         ],
-        "browser_tasks": [
-            {
-                "id": "open_provider_settings",
-                "target": provider_console_url,
-                "agent_role": "open Slack app settings in customer BYOC browser",
-            },
-            {
-                "id": "collect_non_secret_configuration",
-                "fields": [
-                    "workspace id",
-                    "team domain",
-                    "approved channel ids",
-                ],
-                "agent_role": "read Slack workspace IDs and approved channel scope only",
-            },
-            {
-                "id": "generate_customer_cloud_refs",
-                "refs": [
-                    "oauth client ref",
-                    "bot token ref",
-                    "signing secret ref",
-                    "OAuth state HMAC key ref",
-                ],
-                "agent_role": "write Slack manifest and verifier refs locally",
-            },
-        ],
+        "browser_tasks": browser_tasks,
         "browser_dom_plan": _browser_dom_plan(
             source="slack",
             kind="slack_app_manifest",
             provider_console_url=provider_console_url,
             oauth_redirect_url=redirect,
             events_request_url=event_url,
-            settings_targets=[
-                "Slack app manifest",
-                "OAuth scopes",
-                "event subscriptions",
-            ],
+            app_config_required=app_config_required,
+            settings_targets=settings_targets,
             collected_non_secret_fields=[
                 "workspace id",
                 "team domain",
@@ -318,36 +345,10 @@ def _slack_setup_bundle(
                 },
             },
         ],
-        "agent_actions": [
-            {
-                "id": "generate_slack_app_manifest",
-                "kind": "materialize_provider_setup_bundle",
-                "label": "Generate Slack app manifest and event subscription bundle.",
-            },
-            {
-                "id": "prepare_slack_oauth_redirects",
-                "kind": "provider_setup",
-                "label": "Prepare Slack OAuth redirect URL.",
-            },
-            {
-                "id": "prepare_slack_event_subscriptions",
-                "kind": "provider_setup",
-                "label": "Prepare Slack event subscription request URL.",
-            },
-            {
-                "id": "prepare_slack_browser_dom_plan",
-                "kind": "materialize_browser_dom_plan",
-                "label": "Prepare Slack browser DOM action plan.",
-            },
-            {
-                "id": "execute_slack_browser_dom_plan",
-                "kind": "execute_browser_dom_plan",
-                "label": "Run the admin-present Slack browser agent.",
-            },
-        ],
+        "agent_actions": agent_actions,
         "human_gates": [
             "Slack admin signs in and completes MFA when prompted",
-            "Slack admin imports or approves the app manifest",
+            "Slack admin allows creation of an app configuration token if prompted",
             "Slack admin approves workspace OAuth scopes",
         ],
         "raw_secret_values_included": False,
@@ -933,6 +934,7 @@ def _browser_dom_plan(
     collected_non_secret_fields: list[str],
     generated_refs: list[str],
     primary_artifacts: list[str],
+    app_config_required: bool = False,
 ) -> dict[str, Any]:
     return {
         "schema_version": "fyralis.byoc.source.browser_dom_plan.v1",
@@ -953,6 +955,7 @@ def _browser_dom_plan(
             collected_non_secret_fields=collected_non_secret_fields,
             generated_refs=generated_refs,
             primary_artifacts=primary_artifacts,
+            app_config_required=app_config_required,
         ),
         "completion_evidence": [
             "provider settings page accepted generated callback/webhook/scope configuration",
@@ -992,6 +995,7 @@ def _browser_dom_steps(
     collected_non_secret_fields: list[str],
     generated_refs: list[str],
     primary_artifacts: list[str],
+    app_config_required: bool = False,
 ) -> list[dict[str, Any]]:
     steps = [
         _dom_step(
@@ -1009,7 +1013,14 @@ def _browser_dom_steps(
         ),
     ]
     if kind == "slack_app_manifest":
-        steps.extend(_slack_dom_steps(primary_artifacts, oauth_redirect_url, events_request_url))
+        steps.extend(
+            _slack_dom_steps(
+                primary_artifacts,
+                oauth_redirect_url,
+                events_request_url,
+                app_config_required=app_config_required,
+            )
+        )
     elif kind == "github_app_manifest":
         steps.extend(_github_dom_steps(primary_artifacts, oauth_redirect_url, events_request_url))
     elif kind == "google_workspace_dwd_setup":
@@ -1078,28 +1089,50 @@ def _slack_dom_steps(
     primary_artifacts: list[str],
     oauth_redirect_url: str | None,
     events_request_url: str | None,
+    *,
+    app_config_required: bool,
 ) -> list[dict[str, Any]]:
+    if not app_config_required:
+        return []
     return [
         _dom_step(
-            "create_slack_app_from_manifest",
-            "paste_or_upload_manifest",
-            artifacts=primary_artifacts,
-            selectors=_selectors("textarea[name=manifest]", "input[type=file]", "button"),
-            text_targets=_text_targets("Create New App", "From an app manifest", "Next", "Create"),
-        ),
-        _dom_step(
-            "configure_slack_oauth_redirect",
-            "set_url",
-            value=oauth_redirect_url,
-            selectors=_selectors("input[name=redirect_url]", "input[type=url]", "textarea"),
-            text_targets=_text_targets("Redirect URLs", "OAuth", "Save URLs"),
-        ),
-        _dom_step(
-            "configure_slack_events_request_url",
-            "set_url",
-            value=events_request_url,
-            selectors=_selectors("input[name=request_url]", "input[type=url]", "textarea"),
-            text_targets=_text_targets("Event Subscriptions", "Request URL", "Subscribe to bot events"),
+            "generate_slack_app_configuration_token",
+            "slack_app_config_token_auto_connect",
+            target_url="https://api.slack.com/apps",
+            gateway_finalize_path=(
+                "/platform/onboarding/sources/slack/rehearsal/"
+                "browser-agent/configuration"
+            ),
+            selectors=_selectors(
+                "input[value^='xoxe']",
+                "textarea",
+                "code",
+                "pre",
+                "[data-qa]",
+                "[data-testid]",
+            ),
+            token_selectors=_selectors(
+                "input[value^='xoxe']",
+                "textarea",
+                "code",
+                "pre",
+                "[data-qa]",
+                "[data-testid]",
+                "body",
+            ),
+            text_targets=_text_targets(
+                "Create token",
+                "Create Token",
+                "Generate token",
+                "Generate Token",
+                "App configuration tokens",
+                "Configuration tokens",
+            ),
+            human_reason=(
+                "Slack requires an authenticated admin session before a "
+                "configuration token can be created. The token is submitted "
+                "directly to the customer-cloud gateway and is not persisted."
+            ),
         ),
     ]
 

@@ -419,10 +419,12 @@ export async function fetchGatewaySourceObservations({
 
 export async function autoConnectSourceRehearsal({
   sourceId,
-  apiBase
+  apiBase,
+  inputs
 }: {
   sourceId: string;
   apiBase?: string;
+  inputs?: Record<string, string>;
 }): Promise<SourceAutoConnectResponse> {
   const resolvedApiBase = resolveGatewayApiBase(apiBase);
   const response = await fetch(
@@ -432,8 +434,10 @@ export async function autoConnectSourceRehearsal({
     {
       method: "POST",
       headers: {
-        Accept: "application/json"
-      }
+        Accept: "application/json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ inputs: inputs ?? {} })
     }
   );
   if (!response.ok) {

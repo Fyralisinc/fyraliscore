@@ -83,6 +83,9 @@ async def test_install_redirect_to_slack(
     assert qs["client_id"] == ["1234.5678"]
     assert "channels:history" in qs["scope"][0]
     assert "team:read" in qs["scope"][0]
+    assert "channels:history" in qs["user_scope"][0]
+    assert "groups:history" in qs["user_scope"][0]
+    assert "im:history" in qs["user_scope"][0]
     assert "state" in qs and "." in qs["state"][0]
 
     # oauth_install_states has exactly one new row for this tenant.

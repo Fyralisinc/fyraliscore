@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Fyralis Browser Agent",
+  "version": "0.1.4",
+  "description": "Customer-cloud helper for provider onboarding pages.",
+  "permissions": ["clipboardRead", "clipboardWrite"],
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://api.slack.com/*"],
+      "js": ["slack-content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -12,6 +12,7 @@ readme = "README.md"
 dependencies = [
     "asyncpg>=0.29",
     "pgvector>=0.3",
+    "numpy>=2.0",                # reasoning topology + pgvector array handling
     "pydantic>=2.7",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
@@ -74,7 +75,6 @@ dev = [
     "freezegun>=1.5",
     "hdbscan>=0.8.40",          # Wave 4-C precipitation clustering
     "scikit-learn>=1.4",        # transitive via hdbscan; used by precipitation
-    "numpy>=2.0",               # transitive; model-embedding stacking
     "umap-learn>=0.5",          # 2D projection for the CEO Map view (preserves local structure;
                                 # PCA was the wrong abstraction — see CODEBASE-ARCHITECTURE.md §13.13)
     "pyyaml>=6.0",              # real-LLM scenario YAML loader

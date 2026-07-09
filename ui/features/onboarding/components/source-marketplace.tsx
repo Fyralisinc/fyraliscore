@@ -11,6 +11,7 @@ export type SourceAutomationCardState = {
   status: "idle" | "connecting" | "waiting_admin" | "connected" | "blocked" | "error";
   label: string;
   message?: string;
+  installUrl?: string | null;
 };
 
 export function SourceMarketplace({
@@ -19,7 +20,8 @@ export function SourceMarketplace({
   selectedSourceId,
   automationStates = {},
   onSelect,
-  onConnect
+  onConnect,
+  onAuthorize
 }: {
   sources: Source[];
   connections: SourceConnection[];
@@ -27,6 +29,7 @@ export function SourceMarketplace({
   automationStates?: Record<string, SourceAutomationCardState>;
   onSelect: (sourceId: string) => void;
   onConnect: (sourceId: string) => void;
+  onAuthorize?: (sourceId: string, installUrl: string) => void;
 }) {
   return (
     <div className="grid w-full min-w-0 max-w-full">
@@ -42,9 +45,12 @@ export function SourceMarketplace({
             const selected = selectedSourceId === source.id;
             const waiting =
               automation?.status === "waiting_admin" || status === "waiting-admin";
-            const busy = automation?.status === "connecting" || waiting;
             const connected =
               automation?.status === "connected" || status === "connected";
+            const authorizeUrl =
+              automation?.installUrl && !connected ? automation.installUrl : null;
+            const busy =
+              !authorizeUrl && (automation?.status === "connecting" || waiting);
 
             return (
               <div
@@ -83,15 +89,22 @@ export function SourceMarketplace({
                   className="col-span-2 w-full sm:col-span-1 sm:w-32"
                   variant={connected ? "secondary" : "primary"}
                   disabled={busy || connected}
-                  onClick={() => onConnect(source.id)}
+                  onClick={() =>
+                    authorizeUrl
+                      ? onAuthorize?.(source.id, authorizeUrl)
+                      : onConnect(source.id)
+                  }
                   aria-label={sourceActionLabel({
                     sourceName: source.name,
+                    authorize: Boolean(authorizeUrl),
                     waiting,
                     busy,
                     connected
                   })}
                 >
-                  {waiting
+                  {authorizeUrl
+                    ? "Authorize"
+                    : waiting
                     ? "Waiting"
                     : busy
                       ? "Connecting..."
@@ -133,15 +146,20 @@ function statusTone(status: SourceConnection["status"] | SourceAutomationCardSta
 
 function sourceActionLabel({
   sourceName,
+  authorize,
   waiting,
   busy,
   connected
 }: {
   sourceName: string;
+  authorize: boolean;
   waiting: boolean;
   busy: boolean;
   connected: boolean;
 }) {
+  if (authorize) {
+    return `Authorize ${sourceName}`;
+  }
   if (waiting) {
     return `${sourceName} waiting for approval`;
   }

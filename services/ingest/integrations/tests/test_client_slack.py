@@ -124,6 +124,56 @@ async def test_user_token_reloads_latest_label_when_cache_ttl_is_zero(
     assert store.calls == [("user-ref-1", tenant_id), ("user-ref-2", tenant_id)]
 
 
+async def test_user_conversations_list_maps_public_and_private_channels() -> None:
+    seen_params: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_params.append(request.url.params.get("types"))
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "channels": [
+                    {
+                        "id": "C_GENERAL",
+                        "name": "general",
+                        "is_channel": True,
+                        "is_private": False,
+                    },
+                    {
+                        "id": "G_SECRET",
+                        "name": "secret",
+                        "is_group": True,
+                        "is_private": True,
+                    },
+                ],
+            },
+        )
+
+    client = SlackUserClient(
+        pool=None,  # type: ignore[arg-type]
+        secret_store=None,
+        tenant_id=uuid4(),
+        installation_row_id=uuid4(),
+        team_id="T123",
+        user_id="U123",
+        base_url="https://slack.test/api",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    client._user_token_cache.set("user-cache-token", ttl_seconds=float("inf"))  # type: ignore[attr-defined]
+    try:
+        channels = await client.conversations_list(
+            types="public_channel,private_channel",
+        )
+    finally:
+        await client.aclose()
+
+    assert seen_params == ["public_channel,private_channel"]
+    assert {c["channel_type"] for c in channels} == {
+        "public_channel", "private_channel",
+    }
+
+
 async def test_429_exhaustion_is_recoverable_rate_limit() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(429, headers={"Retry-After": "5"})

@@ -281,9 +281,9 @@ BROWSER_AGENT_RECIPES: dict[str, BrowserAgentRecipe] = {
     "slack": _recipe(
         "slack",
         "https://api.slack.com/apps",
-        ("Slack app settings", "OAuth scopes", "event subscriptions"),
-        ("workspace id", "channel scope", "event callback URL"),
-        ("signing secret ref", "Slack event scope contract"),
+        ("Slack app configuration tokens", "OAuth scopes", "event subscriptions"),
+        ("workspace id", "channel scope", "OAuth callback URL"),
+        ("Slack app manifest contract", "Slack event scope contract"),
         OAUTH_GATES,
     ),
     "telegram": _recipe(

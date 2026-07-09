@@ -86,3 +86,15 @@ def test_oauth_callback_records_source_onboarding_failure(
         )
         == 1
     )
+
+
+def test_slack_oauth_landing_pages_render() -> None:
+    client = TestClient(_make_app())
+
+    installed = client.get("/integrations/slack/installed?team=t123")
+    error = client.get("/integrations/slack/install-error?reason=state_invalid")
+
+    assert installed.status_code == 200
+    assert "Slack connected" in installed.text
+    assert error.status_code == 400
+    assert "state_invalid" in error.text

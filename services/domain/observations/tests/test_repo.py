@@ -49,6 +49,7 @@ from services.domain.observations.repo import (
     InvalidTrustTier,
     ObservationError,
     ObservationRepository,
+    _hydrate_row,
 )
 from services.domain.observations.state_change import emit_state_change
 
@@ -90,6 +91,35 @@ def _mk_obs(
         cause_id=cause_id,
         entities_mentioned=entities_mentioned or [],
     )
+
+
+def test_hydrate_row_accepts_pgvector_vector() -> None:
+    from pgvector import Vector
+
+    now = _now()
+    row = _hydrate_row(
+        {
+            "id": uuid7(),
+            "tenant_id": uuid7(),
+            "occurred_at": now,
+            "ingested_at": now,
+            "kind": "signal",
+            "source_channel": "slack:message",
+            "source_actor_ref": None,
+            "actor_id": None,
+            "content": {"text": "hello"},
+            "content_text": "hello",
+            "embedding": Vector([0.1, 0.2, 0.3]),
+            "embedding_pending": False,
+            "trust_tier": "inferential",
+            "external_id": "slack-event-1",
+            "cause_id": None,
+            "sequence_num": 1,
+            "entities_mentioned": [],
+        }
+    )
+
+    assert row.embedding == pytest.approx([0.1, 0.2, 0.3])
 
 
 # =====================================================================

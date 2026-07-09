@@ -72,11 +72,13 @@ _SLACK_BOT_SCOPES = (
     "channels:read,channels:history,groups:read,groups:history,"
     "users:read,team:read"
 )
-# USER scopes (`user_scope` param) — granted per consenting user. The ONLY way
-# to read that user's direct messages + group DMs. Slack returns the resulting
-# xoxp token in the callback's `authed_user.access_token`; absent these, no
-# user token is ever issued and DM ingestion has no credential.
-_SLACK_USER_SCOPES = "im:read,im:history,mpim:read,mpim:history"
+# USER scopes (`user_scope` param) — granted per consenting user. The user token
+# lets Fyralis backfill all public channels + the private channels/DMs visible
+# to that user without forcing a bot invite into every channel.
+_SLACK_USER_SCOPES = (
+    "channels:read,channels:history,groups:read,groups:history,"
+    "im:read,im:history,mpim:read,mpim:history"
+)
 
 _SLACK_AUTHORIZE_URL = "https://slack.com/oauth/v2/authorize"
 _SLACK_OAUTH_ACCESS_URL = "https://slack.com/api/oauth.v2.access"
@@ -143,6 +145,7 @@ async def issue_state_token(
     *,
     ttl_seconds: int = _DEFAULT_STATE_TTL_S,
     provider: str = "slack",
+    extra_payload: dict[str, Any] | None = None,
 ) -> str:
     """Allocate a nonce, persist it in `oauth_install_states`, return
     an HMAC-signed state token suitable for the OAuth redirect.
@@ -172,6 +175,8 @@ async def issue_state_token(
         "nonce": nonce,
         "expires_at": expires_at.isoformat(),
     }
+    if extra_payload:
+        payload.update(extra_payload)
     payload_b64 = _b64url(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     sig = hmac.new(_hmac_key(), payload_b64.encode("ascii"), hashlib.sha256).digest()
     sig_b64 = _b64url(sig)
@@ -385,23 +390,33 @@ async def _connect_handoff(
 # Callback handler — GET /integrations/slack/callback
 # ---------------------------------------------------------------------
 
-async def _exchange_code_for_tokens(code: str) -> dict[str, Any]:
+async def _exchange_code_for_tokens(
+    code: str,
+    *,
+    client_id: str | None = None,
+    client_secret: str | None = None,
+    redirect_uri: str | None = None,
+) -> dict[str, Any]:
     """Call Slack's `oauth.v2.access`. Returns the parsed JSON.
 
     Raises a generic Exception on HTTP-level errors; the caller maps
     those to a `slack_oauth_error` redirect.
     """
-    client_id = os.environ.get("SLACK_CLIENT_ID", "")
-    client_secret = load_app_secret_text_from_env("SLACK_CLIENT_SECRET")
-    redirect_uri = os.environ.get("SLACK_REDIRECT_URI", "")
+    resolved_client_id = client_id or os.environ.get("SLACK_CLIENT_ID", "")
+    resolved_client_secret = (
+        client_secret
+        if client_secret is not None
+        else load_app_secret_text_from_env("SLACK_CLIENT_SECRET")
+    )
+    resolved_redirect_uri = redirect_uri or os.environ.get("SLACK_REDIRECT_URI", "")
     async with httpx.AsyncClient(timeout=15.0) as client:
         r = await client.post(
             _SLACK_OAUTH_ACCESS_URL,
             data={
                 "code": code,
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uri": redirect_uri,
+                "client_id": resolved_client_id,
+                "client_secret": resolved_client_secret,
+                "redirect_uri": resolved_redirect_uri,
             },
         )
     r.raise_for_status()
@@ -413,6 +428,8 @@ async def _persist_secrets(
     tenant_id: UUID,
     team_id: str,
     slack_response: dict[str, Any],
+    *,
+    signing_secret: str | None = None,
 ) -> tuple[str, str, str | None, str | None, str | None]:
     """Store bot token + (optional) user token + per-tenant signing
     secret in the secret store. Returns `(signing_ref, bot_ref,
@@ -467,14 +484,16 @@ async def _persist_secrets(
     # Per-app signing secret — stored once per tenant. We don't try to
     # dedupe; a re-install rewrites the row but the secret store's
     # `put` always allocates a fresh ref (rotation is via `rotate`).
-    signing_secret = load_app_secret_text_from_env("SLACK_SIGNING_SECRET")
-    if not signing_secret:
+    resolved_signing_secret = signing_secret or load_app_secret_text_from_env(
+        "SLACK_SIGNING_SECRET"
+    )
+    if not resolved_signing_secret:
         raise SecretStoreError(
             "SLACK_SIGNING_SECRET env var not set — cannot persist signing secret",
             reason="missing_signing_secret",
         )
     signing_ref = await secret_store.put(
-        signing_secret,
+        resolved_signing_secret,
         label="slack_signing_secret:app",
         tenant_id=tenant_id,
     )
@@ -668,15 +687,62 @@ async def callback_handler(request: Request) -> Any:
 
     # 1+2+3. Verify HMAC + atomic consume.
     try:
-        tenant_id, _payload = await verify_and_consume_state(state, pool)
+        tenant_id, state_payload = await verify_and_consume_state(state, pool)
     except StateTokenInvalidError as e:
         log.info("slack_install_failure", reason=e.reason)
         status_code = 400
         return _error_redirect(e.reason, status_code=status_code)
 
     # 4. Exchange code for tokens.
+    runtime_app = None
+    slack_app_id = state_payload.get("slack_app_id")
+    if isinstance(slack_app_id, str) and slack_app_id.strip():
+        from services.ingest.integrations.slack import byoc_app
+
+        refs = await byoc_app.fetch_app_credentials(
+            pool,
+            tenant_id=tenant_id,
+            app_id=slack_app_id.strip(),
+        )
+        if refs is None:
+            log.error(
+                "slack_install_failure",
+                reason="slack_app_credentials_missing",
+                slack_app_id=slack_app_id,
+            )
+            await _write_audit(
+                pool, tenant_id, None, "install", "error",
+                {"failure_code": "slack_app_credentials_missing"},
+            )
+            return _error_redirect("slack_oauth_error", status_code=502)
+        try:
+            runtime_app = await byoc_app.resolve_runtime_credentials(
+                secret_store=secret_store,
+                tenant_id=tenant_id,
+                refs=refs,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.error(
+                "slack_install_failure",
+                reason="secret_store_unavailable",
+                error_type=type(exc).__name__,
+            )
+            await _write_audit(
+                pool, tenant_id, None, "install", "error",
+                {"failure_code": "secret_store_unavailable"},
+            )
+            return _error_redirect("secret_store_unavailable", status_code=503)
+
+    redirect_uri = os.environ.get("SLACK_REDIRECT_URI", "").strip() or str(
+        request.url
+    ).split("?", 1)[0]
     try:
-        slack_response = await _exchange_code_for_tokens(code)
+        slack_response = await _exchange_code_for_tokens(
+            code,
+            client_id=runtime_app.client_id if runtime_app else None,
+            client_secret=runtime_app.client_secret if runtime_app else None,
+            redirect_uri=redirect_uri,
+        )
     except Exception as exc:  # noqa: BLE001 — Slack API errors
         log.error(
             "slack_install_failure",
@@ -719,7 +785,11 @@ async def callback_handler(request: Request) -> Any:
         (
             signing_ref, bot_ref, user_ref, authed_user_id, granted_user_scopes,
         ) = await _persist_secrets(
-            secret_store, tenant_id, team_id, slack_response,
+            secret_store,
+            tenant_id,
+            team_id,
+            slack_response,
+            signing_secret=runtime_app.signing_secret if runtime_app else None,
         )
     except SecretStoreError as exc:
         log.error(
@@ -787,8 +857,17 @@ async def callback_handler(request: Request) -> Any:
             "was_reinstall": not was_inserted,
             "scopes_count": len(scopes),
             "app_id": slack_response.get("app_id"),
+            "byoc_app_id": runtime_app.app_id if runtime_app else None,
         },
     )
+    if runtime_app:
+        from services.ingest.integrations.slack import byoc_app
+
+        await byoc_app.mark_app_credentials_used(
+            pool,
+            tenant_id=tenant_id,
+            app_id=runtime_app.app_id,
+        )
 
     # 9. Invalidate resolver cache + metrics + redirect.
     _invalidate_resolver_cache(request, team_id)
