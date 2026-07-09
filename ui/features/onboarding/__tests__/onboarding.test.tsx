@@ -4,13 +4,17 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SourceMarketplace } from "../components/source-marketplace";
-import { ONBOARDING_SNAPSHOT, ONBOARDING_STEPS, SOURCES } from "../data/mock-data";
+import {
+  ONBOARDING_SNAPSHOT,
+  ONBOARDING_STEPS,
+  SOURCES,
+} from "../data/mock-data";
 import { StepView, type StepViewProps } from "../flows/step-views";
 import {
   autoConnectSourceRehearsal,
   fetchGatewaySourceObservations,
   fetchSourceRehearsalStatus,
-  submitDesignPartnerIntake
+  submitDesignPartnerIntake,
 } from "../services/onboarding-service";
 import type { Customer, SourceConnection } from "../types";
 
@@ -34,7 +38,7 @@ describe("onboarding workflow contract", () => {
       "deployment-validation",
       "source-catalog",
       "workspace-launch",
-      "workspace-home"
+      "workspace-home",
     ]);
   });
 
@@ -50,18 +54,53 @@ describe("onboarding workflow contract", () => {
         selectedSourceId="github"
         onSelect={onSelect}
         onConnect={onConnect}
-      />
+      />,
     );
 
     expect(screen.getByText("GitHub")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Search integrations")).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Search integrations"),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("Engineering")).not.toBeInTheDocument();
     expect(
-      screen.queryByText("Repositories, pull requests, issues, and code intelligence.")
+      screen.queryByText(
+        "Repositories, pull requests, issues, and code intelligence.",
+      ),
     ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Connect GitHub" }));
     expect(onConnect).toHaveBeenCalledWith("github");
+  });
+
+  it("connects Discord with Full Server Sync by default", async () => {
+    const user = userEvent.setup();
+    const onConnect = vi.fn();
+
+    render(
+      <SourceMarketplace
+        sources={SOURCES.filter((source) => source.id === "discord")}
+        connections={[]}
+        selectedSourceId="discord"
+        onSelect={vi.fn()}
+        onConnect={onConnect}
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        /Full Server Sync: Fyralis can read every channel this server has, including private channels\./,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Administrator")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Connect Discord with Full Server Sync",
+      }),
+    );
+    expect(onConnect).toHaveBeenCalledWith("discord", {
+      discordAccessMode: "full_server_sync",
+    });
   });
 
   it("lets persisted waiting approval state recover the provider handoff link", async () => {
@@ -74,8 +113,8 @@ describe("onboarding workflow contract", () => {
         status: "waiting-admin",
         selectedScopes: [],
         backfillWindow: "Last 30 days",
-        syncMode: "Limited backfill"
-      }
+        syncMode: "Limited backfill",
+      },
     ];
 
     render(
@@ -85,14 +124,14 @@ describe("onboarding workflow contract", () => {
         selectedSourceId="ramp"
         onSelect={onSelect}
         onConnect={onConnect}
-      />
+      />,
     );
 
     expect(screen.getByText("Approval needed")).toBeInTheDocument();
     await user.click(
       screen.getByRole("button", {
-        name: "Get Ramp provider settings link for approval"
-      })
+        name: "Get Ramp provider settings link for approval",
+      }),
     );
     expect(onConnect).toHaveBeenCalledWith("ramp");
   });
@@ -114,30 +153,30 @@ describe("onboarding workflow contract", () => {
             message: "Provider admin approval is blocking completion.",
             actionUrl: "https://developers.ramp.com/",
             actionLabel: "Open settings",
-            receiptPathHint: ".fyralis/sources/ramp/browser-agent-receipt.json"
-          }
+            receiptPathHint: ".fyralis/sources/ramp/browser-agent-receipt.json",
+          },
         }}
         onSelect={vi.fn()}
         onConnect={vi.fn()}
-      />
+      />,
     );
 
     expect(
       screen.getByText(
-        "Next: approve the provider prompt or create the requested least-privilege credential, then return here."
-      )
+        "Next: approve the provider prompt or create the requested least-privilege credential, then return here.",
+      ),
     ).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", {
-        name: "Open Ramp provider settings for approval"
-      })
+        name: "Open Ramp provider settings for approval",
+      }),
     );
 
     expect(openMock).toHaveBeenCalledWith(
       "https://developers.ramp.com/",
       "_blank",
-      "noopener,noreferrer"
+      "noopener,noreferrer",
     );
   });
 
@@ -158,30 +197,30 @@ describe("onboarding workflow contract", () => {
             message:
               "Fyralis queued 22 background steps. Provider admin approval is blocking completion.",
             actionUrl:
-              "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
-          }
+              "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template",
+          },
         }}
         onSelect={vi.fn()}
         onConnect={vi.fn()}
-      />
+      />,
     );
 
     expect(
       screen.getByText(
-        "Next: sign in to AWS, review the generated read-only CloudFormation role stack, approve IAM creation, then return here."
-      )
+        "Next: sign in to AWS, review the generated read-only CloudFormation role stack, approve IAM creation, then return here.",
+      ),
     ).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", {
-        name: "Open AWS provider settings for approval"
-      })
+        name: "Open AWS provider settings for approval",
+      }),
     );
 
     expect(openMock).toHaveBeenCalledWith(
       "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template",
       "_blank",
-      "noopener,noreferrer"
+      "noopener,noreferrer",
     );
     expect(screen.getByText("Open AWS approval")).toBeInTheDocument();
   });
@@ -205,32 +244,32 @@ describe("onboarding workflow contract", () => {
             message:
               "Create the Fyralis BYOC source runtime role first. Use the generated CloudFormation template.",
             actionUrl: runtimeRoleUrl,
-            actionLabel: "Create runtime role"
-          }
+            actionLabel: "Create runtime role",
+          },
         }}
         onSelect={vi.fn()}
         onConnect={vi.fn()}
-      />
+      />,
     );
 
     expect(screen.getByText("BYOC runtime missing")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Next: create the Fyralis BYOC source runtime role, then connect AWS again."
-      )
+        "Next: create the Fyralis BYOC source runtime role, then connect AWS again.",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByText("Create runtime role")).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", {
-        name: "Create runtime role for AWS"
-      })
+        name: "Create runtime role for AWS",
+      }),
     );
 
     expect(openMock).toHaveBeenCalledWith(
       runtimeRoleUrl,
       "_blank",
-      "noopener,noreferrer"
+      "noopener,noreferrer",
     );
   });
 
@@ -251,23 +290,23 @@ describe("onboarding workflow contract", () => {
               "Create the Fyralis BYOC source runtime role first. Use the generated CloudFormation template.",
             actionUrl:
               "https://ap-south-1.console.aws.amazon.com/cloudformation/home?region=ap-south-1#/stacks/create/template",
-            actionLabel: "Create runtime role"
-          }
+            actionLabel: "Create runtime role",
+          },
         }}
         onSelect={vi.fn()}
         onConnect={vi.fn()}
         onRegisterAwsRuntimeRole={onRegisterAwsRuntimeRole}
-      />
+      />,
     );
 
     await user.type(
       screen.getByLabelText("SourceRuntimeRoleArn or AWS account id"),
-      "587628268464"
+      "587628268464",
     );
     await user.click(screen.getByRole("button", { name: "Use runtime role" }));
 
     expect(onRegisterAwsRuntimeRole).toHaveBeenCalledWith(
-      "arn:aws:iam::587628268464:role/fyralis-source-runtime"
+      "arn:aws:iam::587628268464:role/fyralis-source-runtime",
     );
   });
 
@@ -287,23 +326,23 @@ describe("onboarding workflow contract", () => {
             message: "AWS stack approval is complete.",
             actionUrl:
               "https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/template",
-            actionLabel: "Open AWS approval"
-          }
+            actionLabel: "Open AWS approval",
+          },
         }}
         onSelect={vi.fn()}
         onConnect={vi.fn()}
         onFinalizeAwsSourceRole={onFinalizeAwsSourceRole}
-      />
+      />,
     );
 
     await user.type(
       screen.getByLabelText("RoleArn from CloudFormation Outputs"),
-      "587628268464"
+      "587628268464",
     );
     await user.click(screen.getByRole("button", { name: "Finalize AWS" }));
 
     expect(onFinalizeAwsSourceRole).toHaveBeenCalledWith(
-      "arn:aws:iam::587628268464:role/fyralis-source-readonly"
+      "arn:aws:iam::587628268464:role/fyralis-source-readonly",
     );
   });
 
@@ -315,14 +354,128 @@ describe("onboarding workflow contract", () => {
         selectedSourceId="ramp"
         onSelect={vi.fn()}
         onConnect={vi.fn()}
-      />
+      />,
     );
 
     expect(screen.getByText("Ramp")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Connect Ramp" })).toBeInTheDocument();
     expect(
-      screen.queryByText("Spend management and finance events.")
+      screen.getByRole("button", { name: "Connect Ramp" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Spend management and finance events."),
     ).not.toBeInTheDocument();
+  });
+
+  it("renders Discord channel access without schema mapping controls", () => {
+    render(
+      <SourceMarketplace
+        sources={SOURCES.filter((source) => source.id === "discord")}
+        connections={[
+          {
+            sourceId: "discord",
+            status: "connected",
+            selectedScopes: [],
+            backfillWindow: "Last 30 days",
+            syncMode: "Limited backfill",
+          },
+        ]}
+        selectedSourceId="discord"
+        automationStates={{
+          discord: {
+            status: "connected",
+            label: "Connected",
+            message: "2 sanitized observations landed.",
+            installations: [
+              {
+                installationId: "guild-1",
+                enabled: true,
+                hasSecret: true,
+                installedAt: "2026-07-08T09:40:00Z",
+                details: { server_name: "Acme Ops" },
+              },
+            ],
+            accessSummary: {
+              total: 2,
+              ready: 1,
+              missingAccess: 1,
+              needsAdmin: 0,
+              notSelected: 0,
+              unknown: 0,
+              selected: 1,
+              observed: 1,
+            },
+            accessResources: [
+              {
+                sourceId: "discord",
+                installationId: "guild-1",
+                installationName: "Acme Ops",
+                resourceKind: "channel",
+                resourceId: "c-ready",
+                displayName: "verify-here",
+                parentId: null,
+                parentName: null,
+                visibility: "public",
+                permissionStatus: "ready",
+                selected: true,
+                canBackfill: true,
+                canReceiveLive: true,
+                lastProbeAt: "2026-07-08T09:40:00Z",
+                lastObservationAt: "2026-07-08T09:44:00Z",
+                observationCount: 2,
+                diagnostics: {},
+              },
+              {
+                sourceId: "discord",
+                installationId: "guild-1",
+                installationName: "Acme Ops",
+                resourceKind: "channel",
+                resourceId: "c-private",
+                displayName: "moderator-only",
+                parentId: "cat-private",
+                parentName: "Private",
+                visibility: "private",
+                permissionStatus: "missing_access",
+                selected: false,
+                canBackfill: false,
+                canReceiveLive: false,
+                lastProbeAt: "2026-07-08T09:40:00Z",
+                lastObservationAt: null,
+                observationCount: 0,
+                diagnostics: {
+                  message:
+                    "Grant the Fyralis bot role View Channel and Read Message History.",
+                },
+              },
+            ],
+            accessNextActions: [
+              "Grant the Fyralis bot role View Channel and Read Message History in #moderator-only.",
+            ],
+          },
+        }}
+        onSelect={vi.fn()}
+        onConnect={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByText("Acme Ops").length).toBeGreaterThan(0);
+    expect(
+      screen.getByRole("button", { name: "Open Acme Ops Discord server" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("#verify-here")).toBeInTheDocument();
+    expect(screen.getByText("Add server")).toBeInTheDocument();
+    expect(screen.getByText("Servers")).toBeInTheDocument();
+    expect(screen.getByText("Public")).toBeInTheDocument();
+    expect(screen.getAllByText("Private").length).toBeGreaterThan(0);
+    expect(screen.getByText("#moderator-only")).toBeInTheDocument();
+    expect(screen.getByText("Needs access")).toBeInTheDocument();
+    expect(screen.getAllByText("Landing").length).toBeGreaterThan(0);
+    expect(screen.getByText("2 landed")).toBeInTheDocument();
+    expect(screen.queryByText(/map/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Grant the Fyralis bot role View Channel and Read Message History in #moderator-only.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("does not seed fake source connection statuses", () => {
@@ -330,68 +483,31 @@ describe("onboarding workflow contract", () => {
       <StepView
         stepId="source-catalog"
         props={stepViewProps({
-          selectedSource: ONBOARDING_SNAPSHOT.sources[0]
+          selectedSource: ONBOARDING_SNAPSHOT.sources[0],
         })}
-      />
+      />,
     );
 
     expect(screen.queryByText("Draft")).not.toBeInTheDocument();
     expect(screen.queryByText("Ready")).not.toBeInTheDocument();
     expect(screen.queryByText("Connected")).not.toBeInTheDocument();
-    expect(screen.queryByText("Channels, events, and consented DMs.")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Channels, events, and consented DMs."),
+    ).not.toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /^Connect / })).toHaveLength(
-      ONBOARDING_SNAPSHOT.sources.length
+      ONBOARDING_SNAPSHOT.sources.length,
     );
   });
 
   it("starts source automation from the minimal source catalog", async () => {
     const user = userEvent.setup();
     const props = stepViewProps({
-      selectedSource: ONBOARDING_SNAPSHOT.sources[0]
+      selectedSource: ONBOARDING_SNAPSHOT.sources[0],
     });
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(rampNativePreparePayload()), { status: 200 })
-    );
-    const openMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-    vi.spyOn(window, "open").mockImplementation(openMock);
-
-    render(
-      <StepView
-        stepId="source-catalog"
-        props={props}
-      />
-    );
-
-    await user.click(screen.getByRole("button", { name: "Connect Ramp" }));
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/platform/onboarding/sources/ramp/rehearsal/auto-connect",
-      expect.objectContaining({ method: "POST" })
-    );
-    expect(await screen.findByText("Approval needed")).toBeInTheDocument();
-    expect(await screen.findByText(/background steps/)).toBeInTheDocument();
-    expect(openMock).not.toHaveBeenCalled();
-    expect(props.updateConnection).toHaveBeenCalledWith(
-      "ramp",
-      expect.objectContaining({
-        status: "waiting-admin",
-        receiptId: ".fyralis/sources/ramp/browser-agent-receipt.json"
-      })
-    );
-  });
-
-  it("shows retry when source automation returns an error state", async () => {
-    const user = userEvent.setup();
-    const props = stepViewProps({
-      selectedSource: ONBOARDING_SNAPSHOT.sources[0]
-    });
-    const payload = rampNativePreparePayload();
-    payload.auto_connect.state = "error";
-    payload.auto_connect.label = "Retry";
-    payload.auto_connect.message = "Ramp setup needs attention.";
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(payload), { status: 200 })
+      new Response(JSON.stringify(rampNativePreparePayload()), {
+        status: 200,
+      }),
     );
     const openMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -401,11 +517,191 @@ describe("onboarding workflow contract", () => {
 
     await user.click(screen.getByRole("button", { name: "Connect Ramp" }));
 
-    expect(await screen.findByText("Retry")).toBeInTheDocument();
-    expect(await screen.findByText("Ramp setup needs attention.")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/platform/onboarding/sources/ramp/rehearsal/auto-connect",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(await screen.findByText("Approval needed")).toBeInTheDocument();
+    expect(await screen.findByText(/background steps/)).toBeInTheDocument();
+    expect(openMock).not.toHaveBeenCalled();
     expect(props.updateConnection).toHaveBeenCalledWith(
       "ramp",
-      expect.objectContaining({ status: "error" })
+      expect.objectContaining({
+        status: "waiting-admin",
+        receiptId: ".fyralis/sources/ramp/browser-agent-receipt.json",
+      }),
+    );
+  });
+
+  it("opens Discord OAuth handoff from the connect action", async () => {
+    const user = userEvent.setup();
+    const selectedSource = ONBOARDING_SNAPSHOT.sources.find(
+      (source) => source.id === "discord",
+    );
+    expect(selectedSource).toBeDefined();
+    const props = stepViewProps({
+      selectedSource: selectedSource!,
+    });
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(discordOAuthPreparePayload()), {
+        status: 200,
+      }),
+    );
+    const handoffWindow = {
+      opener: {},
+      document: {
+        title: "",
+        body: {
+          textContent: "",
+        },
+      },
+      location: {
+        href: "about:blank",
+      },
+      close: vi.fn(),
+    } as unknown as Window;
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "open").mockReturnValue(handoffWindow);
+
+    render(<StepView stepId="source-catalog" props={props} />);
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Connect Discord with Full Server Sync",
+      }),
+    );
+
+    expect(window.open).toHaveBeenCalledWith("about:blank", "_blank");
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "/platform/onboarding/sources/discord/rehearsal/auto-connect",
+      ),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ access_mode: "full_server_sync" }),
+      }),
+    );
+    expect(await screen.findByText("Approval needed")).toBeInTheDocument();
+    expect(handoffWindow.location.href).toBe(
+      "https://discord.com/oauth2/authorize?client_id=discord-test",
+    );
+    expect(props.updateConnection).toHaveBeenCalledWith(
+      "discord",
+      expect.objectContaining({
+        status: "waiting-admin",
+        receiptId: ".fyralis/sources/discord/browser-agent-receipt.json",
+      }),
+    );
+  });
+
+  it("opens Discord OAuth handoff when adding another server", async () => {
+    const user = userEvent.setup();
+    const selectedSource = ONBOARDING_SNAPSHOT.sources.find(
+      (source) => source.id === "discord",
+    );
+    expect(selectedSource).toBeDefined();
+    const payload = discordOAuthPreparePayload();
+    payload.status.installed = true;
+    payload.status.installation = {
+      installation_id: "guild-1",
+      enabled: true,
+      has_secret: true,
+      installed_at: "2026-07-08T09:40:00Z",
+      details: { server_name: "Guild One" },
+    };
+    payload.status.installations = [payload.status.installation];
+    payload.status.observation_count = 40;
+    payload.auto_connect.state = "connected";
+    payload.auto_connect.label = "Connected";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify(payload), { status: 200 }),
+      );
+    const handoffWindow = {
+      opener: {},
+      document: {
+        title: "",
+        body: {
+          textContent: "",
+        },
+      },
+      location: {
+        href: "about:blank",
+      },
+      close: vi.fn(),
+    } as unknown as Window;
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "open").mockReturnValue(handoffWindow);
+
+    render(
+      <StepView
+        stepId="source-catalog"
+        props={stepViewProps({
+          selectedSource: selectedSource!,
+          connections: [
+            {
+              sourceId: "discord",
+              status: "connected",
+              selectedScopes: [],
+              backfillWindow: "Last 30 days",
+              syncMode: "Limited backfill",
+            },
+          ],
+        })}
+      />,
+    );
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Connect another Discord server with Full Server Sync",
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "/platform/onboarding/sources/discord/rehearsal/auto-connect",
+      ),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ access_mode: "full_server_sync" }),
+      }),
+    );
+    expect(await screen.findByText("Add server")).toBeInTheDocument();
+    expect(handoffWindow.location.href).toBe(
+      "https://discord.com/oauth2/authorize?client_id=discord-test",
+    );
+  });
+
+  it("shows retry when source automation returns an error state", async () => {
+    const user = userEvent.setup();
+    const props = stepViewProps({
+      selectedSource: ONBOARDING_SNAPSHOT.sources[0],
+    });
+    const payload = rampNativePreparePayload();
+    payload.auto_connect.state = "error";
+    payload.auto_connect.label = "Retry";
+    payload.auto_connect.message = "Ramp setup needs attention.";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify(payload), { status: 200 }),
+      );
+    const openMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "open").mockImplementation(openMock);
+
+    render(<StepView stepId="source-catalog" props={props} />);
+
+    await user.click(screen.getByRole("button", { name: "Connect Ramp" }));
+
+    expect(await screen.findByText("Retry")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Ramp setup needs attention."),
+    ).toBeInTheDocument();
+    expect(props.updateConnection).toHaveBeenCalledWith(
+      "ramp",
+      expect.objectContaining({ status: "error" }),
     );
     expect(openMock).not.toHaveBeenCalled();
   });
@@ -413,7 +709,7 @@ describe("onboarding workflow contract", () => {
   it("resumes polling for persisted waiting source connections", async () => {
     vi.useFakeTimers();
     const selectedSource = ONBOARDING_SNAPSHOT.sources.find(
-      (source) => source.id === "ramp"
+      (source) => source.id === "ramp",
     );
     expect(selectedSource).toBeDefined();
     const waitingConnection: SourceConnection = {
@@ -422,14 +718,16 @@ describe("onboarding workflow contract", () => {
       selectedScopes: [],
       backfillWindow: "Last 30 days",
       syncMode: "Limited backfill",
-      receiptId: ".fyralis/sources/ramp/browser-agent-receipt.json"
+      receiptId: ".fyralis/sources/ramp/browser-agent-receipt.json",
     };
     const props = stepViewProps({
       selectedSource: selectedSource!,
-      connections: [waitingConnection]
+      connections: [waitingConnection],
     });
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(rampConnectedStatusPayload()), { status: 200 })
+      new Response(JSON.stringify(rampConnectedStatusPayload()), {
+        status: 200,
+      }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -441,30 +739,27 @@ describe("onboarding workflow contract", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "http://localhost:8000/platform/onboarding/sources/ramp/rehearsal/status",
-      expect.objectContaining({ method: "GET" })
+      expect.objectContaining({ method: "GET" }),
     );
     expect(props.updateConnection).toHaveBeenCalledWith(
       "ramp",
       expect.objectContaining({
         status: "connected",
-        receiptId: ".fyralis/sources/ramp/browser-agent-receipt.json"
-      })
+        receiptId: ".fyralis/sources/ramp/browser-agent-receipt.json",
+      }),
     );
-    expect(props.landSourceObservations).toHaveBeenCalledWith(
-      "ramp",
-      [
-        expect.objectContaining({
-          id: "obs_ramp_connected",
-          sourceChannel: "gateway:ramp:connection-proof"
-        })
-      ]
-    );
+    expect(props.landSourceObservations).toHaveBeenCalledWith("ramp", [
+      expect.objectContaining({
+        id: "obs_ramp_connected",
+        sourceChannel: "gateway:ramp:connection-proof",
+      }),
+    ]);
   });
 
   it("shows background browser-agent progress while polling", async () => {
     vi.useFakeTimers();
     const selectedSource = ONBOARDING_SNAPSHOT.sources.find(
-      (source) => source.id === "ramp"
+      (source) => source.id === "ramp",
     );
     expect(selectedSource).toBeDefined();
     const waitingConnection: SourceConnection = {
@@ -473,16 +768,16 @@ describe("onboarding workflow contract", () => {
       selectedScopes: [],
       backfillWindow: "Last 30 days",
       syncMode: "Limited backfill",
-      receiptId: ".fyralis/sources/ramp/browser-agent-receipt.json"
+      receiptId: ".fyralis/sources/ramp/browser-agent-receipt.json",
     };
     const props = stepViewProps({
       selectedSource: selectedSource!,
-      connections: [waitingConnection]
+      connections: [waitingConnection],
     });
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(rampWaitingStatusPayload("running")), {
-        status: 200
-      })
+        status: 200,
+      }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -494,17 +789,17 @@ describe("onboarding workflow contract", () => {
 
     expect(screen.getByText("Running")).toBeInTheDocument();
     expect(
-      screen.getByText("Source setup is running in the customer cloud.")
+      screen.getByText("Source setup is running in the customer cloud."),
     ).toBeInTheDocument();
     expect(props.updateConnection).not.toHaveBeenCalledWith(
       "ramp",
-      expect.objectContaining({ status: "connected" })
+      expect.objectContaining({ status: "connected" }),
     );
   });
 
   it("keeps legacy source lifecycle views on the clean source catalog", () => {
     const selectedSource = ONBOARDING_SNAPSHOT.sources.find(
-      (source) => source.id === "ramp"
+      (source) => source.id === "ramp",
     );
     expect(selectedSource).toBeDefined();
 
@@ -514,27 +809,27 @@ describe("onboarding workflow contract", () => {
         props={stepViewProps({
           selectedSource: selectedSource!,
           selectedConnection: ONBOARDING_SNAPSHOT.connections.find(
-            (connection) => connection.sourceId === "ramp"
-          )
+            (connection) => connection.sourceId === "ramp",
+          ),
         })}
-      />
+      />,
     );
 
     expect(
-      screen.getByRole("heading", { name: "Sources" })
+      screen.getByRole("heading", { name: "Sources" }),
     ).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /^Connect / }).length).toBeGreaterThan(
-      0
-    );
     expect(
-      screen.queryByRole("button", { name: "Run Ramp setup agent" })
+      screen.getAllByRole("button", { name: /^Connect / }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.queryByRole("button", { name: "Run Ramp setup agent" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByText(/admin-present browser agent/)
+      screen.queryByText(/admin-present browser agent/),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Manual override")).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("checkbox", { name: /Enable live Ramp webhooks/ })
+      screen.queryByRole("checkbox", { name: /Enable live Ramp webhooks/ }),
     ).not.toBeInTheDocument();
   });
 });
@@ -542,7 +837,7 @@ describe("onboarding workflow contract", () => {
 function stepViewProps({
   selectedSource,
   selectedConnection,
-  connections
+  connections,
 }: {
   selectedSource: StepViewProps["selectedSource"];
   selectedConnection?: StepViewProps["selectedConnection"];
@@ -573,7 +868,7 @@ function stepViewProps({
     landSourceObservations: vi.fn(),
     setLaunchReady: vi.fn(),
     goTo: vi.fn(),
-    advance: vi.fn()
+    advance: vi.fn(),
   };
 }
 
@@ -592,37 +887,48 @@ function rampNativePreparePayload() {
     authorization_mode: "customer_local_provider_refs",
     missing_configuration: [],
     required_inputs: ["access_token_or_client_credentials"],
-    optional_inputs: ["business_id", "base_url", "entity_scope", "webhook_verifier_token"],
+    optional_inputs: [
+      "business_id",
+      "base_url",
+      "entity_scope",
+      "webhook_verifier_token",
+    ],
     finalize_mode: "native_finalizer_required",
     automation_profile: {
       automation_level: "fully_automated_after_customer_ref",
       method: "oauth_client_credentials",
       minimum_human_inputs: ["access_token_or_client_credentials"],
-      optional_hints: ["business_id", "base_url", "entity_scope", "webhook_verifier_token"],
+      optional_hints: [
+        "business_id",
+        "base_url",
+        "entity_scope",
+        "webhook_verifier_token",
+      ],
       automated_actions: [
         "prepare provider handoff and gateway routes",
         "validate required customer-owned refs are present",
         "discover business scope, transactions, reimbursements, cards, and users",
         "generate least-privilege connection contract",
-        "create encrypted secret refs in the customer cloud"
+        "create encrypted secret refs in the customer cloud",
       ],
       human_steps: [
         {
           id: "create_provider_client_credentials",
-          label: "Create a least-privilege Ramp OAuth client credential or access token.",
+          label:
+            "Create a least-privilege Ramp OAuth client credential or access token.",
           reason:
             "The provider requires customer-approved credential material before Fyralis can verify access.",
-          can_agent_complete: false
-        }
+          can_agent_complete: false,
+        },
       ],
       agent_discovery_target:
         "business scope, cards, transactions, vendors, and reimbursements",
       post_connect_actions: [
         "store encrypted customer-cloud refs",
         "register source installation metadata",
-        "emit onboarding trigger"
+        "emit onboarding trigger",
       ],
-      human_step_count: 1
+      human_step_count: 1,
     },
     browser_agent: {
       source: "ramp",
@@ -630,15 +936,21 @@ function rampNativePreparePayload() {
       settings_targets: [
         "OAuth app settings",
         "business settings",
-        "webhook settings"
+        "webhook settings",
       ],
-      agent_collects: ["business id", "transaction/reimbursement/card/user streams"],
-      agent_generates: ["webhook verifier token ref", "Ramp spend scope contract"],
+      agent_collects: [
+        "business id",
+        "transaction/reimbursement/card/user streams",
+      ],
+      agent_generates: [
+        "webhook verifier token ref",
+        "Ramp spend scope contract",
+      ],
       human_gates: [
         "admin signs in and completes MFA when prompted",
-        "admin creates or approves a least-privilege service credential"
+        "admin creates or approves a least-privilege service credential",
       ],
-      completion_checks: ["source install status is pollable"]
+      completion_checks: ["source install status is pollable"],
     },
     browser_agent_run: rampBrowserAgentRun(),
     bearer_token: "session-token",
@@ -657,7 +969,7 @@ function rampNativePreparePayload() {
       unresolved_failure_count: 0,
       bearer_token: "session-token",
       session_expires_at: "2026-07-01T10:30:00Z",
-      next_action: "Submit the required Ramp connection details."
+      next_action: "Submit the required Ramp connection details.",
     },
     auto_connect: {
       state: "admin_gate",
@@ -671,12 +983,12 @@ function rampNativePreparePayload() {
           label: "Create a least-privilege Ramp token or service user.",
           reason:
             "Fyralis cannot mint provider-owned credentials without customer approval.",
-          can_agent_complete: false
-        }
+          can_agent_complete: false,
+        },
       ],
       automated_actions: [
         "prepare provider handoff and gateway routes",
-        "validate required customer-owned refs are present"
+        "validate required customer-owned refs are present",
       ],
       browser_agent: {
         source: "ramp",
@@ -684,18 +996,18 @@ function rampNativePreparePayload() {
         settings_targets: [
           "developer app settings",
           "business settings",
-          "webhook settings"
+          "webhook settings",
         ],
         agent_collects: ["business id", "spend entity streams"],
         agent_generates: [
           "webhook verifier token ref",
-          "Ramp spend scope contract"
+          "Ramp spend scope contract",
         ],
         human_gates: [
           "admin signs in and completes MFA when prompted",
-          "admin creates or approves a least-privilege service credential"
+          "admin creates or approves a least-privilege service credential",
         ],
-        completion_checks: ["source install status is pollable"]
+        completion_checks: ["source install status is pollable"],
       },
       browser_agent_run: rampBrowserAgentRun(),
       automation_run: {
@@ -731,11 +1043,11 @@ function rampNativePreparePayload() {
           "ramp",
           "--execute-browser-dom",
           "--interactive-admin",
-          "--execute-native"
-        ]
+          "--execute-native",
+        ],
       },
-      install_url: null
-    }
+      install_url: null,
+    },
   };
 }
 
@@ -748,7 +1060,7 @@ function rampConnectedStatusPayload() {
       enabled: true,
       has_secret: true,
       installed_at: "2026-07-01T10:35:00Z",
-      details: {}
+      details: {},
     },
     trigger_count: 1,
     consumed_trigger_count: 0,
@@ -761,8 +1073,8 @@ function rampConnectedStatusPayload() {
         kind: "connection_proof",
         source_channel: "gateway:ramp:connection-proof",
         occurred_at: "2026-07-01T10:35:00Z",
-        content_text: "Ramp connection proof landed."
-      }
+        content_text: "Ramp connection proof landed.",
+      },
     ],
     unresolved_failure_count: 0,
     bearer_token: "session-token",
@@ -770,9 +1082,9 @@ function rampConnectedStatusPayload() {
     auto_connect_run: rampAutoConnectRun({
       status: "connected",
       backgroundStatus: "connected",
-      currentActionId: null
+      currentActionId: null,
     }),
-    next_action: "Ramp is connected."
+    next_action: "Ramp is connected.",
   };
 }
 
@@ -792,16 +1104,16 @@ function rampWaitingStatusPayload(backgroundStatus: string) {
     session_expires_at: "2026-07-01T10:30:00Z",
     auto_connect_run: rampAutoConnectRun({
       status: "waiting_for_admin",
-      backgroundStatus
+      backgroundStatus,
     }),
-    next_action: "Ramp setup is running."
+    next_action: "Ramp setup is running.",
   };
 }
 
 function rampAutoConnectRun({
   status,
   backgroundStatus,
-  currentActionId = "open_provider_settings"
+  currentActionId = "open_provider_settings",
 }: {
   status: string;
   backgroundStatus: string;
@@ -842,8 +1154,8 @@ function rampAutoConnectRun({
       "ramp",
       "--execute-browser-dom",
       "--interactive-admin",
-      "--execute-native"
-    ]
+      "--execute-native",
+    ],
   };
 }
 
@@ -862,10 +1174,13 @@ function rampBrowserAgentRun() {
     settings_targets: [
       "developer app settings",
       "business settings",
-      "webhook settings"
+      "webhook settings",
     ],
     agent_collects: ["business id", "spend entity streams"],
-    agent_generates: ["webhook verifier token ref", "Ramp spend scope contract"],
+    agent_generates: [
+      "webhook verifier token ref",
+      "Ramp spend scope contract",
+    ],
     human_gates: [
       {
         id: "create_provider_token",
@@ -873,31 +1188,189 @@ function rampBrowserAgentRun() {
         reason:
           "Fyralis cannot mint provider-owned credentials without customer approval.",
         status: "waiting",
-        can_agent_complete: false
-      }
+        can_agent_complete: false,
+      },
     ],
     completion_checks: [
       {
         name: "source install status is pollable",
-        status: "pending"
-      }
+        status: "pending",
+      },
     ],
     action_queue: [
       {
         id: "open_provider_settings",
         owner: "fyralis_agent",
         status: "ready",
-        label: "Open provider settings in the customer-cloud browser."
-      }
+        label: "Open provider settings in the customer-cloud browser.",
+      },
     ],
     current_action: {
       id: "open_provider_settings",
       owner: "fyralis_agent",
       status: "ready",
-      label: "Open provider settings in the customer-cloud browser."
+      label: "Open provider settings in the customer-cloud browser.",
     },
     automated_action_count: 1,
-    human_action_count: 1
+    human_action_count: 1,
+  };
+}
+
+function discordOAuthPreparePayload() {
+  const installUrl =
+    "https://discord.com/oauth2/authorize?client_id=discord-test";
+  const payload = rampNativePreparePayload() as any;
+  payload.source = "discord";
+  payload.authorization_mode = "oauth_plus_gateway";
+  payload.oauth_redirect_url =
+    "https://fyralis-ingress.acme.example/integrations/discord/callback";
+  payload.events_request_url =
+    "https://fyralis-ingress.acme.example/webhooks/discord";
+  payload.install_url = installUrl;
+  payload.provider_console_url = "https://discord.com/developers/applications";
+  payload.finalize_mode = "provider_callback";
+  payload.status.source = "discord";
+  payload.status.next_action =
+    "Approve Discord in the provider browser window.";
+  payload.auto_connect.state = "admin_gate";
+  payload.auto_connect.label = "Approval needed";
+  payload.auto_connect.message =
+    "Fyralis prepared Discord. Provider admin approval is blocking completion.";
+  payload.auto_connect.install_url = installUrl;
+  payload.browser_agent.source = "discord";
+  payload.browser_agent.provider_console_url =
+    "https://discord.com/developers/applications";
+  payload.browser_agent_run = {
+    ...rampBrowserAgentRun(),
+    source: "discord",
+    handoff_url: installUrl,
+    handoff_kind: "provider_install",
+    provider_console_url: "https://discord.com/developers/applications",
+    oauth_redirect_url:
+      "https://fyralis-ingress.acme.example/integrations/discord/callback",
+    events_request_url: "https://fyralis-ingress.acme.example/webhooks/discord",
+  };
+  payload.auto_connect.browser_agent = payload.browser_agent;
+  payload.auto_connect.browser_agent_run = payload.browser_agent_run;
+  payload.auto_connect.automation_run = {
+    ...payload.auto_connect.automation_run,
+    source: "discord",
+    handoff_url: installUrl,
+    native_connect_kind: "oauth_gateway_native_connect",
+    receipt_path_hint: ".fyralis/sources/discord/browser-agent-receipt.json",
+    run_artifact_path_hint: ".fyralis/sources/discord/connection.json",
+  };
+  return payload;
+}
+
+function discordConnectedStatusPayload() {
+  return {
+    source: "discord",
+    installed: true,
+    installation: {
+      installation_id: "guild-1",
+      enabled: true,
+      has_secret: true,
+      installed_at: "2026-07-08T09:40:00Z",
+      details: {},
+    },
+    installations: [
+      {
+        installation_id: "guild-2",
+        enabled: true,
+        has_secret: true,
+        installed_at: "2026-07-09T09:40:00Z",
+        details: { server_name: "Guild Two" },
+      },
+      {
+        installation_id: "guild-1",
+        enabled: true,
+        has_secret: true,
+        installed_at: "2026-07-08T09:40:00Z",
+        details: { server_name: "Guild One" },
+      },
+    ],
+    trigger_count: 1,
+    consumed_trigger_count: 1,
+    run_status_counts: {},
+    shard_state_counts: {
+      done: {
+        count: 1,
+        observations_seen: 2,
+      },
+    },
+    observation_count: 2,
+    observations: [
+      {
+        id: "obs_discord_1",
+        kind: "signal",
+        source_channel: "discord:message",
+        occurred_at: "2026-07-08T09:44:00Z",
+        content_text: "Discord observation landed.",
+      },
+    ],
+    unresolved_failure_count: 0,
+    bearer_token: "session-token",
+    session_expires_at: "2026-07-08T10:30:00Z",
+    auto_connect_run: null,
+    access_summary: {
+      total: 2,
+      ready: 1,
+      missing_access: 1,
+      needs_admin: 0,
+      not_selected: 0,
+      unknown: 0,
+      selected: 1,
+      observed: 1,
+    },
+    access_resources: [
+      {
+        source: "discord",
+        installation_id: "guild-1",
+        installation_name: "Guild One",
+        resource_kind: "channel",
+        resource_id: "c-ready",
+        display_name: "verify-here",
+        parent_id: null,
+        parent_name: null,
+        visibility: "public",
+        permission_status: "ready",
+        selected: true,
+        can_backfill: true,
+        can_receive_live: true,
+        last_probe_at: "2026-07-08T09:40:00Z",
+        last_observation_at: "2026-07-08T09:44:00Z",
+        observation_count: 2,
+        diagnostics: {},
+      },
+      {
+        source: "discord",
+        installation_id: "guild-1",
+        installation_name: "Guild One",
+        resource_kind: "channel",
+        resource_id: "c-private",
+        display_name: "moderator-only",
+        parent_id: "cat-private",
+        parent_name: "Private",
+        visibility: "private",
+        permission_status: "missing_access",
+        selected: false,
+        can_backfill: false,
+        can_receive_live: false,
+        last_probe_at: "2026-07-08T09:40:00Z",
+        last_observation_at: null,
+        observation_count: 0,
+        diagnostics: {
+          issue_code: "discord_channel_missing_access",
+          message:
+            "Grant the Fyralis bot role View Channel and Read Message History.",
+        },
+      },
+    ],
+    access_next_actions: [
+      "Grant the Fyralis bot role View Channel and Read Message History in #moderator-only.",
+    ],
+    next_action: "Discord is connected.",
   };
 }
 
@@ -912,37 +1385,37 @@ describe("onboarding service recovery", () => {
               kind: "signal",
               source_channel: "slack:message",
               occurred_at: "2026-07-01T09:30:00Z",
-              content_text: "historical Slack backfill landed"
+              content_text: "historical Slack backfill landed",
             },
             {
               id: "obs_github_1",
               kind: "signal",
               source_channel: "github:event",
               occurred_at: "2026-07-01T09:31:00Z",
-              content_text: "GitHub event landed"
-            }
+              content_text: "GitHub event landed",
+            },
           ],
           stub: false,
-          source: "substrate"
+          source: "substrate",
         }),
-        { status: 200 }
-      )
+        { status: 200 },
+      ),
     );
     vi.stubGlobal("fetch", fetchMock);
 
     const observations = await fetchGatewaySourceObservations({
       apiBase: "https://fyralis-ingress.acme.example",
       bearerToken: "session-token",
-      sourceId: "slack"
+      sourceId: "slack",
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://fyralis-ingress.acme.example/observations?limit=50&source=slack",
       expect.objectContaining({
         headers: expect.objectContaining({
-          Authorization: "Bearer session-token"
-        })
-      })
+          Authorization: "Bearer session-token",
+        }),
+      }),
     );
     expect(observations).toHaveLength(1);
     expect(observations[0]).toMatchObject({
@@ -950,7 +1423,7 @@ describe("onboarding service recovery", () => {
       sourceId: "slack",
       origin: "gateway",
       sourceChannel: "slack:message",
-      evidencePath: "gateway:/observations/obs_slack_1"
+      evidencePath: "gateway:/observations/obs_slack_1",
     });
   });
 
@@ -964,57 +1437,97 @@ describe("onboarding service recovery", () => {
               kind: "event",
               source_channel: "google_calendar:event",
               occurred_at: "2026-07-01T09:30:00Z",
-              content_text: "calendar backfill landed"
-            }
+              content_text: "calendar backfill landed",
+            },
           ],
           stub: false,
-          source: "substrate"
+          source: "substrate",
         }),
-        { status: 200 }
-      )
+        { status: 200 },
+      ),
     );
     vi.stubGlobal("fetch", fetchMock);
 
     const observations = await fetchGatewaySourceObservations({
       apiBase: "https://fyralis-ingress.acme.example",
       bearerToken: "session-token",
-      sourceId: "google-calendar"
+      sourceId: "google-calendar",
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://fyralis-ingress.acme.example/observations?limit=50&source=google_calendar",
-      expect.anything()
+      expect.anything(),
     );
     expect(observations).toHaveLength(1);
     expect(observations[0]).toMatchObject({
       id: "obs_calendar_1",
       sourceId: "google-calendar",
-      sourceChannel: "google_calendar:event"
+      sourceChannel: "google_calendar:event",
     });
   });
 
   it("maps background source run state from rehearsal status", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(rampWaitingStatusPayload("running")), {
-        status: 200
-      })
+        status: 200,
+      }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
     const status = await fetchSourceRehearsalStatus({
       apiBase: "https://fyralis-ingress.acme.example",
-      sourceId: "ramp"
+      sourceId: "ramp",
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://fyralis-ingress.acme.example/platform/onboarding/sources/ramp/rehearsal/status",
-      expect.objectContaining({ method: "GET" })
+      expect.objectContaining({ method: "GET" }),
     );
     expect(status.autoConnectRun).toMatchObject({
       sourceId: "ramp",
       backgroundStatus: "running",
-      receiptPathHint: ".fyralis/sources/ramp/browser-agent-receipt.json"
+      receiptPathHint: ".fyralis/sources/ramp/browser-agent-receipt.json",
     });
+  });
+
+  it("maps Discord source access resources from rehearsal status", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(discordConnectedStatusPayload()), {
+        status: 200,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const status = await fetchSourceRehearsalStatus({
+      apiBase: "https://fyralis-ingress.acme.example",
+      sourceId: "discord",
+    });
+
+    expect(status.accessSummary).toMatchObject({
+      total: 2,
+      ready: 1,
+      missingAccess: 1,
+      observed: 1,
+    });
+    expect(status.installations.map((item) => item.installationId)).toEqual([
+      "guild-2",
+      "guild-1",
+    ]);
+    expect(status.installations[0].details.server_name).toBe("Guild Two");
+    expect(status.accessResources).toHaveLength(2);
+    expect(status.accessResources[0]).toMatchObject({
+      sourceId: "discord",
+      resourceId: "c-ready",
+      displayName: "verify-here",
+      installationName: "Guild One",
+      visibility: "public",
+      permissionStatus: "ready",
+      canBackfill: true,
+      observationCount: 2,
+    });
+    expect(status.accessNextActions).toEqual([
+      "Grant the Fyralis bot role View Channel and Read Message History in #moderator-only.",
+    ]);
   });
 
   it("preserves ui source ids when starting source auto-connect", async () => {
@@ -1030,7 +1543,8 @@ describe("onboarding service recovery", () => {
           oauth_redirect_url: null,
           events_request_url: null,
           install_url: null,
-          provider_console_url: "https://admin.google.com/ac/owl/domainwidedelegation",
+          provider_console_url:
+            "https://admin.google.com/ac/owl/domainwidedelegation",
           authorization_mode: "customer_local_provider_refs",
           missing_configuration: [],
           required_inputs: ["workspace_domain"],
@@ -1045,7 +1559,7 @@ describe("onboarding service recovery", () => {
             human_steps: [],
             agent_discovery_target: "calendars",
             post_connect_actions: [],
-            human_step_count: 0
+            human_step_count: 0,
           },
           bearer_token: "session-token",
           session_expires_at: "2026-07-01T10:30:00Z",
@@ -1063,7 +1577,8 @@ describe("onboarding service recovery", () => {
             unresolved_failure_count: 0,
             bearer_token: "session-token",
             session_expires_at: "2026-07-01T10:30:00Z",
-            next_action: "Submit the required Google Calendar connection details."
+            next_action:
+              "Submit the required Google Calendar connection details.",
           },
           auto_connect: {
             state: "running",
@@ -1072,29 +1587,29 @@ describe("onboarding service recovery", () => {
             human_step_count: 0,
             human_steps: [],
             automated_actions: ["open provider settings"],
-            install_url: null
-          }
+            install_url: null,
+          },
         }),
-        { status: 200 }
-      )
+        { status: 200 },
+      ),
     );
     vi.stubGlobal("fetch", fetchMock);
 
     const prepared = await autoConnectSourceRehearsal({
       apiBase: "https://fyralis-ingress.acme.example",
-      sourceId: "google-calendar"
+      sourceId: "google-calendar",
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://fyralis-ingress.acme.example/platform/onboarding/sources/google_calendar/rehearsal/auto-connect",
-      expect.anything()
+      expect.anything(),
     );
     expect(prepared.sourceId).toBe("google-calendar");
     expect(prepared.status.sourceId).toBe("google-calendar");
     expect(prepared.finalizeMode).toBe("native_finalizer_required");
     expect(prepared.autoConnect.state).toBe("running");
     expect(prepared.autoConnect.automatedActions).toEqual([
-      "open provider settings"
+      "open provider settings",
     ]);
   });
 
@@ -1127,7 +1642,7 @@ describe("onboarding service recovery", () => {
             human_steps: [],
             agent_discovery_target: "account inventory",
             post_connect_actions: [],
-            human_step_count: 0
+            human_step_count: 0,
           },
           bearer_token: "session-token",
           session_expires_at: "2026-07-01T10:30:00Z",
@@ -1145,7 +1660,7 @@ describe("onboarding service recovery", () => {
             unresolved_failure_count: 0,
             bearer_token: "session-token",
             session_expires_at: "2026-07-01T10:30:00Z",
-            next_action: "Approve the AWS source role stack."
+            next_action: "Approve the AWS source role stack.",
           },
           auto_connect: {
             state: "running",
@@ -1154,11 +1669,11 @@ describe("onboarding service recovery", () => {
             human_step_count: 0,
             human_steps: [],
             automated_actions: [],
-            install_url: null
-          }
+            install_url: null,
+          },
         }),
-        { status: 200 }
-      )
+        { status: 200 },
+      ),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -1168,8 +1683,8 @@ describe("onboarding service recovery", () => {
       deploymentContext: {
         awsRegion: "us-west-2",
         awsAssumingPrincipalArn:
-          "arn:aws:iam::587628268464:role/fyralis-runtime"
-      }
+          "arn:aws:iam::587628268464:role/fyralis-runtime",
+      },
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -1177,17 +1692,48 @@ describe("onboarding service recovery", () => {
       expect.objectContaining({
         method: "POST",
         headers: expect.objectContaining({
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
         }),
         body: JSON.stringify({
           deployment_context: {
             aws_region: "us-west-2",
             aws_assuming_principal_arn:
-              "arn:aws:iam::587628268464:role/fyralis-runtime"
-          }
-        })
-      })
+              "arn:aws:iam::587628268464:role/fyralis-runtime",
+          },
+        }),
+      }),
     );
+  });
+
+  it("sends Discord full server sync access mode when starting auto-connect", async () => {
+    const payload = discordOAuthPreparePayload();
+    payload.discord_access_mode = "full_server_sync";
+    payload.discord_permissions = "8";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(payload), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const prepared = await autoConnectSourceRehearsal({
+      apiBase: "https://fyralis-ingress.acme.example",
+      sourceId: "discord",
+      accessMode: "full_server_sync",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://fyralis-ingress.acme.example/platform/onboarding/sources/discord/rehearsal/auto-connect",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+        }),
+        body: JSON.stringify({
+          access_mode: "full_server_sync",
+        }),
+      }),
+    );
+    expect(prepared.discordAccessMode).toBe("full_server_sync");
+    expect(prepared.discordPermissions).toBe("8");
   });
 
   it("recreates stale backend intent records before resubmitting intake", async () => {
@@ -1195,15 +1741,15 @@ describe("onboarding service recovery", () => {
     const customer: Customer = {
       company: "Alpen Labs",
       setupOwnerEmail: "alpen-owner@google.com",
-      targetCloud: "AWS"
+      targetCloud: "AWS",
     };
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({ detail: { error: "onboarding_intent_not_found" } }),
-          { status: 404 }
-        )
+          { status: 404 },
+        ),
       )
       .mockResolvedValueOnce(
         new Response(
@@ -1222,10 +1768,10 @@ describe("onboarding service recovery", () => {
             target_cloud: null,
             created_at: "2026-07-01T00:00:00Z",
             updated_at: "2026-07-01T00:00:00Z",
-            stored_scope: "sanitized_onboarding_metadata_only"
+            stored_scope: "sanitized_onboarding_metadata_only",
           }),
-          { status: 201 }
-        )
+          { status: 201 },
+        ),
       )
       .mockResolvedValueOnce(
         new Response(
@@ -1244,26 +1790,26 @@ describe("onboarding service recovery", () => {
             target_cloud: "aws",
             created_at: "2026-07-01T00:00:00Z",
             updated_at: "2026-07-01T00:01:00Z",
-            stored_scope: "sanitized_onboarding_metadata_only"
+            stored_scope: "sanitized_onboarding_metadata_only",
           }),
-          { status: 200 }
-        )
+          { status: 200 },
+        ),
       );
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await submitDesignPartnerIntake(
       "ofi_11111111111111111111111111111111",
-      customer
+      customer,
     );
 
     expect(result.status).toBe("workspace_created");
     expect(result.intent_id).toBe("ofi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[0][0]).toContain(
-      "/platform/onboarding/intents/ofi_11111111111111111111111111111111/design-partner-intake"
+      "/platform/onboarding/intents/ofi_11111111111111111111111111111111/design-partner-intake",
     );
     expect(fetchMock.mock.calls[2][0]).toContain(
-      "/platform/onboarding/intents/ofi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/design-partner-intake"
+      "/platform/onboarding/intents/ofi_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/design-partner-intake",
     );
   });
 });

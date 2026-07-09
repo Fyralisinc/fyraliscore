@@ -47,6 +47,7 @@ type OnboardingStore = {
     observations: SourceObservation[]
   ) => void;
   setLaunchReady: (ready: boolean) => void;
+  resetDraft: (sourceId?: string, currentStep?: StepId) => void;
   markSaved: () => void;
 };
 
@@ -171,6 +172,23 @@ export const useOnboardingStore = create<OnboardingStore>()(
           dirty: true
         })),
       setLaunchReady: (ready) => set({ launchReady: ready, dirty: true }),
+      resetDraft: (sourceId = "slack", currentStep = "source-catalog") =>
+        set({
+          selectedPlan: "design-partner-byoc",
+          onboardingIntent: null,
+          customer: { ...defaultCustomer },
+          readiness: { ...defaultReadiness },
+          currentStep,
+          completedSteps: [],
+          selectedSourceId: sourceId,
+          connections: [],
+          sourceValidation: cloneValidation(defaultValidation),
+          syncJobs: [],
+          sourceObservations: [],
+          launchReady: false,
+          dirty: false,
+          lastSavedAt: null
+        }),
       markSaved: () =>
         set({
           dirty: false,
@@ -260,4 +278,11 @@ function upsertConnection(
   return connections.map((item) =>
     item.sourceId === sourceId ? { ...item, ...patch } : item
   );
+}
+
+function cloneValidation(validation: Validation): Validation {
+  return {
+    ...validation,
+    checks: validation.checks.map((check) => ({ ...check }))
+  };
 }

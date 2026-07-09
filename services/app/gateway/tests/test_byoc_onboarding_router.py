@@ -4,6 +4,7 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -14,6 +15,8 @@ from services.app.gateway.byoc_onboarding_router import (
     _ALL_REHEARSAL_SOURCES,
     _SOURCE_LIVE_INGRESS_PATHS,
     _SOURCE_NATIVE_CONNECT_CONTRACTS,
+    _discord_source_access_payload,
+    _discord_source_access_payload_for_installations,
     _execute_source_auto_connect_background_run,
     _ensure_rehearsal_actor,
     _materialize_source_auto_connect_run,
@@ -22,9 +25,11 @@ from services.app.gateway.byoc_onboarding_router import (
     _source_auto_connect_state,
     _source_deployment_context,
     _source_installation_row,
+    _source_provider_handoff,
     _source_rehearsal_status_payload,
     build_byoc_onboarding_router,
 )
+from lib.shared.errors import DiscordApiError
 from services.platform.runtime.source_browser_agent_recipes import (
     browser_agent_recipe_for_source,
     missing_browser_agent_recipe_sources,
@@ -70,6 +75,8 @@ class _GatewayPrefixedObservationPool:
             return {"total": 0, "consumed": 0}
         if "FROM ingestion_failures" in query:
             return {"total": 0}
+        if "FROM source_onboarding_runs" in query:
+            return {"sync_started_at": None}
         if "FROM onboarding_shards" in query:
             return {"failure": None}
         raise AssertionError(f"unexpected fetchrow query: {query}")
@@ -97,6 +104,108 @@ class _GatewayPrefixedObservationPool:
             self.observation_count_args = args
             return 1
         raise AssertionError(f"unexpected fetchval query: {query}")
+
+
+class _DiscordAccessPool:
+    def __init__(
+        self,
+        *,
+        stats_rows: list[dict] | None = None,
+        access_state: dict[str, dict] | None = None,
+    ) -> None:
+        self.stats_args = ()
+        self.stats_rows = stats_rows
+        self.access_state = access_state or {}
+        self.triggers: list[dict] = []
+
+    def acquire(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def transaction(self):
+        return self
+
+    async def fetch(self, query, *args):
+        if "source_channel = 'discord:message'" in query:
+            self.stats_args = args
+            if self.stats_rows is not None:
+                return self.stats_rows
+            return [{
+                "channel_id": "c-ready",
+                "observation_count": 2,
+                "last_observation_at": datetime(2026, 7, 8, 9, 44, tzinfo=UTC),
+            }]
+        if "FROM source_resource_access_state" in query and "SELECT resource_id" in query:
+            return [
+                {
+                    "resource_id": resource_id,
+                    "permission_status": row.get("permission_status", "unknown"),
+                }
+                for resource_id, row in self.access_state.items()
+            ]
+        if "UPDATE source_resource_access_state" in query:
+            _, _, resource_id, replay_from_statuses, observation_count, metadata = args
+            row = self.access_state.get(resource_id)
+            if not row or row.get("permission_status") not in replay_from_statuses:
+                return []
+            row.update(
+                {
+                    "permission_status": "ready",
+                    "observation_count": observation_count,
+                    "last_ready_replay_at": datetime(2026, 7, 8, 9, 44, tzinfo=UTC),
+                    "metadata": json.loads(metadata),
+                }
+            )
+            return [{"resource_id": resource_id}]
+        raise AssertionError(f"unexpected fetch query: {query}")
+
+    async def execute(self, query, *args):
+        if "INSERT INTO source_resource_access_state" in query:
+            _, _, resource_id, permission_status, observation_count, metadata = args
+            previous = self.access_state.get(resource_id, {})
+            previous.update(
+                {
+                    "permission_status": permission_status,
+                    "observation_count": observation_count,
+                    "metadata": json.loads(metadata),
+                }
+            )
+            self.access_state[resource_id] = previous
+            return "INSERT 0 1"
+        if "INSERT INTO onboarding_triggers" in query:
+            trigger_id, tenant_id, payload = args
+            self.triggers.append(
+                {
+                    "id": trigger_id,
+                    "tenant_id": tenant_id,
+                    "payload": json.loads(payload),
+                }
+            )
+            return "INSERT 0 1"
+        raise AssertionError(f"unexpected execute query: {query}")
+
+
+class _DiscordMultiAccessPool(_DiscordAccessPool):
+    def __init__(self) -> None:
+        super().__init__(
+            stats_rows=[
+                {
+                    "channel_id": "channel-guild-a",
+                    "observation_count": 3,
+                    "last_observation_at": datetime(2026, 7, 8, 9, 44, tzinfo=UTC),
+                },
+                {
+                    "channel_id": "channel-guild-b",
+                    "observation_count": 5,
+                    "last_observation_at": datetime(2026, 7, 8, 9, 45, tzinfo=UTC),
+                },
+            ]
+        )
 
 
 def test_auto_connect_state_surfaces_only_real_admin_gates() -> None:
@@ -386,6 +495,370 @@ async def test_source_rehearsal_status_reads_gateway_prefixed_observations() -> 
             "content_text": "Ramp gateway proof landed.",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_discord_source_access_payload_marks_private_channels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = _DiscordAccessPool()
+    tenant_id = uuid4()
+    installation_row_id = uuid4()
+
+    class _ProbeDiscordClient:
+        def __init__(self, **kwargs) -> None:
+            self.guild_id = kwargs["guild_id"]
+            self.closed = False
+
+        async def list_guild_channels(self, guild_id):
+            assert guild_id == self.guild_id
+            return [
+                {
+                    "id": "cat-private",
+                    "type": 4,
+                    "name": "Private",
+                    "permission_overwrites": [
+                        {"id": "guild-1", "type": 0, "deny": str(1 << 10)}
+                    ],
+                },
+                {
+                    "id": "c-blocked",
+                    "type": 0,
+                    "name": "moderator-only",
+                    "parent_id": "cat-private",
+                    "position": 1,
+                },
+                {
+                    "id": "c-ready",
+                    "type": 0,
+                    "name": "verify-here",
+                    "parent_id": "cat-private",
+                    "position": 2,
+                },
+                {"id": "voice", "type": 2, "name": "Voice"},
+            ]
+
+        async def list_guilds(self):
+            return [{"id": "guild-1", "name": "Acme Ops"}]
+
+        async def get_messages(self, *, channel_id, limit):
+            assert limit == 1
+            if channel_id == "c-blocked":
+                raise DiscordApiError(
+                    "missing access",
+                    code="discord_channel_forbidden",
+                    context={"channel_id": channel_id},
+                )
+            return []
+
+        async def aclose(self):
+            self.closed = True
+
+    monkeypatch.setattr(
+        "services.app.gateway.byoc_onboarding_router.DiscordClient",
+        _ProbeDiscordClient,
+    )
+
+    payload = await _discord_source_access_payload(
+        pool,
+        tenant_id=tenant_id,
+        install={
+            "id": installation_row_id,
+            "installation_id": "guild-1",
+            "enabled": True,
+            "has_secret": True,
+            "installed_at": datetime(2026, 7, 8, tzinfo=UTC),
+        },
+    )
+
+    assert pool.stats_args == (tenant_id,)
+    assert payload["access_summary"] == {
+        "total": 2,
+        "ready": 1,
+        "missing_access": 1,
+        "needs_admin": 0,
+        "not_selected": 0,
+        "unknown": 0,
+        "selected": 1,
+        "observed": 1,
+    }
+    resources = {item["resource_id"]: item for item in payload["access_resources"]}
+    assert resources["c-ready"]["permission_status"] == "ready"
+    assert resources["c-ready"]["observation_count"] == 2
+    assert resources["c-ready"]["installation_name"] == "Acme Ops"
+    assert resources["c-ready"]["visibility"] == "private"
+    assert resources["c-blocked"]["permission_status"] == "missing_access"
+    assert resources["c-blocked"]["parent_name"] == "Private"
+    assert resources["c-blocked"]["visibility"] == "private"
+    assert resources["c-blocked"]["can_backfill"] is False
+    assert "moderator-only" in payload["access_next_actions"][0]
+
+
+@pytest.mark.asyncio
+async def test_discord_source_access_payload_queues_replay_after_access_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = _DiscordAccessPool(
+        stats_rows=[],
+        access_state={
+            "c-now-ready": {
+                "permission_status": "missing_access",
+                "last_ready_replay_at": None,
+            }
+        },
+    )
+    tenant_id = uuid4()
+    installation_row_id = uuid4()
+
+    class _ProbeDiscordClient:
+        def __init__(self, **kwargs) -> None:
+            self.guild_id = kwargs["guild_id"]
+
+        async def list_guild_channels(self, guild_id):
+            assert guild_id == self.guild_id
+            return [
+                {
+                    "id": "cat-private",
+                    "type": 4,
+                    "name": "Private",
+                    "permission_overwrites": [
+                        {"id": "guild-1", "type": 0, "deny": str(1 << 10)}
+                    ],
+                },
+                {
+                    "id": "c-now-ready",
+                    "type": 0,
+                    "name": "important-urls",
+                    "parent_id": "cat-private",
+                    "position": 1,
+                },
+            ]
+
+        async def list_guilds(self):
+            return [{"id": "guild-1", "name": "Acme Ops"}]
+
+        async def get_messages(self, *, channel_id, limit):
+            assert channel_id == "c-now-ready"
+            assert limit == 1
+            return []
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(
+        "services.app.gateway.byoc_onboarding_router.DiscordClient",
+        _ProbeDiscordClient,
+    )
+
+    payload = await _discord_source_access_payload(
+        pool,
+        tenant_id=tenant_id,
+        install={
+            "id": installation_row_id,
+            "installation_id": "guild-1",
+            "enabled": True,
+            "has_secret": True,
+            "installed_at": datetime(2026, 7, 8, tzinfo=UTC),
+        },
+    )
+
+    assert payload["access_summary"]["ready"] == 1
+    assert len(pool.triggers) == 1
+    trigger_payload = pool.triggers[0]["payload"]
+    assert trigger_payload["reason"] == "discord_channel_access_granted"
+    assert trigger_payload["installation_row_id"] == str(installation_row_id)
+    assert trigger_payload["guild_id"] == "guild-1"
+    assert trigger_payload["channel_ids"] == ["c-now-ready"]
+    assert any(
+        "queued backfill" in action
+        for action in payload["access_next_actions"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_discord_source_access_payload_includes_active_threads_without_archived_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = _DiscordAccessPool(stats_rows=[])
+    tenant_id = uuid4()
+    installation_row_id = uuid4()
+
+    class _ThreadDiscordClient:
+        def __init__(self, **kwargs) -> None:
+            self.guild_id = kwargs["guild_id"]
+
+        async def list_guild_channels(self, guild_id):
+            assert guild_id == self.guild_id
+            return [
+                {"id": "general", "type": 0, "name": "general", "position": 1},
+                {"id": "news", "type": 5, "name": "news", "position": 2},
+                {"id": "forum", "type": 15, "name": "forum", "position": 3},
+                {"id": "media", "type": 16, "name": "media", "position": 4},
+                {"id": "voice", "type": 2, "name": "Voice"},
+            ]
+
+        async def list_active_guild_threads(self, guild_id):
+            assert guild_id == self.guild_id
+            return [
+                {
+                    "id": "active-thread",
+                    "type": 11,
+                    "name": "active-thread",
+                    "parent_id": "general",
+                }
+            ]
+
+        async def list_channel_archived_threads(self, channel_id, *, archive_kind):
+            raise AssertionError("access status should not sweep archived threads")
+
+        async def list_guilds(self):
+            return [{"id": "guild-1", "name": "Acme Ops"}]
+
+        async def get_messages(self, *, channel_id, limit):
+            assert limit == 1
+            return []
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(
+        "services.app.gateway.byoc_onboarding_router.DiscordClient",
+        _ThreadDiscordClient,
+    )
+
+    payload = await _discord_source_access_payload(
+        pool,
+        tenant_id=tenant_id,
+        install={
+            "id": installation_row_id,
+            "installation_id": "guild-1",
+            "enabled": True,
+            "has_secret": True,
+            "installed_at": datetime(2026, 7, 8, tzinfo=UTC),
+        },
+    )
+
+    resources = {item["resource_id"]: item for item in payload["access_resources"]}
+    assert set(resources) == {
+        "general",
+        "news",
+        "active-thread",
+    }
+    assert resources["active-thread"]["parent_name"] == "general"
+    assert payload["access_summary"]["ready"] == 3
+
+
+@pytest.mark.asyncio
+async def test_discord_source_access_payload_aggregates_multiple_guilds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant_id = uuid4()
+    installation_a = uuid4()
+    installation_b = uuid4()
+
+    class _MultiGuildDiscordClient:
+        def __init__(self, **kwargs) -> None:
+            self.guild_id = kwargs["guild_id"]
+
+        async def list_guild_channels(self, guild_id):
+            assert guild_id == self.guild_id
+            return [
+                {
+                    "id": f"channel-{guild_id}",
+                    "type": 0,
+                    "name": f"general-{guild_id}",
+                    "position": 1,
+                }
+            ]
+
+        async def list_guilds(self):
+            return [
+                {"id": "guild-a", "name": "Alpha Team"},
+                {"id": "guild-b", "name": "Beta Team"},
+            ]
+
+        async def get_messages(self, *, channel_id, limit):
+            assert limit == 1
+            return []
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(
+        "services.app.gateway.byoc_onboarding_router.DiscordClient",
+        _MultiGuildDiscordClient,
+    )
+
+    payload = await _discord_source_access_payload_for_installations(
+        _DiscordMultiAccessPool(),
+        tenant_id=tenant_id,
+        installations=[
+            {
+                "id": installation_a,
+                "installation_id": "guild-a",
+                "enabled": True,
+                "has_secret": True,
+                "installed_at": datetime(2026, 7, 8, tzinfo=UTC),
+            },
+            {
+                "id": installation_b,
+                "installation_id": "guild-b",
+                "enabled": True,
+                "has_secret": True,
+                "installed_at": datetime(2026, 7, 8, tzinfo=UTC),
+            },
+        ],
+    )
+
+    assert payload["access_summary"] == {
+        "total": 2,
+        "ready": 2,
+        "missing_access": 0,
+        "needs_admin": 0,
+        "not_selected": 0,
+        "unknown": 0,
+        "selected": 2,
+        "observed": 2,
+    }
+    resources = {item["installation_id"]: item for item in payload["access_resources"]}
+    assert set(resources) == {"guild-a", "guild-b"}
+    assert resources["guild-a"]["resource_id"] == "channel-guild-a"
+    assert resources["guild-a"]["installation_name"] == "Alpha Team"
+    assert resources["guild-a"]["visibility"] == "public"
+    assert resources["guild-b"]["resource_id"] == "channel-guild-b"
+    assert resources["guild-b"]["installation_name"] == "Beta Team"
+
+
+@pytest.mark.asyncio
+async def test_discord_provider_handoff_uses_administrator_for_full_server_sync(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DISCORD_CLIENT_ID", "discord-client")
+    monkeypatch.setenv("DISCORD_REDIRECT_URI", "https://example.test/callback")
+    monkeypatch.setenv("DISCORD_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("DISCORD_APPLICATION_ID", "discord-app")
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "bot-token")
+    monkeypatch.setenv("WEBHOOK_SECRET_DISCORD", "webhook-secret")
+
+    from services.ingest.integrations.discord import oauth as discord_oauth
+
+    async def _state_token(*args, **kwargs):
+        return "state-token"
+
+    monkeypatch.setattr(discord_oauth, "issue_state_token", _state_token)
+
+    payload = await _source_provider_handoff(
+        "discord",
+        pool=object(),
+        tenant_id=uuid4(),
+        request=SimpleNamespace(base_url="http://gateway.test/"),
+        request_payload={"access_mode": "full_server_sync"},
+    )
+
+    assert payload["discord_access_mode"] == "full_server_sync"
+    assert payload["discord_permissions"] == "8"
+    assert "permissions=8" in payload["install_url"]
+    assert "scope=applications.commands+bot" in payload["install_url"]
 
 
 def test_browser_agent_recipes_cover_all_rehearsal_sources() -> None:

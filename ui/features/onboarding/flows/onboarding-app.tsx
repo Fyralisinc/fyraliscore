@@ -2,7 +2,7 @@
 
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,10 +20,12 @@ import { StepView, type StepViewProps } from "./step-views";
 
 export function OnboardingApp({
   initialStep,
-  initialSourceId
+  initialSourceId,
+  freshStart = false
 }: {
   initialStep: StepId;
   initialSourceId?: string;
+  freshStart?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -48,6 +50,17 @@ export function OnboardingApp({
   }, [initialStep, pathname]);
   const flow = useOnboardingFlow(routeStep);
   const store = useOnboardingStore();
+  const didFreshStart = useRef(false);
+
+  useEffect(() => {
+    if (!freshStart || didFreshStart.current) {
+      return;
+    }
+    didFreshStart.current = true;
+    const freshSourceId = (initialSourceId ?? "discord").trim().toLowerCase();
+    useOnboardingStore.persist.clearStorage();
+    store.resetDraft(freshSourceId, routeStep);
+  }, [freshStart, initialSourceId, routeStep, store]);
 
   useEffect(() => {
     useOnboardingStore.setState({ currentStep: routeStep });

@@ -29,6 +29,7 @@ keyed by `(workflow_kind="shard_fetch", workflow_id=str(shard_id))`.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -47,6 +48,7 @@ from services.ingest.ingestion.workflows.shard_fetch import (
     ShardFetchConfig,
     WORKFLOW_ID_INBOX,
     WORKFLOW_KIND,
+    _load_install,
 )
 from services.ingest.ingestion.workflows.signals import emit_signal
 from services.ingest.ingestion.workflows.state import load_state
@@ -99,16 +101,19 @@ async def _seed_tenant(pool: asyncpg.Pool, label: str = "shf") -> UUID:
 
 async def _seed_provider_install(
     pool: asyncpg.Pool, *, tenant_id: UUID, provider: str,
-) -> None:
+    installation_id: str | None = None,
+) -> UUID:
+    row_id = uuid7()
     await pool.execute(
         """
         INSERT INTO provider_installations
             (id, tenant_id, provider, installation_id, enabled)
         VALUES ($1, $2, $3, $4, TRUE)
         """,
-        uuid7(), tenant_id, provider,
-        f"inst-{tenant_id.hex[:8]}-{provider}",
+        row_id, tenant_id, provider,
+        installation_id or f"inst-{tenant_id.hex[:8]}-{provider}",
     )
+    return row_id
 
 
 async def _seed_onboarding_run(
@@ -169,15 +174,18 @@ async def _emit_shard_requested(
 def _service(
     pool: asyncpg.Pool, producer: _CapturingProducer,
     *, lease_timeout: float = 30.0,
+    max_concurrent_shards: int = 1,
+    max_signals_per_tick: int = 20,
     s3_client: FakeS3Client | None = None,
 ) -> ShardFetch:
     return ShardFetch(
         pool, producer,
         config=ShardFetchConfig(
             tick_interval_seconds=0.01,
-            max_signals_per_tick=20,
+            max_signals_per_tick=max_signals_per_tick,
             lease_timeout_seconds=lease_timeout,
             flush_timeout_seconds=1.0,
+            max_concurrent_shards=max_concurrent_shards,
         ),
         s3_client=s3_client or FakeS3Client(),
     )
@@ -547,6 +555,35 @@ async def test_shard_fetch_handles_unexpected_fetcher_exception(
 # 4. Signal-replay idempotency (emit_signal UNIQUE constraint).
 # =====================================================================
 
+async def test_discord_shard_fetch_loads_install_for_shard_guild(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tid = await _seed_tenant(fresh_db)
+    await _seed_provider_install(
+        fresh_db,
+        tenant_id=tid,
+        provider="discord",
+        installation_id="guild-a",
+    )
+    install_b = await _seed_provider_install(
+        fresh_db,
+        tenant_id=tid,
+        provider="discord",
+        installation_id="guild-b",
+    )
+
+    install = await _load_install(
+        fresh_db,
+        tenant_id=tid,
+        source="discord",
+        shard_identifier={"guild_id": "guild-b", "channel_id": "channel-b"},
+    )
+
+    assert install is not None
+    assert install["id"] == install_b
+    assert install["installation_id"] == "guild-b"
+
+
 async def test_shard_fetch_idempotent_on_signal_replay(
     fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -594,6 +631,186 @@ async def test_shard_fetch_idempotent_on_signal_replay(
 
     # Fetcher called once.
     assert fetcher._call_state["call"] == 1
+
+
+async def test_discord_channel_shards_fetch_in_parallel(
+    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Discord emits one shard per channel. With shard concurrency >1,
+    multiple channel fetch loops should overlap while each channel still
+    keeps its own serial cursor loop."""
+    release = asyncio.Event()
+    state = {"in_flight": 0, "max_in_flight": 0}
+    calls: list[str] = []
+
+    async def _fetcher(
+        install: asyncpg.Record,
+        shard_identifier: dict[str, Any],
+        cursor: dict[str, Any] | None,
+    ) -> FetchResult:
+        channel_id = str(shard_identifier["channel_id"])
+        calls.append(channel_id)
+        state["in_flight"] += 1
+        state["max_in_flight"] = max(
+            state["max_in_flight"],
+            state["in_flight"],
+        )
+        if state["in_flight"] >= 2:
+            release.set()
+        try:
+            await asyncio.wait_for(release.wait(), timeout=0.3)
+            return FetchResult(
+                records=[],
+                next_cursor={"channel_id": channel_id},
+                end_of_data=True,
+            )
+        finally:
+            state["in_flight"] -= 1
+
+    monkeypatch.setitem(FETCHER_DISPATCH, "discord", _fetcher)
+
+    tid = await _seed_tenant(fresh_db)
+    await _seed_provider_install(
+        fresh_db,
+        tenant_id=tid,
+        provider="discord",
+        installation_id="guild-1",
+    )
+    run_id = await _seed_onboarding_run(
+        fresh_db,
+        tenant_id=tid,
+        source="discord",
+    )
+    shard_ids = []
+    for channel_id in ("c-1", "c-2", "c-3"):
+        shard_id = await _seed_shard(
+            fresh_db,
+            run_id=run_id,
+            tenant_id=tid,
+            source="discord",
+            shard_kind="discord_channel_window",
+            identifier={
+                "guild_id": "guild-1",
+                "channel_id": channel_id,
+                "channel_name": channel_id,
+            },
+        )
+        shard_ids.append(shard_id)
+        await _emit_shard_requested(
+            fresh_db,
+            shard_id=shard_id,
+            run_id=run_id,
+            tenant_id=tid,
+            source="discord",
+        )
+
+    producer = _CapturingProducer()
+    await _service(
+        fresh_db,
+        producer,
+        max_concurrent_shards=3,
+    ).run(max_ticks=1)
+
+    assert state["max_in_flight"] >= 2
+    assert set(calls) == {"c-1", "c-2", "c-3"}
+    states = await fresh_db.fetch(
+        "SELECT state FROM onboarding_shards WHERE id = ANY($1::uuid[])",
+        shard_ids,
+    )
+    assert {row["state"] for row in states} == {"done"}
+
+
+async def test_discord_auto_parallelism_runs_all_channel_shards_in_one_tick(
+    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto mode derives fetch width from the current shard backlog.
+
+    A guild with 55 message-readable channels produces 55 shard rows upstream;
+    shard_fetch should not cap that at a static 50 when the operator asks for
+    auto fan-out.
+    """
+    expected = 55
+    release = asyncio.Event()
+    state = {"in_flight": 0, "max_in_flight": 0}
+    calls: list[str] = []
+
+    async def _fetcher(
+        install: asyncpg.Record,
+        shard_identifier: dict[str, Any],
+        cursor: dict[str, Any] | None,
+    ) -> FetchResult:
+        channel_id = str(shard_identifier["channel_id"])
+        calls.append(channel_id)
+        state["in_flight"] += 1
+        state["max_in_flight"] = max(
+            state["max_in_flight"],
+            state["in_flight"],
+        )
+        if state["in_flight"] >= expected:
+            release.set()
+        try:
+            await asyncio.wait_for(release.wait(), timeout=1.0)
+            return FetchResult(
+                records=[],
+                next_cursor={"channel_id": channel_id},
+                end_of_data=True,
+            )
+        finally:
+            state["in_flight"] -= 1
+
+    monkeypatch.setitem(FETCHER_DISPATCH, "discord", _fetcher)
+
+    tid = await _seed_tenant(fresh_db)
+    await _seed_provider_install(
+        fresh_db,
+        tenant_id=tid,
+        provider="discord",
+        installation_id="guild-55",
+    )
+    run_id = await _seed_onboarding_run(
+        fresh_db,
+        tenant_id=tid,
+        source="discord",
+    )
+    shard_ids = []
+    channel_ids = {f"c-{i}" for i in range(expected)}
+    for channel_id in sorted(channel_ids):
+        shard_id = await _seed_shard(
+            fresh_db,
+            run_id=run_id,
+            tenant_id=tid,
+            source="discord",
+            shard_kind="discord_channel_window",
+            identifier={
+                "guild_id": "guild-55",
+                "channel_id": channel_id,
+                "channel_name": channel_id,
+            },
+        )
+        shard_ids.append(shard_id)
+        await _emit_shard_requested(
+            fresh_db,
+            shard_id=shard_id,
+            run_id=run_id,
+            tenant_id=tid,
+            source="discord",
+        )
+
+    producer = _CapturingProducer()
+    await _service(
+        fresh_db,
+        producer,
+        max_signals_per_tick=0,
+        max_concurrent_shards=0,
+    ).run(max_ticks=1)
+
+    assert state["max_in_flight"] == expected
+    assert set(calls) == channel_ids
+    states = await fresh_db.fetch(
+        "SELECT state FROM onboarding_shards WHERE id = ANY($1::uuid[])",
+        shard_ids,
+    )
+    assert {row["state"] for row in states} == {"done"}
 
 
 # =====================================================================

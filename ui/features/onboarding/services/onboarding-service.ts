@@ -3,7 +3,7 @@ import type {
   Customer,
   OnboardingIntent,
   OnboardingSnapshot,
-  SourceObservation
+  SourceObservation,
 } from "../types";
 
 export async function fetchOnboardingSnapshot(): Promise<OnboardingSnapshot> {
@@ -16,15 +16,15 @@ export async function createDesignPartnerOnboardingIntent(): Promise<OnboardingI
     {
       plan_code: "design_partner_byoc_pilot",
       procurement_channel: "design_partner",
-      entrypoint: "get_fyralis"
+      entrypoint: "get_fyralis",
     },
-    () => mockIntent()
+    () => mockIntent(),
   );
 }
 
 export async function submitDesignPartnerIntake(
   intentId: string,
-  customer: Customer
+  customer: Customer,
 ): Promise<OnboardingIntent> {
   try {
     return await postDesignPartnerIntake(intentId, customer);
@@ -51,6 +51,38 @@ type GatewayObservationResponse = {
   stub?: boolean;
 };
 
+type SourceAccessApiSummary = {
+  total: number;
+  ready: number;
+  missing_access: number;
+  needs_admin: number;
+  not_selected: number;
+  unknown: number;
+  selected: number;
+  observed: number;
+};
+
+type SourceAccessApiResource = {
+  source: string;
+  installation_id: string;
+  installation_name?: string | null;
+  resource_kind: string;
+  resource_id: string;
+  display_name: string;
+  parent_id?: string | null;
+  parent_name?: string | null;
+  visibility?: "public" | "private" | "unknown" | null;
+  permission_status:
+    "ready" | "missing_access" | "needs_admin" | "not_selected" | "unknown";
+  selected: boolean;
+  can_backfill: boolean;
+  can_receive_live: boolean;
+  last_probe_at?: string | null;
+  last_observation_at?: string | null;
+  observation_count: number;
+  diagnostics?: Record<string, unknown>;
+};
+
 type SourceRehearsalApiStatus = {
   source: string;
   installed: boolean;
@@ -61,17 +93,31 @@ type SourceRehearsalApiStatus = {
     installed_at: string;
     details?: Record<string, unknown>;
   } | null;
+  installations?: Array<{
+    installation_id: string;
+    enabled: boolean;
+    has_secret: boolean;
+    installed_at: string;
+    details?: Record<string, unknown>;
+  }>;
   trigger_count: number;
   consumed_trigger_count: number;
   run_status_counts: Record<string, number>;
-  shard_state_counts: Record<string, { count: number; observations_seen: number }>;
+  shard_state_counts: Record<
+    string,
+    { count: number; observations_seen: number }
+  >;
   observation_count: number;
+  sync_started_at?: string | null;
   observations: GatewayObservation[];
   unresolved_failure_count: number;
   latest_failure?: string | null;
   bearer_token?: string | null;
   session_expires_at?: string | null;
   auto_connect_run?: SourceAutoConnectRunApi | null;
+  access_summary?: SourceAccessApiSummary;
+  access_resources?: SourceAccessApiResource[];
+  access_next_actions?: string[];
   next_action: string;
 };
 
@@ -85,6 +131,8 @@ type SourceRehearsalPrepareApiResponse = {
   oauth_redirect_url?: string | null;
   events_request_url?: string | null;
   install_url?: string | null;
+  discord_access_mode?: SourceConnectAccessMode | null;
+  discord_permissions?: string | null;
   provider_console_url?: string | null;
   authorization_mode: string;
   missing_configuration: string[];
@@ -196,25 +244,64 @@ export type SourceFinalizeMode =
 export type SourceRehearsalStatus = {
   sourceId: string;
   installed: boolean;
-  installation: {
-    installationId: string;
-    enabled: boolean;
-    hasSecret: boolean;
-    installedAt: string;
-    details: Record<string, unknown>;
-  } | null;
+  installation: SourceInstallation | null;
+  installations: SourceInstallation[];
   triggerCount: number;
   consumedTriggerCount: number;
   runStatusCounts: Record<string, number>;
   shardStateCounts: Record<string, { count: number; observationsSeen: number }>;
   observationCount: number;
+  syncStartedAt: string | null;
   observations: SourceObservation[];
   unresolvedFailureCount: number;
   latestFailure: string | null;
   bearerToken?: string | null;
   sessionExpiresAt?: string | null;
   autoConnectRun: SourceAutoConnectRun | null;
+  accessSummary: SourceAccessSummary;
+  accessResources: SourceAccessResource[];
+  accessNextActions: string[];
   nextAction: string;
+};
+
+export type SourceInstallation = {
+  installationId: string;
+  enabled: boolean;
+  hasSecret: boolean;
+  installedAt: string;
+  details: Record<string, unknown>;
+};
+
+export type SourceAccessSummary = {
+  total: number;
+  ready: number;
+  missingAccess: number;
+  needsAdmin: number;
+  notSelected: number;
+  unknown: number;
+  selected: number;
+  observed: number;
+};
+
+export type SourceAccessResource = {
+  sourceId: string;
+  installationId: string;
+  installationName: string | null;
+  resourceKind: string;
+  resourceId: string;
+  displayName: string;
+  parentId: string | null;
+  parentName: string | null;
+  visibility: "public" | "private" | "unknown";
+  permissionStatus:
+    "ready" | "missing_access" | "needs_admin" | "not_selected" | "unknown";
+  selected: boolean;
+  canBackfill: boolean;
+  canReceiveLive: boolean;
+  lastProbeAt: string | null;
+  lastObservationAt: string | null;
+  observationCount: number;
+  diagnostics: Record<string, unknown>;
 };
 
 export type SourceRehearsalPrepareResponse = {
@@ -227,6 +314,8 @@ export type SourceRehearsalPrepareResponse = {
   oauthRedirectUrl: string | null;
   eventsRequestUrl: string | null;
   installUrl: string | null;
+  discordAccessMode: SourceConnectAccessMode | null;
+  discordPermissions: string | null;
   providerConsoleUrl: string | null;
   authorizationMode: string;
   missingConfiguration: string[];
@@ -258,6 +347,8 @@ export type SourceAutoConnectState = {
 export type SourceAutoConnectResponse = SourceRehearsalPrepareResponse & {
   autoConnect: SourceAutoConnectState;
 };
+
+export type SourceConnectAccessMode = "standard" | "full_server_sync";
 
 export type SourceAutomationProfile = {
   automationLevel: string;
@@ -376,7 +467,7 @@ export async function fetchGatewaySourceObservations({
   apiBase,
   bearerToken,
   sourceId,
-  limit = 50
+  limit = 50,
 }: {
   apiBase?: string;
   bearerToken: string;
@@ -392,7 +483,7 @@ export async function fetchGatewaySourceObservations({
       process.env.NEXT_PUBLIC_FYRALIS_PROVIDER_INGRESS_URL ??
       process.env.NEXT_PUBLIC_FYRALIS_API_BASE ??
       browserOrigin() ??
-      ""
+      "",
   );
   if (!resolvedApiBase) {
     throw new Error("Gateway API base is required.");
@@ -400,14 +491,14 @@ export async function fetchGatewaySourceObservations({
 
   const query = new URLSearchParams({
     limit: String(limit),
-    source: gatewaySourceId(sourceId)
+    source: gatewaySourceId(sourceId),
   });
   const response = await fetch(`${resolvedApiBase}/observations?${query}`, {
     method: "GET",
     headers: {
       Accept: "application/json",
-      Authorization: `Bearer ${token}`
-    }
+      Authorization: `Bearer ${token}`,
+    },
   });
   if (!response.ok) {
     throw new ApiError(response.status, await response.text());
@@ -422,7 +513,8 @@ export async function fetchGatewaySourceObservations({
 export async function autoConnectSourceRehearsal({
   sourceId,
   apiBase,
-  deploymentContext
+  deploymentContext,
+  accessMode,
 }: {
   sourceId: string;
   apiBase?: string;
@@ -430,43 +522,45 @@ export async function autoConnectSourceRehearsal({
     awsRegion?: string;
     awsAssumingPrincipalArn?: string;
   };
+  accessMode?: SourceConnectAccessMode;
 }): Promise<SourceAutoConnectResponse> {
   const resolvedApiBase = resolveGatewayApiBase(apiBase);
-  const requestBody =
-    deploymentContext?.awsRegion || deploymentContext?.awsAssumingPrincipalArn
-      ? {
-          deployment_context: {
-            aws_region: deploymentContext.awsRegion,
-            aws_assuming_principal_arn:
-              deploymentContext.awsAssumingPrincipalArn
-          }
-        }
-      : undefined;
+  const requestBody: Record<string, unknown> = {};
+  if (deploymentContext?.awsRegion || deploymentContext?.awsAssumingPrincipalArn) {
+    requestBody.deployment_context = {
+      aws_region: deploymentContext.awsRegion,
+      aws_assuming_principal_arn: deploymentContext.awsAssumingPrincipalArn,
+    };
+  }
+  if (accessMode) {
+    requestBody.access_mode = accessMode;
+  }
+  const hasRequestBody = Object.keys(requestBody).length > 0;
   const response = await fetch(
     `${resolvedApiBase}/platform/onboarding/sources/${encodeURIComponent(
-      gatewaySourceId(sourceId)
+      gatewaySourceId(sourceId),
     )}/rehearsal/auto-connect`,
     {
       method: "POST",
       headers: {
         Accept: "application/json",
-        ...(requestBody ? { "Content-Type": "application/json" } : {})
+        ...(hasRequestBody ? { "Content-Type": "application/json" } : {}),
       },
-      ...(requestBody ? { body: JSON.stringify(requestBody) } : {})
-    }
+      ...(hasRequestBody ? { body: JSON.stringify(requestBody) } : {}),
+    },
   );
   if (!response.ok) {
     throw new ApiError(response.status, await response.text());
   }
   return mapSourceAutoConnect(
     (await response.json()) as SourceAutoConnectApiResponse,
-    sourceId
+    sourceId,
   );
 }
 
 export async function fetchSourceRehearsalStatus({
   sourceId,
-  apiBase
+  apiBase,
 }: {
   sourceId: string;
   apiBase?: string;
@@ -474,28 +568,28 @@ export async function fetchSourceRehearsalStatus({
   const resolvedApiBase = resolveGatewayApiBase(apiBase);
   const response = await fetch(
     `${resolvedApiBase}/platform/onboarding/sources/${encodeURIComponent(
-      gatewaySourceId(sourceId)
+      gatewaySourceId(sourceId),
     )}/rehearsal/status`,
     {
       method: "GET",
       headers: {
-        Accept: "application/json"
-      }
-    }
+        Accept: "application/json",
+      },
+    },
   );
   if (!response.ok) {
     throw new ApiError(response.status, await response.text());
   }
   return mapSourceRehearsalStatus(
     (await response.json()) as SourceRehearsalApiStatus,
-    sourceId
+    sourceId,
   );
 }
 
 export async function finalizeAwsSourceRehearsal({
   apiBase,
   roleArn,
-  region
+  region,
 }: {
   apiBase?: string;
   roleArn: string;
@@ -508,15 +602,15 @@ export async function finalizeAwsSourceRehearsal({
       method: "POST",
       headers: {
         Accept: "application/json",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
         role_arn: roleArn,
         region: region || "us-east-1",
         credential_kind: "assume_role",
-        backfill_window_days: 90
-      })
-    }
+        backfill_window_days: 90,
+      }),
+    },
   );
   if (!response.ok) {
     throw new ApiError(response.status, await response.text());
@@ -528,7 +622,7 @@ export async function finalizeAwsSourceRehearsal({
 }
 
 export async function retryAwsFirstSyncRehearsal({
-  apiBase
+  apiBase,
 }: {
   apiBase?: string;
 }): Promise<SourceRehearsalStatus> {
@@ -538,9 +632,9 @@ export async function retryAwsFirstSyncRehearsal({
     {
       method: "POST",
       headers: {
-        Accept: "application/json"
-      }
-    }
+        Accept: "application/json",
+      },
+    },
   );
   if (!response.ok) {
     throw new ApiError(response.status, await response.text());
@@ -554,10 +648,10 @@ export async function retryAwsFirstSyncRehearsal({
 async function postJson<T>(
   path: string,
   body: unknown,
-  fallback: () => T
+  fallback: () => T,
 ): Promise<T> {
   const apiBase = trimTrailingSlash(
-    process.env.NEXT_PUBLIC_FYRALIS_API_BASE ?? ""
+    process.env.NEXT_PUBLIC_FYRALIS_API_BASE ?? "",
   );
   const allowLocalFallback = apiBase === "";
   try {
@@ -565,9 +659,9 @@ async function postJson<T>(
       method: "POST",
       headers: {
         Accept: "application/json",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       throw new ApiError(response.status, await response.text());
@@ -583,14 +677,14 @@ async function postJson<T>(
 
 function postDesignPartnerIntake(
   intentId: string,
-  customer: Customer
+  customer: Customer,
 ): Promise<OnboardingIntent> {
   return postJson<OnboardingIntent>(
     `/platform/onboarding/intents/${intentId}/design-partner-intake`,
     {
       company_name: customer.company,
       setup_owner_email: customer.setupOwnerEmail,
-      target_cloud: targetCloudToApi(customer.targetCloud)
+      target_cloud: targetCloudToApi(customer.targetCloud),
     },
     () =>
       mockIntent({
@@ -601,14 +695,14 @@ function postDesignPartnerIntake(
         targetCloud: targetCloudToApi(customer.targetCloud),
         customerId: `cus_${randomHex(8)}`,
         tenantId: randomUuid(),
-        deploymentId: `dep_${randomHex(8)}`
-      })
+        deploymentId: `dep_${randomHex(8)}`,
+      }),
   );
 }
 
 function observationBelongsToSource(
   observation: GatewayObservation,
-  sourceId: string
+  sourceId: string,
 ): boolean {
   const sourceChannel = observation.source_channel?.toLowerCase() ?? "";
   const normalized = sourceId.toLowerCase().replaceAll("-", "_");
@@ -627,7 +721,7 @@ function resolveGatewayApiBase(apiBase?: string): string {
       process.env.NEXT_PUBLIC_FYRALIS_PROVIDER_INGRESS_URL ??
       process.env.NEXT_PUBLIC_FYRALIS_API_BASE ??
       browserOrigin() ??
-      ""
+      "",
   );
   if (!resolvedApiBase) {
     throw new Error("Gateway API base is required.");
@@ -637,7 +731,7 @@ function resolveGatewayApiBase(apiBase?: string): string {
 
 function mapSourceRehearsalPrepare(
   payload: SourceRehearsalPrepareApiResponse,
-  fallbackSourceId: string
+  fallbackSourceId: string,
 ): SourceRehearsalPrepareResponse {
   const sourceId = fallbackSourceId;
   return {
@@ -650,6 +744,8 @@ function mapSourceRehearsalPrepare(
     oauthRedirectUrl: payload.oauth_redirect_url ?? null,
     eventsRequestUrl: payload.events_request_url ?? null,
     installUrl: payload.install_url ?? null,
+    discordAccessMode: mapSourceConnectAccessMode(payload.discord_access_mode),
+    discordPermissions: payload.discord_permissions ?? null,
     providerConsoleUrl: payload.provider_console_url ?? null,
     authorizationMode: payload.authorization_mode,
     missingConfiguration: payload.missing_configuration ?? [],
@@ -658,20 +754,32 @@ function mapSourceRehearsalPrepare(
     finalizeMode: payload.finalize_mode ?? "generic_customer_refs",
     automationProfile: mapSourceAutomationProfile(
       payload.automation_profile,
-      sourceId
+      sourceId,
     ),
     browserAgent: mapSourceBrowserAgentRecipe(payload.browser_agent),
     browserAgentRun: mapSourceBrowserAgentRun(payload.browser_agent_run),
     bearerToken: payload.bearer_token,
     sessionExpiresAt: payload.session_expires_at,
     stateExpiresInSeconds: payload.state_expires_in_seconds ?? null,
-    status: mapSourceRehearsalStatus(payload.status, sourceId)
+    status: mapSourceRehearsalStatus(payload.status, sourceId),
   };
+}
+
+function mapSourceConnectAccessMode(
+  value: string | null | undefined,
+): SourceConnectAccessMode | null {
+  if (value === "full_server_sync") {
+    return "full_server_sync";
+  }
+  if (value === "standard") {
+    return "standard";
+  }
+  return null;
 }
 
 function mapSourceAutoConnect(
   payload: SourceAutoConnectApiResponse,
-  fallbackSourceId: string
+  fallbackSourceId: string,
 ): SourceAutoConnectResponse {
   const prepared = mapSourceRehearsalPrepare(payload, fallbackSourceId);
   const autoConnect = payload.auto_connect;
@@ -686,23 +794,23 @@ function mapSourceAutoConnect(
         id: step.id,
         label: step.label,
         reason: step.reason,
-        canAgentComplete: step.can_agent_complete
+        canAgentComplete: step.can_agent_complete,
       })),
       automatedActions: autoConnect.automated_actions ?? [],
       browserAgent: mapSourceBrowserAgentRecipe(
-        autoConnect.browser_agent ?? payload.browser_agent
+        autoConnect.browser_agent ?? payload.browser_agent,
       ),
       browserAgentRun: mapSourceBrowserAgentRun(
-        autoConnect.browser_agent_run ?? payload.browser_agent_run
+        autoConnect.browser_agent_run ?? payload.browser_agent_run,
       ),
       automationRun: mapSourceAutoConnectRun(autoConnect.automation_run),
-      installUrl: autoConnect.install_url ?? null
-    }
+      installUrl: autoConnect.install_url ?? null,
+    },
   };
 }
 
 function mapSourceAutoConnectRun(
-  payload: SourceAutoConnectRunApi | undefined
+  payload: SourceAutoConnectRunApi | undefined,
 ): SourceAutoConnectRun | null {
   if (!payload) {
     return null;
@@ -729,24 +837,24 @@ function mapSourceAutoConnectRun(
     backgroundRunnerMode: payload.background_runner_mode ?? null,
     runArtifactPathHint: payload.run_artifact_path_hint ?? null,
     commandPreview: payload.command_preview,
-    commandArgs: payload.command_args ?? []
+    commandArgs: payload.command_args ?? [],
   };
 }
 
 function mapSourceBrowserAgentRun(
-  payload: SourceBrowserAgentRunApi | undefined
+  payload: SourceBrowserAgentRunApi | undefined,
 ): SourceBrowserAgentRun | null {
   if (!payload) {
     return null;
   }
   const mapAction = (
-    action: SourceBrowserAgentRunActionApi
+    action: SourceBrowserAgentRunActionApi,
   ): SourceBrowserAgentRunAction => ({
     id: action.id,
     owner: action.owner,
     status: action.status,
     label: action.label,
-    reason: action.reason
+    reason: action.reason,
   });
   return {
     schemaVersion: payload.schema_version,
@@ -767,18 +875,20 @@ function mapSourceBrowserAgentRun(
       label: gate.label,
       reason: gate.reason,
       status: gate.status,
-      canAgentComplete: gate.can_agent_complete
+      canAgentComplete: gate.can_agent_complete,
     })),
     completionChecks: payload.completion_checks ?? [],
     actionQueue: (payload.action_queue ?? []).map(mapAction),
-    currentAction: payload.current_action ? mapAction(payload.current_action) : null,
+    currentAction: payload.current_action
+      ? mapAction(payload.current_action)
+      : null,
     automatedActionCount: payload.automated_action_count ?? 0,
-    humanActionCount: payload.human_action_count ?? 0
+    humanActionCount: payload.human_action_count ?? 0,
   };
 }
 
 function mapSourceBrowserAgentRecipe(
-  payload: SourceBrowserAgentRecipeApi | undefined
+  payload: SourceBrowserAgentRecipeApi | undefined,
 ): SourceBrowserAgentRecipe | null {
   if (!payload) {
     return null;
@@ -790,13 +900,13 @@ function mapSourceBrowserAgentRecipe(
     agentCollects: payload.agent_collects ?? [],
     agentGenerates: payload.agent_generates ?? [],
     humanGates: payload.human_gates ?? [],
-    completionChecks: payload.completion_checks ?? []
+    completionChecks: payload.completion_checks ?? [],
   };
 }
 
 function mapSourceAutomationProfile(
   payload: SourceAutomationProfileApi | undefined,
-  sourceId: string
+  sourceId: string,
 ): SourceAutomationProfile {
   if (!payload) {
     return {
@@ -810,12 +920,12 @@ function mapSourceAutomationProfile(
           id: "approve_source_connection",
           label: `Approve ${sourceId} connection.`,
           reason: "The source owner must approve the boundary and scope.",
-          canAgentComplete: false
-        }
+          canAgentComplete: false,
+        },
       ],
       agentDiscoveryTarget: "approved source scope",
       postConnectActions: ["poll for observations"],
-      humanStepCount: 1
+      humanStepCount: 1,
     };
   }
   return {
@@ -828,31 +938,34 @@ function mapSourceAutomationProfile(
       id: step.id,
       label: step.label,
       reason: step.reason,
-      canAgentComplete: step.can_agent_complete
+      canAgentComplete: step.can_agent_complete,
     })),
     agentDiscoveryTarget: payload.agent_discovery_target,
     postConnectActions: payload.post_connect_actions ?? [],
-    humanStepCount: payload.human_step_count ?? payload.human_steps?.length ?? 0
+    humanStepCount:
+      payload.human_step_count ?? payload.human_steps?.length ?? 0,
   };
 }
 
 function mapSourceRehearsalStatus(
   payload: SourceRehearsalApiStatus,
-  fallbackSourceId: string
+  fallbackSourceId: string,
 ): SourceRehearsalStatus {
   const sourceId = fallbackSourceId;
+  const installations = (payload.installations ?? [])
+    .map(mapSourceInstallation)
+    .filter(Boolean) as SourceInstallation[];
+  const primaryInstallation = payload.installation
+    ? mapSourceInstallation(payload.installation)
+    : (installations[0] ?? null);
   return {
     sourceId,
     installed: payload.installed,
-    installation: payload.installation
-      ? {
-          installationId: payload.installation.installation_id,
-          enabled: payload.installation.enabled,
-          hasSecret: payload.installation.has_secret,
-          installedAt: payload.installation.installed_at,
-          details: payload.installation.details ?? {}
-        }
-      : null,
+    installation: primaryInstallation,
+    installations:
+      installations.length || !primaryInstallation
+        ? installations
+        : [primaryInstallation],
     triggerCount: payload.trigger_count,
     consumedTriggerCount: payload.consumed_trigger_count,
     runStatusCounts: payload.run_status_counts,
@@ -861,11 +974,12 @@ function mapSourceRehearsalStatus(
         state,
         {
           count: value.count,
-          observationsSeen: value.observations_seen
-        }
-      ])
+          observationsSeen: value.observations_seen,
+        },
+      ]),
     ),
     observationCount: payload.observation_count,
+    syncStartedAt: payload.sync_started_at ?? null,
     observations: payload.observations
       .filter((item) => observationBelongsToSource(item, sourceId))
       .map((item) => gatewayObservationToSourceObservation(item, sourceId)),
@@ -873,21 +987,89 @@ function mapSourceRehearsalStatus(
     latestFailure: payload.latest_failure ?? null,
     bearerToken: payload.bearer_token,
     sessionExpiresAt: payload.session_expires_at,
-    autoConnectRun: mapSourceAutoConnectRun(payload.auto_connect_run ?? undefined),
-    nextAction: payload.next_action
+    autoConnectRun: mapSourceAutoConnectRun(
+      payload.auto_connect_run ?? undefined,
+    ),
+    accessSummary: mapSourceAccessSummary(payload.access_summary),
+    accessResources: (payload.access_resources ?? []).map(
+      mapSourceAccessResource,
+    ),
+    accessNextActions: payload.access_next_actions ?? [],
+    nextAction: payload.next_action,
+  };
+}
+
+function mapSourceInstallation(payload: {
+  installation_id: string;
+  enabled: boolean;
+  has_secret: boolean;
+  installed_at: string;
+  details?: Record<string, unknown>;
+}): SourceInstallation {
+  return {
+    installationId: payload.installation_id,
+    enabled: payload.enabled,
+    hasSecret: payload.has_secret,
+    installedAt: payload.installed_at,
+    details: payload.details ?? {},
+  };
+}
+
+function mapSourceAccessSummary(
+  summary: SourceAccessApiSummary | undefined,
+): SourceAccessSummary {
+  return {
+    total: summary?.total ?? 0,
+    ready: summary?.ready ?? 0,
+    missingAccess: summary?.missing_access ?? 0,
+    needsAdmin: summary?.needs_admin ?? 0,
+    notSelected: summary?.not_selected ?? 0,
+    unknown: summary?.unknown ?? 0,
+    selected: summary?.selected ?? 0,
+    observed: summary?.observed ?? 0,
+  };
+}
+
+function mapSourceAccessResource(
+  resource: SourceAccessApiResource,
+): SourceAccessResource {
+  return {
+    sourceId: uiSourceId(resource.source),
+    installationId: resource.installation_id,
+    installationName: resource.installation_name ?? null,
+    resourceKind: resource.resource_kind,
+    resourceId: resource.resource_id,
+    displayName: resource.display_name,
+    parentId: resource.parent_id ?? null,
+    parentName: resource.parent_name ?? null,
+    visibility: resource.visibility ?? "unknown",
+    permissionStatus: resource.permission_status,
+    selected: resource.selected,
+    canBackfill: resource.can_backfill,
+    canReceiveLive: resource.can_receive_live,
+    lastProbeAt: resource.last_probe_at ?? null,
+    lastObservationAt: resource.last_observation_at ?? null,
+    observationCount: resource.observation_count,
+    diagnostics: resource.diagnostics ?? {},
   };
 }
 
 function gatewayObservationToSourceObservation(
   observation: GatewayObservation,
-  sourceId: string
+  sourceId: string,
 ): SourceObservation {
-  const title = summarizeTitle(observation.content_text, observation.source_channel);
+  const title = summarizeTitle(
+    observation.content_text,
+    observation.source_channel,
+  );
   return {
     id: observation.id,
     sourceId,
     title,
-    kind: mapGatewayObservationKind(observation.kind, observation.source_channel),
+    kind: mapGatewayObservationKind(
+      observation.kind,
+      observation.source_channel,
+    ),
     occurredAt: observation.occurred_at,
     summary:
       observation.content_text?.trim() ||
@@ -896,7 +1078,7 @@ function gatewayObservationToSourceObservation(
     status: "landed",
     origin: "gateway",
     syncTrack: "mixed",
-    sourceChannel: observation.source_channel
+    sourceChannel: observation.source_channel,
   };
 }
 
@@ -910,7 +1092,7 @@ function summarizeTitle(contentText: string, sourceChannel: string): string {
 
 function mapGatewayObservationKind(
   kind: string,
-  sourceChannel: string
+  sourceChannel: string,
 ): SourceObservation["kind"] {
   const lowerKind = kind.toLowerCase();
   const lowerChannel = sourceChannel.toLowerCase();
@@ -944,7 +1126,7 @@ function mapGatewayObservationKind(
 class ApiError extends Error {
   constructor(
     readonly status: number,
-    readonly body: string
+    readonly body: string,
   ) {
     super(`HTTP ${status}: ${body}`);
   }
@@ -963,7 +1145,7 @@ function isOnboardingIntentNotFound(error: unknown): boolean {
 }
 
 function targetCloudToApi(
-  targetCloud: Customer["targetCloud"]
+  targetCloud: Customer["targetCloud"],
 ): OnboardingIntent["target_cloud"] {
   if (targetCloud !== "AWS") {
     return "aws";
@@ -981,7 +1163,7 @@ function mockIntent(
     companyName?: string | null;
     setupOwnerEmail?: string | null;
     targetCloud?: OnboardingIntent["target_cloud"];
-  } = {}
+  } = {},
 ): OnboardingIntent {
   const now = new Date().toISOString();
   return {
@@ -999,7 +1181,7 @@ function mockIntent(
     target_cloud: override.targetCloud ?? null,
     created_at: now,
     updated_at: now,
-    stored_scope: "sanitized_onboarding_metadata_only"
+    stored_scope: "sanitized_onboarding_metadata_only",
   };
 }
 
@@ -1008,10 +1190,12 @@ function randomHex(bytes: number): string {
   globalThis.crypto?.getRandomValues(buffer);
   if (buffer.every((value) => value === 0)) {
     return Array.from({ length: bytes * 2 }, () =>
-      Math.floor(Math.random() * 16).toString(16)
+      Math.floor(Math.random() * 16).toString(16),
     ).join("");
   }
-  return Array.from(buffer, (value) => value.toString(16).padStart(2, "0")).join("");
+  return Array.from(buffer, (value) =>
+    value.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 function randomUuid(): string {
@@ -1029,28 +1213,32 @@ function gatewaySourceId(sourceId: string): string {
   return sourceId.trim().toLowerCase().replaceAll("-", "_");
 }
 
+function uiSourceId(sourceId: string): string {
+  return sourceId.trim().toLowerCase().replaceAll("_", "-");
+}
+
 function withRuntimeWorkspaceUrls(
-  snapshot: OnboardingSnapshot
+  snapshot: OnboardingSnapshot,
 ): OnboardingSnapshot {
   const apiBase = trimTrailingSlash(
-    process.env.NEXT_PUBLIC_FYRALIS_API_BASE ?? ""
+    process.env.NEXT_PUBLIC_FYRALIS_API_BASE ?? "",
   );
   const localConsoleUrl = trimTrailingSlash(
     process.env.NEXT_PUBLIC_FYRALIS_LOCAL_CONSOLE_URL ??
       browserOrigin() ??
-      snapshot.workspace.localConsoleUrl
+      snapshot.workspace.localConsoleUrl,
   );
   const providerIngressUrl = trimTrailingSlash(
     process.env.NEXT_PUBLIC_FYRALIS_PROVIDER_INGRESS_URL ??
-      (apiBase || snapshot.workspace.providerIngressUrl)
+      (apiBase || snapshot.workspace.providerIngressUrl),
   );
   return {
     ...snapshot,
     workspace: {
       ...snapshot.workspace,
       localConsoleUrl,
-      providerIngressUrl
-    }
+      providerIngressUrl,
+    },
   };
 }
 

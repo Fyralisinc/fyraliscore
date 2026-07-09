@@ -1,6 +1,8 @@
 """Hosted-portal onboarding routes for Design Partner BYOC."""
 from __future__ import annotations
 
+import asyncio
+import copy
 import json
 import os
 from datetime import UTC, datetime, timedelta
@@ -33,7 +35,34 @@ from services.platform.runtime.source_browser_agent_workflow import (
     source_browser_agent_run_for_payload,
 )
 
+from lib.shared.errors import DiscordApiError
 from lib.shared.ids import uuid7
+from lib.shared.secrets import load_app_secret_text_from_env
+from services.ingest.integrations.discord.client import DiscordClient
+
+_DISCORD_TEXT_CHANNEL_TYPE = 0
+_DISCORD_CATEGORY_CHANNEL_TYPE = 4
+_DISCORD_ANNOUNCEMENT_CHANNEL_TYPE = 5
+_DISCORD_ANNOUNCEMENT_THREAD_TYPE = 10
+_DISCORD_PUBLIC_THREAD_TYPE = 11
+_DISCORD_PRIVATE_THREAD_TYPE = 12
+_DISCORD_FORUM_CHANNEL_TYPE = 15
+_DISCORD_MEDIA_CHANNEL_TYPE = 16
+_DISCORD_OVERWRITE_ROLE_TYPE = 0
+_DISCORD_VIEW_CHANNEL_PERMISSION = 1 << 10
+_DISCORD_MESSAGE_CHANNEL_TYPES = {
+    _DISCORD_TEXT_CHANNEL_TYPE,
+    _DISCORD_ANNOUNCEMENT_CHANNEL_TYPE,
+    _DISCORD_ANNOUNCEMENT_THREAD_TYPE,
+    _DISCORD_PUBLIC_THREAD_TYPE,
+    _DISCORD_PRIVATE_THREAD_TYPE,
+}
+_DISCORD_THREAD_PARENT_CHANNEL_TYPES = {
+    _DISCORD_TEXT_CHANNEL_TYPE,
+    _DISCORD_ANNOUNCEMENT_CHANNEL_TYPE,
+    _DISCORD_FORUM_CHANNEL_TYPE,
+    _DISCORD_MEDIA_CHANNEL_TYPE,
+}
 
 _ALL_REHEARSAL_SOURCES = {
     "ashby",
@@ -97,6 +126,26 @@ _SAFE_PROVIDER_ERROR_CODES = {
     "telegram_dialogs_must_be_list",
     "telegram_missing_api_credentials",
 }
+_SOURCE_ACCESS_PERMISSION_STATUSES = {
+    "ready",
+    "missing_access",
+    "needs_admin",
+    "not_selected",
+    "unknown",
+}
+_SOURCE_ACCESS_READY_REPLAY_FROM_STATUSES = {
+    "missing_access",
+    "needs_admin",
+    "not_selected",
+    "unknown",
+}
+_DISCORD_ACCESS_STATUS_CACHE_SECONDS = 45
+_DISCORD_ACCESS_STATUS_ERROR_CACHE_SECONDS = 15
+_DISCORD_ACCESS_STATUS_CACHE: dict[
+    tuple[str, str, str],
+    tuple[datetime, dict[str, Any]],
+] = {}
+_DISCORD_ACCESS_STATUS_LOCKS: dict[tuple[str, str, str], asyncio.Lock] = {}
 
 _SOURCE_CALLBACK_PATHS = {
     "slack": "/integrations/slack/callback",
@@ -340,7 +389,7 @@ _SOURCE_DISCOVERY_TARGETS = {
     "brex": "cash accounts, cards, and transaction scopes",
     "carta": "issuer, securities, and stakeholder scopes",
     "deel": "contracts, workers, and payment scopes",
-    "discord": "guilds, text channels, private channels the bot can access, and threads",
+    "discord": "guilds, message channels, private channels, forum/media posts, and threads",
     "figma": "teams, projects, files, and webhook-capable file scopes",
     "fireflies": "workspace, meetings, and transcripts",
     "github": "installations, repositories, pull requests, issues, and webhooks",
@@ -437,6 +486,7 @@ _SOURCE_NATIVE_CONNECT_CONTRACTS = {
         "payload_fields": [
             "guild_id",
             "application_id",
+            "access_mode",
             "approved_channel_ids",
             "oauth_redirect_url",
             "events_request_url",
@@ -1563,6 +1613,7 @@ async def _prepare_source_rehearsal_response(
         pool=pool,
         tenant_id=tenant_id,
         request=request,
+        request_payload=request_payload or {},
     )
     if source == "aws":
         handoff["provider_console_url"] = _aws_source_approval_url(
@@ -1595,6 +1646,8 @@ async def _prepare_source_rehearsal_response(
             else live_path
         ),
         "install_url": handoff.get("install_url"),
+        "discord_access_mode": handoff.get("discord_access_mode"),
+        "discord_permissions": handoff.get("discord_permissions"),
         "provider_console_url": handoff.get("provider_console_url"),
         "authorization_mode": handoff["authorization_mode"],
         "missing_configuration": handoff["missing_configuration"],
@@ -1623,6 +1676,7 @@ async def _source_provider_handoff(
     pool: Any,
     tenant_id: UUID,
     request: Request,
+    request_payload: dict[str, Any],
 ) -> dict[str, Any]:
     public_url = _public_url_from_env_or_request(request)
     if source == "slack":
@@ -1665,6 +1719,10 @@ async def _source_provider_handoff(
 
         client_id = os.environ.get("DISCORD_CLIENT_ID", "").strip()
         redirect_uri = os.environ.get("DISCORD_REDIRECT_URI", "").strip()
+        access_mode = discord_oauth.discord_access_mode(
+            request_payload.get("access_mode")
+            or request_payload.get("discord_access_mode")
+        )
         missing = [
             name
             for name, value in {
@@ -1680,19 +1738,19 @@ async def _source_provider_handoff(
         install_url = None
         if client_id and redirect_uri:
             state_token = await discord_oauth.issue_state_token(tenant_id, pool)
-            install_url = f"{discord_oauth._DISCORD_AUTHORIZE_URL}?" + urlencode(  # noqa: SLF001
-                {
-                    "client_id": client_id,
-                    "scope": discord_oauth._DISCORD_SCOPES,  # noqa: SLF001
-                    "permissions": discord_oauth._DISCORD_PERMISSIONS,  # noqa: SLF001
-                    "redirect_uri": redirect_uri,
-                    "response_type": "code",
-                    "state": state_token,
-                }
+            install_url = discord_oauth.discord_authorize_url(
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                state_token=state_token,
+                access_mode=access_mode,
             )
         return {
             "authorization_mode": "oauth_plus_gateway",
             "install_url": install_url,
+            "discord_access_mode": access_mode,
+            "discord_permissions": discord_oauth.discord_permissions_for_access_mode(
+                access_mode
+            ),
             "oauth_redirect_url": redirect_uri or f"{public_url}/integrations/discord/callback",
             "provider_console_url": "https://discord.com/developers/applications",
             "missing_configuration": missing,
@@ -2985,7 +3043,12 @@ async def _source_rehearsal_status_payload(
     bearer_token: str | None = None,
     session_expires_at: str | None = None,
 ) -> dict[str, Any]:
-    install = await _source_installation_row(pool, tenant_id=tenant_id, source=source)
+    installations = await _source_installation_rows(
+        pool,
+        tenant_id=tenant_id,
+        source=source,
+    )
+    install = installations[0] if installations else None
     triggers = await pool.fetchrow(
         """
         SELECT count(*)::int AS total,
@@ -3015,6 +3078,17 @@ async def _source_rehearsal_status_payload(
          WHERE tenant_id = $1 AND source = $2
          GROUP BY state
          ORDER BY state
+        """,
+        tenant_id,
+        source,
+    )
+    sync_run = await pool.fetchrow(
+        """
+        SELECT min(coalesce(started_at, created_at)) AS sync_started_at
+          FROM source_onboarding_runs
+         WHERE tenant_id = $1
+           AND source = $2
+           AND status IN ('pending', 'in_progress')
         """,
         tenant_id,
         source,
@@ -3066,7 +3140,7 @@ async def _source_rehearsal_status_payload(
         tenant_id,
         source,
     )
-    installed = install is not None and bool(install["enabled"])
+    installed = any(bool(row["enabled"]) for row in installations)
     has_secret = install is not None and bool(install["has_secret"])
     trigger_total = int(triggers["total"] if triggers else 0)
     observations = [
@@ -3079,20 +3153,23 @@ async def _source_rehearsal_status_payload(
         }
         for row in observation_rows
     ]
+    access_payload = await _source_access_status_payload(
+        pool,
+        tenant_id=tenant_id,
+        source=source,
+        install=install,
+        installations=installations,
+        installed=installed,
+    )
+    installation_payloads = [
+        _source_installation_payload(row)
+        for row in installations
+    ]
     return {
         "source": source,
         "installed": installed,
-        "installation": (
-            {
-                "installation_id": install["installation_id"],
-                "enabled": bool(install["enabled"]),
-                "has_secret": bool(install["has_secret"]),
-                "installed_at": install["installed_at"].isoformat(),
-                "details": install.get("details", {}),
-            }
-            if install
-            else None
-        ),
+        "installation": installation_payloads[0] if installation_payloads else None,
+        "installations": installation_payloads,
         "trigger_count": trigger_total,
         "consumed_trigger_count": int(triggers["consumed"] if triggers else 0),
         "run_status_counts": {
@@ -3107,9 +3184,15 @@ async def _source_rehearsal_status_payload(
             for row in shards
         },
         "observation_count": int(observation_count or 0),
+        "sync_started_at": _iso_or_none(
+            sync_run["sync_started_at"] if sync_run else None
+        ),
         "observations": observations,
         "unresolved_failure_count": int(failures["total"] if failures else 0),
         "latest_failure": latest_failure["failure"] if latest_failure else None,
+        "access_summary": access_payload["access_summary"],
+        "access_resources": access_payload["access_resources"],
+        "access_next_actions": access_payload["access_next_actions"],
         "bearer_token": bearer_token,
         "session_expires_at": session_expires_at,
         "next_action": _source_rehearsal_next_action(
@@ -3147,6 +3230,863 @@ async def _enqueue_source_manual_replay(
     return trigger_id
 
 
+def _empty_source_access_status() -> dict[str, Any]:
+    return {
+        "access_summary": {
+            "total": 0,
+            "ready": 0,
+            "missing_access": 0,
+            "needs_admin": 0,
+            "not_selected": 0,
+            "unknown": 0,
+            "selected": 0,
+            "observed": 0,
+        },
+        "access_resources": [],
+        "access_next_actions": [],
+    }
+
+
+async def _source_access_status_payload(
+    pool: Any,
+    *,
+    tenant_id: UUID,
+    source: str,
+    install: dict[str, Any] | None,
+    installations: list[dict[str, Any]],
+    installed: bool,
+) -> dict[str, Any]:
+    if source != "discord" or not installed or install is None:
+        return _empty_source_access_status()
+    return await _discord_source_access_payload_for_installations(
+        pool,
+        tenant_id=tenant_id,
+        installations=installations,
+    )
+
+
+async def _discord_source_access_payload_for_installations(
+    pool: Any,
+    *,
+    tenant_id: UUID,
+    installations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    resources: list[dict[str, Any]] = []
+    actions: list[str] = []
+    for install in installations:
+        if not bool(install.get("enabled")):
+            continue
+        payload = await _discord_source_access_payload(
+            pool,
+            tenant_id=tenant_id,
+            install=install,
+        )
+        resources.extend(payload["access_resources"])
+        actions.extend(payload["access_next_actions"])
+    return {
+        "access_summary": _source_access_summary(resources),
+        "access_resources": resources,
+        "access_next_actions": _dedupe_source_access_actions(actions),
+    }
+
+
+async def _discord_source_access_payload(
+    pool: Any,
+    *,
+    tenant_id: UUID,
+    install: dict[str, Any],
+) -> dict[str, Any]:
+    guild_id = str(install.get("installation_id") or "").strip()
+    installation_row_id = _coerce_uuid(install.get("id"))
+    if not guild_id or installation_row_id is None:
+        status = _empty_source_access_status()
+        status["access_next_actions"] = ["Reconnect Discord so Fyralis can review channel access."]
+        return status
+
+    cache_key = (str(tenant_id), guild_id, str(installation_row_id))
+    now = datetime.now(UTC)
+    cached = _DISCORD_ACCESS_STATUS_CACHE.get(cache_key)
+    if cached is not None and cached[0] > now:
+        return copy.deepcopy(cached[1])
+
+    lock = _DISCORD_ACCESS_STATUS_LOCKS.setdefault(cache_key, asyncio.Lock())
+    async with lock:
+        now = datetime.now(UTC)
+        cached = _DISCORD_ACCESS_STATUS_CACHE.get(cache_key)
+        if cached is not None and cached[0] > now:
+            return copy.deepcopy(cached[1])
+
+        payload = await _discord_source_access_payload_uncached(
+            pool,
+            tenant_id=tenant_id,
+            install=install,
+        )
+        ttl_seconds = _DISCORD_ACCESS_STATUS_CACHE_SECONDS
+        actions = payload.get("access_next_actions") or []
+        if _discord_probe_error_action("discord_api_rate_limited") in actions:
+            ttl_seconds = _DISCORD_ACCESS_STATUS_ERROR_CACHE_SECONDS
+            if cached is not None:
+                payload = copy.deepcopy(cached[1])
+                payload["access_next_actions"] = _dedupe_source_access_actions(
+                    [
+                        _discord_probe_error_action("discord_api_rate_limited"),
+                        *list(payload.get("access_next_actions") or []),
+                    ]
+                )
+        _DISCORD_ACCESS_STATUS_CACHE[cache_key] = (
+            now + timedelta(seconds=ttl_seconds),
+            copy.deepcopy(payload),
+        )
+        return payload
+
+
+async def _discord_source_access_payload_uncached(
+    pool: Any,
+    *,
+    tenant_id: UUID,
+    install: dict[str, Any],
+) -> dict[str, Any]:
+    status = _empty_source_access_status()
+    guild_id = str(install.get("installation_id") or "").strip()
+    installation_row_id = _coerce_uuid(install.get("id"))
+    if not guild_id or installation_row_id is None:
+        status["access_next_actions"] = ["Reconnect Discord so Fyralis can review channel access."]
+        return status
+
+    probe_at = datetime.now(UTC).isoformat()
+    client = DiscordClient(
+        pool=pool,
+        secret_store=None,
+        tenant_id=tenant_id,
+        installation_row_id=installation_row_id,
+        guild_id=guild_id,
+    )
+    try:
+        guild_name = await _discord_installation_name(client, install, guild_id)
+        if guild_name:
+            details = dict(install.get("details") or {})
+            details.setdefault("server_name", guild_name)
+            details.setdefault("guild_name", guild_name)
+            install["details"] = details
+        channels = await client.list_guild_channels(guild_id)
+        observation_stats = await _discord_observation_stats_by_channel(
+            pool,
+            tenant_id=tenant_id,
+        )
+        previous_access_state = await _discord_existing_access_state_by_channel(
+            pool,
+            tenant_id=tenant_id,
+            guild_id=guild_id,
+        )
+        resources = []
+        category_names = {
+            str(channel.get("id")): str(channel.get("name") or "Uncategorized")
+            for channel in channels
+            if _discord_channel_type(channel) == _DISCORD_CATEGORY_CHANNEL_TYPE
+            and channel.get("id") is not None
+        }
+        category_private = {
+            str(channel.get("id")): _discord_channel_has_private_gate(
+                channel,
+                guild_id=guild_id,
+            )
+            for channel in channels
+            if _discord_channel_type(channel) == _DISCORD_CATEGORY_CHANNEL_TYPE
+            and channel.get("id") is not None
+        }
+        message_channels = await _discord_message_channels_for_access(
+            client,
+            guild_id=guild_id,
+            channels=channels,
+            include_archived_threads=False,
+        )
+        channel_names = {
+            str(channel.get("id")): str(channel.get("name") or channel.get("id") or "")
+            for channel in channels + message_channels
+            if channel.get("id") is not None
+        }
+        message_channels.sort(
+            key=lambda channel: (
+                str(channel.get("parent_id") or ""),
+                _discord_channel_position(channel),
+                str(channel.get("name") or channel.get("id") or ""),
+            )
+        )
+        for channel in message_channels:
+            channel_id = str(channel.get("id") or "").strip()
+            if not channel_id:
+                continue
+            stats = observation_stats.get(channel_id, {})
+            permission_status = "unknown"
+            diagnostics: dict[str, Any] = {}
+            previous_status = previous_access_state.get(channel_id)
+            if previous_status == "ready":
+                permission_status = "ready"
+            else:
+                try:
+                    await client.get_messages(channel_id=channel_id, limit=1)
+                    permission_status = "ready"
+                except DiscordApiError as exc:
+                    error_code = getattr(exc, "code", "discord_api_error")
+                    if error_code == "discord_channel_forbidden":
+                        permission_status = "missing_access"
+                        diagnostics = {
+                            "issue_code": "discord_channel_missing_access",
+                            "message": (
+                                "Reconnect Discord with Full Server Sync so Fyralis "
+                                "can read private channels without per-channel setup."
+                            ),
+                        }
+                    elif error_code == "discord_secret_unavailable":
+                        permission_status = "needs_admin"
+                        diagnostics = {
+                            "issue_code": "discord_bot_token_missing",
+                            "message": "Configure the Discord bot token in the customer data plane.",
+                        }
+                    else:
+                        diagnostics = {
+                            "issue_code": _safe_provider_error_code(error_code),
+                            "message": "Fyralis could not complete this channel access check.",
+                        }
+            parent_id = (
+                str(channel.get("parent_id"))
+                if channel.get("parent_id") is not None
+                else None
+            )
+            parent_private = category_private.get(parent_id or "", False)
+            if _discord_channel_type(channel) in {
+                _DISCORD_ANNOUNCEMENT_THREAD_TYPE,
+                _DISCORD_PUBLIC_THREAD_TYPE,
+                _DISCORD_PRIVATE_THREAD_TYPE,
+            }:
+                parent_channel = next(
+                    (
+                        item for item in channels
+                        if str(item.get("id") or "") == str(parent_id or "")
+                    ),
+                    None,
+                )
+                parent_private = (
+                    _discord_channel_type(channel) == _DISCORD_PRIVATE_THREAD_TYPE
+                    or _discord_channel_has_private_gate(
+                        parent_channel or {},
+                        guild_id=guild_id,
+                    )
+                    or category_private.get(
+                        str((parent_channel or {}).get("parent_id") or ""),
+                        False,
+                    )
+                )
+            visibility = _discord_channel_visibility(
+                channel,
+                guild_id=guild_id,
+                parent_private=parent_private,
+                permission_status=permission_status,
+            )
+            resources.append(
+                {
+                    "source": "discord",
+                    "installation_id": guild_id,
+                    "installation_name": guild_name
+                    or _discord_installation_fallback_name(guild_id),
+                    "resource_kind": "channel",
+                    "resource_id": channel_id,
+                    "display_name": str(channel.get("name") or channel_id),
+                    "parent_id": parent_id,
+                    "parent_name": (
+                        channel_names.get(parent_id or "")
+                        or category_names.get(parent_id or "")
+                    ),
+                    "visibility": visibility,
+                    "permission_status": permission_status,
+                    "selected": permission_status == "ready",
+                    "can_backfill": permission_status == "ready",
+                    "can_receive_live": permission_status == "ready",
+                    "last_probe_at": probe_at,
+                    "last_observation_at": _iso_or_none(
+                        stats.get("last_observation_at")
+                    ),
+                    "observation_count": int(stats.get("observation_count") or 0),
+                    "diagnostics": diagnostics,
+                }
+            )
+        status["access_resources"] = resources
+        status["access_summary"] = _source_access_summary(resources)
+        replay_actions = await _sync_discord_access_state_and_enqueue_replay(
+            pool,
+            tenant_id=tenant_id,
+            install=install,
+            resources=resources,
+        )
+        status["access_next_actions"] = _dedupe_source_access_actions(
+            _source_access_next_actions(resources) + replay_actions
+        )
+        return status
+    except DiscordApiError as exc:
+        error_code = getattr(exc, "code", "discord_api_error")
+        status["access_next_actions"] = [_discord_probe_error_action(error_code)]
+        return status
+    finally:
+        await client.aclose()
+
+
+async def _sync_discord_access_state_and_enqueue_replay(
+    pool: Any,
+    *,
+    tenant_id: UUID,
+    install: dict[str, Any],
+    resources: list[dict[str, Any]],
+) -> list[str]:
+    guild_id = str(install.get("installation_id") or "").strip()
+    installation_row_id = _coerce_uuid(install.get("id"))
+    if not guild_id or installation_row_id is None:
+        return []
+
+    channel_resources = [
+        resource
+        for resource in resources
+        if resource.get("resource_kind") == "channel"
+        and str(resource.get("resource_id") or "").strip()
+    ]
+    if not channel_resources:
+        return []
+
+    transitioned_channel_ids: list[str] = []
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            for resource in channel_resources:
+                resource_id = str(resource.get("resource_id") or "").strip()
+                permission_status = _source_access_permission_status(
+                    resource.get("permission_status")
+                )
+                observation_count = max(
+                    0,
+                    int(resource.get("observation_count") or 0),
+                )
+                metadata_json = json.dumps(
+                    {
+                        "display_name": str(resource.get("display_name") or resource_id),
+                        "installation_name": str(
+                            resource.get("installation_name")
+                            or _discord_installation_fallback_name(guild_id)
+                        ),
+                        "parent_id": resource.get("parent_id"),
+                        "parent_name": str(resource.get("parent_name") or ""),
+                        "visibility": str(resource.get("visibility") or "unknown"),
+                    },
+                    sort_keys=True,
+                )
+                if permission_status == "ready":
+                    transitioned = await conn.fetch(
+                        """
+                        UPDATE source_resource_access_state
+                           SET permission_status = 'ready',
+                               observation_count = $5,
+                               last_probe_at = now(),
+                               last_ready_replay_at = now(),
+                               metadata = $6::jsonb,
+                               updated_at = now()
+                         WHERE tenant_id = $1
+                           AND source = 'discord'
+                           AND installation_id = $2
+                           AND resource_kind = 'channel'
+                           AND resource_id = $3
+                           AND permission_status = ANY($4::text[])
+                         RETURNING resource_id
+                        """,
+                        tenant_id,
+                        guild_id,
+                        resource_id,
+                        sorted(_SOURCE_ACCESS_READY_REPLAY_FROM_STATUSES),
+                        observation_count,
+                        metadata_json,
+                    )
+                    transitioned_channel_ids.extend(
+                        str(row["resource_id"]) for row in transitioned
+                    )
+                await conn.execute(
+                    """
+                    INSERT INTO source_resource_access_state (
+                        tenant_id,
+                        source,
+                        installation_id,
+                        resource_kind,
+                        resource_id,
+                        permission_status,
+                        observation_count,
+                        last_probe_at,
+                        metadata
+                    )
+                    VALUES (
+                        $1,
+                        'discord',
+                        $2,
+                        'channel',
+                        $3,
+                        $4,
+                        $5,
+                        now(),
+                        $6::jsonb
+                    )
+                    ON CONFLICT (
+                        tenant_id,
+                        source,
+                        installation_id,
+                        resource_kind,
+                        resource_id
+                    )
+                    DO UPDATE SET
+                        permission_status = EXCLUDED.permission_status,
+                        observation_count = EXCLUDED.observation_count,
+                        last_probe_at = EXCLUDED.last_probe_at,
+                        metadata = EXCLUDED.metadata,
+                        updated_at = now()
+                    """,
+                    tenant_id,
+                    guild_id,
+                    resource_id,
+                    permission_status,
+                    observation_count,
+                    metadata_json,
+                )
+
+            if transitioned_channel_ids:
+                await conn.execute(
+                    """
+                    INSERT INTO onboarding_triggers (
+                        id,
+                        tenant_id,
+                        source,
+                        trigger_kind,
+                        installation_row_id,
+                        payload
+                    )
+                    VALUES (
+                        $1,
+                        $2,
+                        'discord',
+                        'manual_replay',
+                        NULL,
+                        $3::jsonb
+                    )
+                    """,
+                    uuid7(),
+                    tenant_id,
+                    json.dumps(
+                        {
+                            "reason": "discord_channel_access_granted",
+                            "installation_row_id": str(installation_row_id),
+                            "guild_id": guild_id,
+                            "channel_ids": transitioned_channel_ids,
+                            "channel_count": len(transitioned_channel_ids),
+                            "queued_by": "discord_access_probe",
+                        },
+                        sort_keys=True,
+                    ),
+                )
+
+    if not transitioned_channel_ids:
+        return []
+    channel_word = "channel" if len(transitioned_channel_ids) == 1 else "channels"
+    return [
+        "Fyralis detected newly granted Discord access and queued "
+        f"backfill for {len(transitioned_channel_ids)} {channel_word}."
+    ]
+
+
+def _source_access_permission_status(value: Any) -> str:
+    status = str(value or "unknown").strip()
+    if status in _SOURCE_ACCESS_PERMISSION_STATUSES:
+        return status
+    return "unknown"
+
+
+async def _discord_observation_stats_by_channel(
+    pool: Any,
+    *,
+    tenant_id: UUID,
+) -> dict[str, dict[str, Any]]:
+    rows = await pool.fetch(
+        """
+        SELECT content #>> '{metadata,channel_id}' AS channel_id,
+               count(*)::int AS observation_count,
+               max(ingested_at) AS last_observation_at
+          FROM observations
+         WHERE tenant_id = $1
+           AND source_channel = 'discord:message'
+           AND content #>> '{metadata,channel_id}' IS NOT NULL
+         GROUP BY 1
+        """,
+        tenant_id,
+    )
+    return {
+        str(row["channel_id"]): {
+            "observation_count": int(row["observation_count"] or 0),
+            "last_observation_at": row["last_observation_at"],
+        }
+        for row in rows
+        if row["channel_id"]
+    }
+
+
+async def _discord_existing_access_state_by_channel(
+    pool: Any,
+    *,
+    tenant_id: UUID,
+    guild_id: str,
+) -> dict[str, str]:
+    rows = await pool.fetch(
+        """
+        SELECT resource_id, permission_status
+          FROM source_resource_access_state
+         WHERE tenant_id = $1
+           AND source = 'discord'
+           AND installation_id = $2
+           AND resource_kind = 'channel'
+        """,
+        tenant_id,
+        guild_id,
+    )
+    return {
+        str(row["resource_id"]): _source_access_permission_status(
+            row["permission_status"]
+        )
+        for row in rows
+        if row["resource_id"]
+    }
+
+
+async def _discord_message_channels_for_access(
+    client: DiscordClient,
+    *,
+    guild_id: str,
+    channels: list[dict[str, Any]],
+    include_archived_threads: bool = True,
+) -> list[dict[str, Any]]:
+    streams: dict[str, dict[str, Any]] = {
+        str(channel["id"]): channel
+        for channel in channels
+        if channel.get("id") is not None
+        and _discord_channel_type(channel) in _DISCORD_MESSAGE_CHANNEL_TYPES
+    }
+
+    for thread in await _discord_safe_list_active_threads(client, guild_id):
+        thread_id = str(thread.get("id") or "").strip()
+        if thread_id and _discord_channel_type(thread) in _DISCORD_MESSAGE_CHANNEL_TYPES:
+            streams[thread_id] = thread
+
+    if include_archived_threads:
+        for parent in channels:
+            parent_id = str(parent.get("id") or "").strip()
+            if (
+                not parent_id
+                or _discord_channel_type(parent) not in _DISCORD_THREAD_PARENT_CHANNEL_TYPES
+            ):
+                continue
+            for archive_kind in ("public", "private"):
+                threads = await _discord_safe_list_archived_threads(
+                    client,
+                    parent_id,
+                    archive_kind=archive_kind,
+                )
+                for thread in threads:
+                    thread_id = str(thread.get("id") or "").strip()
+                    if (
+                        thread_id
+                        and _discord_channel_type(thread) in _DISCORD_MESSAGE_CHANNEL_TYPES
+                    ):
+                        streams[thread_id] = thread
+
+    return list(streams.values())
+
+
+async def _discord_safe_list_active_threads(
+    client: DiscordClient,
+    guild_id: str,
+) -> list[dict[str, Any]]:
+    try:
+        return await client.list_active_guild_threads(guild_id)
+    except (AttributeError, DiscordApiError, NotImplementedError):
+        return []
+
+
+async def _discord_safe_list_archived_threads(
+    client: DiscordClient,
+    channel_id: str,
+    *,
+    archive_kind: str,
+) -> list[dict[str, Any]]:
+    try:
+        return await client.list_channel_archived_threads(
+            channel_id,
+            archive_kind=archive_kind,
+        )
+    except (AttributeError, DiscordApiError, NotImplementedError):
+        return []
+
+
+def _source_access_summary(resources: list[dict[str, Any]]) -> dict[str, int]:
+    summary = {
+        "total": len(resources),
+        "ready": 0,
+        "missing_access": 0,
+        "needs_admin": 0,
+        "not_selected": 0,
+        "unknown": 0,
+        "selected": 0,
+        "observed": 0,
+    }
+    for resource in resources:
+        permission_status = str(resource.get("permission_status") or "unknown")
+        if permission_status in summary:
+            summary[permission_status] += 1
+        else:
+            summary["unknown"] += 1
+        if resource.get("selected"):
+            summary["selected"] += 1
+        if int(resource.get("observation_count") or 0) > 0:
+            summary["observed"] += 1
+    return summary
+
+
+def _source_access_next_actions(resources: list[dict[str, Any]]) -> list[str]:
+    actions: list[str] = []
+    missing_access = [
+        resource
+        for resource in resources
+        if resource.get("permission_status") == "missing_access"
+    ]
+    needs_admin = [
+        resource
+        for resource in resources
+        if resource.get("permission_status") == "needs_admin"
+    ]
+    if missing_access:
+        channel_names = ", ".join(
+            f"#{resource['display_name']}" for resource in missing_access[:3]
+        )
+        suffix = " and more" if len(missing_access) > 3 else ""
+        actions.append(
+            "Reconnect Discord with Full Server Sync so Fyralis can read "
+            f"{channel_names}{suffix} without per-channel role setup."
+        )
+    if needs_admin:
+        actions.append("Configure the Discord bot token before Fyralis can read channels.")
+    if not actions and resources and not any(
+        resource.get("permission_status") == "ready" for resource in resources
+    ):
+        actions.append("Review Discord bot permissions, then refresh channel access.")
+    return actions
+
+
+def _dedupe_source_access_actions(actions: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for action in actions:
+        if action in seen:
+            continue
+        seen.add(action)
+        deduped.append(action)
+    return deduped
+
+
+def _discord_probe_error_action(error_code: str) -> str:
+    if error_code == "discord_secret_unavailable":
+        return "Configure the Discord bot token before Fyralis can review channel access."
+    if error_code == "discord_api_unauthorized":
+        return "Reinstall Discord or restore bot access to this server."
+    if error_code == "discord_api_rate_limited":
+        return "Discord rate-limited the access review. Refresh after the retry window."
+    return "Refresh Discord access after provider connectivity is healthy."
+
+
+async def _discord_installation_name(
+    client: Any,
+    install: dict[str, Any],
+    guild_id: str,
+) -> str | None:
+    details = install.get("details") or {}
+    for key in ("server_name", "guild_name", "name"):
+        value = details.get(key) if isinstance(details, dict) else None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    list_guilds = getattr(client, "list_guilds", None)
+    if not callable(list_guilds):
+        return None
+    try:
+        guilds = await list_guilds()
+    except Exception:  # noqa: BLE001 - channel probes still provide useful status.
+        return None
+    for guild in guilds:
+        if not isinstance(guild, dict):
+            continue
+        if str(guild.get("id") or "") == guild_id:
+            name = guild.get("name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+    return None
+
+
+def _discord_installation_fallback_name(guild_id: str) -> str:
+    suffix = guild_id[-6:] if len(guild_id) > 6 else guild_id
+    return f"Server {suffix}" if suffix else "Discord server"
+
+
+def _discord_channel_visibility(
+    channel: dict[str, Any],
+    *,
+    guild_id: str,
+    parent_private: bool,
+    permission_status: str,
+) -> str:
+    if _discord_channel_has_private_gate(channel, guild_id=guild_id) or parent_private:
+        return "private"
+    if permission_status == "missing_access":
+        return "private"
+    if permission_status == "ready":
+        return "public"
+    return "unknown"
+
+
+def _discord_channel_has_private_gate(
+    channel: dict[str, Any],
+    *,
+    guild_id: str,
+) -> bool:
+    overwrites = channel.get("permission_overwrites")
+    if not isinstance(overwrites, list):
+        return False
+    for overwrite in overwrites:
+        if not isinstance(overwrite, dict):
+            continue
+        if str(overwrite.get("id") or "") != guild_id:
+            continue
+        if _discord_overwrite_type(overwrite) != _DISCORD_OVERWRITE_ROLE_TYPE:
+            continue
+        if _discord_permission_bits(overwrite.get("deny")) & _DISCORD_VIEW_CHANNEL_PERMISSION:
+            return True
+    return False
+
+
+def _discord_overwrite_type(overwrite: dict[str, Any]) -> int | None:
+    raw_type = overwrite.get("type")
+    if isinstance(raw_type, int):
+        return raw_type
+    try:
+        return int(str(raw_type))
+    except (TypeError, ValueError):
+        return None
+
+
+def _discord_permission_bits(value: Any) -> int:
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _discord_channel_type(channel: dict[str, Any]) -> int | None:
+    raw_type = channel.get("type")
+    if isinstance(raw_type, int):
+        return raw_type
+    try:
+        return int(str(raw_type))
+    except (TypeError, ValueError):
+        return None
+
+
+def _discord_channel_position(channel: dict[str, Any]) -> int:
+    raw_position = channel.get("position")
+    if isinstance(raw_position, int):
+        return raw_position
+    try:
+        return int(str(raw_position))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _coerce_uuid(value: Any) -> UUID | None:
+    if isinstance(value, UUID):
+        return value
+    if value is None:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _iso_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def _safe_provider_error_code(error_code: Any) -> str:
+    if not isinstance(error_code, str) or not error_code:
+        return "discord_api_error"
+    safe = "".join(
+        char if char.isalnum() or char == "_" else "_"
+        for char in error_code.strip().lower()
+    )
+    return safe[:80] or "discord_api_error"
+
+
+def _source_installation_payload(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "installation_id": row["installation_id"],
+        "enabled": bool(row["enabled"]),
+        "has_secret": bool(row["has_secret"]),
+        "installed_at": row["installed_at"].isoformat(),
+        "details": row.get("details", {}),
+    }
+
+
+async def _source_installation_rows(
+    pool: Any,
+    *,
+    tenant_id: UUID,
+    source: str,
+) -> list[dict[str, Any]]:
+    if source in _OAUTH_REHEARSAL_SOURCES:
+        rows = await pool.fetch(
+            """
+            SELECT id, installation_id, enabled,
+                   (secret_ref IS NOT NULL) AS has_secret, installed_at
+             FROM provider_installations
+             WHERE tenant_id = $1 AND provider = $2
+             ORDER BY enabled DESC, installed_at DESC
+            """,
+            tenant_id,
+            source,
+        )
+        out = [dict(row, details={}) for row in rows]
+        if source == "github":
+            for item in out:
+                if item["enabled"]:
+                    item["has_secret"] = True
+                    item["details"] = {
+                        "credential_scope": "github_app_level_private_key_and_webhook_secret",
+                    }
+        if source == "discord":
+            has_bot_token = bool(load_app_secret_text_from_env("DISCORD_BOT_TOKEN"))
+            for item in out:
+                if item["enabled"]:
+                    item["has_secret"] = has_bot_token
+                    item["details"] = {
+                        "credential_scope": "discord_app_level_bot_token",
+                    }
+        return out
+
+    row = await _source_installation_row(pool, tenant_id=tenant_id, source=source)
+    return [row] if row else []
+
+
 async def _source_installation_row(
     pool: Any,
     *,
@@ -3156,11 +4096,11 @@ async def _source_installation_row(
     if source in _OAUTH_REHEARSAL_SOURCES:
         row = await pool.fetchrow(
             """
-            SELECT installation_id, enabled, (secret_ref IS NOT NULL) AS has_secret,
-                   installed_at
-              FROM provider_installations
+            SELECT id, installation_id, enabled,
+                   (secret_ref IS NOT NULL) AS has_secret, installed_at
+             FROM provider_installations
              WHERE tenant_id = $1 AND provider = $2
-             ORDER BY installed_at DESC
+             ORDER BY enabled DESC, installed_at DESC
              LIMIT 1
             """,
             tenant_id,

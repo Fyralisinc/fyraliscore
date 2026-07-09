@@ -47,6 +47,9 @@ x-sb-envfile: &sb-envfile
     FYRALIS_SLACK_REHEARSAL_ENABLED: "1"
     FYRALIS_SOURCE_AUTO_CONNECT_EXECUTE_BROWSER_DOM: "1"
     FYRALIS_SOURCE_AUTO_CONNECT_HEADLESS_BROWSER: "1"
+    SHARD_FETCH_BATCH: "auto"
+    SHARD_FETCH_CONCURRENCY: "auto"
+    DISCORD_GATEWAY_INSTALLATION_CACHE_TTL_SECONDS: "5"
   # GitHub App private key (multi-line PEM can't live in env_file) — mount
   # it read-only from the gitignored .secrets/ dir; .env.sandbox points
   # GITHUB_APP_PRIVATE_KEY_PATH here. Harmless on workers that don't read it.

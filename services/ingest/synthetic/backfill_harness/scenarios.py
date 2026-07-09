@@ -47,8 +47,7 @@ class BackfillScenario:
         For Gmail: messages * 1 record/message. For GitHub: repos *
         events_per_repo * 2 (issues + pull_requests). For Slack:
         channels * messages_per_channel. For Discord: channels *
-        messages_per_channel (subject to 5% sampling — see Discord
-        planner). The harness's assertions read this value.
+        messages_per_channel. The harness's assertions read this value.
     """
 
     tenant_slug: str

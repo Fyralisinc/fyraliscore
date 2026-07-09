@@ -43,6 +43,14 @@ x-app-env: &app-env
   AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
   # Redis backs the embedding-backlog drainer's rate limiter.
   REDIS_URL: redis://redis:6379/0
+  # Shard fetch fans out independent source shards, e.g. Discord channels,
+  # while each shard still preserves its own cursor/page ordering. "auto"
+  # claims and runs every shard currently available in the tick.
+  SHARD_FETCH_BATCH: "auto"
+  SHARD_FETCH_CONCURRENCY: "auto"
+  # Keep Discord gateway install misses short so a freshly authorized server
+  # starts resolving promptly after OAuth creates provider_installations.
+  DISCORD_GATEWAY_INSTALLATION_CACHE_TTL_SECONDS: "5"
   # Consumers expose /healthz + /metrics on this port (per container).
   INGESTION_HEALTH_PORT: "9300"
 

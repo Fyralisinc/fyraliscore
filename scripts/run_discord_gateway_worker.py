@@ -274,10 +274,13 @@ async def _build_dispatch_deps(
     log,
 ) -> tuple[DispatchDeps, Any, _DataPlane]:
     secret_store = build_secret_store(pool)
+    cache_ttl_seconds = float(
+        os.environ.get("DISCORD_GATEWAY_INSTALLATION_CACHE_TTL_SECONDS", "5"),
+    )
     tenant_resolver = build_tenant_resolver(
         TenantResolverDeps(
             pool=pool,
-            cache=InstallationCache(),
+            cache=InstallationCache(ttl_seconds=cache_ttl_seconds),
             clock=time.monotonic,
             metrics=default_metrics(),
         )

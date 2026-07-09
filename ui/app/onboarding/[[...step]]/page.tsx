@@ -8,6 +8,7 @@ type PageProps = {
   }>;
   searchParams: Promise<{
     source?: string | string[];
+    fresh?: string | string[];
   }>;
 };
 
@@ -35,7 +36,8 @@ export function generateStaticParams() {
     { step: ["activation"] },
     { step: ["sources"] },
     { step: ["sources", "discord"] },
-    { step: ["sources", "discord", "automated"] }
+    { step: ["sources", "discord", "automated"] },
+    { step: ["fresh", "discord"] }
   ];
 }
 
@@ -43,20 +45,36 @@ export default async function OnboardingPage({ params, searchParams }: PageProps
   const resolved = await params;
   const resolvedSearch = await searchParams;
   const requested = resolved.step?.[0];
-  const sourceFromPath = requested === "sources" ? resolved.step?.[1] : undefined;
+  const sourceFromPath =
+    requested === "sources" || requested === "fresh"
+      ? resolved.step?.[1]
+      : undefined;
   const sourceFromQuery = Array.isArray(resolvedSearch.source)
     ? resolvedSearch.source[0]
     : resolvedSearch.source;
+  const freshParam = Array.isArray(resolvedSearch.fresh)
+    ? resolvedSearch.fresh[0]
+    : resolvedSearch.fresh;
   const initialSourceId = sourceFromPath ?? sourceFromQuery;
   const step: StepId = resolveOnboardingStep(resolved.step);
+  const freshStart = requested === "fresh" || freshParam === "1" || freshParam === "true";
 
-  return <OnboardingApp initialStep={step} initialSourceId={initialSourceId} />;
+  return (
+    <OnboardingApp
+      initialStep={step}
+      initialSourceId={initialSourceId}
+      freshStart={freshStart}
+    />
+  );
 }
 
 function resolveOnboardingStep(parts: string[] | undefined): StepId {
   const requested = parts?.[0];
   if (!requested) {
     return "get-fyralis";
+  }
+  if (requested === "fresh") {
+    return "source-catalog";
   }
   if (requested === "sources" && parts?.[2] === "automated") {
     return "source-catalog";

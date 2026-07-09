@@ -12,7 +12,7 @@ import {
   RefreshCw,
   Rocket,
   ShieldCheck,
-  TerminalSquare
+  TerminalSquare,
 } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { useForm, type UseFormRegisterReturn } from "react-hook-form";
@@ -29,7 +29,7 @@ import {
   sourceScopeSchema,
   type CloudReadinessFormValues,
   type CustomerFormValues,
-  type SourceScopeFormValues
+  type SourceScopeFormValues,
 } from "../schemas/onboarding-schemas";
 import type {
   CloudReadiness,
@@ -44,11 +44,11 @@ import type {
   StepId,
   SyncJob,
   Validation,
-  Workspace
+  Workspace,
 } from "../types";
 import {
   SourceMarketplace,
-  type SourceAutomationCardState
+  type SourceAutomationCardState,
 } from "../components/source-marketplace";
 import {
   autoConnectSourceRehearsal,
@@ -58,9 +58,10 @@ import {
   finalizeAwsSourceRehearsal,
   retryAwsFirstSyncRehearsal,
   type SourceAutoConnectResponse,
+  type SourceConnectAccessMode,
   type SourceRehearsalPrepareResponse,
   type SourceRehearsalStatus,
-  submitDesignPartnerIntake
+  submitDesignPartnerIntake,
 } from "../services/onboarding-service";
 
 export type StepViewProps = {
@@ -82,19 +83,28 @@ export type StepViewProps = {
   updateCustomer: (customer: Customer) => void;
   updateReadiness: (readiness: CloudReadiness) => void;
   selectSource: (sourceId: string) => void;
-  updateConnection: (sourceId: string, patch: Partial<SourceConnection>) => void;
+  updateConnection: (
+    sourceId: string,
+    patch: Partial<SourceConnection>,
+  ) => void;
   setSourceValidation: (validation: Validation) => void;
   upsertSyncJob: (job: SyncJob) => void;
   landSourceObservations: (
     sourceId: string,
-    observations: SourceObservation[]
+    observations: SourceObservation[],
   ) => void;
   setLaunchReady: (ready: boolean) => void;
   goTo: (step: StepId) => void;
   advance: () => void;
 };
 
-export function StepView({ stepId, props }: { stepId: StepId; props: StepViewProps }) {
+export function StepView({
+  stepId,
+  props,
+}: {
+  stepId: StepId;
+  props: StepViewProps;
+}) {
   switch (stepId) {
     case "get-fyralis":
       return <PlanSelection {...props} />;
@@ -148,9 +158,11 @@ const BYOC_CAPABILITIES: CapabilityDefinition[] = [
     existingValue: "available",
     provisionValue: "provision-eks",
     module: "terraform/aws/eks + helm/fyralis",
-    requiredFor: "Running the gateway, workers, and local customer-cloud console.",
-    provisionAction: "Provision a dedicated EKS runtime and install Fyralis with Helm.",
-    existingAction: "Attach Fyralis to the approved Kubernetes runtime."
+    requiredFor:
+      "Running the gateway, workers, and local customer-cloud console.",
+    provisionAction:
+      "Provision a dedicated EKS runtime and install Fyralis with Helm.",
+    existingAction: "Attach Fyralis to the approved Kubernetes runtime.",
   },
   {
     key: "network",
@@ -158,9 +170,12 @@ const BYOC_CAPABILITIES: CapabilityDefinition[] = [
     existingValue: "existing-ready",
     provisionValue: "provision-isolated-vpc",
     module: "terraform/aws/network",
-    requiredFor: "Keeping ingress, egress, private DNS, and service access in the approved boundary.",
-    provisionAction: "Create an isolated VPC, subnets, security groups, and DNS shape.",
-    existingAction: "Use the approved VPC and generate network policy references."
+    requiredFor:
+      "Keeping ingress, egress, private DNS, and service access in the approved boundary.",
+    provisionAction:
+      "Create an isolated VPC, subnets, security groups, and DNS shape.",
+    existingAction:
+      "Use the approved VPC and generate network policy references.",
   },
   {
     key: "secrets",
@@ -168,9 +183,11 @@ const BYOC_CAPABILITIES: CapabilityDefinition[] = [
     existingValue: "aws-secrets-manager",
     provisionValue: "provision-secret-refs",
     module: "terraform/aws/secrets",
-    requiredFor: "Storing customer-owned source tokens, database URLs, and provider secrets locally.",
-    provisionAction: "Create secret names, IAM access, and placeholder refs without secret values.",
-    existingAction: "Reference existing customer-owned secret names only."
+    requiredFor:
+      "Storing customer-owned source tokens, database URLs, and provider secrets locally.",
+    provisionAction:
+      "Create secret names, IAM access, and placeholder refs without secret values.",
+    existingAction: "Reference existing customer-owned secret names only.",
   },
   {
     key: "postgres",
@@ -179,8 +196,10 @@ const BYOC_CAPABILITIES: CapabilityDefinition[] = [
     provisionValue: "provision-rds-pgvector",
     module: "terraform/aws/rds-pgvector",
     requiredFor: "Tenant data, model state, embeddings, and vector search.",
-    provisionAction: "Provision Postgres/RDS and enable the pgvector extension.",
-    existingAction: "Use the existing Postgres endpoint and pgvector validation check."
+    provisionAction:
+      "Provision Postgres/RDS and enable the pgvector extension.",
+    existingAction:
+      "Use the existing Postgres endpoint and pgvector validation check.",
   },
   {
     key: "objectStorage",
@@ -188,9 +207,11 @@ const BYOC_CAPABILITIES: CapabilityDefinition[] = [
     existingValue: "s3-compatible-ready",
     provisionValue: "provision-s3",
     module: "terraform/aws/s3",
-    requiredFor: "Raw payload tier, deployment artifacts, and durable evidence receipts.",
-    provisionAction: "Create S3 buckets, retention policy, and least-privilege access.",
-    existingAction: "Use the approved bucket and generate object-storage refs."
+    requiredFor:
+      "Raw payload tier, deployment artifacts, and durable evidence receipts.",
+    provisionAction:
+      "Create S3 buckets, retention policy, and least-privilege access.",
+    existingAction: "Use the approved bucket and generate object-storage refs.",
   },
   {
     key: "kafka",
@@ -199,9 +220,11 @@ const BYOC_CAPABILITIES: CapabilityDefinition[] = [
     provisionValue: "provision-msk",
     module: "terraform/aws/msk",
     requiredFor: "Kafka-first ingestion durability and worker orchestration.",
-    provisionAction: "Provision MSK/Kafka topics, ACL shape, and worker connectivity.",
-    existingAction: "Use the existing Kafka/MSK cluster and generate topic/ACL checks."
-  }
+    provisionAction:
+      "Provision MSK/Kafka topics, ACL shape, and worker connectivity.",
+    existingAction:
+      "Use the existing Kafka/MSK cluster and generate topic/ACL checks.",
+  },
 ];
 
 type SourceRehearsalConfig = {
@@ -213,7 +236,11 @@ type SourceRehearsalConfig = {
     label: string;
     method: "GET" | "POST";
     path: string;
-    access: "bearer session" | "state-token callback" | "provider signed" | "local only";
+    access:
+      | "bearer session"
+      | "state-token callback"
+      | "provider signed"
+      | "local only";
   }>;
   generatedArtifacts: string[];
   envKeys: string[];
@@ -238,35 +265,35 @@ const SOURCE_REHEARSAL_CONFIG: Record<string, SourceRehearsalConfig> = {
         label: "Install",
         method: "GET",
         path: "/integrations/slack/install",
-        access: "bearer session"
+        access: "bearer session",
       },
       {
         label: "OAuth callback",
         method: "GET",
         path: "/integrations/slack/callback",
-        access: "state-token callback"
+        access: "state-token callback",
       },
       {
         label: "Events API webhook",
         method: "POST",
         path: "/webhooks/slack/events",
-        access: "provider signed"
-      }
+        access: "provider signed",
+      },
     ],
     generatedArtifacts: [
       "fyralis-slack-app-manifest.yaml",
       "fyralis-slack-app-events-manifest.yaml",
       "slack.env.example",
-      "slack-provider-setup.json"
+      "slack-provider-setup.json",
     ],
     envKeys: [
       "SLACK_CLIENT_ID",
       "SLACK_CLIENT_SECRET",
       "SLACK_SIGNING_SECRET",
       "SLACK_REDIRECT_URI",
-      "OAUTH_STATE_HMAC_KEY"
+      "OAUTH_STATE_HMAC_KEY",
     ],
-    manualGates: ["Slack app/admin approval", "Slack OAuth consent"]
+    manualGates: ["Slack app/admin approval", "Slack OAuth consent"],
   },
   jira: {
     sourceId: "jira",
@@ -279,32 +306,32 @@ const SOURCE_REHEARSAL_CONFIG: Record<string, SourceRehearsalConfig> = {
         label: "Credential preflight",
         method: "POST",
         path: "/integrations/jira/connect/preflight",
-        access: "bearer session"
+        access: "bearer session",
       },
       {
         label: "Finalize connection",
         method: "POST",
         path: "/integrations/jira/connect/finalize",
-        access: "bearer session"
+        access: "bearer session",
       },
       {
         label: "Webhook",
         method: "POST",
         path: "/webhooks/jira/events",
-        access: "provider signed"
-      }
+        access: "provider signed",
+      },
     ],
     generatedArtifacts: [
       "jira-connect-payload.example.json",
       "jira.env.example",
-      "jira-provider-setup.json"
+      "jira-provider-setup.json",
     ],
     envKeys: ["JIRA_BASE_URL", "JIRA_ACCOUNT_EMAIL", "JIRA_API_TOKEN"],
     manualGates: [
       "Atlassian API token creation",
       "Project scope selection",
-      "Jira webhook registration"
-    ]
+      "Jira webhook registration",
+    ],
   },
   github: {
     sourceId: "github",
@@ -316,34 +343,34 @@ const SOURCE_REHEARSAL_CONFIG: Record<string, SourceRehearsalConfig> = {
         label: "Install",
         method: "GET",
         path: "/integrations/github/install",
-        access: "bearer session"
+        access: "bearer session",
       },
       {
         label: "GitHub callback",
         method: "GET",
         path: "/integrations/github/callback",
-        access: "state-token callback"
+        access: "state-token callback",
       },
       {
         label: "Webhook",
         method: "POST",
         path: "/webhooks/github",
-        access: "provider signed"
-      }
+        access: "provider signed",
+      },
     ],
     generatedArtifacts: [
       "fyralis-github-app-manifest.json",
       "github.env.example",
-      "github-provider-setup.json"
+      "github-provider-setup.json",
     ],
     envKeys: [
       "GITHUB_APP_SLUG",
       "GITHUB_APP_ID",
       "GITHUB_APP_PRIVATE_KEY",
       "WEBHOOK_SECRET_GITHUB",
-      "OAUTH_STATE_HMAC_KEY"
+      "OAUTH_STATE_HMAC_KEY",
     ],
-    manualGates: ["GitHub App creation/update", "Org installation approval"]
+    manualGates: ["GitHub App creation/update", "Org installation approval"],
   },
   discord: {
     sourceId: "discord",
@@ -355,25 +382,25 @@ const SOURCE_REHEARSAL_CONFIG: Record<string, SourceRehearsalConfig> = {
         label: "Install",
         method: "GET",
         path: "/integrations/discord/install",
-        access: "bearer session"
+        access: "bearer session",
       },
       {
         label: "OAuth callback",
         method: "GET",
         path: "/integrations/discord/callback",
-        access: "state-token callback"
+        access: "state-token callback",
       },
       {
         label: "Interactions/webhook",
         method: "POST",
         path: "/webhooks/discord",
-        access: "provider signed"
-      }
+        access: "provider signed",
+      },
     ],
     generatedArtifacts: [
       "fyralis-discord-app-setup.json",
       "discord.env.example",
-      "discord-provider-setup.json"
+      "discord-provider-setup.json",
     ],
     envKeys: [
       "DISCORD_CLIENT_ID",
@@ -381,9 +408,9 @@ const SOURCE_REHEARSAL_CONFIG: Record<string, SourceRehearsalConfig> = {
       "DISCORD_APPLICATION_ID",
       "DISCORD_BOT_TOKEN",
       "WEBHOOK_SECRET_DISCORD",
-      "OAUTH_STATE_HMAC_KEY"
+      "OAUTH_STATE_HMAC_KEY",
     ],
-    manualGates: ["Discord app/bot setup", "Server admin bot approval"]
+    manualGates: ["Discord app/bot setup", "Server admin bot approval"],
   },
   notion: {
     sourceId: "notion",
@@ -395,37 +422,37 @@ const SOURCE_REHEARSAL_CONFIG: Record<string, SourceRehearsalConfig> = {
         label: "Install",
         method: "GET",
         path: "/integrations/notion/install",
-        access: "bearer session"
+        access: "bearer session",
       },
       {
         label: "OAuth callback",
         method: "GET",
         path: "/integrations/notion/callback",
-        access: "state-token callback"
+        access: "state-token callback",
       },
       {
         label: "Webhook",
         method: "POST",
         path: "/webhooks/notion/events",
-        access: "provider signed"
-      }
+        access: "provider signed",
+      },
     ],
     generatedArtifacts: [
       "fyralis-notion-app-setup.json",
       "notion.env.example",
-      "notion-provider-setup.json"
+      "notion-provider-setup.json",
     ],
     envKeys: [
       "NOTION_CLIENT_ID",
       "NOTION_CLIENT_SECRET",
       "NOTION_REDIRECT_URI",
-      "OAUTH_STATE_HMAC_KEY"
+      "OAUTH_STATE_HMAC_KEY",
     ],
     manualGates: [
       "Notion integration setup",
       "Workspace OAuth consent",
-      "Webhook verification token copy"
-    ]
+      "Webhook verification token copy",
+    ],
   },
   telegram: {
     sourceId: "telegram",
@@ -437,26 +464,26 @@ const SOURCE_REHEARSAL_CONFIG: Record<string, SourceRehearsalConfig> = {
         label: "Local session",
         method: "POST",
         path: ".fyralis/local-rehearsal/telegram/telegram.env",
-        access: "local only"
-      }
+        access: "local only",
+      },
     ],
     generatedArtifacts: [
       "telegram-session-plan.json",
       "telegram.env.example",
-      "telegram-provider-setup.json"
+      "telegram-provider-setup.json",
     ],
     envKeys: [
       "TELEGRAM_ACCOUNT_LABEL",
       "TELEGRAM_API_ID",
       "TELEGRAM_API_HASH",
-      "TELEGRAM_SESSION"
+      "TELEGRAM_SESSION",
     ],
     manualGates: [
       "Telegram API ID/hash creation",
       "MTProto login code",
-      "Dialog scope approval"
-    ]
-  }
+      "Dialog scope approval",
+    ],
+  },
 };
 
 const SOURCE_SIGNAL_CONFIG: Record<string, SourceSignalConfig> = {
@@ -465,43 +492,47 @@ const SOURCE_SIGNAL_CONFIG: Record<string, SourceSignalConfig> = {
       "OAuth callback writes provider_installations and onboarding_triggers(source='slack').",
     liveIngress: "/webhooks/slack/events",
     liveWorker: "Slack Events API -> webhook router -> ingestion pipeline.",
-    landedChannel: "slack:message"
+    landedChannel: "slack:message",
   },
   jira: {
     historicalTrigger:
       "Jira finalize writes jira_installations/projects and onboarding_triggers(source='jira').",
     liveIngress: "/webhooks/jira/events",
     liveWorker: "Jira webhook -> signed webhook router -> ingestion pipeline.",
-    landedChannel: "jira:issue"
+    landedChannel: "jira:issue",
   },
   github: {
     historicalTrigger:
       "GitHub callback writes provider_installations and onboarding_triggers(source='github').",
     liveIngress: "/webhooks/github",
-    liveWorker: "GitHub webhook -> signed webhook router -> ingestion pipeline.",
-    landedChannel: "github:webhook"
+    liveWorker:
+      "GitHub webhook -> signed webhook router -> ingestion pipeline.",
+    landedChannel: "github:webhook",
   },
   discord: {
     historicalTrigger:
       "Discord callback writes provider_installations and onboarding_triggers(source='discord').",
     liveIngress: "/webhooks/discord",
-    liveWorker: "Discord gateway/bot events -> gateway dispatcher -> observations.",
-    landedChannel: "discord:message"
+    liveWorker:
+      "Discord gateway/bot events -> gateway dispatcher -> observations.",
+    landedChannel: "discord:message",
   },
   notion: {
     historicalTrigger:
       "Notion callback writes provider_installations and onboarding_triggers(source='notion').",
     liveIngress: "/webhooks/notion/events",
-    liveWorker: "Notion webhook -> verified webhook router -> ingestion pipeline.",
-    landedChannel: "notion:object"
+    liveWorker:
+      "Notion webhook -> verified webhook router -> ingestion pipeline.",
+    landedChannel: "notion:object",
   },
   telegram: {
     historicalTrigger:
       "Telegram finalize writes telegram_installations/dialogs and onboarding_triggers(source='telegram').",
     liveIngress: "Customer-cloud MTProto session",
-    liveWorker: "Telegram gateway worker reads updates and writes observations locally.",
-    landedChannel: "telegram:message"
-  }
+    liveWorker:
+      "Telegram gateway worker reads updates and writes observations locally.",
+    landedChannel: "telegram:message",
+  },
 };
 
 function sourceEnvPrefix(sourceId: string) {
@@ -514,14 +545,14 @@ function genericEnvKeys(source: Source) {
     return [
       `${prefix}_OAUTH_CLIENT_ID`,
       `${prefix}_OAUTH_CLIENT_SECRET`,
-      `${prefix}_TOKEN_REF`
+      `${prefix}_TOKEN_REF`,
     ];
   }
   if (source.method === "Workspace DWD") {
     return [
       `${prefix}_WORKSPACE_DOMAIN`,
       `${prefix}_ADMIN_EMAIL`,
-      `${prefix}_DWD_CLIENT_ID`
+      `${prefix}_DWD_CLIENT_ID`,
     ];
   }
   if (source.method === "API token") {
@@ -538,7 +569,7 @@ function genericEnvKeys(source: Source) {
       return [
         `${prefix}_PHONE_NUMBER_ID`,
         `${prefix}_APP_SECRET`,
-        `${prefix}_VERIFY_TOKEN`
+        `${prefix}_VERIFY_TOKEN`,
       ];
     }
     return [`${prefix}_ACCESS_TOKEN`, `${prefix}_WEBHOOK_SECRET`];
@@ -557,7 +588,7 @@ function sourceRehearsalConfig(source: Source): SourceRehearsalConfig {
     path,
     access: (path.includes("callback")
       ? "state-token callback"
-      : "provider signed") as SourceRehearsalConfig["gatewayRoutes"][number]["access"]
+      : "provider signed") as SourceRehearsalConfig["gatewayRoutes"][number]["access"],
   }));
   return {
     sourceId: source.id,
@@ -568,14 +599,16 @@ function sourceRehearsalConfig(source: Source): SourceRehearsalConfig {
     generatedArtifacts: [
       `${source.id}-provider-setup.json`,
       `${source.id}.env.example`,
-      `${source.id}-connection-checklist.json`
+      `${source.id}-connection-checklist.json`,
     ],
     envKeys: genericEnvKeys(source),
     manualGates: [
       "Provider/admin approval",
       "Scope selection",
-      source.providerIngressPaths.length ? "Webhook registration" : "Customer-local ref approval"
-    ]
+      source.providerIngressPaths.length
+        ? "Webhook registration"
+        : "Customer-local ref approval",
+    ],
   };
 }
 
@@ -584,16 +617,19 @@ function sourceSignalConfig(source: Source): SourceSignalConfig {
   return (
     SOURCE_SIGNAL_CONFIG[source.id] ?? {
       historicalTrigger: `${source.name} setup writes local install refs and onboarding_triggers(source='${source.id}').`,
-      liveIngress: source.providerIngressPaths[0] ?? source.noIngressReason ?? "Customer-cloud local worker",
+      liveIngress:
+        source.providerIngressPaths[0] ??
+        source.noIngressReason ??
+        "Customer-cloud local worker",
       liveWorker: `${source.name} worker reads approved resources and writes sanitized observations locally.`,
-      landedChannel: `${channelSourceId}:*`
+      landedChannel: `${channelSourceId}:*`,
     }
   );
 }
 
 function capabilityStatus(
   readiness: CloudReadiness,
-  capability: CapabilityDefinition
+  capability: CapabilityDefinition,
 ): CapabilityStatus {
   const value = readiness[capability.key];
   if (value === capability.existingValue) {
@@ -611,15 +647,15 @@ function capabilityStatus(
 function buildAutomationPlan(readiness: CloudReadiness) {
   const rows = BYOC_CAPABILITIES.map((capability) => ({
     ...capability,
-    status: capabilityStatus(readiness, capability)
+    status: capabilityStatus(readiness, capability),
   }));
   return {
     rows,
     existing: rows.filter((row) => row.status === "existing"),
     provision: rows.filter((row) => row.status === "provision"),
     needsDecision: rows.filter(
-      (row) => row.status === "guidance" || row.status === "unknown"
-    )
+      (row) => row.status === "guidance" || row.status === "unknown",
+    ),
   };
 }
 
@@ -639,7 +675,7 @@ function normalizeReadiness(readiness: CloudReadiness): CloudReadiness {
     secrets: partial.secrets ?? "provision-secret-refs",
     postgres: partial.postgres ?? "provision-rds-pgvector",
     objectStorage: partial.objectStorage ?? "provision-s3",
-    kafka: partial.kafka ?? "provision-msk"
+    kafka: partial.kafka ?? "provision-msk",
   };
 }
 
@@ -649,7 +685,7 @@ function PlanSelection({
   onboardingIntent,
   choosePlan,
   setOnboardingIntent,
-  advance
+  advance,
 }: StepViewProps) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -669,7 +705,7 @@ function PlanSelection({
       setError(
         caught instanceof Error
           ? caught.message
-          : "Could not create the Design Partner BYOC intent."
+          : "Could not create the Design Partner BYOC intent.",
       );
     } finally {
       setStarting(false);
@@ -680,81 +716,84 @@ function PlanSelection({
     <div className="rounded-lg border border-border bg-card p-5 text-card-foreground md:p-7">
       <div className="mx-auto max-w-5xl">
         <div className="mb-6">
-          <p className="text-sm font-semibold text-muted-foreground">Get Fyralis</p>
+          <p className="text-sm font-semibold text-muted-foreground">
+            Get Fyralis
+          </p>
           <h2 className="mt-2 text-3xl font-semibold tracking-normal">
             Choose how you want to start.
           </h2>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
-            Start with the design-partner BYOC path or move toward an enterprise BYOC rollout. We do not collect source credentials here.
+            Start with the design-partner BYOC path or move toward an enterprise
+            BYOC rollout. We do not collect source credentials here.
           </p>
         </div>
         <div className="grid gap-4 lg:grid-cols-2">
-        {snapshot.plans.map((plan) => (
-          <article
-            key={plan.id}
-            className={cn(
-              "flex min-h-[33rem] flex-col rounded-lg border p-8 transition",
-              plan.id === "design-partner-byoc"
-                ? "border-success/40 bg-success/10"
-                : "border-info/40 bg-info/10",
-              selectedPlan === plan.id && "ring-2 ring-ring/25"
-            )}
-          >
-            <div>
-              <h3 className="text-2xl font-semibold tracking-normal">
-                {plan.label}
-              </h3>
-              <div className="mt-5 flex items-end gap-2">
-                <strong className="text-5xl font-semibold tracking-normal">
-                  {plan.terms[0]?.value ?? "Custom"}
-                </strong>
-                <span className="pb-2 text-sm text-muted-foreground">
-                  {plan.badge}
-                </span>
-              </div>
-            </div>
-            <p className="mt-6 min-h-16 text-base leading-7 text-foreground">
-              {plan.description}
-            </p>
-            <ul className="mt-6 grid gap-3 text-sm text-foreground">
-              {plan.features.map((feature) => (
-                <li key={feature} className="flex gap-2">
-                  <CheckCircle2
-                    className={cn(
-                      "mt-0.5 h-4 w-4 shrink-0 rounded-full",
-                      plan.id === "design-partner-byoc"
-                        ? "text-success"
-                        : "text-info"
-                    )}
-                    aria-hidden="true"
-                  />
-                  {feature}
-                </li>
-              ))}
-            </ul>
-            <Button
-              type="button"
+          {snapshot.plans.map((plan) => (
+            <article
+              key={plan.id}
               className={cn(
-                "mt-auto w-full",
+                "flex min-h-[33rem] flex-col rounded-lg border p-8 transition",
                 plan.id === "design-partner-byoc"
-                  ? "border-success bg-success text-success-foreground hover:bg-success/90"
-                  : "border-info bg-info text-info-foreground hover:bg-info/90"
+                  ? "border-success/40 bg-success/10"
+                  : "border-info/40 bg-info/10",
+                selectedPlan === plan.id && "ring-2 ring-ring/25",
               )}
-              disabled={starting || plan.id !== "design-partner-byoc"}
-              onClick={() => {
-                if (plan.id === "design-partner-byoc") {
-                  void startDesignPartner();
-                }
-              }}
             >
-              {plan.id === "design-partner-byoc"
-                ? starting
-                  ? "Creating intent..."
-                  : "Start Design Partner BYOC"
-                : "Enterprise path later"}
-            </Button>
-          </article>
-        ))}
+              <div>
+                <h3 className="text-2xl font-semibold tracking-normal">
+                  {plan.label}
+                </h3>
+                <div className="mt-5 flex items-end gap-2">
+                  <strong className="text-5xl font-semibold tracking-normal">
+                    {plan.terms[0]?.value ?? "Custom"}
+                  </strong>
+                  <span className="pb-2 text-sm text-muted-foreground">
+                    {plan.badge}
+                  </span>
+                </div>
+              </div>
+              <p className="mt-6 min-h-16 text-base leading-7 text-foreground">
+                {plan.description}
+              </p>
+              <ul className="mt-6 grid gap-3 text-sm text-foreground">
+                {plan.features.map((feature) => (
+                  <li key={feature} className="flex gap-2">
+                    <CheckCircle2
+                      className={cn(
+                        "mt-0.5 h-4 w-4 shrink-0 rounded-full",
+                        plan.id === "design-partner-byoc"
+                          ? "text-success"
+                          : "text-info",
+                      )}
+                      aria-hidden="true"
+                    />
+                    {feature}
+                  </li>
+                ))}
+              </ul>
+              <Button
+                type="button"
+                className={cn(
+                  "mt-auto w-full",
+                  plan.id === "design-partner-byoc"
+                    ? "border-success bg-success text-success-foreground hover:bg-success/90"
+                    : "border-info bg-info text-info-foreground hover:bg-info/90",
+                )}
+                disabled={starting || plan.id !== "design-partner-byoc"}
+                onClick={() => {
+                  if (plan.id === "design-partner-byoc") {
+                    void startDesignPartner();
+                  }
+                }}
+              >
+                {plan.id === "design-partner-byoc"
+                  ? starting
+                    ? "Creating intent..."
+                    : "Start Design Partner BYOC"
+                  : "Enterprise path later"}
+              </Button>
+            </article>
+          ))}
         </div>
         {error ? (
           <p className="mt-4 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
@@ -771,14 +810,14 @@ function CustomerIntake({
   customer,
   setOnboardingIntent,
   updateCustomer,
-  advance
+  advance,
 }: StepViewProps) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const form = useForm<CustomerFormValues>({
     resolver: zodResolver(customerSchema),
     defaultValues: customer,
-    mode: "onChange"
+    mode: "onChange",
   });
 
   useEffect(() => {
@@ -804,7 +843,7 @@ function CustomerIntake({
               : await createDesignPartnerOnboardingIntent();
           const updatedIntent = await submitDesignPartnerIntake(
             intent.intent_id,
-            values
+            values,
           );
           setOnboardingIntent(updatedIntent);
           updateCustomer(values);
@@ -813,7 +852,7 @@ function CustomerIntake({
           setSubmitError(
             caught instanceof Error
               ? caught.message
-              : "Could not submit Design Partner BYOC intake."
+              : "Could not submit Design Partner BYOC intake.",
           );
         } finally {
           setSubmitting(false);
@@ -877,7 +916,9 @@ function CustomerIntake({
         </p>
       ) : null}
       <ActionBar
-        primaryLabel={submitting ? "Creating workspace..." : "Continue to cloud readiness"}
+        primaryLabel={
+          submitting ? "Creating workspace..." : "Continue to cloud readiness"
+        }
         disabled={submitting}
         submit
       />
@@ -888,19 +929,19 @@ function CustomerIntake({
 function CloudReadinessStep({
   readiness,
   updateReadiness,
-  advance
+  advance,
 }: StepViewProps) {
   const initialReadiness = normalizeReadiness(readiness);
   const form = useForm<CloudReadinessFormValues>({
     resolver: zodResolver(cloudReadinessSchema),
     defaultValues: initialReadiness,
-    mode: "onChange"
+    mode: "onChange",
   });
 
   useEffect(() => {
     const subscription = form.watch((value) => {
       const parsed = cloudReadinessSchema.safeParse(
-        normalizeReadiness(value as CloudReadiness)
+        normalizeReadiness(value as CloudReadiness),
       );
       if (parsed.success) {
         updateReadiness(parsed.data);
@@ -933,13 +974,21 @@ function CloudReadinessStep({
           <Badge tone="info">Agent mode</Badge>
         </CardHeader>
         <CardContent className="grid gap-5 md:grid-cols-2">
-          <SelectField label="Cloud region" register={form.register("region")} help="Used for deployment location and residency.">
+          <SelectField
+            label="Cloud region"
+            register={form.register("region")}
+            help="Used for deployment location and residency."
+          >
             <option>us-east-1</option>
             <option>us-west-2</option>
             <option>eu-west-1</option>
             <option>ap-south-1</option>
           </SelectField>
-          <SelectField label="Deployment environment" register={form.register("environment")} help="Controls naming, safety gates, and rollout strictness.">
+          <SelectField
+            label="Deployment environment"
+            register={form.register("environment")}
+            help="Controls naming, safety gates, and rollout strictness."
+          >
             <option>pilot</option>
             <option>staging</option>
             <option>production</option>
@@ -949,8 +998,12 @@ function CloudReadinessStep({
             register={form.register("agentAccess")}
             help="The agent runs with scoped setup access, not customer source credentials."
           >
-            <option value="customer-cloud-agent">Install agent inside customer cloud</option>
-            <option value="aws-cross-account-role">Allow Fyralis agent to assume setup role</option>
+            <option value="customer-cloud-agent">
+              Install agent inside customer cloud
+            </option>
+            <option value="aws-cross-account-role">
+              Allow Fyralis agent to assume setup role
+            </option>
           </SelectField>
           <Field
             label="Source runtime role"
@@ -967,7 +1020,9 @@ function CloudReadinessStep({
             register={form.register("agentPermissionProfile")}
             help="Controls whether the agent can only discover or can also provision BYOC infra."
           >
-            <option value="byoc-bootstrap-provisioner">BYOC bootstrap provisioner</option>
+            <option value="byoc-bootstrap-provisioner">
+              BYOC bootstrap provisioner
+            </option>
             <option value="discovery-only">Discovery only</option>
           </SelectField>
           <SelectField
@@ -975,7 +1030,9 @@ function CloudReadinessStep({
             register={form.register("agentApprovalMode")}
             help="Recommended: require the customer setup owner to approve the plan before apply."
           >
-            <option value="approval-required">Customer approves before apply</option>
+            <option value="approval-required">
+              Customer approves before apply
+            </option>
             <option value="plan-only">Plan only, no apply</option>
           </SelectField>
         </CardContent>
@@ -1012,13 +1069,16 @@ function CloudReadinessStep({
         </CardHeader>
         <CardContent className="grid gap-3 lg:grid-cols-2">
           {BYOC_CAPABILITIES.map((capability) => (
-            <div key={capability.key} className="rounded-lg border border-border bg-background/70 p-4">
+            <div
+              key={capability.key}
+              className="rounded-lg border border-border bg-background/70 p-4"
+            >
               <div className="flex items-start justify-between gap-3">
                 <span>
                   <strong className="block">{capability.label}</strong>
                   <span className="mt-1 block text-sm text-muted-foreground">
-                    Agent discovers existing resources, then provisions only what
-                    is missing and approved.
+                    Agent discovers existing resources, then provisions only
+                    what is missing and approved.
                   </span>
                 </span>
                 <Badge tone="info">Agent-managed</Badge>
@@ -1039,7 +1099,7 @@ function CloudReadinessStep({
             "Generate CloudFormation and Helm execution artifacts",
             "Create missing approved infrastructure",
             "Install Fyralis with Helm",
-            "Emit sanitized readiness status"
+            "Emit sanitized readiness status",
           ]}
           strong
         />
@@ -1050,7 +1110,7 @@ function CloudReadinessStep({
             "Upload raw customer data",
             "Export prompts, logs, or embeddings",
             "Apply changes without approval",
-            "Create resources outside the setup policy"
+            "Create resources outside the setup policy",
           ]}
         />
       </div>
@@ -1075,8 +1135,7 @@ function SetupPackageStep({ snapshot, readiness, advance }: StepViewProps) {
     effectiveReadiness.agentApprovalMode === "plan-only"
       ? "fyralis byoc agent plan --no-apply --emit-review-bundle"
       : "fyralis byoc agent apply --requires-approval --plan latest";
-  const providerExecutorCommand =
-    `fyralis byoc agent provider-executor --cloud aws --region ${effectiveReadiness.region} --stack-name fyralis-byoc-acme-finance --create-change-set --execute-change-set --execute-helm --confirm-cost-and-mutation --json`;
+  const providerExecutorCommand = `fyralis byoc agent provider-executor --cloud aws --region ${effectiveReadiness.region} --stack-name fyralis-byoc-acme-finance --create-change-set --execute-change-set --execute-helm --confirm-cost-and-mutation --json`;
   const autopilotCommand = [
     "fyralis byoc agent autopilot",
     "--cloud aws",
@@ -1090,41 +1149,38 @@ function SetupPackageStep({ snapshot, readiness, advance }: StepViewProps) {
     "--run-readonly-api-probes",
     "--run-provider-executor",
     "--stack-name fyralis-byoc-acme-finance",
-    "--json"
+    "--json",
   ].join(" ");
   const commands = [
     {
       label: "Zero-spend local rehearsal",
-      command:
-        `fyralis byoc agent local-rehearsal --region ${effectiveReadiness.region} --workdir .fyralis/local-rehearsal --json`
+      command: `fyralis byoc agent local-rehearsal --region ${effectiveReadiness.region} --workdir .fyralis/local-rehearsal --json`,
     },
     {
       label: "Create setup role template",
-      command:
-        `fyralis byoc agent role-template --cloud aws --region ${effectiveReadiness.region} --external-id fyralis-acme-finance-pilot`
+      command: `fyralis byoc agent role-template --cloud aws --region ${effectiveReadiness.region} --external-id fyralis-acme-finance-pilot`,
     },
     {
       label: "Register setup agent",
-      command: accessCommand
+      command: accessCommand,
     },
     {
       label: "Discover and plan",
-      command:
-        `fyralis byoc agent discover --region ${effectiveReadiness.region} --capabilities kubernetes,network,secrets,postgres,s3,kafka --emit-plan`
+      command: `fyralis byoc agent discover --region ${effectiveReadiness.region} --capabilities kubernetes,network,secrets,postgres,s3,kafka --emit-plan`,
     },
     {
       label: "Apply approved plan",
-      command: applyCommand
+      command: applyCommand,
     },
     {
       label: "Execute AWS and Helm setup",
-      command: providerExecutorCommand
+      command: providerExecutorCommand,
     },
     {
       label: "Validate",
       command:
-        "fyralis byoc agent validate --json --emit-sanitized-readiness-report"
-    }
+        "fyralis byoc agent validate --json --emit-sanitized-readiness-report",
+    },
   ];
 
   return (
@@ -1137,9 +1193,14 @@ function SetupPackageStep({ snapshot, readiness, advance }: StepViewProps) {
         <CardContent className="grid gap-5">
           <div className="rounded-lg border border-info/30 bg-info/10 p-4">
             <div className="flex items-start gap-3">
-              <CloudCog className="mt-0.5 h-5 w-5 shrink-0 text-info" aria-hidden="true" />
+              <CloudCog
+                className="mt-0.5 h-5 w-5 shrink-0 text-info"
+                aria-hidden="true"
+              />
               <span>
-                <strong className="block text-sm">Agent runs with scoped setup access</strong>
+                <strong className="block text-sm">
+                  Agent runs with scoped setup access
+                </strong>
                 <span className="mt-1 block text-sm leading-6 text-muted-foreground">
                   The setup owner installs the agent or grants the setup role,
                   reviews the discovered plan, approves apply, and sends back
@@ -1151,7 +1212,10 @@ function SetupPackageStep({ snapshot, readiness, advance }: StepViewProps) {
 
           <div className="grid gap-3 lg:grid-cols-2">
             {automationPlan.rows.map((row) => (
-              <div key={row.key} className="rounded-lg border border-border bg-background/70 p-4">
+              <div
+                key={row.key}
+                className="rounded-lg border border-border bg-background/70 p-4"
+              >
                 <div className="flex items-start justify-between gap-3">
                   <span>
                     <strong className="block">{row.label}</strong>
@@ -1172,24 +1236,27 @@ function SetupPackageStep({ snapshot, readiness, advance }: StepViewProps) {
           <div>
             <h3 className="text-sm font-semibold">Safe artifacts generated</h3>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
-            {snapshot.setupPackage.artifacts.map((artifact) => (
-              <div key={artifact.filename} className="rounded-lg border border-border bg-background/70 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <span>
-                    <strong className="block">{artifact.name}</strong>
-                    <span className="mt-1 block text-sm text-muted-foreground">
-                      {artifact.description}
+              {snapshot.setupPackage.artifacts.map((artifact) => (
+                <div
+                  key={artifact.filename}
+                  className="rounded-lg border border-border bg-background/70 p-4"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <span>
+                      <strong className="block">{artifact.name}</strong>
+                      <span className="mt-1 block text-sm text-muted-foreground">
+                        {artifact.description}
+                      </span>
                     </span>
-                  </span>
-                  <Badge tone={artifact.safeToShare ? "success" : "warning"}>
-                    {artifact.safeToShare ? "Safe" : "Review"}
-                  </Badge>
+                    <Badge tone={artifact.safeToShare ? "success" : "warning"}>
+                      {artifact.safeToShare ? "Safe" : "Review"}
+                    </Badge>
+                  </div>
+                  <code className="mt-3 block break-all text-xs text-muted-foreground">
+                    {artifact.filename}
+                  </code>
                 </div>
-                <code className="mt-3 block break-all text-xs text-muted-foreground">
-                  {artifact.filename}
-                </code>
-              </div>
-            ))}
+              ))}
             </div>
           </div>
 
@@ -1209,22 +1276,30 @@ function SetupPackageStep({ snapshot, readiness, advance }: StepViewProps) {
           <div>
             <h3 className="text-sm font-semibold">Advanced manual commands</h3>
             <div className="mt-3 grid gap-3">
-            {commands.map((command) => (
-              <div key={command.label} className="rounded-lg border border-border bg-primary p-4 text-primary-foreground">
-                <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
-                  <TerminalSquare className="h-4 w-4" aria-hidden="true" />
-                  {command.label} command
+              {commands.map((command) => (
+                <div
+                  key={command.label}
+                  className="rounded-lg border border-border bg-primary p-4 text-primary-foreground"
+                >
+                  <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+                    <TerminalSquare className="h-4 w-4" aria-hidden="true" />
+                    {command.label} command
+                  </div>
+                  <code className="block break-all text-xs text-primary-foreground/80">
+                    {command.command}
+                  </code>
                 </div>
-                <code className="block break-all text-xs text-primary-foreground/80">
-                  {command.command}
-                </code>
-              </div>
-            ))}
+              ))}
             </div>
           </div>
         </CardContent>
       </Card>
-      <ActionBar primaryLabel="Continue to trust boundary" onPrimary={advance} secondaryLabel="Download artifacts" secondaryIcon={<Download className="h-4 w-4" aria-hidden="true" />} />
+      <ActionBar
+        primaryLabel="Continue to trust boundary"
+        onPrimary={advance}
+        secondaryLabel="Download artifacts"
+        secondaryIcon={<Download className="h-4 w-4" aria-hidden="true" />}
+      />
     </div>
   );
 }
@@ -1245,11 +1320,14 @@ function TrustBoundaryStep({ workspace, advance }: StepViewProps) {
                 "Commercial intake",
                 "Setup package generation",
                 "Safe readiness status",
-                "Bounded issue codes"
+                "Bounded issue codes",
               ]}
             />
             <div className="hidden items-center justify-center lg:flex">
-              <ArrowRight className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
+              <ArrowRight
+                className="h-8 w-8 text-muted-foreground"
+                aria-hidden="true"
+              />
             </div>
             <BoundaryPanel
               title="Customer cloud"
@@ -1257,14 +1335,17 @@ function TrustBoundaryStep({ workspace, advance }: StepViewProps) {
                 "Runtime deployment",
                 "Source credentials",
                 "Raw source payloads",
-                "Private logs and prompts"
+                "Private logs and prompts",
               ]}
               strong
             />
           </div>
           <div className="mt-5 grid gap-3 md:grid-cols-2">
             <Endpoint label="Admin console" value={workspace.localConsoleUrl} />
-            <Endpoint label="Provider ingress" value={workspace.providerIngressUrl} />
+            <Endpoint
+              label="Provider ingress"
+              value={workspace.providerIngressUrl}
+            />
           </div>
         </CardContent>
       </Card>
@@ -1283,8 +1364,14 @@ function PreflightStep({ snapshot, advance }: StepViewProps) {
       cards={[
         ["Manifest validity", "Data-plane shape matches the BYOC contract."],
         ["Permission/IAM shape", "Least-privilege boundaries are present."],
-        ["Required components", "Kubernetes, Postgres, S3, Kafka/MSK, and Secrets Manager are reachable."],
-        ["Privacy posture", "No raw logs, prompts, embeddings, source data, or credentials are submitted."]
+        [
+          "Required components",
+          "Kubernetes, Postgres, S3, Kafka/MSK, and Secrets Manager are reachable.",
+        ],
+        [
+          "Privacy posture",
+          "No raw logs, prompts, embeddings, source data, or credentials are submitted.",
+        ],
       ]}
       command={snapshot.setupPackage.commands[0]?.command}
       primaryLabel="Mark preflight complete"
@@ -1304,11 +1391,21 @@ function DeploymentStep({ snapshot, advance }: StepViewProps) {
         <CardContent className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
           <div className="grid gap-3">
             {snapshot.deployment.timeline.map((event) => (
-              <div key={event.label} className="grid grid-cols-[1.5rem_minmax(0,1fr)] gap-3">
-                <span className={cn("mt-1 h-3 w-3 rounded-full", event.status === "done" ? "bg-success" : "bg-info")} />
+              <div
+                key={event.label}
+                className="grid grid-cols-[1.5rem_minmax(0,1fr)] gap-3"
+              >
+                <span
+                  className={cn(
+                    "mt-1 h-3 w-3 rounded-full",
+                    event.status === "done" ? "bg-success" : "bg-info",
+                  )}
+                />
                 <span>
                   <strong className="block">{event.label}</strong>
-                  <span className="text-sm text-muted-foreground">{event.detail}</span>
+                  <span className="text-sm text-muted-foreground">
+                    {event.detail}
+                  </span>
                 </span>
               </div>
             ))}
@@ -1316,7 +1413,10 @@ function DeploymentStep({ snapshot, advance }: StepViewProps) {
           <LogPanel logs={snapshot.deployment.logs} />
         </CardContent>
       </Card>
-      <ActionBar primaryLabel="Continue to deployment validation" onPrimary={advance} />
+      <ActionBar
+        primaryLabel="Continue to deployment validation"
+        onPrimary={advance}
+      />
     </div>
   );
 }
@@ -1336,7 +1436,7 @@ function sourceFirstSyncCommand({
   sourceId,
   workspace,
   syncMode,
-  backfillWindow
+  backfillWindow,
 }: {
   sourceId: string;
   workspace: Workspace;
@@ -1354,7 +1454,7 @@ function sourceFirstSyncCommand({
     `--provider-ingress-url ${workspace.providerIngressUrl}`,
     "--provider-authorization-mode preauthorized-ref",
     "--preauthorized-ref-manifest ./customer-source-refs.json",
-    "--json"
+    "--json",
   ].join(" ");
 }
 
@@ -1363,17 +1463,19 @@ function syncModeToCli(syncMode: SourceConnection["syncMode"]) {
     "Dry run": "dry-run",
     "Limited backfill": "limited-backfill",
     "Live events": "live-events",
-    "Backfill plus live": "backfill-plus-live"
+    "Backfill plus live": "backfill-plus-live",
   };
   return modes[syncMode];
 }
 
-function backfillWindowToCli(backfillWindow: SourceConnection["backfillWindow"]) {
+function backfillWindowToCli(
+  backfillWindow: SourceConnection["backfillWindow"],
+) {
   const windows: Record<SourceConnection["backfillWindow"], string> = {
     "Last 7 days": "7d",
     "Last 30 days": "30d",
     "Last 90 days": "90d",
-    "No historical backfill": "none"
+    "No historical backfill": "none",
   };
   return windows[backfillWindow];
 }
@@ -1387,91 +1489,92 @@ function errorMessage(caught: unknown) {
 
 function sourceObservationSamples(
   source: Source,
-  syncMode: SourceConnection["syncMode"]
+  syncMode: SourceConnection["syncMode"],
 ): SourceObservation[] {
-  const summaries: Record<string, Array<[string, SourceObservation["kind"], string]>> = {
+  const summaries: Record<
+    string,
+    Array<[string, SourceObservation["kind"], string]>
+  > = {
     slack: [
       [
         "Finance launch thread",
         "message",
-        "Approved Slack channels produced launch-readiness signals."
+        "Approved Slack channels produced launch-readiness signals.",
       ],
       [
         "Customer-success escalation",
         "message",
-        "A pilot allowlisted channel produced support-priority metadata."
-      ]
+        "A pilot allowlisted channel produced support-priority metadata.",
+      ],
     ],
     jira: [
       [
         "Pilot issue movement",
         "issue",
-        "Approved Jira projects produced issue status and comment metadata."
+        "Approved Jira projects produced issue status and comment metadata.",
       ],
       [
         "Release blocker changed",
         "task",
-        "A tracked Jira issue moved into review during the first sync."
-      ]
+        "A tracked Jira issue moved into review during the first sync.",
+      ],
     ],
     github: [
       [
         "Repository rollout activity",
         "pull-request",
-        "Selected repositories produced pull-request and issue metadata."
+        "Selected repositories produced pull-request and issue metadata.",
       ],
       [
         "Deployment branch updated",
         "deployment",
-        "A tracked branch update landed as a code-workflow observation."
-      ]
+        "A tracked branch update landed as a code-workflow observation.",
+      ],
     ],
     discord: [
       [
         "Community feedback channel",
         "message",
-        "Approved Discord channels produced event metadata through the gateway."
+        "Approved Discord channels produced event metadata through the gateway.",
       ],
       [
         "Moderator follow-up",
         "message",
-        "A scoped Discord thread produced a follow-up observation."
-      ]
+        "A scoped Discord thread produced a follow-up observation.",
+      ],
     ],
     notion: [
       [
         "Launch checklist updates",
         "page",
-        "Shared Notion pages produced page-change observations."
+        "Shared Notion pages produced page-change observations.",
       ],
       [
         "Runbook database edited",
         "page",
-        "An approved Notion database update landed as a knowledge observation."
-      ]
+        "An approved Notion database update landed as a knowledge observation.",
+      ],
     ],
     telegram: [
       [
         "Partner readiness chat",
         "message",
-        "Approved Telegram dialogs produced MTProto session observations."
+        "Approved Telegram dialogs produced MTProto session observations.",
       ],
       [
         "Pilot decision note",
         "message",
-        "A scoped Telegram chat produced a decision-tracking observation."
-      ]
-    ]
+        "A scoped Telegram chat produced a decision-tracking observation.",
+      ],
+    ],
   };
-  const rows =
-    summaries[source.id] ??
+  const rows = summaries[source.id] ?? [
     [
-      [
-        `${source.name} pilot event`,
-        "task" as const,
-        `${source.name} produced a sanitized pilot observation.`
-      ]
-    ];
+      `${source.name} pilot event`,
+      "task" as const,
+      `${source.name} produced a sanitized pilot observation.`,
+    ],
+  ];
   const previewOccurredAt = "2026-07-05T09:00:00.000Z";
   return rows.map(([title, kind, summary], index) => ({
     id: `obs_${source.id}_${index + 1}`,
@@ -1489,7 +1592,7 @@ function sourceObservationSamples(
         : syncMode === "Backfill plus live"
           ? "mixed"
           : "historical",
-    sourceChannel: sourceSignalConfig(source).landedChannel
+    sourceChannel: sourceSignalConfig(source).landedChannel,
   }));
 }
 
@@ -1497,10 +1600,11 @@ type SourceConnectRun = SourceAutomationCardState & {
   apiBase?: string;
   installUrl?: string | null;
   observationCount?: number;
+  syncStartedAt?: string | null;
 };
 
 function sourceBackgroundRunView(
-  run: SourceRehearsalStatus["autoConnectRun"] | null | undefined
+  run: SourceRehearsalStatus["autoConnectRun"] | null | undefined,
 ): Pick<SourceConnectRun, "status" | "label" | "message" | "actionUrl"> | null {
   const runStatus = run?.backgroundStatus ?? run?.status;
   if (!runStatus) {
@@ -1510,14 +1614,14 @@ function sourceBackgroundRunView(
     return {
       status: "connecting",
       label: "Queued",
-      message: "Source setup is queued in the customer cloud."
+      message: "Source setup is queued in the customer cloud.",
     };
   }
   if (runStatus === "running") {
     return {
       status: "connecting",
       label: "Running",
-      message: "Source setup is running in the customer cloud."
+      message: "Source setup is running in the customer cloud.",
     };
   }
   if (runStatus === "waiting_for_admin" || runStatus === "admin_gate") {
@@ -1526,24 +1630,51 @@ function sourceBackgroundRunView(
       label: "Approval needed",
       message:
         "Provider admin approval is blocking completion. Fyralis keeps checking.",
-      actionUrl: run?.handoffUrl
+      actionUrl: run?.handoffUrl,
     };
   }
-  if (runStatus === "failed" || runStatus === "blocked" || runStatus === "error") {
+  if (
+    runStatus === "failed" ||
+    runStatus === "blocked" ||
+    runStatus === "error"
+  ) {
     return {
       status: "blocked",
       label: "Needs attention",
-      message: "Source setup needs attention. Retry when the provider task is ready."
+      message:
+        "Source setup needs attention. Retry when the provider task is ready.",
     };
   }
   if (runStatus === "connected" || runStatus === "completed") {
     return {
       status: "connecting",
       label: "Finalizing",
-      message: "Source setup finished. Fyralis is waiting for connection proof."
+      message:
+        "Source setup finished. Fyralis is waiting for connection proof.",
     };
   }
   return null;
+}
+
+function discordConnectionMessage(status: SourceRehearsalStatus) {
+  const serverCount = status.installations.filter(
+    (installation) => installation.enabled,
+  ).length;
+  const landingChannels = status.accessResources.filter(
+    (resource) => resource.observationCount > 0,
+  ).length;
+  const readableChannels = status.accessSummary.ready;
+  const blockedChannels = status.accessSummary.missingAccess;
+  if (landingChannels > 0) {
+    return `${serverCount} Discord server${serverCount === 1 ? "" : "s"} connected. Observations landing from ${landingChannels} message stream${landingChannels === 1 ? "" : "s"}.`;
+  }
+  if (readableChannels > 0) {
+    return `${serverCount} Discord server${serverCount === 1 ? "" : "s"} connected. ${readableChannels} readable message stream${readableChannels === 1 ? "" : "s"} queued for backfill.`;
+  }
+  if (blockedChannels > 0) {
+    return `${serverCount} Discord server${serverCount === 1 ? "" : "s"} connected. Private channel or thread access is needed.`;
+  }
+  return `${serverCount} Discord server${serverCount === 1 ? "" : "s"} connected. Fyralis is checking channel and thread access.`;
 }
 
 function SourceCatalogStep(props: StepViewProps) {
@@ -1556,25 +1687,28 @@ function SourceCatalogStep(props: StepViewProps) {
     landSourceObservations,
     connections,
     readiness,
-    workspace
+    workspace,
   } = props;
   const effectiveReadiness = normalizeReadiness(readiness);
   const [automationStates, setAutomationStates] = useState<
     Record<string, SourceConnectRun>
   >({});
 
-  function patchAutomationState(sourceId: string, patch: Partial<SourceConnectRun>) {
+  function patchAutomationState(
+    sourceId: string,
+    patch: Partial<SourceConnectRun>,
+  ) {
     setAutomationStates((current) => {
       const existing = current[sourceId] ?? {
         status: "idle" as const,
-        label: "Ready"
+        label: "Ready",
       };
       return {
         ...current,
         [sourceId]: {
           ...existing,
-          ...patch
-        }
+          ...patch,
+        },
       };
     });
   }
@@ -1584,7 +1718,7 @@ function SourceCatalogStep(props: StepViewProps) {
     status,
     apiBase,
     installUrl,
-    waitingForAdmin
+    waitingForAdmin,
   }: {
     source: Source;
     status: SourceRehearsalStatus;
@@ -1592,16 +1726,18 @@ function SourceCatalogStep(props: StepViewProps) {
     installUrl?: string | null;
     waitingForAdmin?: boolean;
   }) {
-    if (status.observations.length) {
+    if (status.sourceId !== "discord" && status.observations.length) {
       landSourceObservations(status.sourceId, status.observations);
     }
     if (status.installed) {
       const failedShardCount = status.shardStateCounts.failed?.count ?? 0;
       const activeRunCount =
         (status.runStatusCounts.pending ?? 0) +
-        (status.runStatusCounts.running ?? 0);
+        (status.runStatusCounts.running ?? 0) +
+        (status.runStatusCounts.in_progress ?? 0);
       const replayQueued = status.triggerCount > status.consumedTriggerCount;
-      const firstSyncActive = status.observationCount === 0 && (activeRunCount > 0 || replayQueued);
+      const firstSyncActive =
+        status.observationCount === 0 && (activeRunCount > 0 || replayQueued);
       const hasFirstSyncFailure =
         !firstSyncActive &&
         (failedShardCount > 0 ||
@@ -1614,7 +1750,7 @@ function SourceCatalogStep(props: StepViewProps) {
         syncMode: "Limited backfill",
         receiptId:
           status.autoConnectRun?.receiptPathHint ??
-          `source_agent_${source.id}_connected`
+          `source_agent_${source.id}_connected`,
       });
       patchAutomationState(source.id, {
         status: hasFirstSyncFailure
@@ -1627,16 +1763,26 @@ function SourceCatalogStep(props: StepViewProps) {
           : firstSyncActive
             ? "Sync running"
             : "Connected",
-        message: status.observationCount
-          ? `${status.observationCount} sanitized observation${status.observationCount === 1 ? "" : "s"} landed.`
-          : firstSyncActive
-            ? "AWS first sync is queued or running. Fyralis is checking for CloudTrail proof."
-          : hasFirstSyncFailure
-            ? status.nextAction || status.latestFailure || "AWS first sync failed."
-            : "Install created. Fyralis is waiting for the first sync proof.",
+        message:
+          source.id === "discord"
+            ? discordConnectionMessage(status)
+            : status.observationCount
+              ? `${status.observationCount} sanitized observation${status.observationCount === 1 ? "" : "s"} landed.`
+              : firstSyncActive
+                ? "AWS first sync is queued or running. Fyralis is checking for CloudTrail proof."
+                : hasFirstSyncFailure
+                  ? status.nextAction ||
+                    status.latestFailure ||
+                    "AWS first sync failed."
+                  : "Install created. Fyralis is waiting for the first sync proof.",
         apiBase,
         installUrl,
-        observationCount: status.observationCount
+        observationCount: status.observationCount,
+        syncStartedAt: status.syncStartedAt,
+        installations: status.installations,
+        accessSummary: status.accessSummary,
+        accessResources: status.accessResources,
+        accessNextActions: status.accessNextActions,
       });
       return;
     }
@@ -1644,22 +1790,24 @@ function SourceCatalogStep(props: StepViewProps) {
     const receiptPathHint = status.autoConnectRun?.receiptPathHint;
     const handoffUrl = status.autoConnectRun?.handoffUrl ?? installUrl ?? null;
     const nextRunStatus =
-      backgroundView?.status ?? (waitingForAdmin ? "waiting_admin" : "connecting");
+      backgroundView?.status ??
+      (waitingForAdmin ? "waiting_admin" : "connecting");
     if (nextRunStatus === "blocked") {
       updateConnection(source.id, {
         status: "error",
-        ...(receiptPathHint ? { receiptId: receiptPathHint } : {})
+        ...(receiptPathHint ? { receiptId: receiptPathHint } : {}),
       });
     } else if (nextRunStatus === "waiting_admin") {
       updateConnection(source.id, {
         status: "waiting-admin",
-        ...(receiptPathHint ? { receiptId: receiptPathHint } : {})
+        ...(receiptPathHint ? { receiptId: receiptPathHint } : {}),
       });
     }
     patchAutomationState(source.id, {
       status: nextRunStatus,
       label:
-        backgroundView?.label ?? (waitingForAdmin ? "Approval needed" : "Running"),
+        backgroundView?.label ??
+        (waitingForAdmin ? "Approval needed" : "Running"),
       message:
         backgroundView?.message ??
         (waitingForAdmin
@@ -1673,24 +1821,33 @@ function SourceCatalogStep(props: StepViewProps) {
           ? sourceApprovalActionLabel(source)
           : undefined,
       observationCount: status.observationCount,
-      ...(receiptPathHint ? { receiptPathHint } : {})
+      syncStartedAt: status.syncStartedAt,
+      installations: status.installations,
+      accessSummary: status.accessSummary,
+      accessResources: status.accessResources,
+      accessNextActions: status.accessNextActions,
+      ...(receiptPathHint ? { receiptPathHint } : {}),
     });
   }
 
   async function connectSource(
     sourceId: string,
-    options?: { awsAssumingPrincipalArn?: string }
+    options?: {
+      awsAssumingPrincipalArn?: string;
+      discordAccessMode?: SourceConnectAccessMode;
+    },
   ) {
     const source = snapshot.sources.find((item) => item.id === sourceId);
     if (!source) {
       return;
     }
+    const providerHandoffWindow = openImmediateProviderHandoffWindow(source);
     selectSource(sourceId);
     updateConnection(sourceId, { status: "validating" });
     patchAutomationState(sourceId, {
       status: "connecting",
       label: "Connecting",
-      message: "Starting customer-cloud connection..."
+      message: "Starting customer-cloud connection...",
     });
     try {
       const prepared = await autoConnectSourceRehearsal({
@@ -1701,17 +1858,45 @@ function SourceCatalogStep(props: StepViewProps) {
             ? {
                 awsRegion: effectiveReadiness.region,
                 awsAssumingPrincipalArn:
-                  options?.awsAssumingPrincipalArn ?? effectiveReadiness.setupRoleArn
+                  options?.awsAssumingPrincipalArn ??
+                  effectiveReadiness.setupRoleArn,
               }
-            : undefined
+            : undefined,
+        accessMode:
+          source.id === "discord" ? options?.discordAccessMode : undefined,
       });
-      const preparedApiBase = prepared.gatewayApiBase || workspace.providerIngressUrl;
+      const preparedApiBase =
+        prepared.gatewayApiBase || workspace.providerIngressUrl;
       applyCatalogSourceStatus({
         source,
         status: prepared.status,
         apiBase: preparedApiBase,
-        installUrl: prepared.installUrl
+        installUrl: prepared.installUrl,
       });
+      if (
+        source.id === "discord" &&
+        prepared.installUrl &&
+        prepared.status.installed
+      ) {
+        patchAutomationState(sourceId, {
+          status: "waiting_admin",
+          label: "Add server",
+          message: "Select another Discord server to grant Fyralis access.",
+          apiBase: preparedApiBase,
+          installUrl: prepared.installUrl,
+          actionUrl: prepared.installUrl,
+          actionLabel: "Open Discord",
+          installations: prepared.status.installations,
+          accessSummary: prepared.status.accessSummary,
+          accessResources: prepared.status.accessResources,
+          accessNextActions: prepared.status.accessNextActions,
+        });
+        completeImmediateProviderHandoffWindow(
+          providerHandoffWindow,
+          prepared.installUrl,
+        );
+        return;
+      }
       if (
         prepared.autoConnect.state === "blocked" ||
         prepared.autoConnect.state === "error"
@@ -1734,15 +1919,28 @@ function SourceCatalogStep(props: StepViewProps) {
           message: prepared.autoConnect.message,
           apiBase: preparedApiBase,
           installUrl: handoffUrl,
-          actionUrl: prepared.autoConnect.state === "blocked" ? handoffUrl : null,
+          actionUrl:
+            prepared.autoConnect.state === "blocked" ? handoffUrl : null,
           actionLabel:
             prepared.autoConnect.state === "blocked" && source.id === "aws"
               ? "Create runtime role"
-              : undefined
+              : undefined,
         });
+        if (prepared.autoConnect.state === "blocked") {
+          completeImmediateProviderHandoffWindow(
+            providerHandoffWindow,
+            handoffUrl,
+          );
+        } else {
+          closeImmediateProviderHandoffWindow(providerHandoffWindow);
+        }
         return;
       }
-      if (prepared.autoConnect.state === "connected" || prepared.status.installed) {
+      if (
+        prepared.autoConnect.state === "connected" ||
+        prepared.status.installed
+      ) {
+        closeImmediateProviderHandoffWindow(providerHandoffWindow);
         return;
       }
       const installUrl = prepared.autoConnect.installUrl ?? prepared.installUrl;
@@ -1761,7 +1959,7 @@ function SourceCatalogStep(props: StepViewProps) {
           status: "waiting-admin",
           receiptId:
             prepared.autoConnect.automationRun?.receiptPathHint ??
-            `source_agent_${sourceId}_waiting_admin`
+            `source_agent_${sourceId}_waiting_admin`,
         });
         patchAutomationState(sourceId, {
           status: "waiting_admin",
@@ -1771,8 +1969,12 @@ function SourceCatalogStep(props: StepViewProps) {
           installUrl: handoffUrl,
           actionUrl: handoffUrl,
           actionLabel: sourceApprovalActionLabel(source),
-          receiptPathHint: prepared.autoConnect.automationRun?.receiptPathHint
+          receiptPathHint: prepared.autoConnect.automationRun?.receiptPathHint,
         });
+        completeImmediateProviderHandoffWindow(
+          providerHandoffWindow,
+          handoffUrl,
+        );
         return;
       }
       patchAutomationState(sourceId, {
@@ -1782,14 +1984,16 @@ function SourceCatalogStep(props: StepViewProps) {
         apiBase: preparedApiBase,
         installUrl: handoffUrl,
         actionUrl: handoffUrl,
-        receiptPathHint: prepared.autoConnect.automationRun?.receiptPathHint
+        receiptPathHint: prepared.autoConnect.automationRun?.receiptPathHint,
       });
+      completeImmediateProviderHandoffWindow(providerHandoffWindow, handoffUrl);
     } catch (caught) {
+      closeImmediateProviderHandoffWindow(providerHandoffWindow);
       updateConnection(sourceId, { status: "error" });
       patchAutomationState(sourceId, {
         status: "error",
         label: "Retry",
-        message: errorMessage(caught)
+        message: errorMessage(caught),
       });
     }
   }
@@ -1797,7 +2001,7 @@ function SourceCatalogStep(props: StepViewProps) {
   async function registerAwsRuntimeRole(roleArn: string) {
     const nextReadiness = normalizeReadiness({
       ...effectiveReadiness,
-      setupRoleArn: roleArn
+      setupRoleArn: roleArn,
     });
     updateReadiness(nextReadiness);
     await connectSource("aws", { awsAssumingPrincipalArn: roleArn });
@@ -1811,25 +2015,25 @@ function SourceCatalogStep(props: StepViewProps) {
     patchAutomationState("aws", {
       status: "connecting",
       label: "Finalizing",
-      message: "Registering the approved AWS source role..."
+      message: "Registering the approved AWS source role...",
     });
     try {
       const status = await finalizeAwsSourceRehearsal({
         apiBase: workspace.providerIngressUrl,
         roleArn,
-        region: effectiveReadiness.region
+        region: effectiveReadiness.region,
       });
       applyCatalogSourceStatus({
         source,
         status,
-        apiBase: workspace.providerIngressUrl
+        apiBase: workspace.providerIngressUrl,
       });
       updateConnection("aws", { status: "connected" });
     } catch (caught) {
       patchAutomationState("aws", {
         status: "error",
         label: "Retry",
-        message: errorMessage(caught)
+        message: errorMessage(caught),
       });
       updateConnection("aws", { status: "error" });
     }
@@ -1843,22 +2047,22 @@ function SourceCatalogStep(props: StepViewProps) {
     patchAutomationState("aws", {
       status: "connecting",
       label: "Retrying",
-      message: "Queueing a fresh AWS first sync..."
+      message: "Queueing a fresh AWS first sync...",
     });
     try {
       const status = await retryAwsFirstSyncRehearsal({
-        apiBase: workspace.providerIngressUrl
+        apiBase: workspace.providerIngressUrl,
       });
       applyCatalogSourceStatus({
         source,
         status,
-        apiBase: workspace.providerIngressUrl
+        apiBase: workspace.providerIngressUrl,
       });
     } catch (caught) {
       patchAutomationState("aws", {
         status: "error",
         label: "Retry",
-        message: errorMessage(caught)
+        message: errorMessage(caught),
       });
     }
   }
@@ -1872,7 +2076,7 @@ function SourceCatalogStep(props: StepViewProps) {
           label: "Approval needed",
           message:
             "Provider admin approval is blocking completion. Fyralis keeps checking.",
-          apiBase: workspace.providerIngressUrl
+          apiBase: workspace.providerIngressUrl,
         });
       }
       if (connection.status === "validating") {
@@ -1880,7 +2084,21 @@ function SourceCatalogStep(props: StepViewProps) {
           status: "connecting",
           label: "Connecting",
           message: "Fyralis is checking source setup status.",
-          apiBase: workspace.providerIngressUrl
+          apiBase: workspace.providerIngressUrl,
+        });
+      }
+      if (
+        connection.sourceId === "discord" &&
+        connection.status === "connected"
+      ) {
+        activeRunMap.set(connection.sourceId, {
+          ...(automationStates[connection.sourceId] ?? {
+            status: "connected" as const,
+            label: "Connected",
+          }),
+          apiBase:
+            automationStates[connection.sourceId]?.apiBase ??
+            workspace.providerIngressUrl,
         });
       }
     }
@@ -1894,7 +2112,11 @@ function SourceCatalogStep(props: StepViewProps) {
       return;
     }
     let cancelled = false;
+    let pollTimer: number | null = null;
     async function pollActiveSources() {
+      if (cancelled) {
+        return;
+      }
       for (const [sourceId, state] of activeRuns) {
         const source = snapshot.sources.find((item) => item.id === sourceId);
         if (!source) {
@@ -1903,7 +2125,7 @@ function SourceCatalogStep(props: StepViewProps) {
         try {
           const status = await fetchSourceRehearsalStatus({
             sourceId,
-            apiBase: state.apiBase ?? workspace.providerIngressUrl
+            apiBase: state.apiBase ?? workspace.providerIngressUrl,
           });
           if (!cancelled) {
             applyCatalogSourceStatus({
@@ -1911,7 +2133,7 @@ function SourceCatalogStep(props: StepViewProps) {
               status,
               apiBase: state.apiBase,
               installUrl: state.installUrl,
-              waitingForAdmin: state.status === "waiting_admin"
+              waitingForAdmin: state.status === "waiting_admin",
             });
           }
         } catch (caught) {
@@ -1919,18 +2141,28 @@ function SourceCatalogStep(props: StepViewProps) {
             patchAutomationState(sourceId, {
               status: "error",
               label: "Retry",
-              message: errorMessage(caught)
+              message: errorMessage(caught),
             });
           }
         }
       }
+      if (!cancelled) {
+        pollTimer = window.setTimeout(pollActiveSources, 8000);
+      }
     }
-    const interval = window.setInterval(pollActiveSources, 8000);
+    pollTimer = window.setTimeout(pollActiveSources, 1000);
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+      if (pollTimer !== null) {
+        window.clearTimeout(pollTimer);
+      }
     };
-  }, [automationStates, connections, snapshot.sources, workspace.providerIngressUrl]);
+  }, [
+    automationStates,
+    connections,
+    snapshot.sources,
+    workspace.providerIngressUrl,
+  ]);
 
   return (
     <div className="grid w-full min-w-0 max-w-full gap-4">
@@ -1945,9 +2177,13 @@ function SourceCatalogStep(props: StepViewProps) {
         selectedSourceId={selectedSource.id}
         automationStates={automationStates}
         onSelect={selectSource}
-        onConnect={(sourceId) => void connectSource(sourceId)}
-        onRegisterAwsRuntimeRole={(roleArn) => void registerAwsRuntimeRole(roleArn)}
-        onFinalizeAwsSourceRole={(roleArn) => void finalizeAwsSourceRole(roleArn)}
+        onConnect={(sourceId, options) => void connectSource(sourceId, options)}
+        onRegisterAwsRuntimeRole={(roleArn) =>
+          void registerAwsRuntimeRole(roleArn)
+        }
+        onFinalizeAwsSourceRole={(roleArn) =>
+          void finalizeAwsSourceRole(roleArn)
+        }
         onRetryAwsFirstSync={() => void retryAwsFirstSync()}
       />
     </div>
@@ -1957,24 +2193,28 @@ function SourceCatalogStep(props: StepViewProps) {
 function sourceWaitingAdminCard(prepared: SourceAutoConnectResponse) {
   const run = prepared.autoConnect.automationRun;
   if (run) {
-    const backgroundVerb = run.backgroundStatus === "queued" ? "queued" : "started";
+    const backgroundVerb =
+      run.backgroundStatus === "queued" ? "queued" : "started";
     return {
       label: "Approval needed",
       message:
         run.automatedActionCount > 0
           ? `Fyralis ${backgroundVerb} ${run.automatedActionCount} background step${run.automatedActionCount === 1 ? "" : "s"}. Provider admin approval is blocking completion.`
-          : "Provider admin approval is blocking completion. Fyralis keeps checking."
+          : "Provider admin approval is blocking completion. Fyralis keeps checking.",
     };
   }
   return {
     label: "Approval needed",
-    message: prepared.autoConnect.message
+    message: prepared.autoConnect.message,
   };
 }
 
 function sourceApprovalActionLabel(source: Source) {
   if (source.id === "aws") {
     return "Open AWS approval";
+  }
+  if (source.id === "discord") {
+    return "Open Discord";
   }
   return "Open settings";
 }
@@ -1996,7 +2236,12 @@ function sourceRunningMessage(prepared: SourceAutoConnectResponse) {
   return prepared.autoConnect.message;
 }
 
-function WorkspaceLaunchStep({ selectedSource, selectedConnection, setLaunchReady, advance }: StepViewProps) {
+function WorkspaceLaunchStep({
+  selectedSource,
+  selectedConnection,
+  setLaunchReady,
+  advance,
+}: StepViewProps) {
   return (
     <OperationalStep
       icon={<ShieldCheck className="h-5 w-5" aria-hidden="true" />}
@@ -2005,9 +2250,14 @@ function WorkspaceLaunchStep({ selectedSource, selectedConnection, setLaunchRead
       description="Confirm the deployment, source sync, observability, support, and access controls are ready."
       cards={[
         ["Deployment health", "Green"],
-        ["Active source", selectedConnection?.status === "connected" ? `${selectedSource.name} active` : "Pending activation"],
+        [
+          "Active source",
+          selectedConnection?.status === "connected"
+            ? `${selectedSource.name} active`
+            : "Pending activation",
+        ],
         ["Observability", "Customer-local logs and metrics ready"],
-        ["Support", "Launch-day owner confirmed"]
+        ["Support", "Launch-day owner confirmed"],
       ]}
       primaryLabel="Mark pilot launch ready"
       onPrimary={() => {
@@ -2024,15 +2274,17 @@ function WorkspaceHomeStep({
   launchReady,
   selectedSource,
   selectedConnection,
-  sourceObservations
+  sourceObservations,
 }: StepViewProps) {
   const activeSources = snapshot.sources.filter((source) => {
     const connection = connections.find((item) => item.sourceId === source.id);
-    return connection?.status === "connected" || source.id === selectedSource.id;
+    return (
+      connection?.status === "connected" || source.id === selectedSource.id
+    );
   });
   const activeSourceIds = new Set(activeSources.map((source) => source.id));
-  const landedObservations = sourceObservations.filter(
-    (observation) => activeSourceIds.has(observation.sourceId)
+  const landedObservations = sourceObservations.filter((observation) =>
+    activeSourceIds.has(observation.sourceId),
   );
   return (
     <div className="grid gap-5">
@@ -2044,9 +2296,21 @@ function WorkspaceHomeStep({
           </Badge>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-3">
-          <Metric label="Deployment" value="Healthy" detail="Post-deploy validation complete." />
-          <Metric label="Active sources" value={String(activeSources.length)} detail={`${selectedSource.name} ${selectedConnection?.status ?? "ready"}.`} />
-          <Metric label="Data boundary" value="BYOC" detail="No source data leaves the customer cloud." />
+          <Metric
+            label="Deployment"
+            value="Healthy"
+            detail="Post-deploy validation complete."
+          />
+          <Metric
+            label="Active sources"
+            value={String(activeSources.length)}
+            detail={`${selectedSource.name} ${selectedConnection?.status ?? "ready"}.`}
+          />
+          <Metric
+            label="Data boundary"
+            value="BYOC"
+            detail="No source data leaves the customer cloud."
+          />
         </CardContent>
       </Card>
       <Card>
@@ -2056,10 +2320,15 @@ function WorkspaceHomeStep({
         </CardHeader>
         <CardContent className="grid gap-3">
           {activeSources.map((source) => (
-            <div key={source.id} className="flex items-center justify-between gap-4 rounded-lg border border-border bg-background/70 p-4">
+            <div
+              key={source.id}
+              className="flex items-center justify-between gap-4 rounded-lg border border-border bg-background/70 p-4"
+            >
               <span>
                 <strong className="block">{source.name}</strong>
-                <span className="text-sm text-muted-foreground">{source.description}</span>
+                <span className="text-sm text-muted-foreground">
+                  {source.description}
+                </span>
               </span>
               <Badge tone="success">Active</Badge>
             </div>
@@ -2077,8 +2346,9 @@ function WorkspaceHomeStep({
               key={observation.id}
               observation={observation}
               sourceName={
-                snapshot.sources.find((source) => source.id === observation.sourceId)
-                  ?.name
+                snapshot.sources.find(
+                  (source) => source.id === observation.sourceId,
+                )?.name
               }
             />
           ))}
@@ -2096,7 +2366,7 @@ function OperationalStep({
   cards,
   command,
   primaryLabel,
-  onPrimary
+  onPrimary,
 }: {
   icon: ReactNode;
   title: string;
@@ -2117,7 +2387,9 @@ function OperationalStep({
             </span>
             <div>
               <CardTitle>{title}</CardTitle>
-              <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                {description}
+              </p>
             </div>
           </div>
           <Badge tone="info">{badge}</Badge>
@@ -2143,7 +2415,7 @@ function ValidationCard({
   onPrimary,
   secondaryLabel,
   onSecondary,
-  footer
+  footer,
 }: {
   title: string;
   validation: Validation;
@@ -2158,26 +2430,47 @@ function ValidationCard({
       <Card>
         <CardHeader>
           <CardTitle>{title}</CardTitle>
-          <Badge tone={validation.status === "failed" ? "error" : validation.status === "passed" ? "success" : "info"}>
+          <Badge
+            tone={
+              validation.status === "failed"
+                ? "error"
+                : validation.status === "passed"
+                  ? "success"
+                  : "info"
+            }
+          >
             {validation.status}
           </Badge>
         </CardHeader>
         <CardContent className="grid gap-3">
           {validation.checks.map((check) => (
-            <div key={check.label} className="flex gap-3 rounded-lg border border-border bg-background/70 p-4">
+            <div
+              key={check.label}
+              className="flex gap-3 rounded-lg border border-border bg-background/70 p-4"
+            >
               {check.status === "failed" ? (
-                <AlertTriangle className="mt-0.5 h-4 w-4 text-destructive" aria-hidden="true" />
+                <AlertTriangle
+                  className="mt-0.5 h-4 w-4 text-destructive"
+                  aria-hidden="true"
+                />
               ) : (
-                <CheckCircle2 className="mt-0.5 h-4 w-4 text-success" aria-hidden="true" />
+                <CheckCircle2
+                  className="mt-0.5 h-4 w-4 text-success"
+                  aria-hidden="true"
+                />
               )}
               <span>
                 <strong className="block">{check.label}</strong>
-                <span className="text-sm text-muted-foreground">{check.detail}</span>
+                <span className="text-sm text-muted-foreground">
+                  {check.detail}
+                </span>
               </span>
             </div>
           ))}
           <div className="mt-2 flex flex-wrap gap-2">
-            <Button type="button" onClick={onPrimary}>{primaryLabel}</Button>
+            <Button type="button" onClick={onPrimary}>
+              {primaryLabel}
+            </Button>
             {secondaryLabel && onSecondary ? (
               <Button type="button" variant="secondary" onClick={onSecondary}>
                 {secondaryLabel}
@@ -2199,7 +2492,7 @@ function ActionBar({
   onSecondary,
   submit,
   disabled,
-  compact
+  compact,
 }: {
   primaryLabel: string;
   onPrimary?: () => void;
@@ -2211,8 +2504,17 @@ function ActionBar({
   compact?: boolean;
 }) {
   return (
-    <div className={cn("flex flex-wrap items-center gap-3", !compact && "rounded-lg border border-border bg-card p-4")}>
-      <Button type={submit ? "submit" : "button"} onClick={onPrimary} disabled={disabled}>
+    <div
+      className={cn(
+        "flex flex-wrap items-center gap-3",
+        !compact && "rounded-lg border border-border bg-card p-4",
+      )}
+    >
+      <Button
+        type={submit ? "submit" : "button"}
+        onClick={onPrimary}
+        disabled={disabled}
+      >
         {primaryLabel}
         {!submit ? <ArrowRight className="h-4 w-4" aria-hidden="true" /> : null}
       </Button>
@@ -2233,7 +2535,7 @@ function SelectField({
   label,
   help,
   register,
-  children
+  children,
 }: {
   label: string;
   help?: string;
@@ -2247,14 +2549,32 @@ function SelectField({
   );
 }
 
-function BoundaryPanel({ title, items, strong }: { title: string; items: string[]; strong?: boolean }) {
+function BoundaryPanel({
+  title,
+  items,
+  strong,
+}: {
+  title: string;
+  items: string[];
+  strong?: boolean;
+}) {
   return (
-    <div className={cn("rounded-lg border p-5", strong ? "border-success/30 bg-success/10" : "border-border bg-background/70")}>
+    <div
+      className={cn(
+        "rounded-lg border p-5",
+        strong
+          ? "border-success/30 bg-success/10"
+          : "border-border bg-background/70",
+      )}
+    >
       <h3 className="text-lg font-semibold">{title}</h3>
       <ul className="mt-4 grid gap-2 text-sm text-muted-foreground">
         {items.map((item) => (
           <li key={item} className="flex gap-2">
-            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden="true" />
+            <CheckCircle2
+              className="mt-0.5 h-4 w-4 shrink-0 text-success"
+              aria-hidden="true"
+            />
             {item}
           </li>
         ))}
@@ -2267,14 +2587,26 @@ function Endpoint({ label, value }: { label: string; value: string }) {
   return <InfoBlock title={label} value={value} code />;
 }
 
-function InfoBlock({ title, value, code }: { title: string; value: string; code?: boolean }) {
+function InfoBlock({
+  title,
+  value,
+  code,
+}: {
+  title: string;
+  value: string;
+  code?: boolean;
+}) {
   return (
     <div className="rounded-lg border border-border bg-background/70 p-4">
       <strong className="block text-sm">{title}</strong>
       {code ? (
-        <code className="mt-2 block whitespace-pre-wrap break-all text-xs text-muted-foreground">{value}</code>
+        <code className="mt-2 block whitespace-pre-wrap break-all text-xs text-muted-foreground">
+          {value}
+        </code>
       ) : (
-        <span className="mt-2 block whitespace-pre-wrap text-sm text-muted-foreground">{value}</span>
+        <span className="mt-2 block whitespace-pre-wrap text-sm text-muted-foreground">
+          {value}
+        </span>
       )}
     </div>
   );
@@ -2283,7 +2615,7 @@ function InfoBlock({ title, value, code }: { title: string; value: string; code?
 function SignalPathCard({
   title,
   detail,
-  command
+  command,
 }: {
   title: string;
   detail: string;
@@ -2304,7 +2636,7 @@ function SignalPathCard({
 
 function ObservationCard({
   observation,
-  sourceName
+  sourceName,
 }: {
   observation: SourceObservation;
   sourceName?: string;
@@ -2316,7 +2648,7 @@ function ObservationCard({
         "rounded-lg border p-4",
         isGateway
           ? "border-success/25 bg-success/10"
-          : "border-info/25 bg-info/10"
+          : "border-info/25 bg-info/10",
       )}
     >
       <div className="flex items-start justify-between gap-3">
@@ -2365,7 +2697,10 @@ function LogPanel({ logs, command }: { logs: string[]; command?: boolean }) {
       </div>
       <div className="grid gap-2">
         {logs.map((log) => (
-          <code key={log} className="break-all text-xs text-primary-foreground/80">
+          <code
+            key={log}
+            className="break-all text-xs text-primary-foreground/80"
+          >
             {log}
           </code>
         ))}
@@ -2374,25 +2709,103 @@ function LogPanel({ logs, command }: { logs: string[]; command?: boolean }) {
   );
 }
 
-function Metric({ label, value, detail }: { label: string; value: string; detail: string }) {
+function Metric({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
   return (
     <div className="rounded-lg border border-border bg-background/70 p-4">
-      <span className="text-xs font-semibold text-muted-foreground">{label}</span>
+      <span className="text-xs font-semibold text-muted-foreground">
+        {label}
+      </span>
       <strong className="mt-2 block text-2xl tracking-tight">{value}</strong>
       <span className="mt-1 block text-sm text-muted-foreground">{detail}</span>
     </div>
   );
 }
 
-function isExternalUrl(value: string | null | undefined) {
+function isExternalUrl(value: string | null | undefined): value is string {
   return Boolean(value && /^https?:\/\//.test(value));
+}
+
+function openImmediateProviderHandoffWindow(source: Source): Window | null {
+  if (source.id !== "discord" || typeof window === "undefined") {
+    return null;
+  }
+  const opened = window.open("about:blank", "_blank");
+  if (!opened) {
+    return null;
+  }
+  try {
+    opened.opener = null;
+    opened.document.title = `Opening ${source.name}`;
+    opened.document.body.textContent = `Opening ${source.name}...`;
+  } catch {
+    // Some browser contexts do not allow touching the blank window document.
+  }
+  return opened;
+}
+
+function completeImmediateProviderHandoffWindow(
+  opened: Window | null,
+  url: string | null | undefined,
+) {
+  if (!opened) {
+    return;
+  }
+  if (!isExternalUrl(url)) {
+    closeImmediateProviderHandoffWindow(opened);
+    return;
+  }
+  try {
+    opened.location.href = url;
+  } catch {
+    closeImmediateProviderHandoffWindow(opened);
+  }
+}
+
+function closeImmediateProviderHandoffWindow(opened: Window | null) {
+  if (!opened) {
+    return;
+  }
+  try {
+    opened.close();
+  } catch {
+    // The handoff window may already be controlled by the browser.
+  }
 }
 
 function sourceScopeChoices(sourceId: string) {
   const scopes: Record<string, string[]> = {
-    slack: ["#leadership", "#finance-ops", "#customer-success", "#engineering", "Consented DMs", "Pinned files"],
-    github: ["Core repos", "Infrastructure repos", "Open pull requests", "Issues", "Release branches", "Security repos excluded"],
-    gmail: ["Pilot executives", "Finance mailbox", "Customer-success mailbox", "Last 30 days", "Exclude personal labels", "Metadata-first crawl"]
+    slack: [
+      "#leadership",
+      "#finance-ops",
+      "#customer-success",
+      "#engineering",
+      "Consented DMs",
+      "Pinned files",
+    ],
+    github: [
+      "Core repos",
+      "Infrastructure repos",
+      "Open pull requests",
+      "Issues",
+      "Release branches",
+      "Security repos excluded",
+    ],
+    gmail: [
+      "Pilot executives",
+      "Finance mailbox",
+      "Customer-success mailbox",
+      "Last 30 days",
+      "Exclude personal labels",
+      "Metadata-first crawl",
+    ],
   };
   return (
     scopes[sourceId] ?? [
@@ -2401,7 +2814,7 @@ function sourceScopeChoices(sourceId: string) {
       "Last 30 days",
       "Live updates",
       "Metadata-first crawl",
-      "Sensitive records excluded"
+      "Sensitive records excluded",
     ]
   );
 }

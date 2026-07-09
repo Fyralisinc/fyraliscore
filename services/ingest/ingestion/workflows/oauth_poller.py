@@ -87,8 +87,10 @@ PATTERN-ALIGNMENT MAPPING
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -233,6 +235,30 @@ async def _mark_trigger_consumed(
     )
 
 
+def _trigger_payload_dict(payload: Any) -> dict[str, Any]:
+    """Return the trigger payload as a dict across asyncpg jsonb codecs."""
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload, (str, bytes, bytearray)):
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(decoded, dict):
+            return decoded
+    return {}
+
+
+def _payload_uuid_string(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    try:
+        return str(UUID(str(value)))
+    except (TypeError, ValueError):
+        return None
+
+
 # ---------------------------------------------------------------------
 # Service.
 # ---------------------------------------------------------------------
@@ -322,10 +348,16 @@ class OAuthPoller(LongRunningService):
                     "source": trigger["source"],
                     "trigger_kind": trigger["trigger_kind"],
                 }
+                payload = _trigger_payload_dict(trigger["payload"])
                 if trigger["installation_row_id"] is not None:
                     signal_data["installation_row_id"] = str(
                         trigger["installation_row_id"],
                     )
+                elif payload_installation_row_id := _payload_uuid_string(
+                    payload,
+                    "installation_row_id",
+                ):
+                    signal_data["installation_row_id"] = payload_installation_row_id
                 if trigger["gmail_installation_id"] is not None:
                     signal_data["gmail_installation_id"] = str(
                         trigger["gmail_installation_id"],

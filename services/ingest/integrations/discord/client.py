@@ -381,6 +381,68 @@ class DiscordClient:
         )
         return result if isinstance(result, list) else []
 
+    async def list_active_guild_threads(
+        self, guild_id: str,
+    ) -> list[dict[str, Any]]:
+        """Active threads visible to the bot. `GET /guilds/{guild_id}/threads/active`."""
+        result = await self._request(
+            "GET",
+            "/guilds/{guild_id}/threads/active",
+            endpoint_substituted=f"/guilds/{guild_id}/threads/active",
+            disable_on_missing_access=False,
+        )
+        if not isinstance(result, dict):
+            return []
+        threads = result.get("threads")
+        return threads if isinstance(threads, list) else []
+
+    async def list_channel_archived_threads(
+        self,
+        channel_id: str,
+        *,
+        archive_kind: str,
+    ) -> list[dict[str, Any]]:
+        """Archived public/private threads for one parent channel.
+
+        Public archived threads exist under text, announcement, forum, and media
+        parents. Private archived threads require elevated thread permissions;
+        Full Server Sync grants Administrator, so the sandbox can enumerate them.
+        """
+        if archive_kind not in {"public", "private"}:
+            raise ValueError("archive_kind must be 'public' or 'private'")
+
+        out: list[dict[str, Any]] = []
+        before: str | None = None
+        while True:
+            params: dict[str, Any] = {"limit": 100}
+            if before:
+                params["before"] = before
+            result = await self._request(
+                "GET",
+                f"/channels/{{channel_id}}/threads/archived/{archive_kind}",
+                endpoint_substituted=(
+                    f"/channels/{channel_id}/threads/archived/{archive_kind}"
+                ),
+                params=params,
+                disable_on_missing_access=False,
+            )
+            if not isinstance(result, dict):
+                break
+            page = result.get("threads")
+            threads = [item for item in page if isinstance(item, dict)] if isinstance(page, list) else []
+            out.extend(threads)
+            if not result.get("has_more") or not threads:
+                break
+            archive_timestamp = (
+                (threads[-1].get("thread_metadata") or {}).get("archive_timestamp")
+                if isinstance(threads[-1].get("thread_metadata"), dict)
+                else None
+            )
+            if not archive_timestamp:
+                break
+            before = str(archive_timestamp)
+        return out
+
     async def get_messages(
         self,
         *,

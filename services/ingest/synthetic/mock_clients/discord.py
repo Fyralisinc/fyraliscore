@@ -3,6 +3,8 @@
 Implements the methods M6.6 planner/fetcher/reconciler call:
   - list_guilds() -> list[dict]
   - list_guild_channels(guild_id) -> list[dict]
+  - list_active_guild_threads(guild_id) -> list[dict]
+  - list_channel_archived_threads(channel_id, archive_kind=...) -> list[dict]
   - get_messages(channel_id, before=None, after=None, limit=None)
     -> list[dict]
 
@@ -81,12 +83,36 @@ class MockDiscordClient(_MockBase):
     ) -> list[dict[str, Any]]:
         self._check_fault()
         return [
-            {
-                "id": c["id"],
-                "name": c.get("name"),
-                "type": c.get("type", 0),
-            }
+            self._channel_wire(c)
             for c in self._fixture["channels"]
+        ]
+
+    async def list_active_guild_threads(
+        self,
+        guild_id: str,
+    ) -> list[dict[str, Any]]:
+        self._check_fault()
+        return [
+            self._channel_wire(c)
+            for c in self._fixture["channels"]
+            if c.get("type") in {10, 11, 12}
+            and not (c.get("thread_metadata") or {}).get("archived")
+        ]
+
+    async def list_channel_archived_threads(
+        self,
+        channel_id: str,
+        *,
+        archive_kind: str,
+    ) -> list[dict[str, Any]]:
+        self._check_fault()
+        expected_types = {10, 11} if archive_kind == "public" else {12}
+        return [
+            self._channel_wire(c)
+            for c in self._fixture["channels"]
+            if c.get("parent_id") == channel_id
+            and c.get("type") in expected_types
+            and (c.get("thread_metadata") or {}).get("archived")
         ]
 
     async def get_messages(
@@ -111,6 +137,16 @@ class MockDiscordClient(_MockBase):
         return ordered[:page_size]
 
     # ---- Helpers ----
+    def _channel_wire(self, channel: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": channel["id"],
+            "name": channel.get("name"),
+            "type": channel.get("type", 0),
+            "parent_id": channel.get("parent_id"),
+            "position": channel.get("position"),
+            "thread_metadata": channel.get("thread_metadata"),
+        }
+
     def _messages_for(self, channel_id: str) -> list[dict[str, Any]]:
         for c in self._fixture["channels"]:
             if c["id"] == channel_id:

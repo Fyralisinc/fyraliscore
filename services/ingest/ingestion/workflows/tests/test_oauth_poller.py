@@ -217,6 +217,53 @@ async def test_oauth_poller_forwards_provider_installation_row_id(
     assert data["installation_row_id"] == str(install_id)
 
 
+async def test_oauth_poller_forwards_payload_installation_row_id_for_replay(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Manual replay triggers can carry install scope in JSON payload."""
+    tid = await _seed_tenant(fresh_db)
+    install_id = uuid7()
+    trigger_id = await _seed_trigger(
+        fresh_db,
+        tenant_id=tid,
+        source="discord",
+        trigger_kind="manual_replay",
+        payload={
+            "reason": "discord_channel_access_granted",
+            "installation_row_id": str(install_id),
+            "guild_id": "guild-1",
+            "channel_ids": ["c-now-ready"],
+        },
+    )
+
+    poller = OAuthPoller(
+        fresh_db,
+        config=OAuthPollerConfig(
+            tick_interval_seconds=0.01,
+            max_triggers_per_tick=1,
+        ),
+    )
+    await poller.run(max_ticks=1)
+
+    signal_row = await fresh_db.fetchrow(
+        "SELECT signal_data FROM workflow_signals "
+        "WHERE workflow_kind = 'tenant_onboarding' "
+        "AND signal_kind = $1",
+        SIGNAL_KIND_RUN_CREATED,
+    )
+    assert signal_row is not None
+    import orjson
+    raw = signal_row["signal_data"]
+    data = (
+        orjson.loads(raw) if isinstance(raw, (str, bytes, bytearray))
+        else dict(raw)
+    )
+    assert data["trigger_id"] == str(trigger_id)
+    assert data["source"] == "discord"
+    assert data["trigger_kind"] == "manual_replay"
+    assert data["installation_row_id"] == str(install_id)
+
+
 # =====================================================================
 # 2. LOAD-BEARING — atomic rollback on signal-emit failure.
 # =====================================================================

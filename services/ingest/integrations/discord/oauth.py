@@ -77,8 +77,19 @@ log = structlog.get_logger("integrations.discord.oauth")
 # Discord scopes per FR-006. Space-separated in the OAuth URL.
 _DISCORD_SCOPES = "applications.commands bot"
 
-# Minimum permissions: send_messages (0x800) + view_channel (0x400) = 0xC00 = 3072.
-_DISCORD_PERMISSIONS = "3072"
+# Minimum permissions for source onboarding:
+# view_channel (0x400) + send_messages (0x800) + read_message_history (0x10000)
+# = 0x10C00 = 68608. Read Message History keeps first backfill friction low
+# for newly installed servers; private channels still need channel/category
+# role access if they override the bot role.
+_DISCORD_STANDARD_PERMISSIONS = "68608"
+
+# Full Server Sync mode: administrator (0x8). Discord defines this as allowing
+# all permissions and bypassing channel permission overwrites.
+_DISCORD_ADMINISTRATOR_PERMISSIONS = "8"
+_DISCORD_PERMISSIONS = _DISCORD_STANDARD_PERMISSIONS
+_DISCORD_ACCESS_MODE_STANDARD = "standard"
+_DISCORD_ACCESS_MODE_FULL_SERVER_SYNC = "full_server_sync"
 
 _DISCORD_AUTHORIZE_URL = "https://discord.com/oauth2/authorize"
 _DISCORD_TOKEN_URL = "https://discord.com/api/v10/oauth2/token"
@@ -97,6 +108,45 @@ def short_guild_hash(guild_id: str) -> str:
     redirect's `?guild=` query param so the URL is not a workspace-
     enumeration vector (FR-005 / SC-006)."""
     return hashlib.blake2b(guild_id.encode("utf-8"), digest_size=8).hexdigest()
+
+
+def discord_access_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower().replace("-", "_")
+    if mode in {
+        _DISCORD_ACCESS_MODE_FULL_SERVER_SYNC,
+        "administrator",
+        "admin",
+        "full",
+    }:
+        return _DISCORD_ACCESS_MODE_FULL_SERVER_SYNC
+    return _DISCORD_ACCESS_MODE_STANDARD
+
+
+def discord_permissions_for_access_mode(access_mode: Any) -> str:
+    if discord_access_mode(access_mode) == _DISCORD_ACCESS_MODE_FULL_SERVER_SYNC:
+        return _DISCORD_ADMINISTRATOR_PERMISSIONS
+    return _DISCORD_STANDARD_PERMISSIONS
+
+
+def discord_authorize_url(
+    *,
+    client_id: str,
+    redirect_uri: str,
+    state_token: str,
+    access_mode: Any = _DISCORD_ACCESS_MODE_STANDARD,
+) -> str:
+    from urllib.parse import urlencode
+
+    return f"{_DISCORD_AUTHORIZE_URL}?" + urlencode(
+        {
+            "client_id": client_id,
+            "scope": _DISCORD_SCOPES,
+            "permissions": discord_permissions_for_access_mode(access_mode),
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "state": state_token,
+        }
+    )
 
 
 # Re-export the generic state-token helpers under the Discord namespace
@@ -169,19 +219,14 @@ async def install_handler(request: Request) -> RedirectResponse:
     state_token = await issue_state_token(auth.tenant_id, pool)
     metrics.record_install_outcome("initiated")
 
-    from urllib.parse import urlencode
-    qs = urlencode(
-        {
-            "client_id": client_id,
-            "scope": _DISCORD_SCOPES,
-            "permissions": _DISCORD_PERMISSIONS,
-            "redirect_uri": redirect_uri,
-            "response_type": "code",
-            "state": state_token,
-        }
-    )
     return RedirectResponse(
-        url=f"{_DISCORD_AUTHORIZE_URL}?{qs}", status_code=302,
+        url=discord_authorize_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state_token=state_token,
+            access_mode=discord_access_mode(request.query_params.get("access_mode")),
+        ),
+        status_code=302,
     )
 
 
@@ -193,6 +238,7 @@ async def _connect_handoff(
 ) -> dict[str, Any]:
     client_id = str(body.get("client_id") or os.environ.get("DISCORD_CLIENT_ID") or "").strip()
     redirect_uri = os.environ.get("DISCORD_REDIRECT_URI", "").strip()
+    access_mode = discord_access_mode(body.get("access_mode"))
     missing = [
         name
         for name, value in {
@@ -207,21 +253,17 @@ async def _connect_handoff(
     ]
     install_url = None
     if not missing:
-        from urllib.parse import urlencode
-
         state_token = await issue_state_token(tenant_id, pool)
-        install_url = f"{_DISCORD_AUTHORIZE_URL}?" + urlencode(
-            {
-                "client_id": client_id,
-                "scope": _DISCORD_SCOPES,
-                "permissions": _DISCORD_PERMISSIONS,
-                "redirect_uri": redirect_uri,
-                "response_type": "code",
-                "state": state_token,
-            }
+        install_url = discord_authorize_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state_token=state_token,
+            access_mode=access_mode,
         )
     return {
         "install_url": install_url,
+        "discord_access_mode": access_mode,
+        "discord_permissions": discord_permissions_for_access_mode(access_mode),
         "oauth_redirect_url": redirect_uri,
         "events_request_url": str(body.get("events_request_url") or "").strip() or None,
         "provider_console_url": "https://discord.com/developers/applications",
@@ -689,6 +731,9 @@ __all__ = [
     "short_guild_hash",
     "issue_state_token",
     "verify_and_consume_state",
+    "discord_access_mode",
+    "discord_authorize_url",
+    "discord_permissions_for_access_mode",
     "install_handler",
     "callback_handler",
     "router",

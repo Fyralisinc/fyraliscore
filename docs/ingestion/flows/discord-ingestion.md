@@ -115,7 +115,7 @@ Discord‑specific differences ([oauth.py:1‑34](../../../services/ingest/integ
    HMAC‑signed `state` token bound to the session's `tenant_id` (it reuses the
    provider‑agnostic Slack state helpers, passing `provider="discord"`), then
    `302`s to `https://discord.com/oauth2/authorize` with
-   `scope="applications.commands bot"` and `permissions="3072"`
+   `scope="applications.commands bot"` and `permissions="68608"`
    (`send_messages` + `view_channel`)
    ([oauth.py:73‑77](../../../services/ingest/integrations/discord/oauth.py#L73-L77),
    [119‑181](../../../services/ingest/integrations/discord/oauth.py#L119-L181)).
@@ -199,8 +199,10 @@ retry in the client.
 
 ## 4. Backfill scope — the shard family
 
-The planner decomposes one install into **one shard per *sampled* channel**, all
-of `shard_kind = "discord_channel_window"`
+The planner decomposes one install into **one shard per readable Discord
+message stream**: text channels, announcement channels, active/archived
+threads, and forum/media post threads. All use
+`shard_kind = "discord_channel_window"`
 ([planners/discord.py:64‑97](../../../services/ingest/ingestion/planners/discord.py#L64-L97)).
 
 There is **a single shard family** (no Class‑A/Class‑B split like GitHub):
@@ -209,33 +211,23 @@ There is **a single shard family** (no Class‑A/Class‑B split like GitHub):
 |-------|--------|-----------|------------|
 | Channel window | guild text messages | `GET /channels/{id}/messages` (newest‑first) | `fetch_page_discord` |
 
-### 4.1 Enumerate guilds → channels → **5% sparse sample**
+### 4.1 Enumerate guild channels → full message-stream coverage
 
 ```python
-guilds   = await ctx.source_client.list_guilds()            # GET /users/@me/guilds
 channels = await ctx.source_client.list_guild_channels(gid) # per guild
 text     = [c for c in channels if c.get("type") == 0]      # GUILD_TEXT only
-sampled  = _sampled_channels(tenant_str, text)              # deterministic 5%
+selected = sorted(text, key=lambda c: str(c.get("id") or ""))
 ```
 
-The planner does **not** backfill every channel. Per LLD §3.4 it takes a
-**deterministic 5% sparse sample** of each guild's text channels
-([planners/discord.py:21‑61](../../../services/ingest/ingestion/planners/discord.py#L21-L61)):
-
-- **`SAMPLING_RATE`** defaults to `0.05`, overridable via
-  **`DISCORD_BACKFILL_SAMPLING_RATE`** (set `1.0` for full coverage against a
-  mock) ([planners/discord.py:30](../../../services/ingest/ingestion/planners/discord.py#L30)).
-- The sample is **stable across runs and process restarts**: channels are sorted
-  by id, then `random.sample` is seeded from a **SHA‑256** digest of
-  `(tenant_id, SAMPLING_VERSION)`. Python's salted builtin `hash()` was rejected
-  precisely because it gave a different set every restart
-  ([planners/discord.py:33‑61](../../../services/ingest/ingestion/planners/discord.py#L33-L61)).
-- `k = max(1, int(len(channels) * rate))` — every non‑empty guild yields at least
-  one channel ([planners/discord.py:60](../../../services/ingest/ingestion/planners/discord.py#L60)).
-
-Each shard carries `guild_id`, `channel_id`, `channel_name`, `is_sampled=True`,
-`sampling_version`, `installation_id`, at a baseline `recency_score=1.0`
-([planners/discord.py:84‑96](../../../services/ingest/ingestion/planners/discord.py#L84-L96)).
+The planner backfills every Discord text channel returned by the bot-scoped
+`list_guild_channels` call. Full Server Sync installs Fyralis with the
+Discord `Administrator` permission, so channel permission overwrites are
+bypassed and private channels are included without per-channel setup. Legacy
+standard-permission installs can still hit `discord_channel_forbidden`; those
+fetch shards are skipped as bounded channel failures, not treated as a
+source-wide failure. Each shard carries `guild_id`, `channel_id`,
+`channel_name`, and `installation_id` at a baseline `recency_score=1.0`
+([planners/discord.py](../../../services/ingest/ingestion/planners/discord.py)).
 
 ---
 
@@ -447,12 +439,10 @@ global commands) ([tenant_resolver.py:281‑287](../../../services/app/webhooks/
 
 ---
 
-## 9. Reconciliation — gap detection (sampling‑aware)
+## 9. Reconciliation — gap detection
 
 `reconcile_discord` ([reconcilers/discord.py:122‑159](../../../services/ingest/ingestion/reconcilers/discord.py#L122-L159))
-re‑checks completed shards for new activity. It is **sampling‑aware**: only shards
-with `is_sampled=True` are probed — the unsampled 95% of channels are out of scope
-by definition ([reconcilers/discord.py:68‑78](../../../services/ingest/ingestion/reconcilers/discord.py#L68-L78)).
+re‑checks every completed Discord channel shard for new activity.
 
 Per shard, it loads the cursor's `newest_seen_snowflake` and issues a cheap probe
 `get_messages(channel_id, after=<newest>, limit=1)`. Any returned message means a
@@ -500,8 +490,8 @@ plain `DiscordApiError` ([client.py:210‑269](../../../services/ingest/integrat
                           ┌──────────────────────── BACKFILL (pull) ────────────────────────┐
                           │  bot token (env DISCORD_BOT_TOKEN) → Authorization: Bot {token}  │
    ALL BOT GUILDS         │  planner: GET /users/@me/guilds → GET /guilds/{id}/channels      │
-                          │     └─► deterministic 5% sample of GUILD_TEXT channels           │
-                          │     └─► one discord_channel_window shard per sampled channel     │
+                          │     └─► every readable GUILD_TEXT channel                        │
+                          │     └─► one discord_channel_window shard per text channel        │
    channel history        │  fetcher: GET /channels/{id}/messages (before=<oldest>, snowflake)
                           │     └─► reshape REST msg → MESSAGE_CREATE shape (inject guild_id) │
                           └───────────────────────────────────────────────────────────────┬─┘
@@ -539,8 +529,9 @@ plain `DiscordApiError` ([client.py:210‑269](../../../services/ingest/integrat
    authorize bot calls.
 3. **Asymmetric webhook verification.** Interactions are verified with **Ed25519**
    against the app **public** key (not HMAC), with a 300 s replay window.
-4. **Sparse, deterministic backfill.** 5% per‑guild sampling, stable across
-   process restarts (SHA‑256 seed); the reconciler only gap‑checks sampled shards.
+4. **Full text-channel backfill.** Every bot-readable text channel is planned
+   and reconciled; Discord permissions remain the source of truth for private
+   channel access.
 5. **Privacy by construction (SC‑006).** The raw `guild_id` never appears in
    logs, metadata, entities, or shadow‑write bodies — only a BLAKE2b short hash.
 6. **One intentional inline exception.** Discord interactions stay inline (never
@@ -562,11 +553,10 @@ Gateway intents, REST rate limits).
 | `DISCORD_REDIRECT_URI` | — (required for install) | OAuth2 redirect target |
 | `WEBHOOK_SECRET_DISCORD` | — (required for interactions) | app **Ed25519 public key** (hex); mirrored per‑guild into `encrypted_secrets` |
 | `DISCORD_MAX_TIMESTAMP_AGE_S` | `300` | interaction signature replay window |
-| `DISCORD_BACKFILL_SAMPLING_RATE` | `0.05` | fraction of each guild's text channels to backfill (`1.0` = full) |
 
 ### 12.2 Verified compliant
 
-- **OAuth2** — `applications.commands bot` scope, `permissions=3072`, **HTTP Basic**
+- **OAuth2** — `applications.commands bot` scope, `permissions=68608`, **HTTP Basic**
   token exchange (Discord requirement). ✅
 - **Interaction signing** — Ed25519 `VerifyKey.verify` over
   `X-Signature-Timestamp || body`, hex signature, 300 s replay window, PONG to

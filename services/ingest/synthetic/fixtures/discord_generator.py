@@ -4,9 +4,9 @@
 produces a deterministic guild shaped to feed `MockDiscordClient`.
 
 Per M6.6 reality: the planner filters channels to type==0 (GUILD_TEXT)
-and applies 5% sparse sampling. The generator returns all channels as
-type==0 so the planner samples ALL of them — tests can shape the
-shard count via the `channels` parameter directly.
+and plans every returned text channel. The generator returns all channels as
+type==0 so tests can shape the shard count via the `channels` parameter
+directly.
 """
 from __future__ import annotations
 
