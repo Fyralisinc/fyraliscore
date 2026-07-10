@@ -88,6 +88,10 @@ backups/
 .agents/
 skills-lock.json
 
+# Local Codex project guidance and defaults
+/AGENTS.md
+/.codex/
+
 # Scratch refactor transcript (internal dev note, kept local)
 think_refactor.md
 
