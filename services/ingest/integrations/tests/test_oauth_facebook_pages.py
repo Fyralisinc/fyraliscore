@@ -282,7 +282,7 @@ async def test_callback_selects_page_stores_tokens_subscribes_and_triggers_backf
     assert "PAGE2" not in response.headers["location"]
     assert fake_client.closed is True
     assert fake_client.subscriptions == [
-        ("PAGE2", "page-token-2", ("messages",)),
+        ("PAGE2", "page-token-2", ("messages", "message_echoes")),
     ]
     assert [record["label"] for record in secret_store.records] == [
         "facebook_pages_page_token:PAGE2",
@@ -312,6 +312,7 @@ async def test_callback_selects_page_stores_tokens_subscribes_and_triggers_backf
         "pages_read_engagement",
     }
     assert page_args[7] is True
+    assert set(page_args[8]) == {"messages", "message_echoes"}
 
     trigger_args = pool.conn.trigger_args
     assert trigger_args is not None

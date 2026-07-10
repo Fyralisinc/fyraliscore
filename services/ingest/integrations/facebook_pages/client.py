@@ -14,6 +14,7 @@ from lib.shared.errors import SecretNotFoundError, SecretStoreError
 
 
 _DEFAULT_GRAPH_VERSION = "v23.0"
+FACEBOOK_PAGES_WEBHOOK_FIELDS = ("messages", "message_echoes")
 
 
 def graph_api_version() -> str:
@@ -141,7 +142,7 @@ class FacebookPagesClient:
         *,
         page_id: str,
         page_access_token: str,
-        fields: tuple[str, ...] = ("messages",),
+        fields: tuple[str, ...] = FACEBOOK_PAGES_WEBHOOK_FIELDS,
     ) -> dict[str, Any]:
         return await self._request(
             "POST",

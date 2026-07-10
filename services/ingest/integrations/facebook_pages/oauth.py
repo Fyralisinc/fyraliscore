@@ -23,7 +23,10 @@ from lib.shared.errors import (
 )
 from lib.shared.ids import uuid7
 from lib.shared.secrets import load_app_secret_text_from_env
-from services.ingest.integrations.facebook_pages.client import FacebookPagesClient
+from services.ingest.integrations.facebook_pages.client import (
+    FACEBOOK_PAGES_WEBHOOK_FIELDS,
+    FacebookPagesClient,
+)
 from services.ingest.integrations.oauth_native_connect import (
     build_oauth_native_connect_router,
 )
@@ -280,6 +283,7 @@ async def _upsert_page_installation(
     verify_token_ref: str,
     granted_scopes: list[str],
     subscribed: bool,
+    subscribed_fields: tuple[str, ...],
 ) -> tuple[UUID, bool]:
     page_id = str(page["id"])
     row = await conn.fetchrow(
@@ -290,7 +294,7 @@ async def _upsert_page_installation(
             subscribed_fields, webhook_subscribed_at, enabled, updated_at
         ) VALUES (
             $1,$2,$3,$4,$5,$6,$7,
-            CASE WHEN $8 THEN ARRAY['messages']::text[] ELSE '{}'::text[] END,
+            CASE WHEN $8 THEN $9::text[] ELSE '{}'::text[] END,
             CASE WHEN $8 THEN now() ELSE NULL END,
             true, now()
         )
@@ -319,6 +323,7 @@ async def _upsert_page_installation(
         verify_token_ref,
         granted_scopes,
         subscribed,
+        list(subscribed_fields),
     )
     if row is None:
         raise InstallationCollisionError(
@@ -405,7 +410,7 @@ async def callback_handler(request: Request) -> Any:
         subscribe_response = await client.subscribe_page(
             page_id=page_id,
             page_access_token=page_token,
-            fields=("messages",),
+            fields=FACEBOOK_PAGES_WEBHOOK_FIELDS,
         )
     except Exception as exc:  # noqa: BLE001
         log.error(
@@ -447,6 +452,7 @@ async def callback_handler(request: Request) -> Any:
                     verify_token_ref=verify_token_ref,
                     granted_scopes=granted_scopes,
                     subscribed=subscribed,
+                    subscribed_fields=FACEBOOK_PAGES_WEBHOOK_FIELDS,
                 )
                 await _emit_onboarding_trigger(
                     conn,
