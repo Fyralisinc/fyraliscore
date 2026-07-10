@@ -656,6 +656,12 @@ async def _maybe_open_actor_identity_clarification(
     ref = str(unresolved_actor_ref).strip()
     if not ref:
         return
+    # Instagram-scoped IDs identify external customers in the context of one
+    # connected business account. They are useful evidence, but asking an
+    # operator to resolve every one-off customer as an employee would flood the
+    # clarification queue and invite unsafe cross-source merges.
+    if _is_external_customer_ref(ref):
+        return
     question = (
         f"Who is '{ref}'? Is this an existing actor alias, a new actor, "
         "or not a person?"
@@ -726,6 +732,8 @@ async def _maybe_open_actor_identity_clarification(
 
 def _actor_ref_priority(ref: str) -> str:
     lowered = ref.casefold()
+    if lowered.startswith("instagram:user:"):
+        return "low"
     if "@" in lowered and not any(
         marker in lowered
         for marker in ("noreply", "no-reply", "bot@", "dependabot")
@@ -734,6 +742,13 @@ def _actor_ref_priority(ref: str) -> str:
     if lowered.startswith(("slack:", "signal:", "telegram:", "github:")):
         return "normal"
     return "low"
+
+
+def _is_external_customer_ref(ref: str) -> bool:
+    lowered = ref.casefold()
+    return lowered.startswith("instagram:user:") or (
+        lowered.startswith("instagram:") and ":user:" in lowered
+    )
 
 
 async def _publish_embedding_request_if_needed(

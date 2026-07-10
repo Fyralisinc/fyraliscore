@@ -111,6 +111,7 @@ GATEWAY_BEARER_BYPASS_PATH_POLICIES: dict[str, RouteAccessPolicy] = {
     "/healthz": _PUBLIC,
     "/readyz": _PUBLIC,
     "/metrics": _PUBLIC,
+    "/legal/local-test-privacy": _PUBLIC,
     "/auth/session": _BOOTSTRAP,
     "/integrations/slack/callback": _OAUTH_CALLBACK,
     "/integrations/slack/installed": _OAUTH_CALLBACK,
@@ -124,7 +125,9 @@ GATEWAY_BEARER_BYPASS_PATH_POLICIES: dict[str, RouteAccessPolicy] = {
     "/integrations/notion/callback": _OAUTH_CALLBACK,
     "/integrations/notion/installed": _OAUTH_CALLBACK,
     "/integrations/notion/install-error": _OAUTH_CALLBACK,
+    "/integrations/instagram/callback": _OAUTH_CALLBACK,
     "/integrations/whatsapp/webhook": _PROVIDER_SIGNED,
+    "/integrations/instagram/webhook": _PROVIDER_SIGNED,
 }
 
 GATEWAY_BEARER_BYPASS_PATHS = frozenset(GATEWAY_BEARER_BYPASS_PATH_POLICIES)

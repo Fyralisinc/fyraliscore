@@ -42,6 +42,7 @@ def register_gateway_routes(
     from services.app.gateway.substrate_router import build_substrate_router
     from services.app.gateway.today_core_router import build_today_core_router
     from services.app.gateway.whatsapp_router import build_whatsapp_router
+    from services.app.gateway.instagram_router import build_instagram_router
 
     app.include_router(build_core_router())
     app.include_router(build_clarifications_router())
@@ -61,6 +62,7 @@ def register_gateway_routes(
             debug_endpoints_enabled=settings.debug_endpoints_enabled,
         )
     )
+    app.include_router(build_instagram_router())
     app.include_router(build_sage_internal_router())
     app.include_router(build_recommendations_router())
     app.include_router(build_structure_router())
@@ -129,6 +131,16 @@ def mount_gateway_routes(
     except Exception as exc:  # noqa: BLE001 - never block startup
         if emit_mount_logs:
             log.error("jira_router_mount_failed", error=str(exc))
+
+    try:
+        from services.ingest.integrations.instagram.oauth import router as instagram_router
+
+        app.include_router(instagram_router)
+        if emit_mount_logs:
+            log.info("instagram_router_mounted")
+    except Exception as exc:  # noqa: BLE001 - never block startup
+        if emit_mount_logs:
+            log.error("instagram_router_mount_failed", error=str(exc))
 
     try:
         from services.ingest.integrations.mercury.oauth import router as mercury_router

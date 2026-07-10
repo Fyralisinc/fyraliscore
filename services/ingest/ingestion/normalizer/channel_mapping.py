@@ -318,6 +318,14 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     # partner-gated in production (no webhook entitlement → poll-only live edge).
     ("linkedin", "backfill"): "linkedin:object",
     ("linkedin", "poll"): "linkedin:object",
+    # Instagram Messaging — Meta webhooks plus Conversations API backfill/poll.
+    # All ingress paths feed canonical records produced by
+    # integrations.instagram.records, so the single handler can branch by
+    # `_fyralis_record_type` while keeping external_id parity across live,
+    # backfill, and poll recovery copies of the same DM.
+    ("instagram", "webhook"): "instagram:message",
+    ("instagram", "backfill"): "instagram:message",
+    ("instagram", "poll"): "instagram:message",
     # WhatsApp — webhook (live) only in Phase 1. Like github:webhook /
     # notion:object, this is a ONE-channel/many-event-types source: BOTH
     # inbound customer messages AND outbound delivery-status callbacks route

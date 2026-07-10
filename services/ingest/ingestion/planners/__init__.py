@@ -146,6 +146,7 @@ PLANNER_DISPATCH: dict[str, Planner] = {
     "hibob":     _not_implemented_planner("hibob",     "IN-PEOPLE"),
     "ashby":     _not_implemented_planner("ashby",     "IN-PEOPLE"),
     "linkedin":  _not_implemented_planner("linkedin",  "IN-PEOPLE"),
+    "instagram": _not_implemented_planner("instagram", "IN-INSTAGRAM"),
     # WhatsApp is LIVE-only (Kafka data plane); backfill is a deferred phase,
     # so the planner stays a stub — no onboarding_trigger is created for it.
     "whatsapp":  _not_implemented_planner("whatsapp",  "IN-WHATSAPP-BACKFILL"),
@@ -189,3 +190,4 @@ from services.ingest.ingestion.planners import carta as _carta  # noqa: E402,F40
 from services.ingest.ingestion.planners import hibob as _hibob  # noqa: E402,F401
 from services.ingest.ingestion.planners import ashby as _ashby  # noqa: E402,F401
 from services.ingest.ingestion.planners import linkedin as _linkedin  # noqa: E402,F401
+from services.ingest.ingestion.planners import instagram as _instagram  # noqa: E402,F401

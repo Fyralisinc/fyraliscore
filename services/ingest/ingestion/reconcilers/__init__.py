@@ -192,6 +192,7 @@ RECONCILER_DISPATCH: dict[str, Reconciler] = {
     "hibob":     _not_implemented_reconciler("hibob",     "IN-PEOPLE"),
     "ashby":     _not_implemented_reconciler("ashby",     "IN-PEOPLE"),
     "linkedin":  _not_implemented_reconciler("linkedin",  "IN-PEOPLE"),
+    "instagram": _not_implemented_reconciler("instagram", "IN-INSTAGRAM"),
     # WhatsApp is LIVE-only; backfill reconciliation is a deferred phase.
     "whatsapp":  _not_implemented_reconciler("whatsapp",  "IN-WHATSAPP-BACKFILL"),
 }
@@ -266,3 +267,4 @@ from services.ingest.ingestion.reconcilers import carta as _carta  # noqa: E402,
 from services.ingest.ingestion.reconcilers import hibob as _hibob  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import ashby as _ashby  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import linkedin as _linkedin  # noqa: E402,F401
+from services.ingest.ingestion.reconcilers import instagram as _instagram  # noqa: E402,F401

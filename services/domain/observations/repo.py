@@ -116,7 +116,10 @@ def _hydrate_row(record: asyncpg.Record) -> ObservationRow:
     # convert to list[float] so Pydantic validates cleanly.
     emb = raw.get("embedding")
     if emb is not None and not isinstance(emb, list):
-        raw["embedding"] = [float(x) for x in emb]
+        if hasattr(emb, "to_list"):
+            raw["embedding"] = [float(x) for x in emb.to_list()]
+        else:
+            raw["embedding"] = [float(x) for x in emb]
     try:
         return ObservationRow.model_validate(raw)
     except Exception as e:

@@ -200,4 +200,5 @@ nav:
               - Google Drive: ingestion/sources/google-drive.md
               - Jira: ingestion/sources/jira.md
               - Grafana: ingestion/sources/grafana.md
+              - Instagram Direct Messages: ingestion/sources/instagram.md
               - Telegram (MTProto): ingestion/sources/telegram.md

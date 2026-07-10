@@ -178,6 +178,8 @@ async def issue_state_token(
 async def verify_and_consume_state(
     state: str,
     pool: asyncpg.Pool,
+    *,
+    expected_provider: str | None = None,
 ) -> tuple[UUID, dict[str, Any]]:
     """Verify the state token's HMAC + parse payload + atomically
     consume the nonce. Returns `(tenant_id, payload)`.
@@ -236,9 +238,11 @@ async def verify_and_consume_state(
          WHERE nonce = $1
            AND consumed_at IS NULL
            AND expires_at > now()
+           AND ($2::text IS NULL OR provider = $2)
         RETURNING id, tenant_id, provider
         """,
         nonce,
+        expected_provider,
     )
     if row is not None:
         if row["tenant_id"] != tenant_id:
@@ -251,7 +255,7 @@ async def verify_and_consume_state(
         return tenant_id, payload
 
     existing = await pool.fetchrow(
-        "SELECT consumed_at, expires_at FROM oauth_install_states WHERE nonce = $1",
+        "SELECT consumed_at, expires_at, provider FROM oauth_install_states WHERE nonce = $1",
         nonce,
     )
     if existing is None:
@@ -260,6 +264,8 @@ async def verify_and_consume_state(
         )
     if existing["consumed_at"] is not None:
         raise StateTokenInvalidError("state_consumed", "state token already used")
+    if expected_provider is not None and existing["provider"] != expected_provider:
+        raise StateTokenInvalidError("state_invalid", "state issued for another provider")
     raise StateTokenInvalidError("state_expired", "state token expired")
 
 

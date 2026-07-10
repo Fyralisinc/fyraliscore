@@ -72,6 +72,11 @@ CHANNEL_TRUST_MAP: dict[str, str] = {
     # while outbound delivery-status callbacks are Meta-asserted facts and the
     # handler OVERRIDES trust to authoritative + kind=state_change for those.
     "whatsapp:message": "attested_agent",
+    # Instagram Messaging (Meta-signed webhooks + Graph conversation history).
+    # Customer-authored DMs are attested by Meta delivery; read/delivery/delete
+    # callbacks are Meta-asserted facts and the handler overrides those to
+    # authoritative + state_change.
+    "instagram:message": "attested_agent",
     # Internal channels used by system-originated observations; these
     # carry the highest trust and never enter through a signature-
     # verified webhook.
@@ -196,6 +201,7 @@ from services.ingest.ingestion.handlers import hibob  # noqa: E402,F401
 from services.ingest.ingestion.handlers import ashby  # noqa: E402,F401
 from services.ingest.ingestion.handlers import linkedin  # noqa: E402,F401
 from services.ingest.ingestion.handlers import whatsapp  # noqa: E402,F401
+from services.ingest.ingestion.handlers import instagram  # noqa: E402,F401
 
 
 __all__ = [

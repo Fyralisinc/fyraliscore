@@ -192,28 +192,13 @@ async def _run_service(name: str) -> None:
             s3_client=s3_client,
         )
     elif name == "reconciler":
-        # M6.3: per-source reconcilers may need pool access for
-        # auxiliary reads (e.g., Gmail reads workflow_states for each
-        # shard's final_history_id). Register the pool with each
-        # per-source module that needs it; the per-source module
-        # raises an explicit error if its pool isn't registered when
-        # called.
-        from services.ingest.ingestion.reconcilers import gmail as gmail_reconciler
-        from services.ingest.ingestion.reconcilers import github as github_reconciler
-        from services.ingest.ingestion.reconcilers import slack as slack_reconciler
-        from services.ingest.ingestion.reconcilers import discord as discord_reconciler
-        from services.ingest.ingestion.reconcilers import notion as notion_reconciler
-        from services.ingest.ingestion.reconcilers import (
-            google_calendar as google_calendar_reconciler,
-        )
-        from services.ingest.ingestion.reconcilers import jira as jira_reconciler
-        gmail_reconciler.set_pool_provider(pool)
-        github_reconciler.set_pool_provider(pool)
-        slack_reconciler.set_pool_provider(pool)
-        discord_reconciler.set_pool_provider(pool)
-        notion_reconciler.set_pool_provider(pool)
-        google_calendar_reconciler.set_pool_provider(pool)
-        jira_reconciler.set_pool_provider(pool)
+        # M6.3+: per-source reconcilers may need pool access for auxiliary
+        # reads. Keep the legacy multiplexer entrypoint aligned with the
+        # dedicated reconciler entrypoints by deriving the registration set
+        # from RECONCILER_DISPATCH.
+        from services.ingest.ingestion.reconcilers import register_pool_provider
+
+        register_pool_provider(pool)
 
         service = Reconciler(
             pool,

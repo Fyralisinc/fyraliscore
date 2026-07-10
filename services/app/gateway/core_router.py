@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from lib.shared.errors import CompanyOSError, ValidationError
 from lib.shared.http_headers import safe_headers
 from services.app.gateway.auth import AuthContext, create_session
+from services.app.gateway.html_responses import trusted_static_html_response
 from services.ingest.ingestion.core import (
     IngestResult,
     MAX_PAYLOAD_BYTES,
@@ -20,6 +21,26 @@ from services.ingest.ingestion.core import (
 )
 from services.ingest.ingestion.handlers import HandlerNotFound
 from services.app.gateway.state_wiring import probe_integration_runtime_state
+
+
+_LOCAL_TEST_PRIVACY_NOTICE = """<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Fyralis Local Instagram Test Privacy Notice</title></head>
+<body>
+<main>
+<h1>Fyralis Local Instagram Test Privacy Notice</h1>
+<p>This notice applies only to the temporary local test integration operated by the owner of the connected Instagram professional account. It is not a production privacy policy.</p>
+<h2>Purpose</h2>
+<p>The integration is used to verify that Instagram Direct Messages can be received, stored, normalized, and displayed as Fyralis observations.</p>
+<h2>Information handled</h2>
+<p>The test may handle message text, attachment metadata, Instagram-scoped sender and recipient identifiers, account and conversation identifiers, message identifiers, and timestamps for messages sent to or from the connected professional account.</p>
+<h2>Storage and use</h2>
+<p>Test data is stored only in the local Fyralis test environment and is used only to validate this integration. It is not sold, used for advertising, or used to train a public model.</p>
+<h2>Sharing and deletion</h2>
+<p>Meta provides the Instagram API and webhook delivery. The test operator can disconnect the integration and remove the local test data after validation. Questions or deletion requests should be sent to the owner of the connected Instagram professional account.</p>
+</main>
+</body>
+</html>"""
 
 
 class IngestSizeError(Exception):
@@ -112,6 +133,10 @@ def build_core_router() -> APIRouter:
             content=content,
             media_type="text/plain; version=0.0.4",
         )
+
+    @router.get("/legal/local-test-privacy", include_in_schema=False)
+    async def local_test_privacy() -> Response:
+        return trusted_static_html_response(_LOCAL_TEST_PRIVACY_NOTICE)
 
     @router.post("/auth/session")
     async def post_session(request: Request) -> JSONResponse:

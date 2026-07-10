@@ -618,6 +618,24 @@ SELECT id, tenant_id, organization_urn, base_url, secret_ref,
  LIMIT 1
 """
 
+# Instagram Messaging: fetcher works one conversation at a time via
+# shard_identifier; the install carries Graph base URL + access token ref.
+_LOAD_INSTAGRAM_INSTALL_SQL = """
+SELECT ii.id, ii.tenant_id, ii.base_url, ii.ig_business_account_id, ii.page_id,
+       ii.access_token_ref, ii.history_lookback_days, ii.connection_status,
+       ii.disabled_at, iwr.webhook_delivery_account_id
+  FROM instagram_installations ii
+  LEFT JOIN LATERAL (
+      SELECT webhook_delivery_account_id
+        FROM instagram_webhook_routes
+       WHERE instagram_installation_id = ii.id AND enabled = TRUE
+       ORDER BY updated_at DESC
+       LIMIT 1
+  ) iwr ON TRUE
+ WHERE ii.tenant_id = $1 AND ii.disabled_at IS NULL AND ii.connection_status = 'active'
+ LIMIT 1
+"""
+
 
 # ---------------------------------------------------------------------
 # Config.
@@ -745,6 +763,8 @@ async def _load_install(
         return await pool.fetchrow(_LOAD_ASHBY_INSTALL_SQL, tenant_id)
     if source == "linkedin":
         return await pool.fetchrow(_LOAD_LINKEDIN_INSTALL_SQL, tenant_id)
+    if source == "instagram":
+        return await pool.fetchrow(_LOAD_INSTAGRAM_INSTALL_SQL, tenant_id)
     return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
@@ -753,6 +773,7 @@ async def _write_record_and_build_message(
     *,
     tenant_id: UUID,
     source: str,
+    ingress_kind: str,
     shard_id: UUID,
     cursor: dict[str, Any] | None,
     record: dict[str, Any],
@@ -785,6 +806,7 @@ async def _write_record_and_build_message(
     record_body = dict(record)
     webhook_metadata = record_body.pop("webhook_metadata", {})
     blob = {
+        "_fyralis_shard_fetch_wrapper": 1,
         "record": record_body,
         "shard_context": {"shard_id": str(shard_id), "cursor": cursor},
         "webhook_metadata": webhook_metadata,
@@ -809,7 +831,7 @@ async def _write_record_and_build_message(
         raw_s3_key=s3_key,
         content_hash=content_hash,
         ingested_at=now,
-        ingress_kind="backfill",
+        ingress_kind=ingress_kind,  # type: ignore[arg-type]
     )
     return KafkaMessage(
         # Per-source raw topic so backfill traffic for one source cannot
@@ -848,6 +870,12 @@ class _FetchLoopContext:
         return (
             dt.datetime.now(tz=dt.timezone.utc) - self.loop_started_at
         ).total_seconds()
+
+    def ingress_kind(self) -> str:
+        requested = str(self.shard_identifier.get("ingress_kind") or "").strip()
+        if requested in {"backfill", "poll"}:
+            return requested
+        return "backfill"
 
 
 async def _persist_initial_workflow_state(
@@ -941,6 +969,7 @@ async def _write_fetch_page_messages(
                     s3_client,
                     tenant_id=ctx.tenant_id,
                     source=ctx.source,
+                    ingress_kind=ctx.ingress_kind(),
                     shard_id=ctx.shard_id,
                     cursor=cursor,
                     record=rec,

@@ -20,7 +20,7 @@ _VALID_SOURCES = frozenset((
     "google_drive", "jira", "mercury", "notion", "quickbooks", "grafana",
     "telegram", "brex", "ramp", "gusto", "deel",
     "fireflies", "signal", "aws", "miro", "figma", "carta",
-    "hibob", "ashby", "linkedin", "whatsapp",
+    "hibob", "ashby", "linkedin", "whatsapp", "instagram",
 ))
 
 

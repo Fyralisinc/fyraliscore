@@ -38,6 +38,7 @@ env/
 node_modules/
 ui/dist/
 ui/.vite/
+ui/.next/
 ui/test-results/
 ui/playwright-report/
 ui/coverage/

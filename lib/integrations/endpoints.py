@@ -118,6 +118,9 @@ _PROD: dict[str, str] = {
     # approval-only. TODO(human): confirm the granted tier/entitlement once the
     # LinkedIn partner agreement is in place.
     "linkedin_api": "https://api.linkedin.com/rest",
+    # Instagram Messaging API is served from Meta Graph. The versioned path is
+    # supplied by requests/callers so tests can point the whole host at a spammer.
+    "instagram_api": "https://graph.instagram.com",
 }
 
 # name -> explicit per-source env var (highest precedence).
@@ -147,6 +150,7 @@ _ENV: dict[str, str] = {
     "hibob_api": "HIBOB_API_BASE_URL",
     "ashby_api": "ASHBY_API_BASE_URL",
     "linkedin_api": "LINKEDIN_API_BASE_URL",
+    "instagram_api": "INSTAGRAM_API_BASE_URL",
 }
 
 # name -> sub-path under SYNTHETIC_SOURCE_API_BASE when that single-host
@@ -177,6 +181,7 @@ _SPAMMER_SUBPATH: dict[str, str] = {
     "hibob_api": "/hibob",
     "ashby_api": "/ashby",
     "linkedin_api": "/linkedin",
+    "instagram_api": "/instagram",
 }
 
 _SPAMMER_BASE_ENV = "SYNTHETIC_SOURCE_API_BASE"

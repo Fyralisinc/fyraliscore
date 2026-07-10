@@ -75,6 +75,10 @@ def test_static_gateway_route_inventory_classifies_security_boundaries() -> None
         by_path["/integrations/whatsapp/webhook"].policy.access
         is RouteAccess.PROVIDER_SIGNED
     )
+    assert (
+        by_path["/integrations/instagram/webhook"].policy.access
+        is RouteAccess.PROVIDER_SIGNED
+    )
     assert by_path["/ext/oauth/token"].policy.access is RouteAccess.EXTENSION_AUTH
     assert by_path["/ext/v1/observations"].policy.access is RouteAccess.EXTENSION_AUTH
     byoc_intake = by_path["/byoc/control-plane/evidence-packages"].policy

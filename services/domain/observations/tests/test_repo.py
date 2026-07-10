@@ -34,6 +34,7 @@ import asyncpg
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from pgvector import Vector
 from pydantic import ValidationError
 
 from lib.embeddings.ollama import EMBEDDING_DIM, OllamaError
@@ -49,6 +50,7 @@ from services.domain.observations.repo import (
     InvalidTrustTier,
     ObservationError,
     ObservationRepository,
+    _hydrate_row,
 )
 from services.domain.observations.state_change import emit_state_change
 
@@ -90,6 +92,31 @@ def _mk_obs(
         cause_id=cause_id,
         entities_mentioned=entities_mentioned or [],
     )
+
+
+def test_hydrate_row_accepts_pgvector_vector() -> None:
+    now = _now()
+    row = _hydrate_row({
+        "id": uuid7(),
+        "tenant_id": uuid7(),
+        "occurred_at": now,
+        "ingested_at": now,
+        "kind": "signal",
+        "source_channel": "instagram:message",
+        "source_actor_ref": None,
+        "actor_id": None,
+        "content": json.dumps({"text": "hello"}),
+        "content_text": "hello",
+        "embedding": Vector([1.0, 2.0]),
+        "embedding_pending": False,
+        "trust_tier": "attested_agent",
+        "external_id": "instagram:test:message:1",
+        "cause_id": None,
+        "sequence_num": 1,
+        "entities_mentioned": "[]",
+    })
+
+    assert row.embedding == [1.0, 2.0]
 
 
 # =====================================================================

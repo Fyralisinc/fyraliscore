@@ -31,6 +31,7 @@ from services.ingest.integrations.discord import oauth as discord_oauth
 from services.ingest.integrations.github import oauth as github_oauth
 from services.ingest.integrations.notion import oauth as notion_oauth
 from services.ingest.integrations.slack import oauth as slack_oauth
+from services.ingest.integrations.instagram import oauth as instagram_oauth
 
 
 def build_integrations_router() -> APIRouter:
@@ -69,6 +70,14 @@ def build_integrations_router() -> APIRouter:
     @router.get("/notion/callback")
     async def notion_callback(request: Request):
         return await _callback_with_metrics(notion_oauth.callback_handler, request)
+
+    @router.get("/instagram/install")
+    async def instagram_install(request: Request):
+        return await instagram_oauth.install_handler(request)
+
+    @router.get("/instagram/callback")
+    async def instagram_callback(request: Request):
+        return await _callback_with_metrics(instagram_oauth.callback_handler, request)
 
     return router
 

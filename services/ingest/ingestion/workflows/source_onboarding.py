@@ -200,7 +200,7 @@ TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin", "whatsapp")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin", "whatsapp", "instagram")
 
 
 # ---------------------------------------------------------------------
@@ -716,6 +716,48 @@ SELECT li.id, li.tenant_id, li.organization_urn, li.base_url, li.secret_ref,
  LIMIT 1
 """
 
+# Instagram Messaging: one shard per active conversation. Conversations are
+# discovered at install time and refreshed by live/poll paths; the planner reads
+# this DB state only.
+_LOAD_INSTAGRAM_INSTALL_SQL = """
+SELECT ii.id, ii.tenant_id, ii.base_url, ii.ig_business_account_id, ii.page_id,
+       ii.access_token_ref, ii.history_lookback_days, ii.disabled_at,
+       iwr.webhook_delivery_account_id,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'conversation_id', ic.conversation_id,
+             'thread_key', ic.thread_key,
+             'provider_conversation_id', ic.provider_conversation_id,
+             'participant_id', ic.participant_id,
+             'participant_username', ic.participant_username,
+             'participant_display_name', ic.participant_display_name,
+             'last_message_at', ic.last_message_at,
+             'messages_cursor', ic.messages_cursor,
+             'high_water_message_id', ic.high_water_message_id
+           ) ORDER BY ic.last_message_at DESC NULLS LAST, ic.conversation_id
+         ) FILTER (WHERE ic.id IS NOT NULL),
+         '[]'::json
+       ) AS conversations
+  FROM instagram_installations ii
+  LEFT JOIN LATERAL (
+      SELECT webhook_delivery_account_id
+        FROM instagram_webhook_routes
+       WHERE instagram_installation_id = ii.id AND enabled = TRUE
+       ORDER BY updated_at DESC
+       LIMIT 1
+  ) iwr ON TRUE
+  LEFT JOIN instagram_conversations ic
+    ON ic.instagram_installation_id = ii.id
+       AND ic.state = 'active'
+       AND ic.provider_conversation_id IS NOT NULL
+ WHERE ii.tenant_id = $1
+   AND ii.disabled_at IS NULL
+   AND ii.connection_status = 'active'
+ GROUP BY ii.id, iwr.webhook_delivery_account_id
+ LIMIT 1
+"""
+
 _MARK_SOURCE_RUN_IN_PROGRESS_SQL = """
 UPDATE source_onboarding_runs
    SET status = 'in_progress', started_at = COALESCE(started_at, now())
@@ -870,6 +912,8 @@ async def _load_install(
         return await conn.fetchrow(_LOAD_ASHBY_INSTALL_SQL, tenant_id)
     if source == "linkedin":
         return await conn.fetchrow(_LOAD_LINKEDIN_INSTALL_SQL, tenant_id)
+    if source == "instagram":
+        return await conn.fetchrow(_LOAD_INSTAGRAM_INSTALL_SQL, tenant_id)
     return await conn.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
@@ -918,6 +962,8 @@ async def _build_source_client(
     # IN-PEOPLE: hibob/ashby/linkedin planners read DB state only (entity-type
     # list pre-aggregated by the loader, like gusto/carta), so no plan-time
     # source client is needed.
+    if source == "instagram":
+        return await _clients.build_instagram_client(install, pool=pool)
     if source in ("hibob", "ashby", "linkedin"):
         return None
     return None

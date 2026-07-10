@@ -213,7 +213,10 @@ async def test_shard_fetch_s3_blob_contains_record_and_metadata(
     env = RawEnvelope.model_validate(orjson.loads(value))
     blob = orjson.loads(s3.store[env.raw_s3_key])
 
-    assert set(blob.keys()) == {"record", "shard_context", "webhook_metadata"}
+    assert set(blob.keys()) == {
+        "_fyralis_shard_fetch_wrapper", "record", "shard_context", "webhook_metadata",
+    }
+    assert blob["_fyralis_shard_fetch_wrapper"] == 1
     # webhook_metadata was lifted OUT of the record.
     assert blob["record"] == {"action": "opened", "issue": {"node_id": "I_node"}}
     assert "webhook_metadata" not in blob["record"]

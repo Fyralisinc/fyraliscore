@@ -921,6 +921,31 @@ async def build_linkedin_client(
     return await _wrap_source_client("linkedin", client)
 
 
+async def build_instagram_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Instagram Messaging Graph client. The access token is resolved from the
+    tenant secret store in production or preset in spammer mode."""
+    from lib.integrations.endpoints import endpoint
+    from services.ingest.integrations.instagram.client import InstagramClient
+
+    spammer = _spammer_mode()
+    base_url = (
+        endpoint("instagram_api")
+        if spammer
+        else str(install["base_url"] if "base_url" in install else endpoint("instagram_api"))
+    )
+    client = InstagramClient(
+        base_url=base_url,
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        secret_ref=(install["access_token_ref"] if "access_token_ref" in install else None),
+        access_token=("spam-instagram" if spammer else None),
+        http_client=await _get_http(),
+    )
+    return await _wrap_source_client("instagram", client)
+
+
 # ---------------------------------------------------------------------
 # Fetcher / reconciler openers — return (client, close).
 # ---------------------------------------------------------------------
@@ -1030,6 +1055,10 @@ async def open_linkedin_client(install: asyncpg.Record) -> Opener:
     return await build_linkedin_client(install), _noop
 
 
+async def open_instagram_client(install: asyncpg.Record) -> Opener:
+    return await build_instagram_client(install), _noop
+
+
 async def open_signal_client(install: asyncpg.Record) -> Opener:
     return await build_signal_client(install), _noop
 
@@ -1056,6 +1085,7 @@ __all__ = [
     "build_fireflies_client", "build_miro_client", "build_figma_client",
     "build_carta_client", "build_signal_client", "build_aws_client",
     "build_hibob_client", "build_ashby_client", "build_linkedin_client",
+    "build_instagram_client",
     "open_github_client", "open_slack_client", "open_slack_user_client",
     "open_discord_client",
     "open_notion_client", "open_jira_client",
@@ -1065,4 +1095,5 @@ __all__ = [
     "open_fireflies_client", "open_miro_client", "open_figma_client",
     "open_carta_client", "open_signal_client", "open_aws_client",
     "open_hibob_client", "open_ashby_client", "open_linkedin_client",
+    "open_instagram_client",
 ]
