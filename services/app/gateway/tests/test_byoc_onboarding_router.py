@@ -135,12 +135,17 @@ class _DiscordAccessPool:
             self.stats_args = args
             if self.stats_rows is not None:
                 return self.stats_rows
-            return [{
-                "channel_id": "c-ready",
-                "observation_count": 2,
-                "last_observation_at": datetime(2026, 7, 8, 9, 44, tzinfo=UTC),
-            }]
-        if "FROM source_resource_access_state" in query and "SELECT resource_id" in query:
+            return [
+                {
+                    "channel_id": "c-ready",
+                    "observation_count": 2,
+                    "last_observation_at": datetime(2026, 7, 8, 9, 44, tzinfo=UTC),
+                }
+            ]
+        if (
+            "FROM source_resource_access_state" in query
+            and "SELECT resource_id" in query
+        ):
             return [
                 {
                     "resource_id": resource_id,
@@ -336,6 +341,8 @@ def test_auto_connect_materializes_sanitized_background_artifact(
     assert payload["browser_agent_run"]["source"] == "ramp"
     assert payload["auto_connect_run"]["background_status"] == "queued"
     assert payload["auto_connect_run"]["run_artifact_path_hint"] == str(artifact_path)
+    assert record["status"] == descriptor["status"]
+    assert record["handoff_url"] == descriptor["handoff_url"]
     assert record["background_status"] == "queued"
     assert record["background_runner_mode"] == "artifact_materialization"
     assert str(tmp_path) in record["run_artifact_path_hint"]
@@ -459,6 +466,8 @@ async def test_auto_connect_background_runner_writes_receipt(
     )
     assert receipt["source"] == "slack"
     assert receipt["status"] in {"running", "waiting_for_admin"}
+    assert store["slack"]["status"] == descriptor["status"]
+    assert store["slack"]["handoff_url"] == descriptor["handoff_url"]
     assert store["slack"]["background_status"] == receipt["status"]
     assert receipt["raw_secret_values_included"] is False
     assert receipt["generated_artifacts"]
@@ -669,10 +678,7 @@ async def test_discord_source_access_payload_queues_replay_after_access_grant(
     assert trigger_payload["installation_row_id"] == str(installation_row_id)
     assert trigger_payload["guild_id"] == "guild-1"
     assert trigger_payload["channel_ids"] == ["c-now-ready"]
-    assert any(
-        "queued backfill" in action
-        for action in payload["access_next_actions"]
-    )
+    assert any("queued backfill" in action for action in payload["access_next_actions"])
 
 
 @pytest.mark.asyncio
@@ -861,6 +867,34 @@ async def test_discord_provider_handoff_uses_administrator_for_full_server_sync(
     assert "scope=applications.commands+bot" in payload["install_url"]
 
 
+@pytest.mark.asyncio
+async def test_figma_provider_handoff_uses_deployment_owned_oauth_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.ingest.integrations.figma import oauth as figma_oauth
+
+    monkeypatch.setattr(figma_oauth, "_deployment_oauth_ready", lambda: False)
+    monkeypatch.setattr(figma_oauth, "_figma_redirect_uri", lambda: "")
+
+    payload = await _source_provider_handoff(
+        "figma",
+        pool=object(),
+        tenant_id=uuid4(),
+        request=SimpleNamespace(base_url="https://gateway.test/"),
+        request_payload={},
+    )
+
+    assert payload == {
+        "authorization_mode": "oauth",
+        "install_url": None,
+        "oauth_redirect_url": "https://gateway.test/integrations/figma/oauth/callback",
+        "provider_console_url": "https://www.figma.com/developers/apps",
+        "missing_configuration": ["deployment_figma_oauth_app"],
+        "setup_owner": "deployment_admin",
+        "deployment_model": "customer_owned_byoc_oauth_app",
+    }
+
+
 def test_browser_agent_recipes_cover_all_rehearsal_sources() -> None:
     assert missing_browser_agent_recipe_sources(_ALL_REHEARSAL_SOURCES) == set()
 
@@ -898,7 +932,15 @@ def test_native_connect_contracts_cover_mounted_source_routers() -> None:
     assert _SOURCE_NATIVE_CONNECT_CONTRACTS["ramp"]["finalize_path"] == (
         "/integrations/ramp/connect/finalize"
     )
-    assert "team_id" in _SOURCE_NATIVE_CONNECT_CONTRACTS["figma"]["payload_fields"]
+    figma_contract = _SOURCE_NATIVE_CONNECT_CONTRACTS["figma"]
+    assert figma_contract["kind"] == "figma_oauth_file_scoped_connect"
+    assert figma_contract["start_path"] == "/integrations/figma/oauth/start"
+    assert figma_contract["status_path"] == "/integrations/figma/connect/status"
+    assert figma_contract["retry_path"] == "/integrations/figma/connect/retry"
+    assert figma_contract["disconnect_path"] == "/integrations/figma/connect"
+    assert figma_contract["payload_fields"] == ["file_urls", "return_path"]
+    assert "preflight_path" not in figma_contract
+    assert "figma" not in _SOURCE_LIVE_INGRESS_PATHS
     assert _SOURCE_NATIVE_CONNECT_CONTRACTS["gmail"]["preflight_path"] == (
         "/integrations/gmail/connect/preflight"
     )
@@ -961,6 +1003,44 @@ def test_google_browser_agent_run_uses_native_dwd_contract() -> None:
     assert any(action["id"] == "run_native_finalize" for action in run["action_queue"])
 
 
+def test_figma_browser_agent_run_keeps_file_scoped_oauth_out_of_pat_runner() -> None:
+    run = source_browser_agent_run_for_payload(
+        "figma",
+        {
+            "browser_agent": browser_agent_recipe_for_source("figma"),
+            "provider_console_url": "https://www.figma.com/developers/apps",
+            "oauth_redirect_url": (
+                "https://fyralis-ingress.customer.example/"
+                "integrations/figma/oauth/callback"
+            ),
+            "native_connect": _SOURCE_NATIVE_CONNECT_CONTRACTS["figma"],
+            "status": {"installed": False, "observation_count": 0},
+            "missing_configuration": [],
+            "automation_profile": {"human_steps": [], "automated_actions": []},
+        },
+    )
+
+    assert run["native_connect"]["start_path"] == "/integrations/figma/oauth/start"
+    assert not any(
+        action["id"] in {"run_native_preflight", "run_native_finalize"}
+        for action in run["action_queue"]
+    )
+    bundle = run["provider_setup_bundle"]
+    assert bundle["kind"] == "figma_deployment_oauth_app_setup"
+    setup = bundle["artifacts"][0]["json"]
+    assert setup["app"]["required_scopes"] == [
+        "current_user:read",
+        "file_metadata:read",
+        "file_content:read",
+        "file_comments:read",
+        "file_versions:read",
+    ]
+    assert setup["end_user_connection"]["retry_path"] == (
+        "/integrations/figma/connect/retry"
+    )
+    assert "api_token" not in json.dumps(run)
+
+
 def test_slack_browser_agent_run_includes_generated_setup_bundle() -> None:
     run = source_browser_agent_run_for_payload(
         "slack",
@@ -1004,8 +1084,7 @@ def test_slack_browser_agent_run_includes_generated_setup_bundle() -> None:
         for step in bundle["browser_dom_plan"]["steps"]
     )
     assert any(
-        action["id"] == "generate_slack_app_manifest"
-        for action in run["action_queue"]
+        action["id"] == "generate_slack_app_manifest" for action in run["action_queue"]
     )
     assert "channels:history" in bundle["artifacts"][0]["content"]
 
@@ -1018,7 +1097,7 @@ def test_browser_agent_provider_setup_bundles_are_specific_for_all_sources() -> 
         "carta": "oauth_provider_setup",
         "deel": "api_token_provider_setup",
         "discord": "discord_application_setup",
-        "figma": "api_token_provider_setup",
+        "figma": "figma_deployment_oauth_app_setup",
         "facebook_pages": "oauth_provider_setup",
         "fireflies": "api_token_provider_setup",
         "github": "github_app_manifest",
@@ -1086,17 +1165,24 @@ def test_browser_agent_provider_setup_bundles_are_specific_for_all_sources() -> 
             for action in bundle["agent_actions"]
         )
         if source == "aws":
-            expected_aws_url = (
-                "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
-            )
-            artifact_filenames = {artifact["filename"] for artifact in bundle["artifacts"]}
-            assert bundle["provider_console_url"] == (
-                expected_aws_url
-            )
+            expected_aws_url = "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
+            artifact_filenames = {
+                artifact["filename"] for artifact in bundle["artifacts"]
+            }
+            assert bundle["provider_console_url"] == (expected_aws_url)
             assert bundle["browser_dom_plan"]["provider_console_url"] == (
                 expected_aws_url
             )
             assert "fyralis-aws-source-role-cloudformation.json" in artifact_filenames
+        if source == "figma":
+            assert bundle["provider_console_url"] == (
+                "https://www.figma.com/developers/apps"
+            )
+            figma_setup = bundle["artifacts"][0]["json"]
+            assert figma_setup["deployment_model"] == "customer_owned_byoc_oauth_app"
+            assert figma_setup["app"]["mode"] == "private"
+            assert figma_setup["end_user_connection"]["start_path"] is None
+            assert "api_token" not in json.dumps(bundle)
 
 
 def test_aws_browser_agent_bundle_autofills_cloudformation_deployment_context():
@@ -1137,9 +1223,9 @@ def test_aws_browser_agent_bundle_autofills_cloudformation_deployment_context():
     )
     template = cloudformation_artifact["json"]
     parameter = template["Parameters"]["FyralisAssumingPrincipalArn"]
-    assume_statement = template["Resources"]["FyralisSourceReadOnlyRole"][
-        "Properties"
-    ]["AssumeRolePolicyDocument"]["Statement"][0]
+    assume_statement = template["Resources"]["FyralisSourceReadOnlyRole"]["Properties"][
+        "AssumeRolePolicyDocument"
+    ]["Statement"][0]
     parameter_fields = next(
         step["fields"]
         for step in bundle["browser_dom_plan"]["steps"]
@@ -1151,8 +1237,9 @@ def test_aws_browser_agent_bundle_autofills_cloudformation_deployment_context():
     assert assume_statement["Condition"]["ArnEquals"] == {
         "aws:PrincipalArn": {"Ref": "FyralisAssumingPrincipalArn"}
     }
-    assert "FyralisAssumingPrincipalArn" not in (
-        setup_artifact["json"]["cloudformation"]["required_admin_parameters"]
+    assert (
+        "FyralisAssumingPrincipalArn"
+        not in (setup_artifact["json"]["cloudformation"]["required_admin_parameters"])
     )
     assert {
         "name": "FyralisAssumingPrincipalArn",
@@ -1226,8 +1313,7 @@ def test_aws_auto_connect_blocks_until_byoc_runtime_role_is_known(
         "?region=ap-south-1#/stacks/create/template"
     )
     template_path = (
-        tmp_path
-        / ".fyralis/sources/aws/byoc-runtime/"
+        tmp_path / ".fyralis/sources/aws/byoc-runtime/"
         "fyralis-byoc-source-runtime-role-cloudformation.json"
     )
     assert template_path.is_file()
@@ -1279,7 +1365,9 @@ async def test_google_native_install_rows_are_visible_to_onboarding_status(
 
 
 @pytest.mark.asyncio
-async def test_github_app_install_row_is_credential_covered_without_row_secret() -> None:
+async def test_github_app_install_row_is_credential_covered_without_row_secret() -> (
+    None
+):
     installed_at = datetime(2026, 7, 6, tzinfo=UTC)
     pool = _NativeInstallPool(
         {
@@ -1318,7 +1406,9 @@ def _gateway_app(gateway_pool, secret_store=None) -> FastAPI:
     app.state.pool = gateway_pool
     if secret_store is not None:
         app.state.secret_store = secret_store
-    app.include_router(build_byoc_onboarding_router(store=InMemoryOnboardingIntentStore()))
+    app.include_router(
+        build_byoc_onboarding_router(store=InMemoryOnboardingIntentStore())
+    )
     return app
 
 
@@ -1375,9 +1465,7 @@ async def test_slack_rehearsal_is_not_enabled_by_default() -> None:
     app, _store = _app()
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post(
-            "/platform/onboarding/slack/rehearsal/prepare"
-        )
+        response = await client.post("/platform/onboarding/slack/rehearsal/prepare")
 
     assert response.status_code == 404
     assert response.json()["detail"]["error"] == "source_rehearsal_not_enabled"
@@ -1393,6 +1481,7 @@ async def test_generic_source_prepare_returns_actionable_inputs(
     monkeypatch.setenv("FYRALIS_SOURCE_REHEARSAL_ENABLED", "1")
     monkeypatch.setenv("COMPANY_OS_TENANT_ID", str(tenant_id))
     monkeypatch.setenv("COMPANY_OS_CEO_ACTOR_ID", str(actor_id))
+    monkeypatch.setenv("SANDBOX_PUBLIC_URL", "https://fyralis-ingress.acme.example")
 
     app = _gateway_app(gateway_pool, _RecordingSecretStore())
     transport = httpx.ASGITransport(app=app)
@@ -1404,6 +1493,8 @@ async def test_generic_source_prepare_returns_actionable_inputs(
     assert response.status_code == 200
     payload = response.json()
     assert payload["source"] == "hibob"
+    assert payload["gateway_api_base"] == "https://fyralis-ingress.acme.example"
+    assert payload["provider_ingress_url"] == "https://fyralis-ingress.acme.example"
     assert payload["authorization_mode"] == "customer_local_provider_refs"
     assert payload["required_inputs"] == ["service_user_id", "service_user_token"]
     assert "company_id" in payload["optional_inputs"]

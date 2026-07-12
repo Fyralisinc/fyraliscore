@@ -1,21 +1,18 @@
-"""services/ingest/integrations/figma/onboarding.py — install + provision (design).
+"""Figma installation persistence and source-trigger provisioning.
 
-Figma authenticates with a long-lived org/team access token against the
-canonical Figma API host. Onboarding mirrors the Brex dedicated-table shape (NOT
-the OAuth bot-token path):
+The normal BYOC path receives a user OAuth grant from the deployment-owned
+Figma app. ``finalize_install`` persists only opaque encrypted token refs and
+the selected file allowlist, then starts the source workflow transactionally.
+The legacy PAT helpers below remain an operator-only compatibility path.
 
   finalize_install() — UPSERT a figma_installations row, INSERT one
-  figma_files row per file to shard, and emit an onboarding_triggers row
-  (source='figma') so the existing M6 backfill chain (oauth_poller ->
-  tenant_onboarding -> source_onboarding -> shard_fetch -> reconciler) fires.
-  All in one tenant-scoped transaction.
+  figma_files row per selected file, and emit an onboarding_triggers row
+  (source='figma') so the source backfill chain fires. All in one
+  tenant-scoped transaction.
 
-  register_webhook_installation() — register the LIVE-path row in
-  provider_installations (provider='figma', installation_id=webhook_id,
-  secret_ref=webhook secret) so the webhook edge resolves the tenant + loads the
-  signing secret via the existing machinery. Backfill uses figma_installations;
-  live uses provider_installations — the two are seeded together but stay
-  independent.
+  register_webhook_installation() — legacy optional live-webhook support. The
+  current OAuth-first snapshot path uses scheduled polling, so webhook setup is
+  never required for an end-user connection.
 
   R2 — install key: REAL Figma Webhooks V2 deliveries carry the Figma-assigned
   `webhook_id` (returned by `POST /v2/webhooks` at registration) and NO
@@ -32,6 +29,7 @@ the OAuth bot-token path):
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from uuid import UUID
 
 import asyncpg
@@ -57,6 +55,12 @@ async def finalize_install(
     secret_ref: str | None = None,
     team_id: str | None = None,
     webhook_secret_ref: str | None = None,
+    auth_kind: str = "pat",
+    refresh_secret_ref: str | None = None,
+    token_expires_at: datetime | None = None,
+    oauth_user_id: str | None = None,
+    granted_scopes: list[str] | None = None,
+    connection_state: str = "connected",
 ) -> UUID:
     """UPSERT the install + its files + an onboarding trigger atomically.
 
@@ -64,7 +68,9 @@ async def finalize_install(
     FigmaClient.list_files at seed time); each dict carries at least
     ``file_key`` and optionally ``file_name`` / ``project_name``. Returns the
     figma_installations id. Idempotent on (tenant_id, base_url) and per
-    (install, file_key).
+    (install, file_key).  A subsequent finalize is an exact file selection:
+    files no longer selected are paused rather than silently continuing to
+    ingest under the refreshed authorization grant.
     """
     base_url = base_url.rstrip("/")
     # Dedup files defensively on the natural key.
@@ -81,18 +87,30 @@ async def finalize_install(
             """
             INSERT INTO figma_installations (
                 id, tenant_id, base_url, secret_ref,
-                team_id, webhook_secret_ref
-            ) VALUES ($1, $2, $3, $4, $5, $6)
+                team_id, webhook_secret_ref, auth_kind,
+                refresh_secret_ref, token_expires_at, oauth_user_id,
+                granted_scopes, connection_state, last_error, connected_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULL, now())
             ON CONFLICT (tenant_id, base_url) DO UPDATE
                 SET secret_ref = COALESCE(EXCLUDED.secret_ref, figma_installations.secret_ref),
-                    team_id = COALESCE(EXCLUDED.team_id, figma_installations.team_id),
+                    team_id = EXCLUDED.team_id,
                     webhook_secret_ref = COALESCE(
                         EXCLUDED.webhook_secret_ref, figma_installations.webhook_secret_ref),
+                    auth_kind = EXCLUDED.auth_kind,
+                    refresh_secret_ref = EXCLUDED.refresh_secret_ref,
+                    token_expires_at = EXCLUDED.token_expires_at,
+                    oauth_user_id = EXCLUDED.oauth_user_id,
+                    granted_scopes = EXCLUDED.granted_scopes,
+                    connection_state = EXCLUDED.connection_state,
+                    last_error = NULL,
+                    connected_at = now(),
                     disabled_at = NULL
             RETURNING id
             """,
             uuid7(), tenant_id, base_url, secret_ref,
-            team_id, webhook_secret_ref,
+            team_id, webhook_secret_ref, auth_kind, refresh_secret_ref,
+            token_expires_at, oauth_user_id, list(granted_scopes or []),
+            connection_state,
         )
 
         for f in deduped:
@@ -112,6 +130,21 @@ async def finalize_install(
                 f.get("project_name") or f.get("project"),
             )
 
+        # OAuth grants may be narrowed on reconnect.  Preserve historical rows
+        # but stop scheduling files absent from the latest explicit selection.
+        if deduped:
+            await tctx.execute(
+                """
+                UPDATE figma_files
+                   SET state = 'paused', last_error = NULL
+                 WHERE tenant_id = $1
+                   AND figma_installation_id = $2
+                   AND file_key <> ALL($3::text[])
+                   AND state <> 'paused'
+                """,
+                tenant_id, install_id, [f["file_key"] for f in deduped],
+            )
+
         # Emit the onboarding trigger so the M6 backfill chain fires. Like
         # Brex/Jira this is NOT a provider_installations source; the install id
         # rides in installation_row_id purely for the idempotency dedup index.
@@ -125,7 +158,15 @@ async def finalize_install(
             ) VALUES ($1, $2, 'figma', 'install', $3, $4::jsonb)
             ON CONFLICT (tenant_id, source, installation_row_id)
                 WHERE installation_row_id IS NOT NULL
-                DO NOTHING
+                DO UPDATE SET
+                    trigger_kind = 'reinstall',
+                    payload = EXCLUDED.payload,
+                    consumed_at = NULL,
+                    consumed_by_workflow_id = NULL,
+                    consume_attempts = 0,
+                    last_attempt_at = NULL,
+                    last_error = NULL,
+                    created_at = now()
             """,
             uuid7(), tenant_id, install_id,
             json.dumps({"base_url": base_url,

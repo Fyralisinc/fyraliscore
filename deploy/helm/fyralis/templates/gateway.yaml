@@ -54,6 +54,12 @@ spec:
                 name: {{ include "fyralis.appEnvConfigName" . }}
             - secretRef:
                 name: {{ include "fyralis.appSecretName" . }}
+            {{- if and .Values.app.figmaOAuth.enabled .Values.app.figmaOAuth.existingSecret }}
+            # Customer-managed references only: FIGMA_CLIENT_SECRET_SECRET_REF
+            # and OAUTH_STATE_HMAC_KEY_SECRET_REF (plus any provider settings).
+            - secretRef:
+                name: {{ .Values.app.figmaOAuth.existingSecret }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz

@@ -298,6 +298,7 @@ DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 # that count set the tick budget. This keeps Discord's "one shard per channel"
 # behavior from being capped by a static worker batch.
 DEFAULT_MAX_SIGNALS_PER_TICK = 0
+DEFAULT_AUTO_CONCURRENCY_LIMIT = 32
 DEFAULT_LEASE_TIMEOUT_SECONDS = 30.0
 DEFAULT_FLUSH_TIMEOUT_SECONDS = 5.0
 # Bound on how long one rate-limited page fetch may wait for a token
@@ -591,7 +592,8 @@ SELECT id, tenant_id, base_url, org_id, secret_ref, disabled_at
 # shard_identifier; the install row carries base_url + team_id + secret_ref the
 # FigmaClient needs.
 _LOAD_FIGMA_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, team_id, secret_ref, disabled_at
+SELECT id, tenant_id, base_url, team_id, secret_ref, auth_kind,
+       refresh_secret_ref, token_expires_at, disabled_at
   FROM figma_installations
  WHERE tenant_id = $1 AND disabled_at IS NULL
  LIMIT 1
@@ -678,9 +680,13 @@ class ShardFetchConfig:
     # gate). Past this, the loop exits transiently for orphan-scan retry.
     rate_limit_max_wait_seconds: float = DEFAULT_RATE_LIMIT_MAX_WAIT_SECONDS
     # Independent shards can drain concurrently; each shard still preserves
-    # its internal page order and N1 cursor barrier. 0 means auto: run every
-    # shard claimable in this tick concurrently.
+    # its internal page order and N1 cursor barrier. 0 means auto: derive the
+    # width from the backlog, bounded by auto_concurrency_limit.
     max_concurrent_shards: int = 0
+    # Safety ceiling for auto mode. This bounds task, HTTP, and DB pressure for
+    # organization-wide installs with thousands of (repo, event-type) shards.
+    # 0 explicitly restores unbounded auto fan-out.
+    auto_concurrency_limit: int = DEFAULT_AUTO_CONCURRENCY_LIMIT
     # Per-page raw-tier S3 write fan-out. All writes must finish before the
     # page's Kafka flush/cursor advance barrier runs.
     s3_write_concurrency: int = 1
@@ -1253,6 +1259,9 @@ class ShardFetch(LongRunningService):
         configured = self._config.max_concurrent_shards
         if configured > 0:
             return configured
+        auto_limit = self._config.auto_concurrency_limit
+        if auto_limit > 0:
+            return max(1, min(remaining, auto_limit))
         return max(1, remaining)
 
     async def _process_one_signal(self) -> bool:
@@ -1605,9 +1614,10 @@ class ShardFetch(LongRunningService):
 #   SHARD_FETCH_LEASE_SEC     — orphan lease timeout (default 30.0).
 #   SHARD_FETCH_FLUSH_SEC     — Kafka flush timeout (default 5.0).
 #   SHARD_FETCH_CONCURRENCY   — concurrent independent shard loops
-#                               (default auto). auto/all/dynamic/0 means one
-#                               parallel loop for every claimable shard in the
-#                               current tick.
+#                               (default auto). Auto scales with the current
+#                               backlog up to SHARD_FETCH_AUTO_CONCURRENCY_MAX.
+#   SHARD_FETCH_AUTO_CONCURRENCY_MAX — auto-mode safety ceiling (default 32).
+#                               0 restores unbounded fan-out.
 #   SHARD_FETCH_S3_WRITE_CONCURRENCY — per-page S3 PUT fan-out (default 1).
 #   SHARD_FETCH_INSTANCE      — instance name for diagnostics.
 #   REDIS_URL                 — Redis for the FetchPage rate-limit gate
@@ -1674,6 +1684,10 @@ async def _run_service() -> None:
         ),
         max_concurrent_shards=parse_auto_parallelism(
             os.environ.get("SHARD_FETCH_CONCURRENCY"),
+        ),
+        auto_concurrency_limit=parse_auto_parallelism(
+            os.environ.get("SHARD_FETCH_AUTO_CONCURRENCY_MAX"),
+            default=str(DEFAULT_AUTO_CONCURRENCY_LIMIT),
         ),
         s3_write_concurrency=int(
             os.environ.get("SHARD_FETCH_S3_WRITE_CONCURRENCY", "1"),
@@ -1752,6 +1766,7 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "DEFAULT_AUTO_CONCURRENCY_LIMIT",
     "DEFAULT_FLUSH_TIMEOUT_SECONDS",
     "DEFAULT_LEASE_TIMEOUT_SECONDS",
     "DEFAULT_MAX_SIGNALS_PER_TICK",

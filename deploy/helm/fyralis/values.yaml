@@ -24,7 +24,23 @@ app:
   authBootstrapSecret: local-rehearsal-auth-bootstrap-secret-32
   masterKek: KuT6Cixjs4991zhixcpj1QAFbiQj3b9N8meZV2AJJyw=
   ingestionHealthPort: "9300"
+  # Non-secret runtime configuration that does not merit a first-class chart
+  # value. Do not use this for OAuth secret material: it is rendered to the
+  # app ConfigMap. Use figmaOAuth.existingSecret for Figma's managed-secret
+  # references instead.
   extraEnv: {}
+  # A customer-owned Figma OAuth app is opt-in. Public values are rendered to
+  # the app ConfigMap; the external Secret named below provides only managed
+  # secret references (never FIGMA_CLIENT_SECRET or OAUTH_STATE_HMAC_KEY).
+  # See README.md and docs/operations/figma-byoc-oauth-admin.md.
+  figmaOAuth:
+    enabled: false
+    clientId: ""
+    redirectUri: ""
+    uiBaseUrl: ""
+    allowHttpLoopback: false
+    scopes: current_user:read,file_metadata:read,file_content:read,file_comments:read,file_versions:read
+    existingSecret: ""
 
 runtime:
   secretProvider: local-kubernetes-secret
@@ -61,7 +77,10 @@ minio:
   mcImage: minio/mc:latest
   rootUser: fyralis
   rootPassword: fyralis-secret-change-me
+  # Short-retention raw records and durable observation artifacts deliberately
+  # use different buckets. Keep names distinct even in local rehearsal.
   bucket: fyralis-raw
+  blobBucket: fyralis-blobs
 
 redis:
   enabled: true
@@ -102,6 +121,13 @@ workers:
   enabled: true
   defaultReplicas: 1
   items:
+    # Consumes the OAuth callback trigger and starts tenant onboarding.
+    oauth-poller:
+      enabled: true
+      command:
+        - python
+        - -m
+        - services.ingest.ingestion.workflows.oauth_poller
     tenant-onboarding:
       enabled: true
       command:
@@ -121,11 +147,20 @@ workers:
         - -m
         - services.ingest.ingestion.workflows.shard_fetch
     reconciler:
-      enabled: false
+      # Completes the source-onboarding handoff after all shards finish.
+      enabled: true
       command:
         - python
         - -m
         - services.ingest.ingestion.workflows.reconciler
+    periodic-reconciler:
+      # Rechecks completed sources so Figma snapshots are refreshed in
+      # steady state when a provider event or poll is missed.
+      enabled: true
+      command:
+        - python
+        - -m
+        - services.ingest.ingestion.workflows.periodic_reconciler
     normalizer:
       enabled: true
       command:

@@ -1,8 +1,12 @@
 """Tests for services/ingest/ingestion/handlers/figma.py (design)."""
 from __future__ import annotations
 
+import json
+from uuid import uuid4
+
 import pytest
 
+from services.ingest.ingestion.artifacts import StoredArtifact
 from services.ingest.ingestion.handlers import CHANNEL_TRUST_MAP, get_handler
 from services.ingest.ingestion.handlers.figma import handle_figma_event
 
@@ -36,6 +40,8 @@ def _event(**over):
 async def test_handler_registered():
     assert get_handler("figma:event") is handle_figma_event
     assert CHANNEL_TRUST_MAP["figma:event"] == "authoritative"
+    assert get_handler("figma:file_snapshot") is handle_figma_event
+    assert CHANNEL_TRUST_MAP["figma:file_snapshot"] == "authoritative"
 
 
 async def test_event_is_signal_with_versioned_external_id():
@@ -141,3 +147,46 @@ async def test_unknown_payload_raises():
     from lib.shared.errors import ValidationError
     with pytest.raises(ValidationError):
         await handle_figma_event({"foo": "bar"}, {})
+
+
+async def test_file_snapshot_has_safe_blob_ref_and_private_catalog_descriptor():
+    artifact = StoredArtifact(
+        blob_id=uuid4(),
+        kind="figma_document_json",
+        storage_provider="s3",
+        bucket="internal-customer-artifacts",
+        object_key="prod/artifacts/figma/tenant/aa/design.json",
+        content_hash="blake2b:abcdef0123456789",
+        content_type="application/json",
+        size_bytes=1234,
+    )
+    payload = {
+        "_fyralis_record_type": "file_snapshot",
+        "_fyralis_file_key": _FILE,
+        "_fyralis_team_id": _TEAM,
+        "_fyralis_installation_id": "install-1",
+        "file": {"key": _FILE, "name": "Checkout redesign", "project_name": "Payments"},
+        "snapshot": {
+            "version": "v-42",
+            "last_modified": "2026-06-01T12:00:00Z",
+            "projection": {
+                "page_names": ["Checkout", "Payment"],
+                "node_count": 8,
+                "text_preview": "Enter card details",
+            },
+        },
+        "artifact": artifact.private_descriptor(),
+    }
+
+    draft = await handle_figma_event(payload, {})
+
+    assert draft.source_channel == "figma:file_snapshot"
+    assert draft.external_id == "figma:install-1:file_snapshot:file-abc:v-42"
+    assert draft.content["object_type"] == "figma_file_snapshot"
+    assert draft.content["artifacts"][0]["blob_id"] == str(artifact.blob_id)
+    assert draft.artifact_descriptors == [artifact.private_descriptor()]
+    # The observation JSONB is safe to return to the product; catalog-only S3
+    # addressing never crosses this boundary.
+    content_json = json.dumps(draft.content)
+    assert "internal-customer-artifacts" not in content_json
+    assert "prod/artifacts/figma" not in content_json

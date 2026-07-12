@@ -38,6 +38,9 @@ x-app-env: &app-env
   # S3_ENDPOINT_URL="" and real IAM creds (here or in .env.production).
   S3_ENDPOINT_URL: http://minio:9000
   S3_RAW_BUCKET: fyralis-raw
+  # Durable source documents (e.g. complete Figma design JSON) are kept
+  # separately from short-retention raw ingestion envelopes.
+  S3_BLOB_BUCKET: fyralis-blobs
   S3_REGION_NAME: us-east-1
   AWS_ACCESS_KEY_ID: fyralis
   AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
@@ -45,9 +48,10 @@ x-app-env: &app-env
   REDIS_URL: redis://redis:6379/0
   # Shard fetch fans out independent source shards, e.g. Discord channels,
   # while each shard still preserves its own cursor/page ordering. "auto"
-  # claims and runs every shard currently available in the tick.
+  # scales with backlog but is bounded to avoid task explosions on large orgs.
   SHARD_FETCH_BATCH: "auto"
   SHARD_FETCH_CONCURRENCY: "auto"
+  SHARD_FETCH_AUTO_CONCURRENCY_MAX: "32"
   # Keep Discord gateway install misses short so a freshly authorized server
   # starts resolving promptly after OAuth creates provider_installations.
   DISCORD_GATEWAY_INSTALLATION_CACHE_TTL_SECONDS: "5"
@@ -219,7 +223,8 @@ services:
       /bin/sh -c "
       mc alias set local http://minio:9000 fyralis fyralis-secret-change-me &&
       mc mb --ignore-existing local/fyralis-raw &&
-      echo 'bucket fyralis-raw ready'"
+      mc mb --ignore-existing local/fyralis-blobs &&
+      echo 'buckets fyralis-raw and fyralis-blobs ready'"
     restart: "no"
 
   # ---- ingress (gateway: webhooks, Pub/Sub push, OAuth callbacks) --

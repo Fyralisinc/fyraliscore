@@ -19,6 +19,12 @@ from services.platform.runtime.source_browser_agent_runner import (
     _materialize_native_payload_template,
     run_source_browser_agent,
 )
+from services.platform.runtime.source_browser_agent_recipes import (
+    browser_agent_recipe_for_source,
+)
+from services.platform.runtime.source_browser_agent_setup import (
+    build_source_provider_setup_bundle,
+)
 
 
 class _FakeLocator:
@@ -218,22 +224,33 @@ def test_dom_ref_metadata_redacts_mapped_local_ref(tmp_path: Path) -> None:
     assert generated_refs["verify_token"] not in payload_text
 
 
-def test_figma_webhook_ref_maps_to_native_webhook_secret(tmp_path: Path) -> None:
-    generated_values: dict[str, str] = {}
-    generated_refs: dict[str, str] = {}
-
-    _dom_generate_refs(
-        {"id": "prepare_refs", "refs": ["webhook secret ref"]},
-        tmp_path,
+def test_figma_oauth_bundle_never_generates_pat_or_webhook_refs() -> None:
+    bundle = build_source_provider_setup_bundle(
         source="figma",
-        generated_secret_values=generated_values,
-        generated_secret_refs=generated_refs,
+        recipe=browser_agent_recipe_for_source("figma"),
+        provider_console_url="https://www.figma.com/developers/apps",
+        oauth_redirect_url=(
+            "https://fyralis.example/integrations/figma/oauth/callback"
+        ),
+        native_connect={
+            "kind": "figma_oauth_file_scoped_connect",
+            "start_path": "/integrations/figma/oauth/start",
+            "status_path": "/integrations/figma/connect/status",
+            "retry_path": "/integrations/figma/connect/retry",
+            "disconnect_path": "/integrations/figma/connect",
+            "payload_fields": ["file_urls", "return_path"],
+        },
     )
 
-    assert "webhook_secret" in generated_values
-    assert generated_refs["webhook_secret"] == (
-        "customer-cloud://fyralis/sources/figma/webhook-secret"
+    rendered = json.dumps(bundle)
+    setup = bundle["artifacts"][0]["json"]
+    assert bundle["kind"] == "figma_deployment_oauth_app_setup"
+    assert setup["app"]["mode"] == "private"
+    assert setup["end_user_connection"]["status_path"] == (
+        "/integrations/figma/connect/status"
     )
+    assert "api_token" not in rendered
+    assert "webhook_secret" not in rendered
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,5 @@
 """Hosted-portal onboarding routes for Design Partner BYOC."""
+
 from __future__ import annotations
 
 import asyncio
@@ -93,7 +94,14 @@ _ALL_REHEARSAL_SOURCES = {
     "telegram",
     "whatsapp",
 }
-_OAUTH_REHEARSAL_SOURCES = {"slack", "github", "discord", "notion", "facebook_pages"}
+_OAUTH_REHEARSAL_SOURCES = {
+    "slack",
+    "github",
+    "discord",
+    "figma",
+    "notion",
+    "facebook_pages",
+}
 _FORM_REHEARSAL_SOURCES = {"jira", "telegram", "whatsapp"}
 _SOURCE_SPECIFIC_FINALIZE_SOURCES = {"jira", "telegram", "whatsapp"}
 _GENERIC_FINALIZE_BLOCKED_SOURCES = (
@@ -105,7 +113,6 @@ _GENERIC_FINALIZE_BLOCKED_SOURCES = (
         "brex",
         "carta",
         "deel",
-        "figma",
         "fireflies",
         "gmail",
         "google_calendar",
@@ -152,6 +159,7 @@ _SOURCE_CALLBACK_PATHS = {
     "slack": "/integrations/slack/callback",
     "discord": "/integrations/discord/callback",
     "github": "/integrations/github/callback",
+    "figma": "/integrations/figma/oauth/callback",
     "notion": "/integrations/notion/callback",
     "facebook_pages": "/integrations/facebook_pages/callback",
 }
@@ -163,7 +171,6 @@ _SOURCE_LIVE_INGRESS_PATHS = {
     "slack": "/webhooks/slack/events",
     "discord": "/webhooks/discord",
     "facebook_pages": "/integrations/facebook_pages/webhook",
-    "figma": "/webhooks/figma",
     "fireflies": "/webhooks/fireflies",
     "github": "/webhooks/github",
     "gmail": "/webhooks/gmail/pubsub",
@@ -199,8 +206,10 @@ _SOURCE_REQUIRED_INPUTS = {
     "facebook_pages": [
         "page_id",
     ],
+    # The native Figma OAuth card accepts only file-scoped URLs.  The
+    # deployment-owned client secret is never an end-user onboarding field.
     "figma": [
-        "api_token",
+        "file_urls",
     ],
     "fireflies": [
         "api_token",
@@ -275,11 +284,16 @@ _SOURCE_OPTIONAL_INPUTS = {
     "carta": ["firm_id", "oauth_client", "base_url", "refresh_token_ref"],
     "deel": ["organization_id", "base_url", "contract_ids", "webhook_secret"],
     "facebook_pages": ["oauth_redirect_url", "events_request_url"],
-    "figma": ["team_id", "base_url", "file_keys", "webhook_secret"],
+    "figma": [],
     "fireflies": ["workspace_id", "base_url", "webhook_secret"],
     "gmail": ["scope", "inclusion_spec", "pubsub_topic", "watch_channel_id"],
     "google_calendar": ["scope", "inclusion_spec"],
-    "google_drive": ["scope", "inclusion_spec", "include_shared_drives", "watch_channel_id"],
+    "google_drive": [
+        "scope",
+        "inclusion_spec",
+        "include_shared_drives",
+        "watch_channel_id",
+    ],
     "grafana": ["webhook_secret"],
     "gusto": [
         "company_uuid",
@@ -293,7 +307,12 @@ _SOURCE_OPTIONAL_INPUTS = {
     "linkedin": ["organization_urn", "oauth_client", "base_url", "refresh_token_ref"],
     "mercury": ["organization_id", "base_url", "account_ids", "webhook_secret"],
     "miro": ["base_url", "board_ids"],
-    "quickbooks": ["oauth_client", "base_url", "refresh_token_ref", "webhook_verifier_token"],
+    "quickbooks": [
+        "oauth_client",
+        "base_url",
+        "refresh_token_ref",
+        "webhook_verifier_token",
+    ],
     "ramp": ["business_id", "base_url", "entity_scope", "webhook_verifier_token"],
     "signal": ["account_label", "backfill_session", "thread_scope"],
     "telegram": ["backfill_session", "dialogs"],
@@ -307,7 +326,7 @@ _GENERIC_PROVIDER_CONSOLES = {
     "carta": "https://developers.app.carta.com/",
     "deel": "https://app.deel.com/",
     "facebook_pages": "https://developers.facebook.com/apps/",
-    "figma": "https://www.figma.com/developers/api",
+    "figma": "https://www.figma.com/developers/apps",
     "fireflies": "https://app.fireflies.ai/integrations",
     "gmail": "https://admin.google.com/ac/owl/domainwidedelegation",
     "google_calendar": "https://admin.google.com/ac/owl/domainwidedelegation",
@@ -370,7 +389,7 @@ _SOURCE_METHODS = {
     "deel": "api_token",
     "discord": "oauth_plus_gateway",
     "facebook_pages": "oauth",
-    "figma": "api_token",
+    "figma": "oauth",
     "fireflies": "api_token",
     "github": "oauth",
     "gmail": "dwd",
@@ -400,7 +419,10 @@ _SOURCE_DISCOVERY_TARGETS = {
     "deel": "contracts, workers, and payment scopes",
     "discord": "guilds, message channels, private channels, forum/media posts, and threads",
     "facebook_pages": "Facebook Pages, Messenger conversations, Page message history, and webhooks",
-    "figma": "teams, projects, files, and webhook-capable file scopes",
+    "figma": (
+        "explicitly selected Figma design files, document structure, comments, "
+        "and version history"
+    ),
     "fireflies": "workspace, meetings, and transcripts",
     "github": "installations, repositories, pull requests, issues, and webhooks",
     "gmail": "mailboxes, labels, watch channels, and Pub/Sub topic readiness",
@@ -503,18 +525,16 @@ _SOURCE_NATIVE_CONNECT_CONTRACTS = {
         ],
     },
     "figma": {
-        "kind": "api_token_native_connect",
-        "preflight_path": "/integrations/figma/connect/preflight",
-        "finalize_path": "/integrations/figma/connect/finalize",
-        "preflight_payload_fields": ["api_token", "base_url", "team_id"],
-        "payload_fields": [
-            "api_token",
-            "team_id",
-            "base_url",
-            "file_keys",
-            "webhook_id",
-            "webhook_secret",
-        ],
+        # This is intentionally not a preflight/finalize contract.  The
+        # browser starts a file-scoped OAuth authorization, and Figma's public
+        # callback finalizes the install server-side.  Legacy PAT endpoints
+        # stay isolated from this normal BYOC onboarding path.
+        "kind": "figma_oauth_file_scoped_connect",
+        "start_path": "/integrations/figma/oauth/start",
+        "status_path": "/integrations/figma/connect/status",
+        "retry_path": "/integrations/figma/connect/retry",
+        "disconnect_path": "/integrations/figma/connect",
+        "payload_fields": ["file_urls", "return_path"],
     },
     "fireflies": {
         "kind": "api_token_native_connect",
@@ -545,7 +565,12 @@ _SOURCE_NATIVE_CONNECT_CONTRACTS = {
         "preflight_path": "/integrations/gmail/connect/preflight",
         "finalize_path": "/integrations/gmail/connect/finalize",
         "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
-        "payload_fields": ["workspace_domain", "admin_email", "scope", "inclusion_spec"],
+        "payload_fields": [
+            "workspace_domain",
+            "admin_email",
+            "scope",
+            "inclusion_spec",
+        ],
         "scope_aliases": ["gmail.metadata"],
     },
     "google_calendar": {
@@ -553,7 +578,12 @@ _SOURCE_NATIVE_CONNECT_CONTRACTS = {
         "preflight_path": "/integrations/google_calendar/connect/preflight",
         "finalize_path": "/integrations/google_calendar/connect/finalize",
         "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
-        "payload_fields": ["workspace_domain", "admin_email", "scope", "inclusion_spec"],
+        "payload_fields": [
+            "workspace_domain",
+            "admin_email",
+            "scope",
+            "inclusion_spec",
+        ],
         "scope_aliases": ["calendar.readonly"],
     },
     "google_drive": {
@@ -953,9 +983,7 @@ def build_byoc_onboarding_router(
             await client.myself()
             if requested_keys:
                 project_keys = [
-                    str(key).strip()
-                    for key in requested_keys
-                    if str(key).strip()
+                    str(key).strip() for key in requested_keys if str(key).strip()
                 ]
                 project_meta: dict[str, dict] = {}
             else:
@@ -1046,9 +1074,7 @@ def build_byoc_onboarding_router(
         api_id = str(body.get("api_id") or "").strip()
         api_hash = (body.get("api_hash") or "").strip()
         live_session = (body.get("live_session") or body.get("session") or "").strip()
-        backfill_session = (
-            body.get("backfill_session") or live_session
-        ).strip()
+        backfill_session = (body.get("backfill_session") or live_session).strip()
         if not (account_label and api_id and api_hash and live_session):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -1186,9 +1212,7 @@ def build_byoc_onboarding_router(
 
         phone_number_id = inputs["phone_number_id"].strip()
         waba_id = (
-            inputs.get("business_account_id")
-            or inputs.get("waba_id")
-            or ""
+            inputs.get("business_account_id") or inputs.get("waba_id") or ""
         ).strip() or None
         display_phone_number = inputs.get("display_phone_number", "").strip() or None
 
@@ -1370,7 +1394,9 @@ def build_byoc_onboarding_router(
         tenant_id, actor_id = _rehearsal_actor_ids()
         await _ensure_rehearsal_actor(pool, tenant_id=tenant_id, actor_id=actor_id)
 
-        install = await _source_installation_row(pool, tenant_id=tenant_id, source="aws")
+        install = await _source_installation_row(
+            pool, tenant_id=tenant_id, source="aws"
+        )
         if not install or not install["enabled"] or not install["has_secret"]:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1660,7 +1686,11 @@ async def _prepare_source_rehearsal_response(
         "source": source,
         "tenant_id": str(tenant_id),
         "actor_id": str(actor_id),
-        "gateway_api_base": str(request.base_url).rstrip("/"),
+        # Browser polling must use the same trusted public HTTPS origin as
+        # provider callbacks. request.base_url can be downgraded to http when
+        # the gateway sits behind an untrusted reverse-proxy hop (for example
+        # host-side ngrok forwarding into Docker).
+        "gateway_api_base": public_url,
         "provider_ingress_url": public_url,
         "oauth_redirect_url": (
             handoff.get("oauth_redirect_url")
@@ -1677,6 +1707,8 @@ async def _prepare_source_rehearsal_response(
         "provider_console_url": handoff.get("provider_console_url"),
         "authorization_mode": handoff["authorization_mode"],
         "missing_configuration": handoff["missing_configuration"],
+        "setup_owner": handoff.get("setup_owner"),
+        "deployment_model": handoff.get("deployment_model"),
         "required_inputs": _SOURCE_REQUIRED_INPUTS.get(source, []),
         "optional_inputs": _SOURCE_OPTIONAL_INPUTS.get(source, []),
         "finalize_mode": _source_finalize_mode(source),
@@ -1715,8 +1747,12 @@ async def _source_provider_handoff(
             for name, value in {
                 "SLACK_CLIENT_ID": client_id,
                 "SLACK_REDIRECT_URI": redirect_uri,
-                "SLACK_CLIENT_SECRET": _env_or_secret_ref_configured("SLACK_CLIENT_SECRET"),
-                "SLACK_SIGNING_SECRET": _env_or_secret_ref_configured("SLACK_SIGNING_SECRET"),
+                "SLACK_CLIENT_SECRET": _env_or_secret_ref_configured(
+                    "SLACK_CLIENT_SECRET"
+                ),
+                "SLACK_SIGNING_SECRET": _env_or_secret_ref_configured(
+                    "SLACK_SIGNING_SECRET"
+                ),
             }.items()
             if not value
         ]
@@ -1735,7 +1771,8 @@ async def _source_provider_handoff(
         return {
             "authorization_mode": "oauth",
             "install_url": install_url,
-            "oauth_redirect_url": redirect_uri or f"{public_url}/integrations/slack/callback",
+            "oauth_redirect_url": redirect_uri
+            or f"{public_url}/integrations/slack/callback",
             "provider_console_url": "https://api.slack.com/apps",
             "missing_configuration": missing,
         }
@@ -1754,10 +1791,14 @@ async def _source_provider_handoff(
             for name, value in {
                 "DISCORD_CLIENT_ID": client_id,
                 "DISCORD_REDIRECT_URI": redirect_uri,
-                "DISCORD_CLIENT_SECRET": _env_or_secret_ref_configured("DISCORD_CLIENT_SECRET"),
+                "DISCORD_CLIENT_SECRET": _env_or_secret_ref_configured(
+                    "DISCORD_CLIENT_SECRET"
+                ),
                 "DISCORD_APPLICATION_ID": os.environ.get("DISCORD_APPLICATION_ID", ""),
                 "DISCORD_BOT_TOKEN": _env_or_secret_ref_configured("DISCORD_BOT_TOKEN"),
-                "WEBHOOK_SECRET_DISCORD": _env_or_secret_ref_configured("WEBHOOK_SECRET_DISCORD"),
+                "WEBHOOK_SECRET_DISCORD": _env_or_secret_ref_configured(
+                    "WEBHOOK_SECRET_DISCORD"
+                ),
             }.items()
             if not value
         ]
@@ -1777,9 +1818,35 @@ async def _source_provider_handoff(
             "discord_permissions": discord_oauth.discord_permissions_for_access_mode(
                 access_mode
             ),
-            "oauth_redirect_url": redirect_uri or f"{public_url}/integrations/discord/callback",
+            "oauth_redirect_url": redirect_uri
+            or f"{public_url}/integrations/discord/callback",
             "provider_console_url": "https://discord.com/developers/applications",
             "missing_configuration": missing,
+        }
+
+    if source == "figma":
+        # Figma is deliberately deployment-app OAuth, not a PAT form.  The
+        # one-time administrator setup is reported as a single safe category;
+        # ordinary users must never see configuration gaps or credential refs.
+        from services.ingest.integrations.figma import oauth as figma_oauth
+
+        configured_redirect = ""
+        try:
+            configured_redirect = figma_oauth._figma_redirect_uri()  # noqa: SLF001
+        except figma_oauth.FigmaOAuthError:
+            pass
+        ready = figma_oauth._deployment_oauth_ready()  # noqa: SLF001
+        return {
+            "authorization_mode": "oauth",
+            # OAuth state must be created through POST /oauth/start with the
+            # selected file URLs, so there is no generic install URL to open.
+            "install_url": None,
+            "oauth_redirect_url": configured_redirect
+            or f"{public_url}{_SOURCE_CALLBACK_PATHS['figma']}",
+            "provider_console_url": "https://www.figma.com/developers/apps",
+            "missing_configuration": ([] if ready else ["deployment_figma_oauth_app"]),
+            "setup_owner": "deployment_admin",
+            "deployment_model": "customer_owned_byoc_oauth_app",
         }
 
     if source == "github":
@@ -1835,7 +1902,9 @@ async def _source_provider_handoff(
             for name, value in {
                 "NOTION_CLIENT_ID": client_id,
                 "NOTION_REDIRECT_URI": redirect_uri,
-                "NOTION_CLIENT_SECRET": _env_or_secret_ref_configured("NOTION_CLIENT_SECRET"),
+                "NOTION_CLIENT_SECRET": _env_or_secret_ref_configured(
+                    "NOTION_CLIENT_SECRET"
+                ),
             }.items()
             if not value
         ]
@@ -1858,7 +1927,8 @@ async def _source_provider_handoff(
         return {
             "authorization_mode": "oauth",
             "install_url": install_url,
-            "oauth_redirect_url": redirect_uri or f"{public_url}/integrations/notion/callback",
+            "oauth_redirect_url": redirect_uri
+            or f"{public_url}/integrations/notion/callback",
             "provider_console_url": "https://www.notion.so/my-integrations",
             "missing_configuration": missing,
         }
@@ -2189,9 +2259,9 @@ def _aws_source_external_id(value: Any) -> str | None:
     if direct:
         return direct
     try:
-        from_file = Path(_AWS_SOURCE_EXTERNAL_ID_PATH).read_text(
-            encoding="utf-8"
-        ).strip()
+        from_file = (
+            Path(_AWS_SOURCE_EXTERNAL_ID_PATH).read_text(encoding="utf-8").strip()
+        )
     except OSError:
         return None
     return from_file[:300] if from_file else None
@@ -2385,14 +2455,20 @@ def _source_auto_connect_state(source: str, payload: dict[str, Any]) -> dict[str
     source_name = _source_display_name(source)
     status_payload = payload.get("status") or {}
     automation_profile = payload.get("automation_profile") or {}
-    browser_agent = payload.get("browser_agent") or browser_agent_recipe_for_source(source)
-    browser_agent_run = payload.get("browser_agent_run") or source_browser_agent_run_for_payload(
+    browser_agent = payload.get("browser_agent") or browser_agent_recipe_for_source(
+        source
+    )
+    browser_agent_run = payload.get(
+        "browser_agent_run"
+    ) or source_browser_agent_run_for_payload(
         source,
         payload,
     )
     missing_configuration = list(payload.get("missing_configuration") or [])
     human_steps = list(automation_profile.get("human_steps") or [])
-    human_step_count = int(automation_profile.get("human_step_count") or len(human_steps))
+    human_step_count = int(
+        automation_profile.get("human_step_count") or len(human_steps)
+    )
     installed = bool(status_payload.get("installed"))
     observation_count = int(status_payload.get("observation_count") or 0)
     install_url = payload.get("install_url")
@@ -2491,7 +2567,10 @@ def _source_auto_connect_state(source: str, payload: dict[str, Any]) -> dict[str
             "install_url": install_url,
         }
 
-    if finalize_mode in {"source_specific", "native_finalizer_required"} or human_step_count:
+    if (
+        finalize_mode in {"source_specific", "native_finalizer_required"}
+        or human_step_count
+    ):
         return {
             "state": "admin_gate",
             "label": "Admin gate",
@@ -2552,7 +2631,9 @@ def _source_auto_connect_run_descriptor(
     if native_connect:
         command_args.append("--execute-native")
     action_queue = [
-        item for item in browser_agent_run.get("action_queue") or [] if isinstance(item, dict)
+        item
+        for item in browser_agent_run.get("action_queue") or []
+        if isinstance(item, dict)
     ]
     provider_admin_actions = [
         item for item in action_queue if item.get("owner") == "provider_admin"
@@ -2627,6 +2708,7 @@ def _materialize_source_auto_connect_run(
     run_artifact_path = source_dir / "connection.json"
     receipt_path = source_dir / "browser-agent-receipt.json"
     run_record = {
+        **descriptor,
         "background_status": "queued",
         "background_queued_at": generated_at,
         "background_runner_mode": _source_auto_connect_runner_mode(),
@@ -2637,7 +2719,7 @@ def _materialize_source_auto_connect_run(
         "schema_version": "fyralis.byoc.source.connection_artifact.v1",
         "source": source,
         "generated_at": generated_at,
-        "auto_connect_run": {**descriptor, **run_record},
+        "auto_connect_run": dict(run_record),
         "browser_agent_run": browser_agent_run,
         "raw_secret_values_included": False,
         "raw_payloads_exported": False,
@@ -2662,7 +2744,9 @@ def _source_auto_connect_persisted_run_record(source: str) -> dict[str, Any] | N
     record = dict(descriptor)
     record["run_artifact_path_hint"] = str(run_artifact_path)
     receipt_path = Path(
-        str(record.get("receipt_path_hint") or source_dir / "browser-agent-receipt.json")
+        str(
+            record.get("receipt_path_hint") or source_dir / "browser-agent-receipt.json"
+        )
     )
     record["receipt_path_hint"] = str(receipt_path)
     record.setdefault("background_queued_at", artifact.get("generated_at"))
@@ -2777,7 +2861,9 @@ def _source_auto_connect_runner_mode() -> str:
 
 def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def _source_automation_level(method: str) -> str:
@@ -2801,13 +2887,21 @@ def _source_automated_actions(source: str, method: str) -> list[str]:
         "create encrypted secret refs in the customer cloud",
         "register install metadata and source trigger",
     ]
-    if method == "oauth":
+    if source == "figma":
+        actions.insert(1, "prepare deployment-owned Figma OAuth app contract")
+        actions.insert(
+            2,
+            "prepare file-scoped Figma OAuth start, status, retry, and disconnect flow",
+        )
+    elif method == "oauth":
         actions.insert(1, "mint OAuth state and open provider approval")
     elif method == "oauth_plus_gateway":
         actions.insert(1, "mint OAuth state and open provider approval")
         actions.insert(2, "prepare local gateway runner contract")
     elif method == "dwd":
-        actions.insert(1, "prepare Google Workspace DWD preflight and finalize contract")
+        actions.insert(
+            1, "prepare Google Workspace DWD preflight and finalize contract"
+        )
         actions.insert(2, "open Workspace Admin DWD authorization target")
     elif method == "oauth_client_credentials":
         actions.insert(1, "prepare OAuth client-credentials or access-token contract")
@@ -2824,7 +2918,25 @@ def _source_automated_actions(source: str, method: str) -> list[str]:
 
 def _source_human_steps(source: str, method: str) -> list[dict[str, Any]]:
     source_name = _source_display_name(source)
-    if method == "oauth":
+    if source == "figma":
+        steps = [
+            (
+                "configure_deployment_figma_oauth_app",
+                "Create or update the private Figma OAuth app owned by this BYOC deployment.",
+                "This is a one-time deployment administrator setup; no individual user creates a Figma token.",
+            ),
+            (
+                "store_deployment_figma_oauth_secret",
+                "Store the Figma app Client Secret in the deployment secret manager.",
+                "The client secret must remain in the customer cloud and is never entered in the onboarding UI.",
+            ),
+            (
+                "approve_file_scoped_figma_oauth",
+                "Select Figma file URLs in Fyralis and approve Figma OAuth consent.",
+                "Each user connection is limited to the explicitly selected design files.",
+            ),
+        ]
+    elif method == "oauth":
         steps = [
             (
                 "provider_admin_approval",
@@ -3187,10 +3299,7 @@ async def _source_rehearsal_status_payload(
         installations=installations,
         installed=installed,
     )
-    installation_payloads = [
-        _source_installation_payload(row)
-        for row in installations
-    ]
+    installation_payloads = [_source_installation_payload(row) for row in installations]
     return {
         "source": source,
         "installed": installed,
@@ -3198,10 +3307,7 @@ async def _source_rehearsal_status_payload(
         "installations": installation_payloads,
         "trigger_count": trigger_total,
         "consumed_trigger_count": int(triggers["consumed"] if triggers else 0),
-        "run_status_counts": {
-            row["status"]: int(row["count"])
-            for row in runs
-        },
+        "run_status_counts": {row["status"]: int(row["count"]) for row in runs},
         "shard_state_counts": {
             row["state"]: {
                 "count": int(row["count"]),
@@ -3326,7 +3432,9 @@ async def _discord_source_access_payload(
     installation_row_id = _coerce_uuid(install.get("id"))
     if not guild_id or installation_row_id is None:
         status = _empty_source_access_status()
-        status["access_next_actions"] = ["Reconnect Discord so Fyralis can review channel access."]
+        status["access_next_actions"] = [
+            "Reconnect Discord so Fyralis can review channel access."
+        ]
         return status
 
     cache_key = (str(tenant_id), guild_id, str(installation_row_id))
@@ -3376,7 +3484,9 @@ async def _discord_source_access_payload_uncached(
     guild_id = str(install.get("installation_id") or "").strip()
     installation_row_id = _coerce_uuid(install.get("id"))
     if not guild_id or installation_row_id is None:
-        status["access_next_actions"] = ["Reconnect Discord so Fyralis can review channel access."]
+        status["access_next_actions"] = [
+            "Reconnect Discord so Fyralis can review channel access."
+        ]
         return status
 
     probe_at = datetime.now(UTC).isoformat()
@@ -3487,7 +3597,8 @@ async def _discord_source_access_payload_uncached(
             }:
                 parent_channel = next(
                     (
-                        item for item in channels
+                        item
+                        for item in channels
                         if str(item.get("id") or "") == str(parent_id or "")
                     ),
                     None,
@@ -3591,7 +3702,9 @@ async def _sync_discord_access_state_and_enqueue_replay(
                 )
                 metadata_json = json.dumps(
                     {
-                        "display_name": str(resource.get("display_name") or resource_id),
+                        "display_name": str(
+                            resource.get("display_name") or resource_id
+                        ),
                         "installation_name": str(
                             resource.get("installation_name")
                             or _discord_installation_fallback_name(guild_id)
@@ -3798,7 +3911,10 @@ async def _discord_message_channels_for_access(
 
     for thread in await _discord_safe_list_active_threads(client, guild_id):
         thread_id = str(thread.get("id") or "").strip()
-        if thread_id and _discord_channel_type(thread) in _DISCORD_MESSAGE_CHANNEL_TYPES:
+        if (
+            thread_id
+            and _discord_channel_type(thread) in _DISCORD_MESSAGE_CHANNEL_TYPES
+        ):
             streams[thread_id] = thread
 
     if include_archived_threads:
@@ -3806,7 +3922,8 @@ async def _discord_message_channels_for_access(
             parent_id = str(parent.get("id") or "").strip()
             if (
                 not parent_id
-                or _discord_channel_type(parent) not in _DISCORD_THREAD_PARENT_CHANNEL_TYPES
+                or _discord_channel_type(parent)
+                not in _DISCORD_THREAD_PARENT_CHANNEL_TYPES
             ):
                 continue
             for archive_kind in ("public", "private"):
@@ -3819,7 +3936,8 @@ async def _discord_message_channels_for_access(
                     thread_id = str(thread.get("id") or "").strip()
                     if (
                         thread_id
-                        and _discord_channel_type(thread) in _DISCORD_MESSAGE_CHANNEL_TYPES
+                        and _discord_channel_type(thread)
+                        in _DISCORD_MESSAGE_CHANNEL_TYPES
                     ):
                         streams[thread_id] = thread
 
@@ -3897,9 +4015,15 @@ def _source_access_next_actions(resources: list[dict[str, Any]]) -> list[str]:
             f"{channel_names}{suffix} without per-channel role setup."
         )
     if needs_admin:
-        actions.append("Configure the Discord bot token before Fyralis can read channels.")
-    if not actions and resources and not any(
-        resource.get("permission_status") == "ready" for resource in resources
+        actions.append(
+            "Configure the Discord bot token before Fyralis can read channels."
+        )
+    if (
+        not actions
+        and resources
+        and not any(
+            resource.get("permission_status") == "ready" for resource in resources
+        )
     ):
         actions.append("Review Discord bot permissions, then refresh channel access.")
     return actions
@@ -3918,7 +4042,9 @@ def _dedupe_source_access_actions(actions: list[str]) -> list[str]:
 
 def _discord_probe_error_action(error_code: str) -> str:
     if error_code == "discord_secret_unavailable":
-        return "Configure the Discord bot token before Fyralis can review channel access."
+        return (
+            "Configure the Discord bot token before Fyralis can review channel access."
+        )
     if error_code == "discord_api_unauthorized":
         return "Reinstall Discord or restore bot access to this server."
     if error_code == "discord_api_rate_limited":
@@ -3990,7 +4116,10 @@ def _discord_channel_has_private_gate(
             continue
         if _discord_overwrite_type(overwrite) != _DISCORD_OVERWRITE_ROLE_TYPE:
             continue
-        if _discord_permission_bits(overwrite.get("deny")) & _DISCORD_VIEW_CHANNEL_PERMISSION:
+        if (
+            _discord_permission_bits(overwrite.get("deny"))
+            & _DISCORD_VIEW_CHANNEL_PERMISSION
+        ):
             return True
     return False
 

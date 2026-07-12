@@ -40,6 +40,12 @@ spec:
                 name: {{ include "fyralis.appEnvConfigName" $root }}
             - secretRef:
                 name: {{ include "fyralis.appSecretName" $root }}
+            {{- if and $root.Values.app.figmaOAuth.enabled $root.Values.app.figmaOAuth.existingSecret (or (eq $name "shard-fetch") (eq $name "reconciler") (eq $name "periodic-reconciler")) }}
+            # Only components that exchange or refresh Figma grants receive
+            # the customer-managed secret-reference configuration.
+            - secretRef:
+                name: {{ $root.Values.app.figmaOAuth.existingSecret }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz

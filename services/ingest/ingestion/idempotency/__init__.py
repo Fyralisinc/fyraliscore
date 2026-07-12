@@ -308,6 +308,17 @@ def figma_event(team_id: str, event_id: str, version: object) -> str:
     return f"figma:{team_id}:event:{event_id}:{version}"
 
 
+def figma_file_snapshot(scope_id: str, file_key: str, version: object) -> str:
+    """``figma:{scope}:file_snapshot:{file}:{version}``.
+
+    A Figma file is mutable, so the upstream document version (falling back to
+    its captured content hash when Figma omits a version) is part of the key.
+    ``scope_id`` is the tenant installation id when available, avoiding a
+    global collision when the same Figma team is connected by two tenants.
+    """
+    return f"figma:{scope_id}:file_snapshot:{file_key}:{version}"
+
+
 # --- LinkedIn (poll/backfill archetype) ------------------------------
 def linkedin_entity(
     organization_urn: str, entity_kind: str, entity_id: str,
@@ -423,6 +434,7 @@ __all__ = [
     "deel_payment",
     "discord_event",
     "figma_event",
+    "figma_file_snapshot",
     "facebook_page_message",
     "fireflies_transcript",
     "github_push",

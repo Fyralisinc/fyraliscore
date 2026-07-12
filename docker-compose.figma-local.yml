@@ -1,0 +1,33 @@
+# Local-only overlay for the Figma OAuth onboarding proof.
+#
+# Keep the base compose file production-hardened. This overlay changes only
+# the services participating in the local Figma path to development posture,
+# where a locally generated, shared MASTER_KEK in .env.production is valid.
+# Never use this overlay for a deployed customer environment.
+
+x-figma-local-env: &figma-local-env
+  COMPANY_OS_ENV: development
+  FYRALIS_ENV: development
+  FYRALIS_DEPLOYMENT_MODE: local
+
+services:
+  gateway:
+    environment: *figma-local-env
+    ports:
+      - "8000:8000"
+  oauth_poller:
+    environment: *figma-local-env
+  tenant_onboarding:
+    environment: *figma-local-env
+  source_onboarding:
+    environment: *figma-local-env
+  shard_fetch:
+    environment: *figma-local-env
+  normalizer:
+    environment: *figma-local-env
+  observation_writer:
+    environment: *figma-local-env
+  reconciler:
+    environment: *figma-local-env
+  periodic_reconciler:
+    environment: *figma-local-env

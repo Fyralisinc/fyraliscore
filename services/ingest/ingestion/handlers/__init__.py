@@ -112,6 +112,12 @@ class ObservationDraft:
     entities_hint: list[dict[str, Any]] = field(default_factory=list)
     unresolved_phrases: list[str] = field(default_factory=list)
     raw_payload: dict[str, Any] | None = None
+    # Private durable-artifact catalog descriptors.  Unlike ``content`` these
+    # may contain an internal S3 bucket/key and are carried only across the
+    # normalizer/writer boundary; core persists them to blobs +
+    # observation_artifacts in the same transaction as the observation.
+    # Handlers must put only ``StoredArtifact.public_ref()`` in content.
+    artifact_descriptors: list[dict[str, Any]] = field(default_factory=list)
 
 
 HandlerFn = Callable[[dict[str, Any], dict[str, str]], Awaitable[ObservationDraft]]

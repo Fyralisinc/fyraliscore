@@ -46,6 +46,7 @@ from services.ingest.ingestion.handlers import (
 
 
 _CHANNEL = "figma:event"
+_SNAPSHOT_CHANNEL = "figma:file_snapshot"
 _TRUST = "authoritative"
 
 
@@ -260,16 +261,146 @@ def _scope_id_of(payload: dict[str, Any], event: dict[str, Any] | None) -> str:
     return _team_id_of(payload, event)
 
 
+def _snapshot_draft(payload: dict[str, Any]) -> ObservationDraft:
+    """Build the durable file-design observation from a snapshot record.
+
+    The fetcher has already written the complete Figma response to S3.  This
+    handler deliberately copies only ``StoredArtifact.public_ref()`` into
+    content; the bucket/key remain in ``artifact_descriptors`` until core
+    writes the private catalog/link rows in the observation transaction.
+    """
+    from services.ingest.ingestion.artifacts import (
+        ArtifactDescriptorError,
+        StoredArtifact,
+    )
+
+    file_key = _file_key_of(payload, None)
+    if not file_key:
+        raise ValidationError("figma snapshot missing file_key", channel=_SNAPSHOT_CHANNEL)
+    snapshot = payload.get("snapshot")
+    if not isinstance(snapshot, dict):
+        raise ValidationError("figma snapshot record malformed", channel=_SNAPSHOT_CHANNEL)
+    raw_artifact = payload.get("artifact")
+    if not isinstance(raw_artifact, dict):
+        raise ValidationError("figma snapshot missing artifact", channel=_SNAPSHOT_CHANNEL)
+    try:
+        artifact = StoredArtifact.from_private_descriptor(raw_artifact)
+    except ArtifactDescriptorError as exc:
+        raise ValidationError("figma snapshot artifact invalid", channel=_SNAPSHOT_CHANNEL) from exc
+
+    version_value = snapshot.get("version")
+    version = str(version_value) if version_value is not None and str(version_value) else artifact.content_hash
+    team_id = _team_id_of(payload, None)
+    installation_id_raw = payload.get("_fyralis_installation_id") or payload.get("installation_id")
+    installation_id = (
+        str(installation_id_raw)
+        if installation_id_raw is not None and str(installation_id_raw)
+        else ""
+    )
+    scope_id = installation_id or team_id
+    if not scope_id:
+        raise ValidationError(
+            "figma snapshot missing installation/team scope", channel=_SNAPSHOT_CHANNEL,
+        )
+
+    file_data = payload.get("file")
+    file_data = file_data if isinstance(file_data, dict) else {}
+    file_name = file_data.get("name")
+    if not isinstance(file_name, str) or not file_name:
+        file_name = file_key
+    project_name = file_data.get("project_name")
+    if not isinstance(project_name, str) or not project_name:
+        project_name = None
+    projection_raw = snapshot.get("projection")
+    projection_raw = projection_raw if isinstance(projection_raw, dict) else {}
+    pages_raw = projection_raw.get("page_names")
+    page_names = [
+        page[:300] for page in pages_raw[:64]
+        if isinstance(page, str) and page
+    ] if isinstance(pages_raw, list) else []
+    node_count_raw = projection_raw.get("node_count")
+    node_count = node_count_raw if isinstance(node_count_raw, int) and node_count_raw >= 0 else 0
+    text_preview_raw = projection_raw.get("text_preview")
+    text_preview = (
+        _truncate(text_preview_raw, 4_000)
+        if isinstance(text_preview_raw, str)
+        else ""
+    )
+    last_modified = snapshot.get("last_modified")
+    captured_at = snapshot.get("captured_at")
+    occurred = (
+        _parse_iso(last_modified)
+        or _parse_iso(captured_at)
+        or _utcnow()
+    )
+    source_locator: dict[str, Any] = {
+        "file_key": file_key,
+        "version": version,
+    }
+    if installation_id:
+        source_locator["installation_id"] = installation_id
+
+    content: dict[str, Any] = {
+        "object_type": "figma_file_snapshot",
+        "file_key": file_key,
+        "file_name": file_name,
+        "team_id": team_id or None,
+        "figma_version": version,
+        "last_modified": last_modified,
+        "source_locator": source_locator,
+        "artifacts": [artifact.public_ref()],
+        "projection": {
+            "page_names": page_names,
+            "node_count": node_count,
+            "text_preview": text_preview,
+        },
+    }
+    if project_name is not None:
+        content["project_name"] = project_name
+    content = {k: v for k, v in content.items() if v is not None}
+
+    title = f"Figma design snapshot: {file_name} · version {version}"
+    if page_names:
+        title = f"{title} · pages: {', '.join(page_names[:8])}"
+    if text_preview:
+        title = f"{title}\n{text_preview}"
+    entities: list[dict[str, Any]] = [{"type": "figma_file", "id": file_key}]
+    if team_id:
+        entities.append({"type": "figma_team", "id": team_id})
+    if installation_id:
+        entities.append({"type": "figma_installation", "id": installation_id})
+
+    return ObservationDraft(
+        source_channel=_SNAPSHOT_CHANNEL,
+        content_text=_truncate(title, 4_500),
+        content=content,
+        occurred_at=occurred,
+        trust_tier=_TRUST,  # type: ignore[arg-type]
+        kind="state_change",
+        external_id=idempotency.figma_file_snapshot(scope_id, file_key, version),
+        entities_hint=entities,
+        # Never retain the private descriptor as a raw payload.  The separate
+        # descriptor field is transported by NormalizedEnvelope and is not
+        # stored in observations.content.
+        raw_payload=None,
+        artifact_descriptors=[artifact.private_descriptor()],
+    )
+
+
 # ---------------------------------------------------------------------
 # Handler
 # ---------------------------------------------------------------------
 
+@register(_SNAPSHOT_CHANNEL)
 @register(_CHANNEL)
 async def handle_figma_event(
     payload: dict[str, Any], headers: dict[str, str]
 ) -> ObservationDraft:
     if not isinstance(payload, dict):
         raise ValidationError("figma payload must be a JSON object", channel=_CHANNEL)
+
+    if payload.get("_fyralis_record_type") == "file_snapshot":
+        return _snapshot_draft(payload)
 
     # --- LIVE WEBHOOK path (raw Figma webhook body) ---
     # Figma Webhooks V2 carry the event type in `event_type` and the payload
@@ -317,6 +448,7 @@ async def handle_figma_event(
 
 
 CHANNEL_TRUST_MAP.setdefault(_CHANNEL, _TRUST)
+CHANNEL_TRUST_MAP.setdefault(_SNAPSHOT_CHANNEL, _TRUST)
 
 
 __all__ = ["handle_figma_event"]

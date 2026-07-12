@@ -200,7 +200,13 @@ export type Source = {
   method: ConnectionMethod;
   requiredPermissions: string[];
   setupRequirements: string;
-  supportedSyncModes: Array<"Dry run" | "Limited backfill" | "Live events" | "Backfill plus live">;
+  supportedSyncModes: Array<
+    | "Dry run"
+    | "Limited backfill"
+    | "Live events"
+    | "Backfill plus live"
+    | "Backfill plus polling"
+  >;
   providerIngressPaths: string[];
   noIngressReason?: string;
 };
@@ -215,7 +221,12 @@ export type SourceConnection = {
     | "Last 90 days"
     | "All available history"
     | "No historical backfill";
-  syncMode: "Dry run" | "Limited backfill" | "Live events" | "Backfill plus live";
+  syncMode:
+    | "Dry run"
+    | "Limited backfill"
+    | "Live events"
+    | "Backfill plus live"
+    | "Backfill plus polling";
   lastIssueCode?: string;
   receiptId?: string;
 };

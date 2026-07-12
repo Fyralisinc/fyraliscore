@@ -68,7 +68,8 @@ export const sourceScopeSchema = z.object({
     "Dry run",
     "Limited backfill",
     "Live events",
-    "Backfill plus live"
+    "Backfill plus live",
+    "Backfill plus polling"
   ])
 });
 

@@ -596,6 +596,14 @@ async def _insert_observation_and_maybe_enqueue_trigger(
     with notify_scope() as scope:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # The durable artifact catalog is strict-RLS.  Bind the same
+                # tenant for the entire observation transaction so the row,
+                # blob upsert and observation_artifacts link are one atomic
+                # tenant-scoped unit (and the setting cannot leak on reuse).
+                await conn.execute(
+                    "SELECT set_config('app.current_tenant', $1::text, true)",
+                    str(tenant_id),
+                )
                 existing = await _lock_and_find_existing_observation(
                     conn,
                     tenant_id=tenant_id,
@@ -603,6 +611,13 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                 )
                 if existing is not None:
                     deduped_row = await repo.insert(obs_create, conn=conn)
+                    await _persist_artifacts_if_present(
+                        conn,
+                        tenant_id=tenant_id,
+                        observation_id=deduped_row.id,
+                        descriptors=draft.artifact_descriptors,
+                        content=obs_create.content,
+                    )
                     return IngestResult(
                         observation=deduped_row,
                         deduped=True,
@@ -610,6 +625,13 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                     )
                 row = await repo.insert(obs_create, conn=conn)
                 if draft.external_id is not None and row.id != obs_id:
+                    await _persist_artifacts_if_present(
+                        conn,
+                        tenant_id=tenant_id,
+                        observation_id=row.id,
+                        descriptors=draft.artifact_descriptors,
+                        content=obs_create.content,
+                    )
                     return IngestResult(
                         observation=row,
                         deduped=True,
@@ -626,6 +648,13 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                         else None
                     ),
                 )
+                await _persist_artifacts_if_present(
+                    conn,
+                    tenant_id=tenant_id,
+                    observation_id=row.id,
+                    descriptors=draft.artifact_descriptors,
+                    content=obs_create.content,
+                )
                 if enqueue_trigger:
                     trigger_queue_id = await _enqueue_event_arrival_trigger(
                         conn,
@@ -640,6 +669,36 @@ async def _insert_observation_and_maybe_enqueue_trigger(
         observation=row,
         deduped=False,
         trigger_queue_id=trigger_queue_id,
+    )
+
+
+async def _persist_artifacts_if_present(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    observation_id: UUID,
+    descriptors: list[dict[str, Any]],
+    content: dict[str, Any],
+) -> None:
+    """Persist private catalog refs without leaking them into JSONB content."""
+    if not descriptors:
+        return
+    from services.ingest.ingestion.artifacts import (
+        persist_observation_artifacts,
+        update_figma_snapshot_watermark,
+    )
+
+    await persist_observation_artifacts(
+        conn,
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        descriptors=descriptors,
+    )
+    await update_figma_snapshot_watermark(
+        conn,
+        tenant_id=tenant_id,
+        content=content,
+        descriptors=descriptors,
     )
 
 

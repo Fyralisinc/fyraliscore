@@ -237,15 +237,14 @@ _CHANNEL_MAP: dict[tuple[str, str], str] = {
     ("miro", "backfill"): "miro:item",
     ("miro", "poll"): "miro:item",
     ("miro", "webhook"): "miro:item",
-    # Figma — backfill + poll + webhook (IN-VERTICALS, Brex/HMAC archetype). The
-    # design source is a pure event stream: a live push surface (HMAC-shaped
-    # webhook stand-in for the gate; real Figma uses a body passcode) AND a
-    # historical query surface (file versions + comments merged into an event
-    # stream). Backfill walks each file once; the incremental driver re-runs
-    # under ingress_kind="poll"; the webhook ingress delivers live events. ALL
-    # route to the single `figma:event` channel; external_id parity
-    # (`figma:{team}:event:{id}:{version}`) collapses a backfilled event and its
-    # live twin to one observation.
+    # Figma — backfill + poll + webhook (IN-VERTICALS, Brex/HMAC archetype).
+    # Event records and the durable ``file_snapshot`` record share one handler
+    # function; that handler returns either `figma:event` or
+    # `figma:file_snapshot` based on `_fyralis_record_type`.  The mapping stays
+    # on the event entry point because the normalizer dispatches a function,
+    # while the emitted NormalizedEnvelope carries the handler-selected source
+    # channel.  Backfill walks versions/comments plus one design snapshot per
+    # selected file; webhooks/poll deliver events and later schedule refreshes.
     ("figma", "backfill"): "figma:event",
     ("figma", "poll"): "figma:event",
     ("figma", "webhook"): "figma:event",

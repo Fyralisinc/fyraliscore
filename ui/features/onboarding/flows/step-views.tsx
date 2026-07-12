@@ -14,7 +14,7 @@ import {
   ShieldCheck,
   TerminalSquare,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, type UseFormRegisterReturn } from "react-hook-form";
 
 import { Badge } from "@/components/ui/badge";
@@ -46,6 +46,12 @@ import type {
   Validation,
   Workspace,
 } from "../types";
+import {
+  FigmaOAuthConnectionCard,
+} from "../components/figma-oauth-connection-card";
+import type {
+  FigmaConnectionStatus,
+} from "../services/figma-oauth-service";
 import {
   SourceMarketplace,
   type SourceAutomationCardState,
@@ -1464,6 +1470,7 @@ function syncModeToCli(syncMode: SourceConnection["syncMode"]) {
     "Limited backfill": "limited-backfill",
     "Live events": "live-events",
     "Backfill plus live": "backfill-plus-live",
+    "Backfill plus polling": "backfill-plus-polling",
   };
   return modes[syncMode];
 }
@@ -1590,7 +1597,7 @@ function sourceObservationSamples(
     syncTrack:
       syncMode === "Live events"
         ? "live"
-        : syncMode === "Backfill plus live"
+        : syncMode === "Backfill plus live" || syncMode === "Backfill plus polling"
           ? "mixed"
           : "historical",
     sourceChannel: sourceSignalConfig(source).landedChannel,
@@ -1607,7 +1614,13 @@ type SourceConnectRun = SourceAutomationCardState & {
 function sourceBackgroundRunView(
   run: SourceRehearsalStatus["autoConnectRun"] | null | undefined,
 ): Pick<SourceConnectRun, "status" | "label" | "message" | "actionUrl"> | null {
-  const runStatus = run?.backgroundStatus ?? run?.status;
+  // A browser agent can remain queued/running while it waits for a provider
+  // admin. The durable run status is authoritative for that human gate; do
+  // not let the background progress label hide the approval action.
+  const runStatus =
+    run?.status === "waiting_for_admin" || run?.status === "admin_gate"
+      ? run.status
+      : run?.backgroundStatus ?? run?.status;
   if (!runStatus) {
     return null;
   }
@@ -1694,6 +1707,7 @@ function SourceCatalogStep(props: StepViewProps) {
   const [automationStates, setAutomationStates] = useState<
     Record<string, SourceConnectRun>
   >({});
+  const validatedConnectedSources = useRef(new Set<string>());
 
   function patchAutomationState(
     sourceId: string,
@@ -1714,6 +1728,116 @@ function SourceCatalogStep(props: StepViewProps) {
     });
   }
 
+  function clearAutomationState(sourceId: string) {
+    setAutomationStates((current) => {
+      if (!(sourceId in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[sourceId];
+      return next;
+    });
+  }
+
+  function applyFigmaOAuthStatus(status: FigmaConnectionStatus) {
+    if (status.state === "deployment_setup_required") {
+      updateConnection("figma", {
+        status: "waiting-admin",
+        receiptId: undefined,
+        lastIssueCode: "deployment_setup_required",
+      });
+      patchAutomationState("figma", {
+        status: "waiting_admin",
+        label: "Admin setup required",
+        message:
+          status.nextAction ??
+          "A deployment administrator must configure this deployment's Figma OAuth app.",
+        actionUrl: "/host/control-panel",
+        actionLabel: "Open Control Panel",
+        observationCount: 0,
+        syncStartedAt: null,
+      });
+      return;
+    }
+    if (["not_connected", "disconnected", "unknown"].includes(status.state)) {
+      clearAutomationState("figma");
+      if (status.state === "disconnected") {
+        updateConnection("figma", {
+          status: "not-configured",
+          receiptId: undefined,
+          lastIssueCode: undefined,
+        });
+      }
+      return;
+    }
+    const isFailure = [
+      "error",
+      "degraded",
+      "reauthorization_required",
+    ].includes(status.state);
+    const isConnected = status.state === "connected";
+    const isConnecting = [
+      "ready_for_provider_approval",
+      "authorizing",
+      "finalizing",
+      "syncing",
+    ].includes(status.state);
+
+    if (isConnected || isFailure) {
+      updateConnection("figma", {
+        status: isFailure ? "error" : "connected",
+        selectedScopes: [
+          "OAuth file allowlist",
+          "Design snapshots",
+          "Comments and versions",
+        ],
+        backfillWindow: "All available history",
+        syncMode: "Backfill plus polling",
+        lastIssueCode: isFailure ? status.state : undefined,
+        receiptId: status.installationId
+          ? `figma:${status.installationId}`
+          : undefined,
+      });
+    }
+
+    patchAutomationState("figma", {
+      status: isFailure ? "error" : isConnecting ? "connecting" : "connected",
+      label: isFailure
+        ? "Needs attention"
+        : isConnecting
+          ? "Syncing"
+          : "Connected",
+      message:
+        status.lastError ??
+        status.nextAction ??
+        (status.observationCount
+          ? `${status.observationCount} Figma observation${status.observationCount === 1 ? "" : "s"} landed.`
+          : "Connect selected Figma files to create the first design snapshot."),
+      observationCount: status.observationCount,
+      syncStartedAt: status.latestObservationAt,
+    });
+
+    if (status.latestObservation?.occurredAt) {
+      landSourceObservations("figma", [
+        {
+          id: status.latestObservation.id,
+          sourceId: "figma",
+          title: status.latestObservation.contentText ?? "Figma design snapshot",
+          kind: "page",
+          occurredAt: status.latestObservation.occurredAt,
+          summary:
+            status.latestObservation.contentText ??
+            "Figma design snapshot is ready for intelligence processing.",
+          evidencePath: `/observations/${status.latestObservation.id}`,
+          status: "landed",
+          origin: "gateway",
+          syncTrack: "historical",
+          sourceChannel: "figma:file_snapshot",
+        },
+      ]);
+    }
+  }
+
   function applyCatalogSourceStatus({
     source,
     status,
@@ -1731,6 +1855,7 @@ function SourceCatalogStep(props: StepViewProps) {
       landSourceObservations(status.sourceId, status.observations);
     }
     if (status.installed) {
+      validatedConnectedSources.current.add(source.id);
       const failedShardCount = status.shardStateCounts.failed?.count ?? 0;
       const activeRunCount =
         (status.runStatusCounts.pending ?? 0) +
@@ -1789,6 +1914,21 @@ function SourceCatalogStep(props: StepViewProps) {
       });
       return;
     }
+    const persistedConnection = connections.find(
+      (connection) => connection.sourceId === source.id,
+    );
+    if (
+      persistedConnection?.status === "connected" &&
+      !status.autoConnectRun
+    ) {
+      validatedConnectedSources.current.delete(source.id);
+      updateConnection(source.id, {
+        status: "not-configured",
+        receiptId: undefined,
+      });
+      clearAutomationState(source.id);
+      return;
+    }
     const backgroundView = sourceBackgroundRunView(status.autoConnectRun);
     const receiptPathHint = status.autoConnectRun?.receiptPathHint;
     const handoffUrl = status.autoConnectRun?.handoffUrl ?? installUrl ?? null;
@@ -1842,6 +1982,13 @@ function SourceCatalogStep(props: StepViewProps) {
   ) {
     const source = snapshot.sources.find((item) => item.id === sourceId);
     if (!source) {
+      return;
+    }
+    if (source.id === "figma") {
+      // Figma has a native OAuth card below the source marketplace.  It owns
+      // the top-level provider navigation and its own server-backed status
+      // polling; generic rehearsal automation is intentionally never used.
+      selectSource("figma");
       return;
     }
     const providerHandoffWindow = openImmediateProviderHandoffWindow(source);
@@ -2073,6 +2220,12 @@ function SourceCatalogStep(props: StepViewProps) {
   useEffect(() => {
     const activeRunMap = new Map<string, SourceConnectRun>();
     for (const connection of connections) {
+      // Figma uses its native connection status endpoint. Polling the generic
+      // rehearsal route here would be production-disabled and could overwrite
+      // a truthful OAuth/sync state with an unrelated error.
+      if (connection.sourceId === "figma") {
+        continue;
+      }
       if (connection.status === "waiting-admin") {
         activeRunMap.set(connection.sourceId, {
           status: "waiting_admin",
@@ -2091,14 +2244,13 @@ function SourceCatalogStep(props: StepViewProps) {
         });
       }
       if (
-        connection.sourceId === "discord" &&
-        connection.status === "connected"
+        connection.status === "connected" &&
+        !validatedConnectedSources.current.has(connection.sourceId)
       ) {
         activeRunMap.set(connection.sourceId, {
-          ...(automationStates[connection.sourceId] ?? {
-            status: "connected" as const,
-            label: "Connected",
-          }),
+          status: "connecting",
+          label: "Checking connection",
+          message: "Fyralis is confirming the persisted connection.",
           apiBase:
             automationStates[connection.sourceId]?.apiBase ??
             workspace.providerIngressUrl,
@@ -2106,6 +2258,11 @@ function SourceCatalogStep(props: StepViewProps) {
       }
     }
     for (const [sourceId, state] of Object.entries(automationStates)) {
+      // Figma's native OAuth card owns its status lifecycle. Never enqueue its
+      // deployment setup / consent state for the generic rehearsal poller.
+      if (sourceId === "figma") {
+        continue;
+      }
       if (state.status === "connecting" || state.status === "waiting_admin") {
         activeRunMap.set(sourceId, state);
       }
@@ -2189,6 +2346,13 @@ function SourceCatalogStep(props: StepViewProps) {
         }
         onRetryAwsFirstSync={() => void retryAwsFirstSync()}
       />
+      {selectedSource.id === "figma" ? (
+        <FigmaOAuthConnectionCard
+          apiBase={workspace.providerIngressUrl}
+          className="mt-2"
+          onStatusChange={applyFigmaOAuthStatus}
+        />
+      ) : null}
     </div>
   );
 }
@@ -2215,6 +2379,9 @@ function sourceWaitingAdminCard(prepared: SourceAutoConnectResponse) {
 function sourceApprovalActionLabel(source: Source) {
   if (source.id === "aws") {
     return "Open AWS approval";
+  }
+  if (source.id === "github") {
+    return "Open GitHub approval";
   }
   if (source.id === "discord") {
     return "Open Discord";

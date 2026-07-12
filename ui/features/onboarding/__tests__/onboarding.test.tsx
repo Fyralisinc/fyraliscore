@@ -499,6 +499,82 @@ describe("onboarding workflow contract", () => {
     );
   });
 
+  it("never presents missing Figma deployment OAuth setup as connected", async () => {
+    const selectedSource = ONBOARDING_SNAPSHOT.sources.find(
+      (source) => source.id === "figma",
+    );
+    expect(selectedSource).toBeDefined();
+    const props = stepViewProps({
+      selectedSource: selectedSource!,
+      connections: [
+        {
+          sourceId: "figma",
+          status: "connected",
+          selectedScopes: [],
+          backfillWindow: "All available history",
+          syncMode: "Backfill plus polling",
+        },
+      ],
+    });
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/integrations/figma/connect/status")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              ok: true,
+              state: "deployment_setup_required",
+              setup_owner: "deployment_admin",
+              next_action:
+                "Ask a deployment administrator to configure this deployment's Figma OAuth app.",
+            }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ detail: { error: "source_rehearsal_not_enabled" } }),
+          { status: 404 },
+        ),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<StepView stepId="source-catalog" props={props} />);
+
+    expect(await screen.findByText("Admin setup required")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Next: a deployment administrator completes the one-time private Figma app setup in Control Panel.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "Open Control Panel for Figma",
+      }),
+    ).toHaveTextContent("Open Control Panel");
+    expect(
+      screen.queryByRole("button", { name: "Figma connected" }),
+    ).not.toBeInTheDocument();
+    expect(props.updateConnection).toHaveBeenCalledWith("figma", {
+      status: "waiting-admin",
+      receiptId: undefined,
+      lastIssueCode: "deployment_setup_required",
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 1_100));
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).includes("/platform/onboarding/sources/figma/rehearsal/status"),
+      ),
+    ).toBe(false);
+    expect(screen.getByText("Admin setup required")).toBeInTheDocument();
+  });
+
   it("starts source automation from the minimal source catalog", async () => {
     const user = userEvent.setup();
     const props = stepViewProps({
@@ -756,7 +832,66 @@ describe("onboarding workflow contract", () => {
     ]);
   });
 
-  it("shows background browser-agent progress while polling", async () => {
+  it("clears a persisted connected source when the backend has no install", async () => {
+    vi.useFakeTimers();
+    const selectedSource = ONBOARDING_SNAPSHOT.sources.find(
+      (source) => source.id === "github",
+    );
+    expect(selectedSource).toBeDefined();
+    const props = stepViewProps({
+      selectedSource: selectedSource!,
+      connections: [
+        {
+          sourceId: "github",
+          status: "connected",
+          selectedScopes: [],
+          backfillWindow: "Last 30 days",
+          syncMode: "Limited backfill",
+          receiptId: "source_agent_github_connected",
+        },
+      ],
+    });
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          source: "github",
+          installed: false,
+          installation: null,
+          installations: [],
+          trigger_count: 0,
+          consumed_trigger_count: 0,
+          run_status_counts: {},
+          shard_state_counts: {},
+          observation_count: 0,
+          sync_started_at: null,
+          observations: [],
+          unresolved_failure_count: 0,
+          latest_failure: null,
+          auto_connect_run: null,
+          next_action: "Approve GitHub in the provider browser window.",
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<StepView stepId="source-catalog" props={props} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/platform/onboarding/sources/github/rehearsal/status",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(props.updateConnection).toHaveBeenCalledWith("github", {
+      status: "not-configured",
+      receiptId: undefined,
+    });
+  });
+
+  it("keeps the approval action visible when a browser agent is running", async () => {
     vi.useFakeTimers();
     const selectedSource = ONBOARDING_SNAPSHOT.sources.find(
       (source) => source.id === "ramp",
@@ -787,9 +922,16 @@ describe("onboarding workflow contract", () => {
       await vi.advanceTimersByTimeAsync(8000);
     });
 
-    expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(screen.getByText("Approval needed")).toBeInTheDocument();
     expect(
-      screen.getByText("Source setup is running in the customer cloud."),
+      screen.getByText(
+        "Provider admin approval is blocking completion. Fyralis keeps checking.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "Open Ramp provider settings for approval",
+      }),
     ).toBeInTheDocument();
     expect(props.updateConnection).not.toHaveBeenCalledWith(
       "ramp",

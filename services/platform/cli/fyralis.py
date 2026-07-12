@@ -1,4 +1,5 @@
 """Fyralis product CLI."""
+
 from __future__ import annotations
 
 import argparse
@@ -63,6 +64,16 @@ DEFAULT_SLACK_GATEWAY_NAMESPACE = "fyralis-system"
 DEFAULT_SLACK_GATEWAY_LOCAL_PORT = 8000
 DEFAULT_KUBECTL = "/tmp/fyralis-byoc-tools/kubectl"
 DEFAULT_NGROK_API = "http://127.0.0.1:4040/api/tunnels"
+# These Helm component labels identify the only processes that exchange or
+# refresh the deployment-owned Figma OAuth credential. Keep the secret
+# reference out of orchestration-only workers which never call Figma.
+FIGMA_RUNTIME_COMPONENTS = (
+    "gateway",
+    "shard-fetch",
+    "reconciler",
+    "periodic-reconciler",
+)
+FIGMA_REQUIRED_RUNTIME_COMPONENTS = frozenset({"gateway", "shard-fetch"})
 REHEARSABLE_SOURCES = (
     "ashby",
     "aws",
@@ -242,6 +253,50 @@ REHEARSAL_PROFILES: dict[str, dict[str, Any]] = {
             "notion_webhook_verification_token_copy",
         ),
     },
+    "figma": {
+        # One private Figma OAuth app is owned by one customer BYOC deployment.
+        # End users subsequently start the file-scoped OAuth flow from the
+        # Fyralis onboarding card; there is no generic install URL or PAT.
+        "kind": "oauth_app",
+        "needs_public_url": True,
+        "callback_path": "/integrations/figma/oauth/callback",
+        "env": (
+            "FIGMA_OAUTH_ENABLED",
+            "FIGMA_CLIENT_ID",
+            "FIGMA_CLIENT_SECRET_SECRET_REF",
+            "FIGMA_REDIRECT_URI",
+            "FIGMA_OAUTH_UI_BASE_URL",
+            "FIGMA_OAUTH_SCOPES",
+            "OAUTH_STATE_HMAC_KEY_SECRET_REF",
+        ),
+        "required_env": (
+            "FIGMA_OAUTH_ENABLED",
+            "FIGMA_CLIENT_ID",
+            "FIGMA_CLIENT_SECRET_SECRET_REF",
+            "FIGMA_REDIRECT_URI",
+            "FIGMA_OAUTH_UI_BASE_URL",
+            "FIGMA_OAUTH_SCOPES",
+            "OAUTH_STATE_HMAC_KEY_SECRET_REF",
+        ),
+        "default_env": {
+            "FIGMA_OAUTH_ENABLED": "1",
+            "FIGMA_OAUTH_SCOPES": (
+                "current_user:read,file_metadata:read,file_content:read,"
+                "file_comments:read,file_versions:read"
+            ),
+        },
+        # The gateway exchanges authorization codes.  The fetch and
+        # reconciliation workers instantiate FigmaClient, which can refresh
+        # an OAuth grant and therefore also requires the client credential
+        # reference and redirect configuration.
+        "runtime_components": FIGMA_RUNTIME_COMPONENTS,
+        "manual_gate_names": (
+            "figma_private_oauth_app_creation_or_update",
+            "figma_redirect_uri_registration",
+            "figma_deployment_secret_storage",
+            "figma_file_scoped_oauth_consent",
+        ),
+    },
     "jira": {
         "kind": "api_token_connect",
         "needs_public_url": True,
@@ -324,7 +379,11 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
     "aws": {
         "method": "iam_role",
         "default_scopes": ["inventory", "cloudtrail", "eventbridge"],
-        "provider_permissions": ["inventory read", "cloudtrail read", "eventbridge read"],
+        "provider_permissions": [
+            "inventory read",
+            "cloudtrail read",
+            "eventbridge read",
+        ],
         "ingress_paths": [],
         "required_refs": ["role_arn"],
         "no_ingress_reason": "Fyralis polls customer-authorized AWS APIs locally.",
@@ -465,24 +524,30 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
         },
     },
     "figma": {
-        "method": "api_token",
-        "default_scopes": ["team-files", "approved-file-keys"],
-        "provider_permissions": ["file read", "team read", "webhook read"],
-        "ingress_paths": ["/webhooks/figma"],
-        "required_refs": ["api_token", "webhook_secret"],
+        "method": "oauth",
+        "default_scopes": [
+            "current_user:read",
+            "file_metadata:read",
+            "file_content:read",
+            "file_comments:read",
+            "file_versions:read",
+        ],
+        "provider_permissions": [
+            "current user identity read",
+            "file metadata read",
+            "file document content read",
+            "file comments read",
+            "file version history read",
+        ],
+        "ingress_paths": ["/integrations/figma/oauth/callback"],
+        "required_refs": ["figma_client_secret", "oauth_state_hmac_key"],
         "native_connect": {
-            "kind": "api_token_native_connect",
-            "preflight_path": "/integrations/figma/connect/preflight",
-            "finalize_path": "/integrations/figma/connect/finalize",
-            "preflight_payload_fields": ["api_token", "base_url", "team_id"],
-            "payload_fields": [
-                "api_token",
-                "team_id",
-                "base_url",
-                "file_keys",
-                "webhook_id",
-                "webhook_secret",
-            ],
+            "kind": "figma_oauth_file_scoped_connect",
+            "start_path": "/integrations/figma/oauth/start",
+            "status_path": "/integrations/figma/connect/status",
+            "retry_path": "/integrations/figma/connect/retry",
+            "disconnect_path": "/integrations/figma/connect",
+            "payload_fields": ["file_urls", "return_path"],
         },
     },
     "fireflies": {
@@ -507,7 +572,12 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
     "github": {
         "method": "oauth",
         "default_scopes": ["selected-repositories", "pull-requests", "issues"],
-        "provider_permissions": ["repository metadata", "pull requests", "issues", "webhooks"],
+        "provider_permissions": [
+            "repository metadata",
+            "pull requests",
+            "issues",
+            "webhooks",
+        ],
         "ingress_paths": ["/integrations/github/callback", "/webhooks/github"],
         "required_refs": ["github_app_private_key", "webhook_secret"],
         "native_connect": {
@@ -539,7 +609,12 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
             "preflight_path": "/integrations/gmail/connect/preflight",
             "finalize_path": "/integrations/gmail/connect/finalize",
             "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
-            "payload_fields": ["workspace_domain", "admin_email", "scope", "inclusion_spec"],
+            "payload_fields": [
+                "workspace_domain",
+                "admin_email",
+                "scope",
+                "inclusion_spec",
+            ],
             "scope_aliases": ["gmail.metadata"],
         },
     },
@@ -559,7 +634,12 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
             "preflight_path": "/integrations/google_calendar/connect/preflight",
             "finalize_path": "/integrations/google_calendar/connect/finalize",
             "preflight_payload_fields": ["workspace_domain", "admin_email", "scope"],
-            "payload_fields": ["workspace_domain", "admin_email", "scope", "inclusion_spec"],
+            "payload_fields": [
+                "workspace_domain",
+                "admin_email",
+                "scope",
+                "inclusion_spec",
+            ],
             "scope_aliases": ["calendar.readonly"],
         },
     },
@@ -656,7 +736,11 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
     "jira": {
         "method": "api_token",
         "default_scopes": ["pilot-projects", "issues", "comments"],
-        "provider_permissions": ["read:jira-work", "read:jira-user", "webhook registration"],
+        "provider_permissions": [
+            "read:jira-work",
+            "read:jira-user",
+            "webhook registration",
+        ],
         "ingress_paths": ["/webhooks/jira/events"],
         "required_refs": ["api_token", "site_url"],
         "native_connect": {
@@ -676,7 +760,11 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
     "linkedin": {
         "method": "poll",
         "default_scopes": ["organization", "company-page"],
-        "provider_permissions": ["organization read", "profile read", "rate-limit approval"],
+        "provider_permissions": [
+            "organization read",
+            "profile read",
+            "rate-limit approval",
+        ],
         "ingress_paths": [],
         "required_refs": ["oauth_client", "token_ref"],
         "no_ingress_reason": "LinkedIn is poll-only from the customer data plane.",
@@ -684,7 +772,11 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
             "kind": "access_token_native_connect",
             "preflight_path": "/integrations/linkedin/connect/preflight",
             "finalize_path": "/integrations/linkedin/connect/finalize",
-            "preflight_payload_fields": ["organization_urn", "access_token", "base_url"],
+            "preflight_payload_fields": [
+                "organization_urn",
+                "access_token",
+                "base_url",
+            ],
             "payload_fields": [
                 "organization_urn",
                 "access_token",
@@ -776,7 +868,13 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
     },
     "ramp": {
         "method": "oauth_client_credentials",
-        "default_scopes": ["transactions", "reimbursements", "cards", "users", "business"],
+        "default_scopes": [
+            "transactions",
+            "reimbursements",
+            "cards",
+            "users",
+            "business",
+        ],
         "provider_permissions": [
             "transactions read",
             "reimbursements read",
@@ -811,7 +909,11 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
     "signal": {
         "method": "gateway",
         "default_scopes": ["approved-contacts", "approved-groups"],
-        "provider_permissions": ["linked device session", "approved contacts", "approved groups"],
+        "provider_permissions": [
+            "linked device session",
+            "approved contacts",
+            "approved groups",
+        ],
         "ingress_paths": [],
         "required_refs": ["linked_device_session"],
         "no_ingress_reason": "Linked-device gateway session runs from the customer cloud.",
@@ -830,7 +932,12 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
     "slack": {
         "method": "oauth",
         "default_scopes": ["#leadership", "#finance-ops", "#customer-success"],
-        "provider_permissions": ["channels:history", "groups:history", "users:read", "team:read"],
+        "provider_permissions": [
+            "channels:history",
+            "groups:history",
+            "users:read",
+            "team:read",
+        ],
         "ingress_paths": ["/integrations/slack/callback", "/webhooks/slack/events"],
         "required_refs": ["oauth_client", "bot_token", "signing_secret"],
         "native_connect": {
@@ -870,14 +977,22 @@ SOURCE_PROFILES: dict[str, dict[str, Any]] = {
     "whatsapp": {
         "method": "webhook",
         "default_scopes": ["business-account", "approved-phone-ids"],
-        "provider_permissions": ["business account read", "messages webhook", "phone id"],
+        "provider_permissions": [
+            "business account read",
+            "messages webhook",
+            "phone id",
+        ],
         "ingress_paths": ["/integrations/whatsapp/webhook"],
         "required_refs": ["phone_number_id", "app_secret", "verify_token"],
         "native_connect": {
             "kind": "whatsapp_native_connect",
             "preflight_path": "/integrations/whatsapp/connect/preflight",
             "finalize_path": "/integrations/whatsapp/connect/finalize",
-            "preflight_payload_fields": ["phone_number_id", "app_secret", "verify_token"],
+            "preflight_payload_fields": [
+                "phone_number_id",
+                "app_secret",
+                "verify_token",
+            ],
             "payload_fields": [
                 "phone_number_id",
                 "business_account_id",
@@ -1119,7 +1234,9 @@ def _add_local_rehearsal_command(subcommands: argparse._SubParsersAction) -> Non
     parser.add_argument("--environment", default="local-rehearsal")
     parser.add_argument("--cluster-name", default=DEFAULT_LOCAL_REHEARSAL_CLUSTER)
     parser.add_argument("--helm-chart", default=DEFAULT_LOCAL_REHEARSAL_CHART)
-    parser.add_argument("--image-repository", default=DEFAULT_LOCAL_REHEARSAL_IMAGE_REPOSITORY)
+    parser.add_argument(
+        "--image-repository", default=DEFAULT_LOCAL_REHEARSAL_IMAGE_REPOSITORY
+    )
     parser.add_argument("--image-tag", default=DEFAULT_LOCAL_REHEARSAL_IMAGE_TAG)
     parser.set_defaults(handler=_cmd_local_rehearsal)
 
@@ -1371,7 +1488,9 @@ def _add_source_rehearse_slack_command(
     parser.add_argument("--kubectl", default=DEFAULT_KUBECTL)
     parser.add_argument("--namespace", default=DEFAULT_SLACK_GATEWAY_NAMESPACE)
     parser.add_argument("--gateway-service", default=DEFAULT_SLACK_GATEWAY_SERVICE)
-    parser.add_argument("--gateway-local-port", type=int, default=DEFAULT_SLACK_GATEWAY_LOCAL_PORT)
+    parser.add_argument(
+        "--gateway-local-port", type=int, default=DEFAULT_SLACK_GATEWAY_LOCAL_PORT
+    )
     parser.add_argument("--ngrok-api", default=DEFAULT_NGROK_API)
     parser.add_argument("--no-start-tunnel", action="store_true")
     parser.add_argument("--slack-env", type=Path)
@@ -1395,7 +1514,9 @@ def _add_source_rehearse_command(subcommands: argparse._SubParsersAction) -> Non
     parser.add_argument("--kubectl", default=DEFAULT_KUBECTL)
     parser.add_argument("--namespace", default=DEFAULT_SLACK_GATEWAY_NAMESPACE)
     parser.add_argument("--gateway-service", default=DEFAULT_SLACK_GATEWAY_SERVICE)
-    parser.add_argument("--gateway-local-port", type=int, default=DEFAULT_SLACK_GATEWAY_LOCAL_PORT)
+    parser.add_argument(
+        "--gateway-local-port", type=int, default=DEFAULT_SLACK_GATEWAY_LOCAL_PORT
+    )
     parser.add_argument("--ngrok-api", default=DEFAULT_NGROK_API)
     parser.add_argument("--no-start-tunnel", action="store_true")
     parser.add_argument("--provider-env", type=Path)
@@ -1417,7 +1538,10 @@ def _cmd_autopilot(args: argparse.Namespace) -> int:
     try:
         role_template = _role_template_payload(args)
     except Exception as exc:  # noqa: BLE001
-        print(f"failed to build setup role template: {type(exc).__name__}", file=sys.stderr)
+        print(
+            f"failed to build setup role template: {type(exc).__name__}",
+            file=sys.stderr,
+        )
         return 1
     role_template_path = args.workdir / "templates" / "setup-role-template.json"
     _write_json(role_template_path, role_template)
@@ -1446,7 +1570,11 @@ def _cmd_autopilot(args: argparse.Namespace) -> int:
     _write_json(review_path, review)
 
     receipt: dict[str, Any] | None = None
-    if args.auto_approve and not args.plan_only and plan["status"] == "ready_for_approval":
+    if (
+        args.auto_approve
+        and not args.plan_only
+        and plan["status"] == "ready_for_approval"
+    ):
         receipt = _apply_receipt(plan)
         _write_json(_latest_apply_receipt_path(args.workdir), receipt)
 
@@ -1486,7 +1614,9 @@ def _cmd_autopilot(args: argparse.Namespace) -> int:
         "artifacts": {
             "role_template": str(role_template_path),
             "registration": str(_registration_path(args.workdir)),
-            "preflight_report": str(args.workdir / "reports" / "aws-live-preflight.json"),
+            "preflight_report": str(
+                args.workdir / "reports" / "aws-live-preflight.json"
+            ),
             "plan": str(plan_path),
             "review_bundle": str(review_path),
             "apply_receipt": (
@@ -1595,7 +1725,9 @@ def _cmd_plan(args: argparse.Namespace) -> int:
     review = _review_bundle(plan)
     output = args.workdir / "review" / "latest-review-bundle.json"
     _write_json(output, review)
-    payload = review if args.emit_review_bundle or args.json else {"review_path": str(output)}
+    payload = (
+        review if args.emit_review_bundle or args.json else {"review_path": str(output)}
+    )
     return _emit(args, payload, f"BYOC review bundle written to {output}")
 
 
@@ -1668,7 +1800,9 @@ def _cmd_local_rehearsal(args: argparse.Namespace) -> int:
         "helm_chart": args.helm_chart,
         "image": f"{args.image_repository}:{args.image_tag}",
         "artifacts": {
-            "provider_executor_report": str(_provider_executor_report_path(args.workdir)),
+            "provider_executor_report": str(
+                _provider_executor_report_path(args.workdir)
+            ),
             "helm_values": report["artifacts"]["helm_values"],
             "helm_command": report["artifacts"]["helm_command"],
             "runbook": str(runbook_path),
@@ -1836,17 +1970,27 @@ def _cmd_source_activate(args: argparse.Namespace) -> int:
     results: list[dict[str, Any]] = []
     blocked = False
     for source_id in source_ids:
-        validation = _load_optional_json(_source_validation_path(args.workdir, source_id))
+        validation = _load_optional_json(
+            _source_validation_path(args.workdir, source_id)
+        )
         if not validation or validation.get("status") != "passed":
             blocked = True
             result = _source_activation_blocker(source_id, validation)
-            _write_json(_source_activation_blocker_path(args.workdir, source_id), result)
+            _write_json(
+                _source_activation_blocker_path(args.workdir, source_id), result
+            )
             results.append(result)
             continue
         result = _source_activation_result(args, source_id)
-        _write_json(_source_first_sync_path(args.workdir, source_id), result["first_sync"])
-        _write_json(_source_activation_path(args.workdir, source_id), result["activation"])
-        _write_json(_source_readiness_path(args.workdir, source_id), result["readiness"])
+        _write_json(
+            _source_first_sync_path(args.workdir, source_id), result["first_sync"]
+        )
+        _write_json(
+            _source_activation_path(args.workdir, source_id), result["activation"]
+        )
+        _write_json(
+            _source_readiness_path(args.workdir, source_id), result["readiness"]
+        )
         results.append(result["summary"])
 
     payload = _source_stage_payload(
@@ -1863,7 +2007,9 @@ def _cmd_source_activate(args: argparse.Namespace) -> int:
 def _cmd_source_autopilot(args: argparse.Namespace) -> int:
     requested = args.source.strip().lower()
     source_ids = list(SOURCE_PROFILES) if requested == "all" else [requested]
-    invalid = [source_id for source_id in source_ids if source_id not in SOURCE_PROFILES]
+    invalid = [
+        source_id for source_id in source_ids if source_id not in SOURCE_PROFILES
+    ]
     if invalid:
         print(f"unsupported source: {', '.join(invalid)}", file=sys.stderr)
         return 2
@@ -1902,8 +2048,12 @@ def _cmd_source_autopilot(args: argparse.Namespace) -> int:
         "status": "active" if args.auto_activate else "ready",
         "source": requested,
         "source_count": len(results),
-        "active_source_count": sum(1 for result in results if result["status"] == "active"),
-        "ready_source_count": sum(1 for result in results if result["status"] == "ready"),
+        "active_source_count": sum(
+            1 for result in results if result["status"] == "active"
+        ),
+        "ready_source_count": sum(
+            1 for result in results if result["status"] == "ready"
+        ),
         "sync_mode": args.sync_mode,
         "sources": results,
         "raw_secret_exported": False,
@@ -1916,7 +2066,9 @@ def _cmd_source_autopilot(args: argparse.Namespace) -> int:
 def _cmd_source_browser_agent(args: argparse.Namespace) -> int:
     requested = str(args.source).strip().lower()
     source_ids = list(SOURCE_PROFILES) if requested == "all" else [requested]
-    invalid = [source_id for source_id in source_ids if source_id not in SOURCE_PROFILES]
+    invalid = [
+        source_id for source_id in source_ids if source_id not in SOURCE_PROFILES
+    ]
     if invalid:
         print(f"unsupported source: {', '.join(invalid)}", file=sys.stderr)
         return 2
@@ -1932,7 +2084,10 @@ def _cmd_source_browser_agent(args: argparse.Namespace) -> int:
             source_id,
         )
         if not run_artifact.is_file():
-            print(f"missing source browser-agent artifact: {run_artifact}", file=sys.stderr)
+            print(
+                f"missing source browser-agent artifact: {run_artifact}",
+                file=sys.stderr,
+            )
             return 2
 
     try:
@@ -2109,7 +2264,7 @@ def _source_browser_agent_run(
         ),
         oauth_redirect_url=oauth_redirect_url,
         events_request_url=events_request_url,
-        finalize_mode="generic_customer_refs",
+        finalize_mode=_source_native_finalize_mode(profile),
         native_connect=profile.get("native_connect"),
     )
     return run
@@ -2132,7 +2287,9 @@ def _source_browser_agent_ingress_urls(
                 path
                 for path in paths
                 if path != callback_path
-                and any(token in path for token in ("webhook", "events", "pubsub", "push"))
+                and any(
+                    token in path for token in ("webhook", "events", "pubsub", "push")
+                )
             ),
             "",
         )
@@ -2142,6 +2299,16 @@ def _source_browser_agent_ingress_urls(
         base_url,
         webhook_path,
     )
+
+
+def _source_native_finalize_mode(profile: dict[str, Any]) -> str:
+    native_connect = profile.get("native_connect")
+    if (
+        isinstance(native_connect, dict)
+        and native_connect.get("kind") == "figma_oauth_file_scoped_connect"
+    ):
+        return "provider_callback"
+    return "generic_customer_refs"
 
 
 def _source_ingress_url(base_url: str, path: str) -> str | None:
@@ -2269,6 +2436,10 @@ def _cmd_source_rehearse(args: argparse.Namespace) -> int:
         else:
             try:
                 env_report |= _apply_provider_env(args, source_id, profile, env_path)
+                # Do not present a Figma deployment as ready when its managed
+                # client-secret or callback contract was not actually applied.
+                if source_id == "figma" and not env_report.get("applied"):
+                    failed = True
             except Exception as exc:  # noqa: BLE001
                 failed = True
                 env_report["error"] = type(exc).__name__
@@ -2584,7 +2755,9 @@ def _write_source_rehearsal_files(
     elif source_id == "telegram":
         files["session_plan"] = setup_dir / "telegram-session-plan.json"
     else:
-        files["connection_checklist"] = setup_dir / f"{source_id}-connection-checklist.json"
+        files["connection_checklist"] = (
+            setup_dir / f"{source_id}-connection-checklist.json"
+        )
 
     setup_payload = _source_rehearsal_setup_payload(
         source_id,
@@ -2667,12 +2840,15 @@ settings:
   socket_mode_enabled: false
   token_rotation_enabled: false
 """
-    events_manifest = base_manifest.rstrip() + f"""
+    events_manifest = (
+        base_manifest.rstrip()
+        + f"""
   event_subscriptions:
     request_url: {public_url}/webhooks/slack/events
     bot_events:
 {bot_events}
 """
+    )
     return base_manifest, events_manifest
 
 
@@ -2831,7 +3007,7 @@ def _source_rehearsal_browser_agent_run(
         ),
         oauth_redirect_url=oauth_redirect_url,
         events_request_url=events_request_url,
-        finalize_mode="generic_customer_refs",
+        finalize_mode=_source_native_finalize_mode(source_profile),
         native_connect=source_profile.get("native_connect"),
     )
 
@@ -2870,14 +3046,21 @@ def _source_env_example(
     public_url: str,
 ) -> str:
     lines: list[str] = []
+    configured_defaults = profile.get("default_env", {})
+    if not isinstance(configured_defaults, dict):
+        configured_defaults = {}
     for key in profile.get("env", ()):
-        value = ""
-        if key.endswith("_REDIRECT_URI") and profile.get("callback_path"):
+        value = str(configured_defaults.get(key) or "")
+        if not value and key.endswith("_REDIRECT_URI") and profile.get("callback_path"):
             value = f"{public_url}{profile['callback_path']}"
-        elif key.endswith("_WEBHOOK_URL") and profile.get("webhook_path"):
+        elif not value and key.endswith("_WEBHOOK_URL") and profile.get("webhook_path"):
             value = f"{public_url}{profile['webhook_path']}"
-        elif key == "OAUTH_STATE_HMAC_KEY":
+        elif not value and key == "OAUTH_STATE_HMAC_KEY":
             value = "customer-cloud-secret-ref://oauth-state-hmac-key"
+        elif key == "FIGMA_OAUTH_UI_BASE_URL":
+            lines.append(
+                "# Set the trusted HTTPS origin of this deployment's Fyralis onboarding UI."
+            )
         elif key == "JIRA_PROJECT_KEYS":
             lines.append("# Optional comma-separated Jira project keys.")
         elif key == "TELEGRAM_DIALOGS_JSON":
@@ -2905,7 +3088,9 @@ def _source_rehearsal_readme(
     )
     apply_command = f"fyralis byoc source rehearse --source {source_id} --apply-env"
     if profile.get("install_endpoint"):
-        apply_command += " --print-install-url --tenant-id <tenant-id> --actor-id <actor-id>"
+        apply_command += (
+            " --print-install-url --tenant-id <tenant-id> --actor-id <actor-id>"
+        )
     return f"""# Fyralis {source_id.title()} Local Rehearsal
 
 Public gateway:
@@ -2955,6 +3140,13 @@ def _apply_provider_env(
         if env_values.get(source):
             env_values.setdefault(target, env_values[source])
 
+    deployment_env_values = _provider_env_values_for_apply(
+        source_id,
+        profile,
+        env_values,
+    )
+    deployment_targets = _provider_runtime_deployments(args, source_id, profile)
+
     if profile["kind"] in {"api_token_connect", "local_gateway_session"}:
         return {
             "applied": True,
@@ -2966,7 +3158,7 @@ def _apply_provider_env(
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
         tmp_path = Path(handle.name)
         os.chmod(tmp_path, 0o600)
-        for key, value in env_values.items():
+        for key, value in deployment_env_values.items():
             handle.write(f"{key}={value}\n")
     try:
         create = subprocess.run(
@@ -2992,41 +3184,145 @@ def _apply_provider_env(
             check=True,
             capture_output=True,
         )
-        subprocess.run(
-            [
-                args.kubectl,
-                "-n",
-                args.namespace,
-                "set",
-                "env",
-                "deployment/fyralis-gateway",
-                f"--from=secret/fyralis-{source_id}-integration",
-            ],
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            [
-                args.kubectl,
-                "-n",
-                args.namespace,
-                "rollout",
-                "status",
-                "deployment/fyralis-gateway",
-                "--timeout=120s",
-            ],
-            check=True,
-            capture_output=True,
-        )
+        for deployment in deployment_targets:
+            subprocess.run(
+                [
+                    args.kubectl,
+                    "-n",
+                    args.namespace,
+                    "set",
+                    "env",
+                    f"deployment/{deployment}",
+                    f"--from=secret/fyralis-{source_id}-integration",
+                ],
+                check=True,
+                capture_output=True,
+            )
+        for deployment in deployment_targets:
+            subprocess.run(
+                [
+                    args.kubectl,
+                    "-n",
+                    args.namespace,
+                    "rollout",
+                    "status",
+                    f"deployment/{deployment}",
+                    "--timeout=120s",
+                ],
+                check=True,
+                capture_output=True,
+            )
     finally:
         tmp_path.unlink(missing_ok=True)
-    return {
+    result = {
         "applied": True,
         "mode": "gateway_env_applied",
         "kubernetes_secret": f"fyralis-{source_id}-integration",
-        "gateway_deployment": "fyralis-gateway",
+        "gateway_deployment": (
+            deployment_targets[0] if source_id == "figma" else "fyralis-gateway"
+        ),
         "raw_secret_values_exported": False,
     }
+    if source_id == "figma":
+        result["mode"] = "figma_runtime_env_applied"
+        result["runtime_deployments"] = list(deployment_targets)
+        result["runtime_components"] = list(
+            _provider_runtime_components(profile)
+        )
+    return result
+
+
+def _provider_runtime_deployments(
+    args: argparse.Namespace,
+    source_id: str,
+    profile: dict[str, Any],
+) -> tuple[str, ...]:
+    """Return live rollout targets without changing non-Figma rollout scope."""
+    if source_id != "figma":
+        return ("fyralis-gateway",)
+    components = _provider_runtime_components(profile)
+    selector = "app.kubernetes.io/component in (" + ",".join(components) + ")"
+    discovered = subprocess.run(
+        [
+            args.kubectl,
+            "-n",
+            args.namespace,
+            "get",
+            "deployment",
+            "-l",
+            selector,
+            "-o",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    try:
+        payload = json.loads(discovered.stdout)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("could not read Figma runtime deployment discovery") from exc
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        raise ValueError("Figma runtime deployment discovery returned no deployment list")
+    targets_by_component: dict[str, list[str]] = {component: [] for component in components}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        metadata = item.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        name = str(metadata.get("name") or "").strip()
+        labels = metadata.get("labels")
+        component = (
+            str(labels.get("app.kubernetes.io/component") or "").strip()
+            if isinstance(labels, dict)
+            else ""
+        )
+        if name and component in targets_by_component:
+            targets_by_component[component].append(name)
+    missing = sorted(
+        component
+        for component in FIGMA_REQUIRED_RUNTIME_COMPONENTS
+        if not targets_by_component.get(component)
+    )
+    if missing:
+        raise ValueError(
+            "Figma runtime deployments are missing required component labels: "
+            + ", ".join(missing)
+        )
+    return tuple(
+        deployment
+        for component in components
+        for deployment in sorted(targets_by_component[component])
+    )
+
+
+def _provider_runtime_components(profile: dict[str, Any]) -> tuple[str, ...]:
+    configured = profile.get("runtime_components")
+    if not isinstance(configured, (list, tuple)):
+        return FIGMA_RUNTIME_COMPONENTS
+    components = tuple(
+        str(item).strip() for item in configured if str(item).strip()
+    )
+    return components or FIGMA_RUNTIME_COMPONENTS
+
+
+def _provider_env_values_for_apply(
+    source_id: str,
+    profile: dict[str, Any],
+    env_values: dict[str, str],
+) -> dict[str, str]:
+    """Limit Figma rollout material to its declared config and secret refs.
+
+    A Figma Client Secret must already live behind
+    ``FIGMA_CLIENT_SECRET_SECRET_REF``.  Do not copy arbitrary values from a
+    local env file (including a development-only plaintext fallback) into the
+    Kubernetes integration secret.
+    """
+    if source_id != "figma":
+        return env_values
+    allowed = {str(key) for key in profile.get("env", ())}
+    return {key: value for key, value in env_values.items() if key in allowed}
 
 
 def _build_provider_install_url(
@@ -3216,14 +3512,18 @@ def _manual_gate_reason(source_id: str, gate_name: str) -> str:
     if gate_name.endswith("_provider_admin_approval"):
         return f"A {display_name} admin must approve this connection in the customer-owned provider."
     if gate_name.endswith("_scope_selection"):
-        return f"The customer chooses which {display_name} resources Fyralis may ingest."
+        return (
+            f"The customer chooses which {display_name} resources Fyralis may ingest."
+        )
     if gate_name.endswith("_credential_ref_creation"):
         return (
             f"The customer stores {display_name} credentials or references in the "
             "customer-cloud secret manager; raw values are not sent to Fyralis."
         )
     if gate_name.endswith("_oauth_app_or_connection_approval"):
-        return f"The customer creates or approves the {display_name} OAuth app/connection."
+        return (
+            f"The customer creates or approves the {display_name} OAuth app/connection."
+        )
     if gate_name.endswith("_oauth_consent"):
         return f"{display_name} OAuth requires a customer-side approval screen."
     if gate_name.endswith("_webhook_registration"):
@@ -3259,6 +3559,22 @@ def _manual_gate_reason(source_id: str, gate_name: str) -> str:
         "notion_oauth_consent": "A Notion workspace user/admin must approve access.",
         "notion_webhook_verification_token_copy": (
             "Notion delivers a verification token during subscription setup; it must be copied into customer-cloud env."
+        ),
+        "figma_private_oauth_app_creation_or_update": (
+            "A deployment administrator must create or update a private Figma OAuth app "
+            "owned by this customer BYOC deployment."
+        ),
+        "figma_redirect_uri_registration": (
+            "The Figma app owner must save the exact generated HTTPS callback URL "
+            "under Figma OAuth credentials."
+        ),
+        "figma_deployment_secret_storage": (
+            "The Figma Client Secret must be stored only as a deployment-managed "
+            "secret reference; do not place it in the onboarding UI."
+        ),
+        "figma_file_scoped_oauth_consent": (
+            "After deployment setup, each user selects approved Figma file URLs and "
+            "approves the file-scoped OAuth consent screen."
         ),
         "jira_api_token_creation": (
             "A Jira user must create an Atlassian API token for the approved site."
@@ -3356,6 +3672,12 @@ def _provider_setup_notes(source_id: str) -> list[str]:
             "Configure webhook subscription after gateway env is applied.",
             "Copy the webhook verification token into NOTION_WEBHOOK_VERIFICATION_TOKEN when Notion provides it.",
         ],
+        "figma": [
+            "Create one private Figma OAuth app owned by this customer BYOC deployment.",
+            "Register the exact callback URL under Figma OAuth credentials.",
+            "Store the Client Secret through FIGMA_CLIENT_SECRET_SECRET_REF; never enter it in Fyralis onboarding.",
+            "After the deployment readiness check passes, users connect explicitly selected design file URLs from the Figma card.",
+        ],
     }
     if source_id in notes:
         return notes[source_id]
@@ -3366,7 +3688,9 @@ def _provider_setup_notes(source_id: str) -> list[str]:
         "Run the generated Fyralis rehearsal command after the env file is filled.",
     ]
     if source_profile.get("ingress_paths"):
-        generic_notes.append("Register the generated webhook URL with the provider when required.")
+        generic_notes.append(
+            "Register the generated webhook URL with the provider when required."
+        )
     if source_profile.get("no_ingress_reason"):
         generic_notes.append(str(source_profile["no_ingress_reason"]))
     return generic_notes
@@ -3375,7 +3699,9 @@ def _provider_setup_notes(source_id: str) -> list[str]:
 def _source_ids_from_args(args: argparse.Namespace) -> tuple[list[str] | None, int]:
     requested = str(args.source).strip().lower()
     source_ids = list(SOURCE_PROFILES) if requested == "all" else [requested]
-    invalid = [source_id for source_id in source_ids if source_id not in SOURCE_PROFILES]
+    invalid = [
+        source_id for source_id in source_ids if source_id not in SOURCE_PROFILES
+    ]
     if invalid:
         print(f"unsupported source: {', '.join(invalid)}", file=sys.stderr)
         return None, 2
@@ -3565,9 +3891,7 @@ def _source_apply_result(
 ) -> dict[str, Any]:
     profile = SOURCE_PROFILES[source_id]
     scopes = [
-        str(scope)
-        for scope in plan.get("selected_scopes", [])
-        if str(scope).strip()
+        str(scope) for scope in plan.get("selected_scopes", []) if str(scope).strip()
     ] or _source_scopes(args, profile)
     preauthorized_refs = _source_preauthorized_refs(args, source_id)
     credential_ref = _source_credential_ref(args, source_id, preauthorized_refs)
@@ -3627,13 +3951,19 @@ def _source_apply_result(
 
 def _source_validate_result(args: argparse.Namespace, source_id: str) -> dict[str, Any]:
     profile = SOURCE_PROFILES[source_id]
-    apply_receipt = _load_optional_json(_source_apply_receipt_path(args.workdir, source_id))
+    apply_receipt = _load_optional_json(
+        _source_apply_receipt_path(args.workdir, source_id)
+    )
     connection = _load_optional_json(_source_connection_path(args.workdir, source_id))
     secret_refs = _load_optional_json(_source_secret_refs_path(args.workdir, source_id))
     scope = _load_optional_json(_source_scope_path(args.workdir, source_id))
     checks = [
-        _source_check("apply_receipt_present", apply_receipt is not None, required=True),
-        _source_check("connection_contract_present", connection is not None, required=True),
+        _source_check(
+            "apply_receipt_present", apply_receipt is not None, required=True
+        ),
+        _source_check(
+            "connection_contract_present", connection is not None, required=True
+        ),
         _source_check("secret_refs_present", secret_refs is not None, required=True),
         _source_check("scope_receipt_present", scope is not None, required=True),
         _source_check(
@@ -3713,9 +4043,9 @@ def _source_activation_result(
         if isinstance(connection, dict)
         else []
     ) or list(SOURCE_PROFILES[source_id]["default_scopes"])
-    validation = _load_optional_json(_source_validation_path(args.workdir, source_id)) or {
-        "status": "failed"
-    }
+    validation = _load_optional_json(
+        _source_validation_path(args.workdir, source_id)
+    ) or {"status": "failed"}
     sync = _source_first_sync(args, source_id=source_id, scopes=scopes)
     activation = _source_activation(source_id, scopes)
     readiness = _source_readiness(source_id, validation, sync, activation)
@@ -3754,11 +4084,7 @@ def _source_ref_state(
     required_ref_names = list(profile["required_refs"])
     manifest_refs = preauthorized_refs.get("required_refs")
     declared_names = (
-        {
-            str(name).strip()
-            for name in manifest_refs
-            if str(name).strip()
-        }
+        {str(name).strip() for name in manifest_refs if str(name).strip()}
         if isinstance(manifest_refs, dict)
         else set()
     )
@@ -3802,7 +4128,9 @@ def _source_human_gates(
             "required": True,
             "can_agent_complete": False,
             "reason": _source_human_gate_reason(action_id),
-            "missing_required_ref_names": list(refs_state["missing_required_ref_names"]),
+            "missing_required_ref_names": list(
+                refs_state["missing_required_ref_names"]
+            ),
         }
         for action_id in action_ids
     ]
@@ -3816,6 +4144,18 @@ def _source_human_gate_reason(action_id: str) -> str:
         ),
         "authorize_oauth_app_or_dwd_locally": (
             "The provider requires admin consent or OAuth authorization."
+        ),
+        "configure_deployment_figma_oauth_app": (
+            "A deployment administrator must create or update the private Figma OAuth "
+            "app owned by this customer BYOC deployment."
+        ),
+        "store_deployment_figma_oauth_secret": (
+            "The Figma Client Secret must be stored only in the deployment secret "
+            "manager, never in the Fyralis onboarding UI."
+        ),
+        "approve_file_scoped_figma_oauth": (
+            "After deployment setup, a user must select approved Figma file URLs and "
+            "complete the file-scoped OAuth consent screen."
         ),
         "authorize_google_workspace_dwd_and_scope": (
             "Google Workspace requires an admin to authorize the Fyralis service "
@@ -3937,9 +4277,7 @@ def _source_browser_agent_stage_payload(
     receipts: list[dict[str, Any]],
 ) -> dict[str, Any]:
     statuses = [str(receipt.get("status") or "") for receipt in receipts]
-    failed_or_blocked = sum(
-        1 for status in statuses if status in {"failed", "blocked"}
-    )
+    failed_or_blocked = sum(1 for status in statuses if status in {"failed", "blocked"})
     waiting = sum(1 for status in statuses if status == "waiting_for_admin")
     running = sum(1 for status in statuses if status == "running")
     connected = sum(1 for status in statuses if status == "connected")
@@ -3947,7 +4285,11 @@ def _source_browser_agent_stage_payload(
         "schema_version": "fyralis.byoc.source.browser_agent_run_set.v1",
         "stage": "browser-agent",
         "orchestration_mode": "parallel_per_source_browser_agents",
-        "status": "blocked" if failed_or_blocked else "waiting_for_admin" if waiting else "running",
+        "status": "blocked"
+        if failed_or_blocked
+        else "waiting_for_admin"
+        if waiting
+        else "running",
         "source": requested,
         "source_count": len(receipts),
         "connected_source_count": connected,
@@ -3970,7 +4312,9 @@ def _source_browser_agent_stage_payload(
 def _source_stage_status(stage: str, entries: list[dict[str, Any]]) -> str:
     statuses = {str(entry.get("status")) for entry in entries}
     if stage == "discover":
-        return "ready_to_plan" if statuses == {"ready_to_plan"} else "needs_customer_input"
+        return (
+            "ready_to_plan" if statuses == {"ready_to_plan"} else "needs_customer_input"
+        )
     if stage == "plan":
         return (
             "ready_for_approval"
@@ -4087,10 +4431,7 @@ def _source_secret_refs(
             name: f"{credential_ref.rstrip('/')}/{name}"
             for name in profile["required_refs"]
         }
-    ref_metadata = {
-        name: _source_ref_metadata(value)
-        for name, value in refs.items()
-    }
+    ref_metadata = {name: _source_ref_metadata(value) for name, value in refs.items()}
     return {
         "schema_version": "fyralis.byoc.source.secret_refs.v1",
         "source": source_id,
@@ -4171,7 +4512,9 @@ def _source_validation(
     del args
     method = profile["method"]
     checks = [
-        _validation_check("credential_ref_declared", bool(credential_ref), required=True),
+        _validation_check(
+            "credential_ref_declared", bool(credential_ref), required=True
+        ),
         _validation_check("scope_selected", bool(scopes), required=True),
         _validation_check("provider_permissions_declared", True, required=True),
         _validation_check("customer_cloud_boundary", True, required=True),
@@ -4179,7 +4522,9 @@ def _source_validation(
         _validation_check("raw_payload_not_exported", True, required=True),
     ]
     if method in {"oauth", "oauth_client_credentials", "oauth_plus_gateway", "webhook"}:
-        checks.append(_validation_check("provider_callback_declared", True, required=True))
+        checks.append(
+            _validation_check("provider_callback_declared", True, required=True)
+        )
     if method in {"gateway", "oauth_plus_gateway", "poll", "iam_role"}:
         checks.append(_validation_check("local_runner_declared", True, required=True))
     required_passed = all(
@@ -4248,9 +4593,15 @@ def _source_readiness(
     checks = [
         _validation_check("provider_setup_generated", True, required=True),
         _validation_check("secret_refs_generated", True, required=True),
-        _validation_check("connection_validated", validation["status"] == "passed", required=True),
-        _validation_check("first_sync_completed", sync["status"] == "completed", required=True),
-        _validation_check("activation_recorded", activation is not None, required=False),
+        _validation_check(
+            "connection_validated", validation["status"] == "passed", required=True
+        ),
+        _validation_check(
+            "first_sync_completed", sync["status"] == "completed", required=True
+        ),
+        _validation_check(
+            "activation_recorded", activation is not None, required=False
+        ),
     ]
     required_passed = all(
         check["status"] == "pass" for check in checks if check["required"]
@@ -4278,7 +4629,14 @@ def _source_automated_steps(profile: dict[str, Any]) -> list[str]:
         "write_scope_receipt",
         "run_first_sync_receipt",
     ]
-    if method in {"oauth", "oauth_plus_gateway"}:
+    native_connect = profile.get("native_connect")
+    if (
+        isinstance(native_connect, dict)
+        and native_connect.get("kind") == "figma_oauth_file_scoped_connect"
+    ):
+        steps.insert(1, "generate_deployment_owned_figma_oauth_app_contract")
+        steps.insert(2, "prepare_file_scoped_oauth_start_status_retry_disconnect")
+    elif method in {"oauth", "oauth_plus_gateway"}:
         steps.insert(1, "generate_oauth_callback_and_state_contract")
         if method == "oauth_plus_gateway":
             steps.insert(2, "generate_local_gateway_session_contract")
@@ -4310,6 +4668,16 @@ def _source_customer_action_required(
     if authorization_mode == "preauthorized-ref":
         return ["provide_preauthorized_customer_cloud_refs"]
     method = profile["method"]
+    native_connect = profile.get("native_connect")
+    if (
+        isinstance(native_connect, dict)
+        and native_connect.get("kind") == "figma_oauth_file_scoped_connect"
+    ):
+        return [
+            "configure_deployment_figma_oauth_app",
+            "store_deployment_figma_oauth_secret",
+            "approve_file_scoped_figma_oauth",
+        ]
     if method in {"oauth", "oauth_plus_gateway"}:
         return ["authorize_oauth_app_or_dwd_locally"]
     if method == "dwd":
@@ -4411,7 +4779,9 @@ def _role_template_payload(args: argparse.Namespace) -> dict[str, Any]:
         },
         "cloudformation_template": _cloudformation_setup_role_template(
             role_name=role.name,
-            actions=sorted({action for grant in role.grants for action in grant.actions}),
+            actions=sorted(
+                {action for grant in role.grants for action in grant.actions}
+            ),
             resources=sorted(
                 {resource for grant in role.grants for resource in grant.resource_refs}
             ),
@@ -4439,7 +4809,9 @@ def _discover_plan(
     )
     preflight_path = args.workdir / "reports" / "aws-live-preflight.json"
     preflight_path.parent.mkdir(parents=True, exist_ok=True)
-    preflight_path.write_text(render_aws_live_preflight_json(preflight), encoding="utf-8")
+    preflight_path.write_text(
+        render_aws_live_preflight_json(preflight), encoding="utf-8"
+    )
     registration = _load_optional_json(_registration_path(args.workdir))
     return {
         "schema_version": "fyralis.byoc.agent.discovery_plan.v1",
@@ -4686,7 +5058,9 @@ def _readiness_report(workdir: Path) -> dict[str, Any]:
     receipt = _load_optional_json(_latest_apply_receipt_path(workdir))
     provider_report = _load_optional_json(_provider_executor_report_path(workdir))
     checks = [
-        _validation_check("agent_registration", registration is not None, required=True),
+        _validation_check(
+            "agent_registration", registration is not None, required=True
+        ),
         _validation_check("discovery_plan", plan is not None, required=True),
         _validation_check(
             "approval_receipt",
@@ -4816,7 +5190,10 @@ def _cloudformation_setup_role_template(
                         }
                     ],
                     "Tags": [
-                        {"Key": "fyralis:deployment-id", "Value": {"Ref": "DeploymentId"}},
+                        {
+                            "Key": "fyralis:deployment-id",
+                            "Value": {"Ref": "DeploymentId"},
+                        },
                         {"Key": "fyralis:customer-id", "Value": {"Ref": "CustomerId"}},
                         {"Key": "fyralis:managed", "Value": "true"},
                     ],

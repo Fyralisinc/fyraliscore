@@ -152,11 +152,24 @@ BROWSER_AGENT_RECIPES: dict[str, BrowserAgentRecipe] = {
     ),
     "figma": _recipe(
         "figma",
-        "https://www.figma.com/developers/api",
-        ("developer token settings", "team settings", "webhook settings"),
-        ("team id", "file keys", "webhook-capable file scopes"),
-        ("webhook secret ref", "design file scope contract"),
-        TOKEN_GATES,
+        "https://www.figma.com/developers/apps",
+        (
+            "private OAuth app settings",
+            "OAuth redirect URL",
+            "read-only Figma document scopes",
+        ),
+        ("OAuth client ID", "registered redirect URL", "approved design file scope"),
+        (
+            "Figma OAuth client secret deployment ref",
+            "OAuth state HMAC key deployment ref",
+            "design file scope contract",
+        ),
+        (
+            "deployment admin signs in and completes MFA when prompted",
+            "deployment admin creates or updates the private Figma OAuth app",
+            "deployment admin stores the Client Secret only in the customer-cloud secret manager",
+            "each user later approves Figma consent for explicitly selected design files",
+        ),
     ),
     "fireflies": _recipe(
         "fireflies",

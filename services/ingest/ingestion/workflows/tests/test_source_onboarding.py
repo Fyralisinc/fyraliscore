@@ -133,6 +133,31 @@ async def _seed_gmail_install(pool: asyncpg.Pool, *, tenant_id: UUID) -> None:
     )
 
 
+async def _seed_figma_install(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    connection_state: str = "pending",
+    last_error: str | None = None,
+) -> UUID:
+    """Seed one active Figma installation for connection-state tests."""
+    install_id = uuid7()
+    await pool.execute(
+        """
+        INSERT INTO figma_installations
+            (id, tenant_id, base_url, team_id, connection_state, last_error)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        """,
+        install_id,
+        tenant_id,
+        f"https://api.figma.test/{install_id}",
+        f"team-{install_id.hex[:8]}",
+        connection_state,
+        last_error,
+    )
+    return install_id
+
+
 async def _seed_onboarding_run(
     pool: asyncpg.Pool, *, tenant_id: UUID, source: str = "slack",
 ) -> UUID:
@@ -836,6 +861,203 @@ async def test_source_onboarding_marks_run_failed_if_any_shard_failed(
         f"got {row['status']!r}."
     )
     assert "repo permission denied" in (row["failure_reason"] or "")
+
+
+# =====================================================================
+# 6b. Figma failure handoff — run + connection card stay in sync.
+# =====================================================================
+
+async def test_figma_failed_shard_degrades_matching_install_with_safe_error(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """A terminal Figma shard failure atomically degrades only its install.
+
+    The onboarding card's error is UI-visible, so it must not retain a bearer
+    token, token key/value, or email from an untrusted fetcher exception.
+    """
+    tenant_id = await _seed_tenant(fresh_db, "figma-failure")
+    install_id = await _seed_figma_install(
+        fresh_db, tenant_id=tenant_id, connection_state="pending",
+    )
+    run_id = await _seed_onboarding_run(
+        fresh_db, tenant_id=tenant_id, source="figma",
+    )
+    await _seed_source_run(
+        fresh_db, run_id=run_id, source="figma", tenant_id=tenant_id,
+        status="in_progress",
+    )
+    shard_id = await _seed_shard(
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tenant_id,
+        source="figma",
+        state="in_progress",
+        shard_kind="figma_file_snapshot",
+        identifier={
+            "installation_id": str(install_id),
+            "file_key": "figma-file-1",
+        },
+    )
+    await _emit_shard_completed(
+        fresh_db,
+        shard_id=shard_id,
+        status="failed",
+        failure_reason=(
+            "Figma GET failed: Bearer secret-access-token "
+            "access_token=another-secret owner=designer@example.com\nretry later"
+        ),
+    )
+
+    await _service(fresh_db).run(max_ticks=1)
+
+    run = await fresh_db.fetchrow(
+        "SELECT status FROM source_onboarding_runs "
+        "WHERE onboarding_run_id = $1 AND source = 'figma'",
+        run_id,
+    )
+    install = await fresh_db.fetchrow(
+        "SELECT connection_state, last_error FROM figma_installations WHERE id = $1",
+        install_id,
+    )
+    assert run["status"] == "failed"
+    assert install["connection_state"] == "degraded"
+    error = install["last_error"] or ""
+    assert "secret-access-token" not in error
+    assert "another-secret" not in error
+    assert "designer@example.com" not in error
+    assert "Bearer [redacted]" in error
+    assert "access_token=[redacted]" in error
+    assert "[redacted-email]" in error
+    assert "\n" not in error
+
+
+async def test_figma_planner_failure_degrades_triggered_install(
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run-level (pre-shard) Figma failure uses the trigger's exact install."""
+    async def _exploding_figma_planner(ctx: PlannerContext) -> list[Shard]:
+        raise RuntimeError("Figma provider unavailable")
+
+    monkeypatch.setitem(PLANNER_DISPATCH, "figma", _exploding_figma_planner)
+    tenant_id = await _seed_tenant(fresh_db, "figma-planner")
+    install_id = await _seed_figma_install(
+        fresh_db, tenant_id=tenant_id, connection_state="pending",
+    )
+    run_id = await _seed_onboarding_run(
+        fresh_db, tenant_id=tenant_id, source="figma",
+    )
+    await _seed_source_run(
+        fresh_db, run_id=run_id, source="figma", tenant_id=tenant_id,
+    )
+    await _emit_source_requested(
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tenant_id,
+        source="figma",
+        installation_row_id=install_id,
+    )
+
+    await _service(fresh_db).run(max_ticks=1)
+
+    row = await fresh_db.fetchrow(
+        """
+        SELECT sr.status, fi.connection_state, fi.last_error
+          FROM source_onboarding_runs sr
+          JOIN figma_installations fi ON fi.id = $2
+         WHERE sr.onboarding_run_id = $1 AND sr.source = 'figma'
+        """,
+        run_id,
+        install_id,
+    )
+    assert row["status"] == "failed"
+    assert row["connection_state"] == "degraded"
+    assert "Figma provider unavailable" in (row["last_error"] or "")
+
+
+@pytest.mark.parametrize("connection_state", ["reauthorization_required", "disconnected"])
+async def test_figma_failure_preserves_stronger_connection_state(
+    fresh_db: asyncpg.Pool,
+    connection_state: str,
+) -> None:
+    """A generic shard failure never obscures reconnect/disconnect intent."""
+    tenant_id = await _seed_tenant(fresh_db, f"figma-{connection_state}")
+    original_error = "Keep this operator state"
+    install_id = await _seed_figma_install(
+        fresh_db,
+        tenant_id=tenant_id,
+        connection_state=connection_state,
+        last_error=original_error,
+    )
+    run_id = await _seed_onboarding_run(
+        fresh_db, tenant_id=tenant_id, source="figma",
+    )
+    await _seed_source_run(
+        fresh_db, run_id=run_id, source="figma", tenant_id=tenant_id,
+        status="in_progress",
+    )
+    shard_id = await _seed_shard(
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tenant_id,
+        source="figma",
+        state="in_progress",
+        shard_kind="figma_file_events",
+        identifier={"installation_id": str(install_id), "file_key": "figma-file-2"},
+    )
+    await _emit_shard_completed(
+        fresh_db, shard_id=shard_id, status="failed", failure_reason="transient failure",
+    )
+
+    await _service(fresh_db).run(max_ticks=1)
+
+    install = await fresh_db.fetchrow(
+        "SELECT connection_state, last_error FROM figma_installations WHERE id = $1",
+        install_id,
+    )
+    assert install["connection_state"] == connection_state
+    assert install["last_error"] == original_error
+
+
+async def test_figma_failure_cannot_update_another_tenants_install(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """The shard's installation id is additionally constrained by run tenant."""
+    tenant_id = await _seed_tenant(fresh_db, "figma-owner")
+    other_tenant_id = await _seed_tenant(fresh_db, "figma-other")
+    other_install_id = await _seed_figma_install(
+        fresh_db,
+        tenant_id=other_tenant_id,
+        connection_state="connected",
+    )
+    run_id = await _seed_onboarding_run(
+        fresh_db, tenant_id=tenant_id, source="figma",
+    )
+    await _seed_source_run(
+        fresh_db, run_id=run_id, source="figma", tenant_id=tenant_id,
+        status="in_progress",
+    )
+    shard_id = await _seed_shard(
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tenant_id,
+        source="figma",
+        state="in_progress",
+        shard_kind="figma_file_snapshot",
+        identifier={"installation_id": str(other_install_id), "file_key": "figma-file-3"},
+    )
+    await _emit_shard_completed(
+        fresh_db, shard_id=shard_id, status="failed", failure_reason="bad shard id",
+    )
+
+    await _service(fresh_db).run(max_ticks=1)
+
+    other_install = await fresh_db.fetchrow(
+        "SELECT connection_state, last_error FROM figma_installations WHERE id = $1",
+        other_install_id,
+    )
+    assert other_install["connection_state"] == "connected"
+    assert other_install["last_error"] is None
 
 
 # =====================================================================

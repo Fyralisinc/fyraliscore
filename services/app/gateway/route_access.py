@@ -132,6 +132,10 @@ GATEWAY_BEARER_BYPASS_PATH_POLICIES: dict[str, RouteAccessPolicy] = {
     "/integrations/notion/callback": _OAUTH_CALLBACK,
     "/integrations/notion/installed": _OAUTH_CALLBACK,
     "/integrations/notion/install-error": _OAUTH_CALLBACK,
+    # Figma returns the browser here with a signed, single-use OAuth state.
+    # Keep the normal start/status/retry routes bearer-protected; only this
+    # provider callback may bypass actor-session authentication.
+    "/integrations/figma/oauth/callback": _OAUTH_CALLBACK,
     "/integrations/whatsapp/webhook": _PROVIDER_SIGNED,
     "/integrations/facebook_pages/callback": _OAUTH_CALLBACK,
     "/integrations/facebook_pages/installed": _OAUTH_CALLBACK,

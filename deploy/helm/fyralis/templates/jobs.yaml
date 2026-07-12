@@ -91,6 +91,7 @@ spec:
             - |
               until mc alias set local http://{{ include "fyralis.minioName" . }}:9000 {{ .Values.minio.rootUser }} "$MINIO_ROOT_PASSWORD"; do sleep 2; done
               mc mb --ignore-existing local/{{ .Values.minio.bucket }}
+              mc mb --ignore-existing local/{{ .Values.minio.blobBucket }}
           env:
             - name: MINIO_ROOT_PASSWORD
               valueFrom:

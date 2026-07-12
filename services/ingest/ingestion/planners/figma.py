@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 
 
 SHARD_KIND_FILE_EVENTS = "figma_file_events"
+SHARD_KIND_FILE_SNAPSHOT = "figma_file_snapshot"
 
 
 def _decode_files(install: Any) -> list[dict[str, Any]]:
@@ -53,7 +54,7 @@ def _decode_files(install: Any) -> list[dict[str, Any]]:
 
 
 async def plan_shards_figma(ctx: PlannerContext) -> list[Shard]:
-    """One `figma_file_events` shard per active file.
+    """One event shard and one durable-document snapshot shard per file.
 
     Reads DB state only (files pre-aggregated by the loader), so
     `ctx.source_client` is None — same as Jira/Calendar/Gmail/Brex.
@@ -82,6 +83,25 @@ async def plan_shards_figma(ctx: PlannerContext) -> list[Shard]:
             recency_score=1.0,
             window_start=None, window_end=None,
         ))
+        # A file with zero comments/versions is still valuable company
+        # intelligence.  The snapshot shard therefore runs independently of
+        # the event stream and emits a design observation on first sync.
+        shards.append(Shard(
+            shard_kind=SHARD_KIND_FILE_SNAPSHOT,
+            shard_identifier={
+                "shard_kind": SHARD_KIND_FILE_SNAPSHOT,
+                "file_key": file_key,
+                "file_name": f.get("file_name"),
+                "project_name": f.get("project_name"),
+                "team_id": team_id,
+                "installation_id": install_id,
+                # Populated by the artifact slice migration + loader.  Older
+                # installations omit it and safely take a full snapshot.
+                "snapshot_version": f.get("snapshot_version"),
+            },
+            recency_score=1.0,
+            window_start=None, window_end=None,
+        ))
 
     log.info(
         "planners.figma.planned",
@@ -93,4 +113,8 @@ async def plan_shards_figma(ctx: PlannerContext) -> list[Shard]:
 PLANNER_DISPATCH["figma"] = plan_shards_figma
 
 
-__all__ = ["SHARD_KIND_FILE_EVENTS", "plan_shards_figma"]
+__all__ = [
+    "SHARD_KIND_FILE_EVENTS",
+    "SHARD_KIND_FILE_SNAPSHOT",
+    "plan_shards_figma",
+]

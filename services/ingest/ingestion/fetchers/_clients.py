@@ -697,10 +697,13 @@ async def build_miro_client(
 async def build_figma_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
-    """Figma read-client (IN-VERTICALS, PAT/Bearer REST API). API token is
-    long-lived: resolved once from the secret store via `install['secret_ref']`
-    (or preset in spammer mode). The base URL routes through the endpoint
-    resolver so backfill can point at the local spammer's `/figma` sub-path."""
+    """Figma read-client (IN-VERTICALS, PAT or OAuth Bearer REST API).
+
+    ``auth_kind`` is persisted on the install so OAuth grants use the required
+    ``Authorization: Bearer`` header while legacy PAT installs retain
+    ``X-Figma-Token``.  The base URL routes through the endpoint resolver so
+    backfill can point at the local spammer's `/figma` sub-path.
+    """
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.figma.client import FigmaClient
 
@@ -708,6 +711,13 @@ async def build_figma_client(
     base_url = str(install["base_url"]) if "base_url" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     team_id = str(install["team_id"]) if "team_id" in install else ""
+    auth_kind = str(install["auth_kind"]) if "auth_kind" in install else "pat"
+    refresh_secret_ref = (
+        install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
+    )
+    token_expires_at = (
+        install["token_expires_at"] if "token_expires_at" in install else None
+    )
     client = FigmaClient(
         base_url=base_url,
         pool=await _effective_pool(pool, spammer=spammer),
@@ -718,6 +728,10 @@ async def build_figma_client(
         http_client=await _get_http(),
         api_base_url=(endpoint("figma_api") if spammer else None),
         team_id=team_id,
+        auth_kind=auth_kind,
+        install_row_id=install["id"] if "id" in install else None,
+        refresh_secret_ref=refresh_secret_ref,
+        token_expires_at=token_expires_at,
     )
     return await _wrap_source_client("figma", client)
 

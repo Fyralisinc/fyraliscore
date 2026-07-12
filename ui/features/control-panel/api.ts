@@ -8,8 +8,27 @@ export type ControlPanelClientConfig = {
   bearerToken: string;
 };
 
+/** Safe, deployment-admin-only Figma OAuth setup metadata. */
+export type FigmaDeploymentOAuthReadiness = {
+  runtime_ready: boolean;
+  source_enabled: boolean;
+  checks: Record<string, boolean>;
+  redirect_uri: string | null;
+  ui_return_origin: string | null;
+  required_scopes: string[];
+  configured_scopes: string[];
+  provider_console_url: string;
+  recommended_app_mode: "private" | string;
+  provider_app_registration_unverified: boolean;
+  setup_checklist: string[];
+};
+
 export function defaultControlPanelApiBase() {
-  return process.env.NEXT_PUBLIC_FYRALIS_API_BASE ?? "";
+  return (
+    process.env.NEXT_PUBLIC_FYRALIS_API_BASE?.trim() ||
+    process.env.NEXT_PUBLIC_FYRALIS_PROVIDER_INGRESS_URL?.trim() ||
+    ""
+  );
 }
 
 export async function fetchControlPanelDeployments(
@@ -59,6 +78,40 @@ export async function fetchControlPanelState(
   return state;
 }
 
+/**
+ * Reads the Figma app configuration contract from the gateway. The route is
+ * tenant-admin gated, and this client intentionally maps only its safe
+ * metadata fields—never arbitrary response fields or secret values.
+ */
+export async function fetchFigmaDeploymentOAuthReadiness(
+  config: ControlPanelClientConfig,
+): Promise<FigmaDeploymentOAuthReadiness> {
+  const readiness = await getJson<FigmaDeploymentOAuthReadiness>(
+    config,
+    "/api/admin/integrations/figma/oauth/readiness",
+  );
+  return {
+    runtime_ready: readiness.runtime_ready === true,
+    source_enabled: readiness.source_enabled === true,
+    checks: Object.fromEntries(
+      Object.entries(readiness.checks ?? {}).map(([key, value]) => [
+        key,
+        value === true,
+      ]),
+    ),
+    redirect_uri: safeString(readiness.redirect_uri),
+    ui_return_origin: safeString(readiness.ui_return_origin),
+    required_scopes: stringArray(readiness.required_scopes),
+    configured_scopes: stringArray(readiness.configured_scopes),
+    provider_console_url: safeString(readiness.provider_console_url) ?? "",
+    recommended_app_mode:
+      safeString(readiness.recommended_app_mode) ?? "private",
+    provider_app_registration_unverified:
+      readiness.provider_app_registration_unverified === true,
+    setup_checklist: stringArray(readiness.setup_checklist),
+  };
+}
+
 async function getJson<T>(
   config: ControlPanelClientConfig,
   path: string
@@ -86,6 +139,16 @@ function withQuery(query: URLSearchParams): string {
 
 function trimTrailingSlash(value: string): string {
   return value.trim().replace(/\/+$/, "");
+}
+
+function safeString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+    : [];
 }
 
 function assertScope(observed: string, expected: string): void {

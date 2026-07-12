@@ -129,6 +129,14 @@ def mount_gateway_routes(
     app.include_router(build_integrations_router())
     _mount_native_connect_routers(app, emit_mount_logs=emit_mount_logs)
 
+    # Figma's ordinary OAuth router is mounted with the native source routers.
+    # Its deployment-owned app readiness checklist is intentionally a separate
+    # admin-only surface under `/api/admin` so end users never receive callback
+    # or configuration details.
+    from services.ingest.integrations.figma.oauth import admin_router as figma_admin_router
+
+    app.include_router(figma_admin_router)
+
     if settings.finance_panel_enabled:
         try:
             from services.app.gateway.finance_router import build_finance_router

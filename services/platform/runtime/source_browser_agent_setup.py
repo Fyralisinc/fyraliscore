@@ -32,7 +32,6 @@ API_TOKEN_SOURCES = {
     "ashby",
     "brex",
     "deel",
-    "figma",
     "fireflies",
     "grafana",
     "hibob",
@@ -44,6 +43,18 @@ OAUTH_SOURCES = {"carta", "facebook_pages", "gusto", "linkedin", "quickbooks"}
 LOCAL_SESSION_SOURCES = {"signal", "telegram"}
 AWS_SOURCE_APPROVAL_URL = (
     "https://console.aws.amazon.com/cloudformation/home#/stacks/create/template"
+)
+FIGMA_DEVELOPER_APPS_URL = "https://www.figma.com/developers/apps"
+FIGMA_OAUTH_CALLBACK_PATH = "/integrations/figma/oauth/callback"
+# Keep this in lockstep with integrations/figma/oauth.py.  These are the only
+# Figma APIs used by the snapshot pipeline today, so the browser-agent setup
+# must not widen the deployment-owned app's consent surface.
+FIGMA_OAUTH_SCOPES = (
+    "current_user:read",
+    "file_metadata:read",
+    "file_content:read",
+    "file_comments:read",
+    "file_versions:read",
 )
 
 GOOGLE_DWD_SCOPES = {
@@ -143,6 +154,13 @@ def build_source_provider_setup_bundle(
             recipe=recipe,
             provider_console_url=provider_console_url,
             events_request_url=events_request_url,
+            native_connect=native_connect,
+        )
+    if normalized == "figma":
+        return _figma_oauth_setup_bundle(
+            recipe=recipe,
+            provider_console_url=provider_console_url,
+            oauth_redirect_url=oauth_redirect_url,
             native_connect=native_connect,
         )
     if normalized in API_TOKEN_SOURCES:
@@ -923,6 +941,66 @@ def _whatsapp_setup_bundle(
     )
 
 
+def _figma_oauth_setup_bundle(
+    *,
+    recipe: dict[str, Any],
+    provider_console_url: str | None,
+    oauth_redirect_url: str | None,
+    native_connect: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build the one-time, deployment-admin Figma OAuth app contract.
+
+    Figma users never create a personal access token in Fyralis.  One customer
+    BYOC deployment owns one private Figma OAuth app, then individual users
+    connect only the design files they explicitly select through the native
+    OAuth start endpoint.
+    """
+    redirect = oauth_redirect_url or (
+        f"https://fyralis-ingress.customer.example{FIGMA_OAUTH_CALLBACK_PATH}"
+    )
+    setup = {
+        "deployment_model": "customer_owned_byoc_oauth_app",
+        "setup_owner": "deployment_admin",
+        "provider_console_url": provider_console_url or FIGMA_DEVELOPER_APPS_URL,
+        "app": {
+            "mode": "private",
+            "ownership": "this customer BYOC deployment",
+            "redirect_uri": redirect,
+            "required_scopes": list(FIGMA_OAUTH_SCOPES),
+        },
+        "secret_handling": {
+            "client_id": "deployment configuration only; non-secret",
+            "client_secret": (
+                "store only in the deployment secret manager; never in the "
+                "browser-agent artifact or onboarding UI"
+            ),
+            "oauth_state_hmac_key": "deployment secret-manager key",
+        },
+        "end_user_connection": {
+            "scope": "one or more explicitly selected Figma file URLs",
+            "start_path": (native_connect or {}).get("start_path"),
+            "status_path": (native_connect or {}).get("status_path"),
+            "retry_path": (native_connect or {}).get("retry_path"),
+            "disconnect_path": (native_connect or {}).get("disconnect_path"),
+        },
+        "native_connect": native_connect,
+    }
+    return _provider_bundle(
+        source="figma",
+        kind="figma_deployment_oauth_app_setup",
+        recipe=recipe,
+        provider_console_url=provider_console_url or FIGMA_DEVELOPER_APPS_URL,
+        oauth_redirect_url=redirect,
+        setup_payload=setup,
+        primary_filename="fyralis-figma-oauth-app-setup.json",
+        primary_artifact_name="figma_deployment_oauth_app_setup",
+        primary_payload=setup,
+        action_label=(
+            "Generate the private, deployment-owned Figma OAuth app setup contract."
+        ),
+    )
+
+
 def _api_token_setup_bundle(
     *,
     source: str,
@@ -1283,6 +1361,8 @@ def _browser_dom_steps(
         steps.extend(_oauth_app_dom_steps("discord", primary_artifacts, oauth_redirect_url, events_request_url))
     elif kind == "notion_integration_setup":
         steps.extend(_oauth_app_dom_steps("notion", primary_artifacts, oauth_redirect_url, events_request_url))
+    elif kind == "figma_deployment_oauth_app_setup":
+        steps.extend(_figma_oauth_app_dom_steps(primary_artifacts, oauth_redirect_url))
     elif kind == "local_gateway_session_setup":
         steps.extend(_local_session_dom_steps(source, primary_artifacts))
     elif kind == "api_token_provider_setup":
@@ -1632,6 +1712,66 @@ def _oauth_app_dom_steps(
             )
         )
     return steps
+
+
+def _figma_oauth_app_dom_steps(
+    primary_artifacts: list[str],
+    oauth_redirect_url: str | None,
+) -> list[dict[str, Any]]:
+    """Pause at Figma's owner-only app-registration controls.
+
+    Figma does not provide an app-management API for registering redirect URLs.
+    The browser agent may prepare the exact values, but the accountable
+    deployment administrator creates/saves the private app and stores its
+    Client Secret in the customer deployment.
+    """
+    return [
+        _dom_step(
+            "create_private_figma_oauth_app",
+            "human_pause",
+            artifacts=primary_artifacts,
+            text_targets=_text_targets(
+                "Create new app",
+                "OAuth",
+                "Private",
+                "Client Secret",
+            ),
+            human_reason=(
+                "A Figma app owner must create or update the private OAuth app "
+                "for this customer BYOC deployment."
+            ),
+        ),
+        _dom_step(
+            "configure_figma_oauth_redirect",
+            "set_url",
+            value=oauth_redirect_url,
+            artifacts=primary_artifacts,
+            selectors=_selectors("input[type=url]", "textarea", "button"),
+            text_targets=_text_targets(
+                "Redirect URL",
+                "OAuth credentials",
+                "Add a redirect URL",
+                "Save",
+            ),
+        ),
+        _dom_step(
+            "confirm_figma_least_privilege_scopes",
+            "human_pause",
+            artifacts=primary_artifacts,
+            text_targets=_text_targets(
+                "Scopes",
+                "File content",
+                "Comments",
+                "Versions",
+                "Save",
+            ),
+            human_reason=(
+                "The deployment administrator must confirm the generated read-only "
+                "Figma scope set and store the Client Secret only in the deployment "
+                "secret manager."
+            ),
+        ),
+    ]
 
 
 def _local_session_dom_steps(source: str, primary_artifacts: list[str]) -> list[dict[str, Any]]:

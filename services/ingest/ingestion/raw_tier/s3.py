@@ -187,7 +187,15 @@ class S3Client:
     async def __aexit__(self, *exc: Any) -> None:
         await self.close()
 
-    async def put_if_absent(self, key: str, body: bytes) -> None:
+    async def put_if_absent(
+        self,
+        key: str,
+        body: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+        metadata: dict[str, str] | None = None,
+        tagging: str | None = None,
+    ) -> None:
         """Write `body` at `key` only if the key is currently absent.
 
         Treats both 200 (created) and 412 PreconditionFailed
@@ -206,9 +214,16 @@ class S3Client:
                 Key=key,
                 Body=body,
                 IfNoneMatch="*",
-                ContentType="application/octet-stream",
-                Metadata=raw_object_metadata(content_hash=compute_content_hash(body)),
-                Tagging=raw_object_tagging(),
+                ContentType=content_type,
+                # Raw-tier callers keep the existing retention/data-class
+                # metadata. Durable-artifact callers can supply their own
+                # metadata without duplicating this S3 primitive.
+                Metadata=(
+                    metadata
+                    if metadata is not None
+                    else raw_object_metadata(content_hash=compute_content_hash(body))
+                ),
+                Tagging=tagging if tagging is not None else raw_object_tagging(),
             )
         except ClientError as e:
             # 412 PreconditionFailed → key already exists → idempotent

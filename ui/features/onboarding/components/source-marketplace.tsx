@@ -110,13 +110,14 @@ export function SourceMarketplace({
             const automation = automationStates[source.id];
             const effectiveStatus = automation?.status ?? status;
             const selected = selectedSourceId === source.id;
-            const waiting =
-              automation?.status === "waiting_admin" ||
-              status === "waiting-admin";
+            const waiting = automation
+              ? automation.status === "waiting_admin"
+              : status === "waiting-admin";
             const blocked = automation?.status === "blocked";
             const connecting = automation?.status === "connecting";
-            const connected =
-              automation?.status === "connected" || status === "connected";
+            const connected = automation
+              ? automation.status === "connected"
+              : status === "connected";
             const canAddDiscordServer = source.id === "discord" && connected;
             const approvalActionUrl =
               waiting || blocked ? automation?.actionUrl : null;
@@ -1006,12 +1007,18 @@ function sourceApprovalInstruction(source: Source) {
   if (source.id === "aws") {
     return "Next: sign in to AWS, review the generated read-only CloudFormation role stack, approve IAM creation, then return here.";
   }
+  if (source.id === "figma") {
+    return "Next: a deployment administrator completes the one-time private Figma app setup in Control Panel.";
+  }
   return "Next: approve the provider prompt or create the requested least-privilege credential, then return here.";
 }
 
 function sourceApprovalActionLabel(source: Source) {
   if (source.id === "aws") {
     return "Open AWS approval";
+  }
+  if (source.id === "github") {
+    return "Open GitHub approval";
   }
   if (source.id === "discord") {
     return "Open Discord";
@@ -1041,6 +1048,9 @@ function sourceActionLabel({
   actionLabel?: string;
 }) {
   if (blocked && canOpenApproval && actionLabel) {
+    return `${actionLabel} for ${sourceName}`;
+  }
+  if (sourceId === "figma" && canOpenApproval && actionLabel) {
     return `${actionLabel} for ${sourceName}`;
   }
   if (waiting || blocked) {

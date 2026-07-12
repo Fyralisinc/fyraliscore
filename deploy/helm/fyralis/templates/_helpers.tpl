@@ -63,6 +63,51 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-minio" (include "fyralis.fullname" .) -}}
 {{- end -}}
 
+{{/*
+Validate the configuration surface for the customer-owned Figma OAuth app.
+
+`app.extraEnv` is rendered into a ConfigMap, so keeping all OAuth material
+there would make plaintext credentials visible to any ConfigMap reader. The
+public settings below are safe in the ConfigMap. Managed-secret references are
+loaded from `app.figmaOAuth.existingSecret` only by the gateway and the
+workers that exchange or refresh Figma grants.
+*/}}
+{{- define "fyralis.validateFigmaOAuth" -}}
+{{- $extraEnv := default (dict) .Values.app.extraEnv -}}
+{{- $reservedKeys := list "FIGMA_OAUTH_ENABLED" "FIGMA_CLIENT_ID" "FIGMA_CLIENT_SECRET" "FIGMA_CLIENT_SECRET_SECRET_REF" "FIGMA_REDIRECT_URI" "FIGMA_OAUTH_UI_BASE_URL" "FIGMA_OAUTH_ALLOW_HTTP_LOOPBACK" "FIGMA_OAUTH_SCOPES" "OAUTH_STATE_HMAC_KEY" "OAUTH_STATE_HMAC_KEY_SECRET_REF" -}}
+{{- range $key := $reservedKeys -}}
+{{- if hasKey $extraEnv $key -}}
+{{- fail (printf "app.extraEnv.%s is reserved for the safe Figma OAuth configuration; use app.figmaOAuth public settings and app.figmaOAuth.existingSecret" $key) -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.app.figmaOAuth.enabled -}}
+{{- if not .Values.app.figmaOAuth.clientId -}}
+{{- fail "app.figmaOAuth.clientId is required when app.figmaOAuth.enabled=true" -}}
+{{- end -}}
+{{- if not .Values.app.figmaOAuth.redirectUri -}}
+{{- fail "app.figmaOAuth.redirectUri is required when app.figmaOAuth.enabled=true" -}}
+{{- end -}}
+{{- if not .Values.app.figmaOAuth.uiBaseUrl -}}
+{{- fail "app.figmaOAuth.uiBaseUrl is required when app.figmaOAuth.enabled=true" -}}
+{{- end -}}
+{{- if not .Values.app.figmaOAuth.scopes -}}
+{{- fail "app.figmaOAuth.scopes is required when app.figmaOAuth.enabled=true" -}}
+{{- end -}}
+{{- if not .Values.app.figmaOAuth.existingSecret -}}
+{{- fail "app.figmaOAuth.existingSecret is required when app.figmaOAuth.enabled=true; it must contain managed secret references, not plaintext OAuth secrets" -}}
+{{- end -}}
+{{- end -}}
+{{- if not .Values.minio.bucket -}}
+{{- fail "minio.bucket is required" -}}
+{{- end -}}
+{{- if not .Values.minio.blobBucket -}}
+{{- fail "minio.blobBucket is required" -}}
+{{- end -}}
+{{- if eq .Values.minio.bucket .Values.minio.blobBucket -}}
+{{- fail "minio.bucket and minio.blobBucket must be distinct" -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "fyralis.redisName" -}}
 {{- printf "%s-redis" (include "fyralis.fullname" .) -}}
 {{- end -}}

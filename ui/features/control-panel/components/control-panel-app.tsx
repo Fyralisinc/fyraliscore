@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   UsersRound
 } from "lucide-react";
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,6 +35,7 @@ import {
   fetchControlPanelDeployments,
   fetchControlPanelState
 } from "../api";
+import { FigmaDeploymentOAuthReadinessCard } from "./figma-deployment-oauth-readiness-card";
 import {
   SAMPLE_CONTROL_PANEL_STATE,
   SAMPLE_DEPLOYMENT_OPTIONS,
@@ -63,6 +64,10 @@ const ACTION_LABELS: Record<ControlPanelAction["code"], string> = {
 
 export function ControlPanelApp() {
   const [apiBase, setApiBase] = useState(defaultControlPanelApiBase());
+  // This is the same local-only bridge used by the Figma onboarding card. It
+  // is loaded only after hydration so it never appears in server-rendered
+  // markup. It stays in React memory and is deliberately unavailable in
+  // production; a production host must supply its own gateway session.
   const [bearerToken, setBearerToken] = useState("");
   const [customerFilter, setCustomerFilter] = useState("cus_acme_finance");
   const [recentLimit, setRecentLimit] = useState(10);
@@ -80,6 +85,14 @@ export function ControlPanelApp() {
   const [mode, setMode] = useState<"sample" | "live">("sample");
   const [loading, setLoading] = useState<"deployments" | "state" | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production") {
+      setBearerToken(
+        process.env.NEXT_PUBLIC_FYRALIS_GATEWAY_TOKEN?.trim() ?? "",
+      );
+    }
+  }, []);
 
   const generatedAt = useMemo(
     () => formatDateTime(state.generated_at),
@@ -214,6 +227,11 @@ export function ControlPanelApp() {
           </div>
         </CardContent>
       </Card>
+
+      <FigmaDeploymentOAuthReadinessCard
+        apiBase={apiBase}
+        bearerToken={bearerToken}
+      />
 
       {error ? (
         <div className="flex items-start gap-3 rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">

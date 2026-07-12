@@ -146,6 +146,7 @@ def build_source_browser_agent_run(
     }
     if native_connect:
         run["native_connect"] = dict(native_connect)
+    if _native_connect_uses_preflight_finalize(native_connect):
         run["action_queue"].insert(
             1 if run["action_queue"] else 0,
             {
@@ -171,6 +172,24 @@ def build_source_browser_agent_run(
             1 for action in run["action_queue"] if action["owner"] == "provider_admin"
         )
     return run
+
+
+def _native_connect_uses_preflight_finalize(
+    native_connect: dict[str, Any] | None,
+) -> bool:
+    """Whether a contract is callable by the generic native runner.
+
+    Most older source contracts have a POST preflight/finalize pair.  Figma's
+    deployment-owned, file-scoped OAuth contract is different: its browser
+    starts OAuth through `/oauth/start`, then Figma's callback finalizes it.
+    Do not manufacture PAT-style runner actions for that flow.
+    """
+    if not isinstance(native_connect, dict):
+        return False
+    return bool(
+        str(native_connect.get("preflight_path") or "").strip()
+        and str(native_connect.get("finalize_path") or "").strip()
+    )
 
 
 def _sanitized_deployment_context(
