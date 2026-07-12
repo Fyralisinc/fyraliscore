@@ -336,6 +336,8 @@ def test_auto_connect_materializes_sanitized_background_artifact(
     assert payload["browser_agent_run"]["source"] == "ramp"
     assert payload["auto_connect_run"]["background_status"] == "queued"
     assert payload["auto_connect_run"]["run_artifact_path_hint"] == str(artifact_path)
+    assert record["status"] == descriptor["status"]
+    assert record["handoff_url"] == descriptor["handoff_url"]
     assert record["background_status"] == "queued"
     assert record["background_runner_mode"] == "artifact_materialization"
     assert str(tmp_path) in record["run_artifact_path_hint"]
@@ -459,6 +461,8 @@ async def test_auto_connect_background_runner_writes_receipt(
     )
     assert receipt["source"] == "slack"
     assert receipt["status"] in {"running", "waiting_for_admin"}
+    assert store["slack"]["status"] == descriptor["status"]
+    assert store["slack"]["handoff_url"] == descriptor["handoff_url"]
     assert store["slack"]["background_status"] == receipt["status"]
     assert receipt["raw_secret_values_included"] is False
     assert receipt["generated_artifacts"]
@@ -1391,6 +1395,9 @@ async def test_generic_source_prepare_returns_actionable_inputs(
     monkeypatch.setenv("FYRALIS_SOURCE_REHEARSAL_ENABLED", "1")
     monkeypatch.setenv("COMPANY_OS_TENANT_ID", str(tenant_id))
     monkeypatch.setenv("COMPANY_OS_CEO_ACTOR_ID", str(actor_id))
+    monkeypatch.setenv(
+        "SANDBOX_PUBLIC_URL", "https://fyralis-ingress.acme.example"
+    )
 
     app = _gateway_app(gateway_pool, _RecordingSecretStore())
     transport = httpx.ASGITransport(app=app)
@@ -1402,6 +1409,8 @@ async def test_generic_source_prepare_returns_actionable_inputs(
     assert response.status_code == 200
     payload = response.json()
     assert payload["source"] == "hibob"
+    assert payload["gateway_api_base"] == "https://fyralis-ingress.acme.example"
+    assert payload["provider_ingress_url"] == "https://fyralis-ingress.acme.example"
     assert payload["authorization_mode"] == "customer_local_provider_refs"
     assert payload["required_inputs"] == ["service_user_id", "service_user_token"]
     assert "company_id" in payload["optional_inputs"]

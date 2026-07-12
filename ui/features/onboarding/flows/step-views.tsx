@@ -14,7 +14,7 @@ import {
   ShieldCheck,
   TerminalSquare,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useForm, type UseFormRegisterReturn } from "react-hook-form";
 
 import { Badge } from "@/components/ui/badge";
@@ -1606,7 +1606,13 @@ type SourceConnectRun = SourceAutomationCardState & {
 function sourceBackgroundRunView(
   run: SourceRehearsalStatus["autoConnectRun"] | null | undefined,
 ): Pick<SourceConnectRun, "status" | "label" | "message" | "actionUrl"> | null {
-  const runStatus = run?.backgroundStatus ?? run?.status;
+  // A browser agent can remain queued/running while it waits for a provider
+  // admin. The durable run status is authoritative for that human gate; do
+  // not let the background progress label hide the approval action.
+  const runStatus =
+    run?.status === "waiting_for_admin" || run?.status === "admin_gate"
+      ? run.status
+      : run?.backgroundStatus ?? run?.status;
   if (!runStatus) {
     return null;
   }
@@ -1693,6 +1699,7 @@ function SourceCatalogStep(props: StepViewProps) {
   const [automationStates, setAutomationStates] = useState<
     Record<string, SourceConnectRun>
   >({});
+  const validatedConnectedSources = useRef(new Set<string>());
 
   function patchAutomationState(
     sourceId: string,
@@ -1713,6 +1720,17 @@ function SourceCatalogStep(props: StepViewProps) {
     });
   }
 
+  function clearAutomationState(sourceId: string) {
+    setAutomationStates((current) => {
+      if (!(sourceId in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[sourceId];
+      return next;
+    });
+  }
+
   function applyCatalogSourceStatus({
     source,
     status,
@@ -1730,6 +1748,7 @@ function SourceCatalogStep(props: StepViewProps) {
       landSourceObservations(status.sourceId, status.observations);
     }
     if (status.installed) {
+      validatedConnectedSources.current.add(source.id);
       const failedShardCount = status.shardStateCounts.failed?.count ?? 0;
       const activeRunCount =
         (status.runStatusCounts.pending ?? 0) +
@@ -1784,6 +1803,21 @@ function SourceCatalogStep(props: StepViewProps) {
         accessResources: status.accessResources,
         accessNextActions: status.accessNextActions,
       });
+      return;
+    }
+    const persistedConnection = connections.find(
+      (connection) => connection.sourceId === source.id,
+    );
+    if (
+      persistedConnection?.status === "connected" &&
+      !status.autoConnectRun
+    ) {
+      validatedConnectedSources.current.delete(source.id);
+      updateConnection(source.id, {
+        status: "not-configured",
+        receiptId: undefined,
+      });
+      clearAutomationState(source.id);
       return;
     }
     const backgroundView = sourceBackgroundRunView(status.autoConnectRun);
@@ -2088,14 +2122,13 @@ function SourceCatalogStep(props: StepViewProps) {
         });
       }
       if (
-        connection.sourceId === "discord" &&
-        connection.status === "connected"
+        connection.status === "connected" &&
+        !validatedConnectedSources.current.has(connection.sourceId)
       ) {
         activeRunMap.set(connection.sourceId, {
-          ...(automationStates[connection.sourceId] ?? {
-            status: "connected" as const,
-            label: "Connected",
-          }),
+          status: "connecting",
+          label: "Checking connection",
+          message: "Fyralis is confirming the persisted connection.",
           apiBase:
             automationStates[connection.sourceId]?.apiBase ??
             workspace.providerIngressUrl,
@@ -2212,6 +2245,9 @@ function sourceWaitingAdminCard(prepared: SourceAutoConnectResponse) {
 function sourceApprovalActionLabel(source: Source) {
   if (source.id === "aws") {
     return "Open AWS approval";
+  }
+  if (source.id === "github") {
+    return "Open GitHub approval";
   }
   if (source.id === "discord") {
     return "Open Discord";

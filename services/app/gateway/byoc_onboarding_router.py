@@ -1634,7 +1634,11 @@ async def _prepare_source_rehearsal_response(
         "source": source,
         "tenant_id": str(tenant_id),
         "actor_id": str(actor_id),
-        "gateway_api_base": str(request.base_url).rstrip("/"),
+        # Browser polling must use the same trusted public HTTPS origin as
+        # provider callbacks. request.base_url can be downgraded to http when
+        # the gateway sits behind an untrusted reverse-proxy hop (for example
+        # host-side ngrok forwarding into Docker).
+        "gateway_api_base": public_url,
         "provider_ingress_url": public_url,
         "oauth_redirect_url": (
             handoff.get("oauth_redirect_url")
@@ -2601,6 +2605,7 @@ def _materialize_source_auto_connect_run(
     run_artifact_path = source_dir / "connection.json"
     receipt_path = source_dir / "browser-agent-receipt.json"
     run_record = {
+        **descriptor,
         "background_status": "queued",
         "background_queued_at": generated_at,
         "background_runner_mode": _source_auto_connect_runner_mode(),
@@ -2611,7 +2616,7 @@ def _materialize_source_auto_connect_run(
         "schema_version": "fyralis.byoc.source.connection_artifact.v1",
         "source": source,
         "generated_at": generated_at,
-        "auto_connect_run": {**descriptor, **run_record},
+        "auto_connect_run": dict(run_record),
         "browser_agent_run": browser_agent_run,
         "raw_secret_values_included": False,
         "raw_payloads_exported": False,

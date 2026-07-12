@@ -175,6 +175,7 @@ def _service(
     pool: asyncpg.Pool, producer: _CapturingProducer,
     *, lease_timeout: float = 30.0,
     max_concurrent_shards: int = 1,
+    auto_concurrency_limit: int = 32,
     max_signals_per_tick: int = 20,
     s3_client: FakeS3Client | None = None,
 ) -> ShardFetch:
@@ -186,6 +187,7 @@ def _service(
             lease_timeout_seconds=lease_timeout,
             flush_timeout_seconds=1.0,
             max_concurrent_shards=max_concurrent_shards,
+            auto_concurrency_limit=auto_concurrency_limit,
         ),
         s3_client=s3_client or FakeS3Client(),
     )
@@ -720,16 +722,17 @@ async def test_discord_channel_shards_fetch_in_parallel(
     assert {row["state"] for row in states} == {"done"}
 
 
-async def test_discord_auto_parallelism_runs_all_channel_shards_in_one_tick(
+async def test_discord_auto_parallelism_bounds_each_wave_and_drains_all_shards(
     fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Auto mode derives fetch width from the current shard backlog.
 
-    A guild with 55 message-readable channels produces 55 shard rows upstream;
-    shard_fetch should not cap that at a static 50 when the operator asks for
-    auto fan-out.
+    A guild with 55 message-readable channels produces 55 shard rows upstream.
+    Auto mode must drain all of them without creating more than the configured
+    number of concurrent fetch loops.
     """
     expected = 55
+    concurrency_limit = 32
     release = asyncio.Event()
     state = {"in_flight": 0, "max_in_flight": 0}
     calls: list[str] = []
@@ -746,7 +749,7 @@ async def test_discord_auto_parallelism_runs_all_channel_shards_in_one_tick(
             state["max_in_flight"],
             state["in_flight"],
         )
-        if state["in_flight"] >= expected:
+        if state["in_flight"] >= concurrency_limit:
             release.set()
         try:
             await asyncio.wait_for(release.wait(), timeout=1.0)
@@ -802,9 +805,10 @@ async def test_discord_auto_parallelism_runs_all_channel_shards_in_one_tick(
         producer,
         max_signals_per_tick=0,
         max_concurrent_shards=0,
+        auto_concurrency_limit=concurrency_limit,
     ).run(max_ticks=1)
 
-    assert state["max_in_flight"] == expected
+    assert state["max_in_flight"] == concurrency_limit
     assert set(calls) == channel_ids
     states = await fresh_db.fetch(
         "SELECT state FROM onboarding_shards WHERE id = ANY($1::uuid[])",

@@ -537,6 +537,8 @@ rate limits).
 | `GITHUB_MAX_BACKFILL_REPOS` | `0` (no cap) | bound on repo enumeration; a cap hit is logged, never silent |
 | `GITHUB_RL_MAX_ATTEMPTS` | `4` | rate‑limit retry budget (429 / secondary‑limit 403) |
 | `GITHUB_RL_MAX_SLEEP_SEC` | `30` | max backoff per `Retry-After` |
+| `SHARD_FETCH_CONCURRENCY` | `auto` | concurrent independent shard loops; pages within each shard remain serial |
+| `SHARD_FETCH_AUTO_CONCURRENCY_MAX` | `32` | backlog-adaptive concurrency ceiling in auto mode; `0` restores unbounded fan-out |
 
 ### 12.2 Verified compliant
 

@@ -756,7 +756,66 @@ describe("onboarding workflow contract", () => {
     ]);
   });
 
-  it("shows background browser-agent progress while polling", async () => {
+  it("clears a persisted connected source when the backend has no install", async () => {
+    vi.useFakeTimers();
+    const selectedSource = ONBOARDING_SNAPSHOT.sources.find(
+      (source) => source.id === "github",
+    );
+    expect(selectedSource).toBeDefined();
+    const props = stepViewProps({
+      selectedSource: selectedSource!,
+      connections: [
+        {
+          sourceId: "github",
+          status: "connected",
+          selectedScopes: [],
+          backfillWindow: "Last 30 days",
+          syncMode: "Limited backfill",
+          receiptId: "source_agent_github_connected",
+        },
+      ],
+    });
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          source: "github",
+          installed: false,
+          installation: null,
+          installations: [],
+          trigger_count: 0,
+          consumed_trigger_count: 0,
+          run_status_counts: {},
+          shard_state_counts: {},
+          observation_count: 0,
+          sync_started_at: null,
+          observations: [],
+          unresolved_failure_count: 0,
+          latest_failure: null,
+          auto_connect_run: null,
+          next_action: "Approve GitHub in the provider browser window.",
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<StepView stepId="source-catalog" props={props} />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/platform/onboarding/sources/github/rehearsal/status",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(props.updateConnection).toHaveBeenCalledWith("github", {
+      status: "not-configured",
+      receiptId: undefined,
+    });
+  });
+
+  it("keeps the approval action visible when a browser agent is running", async () => {
     vi.useFakeTimers();
     const selectedSource = ONBOARDING_SNAPSHOT.sources.find(
       (source) => source.id === "ramp",
@@ -787,9 +846,16 @@ describe("onboarding workflow contract", () => {
       await vi.advanceTimersByTimeAsync(8000);
     });
 
-    expect(screen.getByText("Running")).toBeInTheDocument();
+    expect(screen.getByText("Approval needed")).toBeInTheDocument();
     expect(
-      screen.getByText("Source setup is running in the customer cloud."),
+      screen.getByText(
+        "Provider admin approval is blocking completion. Fyralis keeps checking.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "Open Ramp provider settings for approval",
+      }),
     ).toBeInTheDocument();
     expect(props.updateConnection).not.toHaveBeenCalledWith(
       "ramp",

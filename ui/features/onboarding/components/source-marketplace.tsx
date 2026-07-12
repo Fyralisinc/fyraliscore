@@ -1013,6 +1013,9 @@ function sourceApprovalActionLabel(source: Source) {
   if (source.id === "aws") {
     return "Open AWS approval";
   }
+  if (source.id === "github") {
+    return "Open GitHub approval";
+  }
   if (source.id === "discord") {
     return "Open Discord";
   }
