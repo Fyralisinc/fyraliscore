@@ -319,7 +319,7 @@ jobs:
           sha256sum -c fyraliscore-sboms.SHA256SUMS
 
       - name: Upload SBOM artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fyraliscore-sboms
           path: |
