@@ -801,3 +801,131 @@ __all__ = [
     "THINK_VALIDATION_DROPPED_OPS",
     "THINK_LLM_COST_USD",
 ]
+
+
+# --- doc_memory metrics (document-memory-substrate) ---
+# Phase 2 (proactive + observability) of the document-memory substrate
+# (docs/plans/document-memory-substrate.md §7 step 12 / §10). Registered on the
+# default registry as module-level singletons (same pattern as the per-module
+# instrumentation in services/reasoning/retrieval/* and kafka/producer.py) so
+# they render via render_default() with no extra wiring. Conceptual dotted names
+# from the plan (doc_memory.models_minted / .scope_unresolved / .mint_failure)
+# map to snake_case Prometheus family names with the `_total` counter suffix the
+# rest of the codebase uses. The worker-side DISPATCH count is exposed separately
+# as doc_memory_enriched_t1_total (renamed off the former, misleading
+# doc_memory_models_minted_total) while doc_memory_models_minted_total now means
+# the TRUE mint count — see the two definitions below. Cardinality: no
+# tenant_id / id labels (§4 rule) —
+# the `source` label is a bounded enum over the doc-memory channel allowlist
+# (google_drive / notion / fireflies / other).
+#
+# Appended as a self-contained block at EOF so this addition never overlaps the
+# file body other tracks edit (zero-conflict guarantee).
+
+# doc_memory.enriched_t1 — a summarized document was handed to Think to mint
+# document Models from (the worker enriched a T1 with the structured summary +
+# resolved scope). Under the ratified Option A, Think — not the worker — is the
+# Model author, so this is the DISPATCH count, NOT a mint count. It remains a
+# useful signal (documents handed to Think for distillation) and is the
+# denominator for a `doc → models_minted` conversion rate (§4.1) once the true
+# mint counter below is wired at Think's apply site. Renamed from the former,
+# misleading `doc_memory_models_minted_total` (which measured dispatches).
+DOC_MEMORY_ENRICHED_T1 = counter(
+    "doc_memory_enriched_t1_total",
+    "Documents dispatched to Think on an enriched T1 to mint document Models "
+    "from (structured summary + re-resolved scope), by source channel. This is "
+    "a DISPATCH count — Think mints the Models later (Option A).",
+    ("source",),
+)
+
+# doc_memory.models_minted — the TRUE mint counter: a document-derived Model was
+# actually minted by Think (a Model whose born_from_event_id is the document
+# observation — i.e. document provenance, §4.4). Distinct from the dispatch
+# counter above: this counts Models that Think genuinely inserted, so
+# `models_minted / enriched_t1` is the real distillation conversion rate.
+#
+# WIRING NOTE (cross-branch constraint): under ratified Option A the only place a
+# document-derived Model is actually inserted is Think's apply path
+# (`services/reasoning/think/applier.py::_apply_claim_insert`, via
+# `ModelsRepo.insert`). That file is owned by the parallel reasoning/BYOC track
+# and is NOT one of the document-memory-substrate files — wiring the increment
+# there would create a new cross-branch intersection. The increment helper
+# `record_doc_memory_model_minted()` below is therefore provided ready-to-call
+# (one line, keyed on document provenance) so whichever track owns the applier
+# can drop it in at the mint site without depending on this module's internals.
+# See docs/plans/document-memory-substrate.md §4.1 / §4.4.
+DOC_MEMORY_MODELS_MINTED = counter(
+    "doc_memory_models_minted_total",
+    "Document-derived Models actually minted by Think (born_from_event_id is the "
+    "document observation), by source channel. The real mint count (Option A).",
+    ("source",),
+)
+
+
+def record_doc_memory_model_minted(source_channel: str | None) -> None:
+    """Record that Think actually minted a document-derived Model.
+
+    Call this from the Think apply site exactly once per inserted Model whose
+    provenance is a document observation (born_from_event_id = the document
+    observation). Kept as a tiny helper so the call site stays a single line and
+    does not need to know the metric's label shape. See the WIRING NOTE above for
+    why the call site itself is not wired from this module.
+    """
+    DOC_MEMORY_MODELS_MINTED.inc(source=doc_memory_source_label(source_channel))
+
+# doc_memory.scope_unresolved — re-resolution ran but produced NO scoped recall
+# surface (no resolved entities and no resolved actors), so the document Models
+# will fall back to semantic-only (Pathway B) recall. Watched as a rate (§10).
+DOC_MEMORY_SCOPE_UNRESOLVED = counter(
+    "doc_memory_scope_unresolved_total",
+    "Documents whose structured-summary scope re-resolution found no entities "
+    "or actors (scoped recall degrades to semantic-only), by source channel.",
+    ("source",),
+)
+
+# doc_memory.mint_failure — the mint path failed in the worker (scope
+# re-resolution raised); strictly failure-isolated so the summary still lands.
+# The §10 alert (DocMemoryMintFailure) fires on a sustained rate of this.
+DOC_MEMORY_MINT_FAILURE = counter(
+    "doc_memory_mint_failure_total",
+    "Document-memory mint-path failures in the summarization worker "
+    "(re-resolution error; summary still succeeds), by source channel.",
+    ("source",),
+)
+
+# map-reduce section counts — distribution of how many sections a large document
+# was split into during map-reduce summarization (Layer 0, §3.2). A histogram so
+# both the section-count distribution and the count of map-reduced documents are
+# queryable. Small integer buckets sized to the realistic section fan-out.
+DOC_MEMORY_MAPREDUCE_SECTIONS = histogram(
+    "doc_memory_mapreduce_sections",
+    "Number of sections a document was split into for map-reduce "
+    "summarization (Layer 0). +Inf bucket counts map-reduced documents.",
+    buckets=(1, 2, 3, 5, 8, 13, 21, 34, 55),
+)
+
+
+def doc_memory_source_label(source_channel: str | None) -> str:
+    """Collapse a free-form source_channel to a bounded doc-memory label value.
+
+    Keeps metric cardinality bounded (§4): the channel allowlist is
+    google_drive:file / notion:object / fireflies:transcript; anything else
+    (or missing) buckets to "other".
+    """
+    if not source_channel:
+        return "other"
+    head = source_channel.split(":", 1)[0].strip().lower()
+    if head in {"google_drive", "notion", "fireflies"}:
+        return head
+    return "other"
+
+
+__all__ += [
+    "DOC_MEMORY_ENRICHED_T1",
+    "DOC_MEMORY_MODELS_MINTED",
+    "DOC_MEMORY_SCOPE_UNRESOLVED",
+    "DOC_MEMORY_MINT_FAILURE",
+    "DOC_MEMORY_MAPREDUCE_SECTIONS",
+    "doc_memory_source_label",
+    "record_doc_memory_model_minted",
+]

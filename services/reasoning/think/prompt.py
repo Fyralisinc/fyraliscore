@@ -335,6 +335,39 @@ Model granularity:
   plan. No-op T1 only when the observation is non-substantive or an existing
   selected Model already captures the same fact at suitable confidence.
 
+Document structured summaries:
+- When <retrieved_context> contains a <document_structured_summary> block, a
+  large document (meeting transcript, doc, page) was ingested and distilled to
+  decisions / commitments / risks. Treat it as the primary evidence and turn it
+  into durable Models:
+  * Emit ONE situation anchor: kind="belief", claim_role="situation",
+    abstraction_level="composite", confidence <= 0.7 (so no falsifier is
+    required), summary = the document's gist, member_model_ids = the per-item
+    Models you create. The anchor is recallable even with empty scope.
+  * Each DECISION -> a claim_ops.insert with claim_role="recommendation" when it
+    proposes a concrete Act/Resource change, otherwise claim_role="fact"
+    (time_mode="current").
+  * Each RISK -> claim_role="concern", polarity="negative".
+  * Each COMMITMENT / action_item with a due date -> kind="prediction",
+    claim_role="prediction", scope_temporal.valid_from = the document's
+    occurred_at, AND set both evaluate_at = the due date and a
+    {"kind":"prediction_deadline","evaluate_at":"<due ISO-8601>","check":"<what
+    would show the commitment was missed>"} falsifier, plus a one-line
+    resolution restating the completion criterion. A commitment without a due
+    date is a recommendation/fact, not a prediction.
+- Provenance is free: set born_from_event_id = the triggering observation_id on
+  every document Model; do NOT invent provenance edges.
+- Scope from the block's resolved_scope_entities / resolved_scope_actors ONLY
+  (they are already validated). Never put unresolved_owner_names in scope_actors
+  — keep them as text in `natural`. An empty scope is acceptable; the anchor is
+  still semantically recallable.
+- Link the Models with EXISTING edge kinds only: anchor->member via
+  `instance_of`/`supports`, risk->decision via `explains`/`relates`. Do not
+  propose new edge kinds for document provenance.
+- DEDUPE: before inserting, check the retrieved Models in THIS context. A second
+  document restating the same commitment/risk should reconcile (confirm/revise)
+  the existing Model via memory_lifecycle_ops, not insert a duplicate.
+
 memory_lifecycle_ops:
 { "op":"reconcile",
   "model_id":"<existing model uuid>",
@@ -655,6 +688,20 @@ Granularity:
   reasoning when this compact pass cannot emit the needed update.
 - Do not insert recap Models for selected context. Merge one-workstream facts;
   split genuinely distinct claims.
+
+Document structured summaries:
+- When <retrieved_context> has a <document_structured_summary> block, a large
+  document was distilled to decisions/commitments/risks. Mint Models from it:
+  one situation anchor (claim_role="situation", abstraction_level="composite",
+  confidence<=0.7), each decision -> recommendation/fact, each risk ->
+  claim_role="concern" with polarity="negative", each commitment/action_item
+  with a due date -> kind="prediction" with claim_role="prediction", evaluate_at
+  set to the due date, AND a {"kind":"prediction_deadline","evaluate_at":"<due
+  ISO-8601>","check":"..."} falsifier plus a resolution criterion.
+- born_from_event_id = the triggering observation_id on every document Model.
+  Scope only from the block's resolved_scope_entities / resolved_scope_actors;
+  never invent UUIDs and never put unresolved owner names in scope_actors. Dedupe
+  against retrieved Models in this context (reconcile, don't duplicate).
 
 Return only well-formed JSON, no prose outside the JSON object.
 """
@@ -1196,6 +1243,110 @@ def _relationship_candidate_lines(candidate: dict[str, Any]) -> list[str]:
     return lines
 
 
+_DOC_SUMMARY_ITEM_LIMIT = 12
+_DOC_SUMMARY_ITEM_CHARS = 400
+
+
+def _doc_summary_item_text(item: Any) -> str:
+    """Render a structured item (str or {who?, what, due?}) for the prompt.
+
+    Commitments keep owner/due inline so Think can set evaluate_at = due and a
+    deadline falsifier (§4.2). Bare strings render as-is.
+    """
+    if isinstance(item, str):
+        return item.strip()
+    if isinstance(item, dict):
+        what = item.get("what")
+        if not isinstance(what, str) or not what.strip():
+            return ""
+        parts = [what.strip()]
+        who = item.get("who")
+        if isinstance(who, str) and who.strip():
+            parts.append(f"(owner: {who.strip()})")
+        due = item.get("due")
+        if isinstance(due, str) and due.strip():
+            parts.append(f"(due: {due.strip()})")
+        return " ".join(parts)
+    return ""
+
+
+def _build_document_summary_section(trigger: TriggerContext) -> list[str]:
+    """Render the enriched-T1 structured document summary as evidence.
+
+    Reads `doc_structured_summary` from the trigger payload (carried on
+    `trigger.seed_signature`). Emits nothing when the trigger is not a
+    document-memory T1, so non-document triggers are byte-for-byte unchanged.
+    """
+    signature = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
+    structured = signature.get("doc_structured_summary")
+    if not isinstance(structured, dict) or not structured:
+        return []
+
+    lines = ["  <document_structured_summary>"]
+    lines.append(
+        "    A large document was ingested and summarized; the structured "
+        "extraction below is the durable evidence. Distill it into Models: one "
+        "situation anchor (claim_role=situation) plus per-item claims — "
+        "decisions -> recommendation/fact, risks -> concern (polarity=negative), "
+        "commitments/action_items -> prediction with evaluate_at=due + a "
+        "prediction_deadline falsifier. born_from_event_id MUST be the "
+        "triggering observation_id; cite it in evidence/supporting ids. "
+        "Dedupe against retrieved Models in this context."
+    )
+    summary_text = structured.get("summary")
+    if isinstance(summary_text, str) and summary_text.strip():
+        lines.append(f"    summary: {_trunc(summary_text.strip(), 600)}")
+
+    for field_key, label in (
+        ("decisions", "decisions"),
+        ("action_items", "commitments"),
+        ("risks", "risks"),
+        ("key_points", "key_points"),
+    ):
+        values = structured.get(field_key)
+        if not isinstance(values, list) or not values:
+            continue
+        rendered: list[str] = []
+        for item in values[:_DOC_SUMMARY_ITEM_LIMIT]:
+            text = _doc_summary_item_text(item)
+            if text:
+                rendered.append(_trunc(text, _DOC_SUMMARY_ITEM_CHARS))
+        if not rendered:
+            continue
+        lines.append(f"    <{label}>")
+        for text in rendered:
+            lines.append(f"      - {text}")
+        omitted = len(values) - len(rendered)
+        if omitted > 0:
+            lines.append(f"      - [{omitted} more {label} omitted]")
+        lines.append(f"    </{label}>")
+
+    # Re-resolved scope (resolved refs/UUIDs only; never invented). Think uses
+    # these directly for scope_entities/scope_actors on the document Models.
+    scope_entities = signature.get("doc_scope_entities")
+    if isinstance(scope_entities, list) and scope_entities:
+        lines.append(
+            "    resolved_scope_entities: "
+            + _trunc(json.dumps(scope_entities, default=str), 800)
+        )
+    scope_actors = signature.get("doc_scope_actors")
+    if isinstance(scope_actors, list) and scope_actors:
+        lines.append(
+            "    resolved_scope_actors: "
+            + _trunc(json.dumps([str(a) for a in scope_actors], default=str), 800)
+        )
+    unresolved = signature.get("doc_unresolved_actor_refs")
+    if isinstance(unresolved, list) and unresolved:
+        lines.append(
+            "    unresolved_owner_names (text only; do NOT put in scope_actors): "
+            + _trunc(json.dumps([str(u) for u in unresolved], default=str), 400)
+        )
+    lines.append("  </document_structured_summary>")
+    return lines
+
+
 def _build_context_section(
     trigger: TriggerContext,
     bundle: ContextBundle,
@@ -1257,6 +1408,13 @@ def _build_context_section(
             used += len(piece)
         obs_parts.append("  </observations>")
         lines.extend(obs_parts)
+
+    # Document-memory Layer 2 (Phase 1): when the summarization worker enriched
+    # the T1 with a structured document summary, surface it as a dedicated
+    # evidence block so Think can distill the document into Models. Gated by
+    # INGEST_DOC_MEMORY_ENABLED on the ingest side; here it is simply rendered
+    # when present (docs/plans/document-memory-substrate.md §4.2).
+    lines.extend(_build_document_summary_section(trigger))
 
     lines.extend(
         _build_models_section(

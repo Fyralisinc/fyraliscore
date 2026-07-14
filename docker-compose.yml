@@ -461,6 +461,26 @@ services:
       SCHEMA_DRIFT_CONNECT_TIMEOUT_S: "10"
       SCHEMA_DRIFT_STATEMENT_TIMEOUT_MS: "30000"
 
+  # Proactive deadline firing for prediction Models (incl. document-memory
+  # commitments, docs/plans/document-memory-substrate.md §4.6 / §7 step 11).
+  # Polls `models WHERE status='active' AND evaluate_at <= now()` per cycle and
+  # enqueues a T2 `prediction_overdue` trigger for Think — so an overdue
+  # commitment (e.g. an unsent SOW) fires BEFORE anyone asks, instead of only
+  # being recalled reactively. It never writes to `models`; Think's
+  # deterministic T2 handler owns the resolution. Global (scans all tenants), so
+  # a single instance — do NOT scale to >1 replica. Exposes /healthz + /metrics
+  # on INGESTION_HEALTH_PORT (9300, from app-env); /healthz goes 503 if the poll
+  # loop wedges, so a hung resolver is restarted.
+  deadline_resolver:
+    <<: *worker
+    container_name: company_os_deadline_resolver
+    command: python scripts/run_deadline_resolver_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      # Poll cadence (seconds). Override in .env.production.
+      DEADLINE_POLL_INTERVAL_S: "60"
+
   # ---- retrieval/memory feature workers (ported from dev) -----------
   sage_structural_features_worker:
     <<: *worker
