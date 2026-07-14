@@ -1481,7 +1481,9 @@ async def test_generic_source_prepare_returns_actionable_inputs(
     monkeypatch.setenv("FYRALIS_SOURCE_REHEARSAL_ENABLED", "1")
     monkeypatch.setenv("COMPANY_OS_TENANT_ID", str(tenant_id))
     monkeypatch.setenv("COMPANY_OS_CEO_ACTOR_ID", str(actor_id))
-    monkeypatch.setenv("SANDBOX_PUBLIC_URL", "https://fyralis-ingress.acme.example")
+    monkeypatch.setenv(
+        "SANDBOX_PUBLIC_URL", "https://fyralis-ingress.acme.example"
+    )
 
     app = _gateway_app(gateway_pool, _RecordingSecretStore())
     transport = httpx.ASGITransport(app=app)
