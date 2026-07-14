@@ -62,22 +62,24 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 
 @pytest_asyncio.fixture
-async def tenant(tx_conn: asyncpg.Connection) -> uuid.UUID:
+async def tenant(fresh_db: asyncpg.Pool) -> uuid.UUID:
     tenant_id = uuid7()
-    await tx_conn.execute(
-        "INSERT INTO tenants (id, name) VALUES ($1, 'models-test')",
-        tenant_id,
-    )
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO tenants (id, name) VALUES ($1, 'models-test')",
+            tenant_id,
+        )
     return tenant_id
 
 
 @pytest_asyncio.fixture
-async def other_tenant(tx_conn: asyncpg.Connection) -> uuid.UUID:
+async def other_tenant(fresh_db: asyncpg.Pool) -> uuid.UUID:
     tenant_id = uuid7()
-    await tx_conn.execute(
-        "INSERT INTO tenants (id, name) VALUES ($1, 'models-test-other')",
-        tenant_id,
-    )
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO tenants (id, name) VALUES ($1, 'models-test-other')",
+            tenant_id,
+        )
     return tenant_id
 
 

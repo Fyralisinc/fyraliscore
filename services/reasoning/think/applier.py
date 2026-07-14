@@ -903,6 +903,8 @@ async def _apply_one_expanded_claim_op(
             doc_memory_source=doc_memory_source,
         )
     except ValidationError as exc:
+        if op.op != "insert":
+            raise
         reason = _classify_apply_claim_drop_reason(exc)
         message = getattr(exc, "message", str(exc))
         log_dropped_op(
