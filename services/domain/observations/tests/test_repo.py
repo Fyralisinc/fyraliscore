@@ -35,7 +35,7 @@ import asyncpg
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from pgvector import Vector
+from pgvector.utils import Vector
 from pydantic import ValidationError
 
 from lib.embeddings.ollama import EMBEDDING_DIM, OllamaError
@@ -261,7 +261,7 @@ async def test_insert_twice_same_external_id_returns_first_row(
 
 
 async def test_hydrate_row_accepts_pgvector_vector(tenant_id: UUID):
-    from pgvector import Vector
+    from pgvector.utils import Vector
 
     row = _hydrate_row(
         {

@@ -69,7 +69,7 @@ def _mc(
 
 
 def test_hydrate_row_accepts_pgvector_vector() -> None:
-    from pgvector import Vector
+    from pgvector.utils import Vector
 
     now = datetime.now(timezone.utc)
     row = _hydrate_row(
