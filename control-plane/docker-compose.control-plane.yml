@@ -1,0 +1,830 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — compose skeleton
+# ----------------------------------------------------------------------------
+# One-command bring-up for the VENDOR-owned control plane. All phases are wired:
+# auth-proxy + boundary collector (P2), Mimir/Loki/Grafana + fleet-SLI (P3),
+# console + agent (P4), release/config-dist/metering/audit/upgrade (P5), and the
+# self-observability watchdog + demo data plane + e2e tests (P6). Bring it up with
+# `./bootstrap.sh` (first run: CA + signing keys + demo-tenant onboard, then up)
+# or `make up`; `docker compose -f docker-compose.control-plane.yml config` parses.
+#
+# Networks (see SPRINT_PLAN.md → Shared Contracts → C5):
+#   cp-net        internal network shared by all control-plane services.
+#   dataplane-net the LOCAL data-plane network the control plane also attaches
+#                 to for single-host dev/demo scraping. Declared external so a
+#                 missing data plane does not break `up`; create it with
+#                 `docker network create dataplane-net` for local scraping, or
+#                 leave it absent in CP-only deployments.
+#
+# Mimir multi-tenancy is keyed by X-Scope-OrgID, injected by the auth proxy
+# from the verified client-cert tenant_id — never accepted from outside cp-net.
+#
+# TRUST BOUNDARY (I4 / C5): INTERNAL stores (mimir, loki, config-dist,
+# release-registry, metering, audit, cp-prometheus, the self-obs exporter, the
+# boundary collector, demo-dataplane, the agent, the ruler-loader) publish NO host
+# ports — they are reachable ONLY on the cp-net/dataplane-net internal networks via
+# `expose:`. Host-publishing a store would let anything on the host reach it
+# DIRECTLY with any X-Scope-OrgID, bypassing the auth-proxy and the per-tenant
+# scoping it enforces. ONLY the operator/tenant entrypoints publish host ports:
+#   - auth-proxy  (8443) — the tenant mTLS ingest path (the ONLY thing exposed in
+#                          production; in prod console+grafana sit behind a VPN/SSO)
+#   - console     (8080) — operator UI/API
+#   - grafana     (3000) — operator UI
+# Everything else is internal-only.
+# ============================================================================
+
+name: fyralis-control-plane
+
+networks:
+  cp-net:
+    driver: bridge
+  dataplane-net:
+    external: true
+
+volumes:
+  mimir-data:
+  loki-data:
+  grafana-data:
+  ca-data:
+  audit-data:
+  # Phase 4 — fleet console registry persistence (best-effort JSON under
+  # console/data) and the data-plane agent's durable heartbeat buffer (I3).
+  console-data:
+  # Hash-chained operator audit trail (I5) the console appends to on every
+  # operator desired-state write; durable across console restarts.
+  console-audit:
+  agent-state:
+  # Phase 5 — operate-the-fleet persistence.
+  #   release-registry-data: published signed release bundles + index.json (WS-RELEASE)
+  #   config-dist-data:      per-deployment signed config store + signing home (WS-CONFIG)
+  #   metering-out:          signed Tier-1 usage rollups + billing exports (WS-METER)
+  #   (audit-data is declared above and reused by WS-AUDIT for the hash-chained log.)
+  release-registry-data:
+  config-dist-data:
+  metering-out:
+  # Phase 6 — control-plane self-observability (WS-SELFOBS / NFR-10): the
+  # dedicated cp-prometheus TSDB persists across restarts.
+  cp-self-obs-data:
+
+services:
+  # ==========================================================================
+  # Phase 2 — auth-proxy (mTLS termination + X-Scope-OrgID injection)
+  # ==========================================================================
+  # The LINCHPIN. Terminates mTLS on :8443, VERIFIES the data-plane agent's
+  # client cert against the Fyralis CA chain, extracts tenant_id from the
+  # verified spiffe://fyralis/tenant/<id> URI SAN (C1), checks the
+  # tenant_registry.json revocation list, STRIPS any caller-set X-Scope-OrgID,
+  # INJECTS X-Scope-OrgID:<tenant_id>, and reverse-proxies to Mimir. NEVER
+  # trusts a tenant_id from a request header (I4).
+  #
+  # BUILD CONTEXT is the control-plane ROOT (.) — the image needs the ca/
+  # modules (ca_lib/registry/verify_chain) + the proxy code. Dockerfile is at
+  # auth-proxy/Dockerfile.
+  #
+  # MATERIAL (mounted from the live ca/ + the bootstrap-minted server cert):
+  #   - ca/pki/ca-chain.crt        verifies client certs (bind-mounted live so
+  #                                a revocation takes effect without a rebuild)
+  #   - ca/tenant_registry.json    fingerprint -> tenant + revocation status
+  #   - auth-proxy/tls/server.crt/.key   the proxy's OWN server identity, minted
+  #                                by bootstrap.sh via auth-proxy/gen_server_cert.py
+  auth-proxy:
+    build:
+      context: .
+      dockerfile: auth-proxy/Dockerfile
+    image: fyralis/auth-proxy
+    container_name: cp-auth-proxy
+    environment:
+      AUTH_PROXY_LISTEN_HOST: "0.0.0.0"
+      AUTH_PROXY_LISTEN_PORT: "8443"
+      AUTH_PROXY_CA_CHAIN: /etc/fyralis/ca/ca-chain.crt
+      AUTH_PROXY_TENANT_REGISTRY: /etc/fyralis/ca/tenant_registry.json
+      AUTH_PROXY_TLS_CERT: /etc/fyralis/tls/server.crt
+      AUTH_PROXY_TLS_KEY: /etc/fyralis/tls/server.key
+      AUTH_PROXY_UPSTREAM_URL: "http://mimir:9009"
+    volumes:
+      # Live CA trust material (read-only) — revocations land without a rebuild.
+      - ./ca/pki/ca-chain.crt:/etc/fyralis/ca/ca-chain.crt:ro
+      - ./ca/tenant_registry.json:/etc/fyralis/ca/tenant_registry.json:ro
+      # The proxy's server cert/key, minted by bootstrap.sh (gitignored).
+      - ./auth-proxy/tls:/etc/fyralis/tls:ro
+    ports:
+      # mTLS ingress for agent / boundary-collector dial-home (I2 inbound to CP).
+      # THE ONLY service host-exposed in PRODUCTION — every tenant push lands here
+      # and the proxy injects X-Scope-OrgID from the verified cert SAN (I4). console
+      # + grafana below are also host-published for the OPERATOR, but in prod they
+      # sit behind a VPN/SSO, not the public internet; all internal stores are
+      # cp-net-only (no host ports at all).
+      - "8443:8443"
+    networks:
+      - cp-net
+    depends_on:
+      mimir:
+        condition: service_started
+      loki:
+        condition: service_started
+    restart: unless-stopped
+    # The proxy is mTLS-ONLY: a plain healthcheck GET is rejected at the TLS
+    # handshake (there is no unauthenticated /healthz). Liveness is observed by
+    # the cp-self-obs-exporter via a TLS-handshake probe — see self-obs/.
+
+  # ==========================================================================
+  # Phase 3 — Mimir / Loki / Grafana + fleet-SLI   (WS-MIMIR / WS-LOKI-T2 /
+  #           central Grafana / WS-FLEETSLI — merged from each dir's
+  #           service.compose.yml fragment)
+  # ==========================================================================
+
+  # --- Mimir: central MULTI-TENANT metrics store (WS-MIMIR + WS-MIMIR-CARD) --
+  # multitenancy_enabled=true ⇒ every request needs X-Scope-OrgID (injected by
+  # the auth-proxy from the verified cert SAN; a request without it gets 401).
+  # Service name MUST be `mimir` — the auth-proxy reverse-proxies to
+  # http://mimir:9009 (auth-proxy/config.py DEFAULT_UPSTREAM_URL). Only reachable
+  # from inside cp-net (behind the proxy). The grafana/mimir image is DISTROLESS
+  # (no shell/curl) so there is no in-container healthcheck — readiness is the
+  # HTTP endpoint GET /ready, probed by the ruler-loader below.
+  mimir:
+    image: grafana/mimir:2.13.0
+    command:
+      - -config.file=/etc/mimir/mimir.yaml
+    volumes:
+      # Main config (multitenancy, all-in-one target, filesystem storage, the
+      # per-tenant cardinality budget DEFAULTS in `limits`).
+      - ./mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
+      # Per-tenant cardinality budget overrides — hot-reloaded every 15s.
+      - ./mimir/runtime_overrides.yaml:/etc/mimir/runtime_overrides.yaml:ro
+      # Fleet-SLI rule files (read-only). NOT auto-discovered off disk — the
+      # filesystem ruler backend stores each group as its own object and does
+      # NOT load a directory of multi-group YAML; the rules are PUSHED in by the
+      # mimir-ruler-loader below (mimirtool rules load -> ruler API). Mounted
+      # here for parity/inspection; the loader is the authoritative path.
+      - ./fleet-sli:/etc/mimir/fleet-sli:ro
+      # Blocks (tsdb/blocks/compactor), ruler tenant storage, alertmanager.
+      - mimir-data:/data
+    expose:
+      # cp-net-ONLY HTTP API (push + query + ruler). NO host `ports:` (I4/C5) — all
+      # access goes through the auth-proxy so X-Scope-OrgID is enforced server-side;
+      # a host publish would let anything on the host push/query any tenant directly.
+      - "9009"
+    networks:
+      - cp-net
+    restart: unless-stopped
+
+  # --- ruler loader: PUSH fleet-sli rules into the __fleet__ ruler tenant -----
+  # One-shot. Waits for Mimir /ready, then uses mimirtool to load EVERY fleet-sli
+  # rule file (golden-12 recording + alert + SLO burn-rate groups + the
+  # WS-MIMIR-CARD cardinality watchdog) into the synthetic `__fleet__` ruler
+  # tenant via the ruler API. This is the canonical loader (a raw filesystem copy
+  # yields "no rule groups found"), and it globs BOTH *.yml and *.yaml, so it
+  # covers the WS-FLEETSLI *.yml deliverables — superseding the fleet-sli
+  # busybox bootstrap (whose disk-copy approach Mimir's ruler does not read).
+  mimir-ruler-loader:
+    image: grafana/mimirtool:2.13.0
+    entrypoint:
+      - /bin/sh
+      - -c
+      # `$$` => a literal `$` to the shell (compose interpolates single `$`).
+      - |
+        set -e
+        echo "waiting for mimir /ready ..."
+        i=0
+        until wget -q -O- http://mimir:9009/ready 2>/dev/null | grep -qi ready; do
+          i=$$((i+1))
+          if [ "$$i" -gt 60 ]; then echo "mimir not ready after 120s — giving up"; exit 1; fi
+          sleep 2
+        done
+        echo "mimir ready — loading fleet-sli rules into tenant __fleet__"
+        files=""
+        for f in /rules/*.yml /rules/*.yaml; do
+          [ -e "$$f" ] || continue
+          case "$$f" in
+            */service.compose.yml|*/docker-compose*.yml) continue ;;
+          esac
+          files="$$files $$f"
+        done
+        if [ -z "$$files" ]; then
+          echo "WARN: no fleet-sli rule files found under /rules — ruler will have no groups"
+          exit 0
+        fi
+        echo "loading:$$files"
+        mimirtool rules load $$files --address=http://mimir:9009 --id=__fleet__
+        echo "loaded. current groups:"
+        mimirtool rules list --address=http://mimir:9009 --id=__fleet__
+    volumes:
+      - ./fleet-sli:/rules:ro
+    networks:
+      - cp-net
+    depends_on:
+      - mimir
+    restart: "no"
+
+  # --- Loki: Tier-2 central MULTI-TENANT log store (WS-LOKI-T2) ---------------
+  # auth_enabled=true ⇒ every request needs X-Scope-OrgID. Logs arrive ALREADY
+  # REDACTED (boundary OTel Collector strips PII before egress, I1); Loki is the
+  # sink, not the redactor. Same injection contract as Mimir (proxy on ingest,
+  # operator Grafana on query). Single-binary (-target=all), filesystem storage
+  # under /data, compactor-owned retention.
+  #
+  # loki-init: a one-shot that chowns the fresh loki-data volume to uid 10001
+  # BEFORE loki starts. The grafana/loki image runs as 10001 but a newly-created
+  # named volume is root-owned, so loki's first `mkdir /data/rules` fails. This
+  # init (runs as root, restart: no) makes the volume writable; loki depends on
+  # its successful completion.
+  loki-init:
+    image: busybox:1.36
+    command: ["sh", "-c", "mkdir -p /data && chown -R 10001:10001 /data"]
+    volumes:
+      - loki-data:/data
+    networks:
+      - cp-net
+    restart: "no"
+
+  loki:
+    image: grafana/loki:3.4.2
+    container_name: cp-loki
+    command:
+      - "-config.file=/etc/loki/loki.yaml"
+      - "-target=all"
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+      # Per-tenant runtime overrides (limits/retention) — hot-reloaded; the dir
+      # may be empty, the file is optional. Mount the dir so the path resolves.
+      - ./loki/overrides:/etc/loki/overrides:ro
+      # Persistent store: TSDB index + chunks + compactor + WAL, all under /data.
+      - loki-data:/data
+    expose:
+      # cp-net-ONLY (I4/C5). NO host `ports:` — reached only through the auth-proxy
+      # on ingest and Grafana on query; a host publish would bypass X-Scope-OrgID.
+      # Liveness is the container healthcheck below (localhost), not a host port.
+      - "3100"
+    networks:
+      - cp-net
+    # The official image's entrypoint handles uid 10001; keep the volume writable.
+    user: "10001:10001"
+    depends_on:
+      loki-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  # --- Grafana: central operator UI (fleet + per-customer views) -------------
+  # Datasources (provisioned) query Mimir/Loki DIRECTLY over cp-net and set
+  # X-Scope-OrgID themselves — the trusted internal OPERATOR QUERY PATH, distinct
+  # from the agent mTLS INGEST PATH through the auth-proxy. Per-customer dashboard
+  # re-scopes via the ${tenant_scope} variable; fleet view uses __fleet__.
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: cp-grafana
+    restart: unless-stopped
+    depends_on:
+      - mimir
+      - loki
+    environment:
+      # ---- operator auth (CHANGE in any real deployment) --------------------
+      GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:?set by bootstrap.sh (control-plane/.env)}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # ---- fleet/admin org id used by the "(fleet)" datasources -------------
+      FYRALIS_FLEET_ORG_ID: ${FYRALIS_FLEET_ORG_ID:-__fleet__}
+      # ---- provisioning paths -----------------------------------------------
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_FEATURE_TOGGLES_ENABLE: ""
+      # ---- UX ----------------------------------------------------------------
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/fleet/fleet-overview.json
+      GF_DATE_FORMATS_DEFAULT_TIMEZONE: utc
+    volumes:
+      # provisioning (datasources + dashboard providers) — read-only
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # dashboard JSON tree (fleet/ + tenant/ subdirs the providers point at)
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # persistent Grafana state (annotations, prefs)
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - cp-net
+      # also attach to the local data plane for single-host dev/demo scraping
+      - dataplane-net
+
+  # ==========================================================================
+  # Phase 2 (customer-VPC side) — demo data plane + boundary OTel Collector
+  # ==========================================================================
+  # NOTE: in a REAL BYOC deploy these run INSIDE the customer VPC alongside the
+  # data plane, not in the vendor control plane. They are wired here for the
+  # single-host dev/demo topology so the bring-up is end-to-end TESTABLE. In
+  # production the installer (installer/) stands up the real data plane and
+  # points the boundary collector at boundary/otel-collector-config.yaml (real
+  # targets); the two services below are DEMO FIXTURES.
+
+  # --- demo-dataplane: golden-12 SLI metrics stub on :9300 -------------------
+  # A tiny stdlib-only scrape target exposing the golden-12 fyralis_* families
+  # (the exact names the boundary allowlist keeps + fleet-sli rules aggregate)
+  # so the boundary collector has a realistic target WITHOUT the real data plane.
+  # See demo-dataplane/README.md. NOT the real data plane.
+  demo-dataplane:
+    build:
+      context: ./demo-dataplane
+      dockerfile: Dockerfile
+    image: fyralis/demo-dataplane
+    container_name: cp-demo-dataplane
+    environment:
+      DEMO_DP_HOST: "0.0.0.0"
+      DEMO_DP_PORT: "9300"
+      DEMO_DP_TENANT: "${AGENT_TENANT_ID:-acme}"
+      DEMO_DP_DEPLOYMENT: "${AGENT_DEPLOYMENT_ID:-acme-use1-0001}"
+      DEMO_DP_REGION: "${AGENT_REGION:-us-east-1}"
+      DEMO_DP_SCENARIO: "${DEMO_DP_SCENARIO:-healthy}"
+    expose:
+      # dataplane-net-ONLY (I4/C5). NO host `ports:` — only the boundary collector
+      # scrapes it (by service name on dataplane-net); it is an internal demo target.
+      - "9300"
+    networks:
+      - dataplane-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9300/healthz',timeout=3).status==200 else 1)"
+      interval: 20s
+      timeout: 4s
+      retries: 3
+      start_period: 5s
+
+  # --- boundary OTel Collector: scrape -> redact -> identity-stamp -> mTLS ----
+  # Tier-1 only by default. Scrapes the demo-dataplane stub, applies the I1
+  # allowlist + PII-label drop, stamps tenant/deployment/region (C4), and
+  # remote-writes THROUGH the auth-proxy over mTLS (the proxy injects
+  # X-Scope-OrgID from the verified cert SAN — this collector never sets it).
+  # Uses the DEMO config + the acme tenant client cert that bootstrap.sh mints
+  # into ./_runtime/agent/. In production swap in boundary/otel-collector-config.yaml.
+  boundary-collector:
+    image: otel/opentelemetry-collector-contrib:0.105.0
+    container_name: cp-boundary-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    environment:
+      FYRALIS_TENANT_ID: "${AGENT_TENANT_ID:-acme}"
+      FYRALIS_DEPLOYMENT_ID: "${AGENT_DEPLOYMENT_ID:-acme-use1-0001}"
+      FYRALIS_REGION: "${AGENT_REGION:-us-east-1}"
+      FYRALIS_TELEMETRY_TIER: "${AGENT_TELEMETRY_TIER:-T1}"
+      # Remote-write THROUGH the mTLS proxy (the proxy server cert SAN includes
+      # "auth-proxy"); the collector authenticates with acme's client cert.
+      FYRALIS_AUTH_PROXY_URL: "https://auth-proxy:8443"
+    volumes:
+      - ./demo-dataplane/boundary-collector.demo.yaml:/etc/otelcol/config.yaml:ro
+      # mTLS material minted by bootstrap.sh (gitignored runtime dir):
+      #   _runtime/ca/ca.crt          = ca-chain (verifies the proxy server cert)
+      #   _runtime/agent/client.crt/.key = acme tenant client cert (SAN -> tenant)
+      - ./_runtime/ca:/etc/fyralis/ca:ro
+      - ./_runtime/agent:/etc/fyralis/agent:ro
+    networks:
+      # On the data-plane side to scrape demo-dataplane; on cp-net to reach the
+      # auth-proxy by name for the in-cluster demo. In real BYOC this lives in
+      # the customer VPC and dials the public proxy URL outbound.
+      - dataplane-net
+      - cp-net
+    depends_on:
+      auth-proxy:
+        condition: service_started
+      demo-dataplane:
+        condition: service_started
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Phase 4 — Deployment surface (console + data-plane agent)
+  #           (WS-CONSOLE / WS-AGENT — merged from each dir's service.compose.yml.
+  #            WS-ONBOARD / WS-LICENSE / WS-INSTALLER are on-demand operator/one-
+  #            shot tools, not always-on services; run their fragments directly,
+  #            e.g. `docker compose -f onboarding/service.compose.yml run --rm ...`.)
+  # ==========================================================================
+
+  # --- console: operator UI/API over the fleet registry (WS-CONSOLE) ---------
+  # FastAPI/uvicorn over the C4 DeploymentRecord registry. Serves the P4 CONSOLE
+  # REST contract (POST /api/v1/register, POST /api/v1/heartbeat, GET
+  # /api/v1/deployments[/{id}], GET / rollup) on 8080 on cp-net. Health is
+  # DERIVED ON READ from heartbeat freshness (NFR-5: stale >90s -> yellow,
+  # missing >300s -> red) — the wire `health` is never trusted.
+  #
+  # BUILD CONTEXT is the control-plane ROOT (.), NOT ./console — the image needs
+  # control-plane/lib (the shared C4 record + derive_health). Dockerfile is at
+  # console/Dockerfile. (Same pattern as the auth-proxy/agent images.)
+  console:
+    build:
+      context: .
+      dockerfile: console/Dockerfile
+    environment:
+      - CP_CONSOLE_HOST=0.0.0.0
+      - CP_CONSOLE_PORT=8080
+      # JSON-file persistence of the fleet registry on the mounted volume so a
+      # console restart does not lose the fleet.
+      - CP_CONSOLE_DATA_DIR=/app/console/data
+      # Heartbeat-age health thresholds (NFR-5 defaults; override to tune).
+      - CP_HEARTBEAT_YELLOW_AFTER_S=90
+      - CP_HEARTBEAT_RED_AFTER_S=300
+      # Bearer token required on every WRITE endpoint (register/heartbeat/delete)
+      # — I4. Sourced from .env (bootstrap.sh generates it into _runtime/secrets/
+      # and writes it here). With it UNSET the console fails CLOSED on writes (503),
+      # never silently open. Reads stay open for the operator UI (next-sprint: SSO).
+      - CONSOLE_INGEST_TOKEN=${CONSOLE_INGEST_TOKEN:?set CONSOLE_INGEST_TOKEN (run ./bootstrap.sh)}
+      # Operator write token (I4) — required on OPERATOR desired-state writes
+      # (remote config push / release pin / action queue / license). DISTINCT from
+      # the agent's CONSOLE_INGEST_TOKEN so operator and agent identities never
+      # mix. Sourced from .env (bootstrap.sh generates it into _runtime/secrets/).
+      # With it UNSET the console fails CLOSED on operator writes (503); operator
+      # READS stay open on the operator LAN (next-sprint: SSO).
+      - OPERATOR_TOKEN=${OPERATOR_TOKEN:?set OPERATOR_TOKEN (run ./bootstrap.sh)}
+      # Where the console writes its hash-chained audit log (the console-audit
+      # volume below). A DATA path — NOT under /app/audit, which is the baked
+      # audit CODE the volume would otherwise shadow.
+      - CONSOLE_AUDIT_LOG=/app/console/audit-data/audit.log.jsonl
+    volumes:
+      # Durable fleet registry + desired/applied sidecars (best-effort JSON
+      # persistence under console/data).
+      - console-data:/app/console/data
+      # Signing trust root + active key so the console can SIGN operator-pushed
+      # desired config/release bundles (I6) via feature routers' deps.signer. The
+      # image bakes signing/ code; the gitignored key material is mounted from the
+      # host (in prod: a secrets manager). Read-only.
+      - ./signing/trust_root.json:/app/signing/trust_root.json:ro
+      - ./signing/keys:/app/signing/keys:ro
+      # Durable, hash-chained operator audit trail (I5) survives console restarts.
+      # Mounted at a DATA path (see CONSOLE_AUDIT_LOG) — NOT /app/audit, which is
+      # the baked audit code the empty volume would shadow.
+      - console-audit:/app/console/audit-data
+    ports:
+      # Operator-facing console UI/API. Reachable on cp-net as http://console:8080;
+      # published to the host for the operator.
+      - "8080:8080"
+    networks:
+      - cp-net
+    healthcheck:
+      # python:3.12-slim has no curl; use the stdlib to probe liveness.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).status==200 else 1)"
+      interval: 15s
+      timeout: 4s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # --- fyralis-agent: data-plane heartbeat agent (WS-AGENT) ------------------
+  # Runs IN THE CUSTOMER VPC (data plane). Every AGENT_INTERVAL_S it collects a
+  # C4 DeploymentRecord (version/region/tier/license-expiry + health derived from
+  # a local /healthz SLI probe) and POSTs it to the console's /api/v1/heartbeat
+  # over an OUTBOUND https call. Console unreachable -> BUFFERS to a durable local
+  # queue and retries with backoff (I3 — never crashes, never blocks local ops).
+  # Pulls + VERIFIES signed config bundles before applying (I6); refuses
+  # privileged actions when its local signed license is missing/expired/tampered.
+  #
+  # I2 — OUTBOUND ONLY: there is NO `ports:` / EXPOSE here, by design. The agent
+  # opens no listening socket; nothing reaches in to it. For the single-host
+  # in-cluster demo it attaches to cp-net (to reach the console by name) AND
+  # dataplane-net (to probe the local data plane). In a REAL BYOC deploy this runs
+  # in the customer VPC and AGENT_CONSOLE_URL is the public vendor-console TLS URL.
+  #
+  # BUILD CONTEXT is the control-plane ROOT (.) so the image includes signing/
+  # (verify_bundle/signing_lib) + lib/ (DeploymentRecord). Dockerfile at
+  # agent/Dockerfile.
+  fyralis-agent:
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    image: fyralis/agent
+    # OUTBOUND-ONLY: no ports published, no listener (I2).
+    environment:
+      AGENT_CONSOLE_URL: "${AGENT_CONSOLE_URL:-http://console:8080}"
+      # Bearer token the agent presents on the console write path (I4). Read from
+      # the read-only file mounted below (kept off the process env / command line);
+      # without it the console answers 401 and the agent buffers + retries (I3).
+      AGENT_CONSOLE_TOKEN_FILE: "/run/secrets/console_ingest_token"
+      AGENT_TENANT_ID: "${AGENT_TENANT_ID:-acme}"
+      AGENT_DEPLOYMENT_ID: "${AGENT_DEPLOYMENT_ID:-acme-use1-0001}"
+      AGENT_REGION: "${AGENT_REGION:-us-east-1}"
+      AGENT_TELEMETRY_TIER: "${AGENT_TELEMETRY_TIER:-T1}"
+      AGENT_INTERVAL_S: "${AGENT_INTERVAL_S:-30}"
+      # Local data-plane health endpoint the agent probes for its SLI-derived health.
+      AGENT_HEALTHZ_URL: "${AGENT_HEALTHZ_URL:-http://127.0.0.1:8088/healthz}"
+      # Paths inside the container (see mounts below).
+      AGENT_VERSION_FILE: "/app/agent/VERSION"
+      AGENT_LICENSE_PATH: "/run/secrets/license.json"
+      AGENT_TRUST_ROOT: "/app/signing/trust_root.json"
+      AGENT_BUFFER_PATH: "/var/lib/fyralis-agent/buffer.jsonl"
+      AGENT_CONFIG_DIR: "/var/lib/fyralis-agent/applied-config"
+    volumes:
+      # The signed license bundle (license.json + sidecars), validated locally (I6).
+      # bootstrap.sh onboards the demo tenant and copies the bundle's
+      # <tenant>.license.json trio into ./_runtime/agent/ (gitignored / per-deploy).
+      - ./_runtime/agent/license.json:/run/secrets/license.json:ro
+      - ./_runtime/agent/license.json.sig:/run/secrets/license.json.sig:ro
+      - ./_runtime/agent/license.json.manifest.json:/run/secrets/license.json.manifest.json:ro
+      # Console write token (I4) — minted by bootstrap.sh into _runtime/secrets/,
+      # mounted read-only; the agent reads it via AGENT_CONSOLE_TOKEN_FILE.
+      - ./_runtime/secrets/console_ingest_token:/run/secrets/console_ingest_token:ro
+      # PUBLIC trust root only — the agent verifies, never signs. Written by
+      # signing/keygen.py --activate during bootstrap.sh.
+      - ./signing/trust_root.json:/app/signing/trust_root.json:ro
+      # Durable buffer + applied-config survive restarts (I3 / I6).
+      - agent-state:/var/lib/fyralis-agent
+    depends_on:
+      - console
+    networks:
+      # cp-net so it can reach the console by name for the in-cluster demo;
+      # dataplane-net so it can probe the local data plane.
+      - cp-net
+      - dataplane-net
+    restart: unless-stopped
+    # NOTE: no healthcheck that opens a port. The control plane observes the agent
+    # via its HEARTBEATS, which is the intended health signal (C4).
+
+  # ==========================================================================
+  # Phase 5 — Operate the fleet (release / config-dist / metering / audit /
+  #           upgrade — merged from each dir's service.compose.yml fragment)
+  # ==========================================================================
+  # All Phase-5 images build from the control-plane ROOT context (.) with a
+  # per-dir dockerfile, exactly like console/fyralis-agent, so each image can
+  # COPY in signing/ (sign_bundle/verify_bundle/signing_lib) + lib/. The agent
+  # reaches config-dist / release-registry BY SERVICE NAME on cp-net
+  # (config-dist:8090, release-registry:8090); the host-port publish is local-
+  # dev convenience only. Because two services listen on container port 8090,
+  # config-dist keeps host 8090 and release-registry is host-mapped to 8091
+  # (container stays 8090 — the in-cluster contract is unchanged).
+
+  # --- release-registry: serves signed release bundles by version (WS-RELEASE) -
+  # FastAPI/uvicorn over the on-disk ReleaseRegistry (publish.py serve). Serves
+  # bundles in the exact layout the agent's config_pull/verify_bundle consumes:
+  #   GET /releases/<version>/<tarball>[.sig|.manifest.json]
+  #   GET /releases/latest   GET /index.json   GET /healthz
+  # Re-verifies the ed25519 signature before publish/serve (I6). build_release.py
+  # and rollout.py are operator/CD CLIs (run on demand), not declared here.
+  release-registry:
+    build:
+      context: .
+      dockerfile: release/Dockerfile
+    image: fyralis/release-registry
+    environment:
+      - CP_RELEASE_REGISTRY=/app/release/_registry
+      - CP_RELEASE_HOST=0.0.0.0
+      - CP_RELEASE_PORT=8090
+    command:
+      # Absolute path — the image WORKDIR is /app/release, so a relative
+      # `release/publish.py` would resolve to /app/release/release/publish.py.
+      - python
+      - /app/release/publish.py
+      - serve
+      - --registry
+      - /app/release/_registry
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8090"
+    volumes:
+      - release-registry-data:/app/release/_registry
+    expose:
+      # cp-net-ONLY (I4/C5). NO host `ports:` — the agent reaches it by service name
+      # release-registry:8090 on cp-net (through the auth-proxy in prod); nothing on
+      # the host should serve/pull release bundles directly.
+      - "8090"
+    networks:
+      - cp-net
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/healthz',timeout=3).status==200 else 1)"
+      interval: 15s
+      timeout: 4s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # --- config-dist: signed per-deployment config distribution (WS-CONFIG) ------
+  # FastAPI/uvicorn over the per-deployment, versioned, ed25519-SIGNED ConfigStore
+  # (flags + telemetry_tier (C3) + token-rotation schedule (FR-D4)). Implements the
+  # exact agent-pull contract (agent/config_pull.py): GET /config/{deployment_id}
+  # [.sig|.manifest.json] + GET /trust_root.json. A tier change / flag flip is a
+  # NEW signed version (no redeploy); the agent verifies-before-apply (I6). Signs
+  # with its own active key under the persisted signing home (mount a shared CP
+  # keystore + set CONFIG_DIST_SIGNING_HOME/KEY_ID to chain to one trust root).
+  config-dist:
+    build:
+      context: .
+      dockerfile: config-dist/Dockerfile
+    image: fyralis/config-dist
+    environment:
+      CONFIG_DIST_PORT: "8090"
+      CONFIG_DIST_STORE_ROOT: /data/store
+      CONFIG_DIST_SIGNING_HOME: /data/signing-home
+      CONFIG_DIST_KEY_ID: cp-config-dist
+    volumes:
+      - config-dist-data:/data
+    command:
+      - python
+      - -m
+      - uvicorn
+      - config_service:app
+      - --app-dir
+      - /app/config-dist
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8090"
+    expose:
+      # cp-net-ONLY (I4/C5). NO host `ports:` — the agent reaches this ONLY through
+      # the auth-proxy on cp-net (mTLS-terminated, tenant-scoped); a host publish
+      # would serve any deployment's signed config to anything on the host.
+      - "8090"
+    networks:
+      - cp-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/healthz').status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # --- metering: signed Tier-1 usage rollup BATCH job (WS-METER, FR-F2/F3) -----
+  # Reads AGGREGATE Tier-1 counters out of central Mimir one tenant at a time via
+  # X-Scope-OrgID (C5) — obs-per-source, think_runs, think cost_usd, ingestion
+  # volume — computes a per-tenant usage rollup over a billing period and SIGNS it
+  # (ed25519) so usage is tamper-evident (FR-F2). export.py emits signed rollups
+  # for billing. One-shot CONTROL-PLANE job (wrap with a scheduler for monthly
+  # close); NEVER dials a data plane (I2) — it only reads Mimir on cp-net. The
+  # default command runs the OFFLINE self-test so `up` proves the image is wired;
+  # override `command` to bill for real (see metering/README.md).
+  metering:
+    build:
+      context: .
+      dockerfile: metering/Dockerfile
+    image: fyralis/metering
+    environment:
+      # Point at the auth-proxy to have the proxy inject X-Scope-OrgID from the
+      # cert SAN instead of the job setting it itself (defence in depth).
+      MIMIR_URL: "http://mimir:9009"
+    volumes:
+      # Private signing key + trust root, read-only (image carries no secret).
+      - ./signing/keys:/app/signing/keys:ro
+      - ./signing/trust_root.json:/app/signing/trust_root.json:ro
+      # Where signed rollups + billing exports land (persisted for billing).
+      - metering-out:/app/metering/out
+    networks:
+      - cp-net
+    command: ["python", "/app/metering/selftest.py"]
+    restart: "no"
+
+  # --- audit: append-only hash-chained audit log + break-glass (WS-AUDIT, I5) --
+  # On-demand CLI image (NOT a daemon) — run via `docker compose run --rm audit
+  # <args>`. Provides the append-only, hash-chained audit log (FR-G) + the
+  # customer-granted, scoped, time-boxed break-glass workflow (I5). Each append
+  # re-signs an ed25519 chain-head checkpoint (whole-file tamper-evidence on top of
+  # the hash chain). The log + grant store persist on the audit-data volume so the
+  # chain survives restarts. Default command verifies the chain.
+  audit:
+    build:
+      context: .
+      dockerfile: audit/Dockerfile
+    image: fyralis/audit
+    environment:
+      AUDIT_LOG: /data/audit.log.jsonl
+      AUDIT_STORE: /data/breakglass_grants.json
+    volumes:
+      - audit-data:/data
+      # Private signing key + trust root, read-only so the image carries no secret.
+      - ./signing/keys:/app/signing/keys:ro
+      - ./signing/trust_root.json:/app/signing/trust_root.json:ro
+    command: ["--log", "/data/audit.log.jsonl", "--store", "/data/breakglass_grants.json", "audit", "verify"]
+    networks:
+      - cp-net
+    restart: "no"
+
+  # --- cp-upgrade-tools: on-demand CP-upgrade operator container (WS-CP-UPGRADE) -
+  # NOT an always-on service. Carries the trust-overlap helper + rolling-upgrade /
+  # trust-overlap scripts + a python with cryptography so an operator can run the
+  # FR-A5 CA-rotation dance and the NFR-6 rolling restart from inside cp-net.
+  # Publishes NO ports and runs NO daemon (restart: "no"; I2 intact). Run via
+  # `docker compose run --rm cp-upgrade-tools <cmd>` (see upgrade/UPGRADE_RUNBOOK.md).
+  cp-upgrade-tools:
+    image: python:3.12-slim
+    working_dir: /app
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        pip install --quiet --no-cache-dir cryptography pyyaml >/dev/null 2>&1 || \
+          pip install --quiet cryptography pyyaml
+        exec "$@"
+      - sh
+    command:
+      - python
+      - upgrade/trust_bundle.py
+      - list
+      - ca/pki/ca-chain.crt
+    volumes:
+      # Mount the whole control-plane tree read-write so the operator can edit the
+      # trust bundle in place (ca/pki is gitignored; this is the live bundle).
+      - .:/app
+      # OPTIONAL: to let this container ALSO drive `docker compose` for the rolling
+      # restart, uncomment the docker socket mount. Off by default (privileged).
+      # - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - cp-net
+    restart: "no"
+
+  # ==========================================================================
+  # Phase 6 — control-plane SELF-OBSERVABILITY (WS-SELFOBS / NFR-10)
+  #           "silence != health" — a DEDICATED, INDEPENDENT watchdog stack,
+  #           merged from self-obs/service.compose.yml. Kept separate from the
+  #           central Mimir/fleet path so it survives a full fleet-pipeline
+  #           outage and can tell you THAT pipeline is what is down.
+  # ==========================================================================
+
+  # --- cp-self-obs-exporter: the ACTIVE prober ------------------------------
+  # Probes every CP service's health/readiness on each scrape and exposes
+  # up/latency + the ingest-path-alive synthetic + the silence heartbeat on
+  # :9110/metrics. auth-proxy is mTLS-only so it is probed by a TLS HANDSHAKE
+  # (there is no unauthenticated /healthz). Build context is THIS dir (./self-obs).
+  cp-self-obs-exporter:
+    build:
+      context: ./self-obs
+      dockerfile: Dockerfile
+    image: fyralis/cp-self-obs
+    container_name: cp-self-obs-exporter
+    environment:
+      CP_SELFOBS_LISTEN_HOST: "0.0.0.0"
+      CP_SELFOBS_LISTEN_PORT: "9110"
+      CP_SELFOBS_PROBE_TIMEOUT_S: "5"
+      CP_AUTHPROXY_HOST: "auth-proxy"
+      CP_AUTHPROXY_PORT: "8443"
+      CP_MIMIR_URL: "http://mimir:9009/ready"
+      CP_LOKI_URL: "http://loki:3100/ready"
+      CP_GRAFANA_URL: "http://grafana:3000/api/health"
+      CP_CONSOLE_URL: "http://console:8080/healthz"
+      CP_CONFIGDIST_URL: "http://config-dist:8090/healthz"
+      CP_RELEASE_URL: "http://release-registry:8090/healthz"
+    expose:
+      # cp-net-ONLY (I4/C5). NO host `ports:` — cp-prometheus scrapes /metrics by
+      # service name on cp-net; this watchdog is internal-only.
+      - "9110"
+    networks:
+      - cp-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9110/metrics',timeout=3).status==200 else 1)"
+      interval: 20s
+      timeout: 4s
+      retries: 3
+      start_period: 10s
+
+  # --- cp-prometheus: the dedicated CP-self watchdog Prometheus --------------
+  # Scrapes the exporter (tight 15s) + mimir/loki/grafana /metrics directly,
+  # loads cp_rules.yml (silence alerts incl. absent() of the heartbeat), and is
+  # provisioned into Grafana as the "CP Self-Obs (Prometheus)" datasource (uid
+  # fyralis-cp-prometheus) backing the cp_self dashboard.
+  cp-prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: cp-prometheus
+    command:
+      - --config.file=/etc/prometheus/cp-prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+      - --web.listen-address=0.0.0.0:9090
+    volumes:
+      - ./self-obs/cp-prometheus.yml:/etc/prometheus/cp-prometheus.yml:ro
+      - ./self-obs/cp_rules.yml:/etc/prometheus/cp_rules.yml:ro
+      - cp-self-obs-data:/prometheus
+    expose:
+      # cp-net-ONLY (I4/C5). NO host `ports:` — the CP-self watchdog TSDB is queried
+      # by the operator THROUGH Grafana (provisioned datasource on cp-net), not from
+      # the host. Liveness is the container healthcheck below.
+      - "9090"
+    networks:
+      - cp-net
+    depends_on:
+      cp-self-obs-exporter:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

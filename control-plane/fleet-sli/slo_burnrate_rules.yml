@@ -1,0 +1,189 @@
+# =============================================================================
+# fleet-sli / slo_burnrate_rules.yml — WS-FLEETSLI
+# -----------------------------------------------------------------------------
+# SLO error-budget recording rules + MULTI-WINDOW BURN-RATE alerts derived from
+# NFR-5 (see slo.md for the full SLO definitions). These load into the Mimir
+# RULER under `__fleet__` alongside recording_rules.yml / alert_rules.yml and
+# evaluate per-deployment (every series carries tenant_id/deployment_id/region).
+#
+# NFR-5 translated to SLOs:
+#   SLO-1 LIVENESS  — a dead deployment is detected within 3 missed heartbeats
+#                     (~90s). Encoded as a fast (short-for) liveness page; the
+#                     burn-rate machinery is for the availability SLO below.
+#   SLO-2 AVAILABILITY — 99.5% of gateway requests are non-5xx over 30 days.
+#                        Error budget = 0.5%. An SLI breach must PAGE within 2
+#                        minutes (NFR-5). Achieved with the Google SRE
+#                        multi-window, multi-burn-rate method:
+#                          * FAST page  : 14.4x burn over (5m AND 1h) → ~2m detect,
+#                                         budget gone in ~2 days at this rate.
+#                          * SLOW ticket: 6x burn over (30m AND 6h)  → catches slow
+#                                         steady burns that the fast window misses.
+#
+# WHY multi-window: a single short window is noisy (flaps on a 1-request blip);
+# a single long window is slow (misses a fast outage). Requiring BOTH the short
+# and the long window to exceed the burn-rate threshold gives a fast page that
+# does not flap, satisfying the "page within 2 min" freshness target without a
+# storm of false pages.
+#
+# DEPENDS on recording_rules.yml for fyralis:gateway_5xx_rate:5m /
+# fyralis:gateway_request_rate:5m AND on the multi-window ratio rules recorded
+# in the FIRST group below (evaluated top-to-bottom each interval).
+# =============================================================================
+
+groups:
+
+  # ===========================================================================
+  # GROUP A — Availability SLI ratios at the four burn-rate windows.
+  #   error_ratio = rate(5xx) / rate(total), guarded denominator. One series per
+  #   deployment. These FEED the burn-rate alerts in group B.
+  # ===========================================================================
+  - name: fleet_slo_availability_ratios
+    interval: 30s
+    rules:
+      - record: fyralis:gateway_error_ratio:5m
+        expr: |
+          (
+            sum by (tenant_id, deployment_id, region) (rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum by (tenant_id, deployment_id, region) (rate(http_requests_total[5m])), 1)
+          )
+      - record: fyralis:gateway_error_ratio:30m
+        expr: |
+          (
+            sum by (tenant_id, deployment_id, region) (rate(http_requests_total{status=~"5.."}[30m]))
+            /
+            clamp_min(sum by (tenant_id, deployment_id, region) (rate(http_requests_total[30m])), 1)
+          )
+      - record: fyralis:gateway_error_ratio:1h
+        expr: |
+          (
+            sum by (tenant_id, deployment_id, region) (rate(http_requests_total{status=~"5.."}[1h]))
+            /
+            clamp_min(sum by (tenant_id, deployment_id, region) (rate(http_requests_total[1h])), 1)
+          )
+      - record: fyralis:gateway_error_ratio:6h
+        expr: |
+          (
+            sum by (tenant_id, deployment_id, region) (rate(http_requests_total{status=~"5.."}[6h]))
+            /
+            clamp_min(sum by (tenant_id, deployment_id, region) (rate(http_requests_total[6h])), 1)
+          )
+      # The SLO target + budget as recorded scalars-per-deployment so dashboards
+      # and the burn-rate alerts read one place. error_budget = 1 - 0.995 = 0.005.
+      - record: fyralis:slo_availability_target
+        expr: |
+          0.995 + (0 * fyralis:gateway_error_ratio:5m)
+      - record: fyralis:slo_availability_error_budget
+        expr: |
+          0.005 + (0 * fyralis:gateway_error_ratio:5m)
+      # Remaining error budget over the 30d window (informational; for the
+      # console budget gauge). 1 means full budget, 0 means exhausted.
+      - record: fyralis:slo_availability_budget_remaining
+        expr: |
+          clamp_min(
+            1 - (
+              (
+                sum by (tenant_id, deployment_id, region) (rate(http_requests_total{status=~"5.."}[30d]))
+                /
+                clamp_min(sum by (tenant_id, deployment_id, region) (rate(http_requests_total[30d])), 1)
+              ) / 0.005
+            ),
+            0
+          )
+
+  # ===========================================================================
+  # GROUP B — Multi-window, multi-burn-rate AVAILABILITY page/ticket (SLO-2).
+  #   Burn rate = error_ratio / error_budget(0.005).
+  #     14.4x → exhausts a 30d budget in ~2 days  (FAST, page)
+  #      6.0x → exhausts a 30d budget in ~5 days   (SLOW, ticket)
+  #   The 2-minute detection target (NFR-5) is met by the 5m short window with a
+  #   for:2m hold — the long window only GATES (prevents single-blip flaps), it
+  #   does not delay the page.
+  # ===========================================================================
+  - name: fleet_slo_availability_burn
+    rules:
+      # FAST burn → PAGE within ~2 min. Requires BOTH 5m and 1h windows hot.
+      - alert: FleetSLOAvailabilityFastBurn
+        expr: |
+          (fyralis:gateway_error_ratio:5m  > (14.4 * 0.005))
+          and on (tenant_id, deployment_id, region)
+          (fyralis:gateway_error_ratio:1h  > (14.4 * 0.005))
+        for: 2m
+        labels:
+          severity: page
+          scope: fleet
+          slo: availability
+          burn: fast
+        annotations:
+          summary: "FAST availability burn on {{ $labels.deployment_id }} (14.4x)"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}
+            region={{ $labels.region }}: gateway error ratio is burning the 99.5%
+            availability budget at >14.4x over both 5m and 1h windows
+            (5m={{ $value | humanizePercentage }}). At this rate the 30d budget is
+            gone in ~2 days. Page now (NFR-5: SLI breach → page ≤2 min).
+
+      # SLOW burn → TICKET. Requires BOTH 30m and 6h windows hot.
+      - alert: FleetSLOAvailabilitySlowBurn
+        expr: |
+          (fyralis:gateway_error_ratio:30m > (6 * 0.005))
+          and on (tenant_id, deployment_id, region)
+          (fyralis:gateway_error_ratio:6h  > (6 * 0.005))
+        for: 15m
+        labels:
+          severity: ticket
+          scope: fleet
+          slo: availability
+          burn: slow
+        annotations:
+          summary: "SLOW availability burn on {{ $labels.deployment_id }} (6x)"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            gateway error ratio is burning the availability budget at >6x over both
+            30m and 6h windows ({{ $value | humanizePercentage }}). Investigate before
+            the budget exhausts.
+
+  # ===========================================================================
+  # GROUP C — LIVENESS SLO (SLO-1): dead deployment detected within 3 missed
+  #   heartbeats (~90s). Workers touch every ~5s; /healthz flips at 120s. We
+  #   page on heartbeat age crossing 90s held for 30s, and on a hard scrape-gap.
+  #   This is a freshness SLO, not an error-budget SLO, so it is a direct
+  #   fast-detect page rather than a burn-rate alert.
+  #   DEPENDS: fyralis:worker_heartbeat_age_max_seconds (recording_rules.yml).
+  # ===========================================================================
+  - name: fleet_slo_liveness
+    rules:
+      # 3 missed heartbeats ≈ 90s. for:30s keeps it inside the NFR-5 ~90s budget
+      # while filtering a single late scrape.
+      - alert: FleetSLOLivenessHeartbeatMissed
+        expr: fyralis:worker_heartbeat_age_max_seconds > 90
+        for: 30s
+        labels:
+          severity: page
+          scope: fleet
+          slo: liveness
+        annotations:
+          summary: "Deployment {{ $labels.deployment_id }} liveness budget breached (~3 missed heartbeats)"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            worst worker heartbeat age is {{ $value | humanizeDuration }} (>90s ≈ 3
+            missed heartbeats). NFR-5 requires detection within ~90s — paging now.
+
+      # Hard scrape gap: the deployment stopped reporting `up` entirely. `absent`
+      # over the fleet job catches a deployment that vanished from remote-write.
+      # NOTE: this fires WITHOUT deployment labels (the series is gone), so the
+      # page names the SCRAPE JOB; correlate with the fleet registry last_heartbeat.
+      - alert: FleetSLOLivenessDeploymentSilent
+        expr: |
+          max by (tenant_id, deployment_id) (up{job=~"fyralis-.*"}) == 0
+        for: 30s
+        labels:
+          severity: page
+          scope: fleet
+          slo: liveness
+        annotations:
+          summary: "Deployment {{ $labels.deployment_id }} is SILENT (all fyralis targets down)"
+          description: >-
+            tenant={{ $labels.tenant_id }} deployment={{ $labels.deployment_id }}:
+            every fyralis worker target reports up==0 — the data plane is dead or the
+            agent stopped remote-writing. Cross-check the fleet registry heartbeat.

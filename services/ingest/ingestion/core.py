@@ -36,15 +36,14 @@ Queue design — BUILD-PLAN allows the agent to pick:
 from __future__ import annotations
 
 import hashlib
-import json
 import os
-import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
 import asyncpg
 
+from lib.embeddings.mode import write_obs_embeddings
 from lib.embeddings.ollama import (
     EMBEDDING_DIM,
     OllamaClient,
@@ -56,7 +55,12 @@ from lib.shared.ids import uuid7
 from lib.shared.types import ObservationCreate, ObservationRow
 from services.domain.actors.repo import ActorRepo
 from services.domain.clarifications import open_clarification_request
-from services.domain.entity_aliases.repo import EntityAliasRepo, normalize_phrase
+from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.ingest.ingestion.scope_resolution import (
+    candidate_phrases,
+    resolve_actor_ref,
+    resolve_entities_in_text,
+)
 from services.domain.triggers import enqueue_trigger as enqueue_think_trigger
 from services.ingest.ingestion.handlers import (
     ObservationDraft,
@@ -73,11 +77,12 @@ from services.domain.observations.partitions import ensure_partition_for_occurre
 from services.domain.observations.repo import ObservationRepository
 
 
-# Phrase extraction: a tiny tokenizer that yields 1- to 3-word runs of
-# alphanumerics + hyphens. Not linguistic — the fast path does exact
-# lookups against known aliases, so precision > recall here. Wave 2-B
-# entity resolver worker handles the long tail with LLM help.
-_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9\-]{1,}")
+# Phrase extraction (`candidate_phrases`), the entity heuristic, and the
+# actor/entity resolvers now live in
+# `services.ingest.ingestion.scope_resolution` so the document-memory summary
+# worker can re-resolve scope through the same blessed helpers
+# (docs/plans/document-memory-substrate.md §4.3). `candidate_phrases` is
+# imported above and re-exported here for backward compatibility.
 
 
 def _dedup_lock_key(tenant_id: UUID, source_channel: str, external_id: str) -> int:
@@ -85,37 +90,6 @@ def _dedup_lock_key(tenant_id: UUID, source_channel: str, external_id: str) -> i
         f"{tenant_id}\0{source_channel}\0{external_id}".encode("utf-8")
     ).digest()
     return int.from_bytes(digest[:8], "big") & 0x7FFFFFFFFFFFFFFF
-
-
-def candidate_phrases(text: str, *, max_phrases: int = 50) -> list[str]:
-    """Generate candidate phrases (1-, 2-, and 3-grams) for fast-path
-    entity lookup.
-
-    - Only alpha starters; skips tokens with no letters to drop stray
-      numeric / timestamp-like chunks.
-    - Deterministic, case-preserving order; normalization happens
-      inside EntityAliasRepo.fast_path_resolve.
-    - Capped at `max_phrases` so pathological long text doesn't
-      explode the fan-out. 50 is generous for typical Slack chatter.
-    """
-    if not text:
-        return []
-    tokens = [m.group(0) for m in _TOKEN_RE.finditer(text)]
-    phrases: list[str] = []
-    seen: set[str] = set()
-    for i, tok in enumerate(tokens):
-        for n in (1, 2, 3):
-            if i + n > len(tokens):
-                break
-            gram = " ".join(tokens[i : i + n])
-            norm = normalize_phrase(gram)
-            if not norm or norm in seen:
-                continue
-            seen.add(norm)
-            phrases.append(gram)
-            if len(phrases) >= max_phrases:
-                return phrases
-    return phrases
 
 
 @dataclass
@@ -385,11 +359,15 @@ async def ingest_from_draft(
     obs_id = uuid7()
     actor = await _resolve_actor(draft, actor_repo)
     entities = await _resolve_entities(draft, alias_repo, tenant_id)
-    embedding = (
-        _EmbeddingResult(embedding=None, pending=True)
-        if summary_pending
-        else await _compute_embedding(embedder, draft.content_text)
-    )
+    if not write_obs_embeddings():
+        # OBS_EMBEDDING_MODE=cutover: observation embeddings are decommissioned;
+        # the T1 retrieval seed re-embeds content_text on demand. Insert NULL
+        # with pending=FALSE so no backfill worker chases the row.
+        embedding = _EmbeddingResult(embedding=None, pending=False)
+    elif summary_pending:
+        embedding = _EmbeddingResult(embedding=None, pending=True)
+    else:
+        embedding = await _compute_embedding(embedder, draft.content_text)
     obs_create = _build_observation_create(
         obs_id=obs_id,
         tenant_id=tenant_id,
@@ -412,7 +390,7 @@ async def ingest_from_draft(
         tenant_id=tenant_id,
         draft=draft,
         row=result.observation,
-        skip=summary_pending,
+        skip=summary_pending or not write_obs_embeddings(),
     )
     await _publish_summarization_request_if_needed(
         producer=summarization_producer,
@@ -433,19 +411,12 @@ async def _resolve_actor(
     draft: ObservationDraft,
     actor_repo: ActorRepo | None,
 ) -> _ActorResolution:
-    if not draft.source_actor_ref or actor_repo is None:
-        return _ActorResolution(actor_id=None, unresolved_actor_ref=None)
-    ref = draft.source_actor_ref
-    if ":" not in ref:
-        ref = f"{draft.source_channel}:{ref}"
-    try:
-        resolved_actor_id = await actor_repo.resolve_by_source_actor_ref(ref)
-    except ValidationError:
-        resolved_actor_id = None
-    return _ActorResolution(
-        actor_id=resolved_actor_id,
-        unresolved_actor_ref=ref if resolved_actor_id is None else None,
+    actor_id, unresolved = await resolve_actor_ref(
+        draft.source_actor_ref,
+        draft.source_channel,
+        actor_repo,
     )
+    return _ActorResolution(actor_id=actor_id, unresolved_actor_ref=unresolved)
 
 
 async def _resolve_entities(
@@ -453,23 +424,13 @@ async def _resolve_entities(
     alias_repo: EntityAliasRepo | None,
     tenant_id: UUID,
 ) -> _EntityResolution:
-    entities_mentioned: list[dict[str, Any]] = list(draft.entities_hint)
-    unresolved_phrases: list[str] = list(draft.unresolved_phrases)
-    if alias_repo is None or not draft.content_text:
-        return _EntityResolution(entities_mentioned, unresolved_phrases)
-
-    seen_ref_keys = {json.dumps(e, sort_keys=True) for e in entities_mentioned}
-    phrases = candidate_phrases(draft.content_text)
-    resolved_by_norm = await alias_repo.fast_path_resolve_many(phrases, tenant_id)
-    for phrase in phrases:
-        ref = resolved_by_norm.get(normalize_phrase(phrase))
-        if ref is not None:
-            key = json.dumps(ref, sort_keys=True)
-            if key not in seen_ref_keys:
-                seen_ref_keys.add(key)
-                entities_mentioned.append(ref)
-        elif _looks_like_entity(phrase) and phrase not in unresolved_phrases:
-            unresolved_phrases.append(phrase)
+    entities_mentioned, unresolved_phrases = await resolve_entities_in_text(
+        draft.content_text,
+        alias_repo,
+        tenant_id,
+        seed_entities=list(draft.entities_hint),
+        seed_unresolved=list(draft.unresolved_phrases),
+    )
     return _EntityResolution(entities_mentioned, unresolved_phrases)
 
 
@@ -596,6 +557,14 @@ async def _insert_observation_and_maybe_enqueue_trigger(
     with notify_scope() as scope:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # The durable artifact catalog is strict-RLS.  Bind the same
+                # tenant for the entire observation transaction so the row,
+                # blob upsert and observation_artifacts link are one atomic
+                # tenant-scoped unit (and the setting cannot leak on reuse).
+                await conn.execute(
+                    "SELECT set_config('app.current_tenant', $1::text, true)",
+                    str(tenant_id),
+                )
                 existing = await _lock_and_find_existing_observation(
                     conn,
                     tenant_id=tenant_id,
@@ -603,6 +572,13 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                 )
                 if existing is not None:
                     deduped_row = await repo.insert(obs_create, conn=conn)
+                    await _persist_artifacts_if_present(
+                        conn,
+                        tenant_id=tenant_id,
+                        observation_id=deduped_row.id,
+                        descriptors=draft.artifact_descriptors,
+                        content=obs_create.content,
+                    )
                     return IngestResult(
                         observation=deduped_row,
                         deduped=True,
@@ -610,6 +586,13 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                     )
                 row = await repo.insert(obs_create, conn=conn)
                 if draft.external_id is not None and row.id != obs_id:
+                    await _persist_artifacts_if_present(
+                        conn,
+                        tenant_id=tenant_id,
+                        observation_id=row.id,
+                        descriptors=draft.artifact_descriptors,
+                        content=obs_create.content,
+                    )
                     return IngestResult(
                         observation=row,
                         deduped=True,
@@ -626,6 +609,13 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                         else None
                     ),
                 )
+                await _persist_artifacts_if_present(
+                    conn,
+                    tenant_id=tenant_id,
+                    observation_id=row.id,
+                    descriptors=draft.artifact_descriptors,
+                    content=obs_create.content,
+                )
                 if enqueue_trigger:
                     trigger_queue_id = await _enqueue_event_arrival_trigger(
                         conn,
@@ -640,6 +630,36 @@ async def _insert_observation_and_maybe_enqueue_trigger(
         observation=row,
         deduped=False,
         trigger_queue_id=trigger_queue_id,
+    )
+
+
+async def _persist_artifacts_if_present(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    observation_id: UUID,
+    descriptors: list[dict[str, Any]],
+    content: dict[str, Any],
+) -> None:
+    """Persist private catalog refs without leaking them into JSONB content."""
+    if not descriptors:
+        return
+    from services.ingest.ingestion.artifacts import (
+        persist_observation_artifacts,
+        update_figma_snapshot_watermark,
+    )
+
+    await persist_observation_artifacts(
+        conn,
+        tenant_id=tenant_id,
+        observation_id=observation_id,
+        descriptors=descriptors,
+    )
+    await update_figma_snapshot_watermark(
+        conn,
+        tenant_id=tenant_id,
+        content=content,
+        descriptors=descriptors,
     )
 
 
@@ -788,20 +808,6 @@ async def _publish_summarization_request_if_needed(
         raw_s3_key=raw_key if isinstance(raw_key, str) else None,
         ingress_kind=summary.get("ingress_kind"),  # type: ignore[arg-type]
     )
-
-
-def _looks_like_entity(phrase: str) -> bool:
-    """Heuristic: phrase has a capital letter or contains a hyphen.
-
-    This intentionally errs on the side of enqueueing fewer common
-    words for the resolver worker. Wave 2-B can refine the rule or
-    move to a POS tagger — the queue key is stable either way.
-    """
-    if not phrase:
-        return False
-    if "-" in phrase:
-        return True
-    return any(c.isupper() for c in phrase)
 
 
 class _PrecomputedEmbedder:

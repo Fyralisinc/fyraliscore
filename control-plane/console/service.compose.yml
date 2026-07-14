@@ -1,0 +1,82 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — operator console fragment (WS-CONSOLE, P4)
+# ----------------------------------------------------------------------------
+# Standalone compose fragment. The integrate step merges this into the master
+# docker-compose.control-plane.yml (it replaces the commented `console:` stub in
+# the "Phase 4 — console" section). Do NOT edit the master file directly.
+#
+# WHAT THIS IS
+#   The operator console: a FastAPI/uvicorn service over the fleet registry (C4
+#   DeploymentRecord rows). It serves the P4 CONSOLE REST API contract
+#     POST /api/v1/register        {tenant_id?, region, plan} -> {tenant_id, deployment_id}
+#     POST /api/v1/heartbeat       {DeploymentRecord JSON}     -> upsert + recompute health
+#     GET  /api/v1/deployments     -> [DeploymentRecord w/ derived health]
+#     GET  /api/v1/deployments/{id}
+#     GET  /                       -> minimal HTML fleet rollup
+#   and listens on **8080** on **cp-net** (the P4 wiring contract).
+#
+# BUILD CONTEXT (read this at integrate time):
+#   build.context is the CONTROL-PLANE ROOT (`.`), not ./console — the image
+#   needs control-plane/lib (the shared C4 record + health math the console
+#   imports). The Dockerfile lives at console/Dockerfile. This mirrors how the
+#   auth-proxy fragment is built.
+#
+# Networks (cp-net) and the named volume are declared in the master compose file;
+# the standalone definitions at the bottom let this fragment run on its own.
+# ============================================================================
+
+services:
+  console:
+    build:
+      # Control-plane root so the image can COPY lib/ (the C4 record) + console/.
+      context: .
+      dockerfile: console/Dockerfile
+    # Operator surface over the fleet registry (C4 deployment records):
+    # list deployments, derived health, last-heartbeat age, license expiry,
+    # telemetry tier. Health is derived ON READ from heartbeat freshness (NFR-5:
+    # stale > 90s -> yellow, missing > 300s -> red).
+    environment:
+      - CP_CONSOLE_HOST=0.0.0.0
+      - CP_CONSOLE_PORT=8080
+      # JSON-file persistence of the fleet registry, on the mounted volume so a
+      # console restart does not lose the fleet.
+      - CP_CONSOLE_DATA_DIR=/app/console/data
+      # Heartbeat-age health thresholds (NFR-5 defaults; override to tune).
+      - CP_HEARTBEAT_YELLOW_AFTER_S=90
+      - CP_HEARTBEAT_RED_AFTER_S=300
+    volumes:
+      # Durable fleet registry (best-effort JSON persistence under console/data).
+      - console-data:/app/console/data
+    ports:
+      # Operator-facing console UI/API. On cp-net it is reachable as
+      # http://console:8080; published to the host for the operator.
+      - "8080:8080"
+    networks:
+      - cp-net
+    healthcheck:
+      # python:3.12-slim has no curl; use the stdlib to probe liveness.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz',timeout=3).status==200 else 1)"
+      interval: 15s
+      timeout: 4s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+# ---------------------------------------------------------------------------
+# When merged into docker-compose.control-plane.yml these are already defined
+# there (cp-net network). The standalone definitions below let
+# `docker compose --project-directory <control-plane-root> -f console/service.compose.yml up`
+# run on its own; on merge, compose unifies same-named networks/volumes so this
+# is harmless. (The console-data volume is console-owned — add it to the master
+# `volumes:` block at integrate time.)
+# ---------------------------------------------------------------------------
+networks:
+  cp-net:
+    driver: bridge
+
+volumes:
+  console-data:

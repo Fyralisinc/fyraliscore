@@ -1,0 +1,164 @@
+# =============================================================================
+# demo-dataplane / boundary-collector.demo.yaml
+# -----------------------------------------------------------------------------
+# A DEMO-ONLY boundary OTel Collector config used by the one-command bring-up.
+# It is the SAME shape as the production boundary/otel-collector-config.yaml
+# (Tier-1: allowlist-filter -> drop high-card/PII labels -> stamp tenant/
+# deployment/region identity -> remote-write through the mTLS auth-proxy) but
+# its ONLY scrape target is the demo-dataplane stub (demo-dataplane:9300),
+# instead of the ~29 real data-plane targets. This lets the demo exercise the
+# full boundary -> auth-proxy(mTLS) -> Mimir path without the real data plane.
+#
+# In PRODUCTION use boundary/otel-collector-config.yaml (real targets) — see
+# installer/. This file is a fixture; do not ship it to a customer.
+#
+# Env (set by the demo compose service):
+#   FYRALIS_TENANT_ID FYRALIS_DEPLOYMENT_ID FYRALIS_REGION FYRALIS_TELEMETRY_TIER
+#   FYRALIS_AUTH_PROXY_URL   e.g. https://auth-proxy:8443
+# mTLS material (mounted, the acme tenant bundle from bootstrap.sh):
+#   /etc/fyralis/ca/ca.crt        CA that signed the proxy server cert
+#   /etc/fyralis/agent/client.crt this deployment's per-tenant client cert
+#   /etc/fyralis/agent/client.key
+# =============================================================================
+
+receivers:
+  prometheus:
+    config:
+      global:
+        scrape_interval: 15s
+        scrape_timeout: 10s
+      scrape_configs:
+        # The ONLY target: the demo data-plane stub on :9300.
+        - job_name: fyralis-workers
+          metrics_path: /metrics
+          static_configs:
+            - targets:
+                - demo-dataplane:9300
+              labels:
+                tier: data-plane
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  # (2a) Tier-1 metric-family allowlist (Invariant I1). Mirrors the production
+  # boundary allowlist so only aggregate golden-12 families can egress.
+  filter/allowlist:
+    error_mode: ignore
+    metrics:
+      metric:
+        - >-
+          not (
+            name == "up" or
+            IsMatch(name, "^worker_heartbeat_age_seconds$") or
+            IsMatch(name, "^worker_uptime_seconds$") or
+            IsMatch(name, "^fyralis_schema_version$") or
+            IsMatch(name, "^fyralis_onboarding_shards$") or
+            IsMatch(name, "^fyralis_dlq_unresolved$") or
+            IsMatch(name, "^fyralis_dead_letter_rows$") or
+            IsMatch(name, "^fyralis_think_queue_pending$") or
+            IsMatch(name, "^fyralis_embedding_backlog_pending$") or
+            IsMatch(name, "^fyralis_oauth_token.*") or
+            IsMatch(name, "^fyralis_llm_breaker.*") or
+            IsMatch(name, "^fyralis_worker_expected_present.*") or
+            IsMatch(name, "^fyralis_worker_expected_running.*") or
+            IsMatch(name, "^fyralis_db_pool.*") or
+            IsMatch(name, "^fyralis_partition_coverage.*") or
+            IsMatch(name, "^kafka_consumergroup_lag.*") or
+            IsMatch(name, "^normalizer_consumer_lag_seconds.*") or
+            IsMatch(name, "^writer_(full_mode_writes|full_mode_dedup_hits|shadow_drop|poison_attempts)(_total)?$") or
+            IsMatch(name, "^reconciliation_pass_count.*") or
+            IsMatch(name, "^think_runs_(total|failed|latency).*") or
+            IsMatch(name, "^think_cost_recent_usd.*") or
+            IsMatch(name, "^embedding_(attempts|failures)_total$") or
+            IsMatch(name, "^webhook_verification_failures_total$") or
+            IsMatch(name, "^http_requests_total$") or
+            IsMatch(name, "^breaker_trips_total$") or
+            IsMatch(name, "^scrape_(samples_scraped|duration_seconds)$")
+          )
+
+  # (2b) Drop any high-cardinality / PII label (defense-in-depth, I1). The stub
+  # emits only bounded enum labels, but keep the backstop honest.
+  transform/redact-labels:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          - delete_key(attributes, "instance")
+          - delete_key(attributes, "id")
+          - delete_key(attributes, "url")
+          - delete_key(attributes, "path")
+          - delete_key(attributes, "user")
+          - delete_key(attributes, "email")
+
+  # (3) Stamp deployment identity (C4). The AUTHORITATIVE tenant scope is still
+  # X-Scope-OrgID injected by the auth-proxy from the verified cert SAN (I4) —
+  # this label is informational/group-by only.
+  resource:
+    attributes:
+      - key: tenant_id
+        value: ${env:FYRALIS_TENANT_ID}
+        action: upsert
+      - key: deployment_id
+        value: ${env:FYRALIS_DEPLOYMENT_ID}
+        action: upsert
+      - key: region
+        value: ${env:FYRALIS_REGION}
+        action: upsert
+      - key: telemetry_tier
+        value: ${env:FYRALIS_TELEMETRY_TIER}
+        action: upsert
+
+  transform/identity-to-labels:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["tenant_id"], resource.attributes["tenant_id"]) where resource.attributes["tenant_id"] != nil
+          - set(attributes["deployment_id"], resource.attributes["deployment_id"]) where resource.attributes["deployment_id"] != nil
+          - set(attributes["region"], resource.attributes["region"]) where resource.attributes["region"] != nil
+          - set(attributes["telemetry_tier"], resource.attributes["telemetry_tier"]) where resource.attributes["telemetry_tier"] != nil
+
+  batch:
+    send_batch_size: 8192
+    timeout: 10s
+
+exporters:
+  # Remote-write the FILTERED, IDENTITY-LABELED metrics to Mimir THROUGH the
+  # mTLS auth-proxy. This collector does NOT set X-Scope-OrgID — the proxy
+  # injects it from the verified client-cert SAN (C1/I4).
+  prometheusremotewrite:
+    endpoint: ${env:FYRALIS_AUTH_PROXY_URL}/api/v1/push
+    resource_to_telemetry_conversion:
+      enabled: false
+    tls:
+      insecure: false
+      ca_file: /etc/fyralis/ca/ca.crt
+      cert_file: /etc/fyralis/agent/client.crt
+      key_file: /etc/fyralis/agent/client.key
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 60s
+      max_elapsed_time: 0   # I3: keep buffering during a CP outage
+
+service:
+  extensions: []
+  pipelines:
+    metrics:
+      receivers: [prometheus]
+      processors:
+        - memory_limiter
+        - filter/allowlist
+        - transform/redact-labels
+        - resource
+        - transform/identity-to-labels
+        - batch
+      exporters: [prometheusremotewrite]
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: basic

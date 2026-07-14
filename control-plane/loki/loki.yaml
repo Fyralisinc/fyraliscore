@@ -1,0 +1,166 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — Loki (Tier 2 central log store)
+# ----------------------------------------------------------------------------
+# Grafana Loki, single-binary, filesystem storage. This is the VENDOR-owned
+# central store for **T2 redacted logs** (SPRINT_PLAN.md → C3). Logs arrive here
+# ALREADY REDACTED: the boundary OTel Collector inside the customer VPC strips
+# PII/payload before any byte leaves the VPC (Invariant I1). Loki is the sink,
+# not the redactor — see README.md "Trust boundary".
+#
+# Multi-tenancy (C5):
+#   auth_enabled: true  → Loki REQUIRES an X-Scope-OrgID header on every
+#   request and scopes all ingest + query by it. The header is NEVER accepted
+#   from outside cp-net: the auth-proxy injects it server-side from the verified
+#   client-cert tenant SAN on INGEST (C1/I4), and the operator Grafana sets it
+#   per-tenant on QUERY. Loki trusts the header ONLY because it can be reached
+#   solely from behind the proxy on cp-net.
+#
+# Storage:
+#   filesystem, local under /data (a docker volume). TSDB index + chunks live
+#   on local disk — no object store needed for the single-host CP. The compactor
+#   owns retention; the per-tenant retention period below is the policy.
+#
+# Validate:  yaml.safe_load(this file) and assert
+#   auth_enabled is true, a retention period is set, and per-tenant limits exist.
+# ============================================================================
+
+# --- multi-tenancy: REQUIRE X-Scope-OrgID on every request (C5) -------------
+# When true Loki refuses requests without X-Scope-OrgID and isolates every
+# tenant's streams. This is the single most important line for tenant isolation.
+auth_enabled: true
+
+# --- server -----------------------------------------------------------------
+server:
+  http_listen_address: 0.0.0.0
+  http_listen_port: 3100          # exposed on cp-net (service.compose.yml)
+  grpc_listen_address: 0.0.0.0
+  grpc_listen_port: 9095
+  log_level: info
+  # T2 log lines can be large even after redaction; allow a generous push body.
+  grpc_server_max_recv_msg_size: 8388608   # 8 MiB
+  grpc_server_max_send_msg_size: 8388608   # 8 MiB
+
+# --- common: single-binary, filesystem, local under /data -------------------
+common:
+  path_prefix: /data
+  replication_factor: 1            # single CP instance — no replication needed
+  ring:
+    kvstore:
+      store: inmemory              # single-binary: in-memory ring, no consul/etcd
+    instance_addr: 127.0.0.1
+  storage:
+    filesystem:
+      chunks_directory: /data/chunks
+      rules_directory: /data/rules
+
+# --- schema: TSDB v13 (current Loki 3.x index) ------------------------------
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+# --- storage backend details (filesystem under /data) -----------------------
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /data/tsdb-index
+    cache_location: /data/tsdb-cache
+  filesystem:
+    directory: /data/chunks
+
+# ============================================================================
+# RETENTION — owned by the compactor.
+# ----------------------------------------------------------------------------
+# retention_enabled lets the compactor delete chunks older than the retention
+# period. The fleet-wide default lives in limits_config.retention_period below;
+# per-tenant overrides can be layered via runtime_config (see overrides note).
+# ============================================================================
+compactor:
+  working_directory: /data/compactor
+  # Single filesystem backend; the compactor both compacts the index and applies
+  # retention deletes.
+  delete_request_store: filesystem
+  retention_enabled: true
+  # Wait before a chunk marked for deletion is actually removed (safety margin).
+  retention_delete_delay: 2h
+  compaction_interval: 10m
+
+# ============================================================================
+# PER-TENANT INGESTION LIMITS + RETENTION POLICY (limits_config).
+# ----------------------------------------------------------------------------
+# These bound every tenant by default (one customer = one X-Scope-OrgID). They
+# protect the shared CP store from a single noisy data plane and set the global
+# retention period the compactor enforces. Tighten/loosen per tenant via a
+# runtime overrides file (runtime_config) without restarting Loki.
+# ============================================================================
+limits_config:
+  # ---- retention -----------------------------------------------------------
+  # Fleet-wide retention for T2 logs. 31 days is a sane operational window for
+  # cross-tenant debugging without hoarding redacted logs indefinitely.
+  retention_period: 744h           # 31 days
+
+  # ---- per-tenant ingestion rate/burst (the noisy-neighbour guard) ---------
+  # Bytes/sec a single tenant may push, with a burst allowance. Sized for the
+  # T2 "fact-of-a-log" volume (redacted bodies, not raw payloads).
+  ingestion_rate_mb: 8             # 8 MB/s sustained per tenant
+  ingestion_burst_size_mb: 16      # 16 MB burst per tenant
+  per_stream_rate_limit: 3MB
+  per_stream_rate_limit_burst: 8MB
+
+  # ---- stream / label cardinality bounds -----------------------------------
+  max_streams_per_user: 10000      # cap active streams per tenant
+  max_label_names_per_series: 30   # bound label cardinality (T2 labels are enums)
+  max_line_size: 262144            # 256 KiB max single log line
+  max_line_size_truncate: true     # truncate over-long lines rather than reject
+
+  # ---- query bounds (protect the shared querier) ---------------------------
+  max_query_length: 745h           # never query past retention + slack
+  max_query_parallelism: 16
+  max_entries_limit_per_query: 5000
+
+  # ---- reject far-future / very-old samples at ingest ----------------------
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h # 7 days — late logs older than this dropped
+
+  # ---- structured-metadata (Loki 3.x): allowed for T2 identity attrs -------
+  allow_structured_metadata: true
+
+# --- per-tenant overrides hook ----------------------------------------------
+# Layer tenant-specific limit/retention overrides here WITHOUT a restart. Loki
+# hot-reloads this file. Empty/absent is fine — defaults above apply to all.
+# Example overrides/loki-overrides.yaml:
+#   overrides:
+#     acme:
+#       retention_period: 2160h        # 90 days for a premium tenant
+#       ingestion_rate_mb: 16
+runtime_config:
+  file: /etc/loki/overrides/loki-overrides.yaml
+  period: 30s
+
+# --- query scheduling / frontend (single-binary defaults) -------------------
+query_range:
+  align_queries_with_step: true
+  cache_results: true
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 100
+
+# --- ruler (optional alerting on logs; local filesystem rule store) ---------
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /data/rules
+  rule_path: /data/ruler-wal
+  enable_api: true
+
+# --- self-telemetry / usage report ------------------------------------------
+# This is a vendor-owned CP component; do not phone home to Grafana Labs.
+analytics:
+  reporting_enabled: false

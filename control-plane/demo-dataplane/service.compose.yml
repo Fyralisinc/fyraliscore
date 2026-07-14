@@ -1,0 +1,68 @@
+# =============================================================================
+# control-plane / demo-dataplane / service.compose.yml
+# -----------------------------------------------------------------------------
+# Standalone compose fragment merged into docker-compose.control-plane.yml by
+# the Assemble step. Do NOT edit the master file here.
+#
+# WHAT THIS ADDS
+#   demo-dataplane   a tiny stdlib-only HTTP server exposing the golden-12 SLI
+#                    fyralis_* metric families on :9300 — a realistic SCRAPE
+#                    TARGET for the boundary OTel Collector so the testable demo
+#                    exercises the full path
+#                       demo-dataplane(:9300)
+#                         -> boundary collector (scrape + redact + identity-stamp)
+#                         -> auth-proxy (mTLS, X-Scope-OrgID from cert SAN)
+#                         -> Mimir (multi-tenant store)
+#                         -> Grafana fleet view
+#                    WITHOUT standing up the real ingestion/reasoning/Postgres
+#                    data plane.
+#
+# PRODUCTION
+#   This service is a DEMO FIXTURE ONLY. In a real BYOC deployment the installer
+#   (control-plane/installer/) stands up the REAL data plane in the customer VPC
+#   and points the boundary collector at the real targets (workers :9300,
+#   gateway :8000, postgres-exporter :9187, kafka-exporter :9308, …). Drop this
+#   service in production: do NOT bring it up with the customer profile.
+#
+# NETWORK
+#   Lives on dataplane-net (the customer-VPC side), exactly where the real data
+#   plane would sit, so the boundary collector reaches it by service name as
+#   http://demo-dataplane:9300/metrics — the same shape as a real target.
+# =============================================================================
+
+services:
+  demo-dataplane:
+    build:
+      context: ./demo-dataplane
+      dockerfile: Dockerfile
+    image: fyralis/demo-dataplane
+    container_name: cp-demo-dataplane
+    environment:
+      DEMO_DP_HOST: "0.0.0.0"
+      DEMO_DP_PORT: "9300"
+      DEMO_DP_TENANT: "${AGENT_TENANT_ID:-acme}"
+      DEMO_DP_DEPLOYMENT: "${AGENT_DEPLOYMENT_ID:-acme-use1-0001}"
+      DEMO_DP_REGION: "${AGENT_REGION:-us-east-1}"
+      # healthy | degraded — flip to demo the fleet roll-up colour + alerts.
+      DEMO_DP_SCENARIO: "${DEMO_DP_SCENARIO:-healthy}"
+    ports:
+      # Operator-local convenience; on dataplane-net it is demo-dataplane:9300.
+      - "9300:9300"
+    networks:
+      - dataplane-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9300/healthz',timeout=3).status==200 else 1)"
+      interval: 20s
+      timeout: 4s
+      retries: 3
+      start_period: 5s
+
+# --- Uncomment ONLY to run this fragment standalone (outside the master compose) ---
+# networks:
+#   dataplane-net:
+#     driver: bridge

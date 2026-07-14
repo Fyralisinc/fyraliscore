@@ -119,8 +119,7 @@ def run4_scenarios(
             tenant_slug=f"r4-discord-{i}", source="discord",
             fixture_params={"guild_id": f"G_r4d{i}", "channels": 4,
                             "messages_per_channel": 5},
-            # 5% of 4 channels → 1 channel sampled → 5 obs (uniform).
-            expected_observation_count=5))
+            expected_observation_count=4 * 5))
     return out
 
 

@@ -170,6 +170,7 @@ FETCHER_DISPATCH: dict[str, Fetcher] = {
     "linkedin":  _not_implemented_fetcher("linkedin",  "IN-PEOPLE"),
     # WhatsApp is LIVE-only; backfill (Coexistence/BSP) is deferred.
     "whatsapp":  _not_implemented_fetcher("whatsapp",  "IN-WHATSAPP-BACKFILL"),
+    "facebook_pages": _not_implemented_fetcher("facebook_pages", "IN-FACEBOOK-PAGES"),
 }
 
 
@@ -207,3 +208,4 @@ from services.ingest.ingestion.fetchers import carta as _carta  # noqa: E402,F40
 from services.ingest.ingestion.fetchers import hibob as _hibob  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import ashby as _ashby  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import linkedin as _linkedin  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import facebook_pages as _facebook_pages  # noqa: E402,F401

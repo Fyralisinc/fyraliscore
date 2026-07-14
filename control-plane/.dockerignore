@@ -1,0 +1,16 @@
+# Keep gitignored secrets + runtime state OUT of every control-plane image.
+# All images get their key material via read-only bind-mounts at runtime
+# (compose), never baked into a layer.
+**/keys/
+signing/trust_root.json
+_runtime/
+.env
+# Runtime data dirs (these are docker volumes at runtime, not image content).
+console/data/
+console/audit-data/
+**/*.log.jsonl
+**/*.log.jsonl.checkpoint.json
+# Python / build cruft.
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/

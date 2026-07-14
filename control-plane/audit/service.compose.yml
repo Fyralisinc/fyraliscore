@@ -1,0 +1,59 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — audit log + break-glass fragment (WS-AUDIT)
+# ----------------------------------------------------------------------------
+# Standalone compose fragment. The integrate step merges this into the master
+# docker-compose.control-plane.yml. Do NOT edit the master file directly.
+#
+# WHAT THIS DOES
+#   Provides the APPEND-ONLY, HASH-CHAINED audit log (FR-G) + the customer-granted,
+#   scoped, time-boxed BREAK-GLASS workflow (invariant I5). It is an on-demand CLI
+#   image (not a long-running daemon) other operators/automation invoke to append
+#   audit events, verify the chain, and drive break-glass grants. The audit log +
+#   grant store persist on a named volume so the hash chain survives restarts.
+#
+# IMPORTANT — build context is the control-plane ROOT (..), not audit/, so the image
+#   can include signing/ (signing_lib), which audit_log imports to ed25519-SIGN the
+#   chain-head checkpoint (C2 / I6 — whole-file tamper-evidence on top of the chain).
+#
+# SECRETS — the PRIVATE signing key (signing/keys/, gitignored) is NOT baked into
+#   the image; it is mounted read-only at runtime so the checkpoint can be signed.
+#   WITHOUT a key the log still HASH-CHAINS (intra-file tamper-evidence); only the
+#   signed checkpoint (whole-file tamper-evidence) is unavailable.
+#
+# Networks (cp-net) are declared in the master compose file; referenced here as
+# external-by-merge. If running standalone, uncomment the networks: block below.
+# ============================================================================
+
+services:
+  audit:
+    build:
+      context: ..
+      dockerfile: audit/Dockerfile
+    image: fyralis/audit
+    # On-demand CLI, not a server. Run via `docker compose run --rm audit <args>`.
+    environment:
+      AUDIT_LOG: /data/audit.log.jsonl
+      AUDIT_STORE: /data/breakglass_grants.json
+    volumes:
+      # Persist the hash-chained audit log + signed checkpoint + break-glass grant
+      # store across restarts (the chain must be durable to stay verifiable).
+      - audit-data:/data
+      # The signing key material + trust root, mounted read-only so the image
+      # carries no secret. signing/keys/ is gitignored on the host; provide it via
+      # a secret/volume in real deployments. The trust root must match the key.
+      - ../signing/keys:/app/signing/keys:ro
+      - ../signing/trust_root.json:/app/signing/trust_root.json:ro
+    # Point the CLI at the persisted log/store by default; subcommands follow.
+    # (Override the whole command on `docker compose run` to pass other subcommands.)
+    command: ["--log", "/data/audit.log.jsonl", "--store", "/data/breakglass_grants.json", "audit", "verify"]
+    networks:
+      - cp-net
+    restart: "no"
+
+volumes:
+  audit-data:
+
+# --- Uncomment ONLY to run this fragment standalone (outside the master compose) ---
+# networks:
+#   cp-net:
+#     driver: bridge

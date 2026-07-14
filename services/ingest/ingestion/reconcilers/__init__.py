@@ -194,6 +194,7 @@ RECONCILER_DISPATCH: dict[str, Reconciler] = {
     "linkedin":  _not_implemented_reconciler("linkedin",  "IN-PEOPLE"),
     # WhatsApp is LIVE-only; backfill reconciliation is a deferred phase.
     "whatsapp":  _not_implemented_reconciler("whatsapp",  "IN-WHATSAPP-BACKFILL"),
+    "facebook_pages": _not_implemented_reconciler("facebook_pages", "IN-FACEBOOK-PAGES"),
 }
 
 
@@ -222,7 +223,16 @@ def register_pool_provider(pool: asyncpg.Pool) -> list[str]:
 
     registered: list[str] = []
     for source in RECONCILER_DISPATCH:
-        module = importlib.import_module(f"{__name__}.{source}")
+        try:
+            module = importlib.import_module(f"{__name__}.{source}")
+        except ModuleNotFoundError:
+            # Sources whose backfill reconciliation is a deferred phase keep a
+            # _not_implemented_reconciler placeholder in RECONCILER_DISPATCH but
+            # ship no per-source module (e.g. whatsapp — live-only; backfill
+            # reconciliation deferred). They have no pool provider to register;
+            # importing the package-qualified name would raise here and crash
+            # the whole reconciler/PeriodicReconciler service at startup. Skip.
+            continue
         setter = getattr(module, "set_pool_provider", None)
         if setter is not None:
             setter(pool)
@@ -266,3 +276,4 @@ from services.ingest.ingestion.reconcilers import carta as _carta  # noqa: E402,
 from services.ingest.ingestion.reconcilers import hibob as _hibob  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import ashby as _ashby  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import linkedin as _linkedin  # noqa: E402,F401
+from services.ingest.ingestion.reconcilers import facebook_pages as _facebook_pages  # noqa: E402,F401

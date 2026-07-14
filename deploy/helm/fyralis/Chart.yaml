@@ -1,0 +1,12 @@
+apiVersion: v2
+name: fyralis
+description: Local BYOC rehearsal chart for the Fyralis customer-cloud data plane.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - fyralis
+  - byoc
+  - local-rehearsal
+maintainers:
+  - name: Fyralis

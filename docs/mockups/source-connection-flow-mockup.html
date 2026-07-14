@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Fyralis · Source Connection — Realistic Flow Mockup</title>
+<!--
+  PURE FRONTEND MOCKUP. No backend / DB / network.
+  Drills into HOW a tenant actually connects each source archetype in production:
+   - OAuth redirect + provider consent (GitHub repo-select, Slack hybrid, Notion, Ramp)
+   - API-key form + validation test (Jira, WhatsApp Cloud API)
+   - IAM assume-role (AWS)
+   - Domain-wide delegation via Google Admin console (Google Workspace)
+   - Interactive device login (Telegram: phone -> code -> 2FA)
+   - QR device-link (Signal)
+   - Per-user self-connect roster (Telegram/Signal/Slack DMs)
+  Plus realistic connection states: validating / connected / syncing / healthy /
+  needs re-auth, with webhook setup + backfill progress.
+  Companion to tenant-onboarding-ui-mockup.html (Phase 3, drilled in).
+-->
+<style>
+  :root{
+    --bg:#0f1117;--panel:#171a23;--panel2:#1e2230;--line:#2a3040;--ink:#e7eaf2;--muted:#9aa3b8;
+    --accent:#7c83ff;--accent2:#5b62e0;--ok:#37d399;--warn:#f0b54f;--err:#f2706e;
+    --org:#62b0ff;--user:#f78fb3;--acct:#c79bff;--radius:12px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .top{display:flex;align-items:center;gap:12px;padding:12px 22px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .top strong{font-size:15px}.tag{font-size:11px;color:var(--warn);border:1px solid #5e4a22;border-radius:999px;padding:2px 10px}
+  .wrap{max-width:1120px;margin:0 auto;padding:26px 22px}
+  h1{font-size:22px;margin:0 0 4px}.sub{color:var(--muted);margin:0 0 20px}
+  /* catalog controls */
+  .controls{display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+  .search{flex:1;min-width:220px;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:9px 12px;color:var(--ink)}
+  .search:focus{outline:none;border-color:var(--accent)}
+  .chip{font-size:12px;color:var(--muted);border:1px solid var(--line);background:var(--panel);padding:6px 11px;border-radius:999px;cursor:pointer}
+  .chip.on{color:var(--ink);border-color:var(--accent);background:var(--panel2)}
+  /* catalog grid */
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .src{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px;cursor:pointer;transition:border-color .15s}
+  .src:hover{border-color:var(--accent)}
+  .src .top2{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+  .nm{display:flex;align-items:center;gap:10px;font-weight:600}
+  .ic{width:30px;height:30px;border-radius:8px;background:var(--panel2);display:grid;place-items:center;font-weight:700;font-size:13px}
+  .meta{font-size:11px;color:var(--muted);margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+  .st{font-size:11px;font-weight:600;display:inline-flex;align-items:center;gap:5px;margin-top:11px}
+  .dotg{width:8px;height:8px;border-radius:50%}
+  .pill{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .pill.org{color:var(--org);border-color:#284a6e}.pill.user{color:var(--user);border-color:#6e2f49}
+  .pill.hybrid{color:var(--accent);border-color:#3a3f7a}.pill.account{color:var(--acct);border-color:#4a3a6e}
+  .pill.auth{color:#a9b2c9}
+  /* drawer */
+  .scrim{position:fixed;inset:0;background:rgba(4,6,12,.55);display:none;z-index:20}
+  .scrim.on{display:block}
+  .drawer{position:fixed;top:0;right:0;height:100vh;width:480px;max-width:96vw;background:var(--panel);border-left:1px solid var(--line);
+    transform:translateX(100%);transition:transform .22s ease;z-index:21;display:flex;flex-direction:column}
+  .drawer.on{transform:none}
+  .dhead{padding:18px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px}
+  .dhead .x{margin-left:auto;cursor:pointer;color:var(--muted);font-size:20px;line-height:1}
+  .dbody{padding:20px;overflow:auto;flex:1}
+  .dfoot{border-top:1px solid var(--line);padding:12px 20px;background:#0b0d13}
+  .stepdots{display:flex;gap:6px;margin-bottom:16px}
+  .stepdots i{height:4px;flex:1;border-radius:3px;background:var(--panel2)}
+  .stepdots i.on{background:var(--accent)}.stepdots i.done{background:var(--ok)}
+  label{display:block;font-size:12px;color:var(--muted);margin:12px 0 5px}
+  input,select{width:100%;background:var(--bg);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:10px 12px;font-size:13px}
+  input:focus{outline:none;border-color:var(--accent)}
+  .btn{appearance:none;border:1px solid var(--accent2);background:var(--accent);color:#fff;font-weight:600;font-size:13px;padding:9px 15px;border-radius:9px;cursor:pointer}
+  .btn:hover{background:var(--accent2)}.btn.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+  .btn.ghost:hover{border-color:var(--accent)}.btn.sm{padding:6px 11px;font-size:12px}.btn:disabled{opacity:.5;cursor:not-allowed}
+  .btn.block{display:block;width:100%;text-align:center;margin-top:8px}
+  .row{display:flex;gap:9px}.row>*{flex:1}
+  .muted{color:var(--muted)}.tiny{font-size:11.5px}
+  .scopes{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:11px 13px;font-size:12px}
+  .scopes div{padding:3px 0;display:flex;gap:8px;align-items:center}
+  .note{font-size:12px;color:var(--muted);background:#10131c;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;padding:10px 12px;margin:12px 0}
+  .note.warn{border-left-color:var(--warn)}.note.err{border-left-color:var(--err);color:#f6b6b4}.note.ok{border-left-color:var(--ok)}
+  /* simulated provider consent page */
+  .provider{border:1px solid var(--line);border-radius:11px;overflow:hidden;background:#0c0e15}
+  .provider .bar{display:flex;align-items:center;gap:8px;padding:9px 13px;background:#11141d;border-bottom:1px solid var(--line);font-size:12px;color:var(--muted)}
+  .provider .bar .lock{color:var(--ok)}
+  .provider .pbody{padding:16px}
+  .ribbon{font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:var(--warn);border:1px dashed #5e4a22;border-radius:6px;padding:2px 7px;display:inline-block;margin-bottom:10px}
+  .opt{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:7px 0;cursor:pointer}
+  .opt.sel{border-color:var(--accent);background:#161a2b}
+  .opt input{width:auto;flex:0 0 auto;margin-top:3px}
+  .codeboxes{display:flex;gap:8px;justify-content:center;margin:14px 0}
+  .codeboxes input{width:44px;text-align:center;font-size:18px;letter-spacing:2px}
+  .qr{width:170px;height:170px;margin:8px auto;border-radius:12px;background:
+      repeating-conic-gradient(#0b0d13 0 25%,#e7eaf2 0 50%) 0 0/22px 22px;border:6px solid #e7eaf2}
+  .spin{display:inline-block;width:16px;height:16px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:s .8s linear infinite;vertical-align:-3px}
+  @keyframes s{to{transform:rotate(360deg)}}
+  .bar2{height:7px;border-radius:6px;background:var(--panel2);overflow:hidden;margin-top:8px}.bar2>i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--ok));transition:width .4s}
+  table.kv{width:100%;font-size:12.5px;border-collapse:collapse}.kv td{padding:5px 0;border-bottom:1px solid var(--line)}.kv td:first-child{color:var(--muted);width:40%}
+  .copy{font:11.5px ui-monospace,Menlo,monospace;background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:8px 10px;display:flex;justify-content:space-between;gap:8px;align-items:center;margin:6px 0}
+  .copy button{flex:0 0 auto}
+  .roster{margin-top:6px}.rrow{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px}
+  .av{width:24px;height:24px;border-radius:50%;background:var(--panel2);display:grid;place-items:center;font-size:11px;font-weight:700}
+  .log{font:11px/1.45 ui-monospace,Menlo,monospace;color:var(--muted);max-height:84px;overflow:auto;display:flex;flex-direction:column-reverse;gap:3px}
+  .log .e b{color:var(--accent)}
+  ol.steps{margin:6px 0 0;padding-left:18px;font-size:12.5px;color:var(--muted)}ol.steps li{margin:6px 0}
+  details{margin-top:10px}summary{cursor:pointer;color:var(--accent);font-size:12px}
+</style>
+</head>
+<body>
+<div class="top"><strong>Fyralis · Connect sources</strong><span class="tag">REALISTIC FLOW MOCKUP — no backend</span>
+  <span style="flex:1"></span><span id="count" class="muted tiny"></span></div>
+
+<div class="wrap">
+  <h1>Connect your data sources</h1>
+  <p class="sub">How a tenant actually connects each source in production. Click any connector — the flow adapts to its real auth method.</p>
+  <div class="controls">
+    <input id="q" class="search" placeholder="Search 26 connectors…" oninput="state.query=this.value;renderCatalog()"/>
+    <span class="chip on" data-cat="all">All</span>
+    <span class="chip" data-cat="Dev">Dev</span>
+    <span class="chip" data-cat="Comms">Comms</span>
+    <span class="chip" data-cat="Finance">Finance</span>
+    <span class="chip" data-cat="Infra">Infra</span>
+    <span class="chip" data-cat="Docs">Docs</span>
+  </div>
+  <div class="grid" id="catalog"></div>
+</div>
+
+<div class="scrim" id="scrim" onclick="if(event.target.id==='scrim')closeDrawer()"></div>
+<aside class="drawer" id="drawer">
+  <div class="dhead" id="dhead"></div>
+  <div class="dbody" id="dbody"></div>
+  <div class="dfoot"><div class="log" id="log"></div></div>
+</aside>
+
+<script>
+/* ============================== DATA ============================== */
+const SOURCES = [
+  {key:'github', name:'GitHub', icon:'GH', cat:'Dev', grain:'org', auth:'oauth', webhook:true,
+    scopes:['Contents — read','Issues — read','Pull requests — read'], oauth:{repoSelect:true, provider:'github.com'}},
+  {key:'slack', name:'Slack', icon:'SL', cat:'Comms', grain:'hybrid', auth:'oauth', webhook:true,
+    scopes:['channels:history','channels:read','users:read'], oauth:{workspace:true, provider:'slack.com'}, dmPerUser:true},
+  {key:'notion', name:'Notion', icon:'No', cat:'Docs', grain:'org', auth:'oauth', webhook:false,
+    scopes:['Read content (selected pages)'], oauth:{pageSelect:true, provider:'notion.so'}},
+  {key:'gworkspace', name:'Google Workspace', icon:'GW', cat:'Comms', grain:'org', auth:'dwd', webhook:false,
+    scopes:['gmail.readonly','calendar.readonly','drive.readonly','admin.directory.user.readonly']},
+  {key:'jira', name:'Jira', icon:'JR', cat:'Dev', grain:'account', auth:'token', webhook:true,
+    fields:[{k:'site',label:'Site URL',ph:'https://acme.atlassian.net'},{k:'email',label:'Account email',ph:'svc@acme.com'},{k:'token',label:'API token',ph:'ATATT…',secret:true}],
+    howto:['Go to id.atlassian.com → Security → API tokens','Create API token, copy it','Use a service/admin account so reach = whole site']},
+  {key:'ramp', name:'Ramp', icon:'Ra', cat:'Finance', grain:'org', auth:'oauth', webhook:true,
+    scopes:['transactions:read','cards:read','users:read'], oauth:{provider:'app.ramp.com'}},
+  {key:'aws', name:'AWS (CloudTrail)', icon:'AW', cat:'Infra', grain:'org', auth:'aws', webhook:false},
+  {key:'whatsapp', name:'WhatsApp Business', icon:'WA', cat:'Comms', grain:'org', auth:'token', webhook:true,
+    fields:[{k:'pnid',label:'Phone number ID',ph:'1093…'},{k:'token',label:'Permanent access token',ph:'EAAG…',secret:true},{k:'verify',label:'Verify token (you choose)',ph:'acme-verify-9f3a'}],
+    howto:['Meta Business Suite → WhatsApp → API setup','Copy the Phone number ID + a permanent access token','We register the webhook for you after validation']},
+  {key:'telegram', name:'Telegram', icon:'Tg', cat:'Comms', grain:'user', auth:'device', webhook:false, perUser:true},
+  {key:'signal', name:'Signal', icon:'Si', cat:'Comms', grain:'user', auth:'qr', webhook:false, perUser:true},
+];
+const TOTAL = 26;
+const TEAM = ['You (admin)','Ana Ruiz','Ben Cole','Priya N.','Sam O.'];
+const grainLabel = g => ({org:'Org-wide',user:'Per-user',hybrid:'Hybrid',account:'Account'})[g];
+const authLabel  = a => ({oauth:'OAuth',dwd:'Service account',token:'API key',aws:'IAM role',device:'Device login',qr:'QR link'})[a];
+
+/* ============================== STATE ============================= */
+const state = {
+  query:'', filter:'all',
+  connections:{   // seeded examples to show real states
+    ramp:   {status:'healthy', syncPct:100, info:{business:'Acme Inc.'}, last:'2m ago'},
+    notion: {status:'needs_reauth', info:{}, last:'token expired'},
+  },
+  drawer:null,  // {key, flow, step, data:{}, members:[], member:null}
+};
+const log=[]; let _t=0;
+function logE(a,d){ log.push({t:++_t,a,d:d||''}); paintLog(); }
+function paintLog(){ const el=document.getElementById('log'); if(el) el.innerHTML=log.slice(-30).map(e=>`<div class="e"><b>#${e.t}</b> ${e.a} ${e.d}</div>`).join(''); }
+
+/* ============================ CATALOG ============================ */
+function stateOf(key){ return state.connections[key]; }
+function stBadge(c){
+  if(!c) return `<span class="st" style="color:var(--muted)"><span class="dotg" style="background:var(--muted)"></span>Not connected</span>`;
+  const m={connected:['var(--accent)','Connected'],syncing:['var(--warn)','Syncing…'],healthy:['var(--ok)','Healthy'],needs_reauth:['var(--err)','Needs re-auth'],error:['var(--err)','Error']};
+  const [c2,t]=m[c.status]||['var(--muted)',c.status];
+  const extra = c.status==='syncing'&&c.syncPct!=null?` · ${c.syncPct}%`:(c.last?` · ${c.last}`:'');
+  return `<span class="st" style="color:${c2}"><span class="dotg" style="background:${c2}"></span>${t}${extra}</span>`;
+}
+function renderCatalog(){
+  const q=state.query.toLowerCase();
+  const list=SOURCES.filter(s=>(state.filter==='all'||s.cat===state.filter)&&s.name.toLowerCase().includes(q));
+  document.getElementById('catalog').innerHTML = list.map(s=>`
+    <div class="src" onclick="openDrawer('${s.key}')">
+      <div class="top2"><span class="nm"><span class="ic">${s.icon}</span>${s.name}</span>
+        <span class="pill ${s.grain}">${grainLabel(s.grain)}</span></div>
+      <div class="meta"><span class="pill auth">${authLabel(s.auth)}</span>${s.webhook?'<span class="pill auth">+ webhook</span>':''}<span class="pill auth">${s.cat}</span></div>
+      ${stBadge(stateOf(s.key))}
+    </div>`).join('') || `<div class="muted">No connectors match.</div>`;
+  const n=Object.keys(state.connections).length;
+  document.getElementById('count').textContent=`${n} of ${TOTAL} connected`;
+}
+document.querySelectorAll('.chip').forEach(ch=>ch.onclick=()=>{
+  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('on')); ch.classList.add('on');
+  state.filter=ch.dataset.cat; renderCatalog();
+});
+
+/* ============================ DRAWER ============================= */
+function firstStep(s){
+  if(s.perUser) return 'roster';
+  return {oauth:'intro',dwd:'intro',token:'form',aws:'form',device:'phone',qr:'qr'}[s.auth];
+}
+function openDrawer(key){
+  const s=SOURCES.find(x=>x.key===key);
+  const existing=stateOf(key);
+  let step=firstStep(s);
+  if(existing && !s.perUser){ step = existing.status==='needs_reauth' ? (s.auth==='oauth'?'intro':'form') : 'connected'; }
+  state.drawer={key, flow:s.auth, step, data:{}, member:null,
+    members: s.perUser ? (existing?.members || TEAM.map((n,i)=>({name:n,status:i===0?'none':'none'}))) : null};
+  if(existing?.members) state.drawer.members=existing.members;
+  logE('open', key+' · '+authLabel(s.auth)+(s.perUser?' (per-user)':''));
+  document.getElementById('scrim').classList.add('on');
+  document.getElementById('drawer').classList.add('on');
+  renderDrawer();
+}
+function closeDrawer(){ document.getElementById('scrim').classList.remove('on'); document.getElementById('drawer').classList.remove('on'); state.drawer=null; }
+function go(step){ state.drawer.step=step; logE('step', '→ '+step); renderDrawer(); }
+
+function renderDrawer(){
+  const d=state.drawer; if(!d) return; const s=SOURCES.find(x=>x.key===d.key);
+  document.getElementById('dhead').innerHTML=`<span class="ic">${s.icon}</span>
+    <div><div style="font-weight:600">${s.name}</div><div class="tiny muted">${grainLabel(s.grain)} · ${authLabel(s.auth)}${s.webhook?' · webhook':''}</div></div>
+    <span class="x" onclick="closeDrawer()">✕</span>`;
+  const body = d.member!=null ? memberFlow(s,d) :
+    ({roster:rosterView, intro:oauthIntro, consent:oauthConsent, callback:oauthCallback,
+      instructions:dwdInstructions, validating:validatingView, select:dwdSelect,
+      form:tokenOrAwsForm, valid:tokenValid, invalid:tokenInvalid,
+      phone:devPhone, code:devCode, twofa:devTwofa, linking:linkingView,
+      qr:qrView, connected:connectedView}[d.step] || (()=>`<div class="muted">…</div>`))(s,d);
+  document.getElementById('dbody').innerHTML=body;
+  paintLog();
+}
+
+/* ---- OAuth flow ---- */
+function dots(arr,cur){ return `<div class="stepdots">${arr.map(x=>`<i class="${x===cur?'on':(arr.indexOf(x)<arr.indexOf(cur)?'done':'')}"></i>`).join('')}</div>`; }
+function oauthIntro(s,d){
+  const reauth = stateOf(d.key)?.status==='needs_reauth';
+  return `${dots(['intro','consent','callback','connected'],'intro')}
+    ${reauth?`<div class="note warn">This connection’s token expired. Re-authorize to resume syncing.</div>`:''}
+    <h3 style="margin:0 0 6px">${reauth?'Re-authorize':'Connect'} ${s.name}</h3>
+    <p class="muted tiny">You’ll be redirected to <b>${s.oauth.provider}</b> to authorize as an <b>org admin</b>. Fyralis will request:</p>
+    <div class="scopes">${s.scopes.map(x=>`<div>✓ ${x}</div>`).join('')}</div>
+    <div class="note">Least privilege: read-only. The long-lived token is stored encrypted (secret_ref); only a short-lived code passes through the browser.</div>
+    ${s.dmPerUser?`<div class="note warn">Hybrid: the bot token covers <b>channels org-wide</b>. Direct messages need each member to self-connect afterward.</div>`:''}
+    <button class="btn block" data-act="oauth-continue">Continue to ${s.name} →</button>`;
+}
+function oauthConsent(s,d){
+  const repo = s.oauth.repoSelect, ws=s.oauth.workspace, pg=s.oauth.pageSelect;
+  d.data.scope = d.data.scope || (repo?'all':null);
+  return `${dots(['intro','consent','callback','connected'],'consent')}
+    <div class="provider">
+      <div class="bar"><span class="lock">🔒</span> ${s.oauth.provider}/login/oauth/authorize</div>
+      <div class="pbody">
+        <span class="ribbon">simulated ${s.name} consent</span>
+        <div style="font-weight:600;margin-bottom:4px">Authorize <b>Fyralis</b></div>
+        <p class="tiny muted">Fyralis by Acme Inc. wants to access your ${ws?'workspace':'account'}.</p>
+        ${ws?`<label>Workspace</label><select><option>Acme HQ (acme.slack.com)</option></select>`:''}
+        ${repo?`<label>Repository access</label>
+          <div class="opt ${d.data.scope==='all'?'sel':''}" data-act="oauth-scope" data-v="all"><input type="radio" ${d.data.scope==='all'?'checked':''}/><div><b>All repositories</b><div class="tiny muted">Current and future repos in the org</div></div></div>
+          <div class="opt ${d.data.scope==='sel'?'sel':''}" data-act="oauth-scope" data-v="sel"><input type="radio" ${d.data.scope==='sel'?'checked':''}/><div><b>Only select repositories</b><div class="tiny muted">Choose specific repos</div></div></div>`:''}
+        ${pg?`<label>Pages &amp; databases</label><div class="opt sel"><input type="checkbox" checked/><div>Engineering, Roadmap, Specs <span class="tiny muted">(3 selected)</span></div></div>`:''}
+        <div class="scopes" style="margin-top:10px">${s.scopes.map(x=>`<div>✓ ${x}</div>`).join('')}</div>
+        <div class="row" style="margin-top:14px"><button class="btn ghost" data-act="oauth-cancel">Cancel</button><button class="btn" data-act="oauth-authorize">Authorize &amp; install</button></div>
+      </div>
+    </div>`;
+}
+function oauthCallback(s,d){
+  setTimeout(()=>{ if(state.drawer&&state.drawer.step==='callback'){ finishConnect(s,d, s.oauth.repoSelect?{repos:d.data.scope==='all'?'all repos':'selected repos'}:{}); } }, 1200);
+  return `${dots(['intro','consent','callback','connected'],'callback')}
+    <div style="text-align:center;padding:30px 0"><div class="spin"></div>
+      <p class="muted">Redirected back from ${s.name}…<br/>Exchanging authorization code → access token…</p></div>`;
+}
+
+/* ---- Service-account / DWD (Google) ---- */
+function dwdInstructions(s,d){
+  return `${dots(['intro','instructions','validating','connected'],'instructions')}
+    <h3 style="margin:0 0 6px">Authorize domain-wide delegation</h3>
+    <p class="muted tiny">Google Workspace isn’t a popup — a Workspace <b>super-admin</b> grants our service account access in the Admin console.</p>
+    <div class="copy"><span>Client ID &nbsp; <b>102847…fyralis.iam</b></span><button class="btn sm ghost" data-act="copy">Copy</button></div>
+    <div class="copy"><span>OAuth scopes (4)</span><button class="btn sm ghost" data-act="copy">Copy</button></div>
+    <ol class="steps">
+      <li>admin.google.com → <b>Security → API controls → Domain-wide delegation</b></li>
+      <li><b>Add new</b> → paste the Client ID + the 4 scopes above</li>
+      <li>Authorize, then come back here</li>
+    </ol>
+    <div class="note">We impersonate read-only; you pick which users/OUs to ingest after authorizing.</div>
+    <button class="btn block" data-act="dwd-done">I’ve authorized in Google Admin →</button>`;
+}
+function dwdSelect(s,d){
+  return `<h3 style="margin:0 0 6px">Choose what to ingest</h3>
+    <div class="opt sel"><input type="checkbox" checked/><div><b>All users</b> <span class="tiny muted">(142)</span></div></div>
+    <div class="opt"><input type="checkbox"/><div>Specific OUs / groups</div></div>
+    <label>Services</label>
+    <div class="scopes"><div>✓ Gmail</div><div>✓ Calendar</div><div>✓ Drive</div></div>
+    <button class="btn block" data-act="finish-generic">Finish &amp; start sync →</button>`;
+}
+
+/* ---- API-key (token) + AWS (IAM) forms ---- */
+function tokenOrAwsForm(s,d){
+  if(s.auth==='aws') return awsForm(s,d);
+  const reauth = stateOf(d.key)?.status==='needs_reauth';
+  return `${reauth?`<div class="note warn">Re-enter credentials to reconnect ${s.name}.</div>`:''}
+    <h3 style="margin:0 0 8px">Connect ${s.name}</h3>
+    ${s.fields.map(f=>`<label>${f.label}</label><input data-f="${f.k}" type="${f.secret?'password':'text'}" placeholder="${f.ph}" value="${d.data[f.k]||''}"/>`).join('')}
+    ${s.howto?`<details><summary>How do I get these?</summary><ol class="steps">${s.howto.map(h=>`<li>${h}</li>`).join('')}</ol></details>`:''}
+    ${s.webhook?`<div class="note">After validation we’ll register the webhook (incoming events) automatically.</div>`:''}
+    <button class="btn block" data-act="token-test">Test connection</button>
+    <p class="tiny muted" style="text-align:center;margin-top:8px">We validate before saving — bad credentials never get stored.</p>`;
+}
+function awsForm(s,d){
+  d.data.method=d.data.method||'role';
+  return `<h3 style="margin:0 0 8px">Connect AWS (CloudTrail)</h3>
+    <div class="row" style="margin-bottom:6px">
+      <button class="btn sm ${d.data.method==='role'?'':'ghost'}" data-act="aws-method" data-v="role">IAM role (recommended)</button>
+      <button class="btn sm ${d.data.method==='keys'?'':'ghost'}" data-act="aws-method" data-v="keys">Access keys</button></div>
+    ${d.data.method==='role'
+      ? `<label>Role ARN to assume</label><input data-f="arn" placeholder="arn:aws:iam::1234:role/fyralis-read"/>
+         <label>External ID</label><div class="copy"><span>fyralis-acme-7c1d</span><button class="btn sm ghost" data-act="copy">Copy</button></div>
+         <div class="note tiny">Create a read-only role trusting Fyralis’s account with this External ID, then paste the ARN.</div>`
+      : `<label>Access key ID</label><input data-f="ak" placeholder="AKIA…"/><label>Secret access key</label><input data-f="sk" type="password" placeholder="••••"/>`}
+    <label>Region</label><select data-f="region"><option>us-east-1</option><option>us-west-2</option><option>eu-west-1</option></select>
+    <button class="btn block" data-act="token-test">Test connection</button>`;
+}
+function tokenValid(s,d){
+  return `<div style="text-align:center;padding:8px 0 14px"><div style="font-size:30px">✅</div>
+    <div style="font-weight:600">Credentials valid</div>
+    <p class="tiny muted">${s.key==='jira'?'Connected to acme.atlassian.net · 12 projects visible':s.key==='aws'?'AssumeRole OK · CloudTrail readable in us-east-1':s.key==='whatsapp'?'Token valid · WABA “Acme Inc.” · webhook registered ✓':'Connection verified'}</p></div>
+    <button class="btn block" data-act="finish-generic">Save &amp; start sync →</button>
+    <button class="btn ghost block" data-act="go-form">← Edit credentials</button>`;
+}
+function tokenInvalid(s,d){
+  return `<div class="note err"><b>✗ ${d.data.err||'401 Unauthorized'}</b><br/><span class="tiny">${s.key==='jira'?'The API token or email is wrong, or the account lacks project access.':'Check the credential and try again.'}</span></div>
+    <button class="btn block" data-act="go-form">← Back to form</button>`;
+}
+
+/* ---- Device login (Telegram) ---- */
+function devPhone(s,d){
+  return `${dots(['phone','code','connected'],'phone')}
+    <h3 style="margin:0 0 6px">Sign in to ${s.name}</h3>
+    <p class="muted tiny">${s.perUser?'You’re connecting <b>your own</b> account (per-user source).':''} We use the user API (MTProto) — no bot.</p>
+    <label>Phone number</label><input data-f="phone" placeholder="+1 415 555 0100" value="${d.data.phone||''}"/>
+    <button class="btn block" data-act="dev-sendcode">Send code via Telegram</button>`;
+}
+function devCode(s,d){
+  return `${dots(['phone','code','connected'],'code')}
+    <h3 style="margin:0 0 4px">Enter the code</h3>
+    <p class="muted tiny">Sent to ${d.data.phone||'your device'} in the Telegram app.</p>
+    <div class="codeboxes">${[0,1,2,3,4].map(i=>`<input maxlength="1" data-code="${i}" value="${(d.data.code||'')[i]||''}"/>`).join('')}</div>
+    <button class="btn block" data-act="dev-code">Verify</button>
+    <p class="tiny muted" style="text-align:center;margin-top:8px">(Demo: any 5 digits)</p>`;
+}
+function devTwofa(s,d){
+  return `${dots(['phone','code','connected'],'code')}
+    <h3 style="margin:0 0 6px">Two-step password</h3>
+    <p class="muted tiny">This account has 2FA enabled.</p>
+    <label>Telegram password</label><input type="password" data-f="twofa" placeholder="••••••"/>
+    <button class="btn block" data-act="dev-2fa">Confirm</button>`;
+}
+/* ---- QR link (Signal) ---- */
+function qrView(s,d){
+  return `<h3 style="margin:0 0 6px">Link ${s.name}</h3>
+    <p class="muted tiny">${s.perUser?'Linking <b>your own</b> Signal account.':''} Scan from a phone that has Signal.</p>
+    <div class="qr"></div>
+    <ol class="steps"><li>Signal → <b>Settings → Linked devices</b></li><li>Tap <b>+</b> and scan this code</li></ol>
+    <button class="btn block" data-act="qr-scan">Simulate scanning the code</button>`;
+}
+function linkingView(s,d){
+  setTimeout(()=>{ if(state.drawer&&state.drawer.step==='linking'){
+    if(d.member!=null){ memberDone(s,d); } else { finishConnect(s,d,{}); }
+  }}, 1100);
+  return `<div style="text-align:center;padding:34px 0"><div class="spin"></div><p class="muted">Establishing encrypted session…</p></div>`;
+}
+function validatingView(s,d){
+  setTimeout(()=>{ if(state.drawer&&state.drawer.step==='validating'){ go('select'); } }, 1100);
+  return `<div style="text-align:center;padding:34px 0"><div class="spin"></div><p class="muted">Verifying delegation with Google…</p></div>`;
+}
+
+/* ---- Per-user roster ---- */
+function rosterView(s,d){
+  const conn=d.members.filter(m=>m.status==='connected').length;
+  return `<h3 style="margin:0 0 4px">${s.name} — per-user source</h3>
+    <p class="muted tiny">Each member connects their <b>own</b> account; an admin can’t connect on their behalf. ${s.key==='telegram'?'(login)':'(device link)'}</p>
+    <div class="note tiny">Coverage: <b>${conn}</b> of <b>${d.members.length}</b> members connected</div>
+    <div class="bar2"><i style="width:${Math.round(100*conn/d.members.length)}%"></i></div>
+    <div class="roster">${d.members.map((m,i)=>`<div class="rrow">
+      <span style="display:flex;gap:9px;align-items:center"><span class="av">${m.name[0]}</span>${m.name}</span>
+      ${m.status==='connected'?`<span class="pill" style="color:var(--ok);border-color:#1f5a45">✓ connected</span>`
+        : m.status==='invited'?`<span class="pill" style="color:var(--warn);border-color:#5e4a22">link sent</span>`
+        : i===0?`<button class="btn sm" data-act="connect-mine">Connect mine</button>`
+        : `<button class="btn sm ghost" data-act="invite-member" data-i="${i}">Send link</button>`}
+    </div>`).join('')}</div>
+    <div class="note tiny">Members get a one-time self-connect link (email/Slack). Clicking it runs the ${s.key==='telegram'?'phone-code login':'QR link'} on their device.</div>`;
+}
+function memberFlow(s,d){
+  // a member is mid-connect: reuse device/qr renderers, but completion returns to roster
+  return ({phone:devPhone,code:devCode,twofa:devTwofa,linking:linkingView,qr:qrView}[d.step]||(()=>''))(s,d);
+}
+function memberDone(s,d){
+  const m=d.members.find(x=>x===d.member)|| d.members[d._mi];
+  if(d._mi!=null) d.members[d._mi].status='connected';
+  logE('member_connected', s.key+' · '+(d.members[d._mi]?.name||'member'));
+  d.member=null; d._mi=null; d.step='roster';
+  persistRoster(s,d); renderDrawer(); renderCatalog();
+}
+function persistRoster(s,d){
+  const conn=d.members.filter(m=>m.status==='connected').length;
+  state.connections[s.key]={status: conn>0?'syncing':'connected', members:d.members, syncPct: conn>0?20:0, last:`${conn}/${d.members.length} members`};
+}
+
+/* ---- Connected / health view ---- */
+function connectedView(s,d){
+  const c=stateOf(d.key)||{};
+  return `<div class="note ok"><b>✓ Connected</b> — ${s.name} ${c.info?.business?'· '+c.info.business:''}</div>
+    <table class="kv">
+      <tr><td>Status</td><td>${c.status==='syncing'?'<span class="spin"></span> backfilling…':c.status}</td></tr>
+      <tr><td>Grain</td><td>${grainLabel(s.grain)}</td></tr>
+      <tr><td>Auth</td><td>${authLabel(s.auth)} · token stored encrypted</td></tr>
+      ${s.webhook?`<tr><td>Webhook</td><td>registered ✓ <span class="tiny muted">/webhooks/${s.key}</span></td></tr>`:''}
+      <tr><td>Last sync</td><td>${c.last||'just now'}</td></tr>
+    </table>
+    ${c.status==='syncing'?`<div style="margin-top:12px" class="tiny muted">Backfill progress</div><div class="bar2"><i style="width:${c.syncPct||10}%"></i></div>`:''}
+    ${s.dmPerUser?`<div class="note warn" style="margin-top:14px">Channels are syncing org-wide. To ingest DMs, invite members to connect their user token. <button class="btn sm" data-act="open-dm-roster">Set up DMs →</button></div>`:''}
+    <div class="row" style="margin-top:16px"><button class="btn ghost" data-act="reauth">Reconnect</button><button class="btn ghost" data-act="disconnect">Disconnect</button></div>`;
+}
+
+/* ============================ ACTIONS =========================== */
+function readFields(){ const d=state.drawer; document.querySelectorAll('[data-f]').forEach(el=>d.data[el.dataset.f]=el.value); }
+function finishConnect(s,d,info){
+  state.connections[s.key]={status:'syncing', syncPct:8, info, last:'just now'};
+  logE('connected', s.key); d.step='connected'; renderDrawer(); renderCatalog(); animateBackfill(s.key);
+}
+let timers={};
+function animateBackfill(key){
+  if(timers[key]) return;
+  timers[key]=setInterval(()=>{
+    const c=state.connections[key]; if(!c||c.syncPct==null){clearInterval(timers[key]);delete timers[key];return;}
+    c.syncPct=Math.min(100,(c.syncPct||0)+11);
+    if(c.syncPct>=38 && c.status==='syncing'){ c.status='syncing'; }
+    if(c.syncPct>=100){ c.status='healthy'; c.last='just now'; clearInterval(timers[key]); delete timers[key]; logE('healthy',key+' · backfill done'); }
+    if(state.drawer&&state.drawer.key===key&&state.drawer.step==='connected') renderDrawer();
+    renderCatalog();
+  },480);
+}
+
+document.addEventListener('click', e=>{
+  const el=e.target.closest('[data-act]'); if(!el) return; const d=state.drawer; if(!d) return;
+  const s=SOURCES.find(x=>x.key===d.key); const a=el.dataset.act;
+  switch(a){
+    /* oauth */
+    case 'oauth-continue': go('consent'); break;
+    case 'oauth-scope': d.data.scope=el.dataset.v; renderDrawer(); break;
+    case 'oauth-cancel': logE('oauth_cancel',s.key); go('intro'); break;
+    case 'oauth-authorize': logE('authorized',s.key+(d.data.scope?(' · '+d.data.scope+' repos'):'')); go('callback'); break;
+    /* dwd */
+    case 'dwd-done': go('validating'); break;
+    /* token/aws */
+    case 'aws-method': d.data.method=el.dataset.v; renderDrawer(); break;
+    case 'token-test': {
+      readFields(); logE('validating',s.key);
+      d.step='validating';
+      document.getElementById('dbody').innerHTML=`<div style="text-align:center;padding:34px 0"><div class="spin"></div><p class="muted">Validating credentials with ${s.name}…</p></div>`;
+      setTimeout(()=>{
+        // demo rule: jira fails if token field empty or =="bad"
+        const tok=d.data.token||d.data.arn||d.data.ak||'';
+        const ok = tok && tok.toLowerCase()!=='bad';
+        if(ok){ logE('valid',s.key); go('valid'); } else { d.data.err='401 Unauthorized'; logE('invalid',s.key); go('invalid'); }
+      },1100); break;
+    }
+    case 'go-form': go('form'); break;
+    case 'finish-generic': finishConnect(s,d, s.key==='whatsapp'?{}:{}); break;
+    /* device */
+    case 'dev-sendcode': readFields(); logE('code_sent',(d.data.phone||'')); go('code'); break;
+    case 'dev-code': {
+      d.data.code=[0,1,2,3,4].map(i=>document.querySelector(`[data-code="${i}"]`).value).join('');
+      logE('code_ok',s.key);
+      // demo: telegram path includes a 2FA step
+      go('twofa'); break;
+    }
+    case 'dev-2fa': readFields(); logE('2fa_ok',s.key); go('linking'); break;
+    /* qr */
+    case 'qr-scan': logE('qr_scanned',s.key); go('linking'); break;
+    /* per-user roster */
+    case 'connect-mine': d.member='You (admin)'; d._mi=0; d.step=(s.auth==='qr'?'qr':'phone'); logE('self_connect_start',s.key); renderDrawer(); break;
+    case 'invite-member': { const i=+el.dataset.i; d.members[i].status='invited'; logE('invite_sent',s.key+' · '+d.members[i].name); persistRoster(s,d); renderDrawer(); renderCatalog(); break; }
+    /* connected view */
+    case 'reauth': d.data={}; d.step=(s.auth==='oauth'?'intro':s.auth==='dwd'?'intro':'form'); logE('reauth_start',s.key); renderDrawer(); break;
+    case 'disconnect': delete state.connections[s.key]; logE('disconnect',s.key); closeDrawer(); renderCatalog(); break;
+    case 'open-dm-roster': alert('In the full build this opens the Slack-DM per-user roster (members connect their xoxp token for DMs).'); break;
+    case 'copy': el.textContent='Copied ✓'; setTimeout(()=>el.textContent='Copy',1200); break;
+  }
+});
+
+/* boot */
+renderCatalog(); logE('boot','catalog loaded');
+</script>
+</body>
+</html>

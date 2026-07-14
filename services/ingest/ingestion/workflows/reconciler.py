@@ -132,7 +132,7 @@ import asyncpg
 import orjson
 
 from lib.shared.ids import uuid7
-from services.app.gateway.product_workflow_metrics import record_product_workflow_event
+from lib.shared.product_workflow_metrics import record_product_workflow_event
 from services.ingest.ingestion.progress.events import (
     CoverageConfidence,
     ProgressEvent,

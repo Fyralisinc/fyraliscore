@@ -21,14 +21,7 @@ from services.product.recommendations.tests.conftest import (
     seed_recommendation_model,
 )
 
-from services.app.gateway.tests.conftest import (  # noqa: F401
-    app_deps,
-    gateway_pool,
-    rate_limiter,
-    seeded_actor,
-    tenant_id,
-    valid_session,
-)
+pytest_plugins = ("services.app.gateway.tests.conftest",)
 
 
 pytestmark = pytest.mark.integration

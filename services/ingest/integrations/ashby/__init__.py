@@ -4,12 +4,15 @@ Ashby is an applicant-tracking-system (ATS) API authenticated with an **API
 key** presented as HTTP Basic: the key is the username and the password is
 empty (``base64("KEY:")``). Every call is scoped to an organization ``org_id``.
 It exposes recruiting entities (candidates, applications, jobs, interviews,
-offers) over an RPC-style surface — ``POST /<Category>.list`` /
+offers) and organization-level recruiting intelligence objects (users, openings,
+job postings, feedback, approvals, sources, surveys, interview plans/schedules,
+etc.) over an RPC-style surface — ``POST /<Category>.list`` /
 ``POST /<Category>.info`` — with cursor pagination (response ``nextCursor`` /
 request param ``cursor`` / ``moreDataAvailable`` bool) and an incremental
-``syncToken`` for delta polls. Live changes arrive as HMAC-signed webhooks
-(HMAC-SHA256, hex digest, ``Ashby-Signature: sha256=<hex>``, verified over the
-RAW unparsed body — see ``services/app/webhooks/signatures/ashby.py``).
+``syncToken`` for delta polls where the endpoint supports it. Live changes
+arrive as HMAC-signed webhooks (HMAC-SHA256, hex digest,
+``Ashby-Signature: sha256=<hex>``, verified over the RAW unparsed body — see
+``services/app/webhooks/signatures/ashby.py``).
 
 The ingestion source key is ``ashby`` and the single channel is ``ashby:object``.
 

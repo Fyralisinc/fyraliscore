@@ -13,6 +13,7 @@ import asyncpg
 import orjson
 from aiokafka import AIOKafkaConsumer
 
+from lib.embeddings.mode import write_obs_embeddings
 from lib.shared.db import configure_connection_timeouts
 from services.domain.triggers import enqueue_trigger
 from services.ingest.ingestion.dlq.publish import publish_dlq
@@ -40,6 +41,17 @@ from services.ingest.ingestion.summarization.source_text import (
     source_text_from_content,
     source_text_from_raw_s3,
 )
+from services.ingest.ingestion.writers.summarization_worker.doc_memory import (
+    DocMemoryScope,
+    doc_memory_enabled,
+    resolve_document_scope,
+)
+from lib.observability.metrics import (
+    DOC_MEMORY_ENRICHED_T1,
+    DOC_MEMORY_MINT_FAILURE,
+    DOC_MEMORY_SCOPE_UNRESOLVED,
+    doc_memory_source_label,
+)
 
 
 log = logging.getLogger(__name__)
@@ -59,6 +71,9 @@ _metrics: dict[str, float] = {
     "summarization_worker.dlq_publish.skipped": 0.0,
     "summarization_worker.embedding_publish.success": 0.0,
     "summarization_worker.embedding_publish.failure": 0.0,
+    # Document-memory Layer 2 (Phase 1, INGEST_DOC_MEMORY_ENABLED).
+    "summarization_worker.doc_memory.scope_resolved": 0.0,
+    "summarization_worker.doc_memory.scope_failed": 0.0,
 }
 
 
@@ -77,7 +92,7 @@ def _bump(key: str, by: float = 1.0) -> None:
 
 _SELECT_SQL = """
 SELECT source_channel, content, content_text, occurred_at, kind, trust_tier,
-       actor_id, embedding_pending
+       actor_id, embedding_pending, entities_mentioned
   FROM observations
  WHERE id = $1
  LIMIT 1
@@ -90,6 +105,49 @@ UPDATE observations
        content = $2::jsonb,
        embedding = NULL,
        embedding_pending = TRUE
+ WHERE id = $3
+   AND COALESCE(content->'summarization'->>'status', '') <> 'complete'
+ RETURNING source_channel, content_text, occurred_at, kind, trust_tier, actor_id
+"""
+
+
+# Variant of `_UPDATE_SQL` that also rewrites `entities_mentioned` with the
+# Layer-2 re-resolution over the structured summary (document-memory substrate).
+# Used only when `INGEST_DOC_MEMORY_ENABLED` is on and re-resolution succeeded.
+_UPDATE_WITH_ENTITIES_SQL = """
+UPDATE observations
+   SET content_text = $1,
+       content = $2::jsonb,
+       entities_mentioned = $4::jsonb,
+       embedding = NULL,
+       embedding_pending = TRUE
+ WHERE id = $3
+   AND COALESCE(content->'summarization'->>'status', '') <> 'complete'
+ RETURNING source_channel, content_text, occurred_at, kind, trust_tier, actor_id
+"""
+
+
+# OBS_EMBEDDING_MODE=cutover: embeddings are decommissioned, so leave the row
+# embedding-less and unflagged (the T1 trigger re-embeds the summary on demand).
+_UPDATE_SQL_NO_EMBED = """
+UPDATE observations
+   SET content_text = $1,
+       content = $2::jsonb,
+       embedding = NULL,
+       embedding_pending = FALSE
+ WHERE id = $3
+   AND COALESCE(content->'summarization'->>'status', '') <> 'complete'
+ RETURNING source_channel, content_text, occurred_at, kind, trust_tier, actor_id
+"""
+
+
+_UPDATE_WITH_ENTITIES_SQL_NO_EMBED = """
+UPDATE observations
+   SET content_text = $1,
+       content = $2::jsonb,
+       entities_mentioned = $4::jsonb,
+       embedding = NULL,
+       embedding_pending = FALSE
  WHERE id = $3
    AND COALESCE(content->'summarization'->>'status', '') <> 'complete'
  RETURNING source_channel, content_text, occurred_at, kind, trust_tier, actor_id
@@ -122,7 +180,22 @@ async def _load_observation(
         return None
     data = dict(row)
     data["content"] = decode_json_content(data.get("content"))
+    data["entities_mentioned"] = _decode_json_list(data.get("entities_mentioned"))
     return data
+
+
+def _decode_json_list(value: Any) -> list[dict[str, Any]]:
+    """Coerce a jsonb column (str | list | None) to a list of dict refs."""
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            return []
+        if isinstance(decoded, list):
+            return [item for item in decoded if isinstance(item, dict)]
+    return []
 
 
 async def _write_summary_and_enqueue(
@@ -145,8 +218,48 @@ async def _write_summary_and_enqueue(
         }
     )
     summary.pop("source_text", None)
+    # Retain the structured extraction (decisions/commitments/risks) instead of
+    # discarding it after rendering content_text. Feeds the document-memory
+    # substrate (docs/plans/document-memory-substrate.md). Live + batch lanes
+    # both reach here via apply_summary_to_observation.
+    if result.structured is not None:
+        summary["structured"] = result.structured
     content["summarization"] = summary
     content["summary_provenance"] = "llm_summarizer"
+
+    # ---- Document-memory Layer 2 (Phase 1, INGEST_DOC_MEMORY_ENABLED) -------
+    # Re-resolve entity/actor scope over the RICH structured summary (not the
+    # placeholder content_text) and build the enriched-T1 payload Think needs to
+    # mint document Models. Strictly failure-isolated: any error here is logged
+    # to a metric and the plain summarize+T1 path is taken (§8 failure
+    # isolation). Runs BEFORE the write tx so re-resolution reads never share
+    # the observation write lock.
+    scope = await _maybe_resolve_doc_memory_scope(
+        pool=pool,
+        env=env,
+        existing=existing,
+        structured=result.structured,
+    )
+
+    embedding_enabled = write_obs_embeddings()
+    update_sql = _UPDATE_SQL if embedding_enabled else _UPDATE_SQL_NO_EMBED
+    update_args: tuple[Any, ...] = (
+        result.summary_text,
+        json.dumps(content),
+        env.observation_id,
+    )
+    if scope is not None:
+        update_sql = (
+            _UPDATE_WITH_ENTITIES_SQL
+            if embedding_enabled
+            else _UPDATE_WITH_ENTITIES_SQL_NO_EMBED
+        )
+        update_args = (
+            result.summary_text,
+            json.dumps(content),
+            env.observation_id,
+            json.dumps(scope.entities_mentioned),
+        )
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -154,35 +267,124 @@ async def _write_summary_and_enqueue(
                 "SELECT set_config('app.current_tenant', $1::text, true)",
                 str(env.tenant_id),
             )
-            updated = await conn.fetchrow(
-                _UPDATE_SQL,
-                result.summary_text,
-                json.dumps(content),
-                env.observation_id,
-            )
+            updated = await conn.fetchrow(update_sql, *update_args)
             if updated is None:
                 _bump("summarization_worker.guard_no_op")
                 return "guard_no_op"
+            payload: dict[str, Any] = {
+                "source_channel": updated["source_channel"],
+                "kind": updated["kind"],
+                "trust_tier": updated["trust_tier"],
+                "seed_occurred_at": updated["occurred_at"].isoformat(),
+                "seed_natural_text": (updated["content_text"] or "")[:2000],
+                "scope_actors": (
+                    [str(updated["actor_id"])] if updated["actor_id"] else []
+                ),
+                "summarized": True,
+            }
+            if scope is not None:
+                _enrich_t1_payload(
+                    payload,
+                    scope,
+                    result.structured,
+                    source_channel=updated["source_channel"],
+                )
             await enqueue_trigger(
                 conn,
                 tenant_id=env.tenant_id,
                 trigger_kind="T1",
                 trigger_subkind="event_arrival",
                 observation_id=env.observation_id,
-                payload={
-                    "source_channel": updated["source_channel"],
-                    "kind": updated["kind"],
-                    "trust_tier": updated["trust_tier"],
-                    "seed_occurred_at": updated["occurred_at"].isoformat(),
-                    "seed_natural_text": (updated["content_text"] or "")[:2000],
-                    "scope_actors": (
-                        [str(updated["actor_id"])] if updated["actor_id"] else []
-                    ),
-                    "summarized": True,
-                },
+                payload=payload,
             )
     _bump("summarization_worker.summaries_succeeded")
     return "summarized"
+
+
+async def _maybe_resolve_doc_memory_scope(
+    *,
+    pool: asyncpg.Pool,
+    env: SummarizationEnvelope,
+    existing: dict[str, Any],
+    structured: dict[str, Any] | None,
+) -> DocMemoryScope | None:
+    """Re-resolve document scope when Layer 2 is enabled and structured exists.
+
+    Returns ``None`` (so the plain path is taken) when the flag is off, there is
+    no structured payload, or re-resolution raised — re-resolution failure must
+    NEVER fail the summary (§8).
+    """
+    if not doc_memory_enabled() or not isinstance(structured, dict) or not structured:
+        return None
+    try:
+        return await resolve_document_scope(
+            pool=pool,
+            tenant_id=env.tenant_id,
+            source_channel=existing.get("source_channel") or env.source,
+            structured=structured,
+            existing_entities=existing.get("entities_mentioned") or [],
+            actor_id=existing.get("actor_id"),
+        )
+    except Exception as exc:  # noqa: BLE001 — failure isolation (§8)
+        _bump("summarization_worker.doc_memory.scope_failed")
+        DOC_MEMORY_MINT_FAILURE.inc(
+            source=doc_memory_source_label(
+                existing.get("source_channel") or env.source
+            )
+        )
+        log.warning(
+            "summarization_worker.doc_memory.scope_failed",
+            extra={
+                "tenant_id": str(env.tenant_id),
+                "observation_id": str(env.observation_id),
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:200],
+            },
+        )
+        return None
+
+
+def _enrich_t1_payload(
+    payload: dict[str, Any],
+    scope: DocMemoryScope,
+    structured: dict[str, Any] | None,
+    *,
+    source_channel: str | None = None,
+) -> None:
+    """Carry the structured extraction + re-resolved scope onto the T1 payload.
+
+    Think's context builder reads ``doc_structured_summary`` to recognize a
+    document evidence block, and merges ``doc_scope_entities`` /
+    ``doc_scope_actors`` into the Models it mints (§4.2–§4.4). ``scope_actors``
+    is widened with the resolved doc actors; unresolved owners ride as text.
+
+    Observability (Phase 2, §7 step 12): this is the worker-side mint DISPATCH —
+    a structured document is handed to Think to mint document Models from — so it
+    bumps ``doc_memory_enriched_t1_total``. This is NOT the mint count: under the
+    ratified Option A, Think (not this worker) mints the Models later, counted by
+    ``doc_memory_models_minted_total`` at Think's apply site. When re-resolution
+    produced no scoped recall surface (no resolved entities AND no resolved
+    actors), the document Models will fall back to semantic-only recall, counted
+    by ``doc_memory_scope_unresolved_total`` (§10 scope-unresolved rate).
+    """
+    _bump("summarization_worker.doc_memory.scope_resolved")
+    source = doc_memory_source_label(source_channel)
+    DOC_MEMORY_ENRICHED_T1.inc(source=source)
+    if not scope.scope_entities and not scope.scope_actors:
+        DOC_MEMORY_SCOPE_UNRESOLVED.inc(source=source)
+    if structured:
+        payload["doc_structured_summary"] = structured
+    if scope.scope_entities:
+        payload["doc_scope_entities"] = scope.scope_entities
+        # Surface resolved entity refs as seed entities so Pathway A can scope
+        # the retrieval that mints the document Models.
+        payload["seed_entity_ids"] = scope.scope_entities
+    if scope.scope_actors:
+        payload["doc_scope_actors"] = scope.scope_actors
+        merged = list(dict.fromkeys([*payload.get("scope_actors", []), *scope.scope_actors]))
+        payload["scope_actors"] = merged
+    if scope.unresolved_actor_refs:
+        payload["doc_unresolved_actor_refs"] = scope.unresolved_actor_refs
 
 
 def _failure_content_text(content: dict[str, Any], error_type: str, error: str) -> str:
@@ -354,7 +556,11 @@ async def summarize_and_update(
         result=result,
         source_chars=len(source_text),
     )
-    if status == "summarized" and embedding_producer is not None:
+    if (
+        status == "summarized"
+        and embedding_producer is not None
+        and write_obs_embeddings()
+    ):
         await publish_embedding_request(
             producer=embedding_producer,
             tenant_id=env.tenant_id,

@@ -657,6 +657,7 @@ scripts/check_byoc_live_test_readiness.py --json \
 | Google Calendar | [Google Calendar](../ingestion/sources/google-calendar.md) | OAuth or domain-wide delegation | Must verify watch renewal worker and calendar scope. |
 | Google Drive | [Google Drive](../ingestion/sources/google-drive.md) | OAuth or domain-wide delegation | Must verify object-store write path and large-object retention tags. |
 | GitHub | [GitHub](../ingestion/sources/github.md) | App installation or token | Must verify webhook signature and installation tenant mapping. |
+| Figma | [Figma](../ingestion/flows/figma-ingestion.md) | Deployment-owned OAuth app | Deployment administrator verifies the private app, exact callback, managed secret, and scopes; users then consent and select explicit file URLs. |
 | Discord | [Discord](../ingestion/sources/discord.md) | Bot token/webhook | Must verify gateway worker health before launch. |
 | Telegram | [Telegram](../ingestion/sources/telegram.md) | MTProto session | Must verify session storage and operator-controlled pause/uninstall. |
 | Jira | [Jira](../ingestion/sources/jira.md) | OAuth | Must verify site URL, webhook signature, and backfill limits. |

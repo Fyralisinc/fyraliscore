@@ -72,6 +72,10 @@ CHANNEL_TRUST_MAP: dict[str, str] = {
     # while outbound delivery-status callbacks are Meta-asserted facts and the
     # handler OVERRIDES trust to authoritative + kind=state_change for those.
     "whatsapp:message": "attested_agent",
+    # Facebook Page Messenger content arrives through Meta-signed webhooks or
+    # Page-token Graph pagination. Messages are customer/Page authored content,
+    # not a provider-authored state fact.
+    "facebook_pages:message": "attested_agent",
     # Internal channels used by system-originated observations; these
     # carry the highest trust and never enter through a signature-
     # verified webhook.
@@ -108,6 +112,12 @@ class ObservationDraft:
     entities_hint: list[dict[str, Any]] = field(default_factory=list)
     unresolved_phrases: list[str] = field(default_factory=list)
     raw_payload: dict[str, Any] | None = None
+    # Private durable-artifact catalog descriptors.  Unlike ``content`` these
+    # may contain an internal S3 bucket/key and are carried only across the
+    # normalizer/writer boundary; core persists them to blobs +
+    # observation_artifacts in the same transaction as the observation.
+    # Handlers must put only ``StoredArtifact.public_ref()`` in content.
+    artifact_descriptors: list[dict[str, Any]] = field(default_factory=list)
 
 
 HandlerFn = Callable[[dict[str, Any], dict[str, str]], Awaitable[ObservationDraft]]
@@ -196,6 +206,7 @@ from services.ingest.ingestion.handlers import hibob  # noqa: E402,F401
 from services.ingest.ingestion.handlers import ashby  # noqa: E402,F401
 from services.ingest.ingestion.handlers import linkedin  # noqa: E402,F401
 from services.ingest.ingestion.handlers import whatsapp  # noqa: E402,F401
+from services.ingest.ingestion.handlers import facebook_pages  # noqa: E402,F401
 
 
 __all__ = [

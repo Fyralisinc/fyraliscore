@@ -1,0 +1,23 @@
+# ============================================================================
+# Loki per-tenant runtime overrides (hot-reloaded — no restart).
+# ----------------------------------------------------------------------------
+# Layer tenant-specific limit/retention overrides here. Keyed by the tenant's
+# X-Scope-OrgID (= the C1 tenant_id). Anything not overridden falls back to the
+# fleet-wide defaults in loki.yaml → limits_config. Loki re-reads this file on
+# the runtime_config.period interval (30s), so changes take effect live.
+#
+# The block is intentionally empty by default → ALL tenants get the loki.yaml
+# defaults. Uncomment / add tenant blocks as needed. Example shown.
+# ============================================================================
+overrides: {}
+
+# Example (uncomment + adapt):
+# overrides:
+#   acme:
+#     retention_period: 2160h        # 90 days for a premium tenant
+#     ingestion_rate_mb: 16
+#     ingestion_burst_size_mb: 32
+#     max_streams_per_user: 25000
+#   smallco:
+#     retention_period: 168h         # 7 days for a trial tenant
+#     ingestion_rate_mb: 2

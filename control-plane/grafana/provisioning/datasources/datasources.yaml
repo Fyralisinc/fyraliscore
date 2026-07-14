@@ -1,0 +1,254 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — Grafana datasource provisioning  (P3)
+# ----------------------------------------------------------------------------
+# Provisions the central Mimir (metrics) and Loki (logs) datasources used by
+# the OPERATOR Grafana to query per-customer and cross-fleet telemetry.
+#
+# ┌──────────────────── TWO DISTINCT X-Scope-OrgID PATHS ────────────────────┐
+# │                                                                          │
+# │  AGENT INGEST PATH  (untrusted edge, push)                               │
+# │    data-plane agent ── mTLS client cert ──► auth-proxy:8443              │
+# │      The auth-proxy TERMINATES mTLS, extracts tenant_id from the         │
+# │      VERIFIED client-cert SPIFFE SAN (C1/I4), STRIPS any caller-set      │
+# │      X-Scope-OrgID, and INJECTS X-Scope-OrgID:<tenant_id> before         │
+# │      writing to Mimir/Loki. Identity is server-side from the cert —      │
+# │      NEVER from a header.                                                 │
+# │                                                                          │
+# │  OPERATOR QUERY PATH  (this file — trusted, internal, inside cp-net)     │
+# │    Grafana ── HTTP + X-Scope-OrgID header ──► mimir:9009 / loki:3100     │
+# │      Grafana itself sets X-Scope-OrgID per datasource. There is NO       │
+# │      per-tenant client cert on the operator side, so these datasources   │
+# │      DO NOT go through the mTLS auth-proxy. They talk to Mimir/Loki       │
+# │      DIRECTLY over cp-net. Mimir/Loki trust this header ONLY because it   │
+# │      arrives from inside cp-net behind the network boundary — the same   │
+# │      reason the proxy's injected header is trusted (C5).                  │
+# │                                                                          │
+# └──────────────────────────────────────────────────────────────────────────┘
+#
+# Per-customer scoping uses the Grafana dashboard variable ${tenant_scope}
+# (a templated value resolved at query time from the `tenant` template var on
+# the per-customer dashboard). For fleet/admin cross-tenant views we use the
+# dedicated FLEET/ADMIN org id "__fleet__" (Mimir tenant-federation reader),
+# wired as separate "(fleet)" datasources below.
+#
+# Reload: Grafana applies this on boot; to re-apply at runtime call
+#   POST /api/admin/provisioning/datasources/reload
+# ============================================================================
+
+apiVersion: 1
+
+# --------------------------------------------------------------------------
+# Datasources to DELETE on provisioning (idempotent re-provision safety).
+# --------------------------------------------------------------------------
+deleteDatasources:
+  - name: Mimir
+    orgId: 1
+  - name: Mimir (fleet)
+    orgId: 1
+  - name: Loki
+    orgId: 1
+  - name: Loki (fleet)
+    orgId: 1
+  - name: CP Self-Obs (Prometheus)
+    orgId: 1
+  - name: Mimir acme
+    orgId: 1
+  - name: Mimir globex
+    orgId: 1
+
+datasources:
+  # ========================================================================
+  # MIMIR (metrics) — PER-CUSTOMER scoped (default datasource)
+  # ------------------------------------------------------------------------
+  # Prometheus-type datasource. X-Scope-OrgID is templated to the dashboard's
+  # `tenant` variable via ${tenant_scope}. On the per-customer drill-down the
+  # operator picks a tenant; that selection flows into this header, so every
+  # query is hard-scoped to ONE customer's metrics in Mimir.
+  #
+  # NOTE: a templated header value resolves only when the calling dashboard
+  # defines the variable. On dashboards without `${tenant_scope}` (e.g. the
+  # raw Explore view) the header is sent literally as "${tenant_scope}",
+  # which Mimir rejects — use the "(fleet)" datasource for un-scoped explore.
+  # ========================================================================
+  - name: Mimir
+    uid: fyralis-mimir
+    type: prometheus
+    access: proxy
+    # DIRECT to Mimir over cp-net — NOT through the mTLS auth-proxy (operator
+    # query path; see header block above).
+    url: http://mimir:9009/prometheus
+    orgId: 1
+    isDefault: true
+    editable: false
+    jsonData:
+      # Mimir speaks the Prometheus query API; pin a recent compatible version.
+      prometheusType: Mimir
+      prometheusVersion: 2.9.1
+      timeInterval: 15s
+      httpMethod: POST
+      manageAlerts: false
+      # ---- per-customer multi-tenancy header (C5, OPERATOR QUERY PATH) ----
+      # ${tenant_scope} resolves to the selected tenant on the per-customer
+      # dashboard. This is the trusted internal query-side scope — distinct
+      # from the proxy-injected ingest-side scope.
+      httpHeaderName1: X-Scope-OrgID
+    secureJsonData:
+      # Value of the X-Scope-OrgID header, templated for per-customer drill-down.
+      httpHeaderValue1: ${tenant_scope}
+
+  # ========================================================================
+  # MIMIR (fleet) — CROSS-FLEET / ADMIN view
+  # ------------------------------------------------------------------------
+  # Uses the dedicated FLEET/ADMIN org id "__fleet__". With Mimir
+  # tenant-federation enabled (limits.max_fetched_series_per_query and
+  # tenant_federation.enabled in mimir.yaml), a query for org "__fleet__"
+  # reads ACROSS all tenants, letting the Fleet Overview dashboard roll up
+  # every deployment. If federation is not enabled, point "__fleet__" at a
+  # real admin org (or a bar-joined tenant list, e.g. "acme|globex").
+  # ========================================================================
+  - name: Mimir (fleet)
+    uid: fyralis-mimir-fleet
+    type: prometheus
+    access: proxy
+    url: http://mimir:9009/prometheus
+    orgId: 1
+    isDefault: false
+    editable: false
+    jsonData:
+      prometheusType: Mimir
+      prometheusVersion: 2.9.1
+      timeInterval: 15s
+      httpMethod: POST
+      manageAlerts: false
+      httpHeaderName1: X-Scope-OrgID
+    secureJsonData:
+      # FLEET/ADMIN org id — cross-tenant reader. With tenant_federation enabled
+      # in mimir.yaml, a bar-joined tenant list federates the RAW series across
+      # those tenants (the lone "__fleet__" ruler org holds only the recorded
+      # fleet:* series, NOT the raw worker_heartbeat_age_seconds / up / dlq
+      # series the fleet panels also read).
+      # NOTE: Grafana provisioning does NOT honor ${VAR:default} bash-default
+      # syntax in secureJsonData (it treats "FYRALIS_FLEET_ORG_ID:acme|globex"
+      # as one var name -> not found -> empty header -> Mimir "no org id"). So we
+      # use a LITERAL bar-joined tenant list, exactly like the per-tenant
+      # datasources below. Add a tenant here when you onboard one (the same
+      # obligation as adding its Mimir <tenant> datasource).
+      # Includes __fleet__ so BOTH the RAW series (federated from acme+globex)
+      # AND the ruler's recorded fleet:* SLI series (written under __fleet__)
+      # resolve through this one fleet/admin datasource. The orgs are disjoint
+      # (raw `up` only in acme/globex; fleet:* only in __fleet__) so no double-count.
+      httpHeaderValue1: "acme|globex|__fleet__"
+
+  # ========================================================================
+  # LOKI (logs) — PER-CUSTOMER scoped  (T2 redacted logs)
+  # ------------------------------------------------------------------------
+  # Same scoping contract as Mimir: X-Scope-OrgID templated to ${tenant_scope}.
+  # Only populated for tenants opted up to telemetry tier T2+ (C3); T1-only
+  # tenants will return empty log results (expected, not an error).
+  # ========================================================================
+  - name: Loki
+    uid: fyralis-loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    orgId: 1
+    isDefault: false
+    editable: false
+    jsonData:
+      maxLines: 1000
+      timeout: 60
+      # ---- per-customer multi-tenancy header (C5, OPERATOR QUERY PATH) ----
+      httpHeaderName1: X-Scope-OrgID
+      # Correlate logs → metrics: link a tenant_id label to the Mimir DS.
+      derivedFields:
+        - name: deployment_id
+          matcherRegex: 'deployment_id="([^"]+)"'
+          url: ''
+    secureJsonData:
+      httpHeaderValue1: ${tenant_scope}
+
+  # ========================================================================
+  # LOKI (fleet) — CROSS-FLEET / ADMIN logs view
+  # ========================================================================
+  - name: Loki (fleet)
+    uid: fyralis-loki-fleet
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    orgId: 1
+    isDefault: false
+    editable: false
+    jsonData:
+      maxLines: 1000
+      timeout: 60
+      httpHeaderName1: X-Scope-OrgID
+    secureJsonData:
+      # Literal fan-out (see the Mimir (fleet) note — Grafana ignores ${VAR:default}).
+      # T1-only tenants have no logs, so this returns empty (expected, not an error).
+      httpHeaderValue1: "acme|globex"
+
+  # ========================================================================
+  # CP SELF-OBS PROMETHEUS — control-plane self-observability (WS-SELFOBS)
+  # ------------------------------------------------------------------------
+  # The DEDICATED, INDEPENDENT control-plane watchdog Prometheus (NFR-10,
+  # "silence != health"). This is NOT central Mimir and NOT scoped by
+  # X-Scope-OrgID — it scrapes the cp-self-obs-exporter (which probes every
+  # CP service on each scrape) plus mimir/loki/grafana /metrics directly, and
+  # survives a full fleet-pipeline outage. The cp_self dashboard (uid
+  # fyralis-cp-self-obs) binds to THIS datasource by uid.
+  # ========================================================================
+  - name: CP Self-Obs (Prometheus)
+    uid: fyralis-cp-prometheus
+    type: prometheus
+    access: proxy
+    url: http://cp-prometheus:9090
+    orgId: 1
+    isDefault: false
+    editable: false
+    jsonData:
+      prometheusType: Prometheus
+      prometheusVersion: 2.53.0
+      timeInterval: 15s
+      httpMethod: POST
+      manageAlerts: false
+
+  # ========================================================================
+  # PER-TENANT FIXED Mimir datasources — one per real tenant (acme, globex).
+  # ------------------------------------------------------------------------
+  # Grafana 11 does NOT interpolate a dashboard TEMPLATE variable into
+  # secureJsonData (the X-Scope-OrgID header), so a single templated DS sends
+  # an EMPTY org id ("no org id" 401). Instead the per-customer drill-down
+  # uses a `datasource`-type template var (tenant_ds) that PICKS one of these
+  # fixed, first-class per-tenant datasources, each with a HARD-CODED literal
+  # X-Scope-OrgID. Add a new tenant => add a new block here.
+  # ========================================================================
+  - name: Mimir acme
+    uid: mimir-acme
+    type: prometheus
+    access: proxy
+    url: http://mimir:9009/prometheus
+    orgId: 1
+    isDefault: false
+    editable: false
+    jsonData:
+      prometheusType: Mimir
+      httpMethod: POST
+      timeInterval: 15s
+      httpHeaderName1: X-Scope-OrgID
+    secureJsonData:
+      httpHeaderValue1: acme
+  - name: Mimir globex
+    uid: mimir-globex
+    type: prometheus
+    access: proxy
+    url: http://mimir:9009/prometheus
+    orgId: 1
+    isDefault: false
+    editable: false
+    jsonData:
+      prometheusType: Mimir
+      httpMethod: POST
+      timeInterval: 15s
+      httpHeaderName1: X-Scope-OrgID
+    secureJsonData:
+      httpHeaderValue1: globex

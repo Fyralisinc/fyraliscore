@@ -256,6 +256,7 @@ from services.ingest.ingestion.workflows.runtime import LongRunningService
 from services.ingest.ingestion.workflows.signals import (
     claim_signals,
     emit_signal,
+    signal_count,
 )
 from services.ingest.ingestion.workflows.state import (
     CursorAdvanceFlushFailure,
@@ -293,7 +294,11 @@ DEFAULT_S3_BUCKET = "fyralis-raw"
 DEFAULT_INGESTION_ENV = "dev"
 
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
-DEFAULT_MAX_SIGNALS_PER_TICK = 10  # smaller batch — each runs a fetch loop
+# 0 means auto: count currently pending shard_fetch_requested signals and let
+# that count set the tick budget. This keeps Discord's "one shard per channel"
+# behavior from being capped by a static worker batch.
+DEFAULT_MAX_SIGNALS_PER_TICK = 0
+DEFAULT_AUTO_CONCURRENCY_LIMIT = 32
 DEFAULT_LEASE_TIMEOUT_SECONDS = 30.0
 DEFAULT_FLUSH_TIMEOUT_SECONDS = 5.0
 # Bound on how long one rate-limited page fetch may wait for a token
@@ -368,10 +373,30 @@ SELECT s.id, s.onboarding_run_id, s.tenant_id, s.source, s.shard_kind,
  LIMIT $2
 """
 
+_COUNT_ORPHAN_SHARDS_SQL = """
+SELECT count(*)
+  FROM onboarding_shards s
+  LEFT JOIN workflow_states ws
+    ON ws.workflow_kind = 'shard_fetch'
+   AND ws.workflow_id   = s.id::text
+ WHERE s.state = 'in_progress'
+   AND (ws.last_advanced_at IS NULL OR ws.last_advanced_at < $1)
+"""
+
 _LOAD_PROVIDER_INSTALL_SQL = """
 SELECT id, tenant_id, provider, installation_id, secret_ref, enabled
   FROM provider_installations
  WHERE tenant_id = $1 AND provider = $2 AND enabled = TRUE
+ LIMIT 1
+"""
+
+_LOAD_PROVIDER_INSTALL_BY_INSTALLATION_ID_SQL = """
+SELECT id, tenant_id, provider, installation_id, secret_ref, enabled
+  FROM provider_installations
+ WHERE tenant_id = $1
+   AND provider = $2
+   AND installation_id = $3
+   AND enabled = TRUE
  LIMIT 1
 """
 
@@ -435,7 +460,7 @@ SELECT id, tenant_id, base_url, secret_ref, disabled_at
 # (access token) + refresh_secret_ref the QuickBooksClient needs.
 _LOAD_QUICKBOOKS_INSTALL_SQL = """
 SELECT id, tenant_id, realm_id, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
+       token_expires_at, disabled_at
   FROM quickbooks_installations
  WHERE tenant_id = $1 AND disabled_at IS NULL
  LIMIT 1
@@ -487,7 +512,7 @@ SELECT id, tenant_id, base_url, secret_ref, disabled_at
 # secret_ref (access token) + refresh_secret_ref the RampClient needs.
 _LOAD_RAMP_INSTALL_SQL = """
 SELECT id, tenant_id, business_id, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
+       token_expires_at, disabled_at
   FROM ramp_installations
  WHERE tenant_id = $1 AND disabled_at IS NULL
  LIMIT 1
@@ -498,7 +523,7 @@ SELECT id, tenant_id, business_id, base_url, secret_ref, refresh_secret_ref,
 # base_url + secret_ref (access token) + refresh_secret_ref the GustoClient needs.
 _LOAD_GUSTO_INSTALL_SQL = """
 SELECT id, tenant_id, company_uuid, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
+       token_expires_at, disabled_at
   FROM gusto_installations
  WHERE tenant_id = $1 AND disabled_at IS NULL
  LIMIT 1
@@ -567,7 +592,8 @@ SELECT id, tenant_id, base_url, org_id, secret_ref, disabled_at
 # shard_identifier; the install row carries base_url + team_id + secret_ref the
 # FigmaClient needs.
 _LOAD_FIGMA_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, team_id, secret_ref, disabled_at
+SELECT id, tenant_id, base_url, team_id, secret_ref, auth_kind,
+       refresh_secret_ref, token_expires_at, disabled_at
   FROM figma_installations
  WHERE tenant_id = $1 AND disabled_at IS NULL
  LIMIT 1
@@ -578,7 +604,7 @@ SELECT id, tenant_id, base_url, team_id, secret_ref, disabled_at
 # base_url + secret_ref (access token) + refresh_secret_ref the CartaClient needs.
 _LOAD_CARTA_INSTALL_SQL = """
 SELECT id, tenant_id, firm_id, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
+       token_expires_at, disabled_at
   FROM carta_installations
  WHERE tenant_id = $1 AND disabled_at IS NULL
  LIMIT 1
@@ -618,6 +644,23 @@ SELECT id, tenant_id, organization_urn, base_url, secret_ref,
  LIMIT 1
 """
 
+_LOAD_FACEBOOK_PAGES_INSTALL_SQL = """
+SELECT id, tenant_id, page_id, page_name, page_access_token_ref,
+       app_secret_ref, verify_token_ref, enabled
+  FROM facebook_page_installations
+ WHERE tenant_id = $1 AND enabled = true
+ ORDER BY updated_at DESC
+ LIMIT 1
+"""
+
+_LOAD_FACEBOOK_PAGES_INSTALL_BY_ID_SQL = """
+SELECT id, tenant_id, page_id, page_name, page_access_token_ref,
+       app_secret_ref, verify_token_ref, enabled
+  FROM facebook_page_installations
+ WHERE id = $1 AND tenant_id = $2 AND enabled = true
+ LIMIT 1
+"""
+
 
 # ---------------------------------------------------------------------
 # Config.
@@ -637,8 +680,13 @@ class ShardFetchConfig:
     # gate). Past this, the loop exits transiently for orphan-scan retry.
     rate_limit_max_wait_seconds: float = DEFAULT_RATE_LIMIT_MAX_WAIT_SECONDS
     # Independent shards can drain concurrently; each shard still preserves
-    # its internal page order and N1 cursor barrier.
-    max_concurrent_shards: int = 1
+    # its internal page order and N1 cursor barrier. 0 means auto: derive the
+    # width from the backlog, bounded by auto_concurrency_limit.
+    max_concurrent_shards: int = 0
+    # Safety ceiling for auto mode. This bounds task, HTTP, and DB pressure for
+    # organization-wide installs with thousands of (repo, event-type) shards.
+    # 0 explicitly restores unbounded auto fan-out.
+    auto_concurrency_limit: int = DEFAULT_AUTO_CONCURRENCY_LIMIT
     # Per-page raw-tier S3 write fan-out. All writes must finish before the
     # page's Kafka flush/cursor advance barrier runs.
     s3_write_concurrency: int = 1
@@ -699,8 +747,37 @@ async def _load_orphan_shards(
     return await pool.fetch(_LOAD_ORPHAN_SHARDS_SQL, cutoff, limit)
 
 
+async def _count_orphan_shards(
+    pool: asyncpg.Pool,
+    *,
+    lease_timeout_seconds: float,
+) -> int:
+    cutoff = (
+        dt.datetime.now(tz=dt.timezone.utc)
+        - dt.timedelta(seconds=lease_timeout_seconds)
+    )
+    value = await pool.fetchval(_COUNT_ORPHAN_SHARDS_SQL, cutoff)
+    return int(value or 0)
+
+
+def parse_auto_parallelism(value: str | None, *, default: str = "auto") -> int:
+    """Parse worker parallelism/batch env.
+
+    Returns 0 for auto/dynamic/all/unbounded, which the service resolves from
+    the current shard-fetch backlog at runtime.
+    """
+    raw = (value if value is not None else default).strip().lower()
+    if raw in ("", "auto", "dynamic", "all", "unbounded"):
+        return 0
+    parsed = int(raw)
+    if parsed < 0:
+        raise ValueError("parallelism must be >= 0 or 'auto'")
+    return parsed
+
+
 async def _load_install(
     pool: asyncpg.Pool, *, tenant_id: UUID, source: str,
+    shard_identifier: dict[str, Any] | None = None,
 ) -> asyncpg.Record | None:
     """Load the active install row for this (tenant, source)."""
     if source == "gmail":
@@ -745,6 +822,24 @@ async def _load_install(
         return await pool.fetchrow(_LOAD_ASHBY_INSTALL_SQL, tenant_id)
     if source == "linkedin":
         return await pool.fetchrow(_LOAD_LINKEDIN_INSTALL_SQL, tenant_id)
+    if source == "facebook_pages":
+        installation_id = (shard_identifier or {}).get("installation_id")
+        if isinstance(installation_id, str) and installation_id.strip():
+            return await pool.fetchrow(
+                _LOAD_FACEBOOK_PAGES_INSTALL_BY_ID_SQL,
+                UUID(installation_id),
+                tenant_id,
+            )
+        return await pool.fetchrow(_LOAD_FACEBOOK_PAGES_INSTALL_SQL, tenant_id)
+    if source == "discord":
+        guild_id = (shard_identifier or {}).get("guild_id")
+        if isinstance(guild_id, str) and guild_id.strip():
+            return await pool.fetchrow(
+                _LOAD_PROVIDER_INSTALL_BY_INSTALLATION_ID_SQL,
+                tenant_id,
+                source,
+                guild_id,
+            )
     return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
@@ -1122,8 +1217,8 @@ class ShardFetch(LongRunningService):
         SKIP LOCKED.
         """
         signals_processed = 0
-        remaining = self._config.max_signals_per_tick
-        width = max(1, self._config.max_concurrent_shards)
+        remaining = await self._signal_tick_budget()
+        width = self._claim_wave_width(remaining)
         while remaining > 0:
             wave_size = min(width, remaining)
             results = await asyncio.gather(
@@ -1148,6 +1243,26 @@ class ShardFetch(LongRunningService):
             signals_processed=signals_processed,
             orphans_resumed=orphans_resumed,
         )
+
+    async def _signal_tick_budget(self) -> int:
+        configured = self._config.max_signals_per_tick
+        if configured > 0:
+            return configured
+        pending = await signal_count(
+            self._pool,
+            workflow_kind=WORKFLOW_KIND,
+            workflow_id=WORKFLOW_ID_INBOX,
+        )
+        return max(1, pending)
+
+    def _claim_wave_width(self, remaining: int) -> int:
+        configured = self._config.max_concurrent_shards
+        if configured > 0:
+            return configured
+        auto_limit = self._config.auto_concurrency_limit
+        if auto_limit > 0:
+            return max(1, min(remaining, auto_limit))
+        return max(1, remaining)
 
     async def _process_one_signal(self) -> bool:
         """Claim one shard_fetch_requested signal + run its fetch loop.
@@ -1224,12 +1339,21 @@ class ShardFetch(LongRunningService):
         Returns count of orphans resumed. Concurrent replicas use
         CLAIM-VIA-UPDATE for the lease extension so only one wins.
         """
+        limit = self._config.max_signals_per_tick
+        if limit <= 0:
+            limit = max(
+                1,
+                await _count_orphan_shards(
+                    self._pool,
+                    lease_timeout_seconds=self._config.lease_timeout_seconds,
+                ),
+            )
         orphans = await _load_orphan_shards(
             self._pool,
             lease_timeout_seconds=self._config.lease_timeout_seconds,
-            limit=self._config.max_signals_per_tick,
+            limit=limit,
         )
-        sem = asyncio.Semaphore(max(1, self._config.max_concurrent_shards))
+        sem = asyncio.Semaphore(self._claim_wave_width(len(orphans)))
 
         async def _resume_one(orphan: asyncpg.Record) -> int:
             shard_id = orphan["id"]
@@ -1293,7 +1417,10 @@ class ShardFetch(LongRunningService):
 
         try:
             install = await _load_install(
-                self._pool, tenant_id=ctx.tenant_id, source=ctx.source,
+                self._pool,
+                tenant_id=ctx.tenant_id,
+                source=ctx.source,
+                shard_identifier=ctx.shard_identifier,
             )
             if install is None:
                 # Install disabled mid-flight — suspended/revoked via the
@@ -1483,11 +1610,14 @@ class ShardFetch(LongRunningService):
 #   DATABASE_URL              — Postgres DSN (required).
 #   KAFKA_BOOTSTRAP_SERVERS   — Kafka bootstrap (default localhost:9092).
 #   SHARD_FETCH_TICK_SEC      — tick interval (default 5.0).
-#   SHARD_FETCH_BATCH         — max signals per tick (default 10).
+#   SHARD_FETCH_BATCH         — max signals per tick (default auto).
 #   SHARD_FETCH_LEASE_SEC     — orphan lease timeout (default 30.0).
 #   SHARD_FETCH_FLUSH_SEC     — Kafka flush timeout (default 5.0).
 #   SHARD_FETCH_CONCURRENCY   — concurrent independent shard loops
-#                               (default 1).
+#                               (default auto). Auto scales with the current
+#                               backlog up to SHARD_FETCH_AUTO_CONCURRENCY_MAX.
+#   SHARD_FETCH_AUTO_CONCURRENCY_MAX — auto-mode safety ceiling (default 32).
+#                               0 restores unbounded fan-out.
 #   SHARD_FETCH_S3_WRITE_CONCURRENCY — per-page S3 PUT fan-out (default 1).
 #   SHARD_FETCH_INSTANCE      — instance name for diagnostics.
 #   REDIS_URL                 — Redis for the FetchPage rate-limit gate
@@ -1533,8 +1663,8 @@ async def _run_service() -> None:
         tick_interval_seconds=float(
             os.environ.get("SHARD_FETCH_TICK_SEC", "5.0"),
         ),
-        max_signals_per_tick=int(
-            os.environ.get("SHARD_FETCH_BATCH", "10"),
+        max_signals_per_tick=parse_auto_parallelism(
+            os.environ.get("SHARD_FETCH_BATCH"),
         ),
         lease_timeout_seconds=float(
             os.environ.get("SHARD_FETCH_LEASE_SEC", "30.0"),
@@ -1552,8 +1682,12 @@ async def _run_service() -> None:
                 str(DEFAULT_RATE_LIMIT_MAX_WAIT_SECONDS),
             ),
         ),
-        max_concurrent_shards=int(
-            os.environ.get("SHARD_FETCH_CONCURRENCY", "1"),
+        max_concurrent_shards=parse_auto_parallelism(
+            os.environ.get("SHARD_FETCH_CONCURRENCY"),
+        ),
+        auto_concurrency_limit=parse_auto_parallelism(
+            os.environ.get("SHARD_FETCH_AUTO_CONCURRENCY_MAX"),
+            default=str(DEFAULT_AUTO_CONCURRENCY_LIMIT),
         ),
         s3_write_concurrency=int(
             os.environ.get("SHARD_FETCH_S3_WRITE_CONCURRENCY", "1"),
@@ -1632,10 +1766,12 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "DEFAULT_AUTO_CONCURRENCY_LIMIT",
     "DEFAULT_FLUSH_TIMEOUT_SECONDS",
     "DEFAULT_LEASE_TIMEOUT_SECONDS",
     "DEFAULT_MAX_SIGNALS_PER_TICK",
     "DEFAULT_TICK_INTERVAL_SECONDS",
+    "parse_auto_parallelism",
     "RAW_TOPIC",
     "SIGNAL_KIND_COMPLETED",
     "SIGNAL_KIND_REQUESTED",

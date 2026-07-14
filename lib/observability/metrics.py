@@ -557,6 +557,213 @@ def reset_default_for_tests() -> None:
     _DEFAULT.reset_for_tests()
 
 
+# ---------------------------------------------------------------------
+# Schema-version ledger metrics (BYOC §12 G1).
+#
+# Singletons defined on the default registry so the migration runner can
+# import-and-set them at the site where it applies migrations, and every
+# worker that serves /metrics (each renders render_default()) exposes the
+# deployment's schema state to the fleet control plane. Cross-deployment,
+# no tenant labels — same cardinality rules as the rest of this module.
+# ---------------------------------------------------------------------
+SCHEMA_VERSION = gauge(
+    "fyralis_schema_version",
+    "Highest applied db/migrations numeric prefix (monotonic schema version). "
+    "0 if the ledger is empty / unreadable.",
+)
+SCHEMA_APPLIED_TOTAL = gauge(
+    "fyralis_schema_applied_count",
+    "Number of rows in the schema_migrations ledger (migrations applied).",
+)
+SCHEMA_LAST_FAILED = gauge(
+    "fyralis_schema_last_failed_migration",
+    "1 while the most recent migration apply attempt FAILED (per `filename` "
+    "label); cleared to 0 once that file applies cleanly. A sustained 1 means "
+    "the deployment is wedged on a broken/pending migration.",
+    ("filename",),
+)
+
+
+# ---------------------------------------------------------------------
+# Data-loss counters (BYOC §12 G6).
+#
+# Promote the two silent-data-loss LOG lines — producer flush-undelivered on
+# shutdown and the observation_writer shadow-drop — to real counters so the
+# fleet control plane can alert on data loss instead of grepping logs. Defined
+# here (not at each call site) per the BYOC instrumentation track so the
+# control-plane SLI build has one canonical name to scrape. Incremented at the
+# exact sites: kafka/producer.py:stop() and writers/observation_writer.py.
+# ---------------------------------------------------------------------
+KAFKA_PRODUCER_SHUTDOWN_UNDELIVERED = counter(
+    "fyralis_kafka_producer_shutdown_undelivered_total",
+    "Messages still undelivered when the idempotent producer was stopped "
+    "(flush timed out on shutdown) — silent loss on restart. Sum across stops.",
+)
+WRITER_SHADOW_DROP = counter(
+    "fyralis_writer_shadow_drop_total",
+    "Envelopes that reached the writer shadow path and were DROPPED (no row, "
+    "no DLQ, offset committed). ingress_kind=backfill is an INVARIANT VIOLATION "
+    "(silent data loss); live is by-design (inline path persists it).",
+    ("ingress_kind",),
+)
+
+
+# ---------------------------------------------------------------------
+# LLM circuit-breaker + provider-error metrics (BYOC §12 G3).
+#
+# The per-provider LLM circuit breaker (services/reasoning/think/
+# circuit_breaker.py) guards every LLM PROVIDER call (lib/llm/provider.py
+# routes _raw_call through get_breaker(provider).call(fn)). When a provider
+# has an outage the breaker trips OPEN and EVERY Think run fast-fails — but
+# that state, and the provider error classes that drove it, were log-only.
+# These fleet-canonical singletons surface both: a per-provider state gauge
+# and per-provider error-class counters. Bounded cardinality: `provider` is
+# the closed LLM-provider set (codex/anthropic/openai/deepseek); `state` is
+# the closed CircuitState enum; `error_class` is the closed LLMErrorClass
+# enum (rate_limit/timeout/permanent/transient/parse_error/content_violation).
+LLM_CIRCUIT_BREAKER_STATE = gauge(
+    "fyralis_llm_circuit_breaker_state",
+    "LLM provider circuit-breaker state, one series per (provider, state): the "
+    "active state reads 1, the other two read 0. state=open means the provider "
+    "is being fast-failed and ALL Think runs for it are short-circuiting.",
+    ("provider", "state"),
+)
+LLM_PROVIDER_ERRORS = counter(
+    "fyralis_llm_provider_errors_total",
+    "LLM provider call errors classified by `error_class` (rate_limit|timeout|"
+    "permanent|transient|parse_error|content_violation), by provider. Separates "
+    "a quota/auth/outage (rate_limit/permanent) from a recoverable blip so the "
+    "fleet can distinguish 'fix billing' from 'wait it out'.",
+    ("provider", "error_class"),
+)
+
+
+# ---------------------------------------------------------------------
+# Think survival metrics on the DEFAULT registry (BYOC §12 G4).
+#
+# services/reasoning/think/observability.py keeps its own in-process Metrics
+# singleton rendered ONLY on the think worker's concatenated /metrics
+# (render_prometheus_text + render_default). validation_dropped_ops has no DB
+# backing, so it is invisible to any collector that scrapes the canonical
+# default registry (render_default) — and resets on restart. Mirror the two
+# at-risk families onto the default registry under fyralis_-prefixed names
+# (distinct from the think-local think_* names, so the think worker emits no
+# duplicate series) so they are continuously fleet-scraped: the central TSDB
+# then retains the series across a worker restart even as the in-process
+# counter zeroes. Cost is additionally DB-backed in think_run_costs (the §12
+# G4 "rely on think_run_costs" option); this counter is its live mirror.
+# Mirrored at the emission sites: observability.log_dropped_op + record_cost.
+THINK_VALIDATION_DROPPED_OPS = counter(
+    "fyralis_think_validation_dropped_ops_total",
+    "Think ops dropped by validation during apply, by reason and op_type — "
+    "silent correctness loss (the diff the LLM proposed was not fully applied). "
+    "Fleet-canonical mirror of the think-local think_validation_dropped_ops_total "
+    "(in-memory only, no DB backing) so it survives a think-worker restart.",
+    ("reason", "op_type"),
+)
+THINK_LLM_COST_USD = counter(
+    "fyralis_think_llm_cost_usd_total",
+    "Cumulative Think LLM spend in USD by trigger_kind — fleet-canonical mirror "
+    "of the think-local in-memory total (also durably recorded in think_run_costs).",
+    ("trigger_kind",),
+)
+
+
+# ---------------------------------------------------------------------
+# Expected-vs-running worker set (BYOC §12 G5).
+#
+# A deployment can look healthy (every scraped target up) while a whole
+# reasoning worker class never runs — the design flags anomaly_processor /
+# deadline_resolver as coded but absent from compose, so T2/T3 reasoning
+# silently never fires. These two gauges export the AUTHORITATIVE expected
+# worker set FROM CODE (not just from the prometheus scrape list, which can
+# itself omit a class) so the control plane can diff expected-vs-`up` and
+# directly see coded-but-undeployed classes. Rendered by a collector below
+# from EXPECTED_WORKER_CLASSES. Bounded cardinality: `worker_class` is the
+# fixed code-defined set.
+WORKER_EXPECTED = gauge(
+    "fyralis_worker_expected",
+    "1 for every worker class this build EXPECTS to be running (authoritative "
+    "expected set, encoded in code). The fleet diffs this against up{job=~"
+    "'fyralis-.*'} to detect a missing worker class.",
+    ("worker_class",),
+)
+WORKER_COMPOSE_PRESENT = gauge(
+    "fyralis_worker_compose_present",
+    "1 if an expected worker class is wired into the deployment's process set, "
+    "0 if it is coded-but-NOT-deployed (e.g. anomaly_processor / deadline_"
+    "resolver absent from compose). A 0 here means reasoning that depends on "
+    "that class silently never fires even though every running worker is healthy.",
+    ("worker_class",),
+)
+
+
+# ---------------------------------------------------------------------
+# OAuth source-token health metrics (BYOC §12 G2).
+#
+# The most common "a source silently stops ingesting" failure is an OAuth
+# access/refresh token that expired or whose refresh exchange failed — and
+# until now that was invisible to the fleet (the refresh path only logged).
+# These fleet-canonical singletons live on the default registry so every
+# worker that runs an OAuth refresh (the oauth poll sweep + the reactive 401
+# re-mint inside services/ingest/integrations/oauth_refresh.py) exposes
+# per-provider token health to the control plane. Bounded cardinality:
+# `provider` is the closed refresh-capable source set (quickbooks/ramp/
+# gusto/carta), never a tenant/install id (those aggregate in Postgres).
+OAUTH_REFRESH_FAILURES = counter(
+    "fyralis_oauth_refresh_failures_total",
+    "OAuth source-token refresh/re-mint exchanges that FAILED, by provider and "
+    "reason (transport|http_4xx|http_5xx|invalid_response|bad_request_config). "
+    "A sustained rate means a source has silently stopped (or is about to stop) "
+    "ingesting because its access token can no longer be renewed.",
+    ("provider", "reason"),
+)
+OAUTH_TOKEN_EXPIRES_IN_SECONDS = gauge(
+    "fyralis_oauth_token_expires_in_seconds",
+    "Seconds until the most-recently-observed OAuth access token for `provider` "
+    "expires (negative once expired). Set on every refresh evaluation + every "
+    "successful re-mint; the fleet alerts when this drops below the refresh skew "
+    "(token-expiry-soon) — the leading indicator of an imminent source outage.",
+    ("provider",),
+)
+
+
+# BYOC §12 G5: the authoritative expected reasoning-worker set, encoded in
+# code. Each entry maps a worker class to whether it is wired into the
+# deployment's process set (compose / run scripts). The two coded-but-NOT-
+# deployed classes carry `False` so a clean-looking deployment still exports
+# fyralis_worker_compose_present{worker_class="anomaly_processor"} 0 — the
+# direct, scrapeable form of "T2/T3 reasoning silently never fires". Update
+# the flag to True here in lockstep when a class is added to compose; the
+# code stays the source of truth the control plane diffs against.
+EXPECTED_WORKER_CLASSES: dict[str, bool] = {
+    "think_worker": True,
+    "post_commit_worker": True,
+    # Coded under services/workers/{anomaly_processor,deadline_resolver}/
+    # worker.py but absent from docker-compose.yml + scripts/ — the G5 gap.
+    "anomaly_processor": False,
+    "deadline_resolver": False,
+}
+
+
+def publish_expected_worker_set() -> None:
+    """Set the encoded expected-worker gauges from EXPECTED_WORKER_CLASSES.
+
+    Idempotent. Called once at import so the values are present on the very
+    first /metrics scrape; the set is static (no runtime state) so no
+    collector/sampler is needed to keep it fresh. Exported so a test that
+    calls reset_default_for_tests() can re-assert it.
+    """
+    for worker_class, in_compose in EXPECTED_WORKER_CLASSES.items():
+        WORKER_EXPECTED.set(1.0, worker_class=worker_class)
+        WORKER_COMPOSE_PRESENT.set(
+            1.0 if in_compose else 0.0, worker_class=worker_class,
+        )
+
+
+publish_expected_worker_set()
+
+
 # Process start marker for *_uptime gauges rendered by collectors.
 PROCESS_STARTED_AT = time.time()
 
@@ -578,4 +785,147 @@ __all__ = [
     "PROCESS_STARTED_AT",
     "validate_label_name",
     "validate_label_value",
+    "SCHEMA_VERSION",
+    "SCHEMA_APPLIED_TOTAL",
+    "SCHEMA_LAST_FAILED",
+    "KAFKA_PRODUCER_SHUTDOWN_UNDELIVERED",
+    "WRITER_SHADOW_DROP",
+    "OAUTH_REFRESH_FAILURES",
+    "OAUTH_TOKEN_EXPIRES_IN_SECONDS",
+    "LLM_CIRCUIT_BREAKER_STATE",
+    "LLM_PROVIDER_ERRORS",
+    "WORKER_EXPECTED",
+    "WORKER_COMPOSE_PRESENT",
+    "EXPECTED_WORKER_CLASSES",
+    "publish_expected_worker_set",
+    "THINK_VALIDATION_DROPPED_OPS",
+    "THINK_LLM_COST_USD",
+]
+
+
+# --- doc_memory metrics (document-memory-substrate) ---
+# Phase 2 (proactive + observability) of the document-memory substrate
+# (docs/plans/document-memory-substrate.md §7 step 12 / §10). Registered on the
+# default registry as module-level singletons (same pattern as the per-module
+# instrumentation in services/reasoning/retrieval/* and kafka/producer.py) so
+# they render via render_default() with no extra wiring. Conceptual dotted names
+# from the plan (doc_memory.models_minted / .scope_unresolved / .mint_failure)
+# map to snake_case Prometheus family names with the `_total` counter suffix the
+# rest of the codebase uses. The worker-side DISPATCH count is exposed separately
+# as doc_memory_enriched_t1_total (renamed off the former, misleading
+# doc_memory_models_minted_total) while doc_memory_models_minted_total now means
+# the TRUE mint count — see the two definitions below. Cardinality: no
+# tenant_id / id labels (§4 rule) —
+# the `source` label is a bounded enum over the doc-memory channel allowlist
+# (google_drive / notion / fireflies / other).
+#
+# Appended as a self-contained block at EOF so this addition never overlaps the
+# file body other tracks edit (zero-conflict guarantee).
+
+# doc_memory.enriched_t1 — a summarized document was handed to Think to mint
+# document Models from (the worker enriched a T1 with the structured summary +
+# resolved scope). Under the ratified Option A, Think — not the worker — is the
+# Model author, so this is the DISPATCH count, NOT a mint count. It remains a
+# useful signal (documents handed to Think for distillation) and is the
+# denominator for a `doc → models_minted` conversion rate (§4.1) once the true
+# mint counter below is wired at Think's apply site. Renamed from the former,
+# misleading `doc_memory_models_minted_total` (which measured dispatches).
+DOC_MEMORY_ENRICHED_T1 = counter(
+    "doc_memory_enriched_t1_total",
+    "Documents dispatched to Think on an enriched T1 to mint document Models "
+    "from (structured summary + re-resolved scope), by source channel. This is "
+    "a DISPATCH count — Think mints the Models later (Option A).",
+    ("source",),
+)
+
+# doc_memory.models_minted — the TRUE mint counter: a document-derived Model was
+# actually minted by Think (a Model whose born_from_event_id is the document
+# observation — i.e. document provenance, §4.4). Distinct from the dispatch
+# counter above: this counts Models that Think genuinely inserted, so
+# `models_minted / enriched_t1` is the real distillation conversion rate.
+#
+# WIRING NOTE (cross-branch constraint): under ratified Option A the only place a
+# document-derived Model is actually inserted is Think's apply path
+# (`services/reasoning/think/applier.py::_apply_claim_insert`, via
+# `ModelsRepo.insert`). That file is owned by the parallel reasoning/BYOC track
+# and is NOT one of the document-memory-substrate files — wiring the increment
+# there would create a new cross-branch intersection. The increment helper
+# `record_doc_memory_model_minted()` below is therefore provided ready-to-call
+# (one line, keyed on document provenance) so whichever track owns the applier
+# can drop it in at the mint site without depending on this module's internals.
+# See docs/plans/document-memory-substrate.md §4.1 / §4.4.
+DOC_MEMORY_MODELS_MINTED = counter(
+    "doc_memory_models_minted_total",
+    "Document-derived Models actually minted by Think (born_from_event_id is the "
+    "document observation), by source channel. The real mint count (Option A).",
+    ("source",),
+)
+
+
+def record_doc_memory_model_minted(source_channel: str | None) -> None:
+    """Record that Think actually minted a document-derived Model.
+
+    Call this from the Think apply site exactly once per inserted Model whose
+    provenance is a document observation (born_from_event_id = the document
+    observation). Kept as a tiny helper so the call site stays a single line and
+    does not need to know the metric's label shape. See the WIRING NOTE above for
+    why the call site itself is not wired from this module.
+    """
+    DOC_MEMORY_MODELS_MINTED.inc(source=doc_memory_source_label(source_channel))
+
+# doc_memory.scope_unresolved — re-resolution ran but produced NO scoped recall
+# surface (no resolved entities and no resolved actors), so the document Models
+# will fall back to semantic-only (Pathway B) recall. Watched as a rate (§10).
+DOC_MEMORY_SCOPE_UNRESOLVED = counter(
+    "doc_memory_scope_unresolved_total",
+    "Documents whose structured-summary scope re-resolution found no entities "
+    "or actors (scoped recall degrades to semantic-only), by source channel.",
+    ("source",),
+)
+
+# doc_memory.mint_failure — the mint path failed in the worker (scope
+# re-resolution raised); strictly failure-isolated so the summary still lands.
+# The §10 alert (DocMemoryMintFailure) fires on a sustained rate of this.
+DOC_MEMORY_MINT_FAILURE = counter(
+    "doc_memory_mint_failure_total",
+    "Document-memory mint-path failures in the summarization worker "
+    "(re-resolution error; summary still succeeds), by source channel.",
+    ("source",),
+)
+
+# map-reduce section counts — distribution of how many sections a large document
+# was split into during map-reduce summarization (Layer 0, §3.2). A histogram so
+# both the section-count distribution and the count of map-reduced documents are
+# queryable. Small integer buckets sized to the realistic section fan-out.
+DOC_MEMORY_MAPREDUCE_SECTIONS = histogram(
+    "doc_memory_mapreduce_sections",
+    "Number of sections a document was split into for map-reduce "
+    "summarization (Layer 0). +Inf bucket counts map-reduced documents.",
+    buckets=(1, 2, 3, 5, 8, 13, 21, 34, 55),
+)
+
+
+def doc_memory_source_label(source_channel: str | None) -> str:
+    """Collapse a free-form source_channel to a bounded doc-memory label value.
+
+    Keeps metric cardinality bounded (§4): the channel allowlist is
+    google_drive:file / notion:object / fireflies:transcript; anything else
+    (or missing) buckets to "other".
+    """
+    if not source_channel:
+        return "other"
+    head = source_channel.split(":", 1)[0].strip().lower()
+    if head in {"google_drive", "notion", "fireflies"}:
+        return head
+    return "other"
+
+
+__all__ += [
+    "DOC_MEMORY_ENRICHED_T1",
+    "DOC_MEMORY_MODELS_MINTED",
+    "DOC_MEMORY_SCOPE_UNRESOLVED",
+    "DOC_MEMORY_MINT_FAILURE",
+    "DOC_MEMORY_MAPREDUCE_SECTIONS",
+    "doc_memory_source_label",
+    "record_doc_memory_model_minted",
 ]

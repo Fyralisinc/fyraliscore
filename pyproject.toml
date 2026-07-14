@@ -60,6 +60,9 @@ dependencies = [
     "pypdf>=4.0",                               # IN-16: Google Drive PDF text extraction (pure-Python, no system deps)
 ]
 
+[project.scripts]
+fyralis = "services.platform.cli.fyralis:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.1",
@@ -104,6 +107,9 @@ docs = [
 # real Telegram live worker: `pip install 'fyraliscore[telegram]'`.
 telegram = [
     "telethon>=1.36",          # pure-Python asyncio MTProto client
+]
+browser-agent = [
+    "playwright>=1.45",        # customer-cloud admin-present source setup browser driver
 ]
 
 [tool.setuptools.packages.find]

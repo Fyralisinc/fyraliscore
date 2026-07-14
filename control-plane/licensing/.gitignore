@@ -1,0 +1,18 @@
+# licensing-local ignores.
+# (The repo-level .gitignore already covers **/keys/, __pycache__.)
+
+# Compiled python
+__pycache__/
+*.pyc
+
+# Issued license bundles are runtime output (signed per-tenant); never tracked.
+# Operators issue them to a deploy path, not into the repo.
+*.license.json
+license-*/
+out/
+
+# revocations.json IS the revocation source of truth the validator consults
+# (FR-F), analogous to ca/tenant_registry.json. A committed empty seed is fine;
+# real entries are written at runtime by revoke.py / the service. If you prefer
+# NOT to track runtime revocations in git, uncomment the next line.
+# revocations.json

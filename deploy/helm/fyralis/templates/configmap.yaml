@@ -1,0 +1,40 @@
+{{- include "fyralis.validateFigmaOAuth" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fyralis.appEnvConfigName" . }}
+  labels:
+    {{- include "fyralis.labels" . | nindent 4 }}
+data:
+  COMPANY_OS_ENV: {{ .Values.app.environment | quote }}
+  FYRALIS_ENV: {{ .Values.app.environment | quote }}
+  FYRALIS_DEPLOYMENT_MODE: {{ .Values.app.deploymentMode | quote }}
+  FYRALIS_BYOC_DEPLOYMENT_ID: {{ .Values.global.deploymentId | quote }}
+  FYRALIS_BYOC_CUSTOMER_ID: {{ .Values.global.customerId | quote }}
+  FYRALIS_BYOC_CLOUD_PROVIDER: "customer-managed-kubernetes"
+  FYRALIS_BYOC_REGION: {{ .Values.global.region | quote }}
+  FYRALIS_TELEMETRY_MODE: {{ .Values.global.telemetry | quote }}
+  KAFKA_BOOTSTRAP_SERVERS: {{ printf "%s:9092" (include "fyralis.kafkaName" .) | quote }}
+  KAFKA_TOPIC_PARTITIONS: {{ .Values.kafka.topicPartitions | quote }}
+  KAFKA_TOPIC_REPLICATION: {{ .Values.kafka.topicReplication | quote }}
+  S3_ENDPOINT_URL: {{ printf "http://%s:9000" (include "fyralis.minioName" .) | quote }}
+  S3_RAW_BUCKET: {{ .Values.minio.bucket | quote }}
+  S3_BLOB_BUCKET: {{ .Values.minio.blobBucket | quote }}
+  S3_REGION_NAME: {{ .Values.global.region | quote }}
+  AWS_ACCESS_KEY_ID: {{ .Values.minio.rootUser | quote }}
+  AWS_DEFAULT_REGION: {{ .Values.global.region | quote }}
+  REDIS_URL: {{ printf "redis://%s:6379/0" (include "fyralis.redisName" .) | quote }}
+  INGESTION_HEALTH_PORT: {{ .Values.app.ingestionHealthPort | quote }}
+  WEBHOOK_SECRETS_ENV_FALLBACK_ALLOW: "1"
+  # These are public deployment settings. FIGMA_CLIENT_SECRET_SECRET_REF and
+  # OAUTH_STATE_HMAC_KEY_SECRET_REF are supplied by the pre-created Secret
+  # named in app.figmaOAuth.existingSecret, never by this ConfigMap.
+  FIGMA_OAUTH_ENABLED: {{ ternary "1" "0" .Values.app.figmaOAuth.enabled | quote }}
+  FIGMA_CLIENT_ID: {{ .Values.app.figmaOAuth.clientId | quote }}
+  FIGMA_REDIRECT_URI: {{ .Values.app.figmaOAuth.redirectUri | quote }}
+  FIGMA_OAUTH_UI_BASE_URL: {{ .Values.app.figmaOAuth.uiBaseUrl | quote }}
+  FIGMA_OAUTH_ALLOW_HTTP_LOOPBACK: {{ ternary "1" "0" .Values.app.figmaOAuth.allowHttpLoopback | quote }}
+  FIGMA_OAUTH_SCOPES: {{ .Values.app.figmaOAuth.scopes | quote }}
+  {{- range $name, $value := .Values.app.extraEnv }}
+  {{ $name }}: {{ $value | quote }}
+  {{- end }}

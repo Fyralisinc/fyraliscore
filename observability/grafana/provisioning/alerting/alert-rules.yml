@@ -680,3 +680,48 @@ groups:
                     type: last
                     params: []
                   type: query
+
+      # Document-memory substrate (§10): the mint path is strictly
+      # failure-isolated (a mint-path error never fails summarization), so these
+      # failures are otherwise silent. Alert when they occur at a sustained rate.
+      - uid: doc-memory-mint-failure
+        title: DocMemoryMintFailure
+        condition: C
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "Document-memory mint path failing (scope re-resolution erroring) for 10m — documents are summarized but not becoming scoped, recallable Models. Summaries still land; check the summarization_worker logs."
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: fyralis-prom
+            model:
+              refId: A
+              expr: 'sum(rate(doc_memory_mint_failure_total[10m]))'
+              instant: true
+          - refId: C
+            relativeTimeRange:
+              from: 0
+              to: 0
+            datasourceUid: "__expr__"
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    type: last
+                    params: []
+                  type: query

@@ -1,6 +1,8 @@
 """Gateway route mounting orchestration."""
 from __future__ import annotations
 
+from importlib import import_module
+
 from fastapi import FastAPI
 
 from services.app.gateway.logging_config import get_logger
@@ -31,8 +33,12 @@ def register_gateway_routes(
     from services.app.gateway.byoc_control_panel_router import (
         build_byoc_control_panel_router,
     )
+    from services.app.gateway.byoc_onboarding_router import (
+        build_byoc_onboarding_router,
+    )
     from services.app.gateway.dead_letter_router import build_dead_letter_admin_router
     from services.app.gateway.extension_router import build_extension_router
+    from services.app.gateway.facebook_pages_router import build_facebook_pages_router
     from services.app.gateway.map_routes import register_map_routes
     from services.app.gateway.recommendations_router import (
         build_recommendations_router,
@@ -51,6 +57,7 @@ def register_gateway_routes(
     app.include_router(build_byoc_agent_router())
     app.include_router(build_byoc_control_plane_router())
     app.include_router(build_byoc_control_panel_router())
+    app.include_router(build_byoc_onboarding_router())
     app.include_router(build_dead_letter_admin_router())
     if settings.debug_endpoints_enabled:
         from services.app.gateway.document_ingest_router import build_document_ingest_router
@@ -61,6 +68,7 @@ def register_gateway_routes(
             debug_endpoints_enabled=settings.debug_endpoints_enabled,
         )
     )
+    app.include_router(build_facebook_pages_router())
     app.include_router(build_sage_internal_router())
     app.include_router(build_recommendations_router())
     app.include_router(build_structure_router())
@@ -119,28 +127,15 @@ def mount_gateway_routes(
     from services.ingest.integrations.router import build_integrations_router
 
     app.include_router(build_integrations_router())
+    _mount_native_connect_routers(app, emit_mount_logs=emit_mount_logs)
 
-    try:
-        from services.ingest.integrations.jira.oauth import router as jira_router
+    # Figma's ordinary OAuth router is mounted with the native source routers.
+    # Its deployment-owned app readiness checklist is intentionally a separate
+    # admin-only surface under `/api/admin` so end users never receive callback
+    # or configuration details.
+    from services.ingest.integrations.figma.oauth import admin_router as figma_admin_router
 
-        app.include_router(jira_router)
-        if emit_mount_logs:
-            log.info("jira_router_mounted")
-    except Exception as exc:  # noqa: BLE001 - never block startup
-        if emit_mount_logs:
-            log.error("jira_router_mount_failed", error=str(exc))
-
-    try:
-        from services.ingest.integrations.mercury.oauth import router as mercury_router
-        from services.ingest.integrations.quickbooks.oauth import router as qbo_router
-
-        app.include_router(mercury_router)
-        app.include_router(qbo_router)
-        if emit_mount_logs:
-            log.info("finance_install_routers_mounted")
-    except Exception as exc:  # noqa: BLE001 - never block startup
-        if emit_mount_logs:
-            log.error("finance_install_routers_mount_failed", error=str(exc))
+    app.include_router(figma_admin_router)
 
     if settings.finance_panel_enabled:
         try:
@@ -157,3 +152,55 @@ def mount_gateway_routes(
             app.include_router(build_slack_router())
         except Exception as exc:  # noqa: BLE001 - never block startup
             log.error("slack_router_mount_failed", error=str(exc))
+
+
+def _mount_native_connect_routers(
+    app: FastAPI,
+    *,
+    emit_mount_logs: bool,
+) -> None:
+    """Mount source-native connect routers that own table-backed finalizers."""
+    sources = (
+        "ashby",
+        "aws",
+        "brex",
+        "carta",
+        "deel",
+        "discord",
+        "figma",
+        "fireflies",
+        "facebook_pages",
+        "github",
+        "gmail",
+        "google_calendar",
+        "google_drive",
+        "grafana",
+        "gusto",
+        "hibob",
+        "jira",
+        "linkedin",
+        "mercury",
+        "miro",
+        "notion",
+        "quickbooks",
+        "ramp",
+        "signal",
+        "slack",
+        "telegram",
+        "whatsapp",
+    )
+    mounted: list[str] = []
+    for source in sources:
+        try:
+            module = import_module(f"services.ingest.integrations.{source}.oauth")
+            app.include_router(module.router)
+            mounted.append(source)
+        except Exception as exc:  # noqa: BLE001 - never block startup
+            if emit_mount_logs:
+                log.error(
+                    "native_connect_router_mount_failed",
+                    source=source,
+                    error=str(exc),
+                )
+    if emit_mount_logs and mounted:
+        log.info("native_connect_routers_mounted", sources=mounted)

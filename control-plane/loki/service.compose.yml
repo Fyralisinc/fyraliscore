@@ -1,0 +1,72 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — Loki service (Tier 2 central log store)
+# ----------------------------------------------------------------------------
+# STANDALONE service fragment. The integrate step merges this into the master
+# `docker-compose.control-plane.yml` (do NOT edit that shared file directly).
+# It mirrors the commented `loki:` block already stubbed there:
+#   - image: grafana/loki
+#   - config mounted at /etc/loki/loki.yaml
+#   - data volume `loki-data` at /data (matches loki.yaml common.path_prefix)
+#   - on `cp-net` (C5) — reachable ONLY from behind the auth-proxy
+#   - port 3100 exposed
+#
+# Multi-tenancy (C5): Loki runs with auth_enabled=true and REQUIRES X-Scope-OrgID
+# on every request. That header is injected by the auth-proxy on INGEST (from the
+# verified client-cert tenant SAN, C1/I4) and set by the operator Grafana on
+# QUERY. Loki never accepts the header from outside cp-net.
+#
+# The named volume `loki-data` and the `cp-net` network are declared in the
+# master compose's top-level `volumes:` / `networks:` blocks (already present).
+# When merging standalone, also declare:
+#   networks: { cp-net: { driver: bridge } }
+#   volumes:  { loki-data: {} }
+# ============================================================================
+
+services:
+  loki:
+    image: grafana/loki:3.4.2
+    container_name: cp-loki
+    # Single-binary mode: serve all targets (distributor/ingester/querier/
+    # compactor/ruler) from one process, configured by loki.yaml.
+    command:
+      - "-config.file=/etc/loki/loki.yaml"
+      - "-target=all"
+    volumes:
+      # Read-only config.
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+      # Per-tenant runtime overrides (limits/retention) — hot-reloaded; the dir
+      # may be empty, the file is optional. Mount the dir so the path resolves.
+      - ./loki/overrides:/etc/loki/overrides:ro
+      # Persistent store: TSDB index + chunks + compactor + WAL, all under /data
+      # (matches common.path_prefix and storage_config in loki.yaml).
+      - loki-data:/data
+    ports:
+      # HTTP API (push at /loki/api/v1/push, query at /loki/api/v1/query_range).
+      # In production this is reached ONLY through the auth-proxy on cp-net;
+      # the host publish is for single-host dev/demo + healthcheck.
+      - "3100:3100"
+    networks:
+      - cp-net
+    # Loki must not run as root against the mounted volume; the official image's
+    # entrypoint handles user 10001. Keep the volume writable by it.
+    user: "10001:10001"
+    restart: unless-stopped
+    healthcheck:
+      # /ready returns 200 once the ingester has joined and is serving.
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+# ---------------------------------------------------------------------------
+# Top-level declarations the integrate step must ensure exist in the master
+# compose (they already do — kept here so this fragment is self-describing and
+# `docker compose -f loki/service.compose.yml config` validates standalone).
+# ---------------------------------------------------------------------------
+networks:
+  cp-net:
+    driver: bridge
+
+volumes:
+  loki-data:

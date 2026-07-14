@@ -1,0 +1,199 @@
+global:
+  deploymentId: dep_customer
+  customerId: cus_customer
+  environment: local-rehearsal
+  region: us-east-1
+  dataResidency: customer-cloud
+  telemetry: local-only
+
+image:
+  repository: fyralis/local
+  tag: dev
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+
+app:
+  environment: dev
+  deploymentMode: byoc
+  authBootstrapSecret: local-rehearsal-auth-bootstrap-secret-32
+  masterKek: KuT6Cixjs4991zhixcpj1QAFbiQj3b9N8meZV2AJJyw=
+  ingestionHealthPort: "9300"
+  # Non-secret runtime configuration that does not merit a first-class chart
+  # value. Do not use this for OAuth secret material: it is rendered to the
+  # app ConfigMap. Use figmaOAuth.existingSecret for Figma's managed-secret
+  # references instead.
+  extraEnv: {}
+  # A customer-owned Figma OAuth app is opt-in. Public values are rendered to
+  # the app ConfigMap; the external Secret named below provides only managed
+  # secret references (never FIGMA_CLIENT_SECRET or OAUTH_STATE_HMAC_KEY).
+  # See README.md and docs/operations/figma-byoc-oauth-admin.md.
+  figmaOAuth:
+    enabled: false
+    clientId: ""
+    redirectUri: ""
+    uiBaseUrl: ""
+    allowHttpLoopback: false
+    scopes: current_user:read,file_metadata:read,file_content:read,file_comments:read,file_versions:read
+    existingSecret: ""
+
+runtime:
+  secretProvider: local-kubernetes-secret
+  objectStorage: minio
+  database: postgres-pgvector
+  broker: kafka
+
+trustBoundary:
+  rawPayloadsLeaveBoundary: false
+  promptsLeaveBoundary: false
+  embeddingsLeaveBoundary: false
+  logsLeaveBoundary: false
+  providerSecretsLeaveBoundary: false
+
+postgres:
+  enabled: true
+  image: pgvector/pgvector:pg16
+  user: company_os
+  password: company_os
+  database: company_os
+  storage:
+    enabled: false
+    size: 8Gi
+
+kafka:
+  enabled: true
+  image: apache/kafka:4.0.2
+  topicPartitions: "3"
+  topicReplication: "1"
+
+minio:
+  enabled: true
+  image: minio/minio:latest
+  mcImage: minio/mc:latest
+  rootUser: fyralis
+  rootPassword: fyralis-secret-change-me
+  # Short-retention raw records and durable observation artifacts deliberately
+  # use different buckets. Keep names distinct even in local rehearsal.
+  bucket: fyralis-raw
+  blobBucket: fyralis-blobs
+
+redis:
+  enabled: true
+  image: redis:7-alpine
+
+gateway:
+  enabled: true
+  replicas: 1
+  command:
+    - uvicorn
+    - services.app.gateway.main:app
+    - --host
+    - 0.0.0.0
+    - --port
+    - "8000"
+  service:
+    type: ClusterIP
+    port: 8000
+
+jobs:
+  migrate:
+    enabled: true
+    backoffLimit: 3
+    command:
+      - bash
+      - scripts/docker-migrate.sh
+  kafkaInit:
+    enabled: true
+    backoffLimit: 6
+    command:
+      - python
+      - scripts/provision_kafka_topics.py
+  minioInit:
+    enabled: true
+    backoffLimit: 6
+
+workers:
+  enabled: true
+  defaultReplicas: 1
+  items:
+    # Consumes the OAuth callback trigger and starts tenant onboarding.
+    oauth-poller:
+      enabled: true
+      command:
+        - python
+        - -m
+        - services.ingest.ingestion.workflows.oauth_poller
+    tenant-onboarding:
+      enabled: true
+      command:
+        - python
+        - -m
+        - services.ingest.ingestion.workflows.tenant_onboarding
+    source-onboarding:
+      enabled: true
+      command:
+        - python
+        - -m
+        - services.ingest.ingestion.workflows.source_onboarding
+    shard-fetch:
+      enabled: true
+      command:
+        - python
+        - -m
+        - services.ingest.ingestion.workflows.shard_fetch
+    reconciler:
+      # Completes the source-onboarding handoff after all shards finish.
+      enabled: true
+      command:
+        - python
+        - -m
+        - services.ingest.ingestion.workflows.reconciler
+    periodic-reconciler:
+      # Rechecks completed sources so Figma snapshots are refreshed in
+      # steady state when a provider event or poll is missed.
+      enabled: true
+      command:
+        - python
+        - -m
+        - services.ingest.ingestion.workflows.periodic_reconciler
+    normalizer:
+      enabled: true
+      command:
+        - python
+        - -m
+        - services.ingest.ingestion.normalizer.worker
+    observation-writer:
+      enabled: true
+      command:
+        - python
+        - -m
+        - services.ingest.ingestion.writers.observation_writer
+    dlq-writer:
+      enabled: true
+      command:
+        - python
+        - -m
+        - services.ingest.ingestion.writers.dlq_writer.dlq_writer
+    embedding-backlog:
+      enabled: false
+      command:
+        - python
+        - -m
+        - services.ingest.ingestion.recovery.embedding_backlog
+    summarization-worker:
+      enabled: false
+      command:
+        - python
+        - -m
+        - services.ingest.ingestion.writers.summarization_worker.summarization_worker
+
+resources: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

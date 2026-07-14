@@ -113,7 +113,7 @@ def assert_observation_count_matches_fixture(
     """Total observation count per tenant equals fixture record count.
 
     `tolerance` allows a small fractional deviation (e.g., 0.1 for 10%)
-    for sources whose planners sample channels (Discord at 5% per M6.6).
+    for sources with intentionally fuzzy fixture counts.
     """
     for t in result.outcomes:
         expected = t.scenario.expected_observation_count

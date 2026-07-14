@@ -25,10 +25,12 @@ CLIENT_ASSET_SUFFIXES = (".html", ".js", ".jsx", ".ts", ".tsx", ".py")
 IGNORED_PARTS = {
     ".git",
     ".mypy_cache",
+    ".next",
     ".pytest_cache",
     ".ruff_cache",
     ".venv",
     "__pycache__",
+    "dist",
     "node_modules",
     "site",
     "truss_run",
@@ -1408,8 +1410,8 @@ def find_byoc_agent_token_rotation_privacy_violations(
     privacy_class = classes.get("ByocAgentTokenRotationPrivacyContract")
     privacy_fields = _class_field_assignments(privacy_class)
     for field_name in BYOC_AGENT_TOKEN_ROTATION_FALSE_PRIVACY_FLAGS:
-        assignment = privacy_fields.get(field_name)
-        if assignment is None:
+        privacy_assignment = privacy_fields.get(field_name)
+        if privacy_assignment is None:
             violations.append(
                 Violation(
                     check="byoc-agent-token-rotation-privacy",
@@ -1422,8 +1424,8 @@ def find_byoc_agent_token_rotation_privacy_violations(
                 )
             )
             continue
-        annotation = ast.unparse(assignment.annotation)
-        value = assignment.value
+        annotation = ast.unparse(privacy_assignment.annotation)
+        value = privacy_assignment.value
         if (
             annotation != "Literal[False]"
             or not isinstance(value, ast.Constant)
@@ -1433,7 +1435,7 @@ def find_byoc_agent_token_rotation_privacy_violations(
                 Violation(
                     check="byoc-agent-token-rotation-privacy",
                     path=contract_path,
-                    line_number=assignment.lineno,
+                    line_number=privacy_assignment.lineno,
                     message=(
                         f"BYOC token rotation privacy must keep {field_name} "
                         "pinned to Literal[False] = False"
@@ -1442,8 +1444,8 @@ def find_byoc_agent_token_rotation_privacy_violations(
             )
 
     for field_name in BYOC_AGENT_TOKEN_ROTATION_TRUE_PRIVACY_FLAGS:
-        assignment = privacy_fields.get(field_name)
-        if assignment is None:
+        privacy_assignment = privacy_fields.get(field_name)
+        if privacy_assignment is None:
             violations.append(
                 Violation(
                     check="byoc-agent-token-rotation-privacy",
@@ -1456,8 +1458,8 @@ def find_byoc_agent_token_rotation_privacy_violations(
                 )
             )
             continue
-        annotation = ast.unparse(assignment.annotation)
-        value = assignment.value
+        annotation = ast.unparse(privacy_assignment.annotation)
+        value = privacy_assignment.value
         if (
             annotation != "Literal[True]"
             or not isinstance(value, ast.Constant)
@@ -1467,7 +1469,7 @@ def find_byoc_agent_token_rotation_privacy_violations(
                 Violation(
                     check="byoc-agent-token-rotation-privacy",
                     path=contract_path,
-                    line_number=assignment.lineno,
+                    line_number=privacy_assignment.lineno,
                     message=(
                         f"BYOC token rotation privacy must keep {field_name} "
                         "pinned to Literal[True] = True"
@@ -1527,8 +1529,8 @@ def find_byoc_live_credential_rehearsal_privacy_violations(
     privacy_class = classes.get("ByocLiveCredentialRehearsalPrivacyContract")
     privacy_fields = _class_field_assignments(privacy_class)
     for field_name in BYOC_LIVE_CREDENTIAL_REHEARSAL_FALSE_PRIVACY_FLAGS:
-        assignment = privacy_fields.get(field_name)
-        if assignment is None:
+        privacy_assignment = privacy_fields.get(field_name)
+        if privacy_assignment is None:
             violations.append(
                 Violation(
                     check="byoc-live-credential-rehearsal-privacy",
@@ -1541,8 +1543,8 @@ def find_byoc_live_credential_rehearsal_privacy_violations(
                 )
             )
             continue
-        annotation = ast.unparse(assignment.annotation)
-        value = assignment.value
+        annotation = ast.unparse(privacy_assignment.annotation)
+        value = privacy_assignment.value
         if (
             annotation != "Literal[False]"
             or not isinstance(value, ast.Constant)
@@ -1552,7 +1554,7 @@ def find_byoc_live_credential_rehearsal_privacy_violations(
                 Violation(
                     check="byoc-live-credential-rehearsal-privacy",
                     path=contract_path,
-                    line_number=assignment.lineno,
+                    line_number=privacy_assignment.lineno,
                     message=(
                         f"BYOC live credential rehearsal privacy must keep "
                         f"{field_name} pinned to Literal[False] = False"
@@ -1642,8 +1644,8 @@ def find_byoc_control_plane_read_smoke_summary_privacy_violations(
     privacy_class = classes.get("ByocControlPlaneReadSmokePrivacyContract")
     privacy_fields = _class_field_assignments(privacy_class)
     for field_name in BYOC_CONTROL_PLANE_READ_SMOKE_SUMMARY_FALSE_PRIVACY_FLAGS:
-        assignment = privacy_fields.get(field_name)
-        if assignment is None:
+        privacy_assignment = privacy_fields.get(field_name)
+        if privacy_assignment is None:
             violations.append(
                 Violation(
                     check="byoc-control-plane-read-smoke-summary-privacy",
@@ -1656,8 +1658,8 @@ def find_byoc_control_plane_read_smoke_summary_privacy_violations(
                 )
             )
             continue
-        annotation = ast.unparse(assignment.annotation)
-        value = assignment.value
+        annotation = ast.unparse(privacy_assignment.annotation)
+        value = privacy_assignment.value
         if (
             annotation != "Literal[False]"
             or not isinstance(value, ast.Constant)
@@ -1667,7 +1669,7 @@ def find_byoc_control_plane_read_smoke_summary_privacy_violations(
                 Violation(
                     check="byoc-control-plane-read-smoke-summary-privacy",
                     path=contract_path,
-                    line_number=assignment.lineno,
+                    line_number=privacy_assignment.lineno,
                     message=(
                         "BYOC control-plane read smoke privacy must keep "
                         f"{field_name} pinned to Literal[False] = False"
@@ -1820,8 +1822,8 @@ def find_byoc_product_health_privacy_violations(
         classes.get("ByocProductHealthPrivacyBoundary")
     )
     for field_name in BYOC_PRODUCT_HEALTH_FALSE_PRIVACY_FLAGS:
-        assignment = privacy_fields.get(field_name)
-        if assignment is None:
+        privacy_assignment = privacy_fields.get(field_name)
+        if privacy_assignment is None:
             violations.append(
                 Violation(
                     check="byoc-product-health-privacy",
@@ -1837,14 +1839,14 @@ def find_byoc_product_health_privacy_violations(
             )
             continue
         if (
-            not isinstance(assignment.value, ast.Constant)
-            or assignment.value.value is not False
+            not isinstance(privacy_assignment.value, ast.Constant)
+            or privacy_assignment.value.value is not False
         ):
             violations.append(
                 Violation(
                     check="byoc-product-health-privacy",
                     path=contract_path,
-                    line_number=assignment.lineno,
+                    line_number=privacy_assignment.lineno,
                     message=(
                         "BYOC product-health privacy boundary must keep "
                         f"{field_name} pinned to Literal[False] = False"
@@ -2260,8 +2262,8 @@ def find_byoc_launch_readiness_summary_privacy_violations(
     privacy_class = classes.get("ByocLaunchReadinessPrivacyContract")
     privacy_fields = _class_field_assignments(privacy_class)
     for field_name in BYOC_LAUNCH_READINESS_SUMMARY_FALSE_PRIVACY_FLAGS:
-        assignment = privacy_fields.get(field_name)
-        if assignment is None:
+        privacy_assignment = privacy_fields.get(field_name)
+        if privacy_assignment is None:
             violations.append(
                 Violation(
                     check="byoc-launch-readiness-summary-privacy",
@@ -2274,8 +2276,8 @@ def find_byoc_launch_readiness_summary_privacy_violations(
                 )
             )
             continue
-        annotation = ast.unparse(assignment.annotation)
-        value = assignment.value
+        annotation = ast.unparse(privacy_assignment.annotation)
+        value = privacy_assignment.value
         if (
             annotation != "Literal[False]"
             or not isinstance(value, ast.Constant)
@@ -2285,7 +2287,7 @@ def find_byoc_launch_readiness_summary_privacy_violations(
                 Violation(
                     check="byoc-launch-readiness-summary-privacy",
                     path=contract_path,
-                    line_number=assignment.lineno,
+                    line_number=privacy_assignment.lineno,
                     message=(
                         f"BYOC launch readiness privacy must keep {field_name} "
                         "pinned to Literal[False] = False"
@@ -2381,8 +2383,8 @@ def find_byoc_customer_pilot_package_privacy_violations(
     privacy_class = classes.get("ByocCustomerPilotPackagePrivacyContract")
     privacy_fields = _class_field_assignments(privacy_class)
     for field_name in BYOC_CUSTOMER_PILOT_PACKAGE_FALSE_PRIVACY_FLAGS:
-        assignment = privacy_fields.get(field_name)
-        if assignment is None:
+        privacy_assignment = privacy_fields.get(field_name)
+        if privacy_assignment is None:
             violations.append(
                 Violation(
                     check="byoc-customer-pilot-package-privacy",
@@ -2395,8 +2397,8 @@ def find_byoc_customer_pilot_package_privacy_violations(
                 )
             )
             continue
-        annotation = ast.unparse(assignment.annotation)
-        value = assignment.value
+        annotation = ast.unparse(privacy_assignment.annotation)
+        value = privacy_assignment.value
         if (
             annotation != "Literal[False]"
             or not isinstance(value, ast.Constant)
@@ -2406,7 +2408,7 @@ def find_byoc_customer_pilot_package_privacy_violations(
                 Violation(
                     check="byoc-customer-pilot-package-privacy",
                     path=contract_path,
-                    line_number=assignment.lineno,
+                    line_number=privacy_assignment.lineno,
                     message=(
                         "BYOC customer-pilot package privacy must keep "
                         f"{field_name} pinned to Literal[False] = False"
@@ -2496,8 +2498,8 @@ def find_byoc_customer_pilot_rehearsal_privacy_violations(
     privacy_class = classes.get("ByocCustomerPilotRehearsalPrivacyContract")
     privacy_fields = _class_field_assignments(privacy_class)
     for field_name in BYOC_CUSTOMER_PILOT_REHEARSAL_FALSE_PRIVACY_FLAGS:
-        assignment = privacy_fields.get(field_name)
-        if assignment is None:
+        privacy_assignment = privacy_fields.get(field_name)
+        if privacy_assignment is None:
             violations.append(
                 Violation(
                     check="byoc-customer-pilot-rehearsal-privacy",
@@ -2510,8 +2512,8 @@ def find_byoc_customer_pilot_rehearsal_privacy_violations(
                 )
             )
             continue
-        annotation = ast.unparse(assignment.annotation)
-        value = assignment.value
+        annotation = ast.unparse(privacy_assignment.annotation)
+        value = privacy_assignment.value
         if (
             annotation != "Literal[False]"
             or not isinstance(value, ast.Constant)
@@ -2521,7 +2523,7 @@ def find_byoc_customer_pilot_rehearsal_privacy_violations(
                 Violation(
                     check="byoc-customer-pilot-rehearsal-privacy",
                     path=contract_path,
-                    line_number=assignment.lineno,
+                    line_number=privacy_assignment.lineno,
                     message=(
                         "BYOC customer-pilot rehearsal privacy must keep "
                         f"{field_name} pinned to Literal[False] = False"
@@ -2579,8 +2581,8 @@ def find_byoc_aws_live_preflight_privacy_violations(
     privacy_class = classes.get("ByocAwsLivePreflightPrivacyContract")
     privacy_fields = _class_field_assignments(privacy_class)
     for field_name in BYOC_AWS_LIVE_PREFLIGHT_FALSE_PRIVACY_FLAGS:
-        assignment = privacy_fields.get(field_name)
-        if assignment is None:
+        privacy_assignment = privacy_fields.get(field_name)
+        if privacy_assignment is None:
             violations.append(
                 Violation(
                     check="byoc-aws-live-preflight-privacy",
@@ -2593,8 +2595,8 @@ def find_byoc_aws_live_preflight_privacy_violations(
                 )
             )
             continue
-        annotation = ast.unparse(assignment.annotation)
-        value = assignment.value
+        annotation = ast.unparse(privacy_assignment.annotation)
+        value = privacy_assignment.value
         if (
             annotation != "Literal[False]"
             or not isinstance(value, ast.Constant)
@@ -2604,7 +2606,7 @@ def find_byoc_aws_live_preflight_privacy_violations(
                 Violation(
                     check="byoc-aws-live-preflight-privacy",
                     path=contract_path,
-                    line_number=assignment.lineno,
+                    line_number=privacy_assignment.lineno,
                     message=(
                         f"BYOC AWS live preflight privacy must keep {field_name} "
                         "pinned to Literal[False] = False"

@@ -136,8 +136,40 @@ async def test_budget_exhausted_raises_rate_limited(
         with pytest.raises(DiscordApiError) as exc_info:
             await client.get_guild_member(_USER_ID)
         await client.aclose()
-        assert exc_info.value.code == "discord_api_rate_limited"
-        assert exc_info.value.context["attempts"] <= 3
+    assert exc_info.value.code == "discord_api_rate_limited"
+    assert exc_info.value.context["attempts"] <= 3
+
+
+async def test_channel_missing_access_does_not_disable_installation(
+    fresh_db: asyncpg.Pool, _tenant: UUID,
+) -> None:
+    secret_store = FernetSecretStore(fresh_db, master_kek=Fernet.generate_key())
+    install_id = await _seed_install(fresh_db, _tenant, secret_store)
+
+    with respx.mock(base_url="https://discord.com") as router:
+        router.get("/api/v10/channels/private-channel/messages").respond(
+            403,
+            json={"message": "Missing Access", "code": 50001},
+        )
+
+        client = DiscordClient(
+            pool=fresh_db,
+            secret_store=secret_store,
+            tenant_id=_tenant,
+            installation_row_id=install_id,
+            guild_id=_GUILD_ID,
+            base_url="https://discord.com/api/v10",
+        )
+        with pytest.raises(DiscordApiError) as exc_info:
+            await client.get_messages(channel_id="private-channel")
+        await client.aclose()
+
+    enabled = await fresh_db.fetchval(
+        "SELECT enabled FROM provider_installations WHERE id = $1",
+        install_id,
+    )
+    assert exc_info.value.code == "discord_channel_forbidden"
+    assert enabled is True
 
 
 async def test_missing_bot_token_env_raises_discord_secret_unavailable(

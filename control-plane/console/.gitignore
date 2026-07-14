@@ -1,0 +1,9 @@
+# Runtime fleet-registry persistence (the live store writes here).
+data/
+*.tmp
+.fleet_registry.*.tmp
+
+# Python / pytest artifacts.
+__pycache__/
+*.pyc
+.pytest_cache/

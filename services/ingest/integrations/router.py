@@ -21,13 +21,14 @@ from typing import Any, Awaitable, Callable
 from fastapi import APIRouter, Request
 from starlette.responses import Response
 
-from services.app.gateway.product_workflow_metrics import (
+from lib.shared.product_workflow_metrics import (
     ProductWorkflowEvent,
     ProductWorkflowOutcome,
     record_product_workflow_event,
 )
 
 from services.ingest.integrations.discord import oauth as discord_oauth
+from services.ingest.integrations.facebook_pages import oauth as facebook_pages_oauth
 from services.ingest.integrations.github import oauth as github_oauth
 from services.ingest.integrations.notion import oauth as notion_oauth
 from services.ingest.integrations.slack import oauth as slack_oauth
@@ -69,6 +70,17 @@ def build_integrations_router() -> APIRouter:
     @router.get("/notion/callback")
     async def notion_callback(request: Request):
         return await _callback_with_metrics(notion_oauth.callback_handler, request)
+
+    @router.get("/facebook_pages/install")
+    async def facebook_pages_install(request: Request):
+        return await facebook_pages_oauth.install_handler(request)
+
+    @router.get("/facebook_pages/callback")
+    async def facebook_pages_callback(request: Request):
+        return await _callback_with_metrics(
+            facebook_pages_oauth.callback_handler,
+            request,
+        )
 
     return router
 

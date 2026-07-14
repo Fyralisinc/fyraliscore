@@ -1,0 +1,81 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — CP-upgrade tooling fragment (WS-CP-UPGRADE, P5)
+# ----------------------------------------------------------------------------
+# Standalone compose fragment. Per the build rules, this directory does NOT edit
+# the master docker-compose.control-plane.yml; the upgrade tooling is exposed as
+# its own fragment that the integrate step (or an operator) can run on demand.
+#
+# WHAT THIS IS
+#   `cp-upgrade-tools` — an ON-DEMAND, one-shot operator container (NOT an always-
+#   on service). It carries the trust-overlap helper + the rolling-upgrade /
+#   trust-overlap scripts and a python with `cryptography`, so an operator can run
+#   the FR-A5 CA-rotation dance and the NFR-6 rolling restart from inside the
+#   cp-net network without installing anything on the host.
+#
+#   It deliberately publishes NO ports and runs NO daemon (restart: "no"): the
+#   control-plane upgrade is an operator action, not a standing service. This keeps
+#   I2 intact (it initiates nothing inbound to any data plane) and adds no attack
+#   surface.
+#
+# HOW TO RUN (examples — from control-plane/):
+#   # show the current trust bundle:
+#   docker compose -f upgrade/service.compose.yml run --rm cp-upgrade-tools \
+#       python upgrade/trust_bundle.py list ca/pki/ca-chain.crt
+#
+#   # add a new CA to the bundle (trust OVERLAP) and re-sign it (I6):
+#   docker compose -f upgrade/service.compose.yml run --rm cp-upgrade-tools \
+#       python upgrade/trust_bundle.py add ca/pki/ca-chain.crt \
+#         --add-ca ca/pki-new/ca-chain.crt --sign
+#
+#   The actual `docker compose up -d --no-deps <svc>` rolling restart in
+#   rolling_upgrade.sh is run from the HOST (it drives the docker socket); this
+#   container is for the cert/bundle manipulation that precedes it. To let the
+#   container drive compose too, mount the docker socket (commented below) — off
+#   by default because socket access is privileged.
+#
+# BUILD CONTEXT is the control-plane ROOT (.) so the image has ca/, signing/, lib/
+# and upgrade/ all importable (trust_bundle.py imports the committed ca/ + signing/
+# siblings). Reuses the same python:3.12-slim + cryptography stack as the agent.
+# ============================================================================
+
+services:
+  cp-upgrade-tools:
+    image: python:3.12-slim
+    working_dir: /app
+    # Install only what trust_bundle.py needs (cryptography is the single dep;
+    # PyYAML lets the self-test validate compose overlays). pip is cached by the
+    # base image layer; this is a one-shot operator container so the install cost
+    # is paid once per `run`.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        pip install --quiet --no-cache-dir cryptography pyyaml >/dev/null 2>&1 || \
+          pip install --quiet cryptography pyyaml
+        exec "$@"
+      - sh
+    # Default command: print the trust bundle so a bare `run` is a useful no-op.
+    command:
+      - python
+      - upgrade/trust_bundle.py
+      - list
+      - ca/pki/ca-chain.crt
+    volumes:
+      # Mount the whole control-plane tree read-write so the operator can edit the
+      # trust bundle in place. (ca/pki is gitignored; this is the live bundle.)
+      - .:/app
+      # OPTIONAL: to let this container ALSO drive `docker compose` for the rolling
+      # restart, uncomment the docker socket mount. Off by default (privileged).
+      # - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - cp-net
+    # One-shot operator tool — never a standing daemon, never auto-restarts.
+    restart: "no"
+
+# The master compose file owns the real `cp-net` definition; declaring it here as
+# external lets this fragment run standalone and, when merged, bind to the shared
+# network rather than create a second one.
+networks:
+  cp-net:
+    name: cp-net

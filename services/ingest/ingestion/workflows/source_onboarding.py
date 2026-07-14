@@ -153,7 +153,9 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.ids import uuid7
-from services.app.gateway.product_workflow_metrics import record_product_workflow_event
+from lib.shared.http_headers import redact_log_mapping
+from lib.shared.product_workflow_metrics import record_product_workflow_event
+from lib.shared.tenant_context import TenantContext, bind_tenant
 from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
 from services.ingest.ingestion.planners.context import PlannerContext
 from services.ingest.ingestion.progress.events import (
@@ -199,8 +201,9 @@ TENANT_ONBOARDING_INBOX_ID = "tenant_onboarding"
 
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
+_FIGMA_CONNECTION_ERROR_MAX_CHARS = 512
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin", "whatsapp")
+VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin", "whatsapp", "facebook_pages")
 
 
 # ---------------------------------------------------------------------
@@ -216,6 +219,13 @@ _LOAD_PROVIDER_INSTALL_SQL = """
 SELECT id, tenant_id, provider, installation_id, secret_ref, enabled
   FROM provider_installations
  WHERE tenant_id = $1 AND provider = $2 AND enabled = TRUE
+ LIMIT 1
+"""
+
+_LOAD_PROVIDER_INSTALL_BY_ID_SQL = """
+SELECT id, tenant_id, provider, installation_id, secret_ref, enabled
+  FROM provider_installations
+ WHERE id = $1 AND tenant_id = $2 AND provider = $3 AND enabled = TRUE
  LIMIT 1
 """
 
@@ -599,14 +609,15 @@ SELECT mi.id, mi.tenant_id, mi.base_url, mi.org_id, mi.secret_ref,
 # onto the install so the planner emits one shard per file.
 _LOAD_FIGMA_INSTALL_SQL = """
 SELECT fi.id, fi.tenant_id, fi.base_url, fi.team_id, fi.secret_ref,
-       fi.disabled_at,
+       fi.auth_kind, fi.refresh_secret_ref, fi.token_expires_at, fi.disabled_at,
        COALESCE(
          json_agg(
            json_build_object(
              'file_key', ff.file_key,
              'file_name', ff.file_name,
              'project_name', ff.project_name,
-             'event_cursor', ff.event_cursor
+             'event_cursor', ff.event_cursor,
+             'snapshot_version', ff.snapshot_version
            ) ORDER BY ff.file_key
          ) FILTER (WHERE ff.id IS NOT NULL),
          '[]'::json
@@ -614,7 +625,9 @@ SELECT fi.id, fi.tenant_id, fi.base_url, fi.team_id, fi.secret_ref,
   FROM figma_installations fi
   LEFT JOIN figma_files ff
     ON ff.figma_installation_id = fi.id AND ff.state = 'active'
- WHERE fi.tenant_id = $1 AND fi.disabled_at IS NULL
+ WHERE fi.tenant_id = $1
+   AND fi.disabled_at IS NULL
+   AND ($2::uuid IS NULL OR fi.id = $2)
  GROUP BY fi.id
  LIMIT 1
 """
@@ -716,6 +729,29 @@ SELECT li.id, li.tenant_id, li.organization_urn, li.base_url, li.secret_ref,
  LIMIT 1
 """
 
+_LOAD_FACEBOOK_PAGES_INSTALL_SQL = """
+SELECT id, tenant_id, page_id, page_name, page_access_token_ref,
+       app_secret_ref, verify_token_ref, granted_scopes, subscribed_fields,
+       webhook_subscribed_at, enabled, oldest_message_at,
+       backfill_exhausted_at, backfill_exhausted_reason,
+       conversation_count, message_count
+  FROM facebook_page_installations
+ WHERE tenant_id = $1 AND enabled = true
+ ORDER BY updated_at DESC
+ LIMIT 1
+"""
+
+_LOAD_FACEBOOK_PAGES_INSTALL_BY_ID_SQL = """
+SELECT id, tenant_id, page_id, page_name, page_access_token_ref,
+       app_secret_ref, verify_token_ref, granted_scopes, subscribed_fields,
+       webhook_subscribed_at, enabled, oldest_message_at,
+       backfill_exhausted_at, backfill_exhausted_reason,
+       conversation_count, message_count
+  FROM facebook_page_installations
+ WHERE id = $1 AND tenant_id = $2 AND enabled = true
+ LIMIT 1
+"""
+
 _MARK_SOURCE_RUN_IN_PROGRESS_SQL = """
 UPDATE source_onboarding_runs
    SET status = 'in_progress', started_at = COALESCE(started_at, now())
@@ -734,6 +770,20 @@ UPDATE source_onboarding_runs
    SET status = 'failed', completed_at = now(), failure_reason = $3
  WHERE onboarding_run_id = $1 AND source = $2
    AND status IN ('pending', 'in_progress')
+   AND tenant_id = $4
+"""
+
+# The source-run failure and connection-state update are deliberately executed
+# by the same caller-managed transaction.  A Figma installation that has
+# already been explicitly disconnected or needs a new authorization must win
+# over a generic sync failure: neither state is downgraded to ``degraded``.
+_MARK_FIGMA_INSTALLATION_DEGRADED_SQL = """
+UPDATE figma_installations
+   SET connection_state = 'degraded', last_error = $3
+ WHERE id = $1
+   AND tenant_id = $2
+   AND disabled_at IS NULL
+   AND connection_state NOT IN ('reauthorization_required', 'disconnected')
 """
 
 # Use the existing M1-shipped 0045 columns. `cursor_token` is omitted
@@ -747,7 +797,8 @@ VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, 'pending', now())
 """
 
 _LOAD_SHARD_SQL = """
-SELECT id, onboarding_run_id, tenant_id, source, shard_kind, state
+SELECT id, onboarding_run_id, tenant_id, source, shard_kind, shard_identifier,
+       state
   FROM onboarding_shards
  WHERE id = $1
 """
@@ -822,6 +873,7 @@ async def _load_source_run(
 
 async def _load_install(
     conn: asyncpg.Connection, *, tenant_id: UUID, source: str,
+    installation_row_id: UUID | None = None,
 ) -> asyncpg.Record | None:
     """Load the active install row for this (tenant, source).
 
@@ -861,7 +913,13 @@ async def _load_install(
     if source == "miro":
         return await conn.fetchrow(_LOAD_MIRO_INSTALL_SQL, tenant_id)
     if source == "figma":
-        return await conn.fetchrow(_LOAD_FIGMA_INSTALL_SQL, tenant_id)
+        # OAuth/manual-replay triggers carry the Figma installation id.  Keep
+        # planning pinned to that exact row so a tenant with multiple Figma
+        # API origins cannot have one installation's failure reflected on
+        # another installation's onboarding card.
+        return await conn.fetchrow(
+            _LOAD_FIGMA_INSTALL_SQL, tenant_id, installation_row_id,
+        )
     if source == "carta":
         return await conn.fetchrow(_LOAD_CARTA_INSTALL_SQL, tenant_id)
     if source == "hibob":
@@ -870,6 +928,21 @@ async def _load_install(
         return await conn.fetchrow(_LOAD_ASHBY_INSTALL_SQL, tenant_id)
     if source == "linkedin":
         return await conn.fetchrow(_LOAD_LINKEDIN_INSTALL_SQL, tenant_id)
+    if source == "facebook_pages":
+        if installation_row_id is not None:
+            return await conn.fetchrow(
+                _LOAD_FACEBOOK_PAGES_INSTALL_BY_ID_SQL,
+                installation_row_id,
+                tenant_id,
+            )
+        return await conn.fetchrow(_LOAD_FACEBOOK_PAGES_INSTALL_SQL, tenant_id)
+    if installation_row_id is not None:
+        return await conn.fetchrow(
+            _LOAD_PROVIDER_INSTALL_BY_ID_SQL,
+            installation_row_id,
+            tenant_id,
+            source,
+        )
     return await conn.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
@@ -920,6 +993,8 @@ async def _build_source_client(
     # source client is needed.
     if source in ("hibob", "ashby", "linkedin"):
         return None
+    if source == "facebook_pages":
+        return None
     return None
 
 
@@ -949,6 +1024,109 @@ async def _load_shard(
     conn: asyncpg.Connection, shard_id: UUID,
 ) -> asyncpg.Record | None:
     return await conn.fetchrow(_LOAD_SHARD_SQL, shard_id)
+
+
+def _sanitize_figma_connection_error(failure_reason: object) -> str:
+    """Make a bounded UI-visible Figma sync error safe to persist.
+
+    Shard failures can originate at an HTTP/provider boundary, so their text
+    is not trusted to be free of bearer tokens, query credentials, or PII.
+    Reuse the central log-string redactor before storing it on the install
+    record, flatten line breaks for the onboarding card, and bound its size.
+    The full diagnostic remains on the source run / shard for operators.
+    """
+    raw = " ".join(str(failure_reason or "").split())
+    if not raw:
+        return "Figma sync failed; retry shortly"
+    redacted = redact_log_mapping({"message": raw}).get("message")
+    safe = " ".join(str(redacted or "").split())
+    return safe[:_FIGMA_CONNECTION_ERROR_MAX_CHARS] or "Figma sync failed; retry shortly"
+
+
+def _figma_installation_id_from_shard(
+    shard: asyncpg.Record,
+) -> UUID | None:
+    """Read the planner-persisted installation id without trusting it alone.
+
+    The eventual UPDATE also matches the source-run tenant and runs under its
+    tenant context.  This parser merely narrows a Figma run to the installation
+    that actually produced the shard; malformed/legacy shard JSON safely skips
+    the card-state mutation instead of guessing across installations.
+    """
+    raw_identifier = shard["shard_identifier"]
+    if isinstance(raw_identifier, (str, bytes, bytearray)):
+        try:
+            import orjson
+            identifier = orjson.loads(raw_identifier)
+        except (orjson.JSONDecodeError, TypeError, ValueError):
+            return None
+    elif isinstance(raw_identifier, dict):
+        identifier = raw_identifier
+    else:
+        return None
+    if not isinstance(identifier, dict):
+        return None
+    value = identifier.get("installation_id")
+    try:
+        return UUID(str(value)) if value is not None else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+async def _mark_figma_installation_degraded(
+    tctx: TenantContext,
+    *,
+    tenant_id: UUID,
+    installation_row_id: UUID | None,
+    failure_reason: str,
+) -> None:
+    """Reflect a terminal Figma onboarding failure on its active install.
+
+    ``tctx`` is already tenant-bound by ``_mark_source_run_failed``.  The
+    explicit tenant predicate is retained as defense in depth so a stale or
+    malformed shard's installation id cannot affect another tenant.
+    """
+    if installation_row_id is None:
+        return
+    await tctx.execute(
+        _MARK_FIGMA_INSTALLATION_DEGRADED_SQL,
+        installation_row_id,
+        tenant_id,
+        _sanitize_figma_connection_error(failure_reason),
+    )
+
+
+async def _mark_source_run_failed(
+    conn: asyncpg.Connection,
+    *,
+    run_id: UUID,
+    source: str,
+    tenant_id: UUID,
+    failure_reason: str,
+    figma_installation_row_id: UUID | None = None,
+) -> None:
+    """Atomically mark the source run failed and update its Figma UI state.
+
+    This is the one terminal-failure choke point for SourceOnboarding.  It
+    binds ``app.current_tenant`` on the already-open signal transaction, so the
+    source run and matching Figma installation are both protected by RLS and
+    commit (or roll back) together.
+    """
+    async with bind_tenant(conn, tenant_id) as tctx:
+        result = await tctx.execute(
+            _MARK_SOURCE_RUN_FAILED_SQL,
+            run_id,
+            source,
+            failure_reason,
+            tenant_id,
+        )
+        if source == "figma" and result.endswith(" 1"):
+            await _mark_figma_installation_degraded(
+                tctx,
+                tenant_id=tenant_id,
+                installation_row_id=figma_installation_row_id,
+                failure_reason=failure_reason,
+            )
 
 
 async def _lock_source_run_for_rollup(
@@ -1105,6 +1283,11 @@ class SourceOnboarding(LongRunningService):
         run_id = UUID(sig.signal_data["onboarding_run_id"])
         tenant_id = UUID(sig.signal_data["tenant_id"])
         source = sig.signal_data["source"]
+        installation_row_id = (
+            UUID(sig.signal_data["installation_row_id"])
+            if sig.signal_data.get("installation_row_id")
+            else None
+        )
 
         if source not in VALID_SOURCES:
             log.warning(
@@ -1123,6 +1306,21 @@ class SourceOnboarding(LongRunningService):
                 },
             )
             return []
+        if run["tenant_id"] != tenant_id:
+            # The signal payload is transport data; source-run ownership is
+            # authoritative.  Continue under the authoritative tenant instead
+            # of letting a malformed replay cross the boundary or strand an
+            # otherwise valid source run.
+            log.warning(
+                "source_onboarding.tenant_mismatch",
+                extra={
+                    "run_id": str(run_id),
+                    "source": source,
+                    "signal_tenant_id": str(tenant_id),
+                    "run_tenant_id": str(run["tenant_id"]),
+                },
+            )
+            tenant_id = run["tenant_id"]
         if run["status"] != "pending":
             # Idempotency: a re-claimed signal whose run already
             # advanced is a no-op success.
@@ -1130,6 +1328,7 @@ class SourceOnboarding(LongRunningService):
 
         install = await _load_install(
             conn, tenant_id=tenant_id, source=source,
+            installation_row_id=installation_row_id,
         )
         if install is None:
             failure_reason = (
@@ -1138,9 +1337,15 @@ class SourceOnboarding(LongRunningService):
                 f"install was likely disabled between trigger fire "
                 f"and source-onboarding pickup (A14 race)."
             )
-            await conn.execute(
-                _MARK_SOURCE_RUN_FAILED_SQL,
-                run_id, source, failure_reason,
+            await _mark_source_run_failed(
+                conn,
+                run_id=run_id,
+                source=source,
+                tenant_id=run["tenant_id"],
+                failure_reason=failure_reason,
+                figma_installation_row_id=(
+                    installation_row_id if source == "figma" else None
+                ),
             )
             await self._emit_source_completed(
                 conn, run_id=run_id, source=source,
@@ -1170,9 +1375,15 @@ class SourceOnboarding(LongRunningService):
             shards = await PLANNER_DISPATCH[source](ctx)
         except NotImplementedError as exc:
             failure_reason = str(exc)
-            await conn.execute(
-                _MARK_SOURCE_RUN_FAILED_SQL,
-                run_id, source, failure_reason,
+            await _mark_source_run_failed(
+                conn,
+                run_id=run_id,
+                source=source,
+                tenant_id=run["tenant_id"],
+                failure_reason=failure_reason,
+                figma_installation_row_id=(
+                    install["id"] if source == "figma" else None
+                ),
             )
             await self._emit_source_completed(
                 conn, run_id=run_id, source=source,
@@ -1190,9 +1401,15 @@ class SourceOnboarding(LongRunningService):
                 "source_onboarding.planner_exception",
                 extra={"source": source, "run_id": str(run_id)},
             )
-            await conn.execute(
-                _MARK_SOURCE_RUN_FAILED_SQL,
-                run_id, source, failure_reason,
+            await _mark_source_run_failed(
+                conn,
+                run_id=run_id,
+                source=source,
+                tenant_id=run["tenant_id"],
+                failure_reason=failure_reason,
+                figma_installation_row_id=(
+                    install["id"] if source == "figma" else None
+                ),
             )
             await self._emit_source_completed(
                 conn, run_id=run_id, source=source,
@@ -1307,8 +1524,16 @@ class SourceOnboarding(LongRunningService):
             rollup = await _collect_shard_failure_summary(
                 conn, run_id=run_id, source=source,
             )
-            await conn.execute(
-                _MARK_SOURCE_RUN_FAILED_SQL, run_id, source, rollup,
+            await _mark_source_run_failed(
+                conn,
+                run_id=run_id,
+                source=source,
+                tenant_id=shard["tenant_id"],
+                failure_reason=rollup,
+                figma_installation_row_id=(
+                    _figma_installation_id_from_shard(shard)
+                    if source == "figma" else None
+                ),
             )
             await self._emit_source_completed(
                 conn, run_id=run_id, source=source, failure_reason=rollup,

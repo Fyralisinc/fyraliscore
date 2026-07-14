@@ -38,11 +38,23 @@ x-app-env: &app-env
   # S3_ENDPOINT_URL="" and real IAM creds (here or in .env.production).
   S3_ENDPOINT_URL: http://minio:9000
   S3_RAW_BUCKET: fyralis-raw
+  # Durable source documents (e.g. complete Figma design JSON) are kept
+  # separately from short-retention raw ingestion envelopes.
+  S3_BLOB_BUCKET: fyralis-blobs
   S3_REGION_NAME: us-east-1
   AWS_ACCESS_KEY_ID: fyralis
   AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
   # Redis backs the embedding-backlog drainer's rate limiter.
   REDIS_URL: redis://redis:6379/0
+  # Shard fetch fans out independent source shards, e.g. Discord channels,
+  # while each shard still preserves its own cursor/page ordering. "auto"
+  # scales with backlog but is bounded to avoid task explosions on large orgs.
+  SHARD_FETCH_BATCH: "auto"
+  SHARD_FETCH_CONCURRENCY: "auto"
+  SHARD_FETCH_AUTO_CONCURRENCY_MAX: "32"
+  # Keep Discord gateway install misses short so a freshly authorized server
+  # starts resolving promptly after OAuth creates provider_installations.
+  DISCORD_GATEWAY_INSTALLATION_CACHE_TTL_SECONDS: "5"
   # Consumers expose /healthz + /metrics on this port (per container).
   INGESTION_HEALTH_PORT: "9300"
 
@@ -211,7 +223,8 @@ services:
       /bin/sh -c "
       mc alias set local http://minio:9000 fyralis fyralis-secret-change-me &&
       mc mb --ignore-existing local/fyralis-raw &&
-      echo 'bucket fyralis-raw ready'"
+      mc mb --ignore-existing local/fyralis-blobs &&
+      echo 'buckets fyralis-raw and fyralis-blobs ready'"
     restart: "no"
 
   # ---- ingress (gateway: webhooks, Pub/Sub push, OAuth callbacks) --
@@ -447,6 +460,26 @@ services:
       SCHEMA_DRIFT_CHECK_INTERVAL_S: "300"
       SCHEMA_DRIFT_CONNECT_TIMEOUT_S: "10"
       SCHEMA_DRIFT_STATEMENT_TIMEOUT_MS: "30000"
+
+  # Proactive deadline firing for prediction Models (incl. document-memory
+  # commitments, docs/plans/document-memory-substrate.md §4.6 / §7 step 11).
+  # Polls `models WHERE status='active' AND evaluate_at <= now()` per cycle and
+  # enqueues a T2 `prediction_overdue` trigger for Think — so an overdue
+  # commitment (e.g. an unsent SOW) fires BEFORE anyone asks, instead of only
+  # being recalled reactively. It never writes to `models`; Think's
+  # deterministic T2 handler owns the resolution. Global (scans all tenants), so
+  # a single instance — do NOT scale to >1 replica. Exposes /healthz + /metrics
+  # on INGESTION_HEALTH_PORT (9300, from app-env); /healthz goes 503 if the poll
+  # loop wedges, so a hung resolver is restarted.
+  deadline_resolver:
+    <<: *worker
+    container_name: company_os_deadline_resolver
+    command: python scripts/run_deadline_resolver_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      # Poll cadence (seconds). Override in .env.production.
+      DEADLINE_POLL_INTERVAL_S: "60"
 
   # ---- retrieval/memory feature workers (ported from dev) -----------
   sage_structural_features_worker:

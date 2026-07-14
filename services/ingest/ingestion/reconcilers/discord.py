@@ -1,8 +1,7 @@
 """services/ingest/ingestion/reconcilers/discord.py — Discord gap detection (M6.6).
 
-Per A17 + A18 + A18.3. SAMPLING-AWARE: only sampled shards
-(`is_sampled=True` in identifier) are gap-checked. Non-sampled
-channels (95% of the population) are by definition out-of-scope.
+Per A17 + A18 + A18.3. Every completed Discord channel shard is gap-checked;
+Discord permission failures are bounded per shard by the fetcher/client.
 """
 from __future__ import annotations
 
@@ -69,9 +68,6 @@ async def _check_one_shard(
     *, pool: Any, client: Any, shard: asyncpg.Record,
 ) -> ResharedShard | None:
     ident = _decode_id(shard["shard_identifier"])
-    # Sampling-aware: only sampled shards get gap-checked.
-    if not ident.get("is_sampled"):
-        return None
     channel_id = ident.get("channel_id")
     if not channel_id:
         return None
@@ -103,8 +99,6 @@ async def _check_one_shard(
         "guild_id": ident.get("guild_id"),
         "channel_id": channel_id,
         "channel_name": ident.get("channel_name"),
-        "is_sampled": True,
-        "sampling_version": ident.get("sampling_version"),
         "installation_id": ident.get("installation_id"),
         "parent_shard_id": str(shard["id"]),
         "gap_baseline_snowflake": newest,

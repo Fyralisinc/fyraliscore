@@ -1,0 +1,333 @@
+# ============================================================================
+# Fyralis BYOC — Boundary OTel Collector (Tier 1, default)
+# ----------------------------------------------------------------------------
+# Runs INSIDE the customer VPC, alongside the Fyralis data plane.
+#
+# WHAT IT DOES (in order):
+#   1. RECEIVE  — scrape the data-plane /metrics endpoints (workers :9300,
+#                 gateway :8000, postgres/kafka/redis/minio exporters).
+#                 Mirrors observability/prometheus/prometheus.yml targets.
+#   2. REDACT   — Tier-1 egress filter (Invariant I1):
+#                 (a) KEEP only an allowlist of aggregate metric families
+#                     (golden-12 + G1–G7 fleet metrics).
+#                 (b) DROP every high-cardinality / PII-risk label
+#                     (ids, emails, free-form text, urls, paths).
+#                     Keep ONLY bounded enums: worker/job/source/provider/
+#                     state/status/table/trigger_kind/reason/op_type/route.
+#   3. STAMP    — add deployment identity (tenant_id, deployment_id, region)
+#                 from env, so the central fleet view can group by deployment.
+#   4. EGRESS   — prometheusremotewrite → the auth proxy (mTLS). The PROXY
+#                 injects X-Scope-OrgID from the verified client-cert SAN (C1);
+#                 this collector NEVER sets X-Scope-OrgID itself.
+#
+# Tier is config-only: this file IS the T1 pipeline. T2/T3 add a logs/traces
+# pipeline (see tier_policy.yaml) — nothing above the configured tier is wired,
+# so nothing above-tier can ever leave the VPC (C3).
+#
+# Validate: otelcol-contrib validate --config otel-collector-config.yaml
+#       or: boundary/selftest.py (yaml.safe_load + structural + redaction asserts)
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# RECEIVERS
+# ----------------------------------------------------------------------------
+receivers:
+  # Embedded Prometheus scrape config. Targets mirror the existing data-plane
+  # observability/prometheus/prometheus.yml (29 scrape targets: 23 workers +
+  # 6 infra). Hostnames are the data-plane docker-network service names; in a
+  # real customer deploy these come from service discovery / static targets.
+  prometheus:
+    config:
+      global:
+        scrape_interval: 30s
+        scrape_timeout: 10s
+        # external_labels are NOT used to carry identity — identity is added by
+        # the resource/transform processors below so it survives remote-write
+        # relabeling and is explicit/auditable.
+
+      scrape_configs:
+        # --- Fyralis workers: hand-rolled /metrics on :9300 -----------------
+        # 23 worker containers expose worker_heartbeat_age_seconds /
+        # worker_uptime_seconds + family metrics on :9300.
+        - job_name: fyralis-workers
+          metrics_path: /metrics
+          static_configs:
+            - targets:
+                - normalizer:9300
+                - observation-writer:9300
+                - reconciler:9300
+                - think-worker:9300
+                - post-commit-worker:9300
+                - embedding-worker:9300
+                - anomaly-processor:9300       # G5: may be absent → 'up'==0 surfaces it
+                - deadline-resolver:9300        # G5: may be absent → 'up'==0 surfaces it
+              labels:
+                # 'job' is a bounded enum label — kept by the allowlist.
+                tier: data-plane
+
+        # --- Fyralis gateway: /metrics on :8000 ----------------------------
+        - job_name: fyralis-gateway
+          metrics_path: /metrics
+          static_configs:
+            - targets:
+                - gateway:8000
+
+        # --- postgres-exporter: custom queries (G7) ------------------------
+        # Exposes fyralis_dlq_unresolved, fyralis_think_queue_pending,
+        # fyralis_embedding_backlog_pending, fyralis_dead_letter_rows,
+        # fyralis_onboarding_shards (+ stock pg_* metrics).
+        - job_name: postgres-exporter
+          static_configs:
+            - targets:
+                - postgres-exporter:9187
+
+        # --- kafka-exporter: consumer-group lag ----------------------------
+        - job_name: kafka-exporter
+          static_configs:
+            - targets:
+                - kafka-exporter:9308
+
+        # --- infra exporters: redis / minio --------------------------------
+        - job_name: redis-exporter
+          static_configs:
+            - targets:
+                - redis-exporter:9121
+        - job_name: minio
+          metrics_path: /minio/v2/metrics/cluster
+          static_configs:
+            - targets:
+                - minio:9000
+
+# ----------------------------------------------------------------------------
+# PROCESSORS  (order in the pipeline below matters)
+# ----------------------------------------------------------------------------
+processors:
+
+  # ===== (2a) METRIC-FAMILY ALLOWLIST — Invariant I1 ========================
+  # KEEP ONLY these aggregate families. Everything else is dropped at the
+  # boundary and can never leave the VPC. This is the auditable I1 gate; the
+  # human-readable source of truth is redaction_allowlist.md.
+  #
+  # `filter/allowlist` keeps a metric iff its name matches one of these
+  # regexes (include = keep-list semantics). Anchored with ^...$.
+  filter/allowlist:
+    error_mode: ignore
+    metrics:
+      metric:
+        # Drop the metric unless it matches the allowlist. The expression is
+        # "drop when NOT in allowlist", so we negate a big alternation.
+        - >-
+          not (
+            name == "up" or
+            IsMatch(name, "^worker_heartbeat_age_seconds$") or
+            IsMatch(name, "^worker_uptime_seconds$") or
+            IsMatch(name, "^fyralis_schema_version$") or
+            IsMatch(name, "^fyralis_onboarding_shards$") or
+            IsMatch(name, "^fyralis_dlq_unresolved$") or
+            IsMatch(name, "^fyralis_dead_letter_rows$") or
+            IsMatch(name, "^fyralis_think_queue_pending$") or
+            IsMatch(name, "^fyralis_embedding_backlog_pending$") or
+            IsMatch(name, "^fyralis_oauth_token.*") or
+            IsMatch(name, "^fyralis_llm_breaker.*") or
+            IsMatch(name, "^fyralis_worker_expected_present.*") or
+            IsMatch(name, "^fyralis_db_pool.*") or
+            IsMatch(name, "^fyralis_partition_coverage.*") or
+            IsMatch(name, "^kafka_consumergroup_lag.*") or
+            IsMatch(name, "^normalizer_consumer_lag_seconds.*") or
+            IsMatch(name, "^writer_(full_mode_writes|full_mode_dedup_hits|full_mode_failures|shadow_drop|poison_dlq|parse_failure)(_total)?$") or
+            IsMatch(name, "^writer_poison_attempts.*") or
+            IsMatch(name, "^reconciliation_pass_count.*") or
+            IsMatch(name, "^think_runs_(total|failed|latency).*") or
+            IsMatch(name, "^think_cost_recent_usd.*") or
+            IsMatch(name, "^webhook_verification_failures_total$") or
+            IsMatch(name, "^webhook_resolver_outcomes_total$") or
+            IsMatch(name, "^http_requests_total$") or
+            IsMatch(name, "^breaker_trips_total$") or
+            IsMatch(name, "^pg_.*") or
+            IsMatch(name, "^process_.*") or
+            IsMatch(name, "^scrape_(samples_scraped|duration_seconds)$")
+          )
+
+  # ===== (2b) HIGH-CARDINALITY / PII LABEL DROP — Invariant I1 =============
+  # Delete every label that can carry an identifier, an email, a URL/path, or
+  # free-form text. Whatever survives is a bounded enum (worker, job, source,
+  # provider, state, status, table, trigger_kind, reason, op_type, route, le,
+  # quantile, group, topic, partition, instance, tier). The metrics layer
+  # (lib/observability/metrics.py) already forbids unbounded label values, so
+  # this is a defense-in-depth backstop against a future regression / an
+  # exporter that leaks one.
+  #
+  # transform/redact-labels runs ONE delete_key per banned label key.
+  transform/redact-labels:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          # --- direct identifiers --------------------------------------------
+          - delete_key(attributes, "tenant_id_inner")   # never trust a DP-supplied tenant id; CP stamps the real one
+          - delete_key(attributes, "installation_id")
+          - delete_key(attributes, "signal_id")
+          - delete_key(attributes, "observation_id")
+          - delete_key(attributes, "model_id")
+          - delete_key(attributes, "run_id")
+          - delete_key(attributes, "external_id")
+          - delete_key(attributes, "node_id")
+          - delete_key(attributes, "shard_id")
+          - delete_key(attributes, "actor_id")
+          - delete_key(attributes, "session_id")
+          - delete_key(attributes, "user_id")
+          - delete_key(attributes, "thread_id")
+          - delete_key(attributes, "channel_id")
+          - delete_key(attributes, "event_id")
+          - delete_key(attributes, "trace_id")
+          - delete_key(attributes, "span_id")
+          - delete_key(attributes, "request_id")
+          - delete_key(attributes, "id")
+          - delete_key(attributes, "uuid")
+          # --- PII / contact -------------------------------------------------
+          - delete_key(attributes, "email")
+          - delete_key(attributes, "user")
+          - delete_key(attributes, "username")
+          - delete_key(attributes, "actor")
+          - delete_key(attributes, "author")
+          - delete_key(attributes, "name")
+          - delete_key(attributes, "display_name")
+          - delete_key(attributes, "phone")
+          - delete_key(attributes, "ip")
+          - delete_key(attributes, "client_ip")
+          - delete_key(attributes, "remote_addr")
+          # --- free-form / unbounded -----------------------------------------
+          - delete_key(attributes, "url")
+          - delete_key(attributes, "path")
+          - delete_key(attributes, "uri")
+          - delete_key(attributes, "endpoint")
+          - delete_key(attributes, "query")
+          - delete_key(attributes, "text")
+          - delete_key(attributes, "content")
+          - delete_key(attributes, "message")
+          - delete_key(attributes, "error_message")
+          - delete_key(attributes, "exception")
+          - delete_key(attributes, "title")
+          - delete_key(attributes, "subject")
+          - delete_key(attributes, "body")
+          - delete_key(attributes, "payload")
+          - delete_key(attributes, "filename")
+          - delete_key(attributes, "file")
+          - delete_key(attributes, "repo")
+          - delete_key(attributes, "repository")
+          - delete_key(attributes, "branch")
+          - delete_key(attributes, "commit")
+          - delete_key(attributes, "sha")
+          - delete_key(attributes, "realm_id")
+          - delete_key(attributes, "team_id")
+          - delete_key(attributes, "workspace_id")
+
+  # ===== (3) DEPLOYMENT IDENTITY — C4 ======================================
+  # Stamp every metric with the deployment identity from env. These three are
+  # the C4 deployment-record keys. They are LOW-cardinality (one value per
+  # deployment) and explicitly allowed. tenant_id here is informational/group-
+  # by only — the AUTHORITATIVE tenant scoping is X-Scope-OrgID injected by the
+  # auth proxy from the verified cert SAN (C1/I4), NOT this label.
+  resource:
+    attributes:
+      - key: tenant_id
+        value: ${env:FYRALIS_TENANT_ID}
+        action: upsert
+      - key: deployment_id
+        value: ${env:FYRALIS_DEPLOYMENT_ID}
+        action: upsert
+      - key: region
+        value: ${env:FYRALIS_REGION}
+        action: upsert
+      - key: telemetry_tier
+        value: ${env:FYRALIS_TELEMETRY_TIER}
+        action: upsert
+
+  # Promote the resource attributes onto each datapoint so the
+  # prometheusremotewrite exporter emits them as series labels.
+  transform/identity-to-labels:
+    error_mode: ignore
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["tenant_id"], resource.attributes["tenant_id"]) where resource.attributes["tenant_id"] != nil
+          - set(attributes["deployment_id"], resource.attributes["deployment_id"]) where resource.attributes["deployment_id"] != nil
+          - set(attributes["region"], resource.attributes["region"]) where resource.attributes["region"] != nil
+          - set(attributes["telemetry_tier"], resource.attributes["telemetry_tier"]) where resource.attributes["telemetry_tier"] != nil
+
+  # Standard safety valve — bound memory so a metrics storm in the data plane
+  # can never OOM the boundary and take down egress.
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  batch:
+    send_batch_size: 8192
+    timeout: 10s
+
+# ----------------------------------------------------------------------------
+# EXPORTERS
+# ----------------------------------------------------------------------------
+exporters:
+  # Remote-write the FILTERED, IDENTITY-LABELED metrics to the central Mimir
+  # THROUGH the auth proxy over mTLS. The proxy terminates mTLS, verifies the
+  # per-tenant client cert, and injects X-Scope-OrgID from the cert SAN (C1).
+  # This collector therefore does NOT set X-Scope-OrgID and MUST NOT.
+  prometheusremotewrite:
+    # ${FYRALIS_AUTH_PROXY_URL} e.g. https://auth-proxy.fyralis.example:8443
+    # The proxy routes /api/v1/push → Mimir's distributor.
+    endpoint: ${env:FYRALIS_AUTH_PROXY_URL}/api/v1/push
+    # Do NOT let remote-write add target_info / instance noise; identity comes
+    # from the resource processor above.
+    resource_to_telemetry_conversion:
+      enabled: false
+    # The boundary→proxy hop is mutually-authenticated TLS. Identity = the
+    # client cert; the proxy maps cert SAN → tenant → X-Scope-OrgID.
+    tls:
+      insecure: false
+      ca_file: /etc/fyralis/ca/ca.crt           # Fyralis CA that signed the proxy server cert
+      cert_file: /etc/fyralis/agent/client.crt   # this deployment's per-tenant client cert (SAN = spiffe://fyralis/tenant/<id>)
+      key_file: /etc/fyralis/agent/client.key
+    retry_on_failure:
+      enabled: true        # I3: buffer/retry when the control plane is unreachable
+      initial_interval: 5s
+      max_interval: 60s
+      max_elapsed_time: 0  # never give up — keep buffering during a CP outage
+    # NOTE: external_labels intentionally empty — identity is explicit labels.
+
+  # Local debug sink (disabled by default; flip into the pipeline to eyeball
+  # exactly what would egress without sending anything out of the VPC).
+  debug:
+    verbosity: basic
+
+# ----------------------------------------------------------------------------
+# SERVICE — the wired pipeline. THIS is what makes the tier real.
+# ----------------------------------------------------------------------------
+service:
+  extensions: []
+  pipelines:
+    # ===== TIER 1 (default): metrics only, redacted, identity-stamped =======
+    metrics:
+      receivers: [prometheus]
+      processors:
+        - memory_limiter
+        - filter/allowlist            # (2a) keep only allowlisted families  — I1
+        - transform/redact-labels     # (2b) drop high-card / PII labels      — I1
+        - resource                    # (3)  stamp tenant/deployment/region   — C4
+        - transform/identity-to-labels
+        - batch
+      exporters: [prometheusremotewrite]
+
+    # ===== TIER 2 / TIER 3 pipelines are DEFINED IN tier_policy.yaml ========
+    # They are intentionally NOT present here. A tier change = swap in the T2
+    # or T3 service block from tier_policy.yaml (config-only). Because the logs
+    # and traces pipelines do not exist in the T1 service block, no log line or
+    # trace span can leave the VPC at T1 — the boundary simply has nowhere to
+    # send them (C3 enforced by absence).
+
+  telemetry:
+    logs:
+      level: info
+    metrics:
+      level: basic
