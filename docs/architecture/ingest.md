@@ -34,13 +34,34 @@ drift. See [ADR-0001](../adr/0001-kafka-first-ingestion-default.md).
 `content._unresolved_actor_ref`); (4) `EntityAliasRepo` fast-path entity lookup
 over 1–3-gram phrases (misses → `content._unresolved_phrases` for the
 [entity_resolver worker](workers.md)); (5) Ollama embedding (768-d; failure →
-`embedding_pending=True`); (6) `ObservationRepository.insert` in a transaction
+`embedding_pending=True`) — **gated by `OBS_EMBEDDING_MODE`** (see callout below);
+(6) `ObservationRepository.insert` in a transaction
 (dedup on `(source_channel, external_id, occurred_at)`, where each source's
 composed `external_id` comes from the central `idempotency` constructors —
 see the module table); (7) enqueue a
 `T1`/`event_arrival` row into `think_trigger_queue` unless deduped. Post-commit
 `observations_new` NOTIFY is flushed after commit; missing monthly partitions
 self-heal and retry once.
+
+!!! note "`OBS_EMBEDDING_MODE` — decommissioning the per-signal embedding (staged)"
+    `observations.embedding` is **never used as a search target** in production —
+    the only `<=>` ANN over `observations` is the test-only
+    `ObservationRepository.search_by_embedding`. The single live reader is the T1
+    retrieval seed ([reasoning](reasoning.md)), which already re-embeds
+    `content_text` on demand when the vector is absent. The
+    [`lib.embeddings.mode`](lib.md) flag `OBS_EMBEDDING_MODE` stages turning the
+    write-path off (the column is kept; a later migration drops it after a bake):
+
+    - **`eager`** (default) — embed at ingest (step 5), seed T1 from the stored
+      vector. Current behaviour.
+    - **`shadow`** — keep writing, but at think-time also re-embed `content_text`
+      and log the cosine vs the stored vector (`retrieval_obs_seed_shadow_cosine`)
+      to confirm parity before flipping.
+    - **`cutover`** — step 5 is skipped (insert `NULL` / `embedding_pending=FALSE`),
+      the `summarization_worker` re-embed republish is suppressed, and the
+      `embedding_worker`/`embedding_backlog` drainers idle (no `pending=TRUE` rows).
+      T1 retrieval re-embeds `content_text` on demand. Only the **T1** seed is
+      affected; `models.embedding` (the real ANN target) and the T2 seed are not.
 
 **Handler registry + trust map** (`handlers/__init__.py`): a `register(channel)`
 decorator self-registers handlers at import; `CHANNEL_TRUST_MAP` is the

@@ -43,6 +43,7 @@ from uuid import UUID
 
 import asyncpg
 
+from lib.embeddings.mode import write_obs_embeddings
 from lib.embeddings.ollama import (
     EMBEDDING_DIM,
     OllamaClient,
@@ -348,7 +349,7 @@ async def ingest_from_draft(
         tenant_id=tenant_id,
         draft=draft,
         row=result.observation,
-        skip=preparation.summary_pending,
+        skip=preparation.summary_pending or not write_obs_embeddings(),
     )
     await _publish_summarization_request_if_needed(
         producer=summarization_producer,
@@ -387,11 +388,14 @@ async def _prepare_observation_for_ingest(
     obs_id = uuid7()
     actor = await _resolve_actor(draft, actor_repo)
     entities = await _resolve_entities(draft, alias_repo, tenant_id)
-    embedding = (
-        _EmbeddingResult(embedding=None, pending=True)
-        if summary_pending
-        else await _compute_embedding(embedder, draft.content_text)
-    )
+    if not write_obs_embeddings():
+        # In cutover mode, retrieval re-embeds content on demand. Keeping
+        # pending false prevents the backfill worker from chasing the row.
+        embedding = _EmbeddingResult(embedding=None, pending=False)
+    elif summary_pending:
+        embedding = _EmbeddingResult(embedding=None, pending=True)
+    else:
+        embedding = await _compute_embedding(embedder, draft.content_text)
     return _ObservationPreparation(
         obs_id=obs_id,
         obs_create=_build_observation_create(
