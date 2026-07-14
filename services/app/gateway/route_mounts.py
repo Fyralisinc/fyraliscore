@@ -1,4 +1,5 @@
 """Gateway route mounting orchestration."""
+
 from __future__ import annotations
 
 from importlib import import_module
@@ -48,6 +49,7 @@ def register_gateway_routes(
     from services.app.gateway.substrate_router import build_substrate_router
     from services.app.gateway.today_core_router import build_today_core_router
     from services.app.gateway.whatsapp_router import build_whatsapp_router
+    from services.app.gateway.instagram_router import build_instagram_router
 
     app.include_router(build_core_router())
     app.include_router(build_clarifications_router())
@@ -60,7 +62,9 @@ def register_gateway_routes(
     app.include_router(build_byoc_onboarding_router())
     app.include_router(build_dead_letter_admin_router())
     if settings.debug_endpoints_enabled:
-        from services.app.gateway.document_ingest_router import build_document_ingest_router
+        from services.app.gateway.document_ingest_router import (
+            build_document_ingest_router,
+        )
 
         app.include_router(build_document_ingest_router())
     app.include_router(
@@ -69,6 +73,7 @@ def register_gateway_routes(
         )
     )
     app.include_router(build_facebook_pages_router())
+    app.include_router(build_instagram_router())
     app.include_router(build_sage_internal_router())
     app.include_router(build_recommendations_router())
     app.include_router(build_structure_router())
@@ -133,7 +138,9 @@ def mount_gateway_routes(
     # Its deployment-owned app readiness checklist is intentionally a separate
     # admin-only surface under `/api/admin` so end users never receive callback
     # or configuration details.
-    from services.ingest.integrations.figma.oauth import admin_router as figma_admin_router
+    from services.ingest.integrations.figma.oauth import (
+        admin_router as figma_admin_router,
+    )
 
     app.include_router(figma_admin_router)
 
@@ -177,6 +184,7 @@ def _mount_native_connect_routers(
         "grafana",
         "gusto",
         "hibob",
+        "instagram",
         "jira",
         "linkedin",
         "mercury",

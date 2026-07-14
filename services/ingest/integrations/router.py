@@ -14,6 +14,7 @@ so the gateway's public-path allowlist can target individual routes
 rather than blanket-publish `/integrations/*` (ClickUp body's
 "single-route, not blanket public" wording).
 """
+
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
@@ -33,6 +34,7 @@ from services.ingest.integrations.facebook_pages import oauth as facebook_pages_
 from services.ingest.integrations.github import oauth as github_oauth
 from services.ingest.integrations.notion import oauth as notion_oauth
 from services.ingest.integrations.slack import oauth as slack_oauth
+from services.ingest.integrations.instagram import oauth as instagram_oauth
 
 
 def build_integrations_router() -> APIRouter:
@@ -103,6 +105,14 @@ def build_integrations_router() -> APIRouter:
             facebook_pages_oauth.callback_handler,
             request,
         )
+
+    @router.get("/instagram/install")
+    async def instagram_install(request: Request):
+        return await instagram_oauth.install_handler(request)
+
+    @router.get("/instagram/callback")
+    async def instagram_callback(request: Request):
+        return await _callback_with_metrics(instagram_oauth.callback_handler, request)
 
     return router
 

@@ -67,6 +67,7 @@ See [docs/ingestion/05-lld-amendments.md A15](../../../docs/ingestion/05-lld-ame
 for the column-naming map and the full M6.2a-prompt-words →
 existing-schema-columns reconciliation.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -102,12 +103,14 @@ Planner = Callable[[PlannerContext], Awaitable[list[Shard]]]
 # ---------------------------------------------------------------------
 def _not_implemented_planner(source: str, milestone: str) -> Planner:
     """Build a planner stub that raises `NotImplementedError` loudly."""
+
     async def stub(ctx: PlannerContext) -> list[Shard]:
         raise NotImplementedError(
             f"Planner for source={source!r} is not yet implemented. "
             f"Pending in {milestone} per "
             f"docs/ingestion/04-implementation-plan.md §{milestone}."
         )
+
     stub.__name__ = f"_not_implemented_planner_{source}"
     return stub
 
@@ -121,34 +124,35 @@ def _not_implemented_planner(source: str, milestone: str) -> Planner:
 # (i.e., the per-source planner module assigns into the dict during its
 # import, replacing the stub).
 PLANNER_DISPATCH: dict[str, Planner] = {
-    "gmail":   _not_implemented_planner("gmail",   "M6.3"),
-    "github":  _not_implemented_planner("github",  "M6.4"),
-    "slack":   _not_implemented_planner("slack",   "M6.5"),
+    "gmail": _not_implemented_planner("gmail", "M6.3"),
+    "github": _not_implemented_planner("github", "M6.4"),
+    "slack": _not_implemented_planner("slack", "M6.5"),
     "discord": _not_implemented_planner("discord", "M6.6"),
-    "notion":  _not_implemented_planner("notion",  "IN-14"),
+    "notion": _not_implemented_planner("notion", "IN-14"),
     "google_calendar": _not_implemented_planner("google_calendar", "IN-15"),
     "google_drive": _not_implemented_planner("google_drive", "IN-16"),
-    "jira":    _not_implemented_planner("jira",    "IN-17"),
+    "jira": _not_implemented_planner("jira", "IN-17"),
     "mercury": _not_implemented_planner("mercury", "IN-FIN"),
     "quickbooks": _not_implemented_planner("quickbooks", "IN-FIN"),
     "grafana": _not_implemented_planner("grafana", "IN-GRAFANA"),
     "telegram": _not_implemented_planner("telegram", "IN-TELEGRAM"),
-    "brex":  _not_implemented_planner("brex",  "IN-FIN2"),
-    "ramp":  _not_implemented_planner("ramp",  "IN-FIN2"),
+    "brex": _not_implemented_planner("brex", "IN-FIN2"),
+    "ramp": _not_implemented_planner("ramp", "IN-FIN2"),
     "gusto": _not_implemented_planner("gusto", "IN-FIN2"),
-    "deel":  _not_implemented_planner("deel",  "IN-FIN2"),
+    "deel": _not_implemented_planner("deel", "IN-FIN2"),
     "fireflies": _not_implemented_planner("fireflies", "IN-VERTICALS"),
-    "signal":    _not_implemented_planner("signal",    "IN-VERTICALS"),
-    "aws":       _not_implemented_planner("aws",       "IN-VERTICALS"),
-    "miro":      _not_implemented_planner("miro",      "IN-VERTICALS"),
-    "figma":     _not_implemented_planner("figma",     "IN-VERTICALS"),
-    "carta":     _not_implemented_planner("carta",     "IN-VERTICALS"),
-    "hibob":     _not_implemented_planner("hibob",     "IN-PEOPLE"),
-    "ashby":     _not_implemented_planner("ashby",     "IN-PEOPLE"),
-    "linkedin":  _not_implemented_planner("linkedin",  "IN-PEOPLE"),
+    "signal": _not_implemented_planner("signal", "IN-VERTICALS"),
+    "aws": _not_implemented_planner("aws", "IN-VERTICALS"),
+    "miro": _not_implemented_planner("miro", "IN-VERTICALS"),
+    "figma": _not_implemented_planner("figma", "IN-VERTICALS"),
+    "carta": _not_implemented_planner("carta", "IN-VERTICALS"),
+    "hibob": _not_implemented_planner("hibob", "IN-PEOPLE"),
+    "ashby": _not_implemented_planner("ashby", "IN-PEOPLE"),
+    "linkedin": _not_implemented_planner("linkedin", "IN-PEOPLE"),
+    "instagram": _not_implemented_planner("instagram", "IN-INSTAGRAM"),
     # WhatsApp is LIVE-only (Kafka data plane); backfill is a deferred phase,
     # so the planner stays a stub — no onboarding_trigger is created for it.
-    "whatsapp":  _not_implemented_planner("whatsapp",  "IN-WHATSAPP-BACKFILL"),
+    "whatsapp": _not_implemented_planner("whatsapp", "IN-WHATSAPP-BACKFILL"),
     "facebook_pages": _not_implemented_planner("facebook_pages", "IN-FACEBOOK-PAGES"),
 }
 
@@ -191,3 +195,4 @@ from services.ingest.ingestion.planners import hibob as _hibob  # noqa: E402,F40
 from services.ingest.ingestion.planners import ashby as _ashby  # noqa: E402,F401
 from services.ingest.ingestion.planners import linkedin as _linkedin  # noqa: E402,F401
 from services.ingest.ingestion.planners import facebook_pages as _facebook_pages  # noqa: E402,F401
+from services.ingest.ingestion.planners import instagram as _instagram  # noqa: E402,F401

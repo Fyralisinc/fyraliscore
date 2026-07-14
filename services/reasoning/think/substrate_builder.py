@@ -488,6 +488,12 @@ def _add_actor_candidates(
         return None
     source_actor_ref = str(source_actor_ref)
     source_root = _source_root(source_channel)
+    # An Instagram-scoped user is a high-cardinality external customer, not an
+    # internal colleague. The structured instagram_customer entity is promoted
+    # through the customer path after repeated evidence; do not create an actor
+    # candidate/clarification for every person who sends a DM.
+    if source_root == "instagram" and ":user:" in source_actor_ref.casefold():
+        return None
     full_ref = (
         source_actor_ref
         if ":" in source_actor_ref

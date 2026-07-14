@@ -68,6 +68,7 @@ The fetcher's exceptions are caught by the service:
 Tests inject test fetchers via `FETCHER_DISPATCH[source] = <test_fn>`
 (or `monkeypatch.setitem(FETCHER_DISPATCH, ...)`).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -119,6 +120,7 @@ def _not_implemented_fetcher(source: str, milestone: str) -> Fetcher:
     reading `onboarding_shards.last_error` (or service logs)
     immediately know where the implementation work lives.
     """
+
     async def stub(
         install: asyncpg.Record,
         shard_identifier: dict[str, Any],
@@ -132,6 +134,7 @@ def _not_implemented_fetcher(source: str, milestone: str) -> Fetcher:
             f"with this reason; the failure is the expected "
             f"pre-{milestone} steady state, not a regression."
         )
+
     stub.__name__ = f"_not_implemented_fetcher_{source}"
     return stub
 
@@ -143,33 +146,34 @@ def _not_implemented_fetcher(source: str, milestone: str) -> Fetcher:
 # entries via `FETCHER_DISPATCH[source] = test_fn`. Production
 # replacements (M6.3-M6.6) overwrite the stub at module-import time.
 FETCHER_DISPATCH: dict[str, Fetcher] = {
-    "gmail":   _not_implemented_fetcher("gmail",   "M6.3"),
-    "github":  _not_implemented_fetcher("github",  "M6.4"),
-    "slack":   _not_implemented_fetcher("slack",   "M6.5"),
+    "gmail": _not_implemented_fetcher("gmail", "M6.3"),
+    "github": _not_implemented_fetcher("github", "M6.4"),
+    "slack": _not_implemented_fetcher("slack", "M6.5"),
     "discord": _not_implemented_fetcher("discord", "M6.6"),
-    "notion":  _not_implemented_fetcher("notion",  "IN-14"),
+    "notion": _not_implemented_fetcher("notion", "IN-14"),
     "google_calendar": _not_implemented_fetcher("google_calendar", "IN-15"),
     "google_drive": _not_implemented_fetcher("google_drive", "IN-16"),
-    "jira":    _not_implemented_fetcher("jira",    "IN-17"),
+    "jira": _not_implemented_fetcher("jira", "IN-17"),
     "mercury": _not_implemented_fetcher("mercury", "IN-FIN"),
     "quickbooks": _not_implemented_fetcher("quickbooks", "IN-FIN"),
     "grafana": _not_implemented_fetcher("grafana", "IN-GRAFANA"),
     "telegram": _not_implemented_fetcher("telegram", "IN-TELEGRAM"),
-    "brex":  _not_implemented_fetcher("brex",  "IN-FIN2"),
-    "ramp":  _not_implemented_fetcher("ramp",  "IN-FIN2"),
+    "brex": _not_implemented_fetcher("brex", "IN-FIN2"),
+    "ramp": _not_implemented_fetcher("ramp", "IN-FIN2"),
     "gusto": _not_implemented_fetcher("gusto", "IN-FIN2"),
-    "deel":  _not_implemented_fetcher("deel",  "IN-FIN2"),
+    "deel": _not_implemented_fetcher("deel", "IN-FIN2"),
     "fireflies": _not_implemented_fetcher("fireflies", "IN-VERTICALS"),
-    "signal":    _not_implemented_fetcher("signal",    "IN-VERTICALS"),
-    "aws":       _not_implemented_fetcher("aws",       "IN-VERTICALS"),
-    "miro":      _not_implemented_fetcher("miro",      "IN-VERTICALS"),
-    "figma":     _not_implemented_fetcher("figma",     "IN-VERTICALS"),
-    "carta":     _not_implemented_fetcher("carta",     "IN-VERTICALS"),
-    "hibob":     _not_implemented_fetcher("hibob",     "IN-PEOPLE"),
-    "ashby":     _not_implemented_fetcher("ashby",     "IN-PEOPLE"),
-    "linkedin":  _not_implemented_fetcher("linkedin",  "IN-PEOPLE"),
+    "signal": _not_implemented_fetcher("signal", "IN-VERTICALS"),
+    "aws": _not_implemented_fetcher("aws", "IN-VERTICALS"),
+    "miro": _not_implemented_fetcher("miro", "IN-VERTICALS"),
+    "figma": _not_implemented_fetcher("figma", "IN-VERTICALS"),
+    "carta": _not_implemented_fetcher("carta", "IN-VERTICALS"),
+    "hibob": _not_implemented_fetcher("hibob", "IN-PEOPLE"),
+    "ashby": _not_implemented_fetcher("ashby", "IN-PEOPLE"),
+    "linkedin": _not_implemented_fetcher("linkedin", "IN-PEOPLE"),
+    "instagram": _not_implemented_fetcher("instagram", "IN-INSTAGRAM"),
     # WhatsApp is LIVE-only; backfill (Coexistence/BSP) is deferred.
-    "whatsapp":  _not_implemented_fetcher("whatsapp",  "IN-WHATSAPP-BACKFILL"),
+    "whatsapp": _not_implemented_fetcher("whatsapp", "IN-WHATSAPP-BACKFILL"),
     "facebook_pages": _not_implemented_fetcher("facebook_pages", "IN-FACEBOOK-PAGES"),
 }
 
@@ -209,3 +213,4 @@ from services.ingest.ingestion.fetchers import hibob as _hibob  # noqa: E402,F40
 from services.ingest.ingestion.fetchers import ashby as _ashby  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import linkedin as _linkedin  # noqa: E402,F401
 from services.ingest.ingestion.fetchers import facebook_pages as _facebook_pages  # noqa: E402,F401
+from services.ingest.ingestion.fetchers import instagram as _instagram  # noqa: E402,F401

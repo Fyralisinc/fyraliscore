@@ -12,6 +12,7 @@ Versioning policy:
   - breaking changes bump to v2 — a new model class consumers can
     opt into.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -22,12 +23,34 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 SourceLiteral = Literal[
-    "slack", "github", "discord", "gmail", "notion", "google_calendar",
-    "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram",
-    "brex", "ramp", "gusto", "deel",
-    "fireflies", "signal", "aws", "miro", "figma", "carta",
-    "hibob", "ashby", "linkedin",
-    "whatsapp", "facebook_pages",
+    "slack",
+    "github",
+    "discord",
+    "gmail",
+    "notion",
+    "google_calendar",
+    "google_drive",
+    "jira",
+    "mercury",
+    "quickbooks",
+    "grafana",
+    "telegram",
+    "brex",
+    "ramp",
+    "gusto",
+    "deel",
+    "fireflies",
+    "signal",
+    "aws",
+    "miro",
+    "figma",
+    "carta",
+    "hibob",
+    "ashby",
+    "linkedin",
+    "whatsapp",
+    "facebook_pages",
+    "instagram",
 ]
 # "poll" is the Gmail live-via-Kafka cutover ingress: the push handler /
 # history poller fetches the message resource (a real Gmail message, NOT

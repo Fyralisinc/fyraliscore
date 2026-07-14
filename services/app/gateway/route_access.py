@@ -4,6 +4,7 @@ This module describes the gateway bearer-middleware bypass surface and the
 current access boundary for route inventory checks. It is intentionally about
 transport-level exposure, not fine-grained substrate authorization.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -119,6 +120,7 @@ GATEWAY_BEARER_BYPASS_PATH_POLICIES: dict[str, RouteAccessPolicy] = {
     "/healthz": _PUBLIC,
     "/readyz": _PUBLIC,
     "/metrics": _PUBLIC,
+    "/legal/local-test-privacy": _PUBLIC,
     "/auth/session": _BOOTSTRAP,
     "/integrations/slack/callback": _OAUTH_CALLBACK,
     "/integrations/slack/installed": _OAUTH_CALLBACK,
@@ -141,6 +143,8 @@ GATEWAY_BEARER_BYPASS_PATH_POLICIES: dict[str, RouteAccessPolicy] = {
     "/integrations/facebook_pages/installed": _OAUTH_CALLBACK,
     "/integrations/facebook_pages/install-error": _OAUTH_CALLBACK,
     "/integrations/facebook_pages/webhook": _PROVIDER_SIGNED,
+    "/integrations/instagram/callback": _OAUTH_CALLBACK,
+    "/integrations/instagram/webhook": _PROVIDER_SIGNED,
 }
 
 GATEWAY_BEARER_BYPASS_PATHS = frozenset(GATEWAY_BEARER_BYPASS_PATH_POLICIES)

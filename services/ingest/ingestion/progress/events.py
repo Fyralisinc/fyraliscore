@@ -24,6 +24,7 @@ behind a guarded UPDATE (LLD §2.6: `UPDATE onboarding_runs SET
 feels_onboarded_at = now() WHERE id = $1 AND feels_onboarded_at IS
 NULL` only publishes if the UPDATE affected 1 row).
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -39,7 +40,36 @@ from pydantic import BaseModel, ConfigDict, Field
 # sources, and an omitted member (previously 'grafana') makes Pydantic raise a
 # literal_error that propagates out of the orchestrator tick and crashes the
 # worker — so onboarding a grafana tenant never completes.
-Source = Literal["slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin", "whatsapp", "facebook_pages"]
+Source = Literal[
+    "slack",
+    "github",
+    "discord",
+    "gmail",
+    "notion",
+    "google_calendar",
+    "google_drive",
+    "jira",
+    "mercury",
+    "quickbooks",
+    "grafana",
+    "telegram",
+    "brex",
+    "ramp",
+    "gusto",
+    "deel",
+    "fireflies",
+    "signal",
+    "aws",
+    "miro",
+    "figma",
+    "carta",
+    "hibob",
+    "ashby",
+    "linkedin",
+    "whatsapp",
+    "facebook_pages",
+    "instagram",
+]
 
 
 class ProgressEventBase(BaseModel):
@@ -108,9 +138,7 @@ CoverageConfidence = Literal[
 
 
 class SourceOnboardingComplete(ProgressEventBase):
-    event_kind: Literal["source.onboarding.complete"] = (
-        "source.onboarding.complete"
-    )
+    event_kind: Literal["source.onboarding.complete"] = "source.onboarding.complete"
     source: Source
     total_observations: int
     total_seconds: float
@@ -119,9 +147,7 @@ class SourceOnboardingComplete(ProgressEventBase):
 
 
 class TenantOnboardingComplete(ProgressEventBase):
-    event_kind: Literal["tenant.onboarding.complete"] = (
-        "tenant.onboarding.complete"
-    )
+    event_kind: Literal["tenant.onboarding.complete"] = "tenant.onboarding.complete"
     total_observations: int
     completed_at: dt.datetime
     sources: list[Source]

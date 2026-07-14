@@ -25,6 +25,7 @@ Handler shape (the `ObservationDraft` model below):
 All handlers are pure functions:
     async def handle(payload: dict, request_headers: dict) -> ObservationDraft
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -76,6 +77,11 @@ CHANNEL_TRUST_MAP: dict[str, str] = {
     # Page-token Graph pagination. Messages are customer/Page authored content,
     # not a provider-authored state fact.
     "facebook_pages:message": "attested_agent",
+    # Instagram Messaging (Meta-signed webhooks + Graph conversation history).
+    # Customer-authored DMs are attested by Meta delivery; read/delivery/delete
+    # callbacks are Meta-asserted facts and the handler overrides those to
+    # authoritative + state_change.
+    "instagram:message": "attested_agent",
     # Internal channels used by system-originated observations; these
     # carry the highest trust and never enter through a signature-
     # verified webhook.
@@ -140,9 +146,7 @@ def register(channel: str) -> Callable[[HandlerFn], HandlerFn]:
 
     def _decorator(fn: HandlerFn) -> HandlerFn:
         if channel in _HANDLERS:
-            raise RuntimeError(
-                f"handler for {channel!r} already registered"
-            )
+            raise RuntimeError(f"handler for {channel!r} already registered")
         _HANDLERS[channel] = fn
         return fn
 
@@ -207,6 +211,7 @@ from services.ingest.ingestion.handlers import ashby  # noqa: E402,F401
 from services.ingest.ingestion.handlers import linkedin  # noqa: E402,F401
 from services.ingest.ingestion.handlers import whatsapp  # noqa: E402,F401
 from services.ingest.ingestion.handlers import facebook_pages  # noqa: E402,F401
+from services.ingest.ingestion.handlers import instagram  # noqa: E402,F401
 
 
 __all__ = [

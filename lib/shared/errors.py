@@ -1155,6 +1155,33 @@ class LinkedinApiError(CompanyOSError):
             self._code = code
 
 
+class InstagramApiError(CompanyOSError):
+    """Outbound Meta Graph / Instagram Messaging API call failure.
+
+    Stable `code` values:
+      - instagram_api_unauthorized: 401/403 — token expired, missing
+        instagram_manage_messages/pages_manage_metadata, or app review missing
+      - instagram_api_not_found: 404 — account/conversation/message not visible
+      - instagram_api_rate_limited: 429 with retry budget exhausted
+      - instagram_api_error: other terminal 4xx/5xx/transport failure
+    """
+    default_code = "instagram_api_error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        context: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> None:
+        merged = dict(context or {})
+        merged.update(extra)
+        super().__init__(message, **merged)
+        if code is not None:
+            self._code = code
+
+
 __all__ = [
     "CompanyOSError",
     "ValidationError",
@@ -1195,4 +1222,5 @@ __all__ = [
     "HibobApiError",
     "AshbyApiError",
     "LinkedinApiError",
+    "InstagramApiError",
 ]

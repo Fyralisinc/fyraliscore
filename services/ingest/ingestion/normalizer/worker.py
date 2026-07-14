@@ -499,7 +499,7 @@ async def _normalize_one_with_envelope(
         raw_body = await s3.get(envelope.raw_s3_key)
     payload = orjson.loads(raw_body)
 
-    # M6.7 (A27.3) — the backfill producer (shard_fetch) wraps the
+    # M6.7 (A27.3) — the shard_fetch producer wraps the backfill/poll
     # handler body in a blob `{record, shard_context, webhook_metadata}`
     # so it can carry the webhook-equivalent headers a handler needs
     # (e.g. X-GitHub-Event) without a webhook signature. Unwrap it here:
@@ -508,7 +508,21 @@ async def _normalize_one_with_envelope(
     # HLD §02 L278). The live webhook/gateway/pubsub paths publish the
     # bare body with no wrapper, so they keep headers={}.
     headers: dict[str, str] = {}
-    if envelope.ingress_kind == "backfill" and isinstance(payload, dict):
+    is_shard_fetch_wrapper = (
+        isinstance(payload, dict)
+        and (
+            payload.get("_fyralis_shard_fetch_wrapper") == 1
+            # Older backfill blobs predate the explicit marker. Keep their
+            # structural wrapper contract readable during replay.
+            or (
+                envelope.ingress_kind in {"backfill", "poll"}
+                and isinstance(payload.get("record"), dict)
+                and isinstance(payload.get("shard_context"), dict)
+                and "webhook_metadata" in payload
+            )
+        )
+    )
+    if is_shard_fetch_wrapper:
         headers = payload.get("webhook_metadata") or {}
         payload = payload.get("record", payload)
     elif envelope.source == "github":
