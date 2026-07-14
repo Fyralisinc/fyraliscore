@@ -1711,6 +1711,8 @@ def _hydrate_row(record: asyncpg.Record) -> ModelRow:
                 raw["embedding"] = json.loads(emb)
             except (json.JSONDecodeError, ValueError):
                 pass
+        elif hasattr(emb, "to_list"):
+            raw["embedding"] = [float(x) for x in emb.to_list()]
         else:
             try:
                 raw["embedding"] = [float(x) for x in emb]

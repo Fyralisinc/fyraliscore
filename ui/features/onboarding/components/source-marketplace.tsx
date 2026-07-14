@@ -37,6 +37,7 @@ export type SourceAutomationCardState = {
   accessResources?: SourceAccessResource[];
   accessNextActions?: string[];
   syncStartedAt?: string | null;
+  installUrl?: string | null;
 };
 
 export function SourceMarketplace({
@@ -49,6 +50,7 @@ export function SourceMarketplace({
   onRegisterAwsRuntimeRole,
   onFinalizeAwsSourceRole,
   onRetryAwsFirstSync,
+  onAuthorize,
 }: {
   sources: Source[];
   connections: SourceConnection[];
@@ -62,6 +64,7 @@ export function SourceMarketplace({
   onRegisterAwsRuntimeRole?: (roleArn: string) => void | Promise<void>;
   onFinalizeAwsSourceRole?: (roleArn: string) => void | Promise<void>;
   onRetryAwsFirstSync?: () => void | Promise<void>;
+  onAuthorize?: (sourceId: string, installUrl: string) => void;
 }) {
   const [awsRuntimeRoleInput, setAwsRuntimeRoleInput] = useState("");
   const [awsRuntimeRoleError, setAwsRuntimeRoleError] = useState<string | null>(
@@ -138,6 +141,8 @@ export function SourceMarketplace({
                 automation?.accessResources?.length ||
                 automation?.accessNextActions?.length,
               );
+            const authorizeUrl =
+              automation?.installUrl && !connected ? automation.installUrl : null;
 
             return (
               <div
@@ -189,6 +194,14 @@ export function SourceMarketplace({
                   variant={connected ? "secondary" : "primary"}
                   disabled={actionDisabled}
                   onClick={() => {
+                    if (authorizeUrl) {
+                      if (onAuthorize) {
+                        onAuthorize(source.id, authorizeUrl);
+                      } else {
+                        window.open(authorizeUrl, "_blank", "noopener,noreferrer");
+                      }
+                      return;
+                    }
                     if (canOpenApproval && approvalActionUrl) {
                       window.open(
                         approvalActionUrl,
@@ -208,6 +221,7 @@ export function SourceMarketplace({
                   aria-label={sourceActionLabel({
                     sourceId: source.id,
                     sourceName: source.name,
+                    authorize: Boolean(authorizeUrl),
                     waiting,
                     blocked,
                     connecting,
@@ -217,7 +231,9 @@ export function SourceMarketplace({
                     actionLabel: approvalActionLabel,
                   })}
                 >
-                  {waiting || blocked ? (
+                  {authorizeUrl ? (
+                    "Authorize"
+                  ) : waiting || blocked ? (
                     canOpenApproval ? (
                       <>
                         <ExternalLink className="h-4 w-4" aria-hidden="true" />
@@ -1029,6 +1045,7 @@ function sourceApprovalActionLabel(source: Source) {
 function sourceActionLabel({
   sourceId,
   sourceName,
+  authorize,
   waiting,
   blocked,
   connecting,
@@ -1039,6 +1056,7 @@ function sourceActionLabel({
 }: {
   sourceId?: string;
   sourceName: string;
+  authorize: boolean;
   waiting: boolean;
   blocked: boolean;
   connecting: boolean;
@@ -1047,6 +1065,9 @@ function sourceActionLabel({
   canOpenApproval: boolean;
   actionLabel?: string;
 }) {
+  if (authorize) {
+    return `Authorize ${sourceName}`;
+  }
   if (blocked && canOpenApproval && actionLabel) {
     return `${actionLabel} for ${sourceName}`;
   }

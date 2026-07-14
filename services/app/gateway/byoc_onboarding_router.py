@@ -264,6 +264,9 @@ _SOURCE_REQUIRED_INPUTS = {
     "signal": [
         "linked_device_session",
     ],
+    "slack": [
+        "slack_app_config_token",
+    ],
     "telegram": [
         "account_label",
         "api_id",
@@ -943,6 +946,52 @@ def build_byoc_onboarding_router(
             _source_auto_connect_run_key(source),
         )
         return payload
+
+    @router.post("/sources/slack/rehearsal/browser-agent/configuration")
+    async def consume_slack_browser_agent_config_token(
+        request: Request,
+    ) -> dict[str, Any]:
+        body = await _optional_json_body(request)
+        provider_inputs = _source_finalize_inputs(body) if body else {}
+        config_token = provider_inputs.get("slack_app_config_token", "").strip()
+        if not config_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "slack_app_config_token_required"},
+            )
+        payload = await _prepare_source_rehearsal_response(
+            request,
+            "slack",
+            provider_inputs=provider_inputs,
+        )
+        payload["auto_connect"] = _source_auto_connect_state("slack", payload)
+        payload["browser_agent_run"] = source_browser_agent_run_for_payload(
+            "slack",
+            payload,
+            auto_state=payload["auto_connect"],
+        )
+        payload["auto_connect"]["browser_agent_run"] = payload["browser_agent_run"]
+        return {
+            "schema_version": "fyralis.byoc.source.slack_config_token_consume.v1",
+            "ok": bool(
+                payload.get("install_url")
+                or (payload.get("status") or {}).get("installed")
+            ),
+            "source": "slack",
+            "install_url": payload.get("install_url"),
+            "oauth_redirect_url": payload.get("oauth_redirect_url"),
+            "provider_console_url": payload.get("provider_console_url"),
+            "status": payload.get("status") or {},
+            "auto_connect": {
+                "state": payload["auto_connect"].get("state"),
+                "label": payload["auto_connect"].get("label"),
+                "message": payload["auto_connect"].get("message"),
+                "install_url": payload["auto_connect"].get("install_url"),
+            },
+            "raw_secret_values_included": False,
+            "raw_payloads_exported": False,
+            "stored_scope": "sanitized_slack_config_token_handoff_metadata_only",
+        }
 
     @router.post("/sources/jira/rehearsal/finalize")
     async def finalize_jira_rehearsal(request: Request) -> dict[str, Any]:
@@ -1737,28 +1786,65 @@ async def _source_provider_handoff(
     request_payload: dict[str, Any],
 ) -> dict[str, Any]:
     public_url = _public_url_from_env_or_request(request)
+    provider_inputs = (
+        _source_finalize_inputs(request_payload) if request_payload else {}
+    )
     if source == "slack":
+        from services.ingest.integrations.slack import byoc_app
         from services.ingest.integrations.slack import oauth as slack_oauth
 
-        client_id = os.environ.get("SLACK_CLIENT_ID", "").strip()
-        redirect_uri = os.environ.get("SLACK_REDIRECT_URI", "").strip()
-        missing = [
-            name
-            for name, value in {
-                "SLACK_CLIENT_ID": client_id,
-                "SLACK_REDIRECT_URI": redirect_uri,
-                "SLACK_CLIENT_SECRET": _env_or_secret_ref_configured(
-                    "SLACK_CLIENT_SECRET"
-                ),
-                "SLACK_SIGNING_SECRET": _env_or_secret_ref_configured(
-                    "SLACK_SIGNING_SECRET"
-                ),
-            }.items()
-            if not value
-        ]
+        redirect_uri = (
+            os.environ.get("SLACK_REDIRECT_URI", "").strip()
+            or f"{public_url}/integrations/slack/callback"
+        )
+        events_request_url = f"{public_url}/webhooks/slack/events"
+        config_token = byoc_app.configuration_token_from_inputs(provider_inputs)
+        app_refs = None
+        if config_token:
+            secret_store = _secret_store_from_state(request, pool)
+            try:
+                created_app = await byoc_app.create_app_from_manifest(
+                    configuration_token=config_token,
+                    oauth_redirect_url=redirect_uri,
+                    events_request_url=events_request_url,
+                )
+            except byoc_app.SlackManifestCreateError as exc:
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail={
+                        "error": "slack_manifest_create_failed",
+                        "slack_error": exc.slack_error,
+                        "message": str(exc),
+                    },
+                ) from exc
+            app_refs = await byoc_app.store_app_credentials(
+                pool=pool,
+                secret_store=secret_store,
+                tenant_id=tenant_id,
+                credentials=created_app,
+            )
+        if app_refs is None:
+            app_refs = await byoc_app.fetch_app_credentials(pool, tenant_id=tenant_id)
+
+        client_id = (
+            app_refs.client_id
+            if app_refs
+            else os.environ.get("SLACK_CLIENT_ID", "").strip()
+        )
+        env_ready = bool(
+            os.environ.get("SLACK_CLIENT_ID", "").strip()
+            and _env_or_secret_ref_configured("SLACK_CLIENT_SECRET")
+            and _env_or_secret_ref_configured("SLACK_SIGNING_SECRET")
+        )
+        missing = [] if app_refs or env_ready else ["slack_app_config_token"]
         install_url = None
-        if client_id and redirect_uri:
-            state_token = await slack_oauth.issue_state_token(tenant_id, pool)
+        if client_id and redirect_uri and not missing:
+            state_payload = {"slack_app_id": app_refs.app_id} if app_refs else None
+            state_token = await slack_oauth.issue_state_token(
+                tenant_id,
+                pool,
+                extra_payload=state_payload,
+            )
             install_url = f"{slack_oauth._SLACK_AUTHORIZE_URL}?" + urlencode(  # noqa: SLF001
                 {
                     "client_id": client_id,
@@ -1989,12 +2075,16 @@ async def _json_body(request: Request) -> dict[str, Any]:
 
 
 async def _optional_json_body(request: Request) -> dict[str, Any]:
+    raw_body = await request.body()
+    if not raw_body or not raw_body.strip():
+        return {}
     try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return {}
-    if body in (None, b"", ""):
-        return {}
+        body = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_json_body"},
+        ) from exc
     if not isinstance(body, dict):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -2527,6 +2617,44 @@ def _source_auto_connect_state(source: str, payload: dict[str, Any]) -> dict[str
         }
 
     if missing_configuration:
+        if _source_missing_configuration_agent_assisted(source, missing_configuration):
+            assisted_steps = _source_agent_assisted_missing_configuration_steps(
+                source,
+                source_name,
+                human_steps,
+            )
+            if _source_auto_connect_runner_mode() == "artifact_materialization":
+                return {
+                    "state": "blocked",
+                    "label": "Not connected",
+                    "message": (
+                        "Slack was not connected. App creation needs the "
+                        "customer-cloud browser agent to run, or a Slack app "
+                        "configuration token must be provided as fallback."
+                    ),
+                    "human_step_count": len(assisted_steps),
+                    "human_steps": assisted_steps,
+                    "automated_actions": automation_profile.get("automated_actions")
+                    or [],
+                    "browser_agent": browser_agent,
+                    "browser_agent_run": browser_agent_run,
+                    "install_url": install_url,
+                }
+            return {
+                "state": "admin_gate",
+                "label": "Admin assist",
+                "message": (
+                    "Fyralis can open the Slack app dashboard, generate the app "
+                    "configuration token in an admin-present browser, create the "
+                    "BYOC Slack app, then ask for OAuth approval."
+                ),
+                "human_step_count": len(assisted_steps),
+                "human_steps": assisted_steps,
+                "automated_actions": automation_profile.get("automated_actions") or [],
+                "browser_agent": browser_agent,
+                "browser_agent_run": browser_agent_run,
+                "install_url": install_url,
+            }
         return {
             "state": "blocked",
             "label": "Needs config",
@@ -2611,6 +2739,42 @@ def _aws_source_runtime_role_from_payload(payload: dict[str, Any]) -> str | None
     )
 
 
+def _source_missing_configuration_agent_assisted(
+    source: str,
+    missing_configuration: list[str],
+) -> bool:
+    normalized_missing = {
+        str(name).strip().lower() for name in missing_configuration if str(name).strip()
+    }
+    return source == "slack" and normalized_missing == {"slack_app_config_token"}
+
+
+def _source_agent_assisted_missing_configuration_steps(
+    source: str,
+    source_name: str,
+    fallback_steps: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if source != "slack":
+        return fallback_steps
+    return [
+        {
+            "id": "generate_slack_app_config_token",
+            "label": "Generate a Slack app configuration token in the admin browser.",
+            "reason": (
+                "Slack requires an authenticated workspace admin session before "
+                "a configuration token can be created."
+            ),
+            "can_agent_complete": True,
+        },
+        {
+            "id": "provider_admin_approval",
+            "label": f"Approve the {source_name} OAuth scopes.",
+            "reason": "Slack requires workspace admin consent for the created app.",
+            "can_agent_complete": False,
+        },
+    ]
+
+
 def _source_auto_connect_run_descriptor(
     source: str,
     payload: dict[str, Any],
@@ -2618,17 +2782,26 @@ def _source_auto_connect_run_descriptor(
 ) -> dict[str, Any]:
     source_cli = source.replace("_", "-")
     native_connect = payload.get("native_connect")
+    missing_configuration = list(payload.get("missing_configuration") or [])
+    include_native_execution = bool(native_connect) and not (
+        _source_missing_configuration_agent_assisted(source, missing_configuration)
+    )
+    gateway_api_base = str(payload.get("gateway_api_base") or "").strip()
     command_args = [
         "fyralis",
         "byoc",
         "source",
         "browser-agent",
+        "--workdir",
+        str(_source_auto_connect_workdir()),
         "--source",
         source_cli,
         "--execute-browser-dom",
         "--interactive-admin",
     ]
-    if native_connect:
+    if gateway_api_base:
+        command_args.extend(["--gateway-api-base", gateway_api_base])
+    if include_native_execution:
         command_args.append("--execute-native")
     action_queue = [
         item

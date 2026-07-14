@@ -30,6 +30,7 @@ Design:
 - Vector columns: we register pgvector's codec once per pool so
   `list[float]` round-trips transparently as VECTOR(768).
 """
+
 from __future__ import annotations
 
 import json
@@ -112,16 +113,23 @@ def _hydrate_row(record: asyncpg.Record) -> ObservationRow:
             v = v.decode()
         if isinstance(v, str):
             raw[key] = json.loads(v)
-    # pgvector's asyncpg codec can return either numpy arrays or
-    # pgvector.Vector depending on package/runtime version. Normalize to
-    # list[float] so Pydantic validates cleanly.
+    # pgvector's asyncpg codec can return text, numpy arrays, or Vector objects
+    # depending on the driver/code path. Normalize all supported forms.
     emb = raw.get("embedding")
     if emb is not None and not isinstance(emb, list):
-        if hasattr(emb, "to_list"):
-            emb = emb.to_list()
+        if isinstance(emb, (bytes, bytearray)):
+            emb = emb.decode()
+        if isinstance(emb, str):
+            try:
+                raw["embedding"] = json.loads(emb)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        elif hasattr(emb, "to_list"):
+            raw["embedding"] = [float(x) for x in emb.to_list()]
         elif hasattr(emb, "to_numpy"):
-            emb = emb.to_numpy()
-        raw["embedding"] = [float(x) for x in emb]
+            raw["embedding"] = [float(x) for x in emb.to_numpy()]
+        else:
+            raw["embedding"] = [float(x) for x in emb]
     try:
         return ObservationRow.model_validate(raw)
     except Exception as e:
@@ -431,8 +439,13 @@ class ObservationRepository:
                 raise ObservationError(
                     f"unknown filter key {key!r}",
                     supported=sorted(
-                        ("kind", "source_channel", "actor_id",
-                         "occurred_after", "occurred_before")
+                        (
+                            "kind",
+                            "source_channel",
+                            "actor_id",
+                            "occurred_after",
+                            "occurred_before",
+                        )
                     ),
                 )
         params.append(k)
@@ -640,6 +653,7 @@ async def _exact_embedding_fallback(
 # ---------------------------------------------------------------------
 # Connection helper — use caller's conn if provided, else acquire.
 # ---------------------------------------------------------------------
+
 
 class _connection:
     """

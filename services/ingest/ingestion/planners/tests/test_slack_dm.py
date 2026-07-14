@@ -115,6 +115,50 @@ async def test_dm_shards_emitted_per_conversation(patch_user_clients):
             assert s.shard_identifier["counterpart_user_id"] is not None
 
 
+async def test_channel_shards_prefer_user_visible_channels(monkeypatch):
+    class _UserVisible:
+        async def conversations_list(self, *, types="im,mpim"):
+            if types == "public_channel,private_channel":
+                return [
+                    {
+                        "id": "C_GENERAL",
+                        "name": "general",
+                        "team_id": "T_DEMO",
+                        "channel_type": "public_channel",
+                    },
+                    {
+                        "id": "G_SECRET",
+                        "name": "secret",
+                        "team_id": "T_DEMO",
+                        "channel_type": "private_channel",
+                    },
+                ]
+            return []
+
+    async def _factory(*, tenant_id, team_id, user_id, base_url):
+        return _UserVisible()
+
+    monkeypatch.setattr(planner_mod, "_open_slack_user_client", _factory)
+    ctx = _ctx(
+        channels=[{"id": "C_BOT_ONLY", "name": "bot", "team_id": "T_DEMO"}],
+        dm_rows=[_dm_row("U_ALICE", base_url="https://slack.test/api")],
+        user_clients=None,
+    )
+
+    shards = await plan_shards_slack(ctx)
+
+    chan = [s for s in shards if s.shard_kind == SHARD_KIND_CHANNEL_WINDOW]
+    assert {s.shard_identifier["channel_id"] for s in chan} == {
+        "C_GENERAL", "G_SECRET",
+    }
+    assert all(
+        s.shard_identifier["consenting_user_id"] == "U_ALICE" for s in chan
+    )
+    assert all(
+        s.shard_identifier["base_url"] == "https://slack.test/api" for s in chan
+    )
+
+
 async def test_dm_channel_ids_match_inline_console_scheme(patch_user_clients):
     """The worker-fetch DM channel id must equal the gateway console's
     `_dm_channel(user, counterpart)` so a worker-backfilled DM and its inline

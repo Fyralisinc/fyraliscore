@@ -293,13 +293,14 @@ const SOURCE_REHEARSAL_CONFIG: Record<string, SourceRehearsalConfig> = {
       "slack-provider-setup.json",
     ],
     envKeys: [
-      "SLACK_CLIENT_ID",
-      "SLACK_CLIENT_SECRET",
-      "SLACK_SIGNING_SECRET",
+      "SLACK_APP_CONFIG_TOKEN",
       "SLACK_REDIRECT_URI",
       "OAUTH_STATE_HMAC_KEY",
     ],
-    manualGates: ["Slack app/admin approval", "Slack OAuth consent"],
+    manualGates: [
+      "Slack app configuration/admin approval",
+      "Slack OAuth consent",
+    ],
   },
   jira: {
     sourceId: "jira",
@@ -1624,6 +1625,17 @@ function sourceBackgroundRunView(
   if (!runStatus) {
     return null;
   }
+  if (
+    run?.backgroundRunnerMode === "artifact_materialization" &&
+    (runStatus === "waiting_for_admin" || runStatus === "admin_gate")
+  ) {
+    return {
+      status: "blocked",
+      label: "Not connected",
+      message:
+        "Source setup did not complete. Retry after enabling browser automation or use the fallback credential field."
+    };
+  }
   if (runStatus === "queued") {
     return {
       status: "connecting",
@@ -1695,6 +1707,7 @@ function SourceCatalogStep(props: StepViewProps) {
   const {
     snapshot,
     selectedSource,
+    selectedConnection,
     selectSource,
     updateConnection,
     updateReadiness,
@@ -1708,6 +1721,35 @@ function SourceCatalogStep(props: StepViewProps) {
     Record<string, SourceConnectRun>
   >({});
   const validatedConnectedSources = useRef(new Set<string>());
+  const [sourceInputs, setSourceInputs] = useState<
+    Record<string, Record<string, string>>
+  >({});
+
+  function patchSourceInput(sourceId: string, name: string, value: string) {
+    setSourceInputs((current) => ({
+      ...current,
+      [sourceId]: {
+        ...(current[sourceId] ?? {}),
+        [name]: value
+      }
+    }));
+  }
+
+  function openProviderAuthorization(sourceId: string, installUrl: string) {
+    selectSource(sourceId);
+    window.open(installUrl, "_blank", "noopener,noreferrer");
+  }
+
+  function maybeOpenSlackAuthorization(sourceId: string, installUrl?: string | null) {
+    if (
+      sourceId === "slack" &&
+      installUrl &&
+      isExternalUrl(installUrl) &&
+      installUrl.includes("slack.com/oauth")
+    ) {
+      openProviderAuthorization(sourceId, installUrl);
+    }
+  }
 
   function patchAutomationState(
     sourceId: string,
@@ -1733,8 +1775,7 @@ function SourceCatalogStep(props: StepViewProps) {
       if (!(sourceId in current)) {
         return current;
       }
-      const next = { ...current };
-      delete next[sourceId];
+      const { [sourceId]: _removed, ...next } = current;
       return next;
     });
   }
@@ -1844,12 +1885,14 @@ function SourceCatalogStep(props: StepViewProps) {
     apiBase,
     installUrl,
     waitingForAdmin,
+    resetWhenMissingInstall,
   }: {
     source: Source;
     status: SourceRehearsalStatus;
     apiBase?: string;
     installUrl?: string | null;
     waitingForAdmin?: boolean;
+    resetWhenMissingInstall?: boolean;
   }) {
     if (status.sourceId !== "discord" && status.observations.length) {
       landSourceObservations(status.sourceId, status.observations);
@@ -1935,6 +1978,15 @@ function SourceCatalogStep(props: StepViewProps) {
     const nextRunStatus =
       backgroundView?.status ??
       (waitingForAdmin ? "waiting_admin" : "connecting");
+    if (resetWhenMissingInstall && !backgroundView && !waitingForAdmin) {
+      updateConnection(source.id, {
+        status: "draft",
+        selectedScopes: [],
+        receiptId: undefined,
+      });
+      clearAutomationState(source.id);
+      return;
+    }
     if (nextRunStatus === "blocked") {
       updateConnection(source.id, {
         status: "error",
@@ -2014,6 +2066,7 @@ function SourceCatalogStep(props: StepViewProps) {
             : undefined,
         accessMode:
           source.id === "discord" ? options?.discordAccessMode : undefined,
+        inputs: sourceInputs[sourceId] ?? {},
       });
       const preparedApiBase =
         prepared.gatewayApiBase || workspace.providerIngressUrl;
@@ -2023,6 +2076,16 @@ function SourceCatalogStep(props: StepViewProps) {
         apiBase: preparedApiBase,
         installUrl: prepared.installUrl,
       });
+      const installUrl = prepared.autoConnect.installUrl ?? prepared.installUrl;
+      const providerConsoleUrl =
+        prepared.autoConnect.browserAgent?.providerConsoleUrl ??
+        prepared.browserAgent?.providerConsoleUrl ??
+        prepared.providerConsoleUrl;
+      const handoffUrl =
+        prepared.autoConnect.browserAgentRun?.handoffUrl ??
+        prepared.browserAgentRun?.handoffUrl ??
+        installUrl ??
+        (isExternalUrl(providerConsoleUrl) ? providerConsoleUrl : null);
       if (
         source.id === "discord" &&
         prepared.installUrl &&
@@ -2076,6 +2139,19 @@ function SourceCatalogStep(props: StepViewProps) {
               ? "Create runtime role"
               : undefined,
         });
+        if (
+          sourceId === "slack" &&
+          prepared.autoConnect.state === "blocked" &&
+          prepared.autoConnect.browserAgentRun?.canStart &&
+          handoffUrl &&
+          isExternalUrl(handoffUrl)
+        ) {
+          openProviderAuthorization(
+            sourceId,
+            slackBrowserAgentHandoffUrl(handoffUrl, preparedApiBase) ??
+              handoffUrl,
+          );
+        }
         if (prepared.autoConnect.state === "blocked") {
           completeImmediateProviderHandoffWindow(
             providerHandoffWindow,
@@ -2093,16 +2169,6 @@ function SourceCatalogStep(props: StepViewProps) {
         closeImmediateProviderHandoffWindow(providerHandoffWindow);
         return;
       }
-      const installUrl = prepared.autoConnect.installUrl ?? prepared.installUrl;
-      const providerConsoleUrl =
-        prepared.autoConnect.browserAgent?.providerConsoleUrl ??
-        prepared.browserAgent?.providerConsoleUrl ??
-        prepared.providerConsoleUrl;
-      const handoffUrl =
-        prepared.autoConnect.browserAgentRun?.handoffUrl ??
-        prepared.browserAgentRun?.handoffUrl ??
-        installUrl ??
-        (isExternalUrl(providerConsoleUrl) ? providerConsoleUrl : null);
       if (prepared.autoConnect.state === "admin_gate") {
         const waiting = sourceWaitingAdminCard(prepared);
         updateConnection(sourceId, {
@@ -2125,6 +2191,7 @@ function SourceCatalogStep(props: StepViewProps) {
           providerHandoffWindow,
           handoffUrl,
         );
+        maybeOpenSlackAuthorization(sourceId, installUrl);
         return;
       }
       patchAutomationState(sourceId, {
@@ -2137,6 +2204,7 @@ function SourceCatalogStep(props: StepViewProps) {
         receiptPathHint: prepared.autoConnect.automationRun?.receiptPathHint,
       });
       completeImmediateProviderHandoffWindow(providerHandoffWindow, handoffUrl);
+      maybeOpenSlackAuthorization(sourceId, installUrl);
     } catch (caught) {
       closeImmediateProviderHandoffWindow(providerHandoffWindow);
       updateConnection(sourceId, { status: "error" });
@@ -2293,7 +2361,10 @@ function SourceCatalogStep(props: StepViewProps) {
               status,
               apiBase: state.apiBase,
               installUrl: state.installUrl,
-              waitingForAdmin: state.status === "waiting_admin",
+              waitingForAdmin:
+                state.status === "waiting_admin" &&
+                Boolean(status.autoConnectRun),
+              resetWhenMissingInstall: state.status === "waiting_admin",
             });
           }
         } catch (caught) {
@@ -2324,6 +2395,15 @@ function SourceCatalogStep(props: StepViewProps) {
     workspace.providerIngressUrl,
   ]);
 
+  const selectedAutomationState = automationStates[selectedSource.id];
+  const showSlackManualTokenFallback =
+    selectedSource.id === "slack" &&
+    selectedConnection?.status !== "connected" &&
+    Boolean(
+      sourceInputs.slack?.slack_app_config_token ||
+        selectedAutomationState?.status === "error"
+    );
+
   return (
     <div className="grid w-full min-w-0 max-w-full gap-4">
       <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-end md:justify-between">
@@ -2331,6 +2411,27 @@ function SourceCatalogStep(props: StepViewProps) {
           <h1 className="text-2xl font-semibold tracking-normal">Sources</h1>
         </div>
       </div>
+      {showSlackManualTokenFallback ? (
+        <div className="grid w-full max-w-lg gap-3 rounded-lg border border-border bg-card p-3">
+          <Field label="Slack app configuration token">
+            <Input
+              type="password"
+              autoComplete="off"
+              inputMode="text"
+              spellCheck={false}
+              placeholder="xoxe..."
+              value={sourceInputs.slack?.slack_app_config_token ?? ""}
+              onChange={(event) =>
+                patchSourceInput(
+                  "slack",
+                  "slack_app_config_token",
+                  event.target.value
+                )
+              }
+            />
+          </Field>
+        </div>
+      ) : null}
       <SourceMarketplace
         sources={snapshot.sources}
         connections={connections}
@@ -2345,6 +2446,7 @@ function SourceCatalogStep(props: StepViewProps) {
           void finalizeAwsSourceRole(roleArn)
         }
         onRetryAwsFirstSync={() => void retryAwsFirstSync()}
+        onAuthorize={openProviderAuthorization}
       />
       {selectedSource.id === "figma" ? (
         <FigmaOAuthConnectionCard
@@ -2948,6 +3050,42 @@ function closeImmediateProviderHandoffWindow(opened: Window | null) {
   } catch {
     // The handoff window may already be controlled by the browser.
   }
+}
+
+function slackBrowserAgentHandoffUrl(
+  handoffUrl: string,
+  gatewayApiBase: string | undefined
+) {
+  if (!gatewayApiBase) {
+    return null;
+  }
+  try {
+    const endpoint = new URL(
+      "/platform/onboarding/sources/slack/rehearsal/browser-agent/configuration",
+      gatewayApiBase
+    ).toString();
+    const payload = {
+      schema_version: "fyralis.browser_agent.handoff.slack.v1",
+      source: "slack",
+      endpoint
+    };
+    const url = new URL(handoffUrl);
+    url.hash = `fyralis_agent=${base64UrlEncode(JSON.stringify(payload))}`;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function base64UrlEncode(value: string) {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  return window
+    .btoa(value)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
 }
 
 function sourceScopeChoices(sourceId: string) {

@@ -26,7 +26,7 @@ import pytest
 from lib.shared.errors import FalsifierInadequateError, ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate
-from services.domain.models.repo import ModelsRepo
+from services.domain.models.repo import ModelsRepo, _hydrate_row
 from services.domain.models.propositions import canonicalize_proposition
 from services.domain.observations.events import notify_scope
 from services.domain.models.tests.conftest import (
@@ -66,6 +66,29 @@ def _mc(
         confidence_at_assertion=kwargs.pop("confidence_at_assertion", confidence),
         **kwargs,
     )
+
+
+def test_hydrate_row_accepts_pgvector_vector() -> None:
+    from pgvector import Vector
+
+    now = datetime.now(timezone.utc)
+    row = _hydrate_row(
+        {
+            "id": uuid7(),
+            "tenant_id": uuid7(),
+            "born_from_event_id": uuid7(),
+            "proposition": {"kind": "state", "text": "Slack signal landed"},
+            "natural": "Slack signal landed",
+            "embedding": Vector([0.1, 0.2, 0.3]),
+            "scope_temporal": {"type": "now"},
+            "confidence": 0.5,
+            "activation": 1.0,
+            "created_at": now,
+            "confidence_at_assertion": 0.5,
+        }
+    )
+
+    assert row.embedding == pytest.approx([0.1, 0.2, 0.3])
 
 
 # =====================================================================

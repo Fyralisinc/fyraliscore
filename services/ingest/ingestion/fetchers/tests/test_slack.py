@@ -40,6 +40,13 @@ def _patch(monkeypatch, fake):
     monkeypatch.setattr(sl, "_open_slack_client", fake_open)
 
 
+def _patch_user(monkeypatch, fake):
+    async def fake_open(install, shard_identifier):
+        async def close(): return None
+        return fake, close
+    monkeypatch.setattr(sl, "_open_slack_user_client", fake_open)
+
+
 async def test_first_page_advances(monkeypatch):
     fake = _FakeSlackClient([
         ([{"ts": "1700000.000001", "text": "hi"},
@@ -55,6 +62,36 @@ async def test_first_page_advances(monkeypatch):
     assert r.end_of_data is False
     assert r.next_cursor["next_cursor"] == "p2"
     assert r.next_cursor["newest_seen_ts"] == "1700000.000002"
+
+
+async def test_channel_with_consenting_user_uses_user_client(monkeypatch):
+    fake = _FakeSlackClient([
+        ([{"ts": "1700000.000001", "text": "hello1"}], None),
+    ])
+    _patch_user(monkeypatch, fake)
+    called = {"bot": False}
+
+    async def fake_bot_open(install):
+        called["bot"] = True
+        async def close(): return None
+        return fake, close
+
+    monkeypatch.setattr(sl, "_open_slack_client", fake_bot_open)
+    r = await fetch_page_slack(
+        _FakeInst(),
+        {
+            "shard_kind": SHARD_KIND_CHANNEL_WINDOW,
+            "channel_id": "C_GENERAL",
+            "channel_type": "public_channel",
+            "consenting_user_id": "U_ALICE",
+            "team_id": "T_DEMO",
+            "installation_id": "T_DEMO",
+        },
+        cursor=None,
+    )
+    assert called["bot"] is False
+    assert r.records[0]["event"]["text"] == "hello1"
+    assert r.records[0]["event"]["channel_type"] == "public_channel"
 
 
 async def test_multi_page(monkeypatch):

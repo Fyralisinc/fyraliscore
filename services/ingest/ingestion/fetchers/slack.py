@@ -84,14 +84,13 @@ async def fetch_page_slack(
     channel_id = shard_identifier["channel_id"]
     cur = _decode_cursor(cursor)
 
-    # DM shards (`slack_dm_window`) read under the consenting user's xoxp token
-    # and carry a `channel_type` (im/mpim) the bot-channel path lacks —
+    # Shards with `consenting_user_id` read under that user's xoxp token.
+    # This includes DMs plus user-visible channel shards, which prevents the
+    # channel backfill from requiring bot membership in every public channel.
     # conversations.history messages don't self-describe their surface, so the
-    # fetcher INJECTS it onto each event (parity with the live webhook + the
-    # inline backfill, which both stamp content.channel_type). Channel shards
-    # keep their existing behaviour (no channel_type; the handler stamps None).
-    is_dm = shard_identifier.get("shard_kind") == SHARD_KIND_DM_WINDOW
-    if is_dm:
+    # fetcher INJECTS channel_type when the planner supplied it.
+    uses_user_token = bool(shard_identifier.get("consenting_user_id"))
+    if uses_user_token:
         client, close = await _open_slack_user_client(install, shard_identifier)
         channel_type = shard_identifier.get("channel_type")
     else:
@@ -109,12 +108,16 @@ async def fetch_page_slack(
             # refuses to serve its history. A bot is rarely in every
             # channel of a real workspace — skip the channel as a
             # terminal empty page rather than failing the whole backfill
-            # run. Live coverage for such a channel only begins once the
-            # bot is invited (its message.* events then flow).
+            # run. User-token channel shards should not usually hit this
+            # unless the grant is stale or the user's visibility changed.
             if slack_error in ("not_in_channel", "channel_not_found"):
                 log.info(
                     "slack_backfill_skip_inaccessible_channel",
-                    extra={"channel_id": channel_id, "slack_error": slack_error},
+                    extra={
+                        "channel_id": channel_id,
+                        "slack_error": slack_error,
+                        "uses_user_token": uses_user_token,
+                    },
                 )
                 return FetchResult(
                     records=[], next_cursor=_encode_cursor(cur),

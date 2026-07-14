@@ -112,6 +112,10 @@ SLACK_BOT_SCOPES = (
     "team:read",
 )
 SLACK_USER_SCOPES = (
+    "channels:read",
+    "channels:history",
+    "groups:read",
+    "groups:history",
     "im:read",
     "im:history",
     "mpim:read",

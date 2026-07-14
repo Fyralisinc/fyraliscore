@@ -91,6 +91,7 @@ async def _check_one_shard(
         return None
     shard_kind = ident.get("shard_kind") or SHARD_KIND_CHANNEL_WINDOW
     is_dm = shard_kind == SHARD_KIND_DM_WINDOW
+    uses_user_token = bool(ident.get("consenting_user_id"))
 
     cursor = await _load_cursor(pool, shard["id"])
     if cursor is None:
@@ -99,11 +100,11 @@ async def _check_one_shard(
     if newest_seen is None:
         return None
 
-    # DM shards gap-probe under the consenting user's xoxp token (a bot token
-    # can't read DMs); channel shards reuse the shared bot client.
+    # User-token shards gap-probe under the consenting user's xoxp token. This
+    # covers DMs and channels discovered via the user-visible planner path.
     close = None
     try:
-        if is_dm:
+        if uses_user_token:
             client, close = await _open_slack_user_client(install, ident)
         else:
             client = bot_client
@@ -118,6 +119,7 @@ async def _check_one_shard(
                 "reconcilers.slack.history_failed",
                 extra={
                     "channel_id": channel_id, "shard_kind": shard_kind,
+                    "uses_user_token": uses_user_token,
                     "error": str(exc)[:200],
                 },
             )
@@ -137,6 +139,7 @@ async def _check_one_shard(
             "counterpart_user_id": ident.get("counterpart_user_id"),
             "team_id": ident.get("team_id"),
             "installation_id": ident.get("installation_id"),
+            "base_url": ident.get("base_url"),
             "parent_shard_id": str(shard["id"]),
             "gap_baseline_ts": newest_seen,
         }
@@ -145,8 +148,11 @@ async def _check_one_shard(
             "shard_kind": SHARD_KIND_CHANNEL_WINDOW,
             "channel_id": channel_id,
             "channel_name": ident.get("channel_name"),
+            "channel_type": ident.get("channel_type"),
+            "consenting_user_id": ident.get("consenting_user_id"),
             "team_id": ident.get("team_id"),
             "installation_id": ident.get("installation_id"),
+            "base_url": ident.get("base_url"),
             "parent_shard_id": str(shard["id"]),
             "gap_baseline_ts": newest_seen,
         }
