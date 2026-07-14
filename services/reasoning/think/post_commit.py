@@ -71,6 +71,9 @@ BACKOFF_CAP_SECONDS = int(QUEUE_RETRY_BACKOFF_CAP_SECONDS)
 
 POLL_INTERVAL_SECONDS = 2.0
 BATCH_SIZE = 10
+PROJECTION_EVENTS_PER_MODEL = 8
+PROJECTION_MIN_EVENT_LIMIT = 24
+PROJECTION_MAX_EVENT_LIMIT = 1000
 VIEW_CEO_REFRESH_CHANNEL = "view_ceo_refresh"
 
 ACTION_KINDS = (
@@ -96,6 +99,19 @@ dispatch, not exactly-once. A crash mid-dispatch leaves the action
 available for retry; if the handler partially completed, its second
 run should be a no-op for the already-done side effects.
 """
+
+
+@dataclass(frozen=True)
+class _ProjectionMaterializationDispatch:
+    mode: str
+    processed_events: int = 0
+    failed_events: int = 0
+    routed_events: int = 0
+    enqueued_jobs: int = 0
+    route_errors: int = 0
+    processed_jobs: int = 0
+    failed_jobs: int = 0
+    projection_errors: tuple[dict[str, Any], ...] = ()
 
 
 # Product-facing default handlers emit the durable CEO-view refresh NOTIFY
@@ -131,7 +147,8 @@ async def _default_schedule_predictions(
 ) -> None:
     predictions = payload.get("predictions", [])
     missing_schedule = [
-        index for index, prediction in enumerate(predictions)
+        index
+        for index, prediction in enumerate(predictions)
         if not isinstance(prediction, dict) or not prediction.get("evaluate_at")
     ]
     if missing_schedule:
@@ -1110,11 +1127,9 @@ def _summary_has_actor_profile_signal(summary: dict[str, Any]) -> bool:
         entry = item.get("entry") if isinstance(item.get("entry"), dict) else {}
         if not scope_actors and isinstance(entry, dict):
             scope_actors = entry.get("scope_actors") or ()
-        if (
-            str(item.get("claim_role") or entry.get("claim_role") or "").casefold()
-            in profile_roles
-            and bool(scope_actors)
-        ):
+        if str(
+            item.get("claim_role") or entry.get("claim_role") or ""
+        ).casefold() in profile_roles and bool(scope_actors):
             return True
     return False
 

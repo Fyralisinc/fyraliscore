@@ -100,19 +100,56 @@ _EDGE_TRAVERSAL_KINDS = (
 )
 _TAGIFY_RE = re.compile(r"[^a-z0-9_]+")
 _REPRESENTATION_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("progress_signal", ("started", "picked up", "raised", "opened", "merged", "shipped", "completed", "pr", "pull request")),
+    (
+        "progress_signal",
+        (
+            "started",
+            "picked up",
+            "raised",
+            "opened",
+            "merged",
+            "shipped",
+            "completed",
+            "pr",
+            "pull request",
+        ),
+    ),
     ("review_loop", ("review", "feedback", "comment", "approval", "approved")),
-    ("delivery_risk", ("risk", "blocked", "blocker", "stalled", "slip", "delay", "missing")),
-    ("coordination_debt", ("handoff", "waiting", "unclear", "owner", "follow up", "follow-up")),
+    (
+        "delivery_risk",
+        ("risk", "blocked", "blocker", "stalled", "slip", "delay", "missing"),
+    ),
+    (
+        "coordination_debt",
+        ("handoff", "waiting", "unclear", "owner", "follow up", "follow-up"),
+    ),
     ("deployment_activity", ("deploy", "release", "rollback", "staging", "production")),
-    ("finance_flow", ("invoice", "bill", "payment", "vendor", "runway", "budget", "transaction")),
-    ("operational_churn", ("alert", "latency", "error", "aws", "lambda", "incident", "disk", "5xx")),
-    ("decision_pressure", ("decision", "revisited", "approved", "rejected", "exception")),
-    ("contextual_recurrence", ("repeat", "repeated", "recurring", "cadence", "again", "same pattern")),
+    (
+        "finance_flow",
+        ("invoice", "bill", "payment", "vendor", "runway", "budget", "transaction"),
+    ),
+    (
+        "operational_churn",
+        ("alert", "latency", "error", "aws", "lambda", "incident", "disk", "5xx"),
+    ),
+    (
+        "decision_pressure",
+        ("decision", "revisited", "approved", "rejected", "exception"),
+    ),
+    (
+        "contextual_recurrence",
+        ("repeat", "repeated", "recurring", "cadence", "again", "same pattern"),
+    ),
     ("source_code", ("github", "gitlab", "jira")),
     ("source_chat", ("slack", "telegram", "discord", "signal")),
-    ("source_docs", ("notion", "drive", "gmail", "calendar", "fireflies", "miro", "figma")),
-    ("source_finance", ("quickbooks", "ramp", "brex", "mercury", "deel", "carta", "gusto")),
+    (
+        "source_docs",
+        ("notion", "drive", "gmail", "calendar", "fireflies", "miro", "figma"),
+    ),
+    (
+        "source_finance",
+        ("quickbooks", "ramp", "brex", "mercury", "deel", "carta", "gusto"),
+    ),
     ("source_observability", ("aws", "grafana", "cloudwatch")),
     ("source_people", ("ashby", "hibob", "linkedin")),
 )
@@ -2354,11 +2391,13 @@ async def _pathway_b_fetch_scope_exact_fallback(
         time.perf_counter() - exact_started, strategy="exact_fallback"
     )
     _PGVECTOR_QUERIES.inc(strategy="exact_fallback")
-    exact_models = _hydrate_many(exact_rows, _hydrate_model, notes, "scope_exact_models")
+    exact_models = _hydrate_many(
+        exact_rows, _hydrate_model, notes, "scope_exact_models"
+    )
     models = _pathway_b_rank_exact(exact_models, vec=vec, k=k)
     notes["scope_exact_fallback"] = {
         "hnsw_rows": len(ann_rows),
-        "candidate_rows": len(candidates),
+        "candidate_rows": len(exact_models),
         "hydrated_rows": len(models),
         "returned": len(models),
     }
@@ -2552,16 +2591,12 @@ async def pathway_b_representation_tags(
         feature_postings_table = await conn.fetchval(
             "SELECT to_regclass('public.model_representation_feature_postings')"
         )
-        representation_feature_postings_available = (
-            feature_postings_table is not None
-        )
+        representation_feature_postings_available = feature_postings_table is not None
     if representation_feature_postings_available:
         per_tag_limit = max(32, min(240, max(1, int(limit)) * 6))
         notes["representation_postings_index"] = True
         notes["representation_feature_postings_index"] = True
-        notes["representation_postings_table"] = (
-            "model_representation_feature_postings"
-        )
+        notes["representation_postings_table"] = "model_representation_feature_postings"
         notes["postings_per_tag_limit"] = per_tag_limit
         rows = await conn.fetch(
             f"""
@@ -2807,16 +2842,12 @@ async def pathway_b_representation_tag_candidates(
         feature_postings_table = await conn.fetchval(
             "SELECT to_regclass('public.model_representation_feature_postings')"
         )
-        representation_feature_postings_available = (
-            feature_postings_table is not None
-        )
+        representation_feature_postings_available = feature_postings_table is not None
     if representation_feature_postings_available:
         per_tag_limit = max(32, min(240, max(1, int(limit)) * 6))
         notes["representation_postings_index"] = True
         notes["representation_feature_postings_index"] = True
-        notes["representation_postings_table"] = (
-            "model_representation_feature_postings"
-        )
+        notes["representation_postings_table"] = "model_representation_feature_postings"
         notes["postings_per_tag_limit"] = per_tag_limit
         rows = await conn.fetch(
             """
@@ -3113,9 +3144,7 @@ async def pathway_l_semantic_terms(
         lateral_scope_sql = ""
         if lateral_scope_clauses:
             lateral_scope_sql = (
-                "                  AND ("
-                + " OR ".join(lateral_scope_clauses)
-                + ")\n"
+                "                  AND (" + " OR ".join(lateral_scope_clauses) + ")\n"
             )
         rows = await conn.fetch(
             f"""
@@ -3209,9 +3238,7 @@ async def pathway_l_semantic_terms(
         lateral_scope_sql = ""
         if lateral_scope_clauses:
             lateral_scope_sql = (
-                "                  AND ("
-                + " OR ".join(lateral_scope_clauses)
-                + ")\n"
+                "                  AND (" + " OR ".join(lateral_scope_clauses) + ")\n"
             )
         post_status_sql = (
             "                  AND post.status = 'active'\n"
@@ -3379,9 +3406,7 @@ async def pathway_l_semantic_term_candidates(
         lateral_scope_sql = ""
         if lateral_scope_clauses:
             lateral_scope_sql = (
-                "                  AND ("
-                + " OR ".join(lateral_scope_clauses)
-                + ")\n"
+                "                  AND (" + " OR ".join(lateral_scope_clauses) + ")\n"
             )
         rows = await conn.fetch(
             f"""
@@ -3477,9 +3502,7 @@ async def pathway_l_semantic_term_candidates(
         lateral_scope_sql = ""
         if lateral_scope_clauses:
             lateral_scope_sql = (
-                "                  AND ("
-                + " OR ".join(lateral_scope_clauses)
-                + ")\n"
+                "                  AND (" + " OR ".join(lateral_scope_clauses) + ")\n"
             )
         post_status_sql = (
             "                  AND post.status = 'active'\n"

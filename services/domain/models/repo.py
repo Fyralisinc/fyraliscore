@@ -68,6 +68,7 @@ vector.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Sequence
@@ -112,7 +113,6 @@ from services.domain.models.falsifier import is_adequate_falsifier
 from services.domain.models.read_shapes import (
     MODEL_ROW_SELECT_COLS,
     MODEL_ROW_SELECT_SQL,
-    hydrate_model_row,
 )
 from services.domain.models.recommendations import validate_recommendation
 from services.domain.observations.events import NewObservationEvent, schedule_notify

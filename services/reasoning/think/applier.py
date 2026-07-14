@@ -114,11 +114,13 @@ def _doc_memory_source_from_cascade(payload: dict[str, Any] | None) -> str | Non
     return source_channel if isinstance(source_channel, str) else None
 
 
-_RELATION_CLAIM_SUPPORT_SUPERSEDERS = frozenset({
-    "blocks",
-    "contradicts",
-    "weakens",
-})
+_RELATION_CLAIM_SUPPORT_SUPERSEDERS = frozenset(
+    {
+        "blocks",
+        "contradicts",
+        "weakens",
+    }
+)
 _NON_OVERRIDABLE_EDGE_PROVENANCE = frozenset({"manual"})
 _NOISE_NOOP_NEGATIVE_MEMORY_TTL = timedelta(days=60)
 _NOISE_NOOP_TRACE_MARKERS = (
@@ -1302,8 +1304,7 @@ async def _compile_memory_lifecycle_update(
 
     outcome = _lifecycle_resolution_outcome(op)
     is_prediction = (
-        row["proposition_kind"] == "prediction"
-        or row["claim_role"] == "prediction"
+        row["proposition_kind"] == "prediction" or row["claim_role"] == "prediction"
     )
     if outcome is not None and (is_prediction or op.action == "falsify"):
         changes["resolution_outcome"] = outcome
@@ -1330,9 +1331,8 @@ async def _apply_memory_lifecycle_ops_for_diff(
                 claim_op = ClaimOp(
                     op="archive",
                     model_id=op.model_id,
-                    reason=op.reason or (
-                        "superseded" if op.action == "supersede" else "decay"
-                    ),
+                    reason=op.reason
+                    or ("superseded" if op.action == "supersede" else "decay"),
                 )
                 apply_result = await _apply_claim_archive(
                     claim_op,
@@ -1469,11 +1469,13 @@ def _row_get(row: Any, key: str) -> Any:
 
 
 def _noise_noop_signature(rows: list[Any]) -> dict[str, Any]:
-    channels = sorted({
-        str(channel)
-        for row in rows
-        if (channel := _row_get(row, "source_channel")) is not None
-    })
+    channels = sorted(
+        {
+            str(channel)
+            for row in rows
+            if (channel := _row_get(row, "source_channel")) is not None
+        }
+    )
     signature: dict[str, Any] = {
         "signal_type": "noise_noop",
         "question_primitive": "NOISE_SUPPRESSION",
@@ -1535,16 +1537,14 @@ async def _record_noise_noop_negative_memory(
                     "route": "t1_noise_noop",
                     "trigger_ref": str(diff.trigger_ref),
                     "observation_ids": [str(oid) for oid in observation_ids],
-                    "source_channels": sorted({
-                        str(_row_get(row, "source_channel") or "")
-                        for row in row_list
-                    }),
+                    "source_channels": sorted(
+                        {str(_row_get(row, "source_channel") or "") for row in row_list}
+                    ),
                 },
                 reason="noise_only_trigger_discarded_without_durable_write",
                 evidence_snapshot_hash=_noise_noop_evidence_hash(row_list),
                 confidence=0.8,
-                expires_at=datetime.now(timezone.utc)
-                + _NOISE_NOOP_NEGATIVE_MEMORY_TTL,
+                expires_at=datetime.now(timezone.utc) + _NOISE_NOOP_NEGATIVE_MEMORY_TTL,
             )
             await NegativeMemoryRepo(
                 None,
@@ -1559,11 +1559,13 @@ async def _record_noise_noop_negative_memory(
             error=str(exc),
         )
         return 0
-    ops_summary.setdefault("negative_memory_ops", []).append({
-        "memory_type": "noisy_path",
-        "signature": signature,
-        "reason": "noise_only_trigger_discarded_without_durable_write",
-    })
+    ops_summary.setdefault("negative_memory_ops", []).append(
+        {
+            "memory_type": "noisy_path",
+            "signature": signature,
+            "reason": "noise_only_trigger_discarded_without_durable_write",
+        }
+    )
     await _emit_noise_noop_experience_event(
         signature=signature or {},
         observation_ids=observation_ids,
@@ -1583,11 +1585,13 @@ async def _emit_noise_noop_experience_event(
     except Exception:  # noqa: BLE001
         return
 
-    channels = sorted({
-        str(_row_get(row, "source_channel") or "")
-        for row in rows
-        if _row_get(row, "source_channel")
-    })
+    channels = sorted(
+        {
+            str(_row_get(row, "source_channel") or "")
+            for row in rows
+            if _row_get(row, "source_channel")
+        }
+    )
     await emit_event(
         "outcome_quality_assessed",
         {
@@ -1628,6 +1632,7 @@ async def _apply_diff_mutation_ops(
     trigger_evidence_ids: list[UUID],
     think_run_id: UUID | None,
     parent_cascade_payload: dict[str, Any] | None,
+    doc_memory_source: str | None,
     ops_summary: dict[str, Any],
 ) -> _ApplyDiffMutationResult:
     claim_result = await _apply_claim_ops_for_diff(
@@ -1638,31 +1643,34 @@ async def _apply_diff_mutation_ops(
         trigger_evidence_ids=trigger_evidence_ids,
         think_run_id=think_run_id,
         ops_summary=ops_summary,
+        doc_memory_source=doc_memory_source,
     )
     applied_model_ids = list(claim_result.applied_model_ids)
     pending_model_ids_by_event_id = claim_result.pending_model_ids_by_event_id
     state_changes_emitted = claim_result.state_changes_emitted
 
-    applied_open_question_ops, open_question_state_changes = (
-        await _apply_open_question_ops_for_diff(
-            diff=diff,
-            conn=conn,
-            pending_model_ids_by_event_id=pending_model_ids_by_event_id,
-            trigger_cause_event_id=trigger_cause_event_id,
-            ops_summary=ops_summary,
-        )
+    (
+        applied_open_question_ops,
+        open_question_state_changes,
+    ) = await _apply_open_question_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
     )
     state_changes_emitted += open_question_state_changes
 
-    lifecycle_model_ids, lifecycle_state_changes = (
-        await _apply_memory_lifecycle_ops_for_diff(
-            diff=diff,
-            conn=conn,
-            models_repo=models_repo,
-            trigger_cause_event_id=trigger_cause_event_id,
-            trigger_evidence_ids=trigger_evidence_ids,
-            ops_summary=ops_summary,
-        )
+    (
+        lifecycle_model_ids,
+        lifecycle_state_changes,
+    ) = await _apply_memory_lifecycle_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        models_repo=models_repo,
+        trigger_cause_event_id=trigger_cause_event_id,
+        trigger_evidence_ids=trigger_evidence_ids,
+        ops_summary=ops_summary,
     )
     applied_model_ids.extend(lifecycle_model_ids)
     state_changes_emitted += lifecycle_state_changes
@@ -1804,33 +1812,9 @@ async def apply_diff(
         trigger_cause_event_id=trigger_cause_event_id,
         trigger_evidence_ids=trigger_evidence_ids,
         think_run_id=think_run_id,
+        parent_cascade_payload=parent_cascade_payload,
         ops_summary=ops_summary,
         doc_memory_source=doc_memory_source,
-    )
-    applied_model_ids = claim_result.applied_model_ids
-    pending_model_ids_by_event_id = claim_result.pending_model_ids_by_event_id
-    state_changes_emitted = claim_result.state_changes_emitted
-
-    # --- 2. memory_lifecycle_ops ----------------------------------
-    lifecycle_model_ids, lifecycle_state_changes = await _apply_memory_lifecycle_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        models_repo=models_repo,
-        trigger_cause_event_id=trigger_cause_event_id,
-        trigger_evidence_ids=trigger_evidence_ids,
-        ops_summary=ops_summary,
-    )
-    applied_model_ids.extend(lifecycle_model_ids)
-    state_changes_emitted += lifecycle_state_changes
-
-    # --- 3. relation_claim_ops ------------------------------------
-    applied_relation_claim_ops = await _apply_relation_claim_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
-        trigger_cause_event_id=trigger_cause_event_id,
-        think_run_id=think_run_id,
-        ops_summary=ops_summary,
     )
 
     ops_summary["memory_aggregation"] = _summarize_memory_aggregation(
@@ -2339,7 +2323,7 @@ async def _emit_question_policy_valid_diff_feedback(
                             ],
                             default=str,
                         ),
-                        )
+                    )
                     for model_id in model_ids
                 ],
             )
@@ -2496,9 +2480,7 @@ async def _record_edge_intelligence_valid_diff(
                     RelationEvidence(
                         tenant_id=diff.tenant_id,
                         source_observation_id=(
-                            op.evidence_event_ids[0]
-                            if op.evidence_event_ids
-                            else None
+                            op.evidence_event_ids[0] if op.evidence_event_ids else None
                         ),
                         source_model_id=op.source_model_id,
                         target_model_id=op.target_model_id,
@@ -2535,9 +2517,7 @@ async def _record_edge_intelligence_valid_diff(
                 if op.source_model_id is None or op.target_model_id is None:
                     continue
                 direction = (
-                    "source_to_target"
-                    if op.direction == "unknown"
-                    else op.direction
+                    "source_to_target" if op.direction == "unknown" else op.direction
                 )
                 await repo.insert_relation_evidence(
                     conn,
@@ -2827,8 +2807,8 @@ async def _apply_open_question_op(
     question_id = op.question_id or op.id
     if question_id is None:
         raise ValidationError(f"open_question_op {op.op} requires question_id")
-    status: OpenQuestionStatus = (
-        op.status or ("resolved" if op.op == "resolve" else "archived")
+    status: OpenQuestionStatus = op.status or (
+        "resolved" if op.op == "resolve" else "archived"
     )  # type: ignore[assignment]
     row = await repo.resolve(
         conn,
@@ -4039,9 +4019,7 @@ def _summarize_memory_aggregation(
         "evidence_attachments": len(evidence_attachments),
         "near_duplicate_absorptions": len(near_duplicate_absorptions),
         "skipped_claim_writes": len(skipped),
-        "memory_lifecycle_ops": len(
-            ops_summary.get("memory_lifecycle_ops") or []
-        ),
+        "memory_lifecycle_ops": len(ops_summary.get("memory_lifecycle_ops") or []),
         "relation_claim_ops": len(ops_summary.get("relation_claim_ops") or []),
         "edge_ops": len(ops_summary.get("edge_ops") or []),
         "ontology_gap_ops": len(ops_summary.get("ontology_gap_ops") or []),
@@ -4908,6 +4886,7 @@ async def _apply_model_column_updates(
         MODEL_EVENT_UPDATED,
         emit_model_event_from_db,
     )
+
     await emit_model_event_from_db(
         conn,
         model_id=model_id,
@@ -4998,8 +4977,7 @@ async def _execute_model_update(
     if set_clauses:
         params.append(model_id)
         sql = (
-            f"UPDATE models SET {', '.join(set_clauses)} "
-            f"WHERE id = ${len(params)}"
+            f"UPDATE models SET {', '.join(set_clauses)} " f"WHERE id = ${len(params)}"
         )
         await conn.execute(sql, *params)
     if "semantic_terms" in changes:
@@ -5009,7 +4987,9 @@ async def _execute_model_update(
         )
         if tenant_id is not None:
             value = changes["semantic_terms"]
-            semantic_terms = list(value) if isinstance(value, (list, tuple)) else [value]
+            semantic_terms = (
+                list(value) if isinstance(value, (list, tuple)) else [value]
+            )
             await conn.execute(
                 """
                 INSERT INTO model_semantic_terms (
@@ -5210,8 +5190,7 @@ async def _apply_relation_claim_op(
             if not retired_edge_summaries:
                 raise
             edge_metadata["superseded_edge_count"] = sum(
-                int(item.get("retired_edges") or 0)
-                for item in retired_edge_summaries
+                int(item.get("retired_edges") or 0) for item in retired_edge_summaries
             )
             edge_ids = await edges_repo.link(
                 conn,
@@ -5229,18 +5208,21 @@ async def _apply_relation_claim_op(
                 explanation=op.explanation or op.evidence_text,
                 review_status="accepted",
             )
-        row = await repo.mark_relation_claim_decided(
-            conn,
-            claim_id=row["id"],
-            tenant_id=tenant_id,
-            status="accepted",
-            accepted_edge_ids=edge_ids,
-            decision_metadata={
-                "reason": "accepted_relation_claim_created_edge",
-                "accepted_edge_ids": [str(edge_id) for edge_id in edge_ids],
-                "superseded_edges": retired_edge_summaries,
-            },
-        ) or row
+        row = (
+            await repo.mark_relation_claim_decided(
+                conn,
+                claim_id=row["id"],
+                tenant_id=tenant_id,
+                status="accepted",
+                accepted_edge_ids=edge_ids,
+                decision_metadata={
+                    "reason": "accepted_relation_claim_created_edge",
+                    "accepted_edge_ids": [str(edge_id) for edge_id in edge_ids],
+                    "superseded_edges": retired_edge_summaries,
+                },
+            )
+            or row
+        )
         edge_summary = {
             "op": "add",
             "edge_kind": op.edge_kind,
@@ -5271,8 +5253,7 @@ async def _apply_relation_claim_op(
             "status": row["status"],
             "accepted_edge_ids": [str(edge_id) for edge_id in edge_ids],
             "superseded_edge_count": sum(
-                int(item.get("retired_edges") or 0)
-                for item in retired_edge_summaries
+                int(item.get("retired_edges") or 0) for item in retired_edge_summaries
             ),
         },
         "edge_summary": edge_summary,
@@ -5303,9 +5284,7 @@ async def _apply_relation_frame_op(
         )
     )
     evidence_model_ids = tuple(_merge_event_ids(op.evidence_model_ids))
-    participant_models = tuple(
-        participant.model_id for participant in op.participants
-    )
+    participant_models = tuple(participant.model_id for participant in op.participants)
     frame = await repo.insert_relation_frame(
         conn,
         RelationFrame(
@@ -5319,7 +5298,9 @@ async def _apply_relation_frame_op(
             write_policy=op.write_policy,
             confidence=op.confidence,
             evidence_event_ids=evidence_event_ids,
-            evidence_model_ids=tuple(_merge_event_ids(evidence_model_ids, participant_models)),
+            evidence_model_ids=tuple(
+                _merge_event_ids(evidence_model_ids, participant_models)
+            ),
             evidence_text=op.evidence_text,
             explanation=op.explanation,
             temporal_bounds=op.temporal_bounds,
@@ -5468,26 +5449,25 @@ async def _retire_superseded_support_edges_for_relation_claim(
             target=target,
             kind="supports",
             tenant_id=tenant_id,
-            reason=(
-                "superseded_by_relation_claim:"
-                f"{op.edge_kind}:{claim_id}"
-            ),
+            reason=("superseded_by_relation_claim:" f"{op.edge_kind}:{claim_id}"),
         )
         if count <= 0:
             continue
         affected_targets.add(target)
-        summaries.append({
-            "op": "retire",
-            "edge_kind": "supports",
-            "source_model_id": str(source),
-            "target_model_id": str(target),
-            "retired_edges": int(count),
-            "retired_edge_ids": [str(row["id"]) for row in support_rows],
-            "reason": "superseded_by_precise_relation_claim",
-            "superseded_by_edge_kind": op.edge_kind,
-            "relation_claim_id": str(claim_id),
-            "source": "relation_claim_op",
-        })
+        summaries.append(
+            {
+                "op": "retire",
+                "edge_kind": "supports",
+                "source_model_id": str(source),
+                "target_model_id": str(target),
+                "retired_edges": int(count),
+                "retired_edge_ids": [str(row["id"]) for row in support_rows],
+                "reason": "superseded_by_precise_relation_claim",
+                "superseded_by_edge_kind": op.edge_kind,
+                "relation_claim_id": str(claim_id),
+                "source": "relation_claim_op",
+            }
+        )
 
     for target in affected_targets:
         await _refresh_supporting_model_ids_from_active_edges(

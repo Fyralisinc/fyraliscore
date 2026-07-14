@@ -24,10 +24,6 @@ import pytest_asyncio
 
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate
-from services.domain.models.open_questions import (
-    ModelOpenQuestionCreate,
-    ModelOpenQuestionsRepo,
-)
 from services.domain.models.repo import ModelsRepo
 from services.reasoning.edge_intelligence import (
     EdgeIntelligenceRepo,
@@ -663,7 +659,9 @@ async def test_materialize_projections_handler_consumes_model_events(
     assert constraint_snapshot is not None
     assert resource_snapshot is not None
     assert decision_surface_snapshot is not None
-    assert str(model.id) in {str(mid) for mid in constraint_snapshot["source_model_ids"]}
+    assert str(model.id) in {
+        str(mid) for mid in constraint_snapshot["source_model_ids"]
+    }
     assert str(model.id) in {str(mid) for mid in resource_snapshot["source_model_ids"]}
     assert str(model.id) in {
         str(mid) for mid in decision_surface_snapshot["source_model_ids"]

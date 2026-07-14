@@ -14,7 +14,7 @@ import structlog
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelRow, ObservationRow
 from services.platform.access_control.audit import record_override_if_needed
-from services.platform.access_control.checks import can_read
+from services.platform.access_control.checks import can_read  # noqa: F401
 from services.domain.models.repo import _SELECT_COLS_SQL as _MODEL_SELECT_COLS_SQL
 from services.domain.models.repo import _hydrate_row as _hydrate_model_row
 from services.platform.access_control.authority import (
@@ -390,18 +390,7 @@ class AskOrchestrator:
             evidence = _rank_evidence_for_packet(query, intent, evidence)
             if not models and not observations and not evidence:
                 degraded_reasons.append("no_accessible_synthesis_state")
-            omitted = [
-                AskEvidenceItem(
-                    id=uuid7(),
-                    source_ref=_try_uuid(mid),
-                    source_kind="omitted_model",
-                    summary=f"Evidence projection omitted model {mid}: {reason}.",
-                    strength="unknown",
-                    omitted_reason=reason,
-                    raw_payload={"source": "sage_projection"},
-                )
-                for mid, reason in omitted_pairs
-            ]
+            omitted = await _omitted_from_reader(conn, principal, omitted_pairs)
             state_contract = compile_state_contract(
                 query,
                 _state_sources_for_packet(models, observations, evidence),
@@ -542,11 +531,11 @@ async def _filter_models(
         )
         await record_override_if_needed(
             decision,
-            actor_id=viewer_id,
+            actor_id=principal.actor_id,
             entity_type="model",
             entity_id=model.id,
             conn=conn,
-            tenant_id=tenant_id,
+            tenant_id=model.tenant_id,
         )
         if decision.allowed:
             visible.append(model)
@@ -572,11 +561,11 @@ async def _filter_observations(
         )
         await record_override_if_needed(
             decision,
-            actor_id=viewer_id,
+            actor_id=principal.actor_id,
             entity_type="observation",
             entity_id=obs.id,
             conn=conn,
-            tenant_id=tenant_id,
+            tenant_id=obs.tenant_id,
         )
         if decision.allowed:
             visible.append(obs)

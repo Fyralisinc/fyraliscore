@@ -60,7 +60,7 @@ from services.ingest.ingestion.scope_resolution import (
     resolve_actor_ref,
     resolve_entities_in_text,
 )
-from services.domain.triggers import enqueue_trigger as enqueue_think_trigger
+from services.domain.triggers import ensure_event_arrival_trigger
 from services.ingest.ingestion.handlers import (
     ObservationDraft,
     get_handler,

@@ -20,6 +20,7 @@ from services.platform.access_control.checks import (
     EntityKind,
     can_read_by_id,
 )
+from services.platform.access_control.authority import principal_for_actor
 from services.platform.access_control.roles import has_role
 from services.platform.operator_action_audit import record_operator_action
 

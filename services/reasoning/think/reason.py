@@ -142,6 +142,27 @@ def _narrow_inferential_transaction_enabled() -> bool:
     }
 
 
+def _representation_repair_triggers_enabled() -> bool:
+    return os.environ.get(
+        "THINK_REPRESENTATION_REPAIR_TRIGGERS", "1"
+    ).strip().lower() in {
+        "1",
+        "on",
+        "true",
+        "yes",
+    }
+
+
+def _representation_repair_max_triggers(default: int = 3) -> int:
+    raw = os.environ.get("THINK_REPRESENTATION_REPAIR_MAX_TRIGGERS")
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
+
+
 @asynccontextmanager
 async def _mutation_transaction(conn: asyncpg.Connection):
     if conn.is_in_transaction():
@@ -476,9 +497,9 @@ async def _run_think_attempt(
                     triggering_content=triggering_content,
                     reason_for_trigger=reason_for_trigger,
                     record=record,
-                        expanded_region=expanded_region,
-                        reason_cache=reason_cache,
-                    )
+                    expanded_region=expanded_region,
+                    reason_cache=reason_cache,
+                )
     await flush_debug_captures(pool, debug_scope.artifacts)
     return outcome
 
@@ -882,7 +903,9 @@ def _residual_repair_cascade_depth(context: ThinkResidualContext) -> int:
     if context.repair_cascade_depth is not None:
         return max(0, int(context.repair_cascade_depth)) + 1
     summary = context.ops_applied_summary
-    reasoning_frame = summary.get("reasoning_frame") if isinstance(summary, dict) else None
+    reasoning_frame = (
+        summary.get("reasoning_frame") if isinstance(summary, dict) else None
+    )
     if not isinstance(reasoning_frame, dict):
         return 0
     raw = reasoning_frame.get("cascade_depth", 0)
@@ -1330,9 +1353,7 @@ async def _record_apply_observability(
     for summary in applied.get("edge_ops", []):
         METRICS.inc_op(f"edge_{summary.get('op')}_{summary.get('edge_kind')}")
     for summary in applied.get("relation_claim_ops", []):
-        METRICS.inc_op(
-            f"relation_claim_{summary.get('op')}_{summary.get('edge_kind')}"
-        )
+        METRICS.inc_op(f"relation_claim_{summary.get('op')}_{summary.get('edge_kind')}")
     for summary in applied.get("relation_frame_ops", []):
         METRICS.inc_op(
             f"relation_frame_{summary.get('op')}_{summary.get('relation_kind')}"
@@ -1352,7 +1373,9 @@ async def _record_apply_observability(
 
 
 def _primitive_from_trigger(trigger: TriggerContext) -> str | None:
-    signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    signature = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
     for key in ("question_primitive", "primitive"):
         value = signature.get(key)
         if value:
@@ -1426,7 +1449,9 @@ def _representation_repair_payloads_from_audit(
             str(warning.get("code") or "")
         ]
     )
-    limit = _representation_repair_max_triggers() if max_payloads is None else max_payloads
+    limit = (
+        _representation_repair_max_triggers() if max_payloads is None else max_payloads
+    )
     if limit <= 0:
         return []
 
@@ -1455,9 +1480,13 @@ def _representation_repair_payloads_from_audit(
         if trigger.seed_entity_ids:
             payload["seed_entity_ids"] = list(trigger.seed_entity_ids)
         if trigger.scope_actors:
-            payload["scope_actors"] = [str(actor_id) for actor_id in trigger.scope_actors]
+            payload["scope_actors"] = [
+                str(actor_id) for actor_id in trigger.scope_actors
+            ]
         if observation_ids:
-            payload["observation_ids"] = [str(observation_id) for observation_id in observation_ids]
+            payload["observation_ids"] = [
+                str(observation_id) for observation_id in observation_ids
+            ]
         if model_ids:
             payload["model_ids"] = [str(model_id) for model_id in model_ids]
         if trigger.region_spec:
@@ -1542,7 +1571,9 @@ def _trigger_model_seed_ids(trigger: TriggerContext) -> list[UUID]:
 
 
 def _next_repair_cascade_depth(trigger: TriggerContext) -> int:
-    signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    signature = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
     raw = signature.get("cascade_depth", 0)
     try:
         return max(0, int(raw)) + 1
@@ -1777,7 +1808,9 @@ def _build_residual_context(
         for error in (applied.get("apply_dropped_op_errors") or [])
         if str(error).strip()
     )
-    repair_payload = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    repair_payload = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
     return ThinkResidualContext(
         tenant_id=trigger.tenant_id,
         think_run_id=record.id,

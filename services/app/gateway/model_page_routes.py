@@ -41,6 +41,7 @@ from services.platform.access_control.checks import (
     can_read,
     can_read_by_id,
 )
+from services.platform.access_control.authority import Principal, principal_for_actor
 from services.product.model_trace.repo import (
     TraceStep,
     trace_back,
@@ -1550,6 +1551,11 @@ async def _build_item_trace(
             auth=auth,
             model_id=item_id,
         )
+        principal = await _principal_for_actor(
+            conn,
+            tenant_id=tenant_id,
+            actor_id=auth.actor_id,
+        )
         if direction == "cause":
             chain = await trace_back(
                 conn,
@@ -1559,7 +1565,13 @@ async def _build_item_trace(
                 principal=principal,
             )
         else:
-            chain = await trace_forward(conn, tenant_id, item_id, depth)
+            chain = await trace_forward(
+                conn,
+                tenant_id,
+                item_id,
+                depth,
+                principal=principal,
+            )
         chain = await _filter_visible_trace_steps(conn, auth, chain)
 
     if not chain:

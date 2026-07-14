@@ -534,6 +534,24 @@ def _daily_budget_usd_per_tenant() -> float | None:
     return value if value > 0 else None
 
 
+def _optional_positive_float_env(name: str) -> float | None:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
 def _daily_token_budget_per_tenant() -> int | None:
     """Daily per-tenant LLM token ceiling. None disables (default)."""
     raw = os.environ.get("LLM_DAILY_TOKEN_BUDGET_PER_TENANT")
@@ -646,9 +664,7 @@ class WorkerConfig:
                 not in {"0", "false", "no", "off"}
             ),
             process_background_triggers=(
-                os.environ.get("THINK_PROCESS_BACKGROUND_TRIGGERS", "1")
-                .strip()
-                .lower()
+                os.environ.get("THINK_PROCESS_BACKGROUND_TRIGGERS", "1").strip().lower()
                 not in {"0", "false", "no", "off"}
             ),
             t4_topology_min_judgment_leverage=float(
@@ -1338,9 +1354,7 @@ class ThinkWorker:
 
     def _downstream_batching_enabled(self) -> bool:
         t2_batch_max_size = (
-            self.config.t2_batch_max_size
-            if self._lane_allowed(ThinkLane.REFLEX)
-            else 0
+            self.config.t2_batch_max_size if self._lane_allowed(ThinkLane.REFLEX) else 0
         )
         t4_batch_max_size = self._largest_t4_downstream_batch_max_size()
         return (
@@ -1684,10 +1698,9 @@ class ThinkWorker:
         row: asyncpg.Record,
         payload: dict[str, Any],
     ) -> str | None:
-        model_lane = (
-            _first_payload_uuid_lane(payload, "model_ids", prefix="model")
-            or _first_payload_uuid_lane(payload, "source_model_ids", prefix="model")
-        )
+        model_lane = _first_payload_uuid_lane(
+            payload, "model_ids", prefix="model"
+        ) or _first_payload_uuid_lane(payload, "source_model_ids", prefix="model")
         if model_lane is not None:
             return f"open_question:{model_lane}"
         if row["model_id"] is not None:
@@ -1742,8 +1755,7 @@ class ThinkWorker:
         )
         candidate_by_id = {row["id"]: row for row in candidate_rows}
         kind_by_candidate = {
-            row["id"]: str(row["candidate_kind"] or "unknown")
-            for row in candidate_rows
+            row["id"]: str(row["candidate_kind"] or "unknown") for row in candidate_rows
         }
         model_ids: list[UUID] = []
         seen_models: set[UUID] = set()
@@ -1959,7 +1971,9 @@ class ThinkWorker:
         rows: list[asyncpg.Record],
     ) -> dict[UUID, str | None]:
         observation_ids = list(
-            dict.fromkeys(row["observation_id"] for row in rows if row["observation_id"])
+            dict.fromkeys(
+                row["observation_id"] for row in rows if row["observation_id"]
+            )
         )
         if not observation_ids:
             return {}
@@ -1979,8 +1993,7 @@ class ThinkWorker:
             for row in observation_rows
         }
         return {
-            row["id"]: lane_by_observation.get(row["observation_id"])
-            for row in rows
+            row["id"]: lane_by_observation.get(row["observation_id"]) for row in rows
         }
 
     async def _insert_t1_batch_row(
@@ -2503,7 +2516,9 @@ class ThinkWorker:
             "repair_batch_items": repair_items,
             "model_ids": [str(model_id) for model_id in model_ids],
             "member_model_ids": [str(model_id) for model_id in model_ids],
-            "observation_ids": [str(observation_id) for observation_id in observation_ids],
+            "observation_ids": [
+                str(observation_id) for observation_id in observation_ids
+            ],
             "seed_entity_ids": seed_entities,
             "scope_actors": scope_actors,
             "seed_natural_text": summary,
@@ -2720,9 +2735,7 @@ class ThinkWorker:
         total_requests = int(row["total_requests"] or 0) if row is not None else 0
         spend_over = spend_budget is not None and spend >= spend_budget
         token_over = token_budget is not None and total_tokens >= token_budget
-        request_over = (
-            request_budget is not None and total_requests >= request_budget
-        )
+        request_over = request_budget is not None and total_requests >= request_budget
         if spend_over or token_over or request_over:
             _log.warning(
                 "think.daily_budget_exceeded",
@@ -3333,11 +3346,12 @@ class ThinkWorker:
             lane_filter = self._lane_filter_sql()
             if self.config.tenant_filter is None:
                 row = await conn.fetchrow(
-                    """
+                    f"""
                     SELECT
                       COUNT(*) FILTER (
                         WHERE completed_at IS NULL
                           AND batch_parent_id IS NULL
+                          {lane_filter}
                       )::int AS pending_depth,
                       COUNT(*) FILTER (
                         WHERE completed_at IS NULL
@@ -3346,6 +3360,7 @@ class ThinkWorker:
                             locked_at IS NULL
                             OR locked_at < now() - ($1 || ' seconds')::interval
                           )
+                          {lane_filter}
                       )::int AS stale_locks
                     FROM think_trigger_queue
                     """,
@@ -3353,11 +3368,12 @@ class ThinkWorker:
                 )
             else:
                 row = await conn.fetchrow(
-                    """
+                    f"""
                     SELECT
                       COUNT(*) FILTER (
                         WHERE completed_at IS NULL
                           AND batch_parent_id IS NULL
+                          {lane_filter}
                       )::int AS pending_depth,
                       COUNT(*) FILTER (
                         WHERE completed_at IS NULL
@@ -3366,6 +3382,7 @@ class ThinkWorker:
                             locked_at IS NULL
                             OR locked_at < now() - ($2 || ' seconds')::interval
                           )
+                          {lane_filter}
                       )::int AS stale_locks
                     FROM think_trigger_queue
                     WHERE tenant_id = $1

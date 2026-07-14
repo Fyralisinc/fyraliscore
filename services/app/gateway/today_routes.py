@@ -66,6 +66,16 @@ from services.platform.access_control.audit import (
     record_override_if_needed as record_access_override_if_needed,
 )
 from services.platform.access_control.checks import AccessDecision, can_read_by_id
+from services.platform.access_control.authority import (
+    ObjectRef,
+    Principal,
+    authorize_read,
+    principal_for_actor,
+)
+from services.reasoning.oracle import (
+    enqueue_outcome_representation_repair,
+    human_correction_outcome_fact,
+)
 
 
 # =====================================================================
@@ -131,6 +141,7 @@ _TARGET_ACCESS_KIND: dict[str, str] = {
     "goal": "goal",
     "decision": "decision",
     "model": "model",
+    "observation": "observation",
 }
 
 _CATEGORY_LABELS: dict[str, str] = {
@@ -1170,7 +1181,7 @@ def _delta_source_refs(
 def _authority_kind_for_target(target_node_kind: str | None) -> str | None:
     if not target_node_kind:
         return None
-    return _TARGET_KIND_TO_AUTHORITY_KIND.get(target_node_kind.strip().lower())
+    return _TARGET_ACCESS_KIND.get(target_node_kind.strip().lower())
 
 
 def _dedupe_refs(refs: list[ObjectRef]) -> tuple[ObjectRef, ...]:
@@ -1784,6 +1795,12 @@ async def get_delta(delta_id: str, request: Request) -> JSONResponse:
             conn, tenant_id=auth.tenant_id, delta_id=did,
         )
         if view is not None:
+            if not await _authorized_delta_view(
+                view,
+                principal=principal,
+                conn=conn,
+            ):
+                return _not_found()
             denial = await _delta_access_denial(conn, auth, view)
             if denial is not None:
                 return denial
@@ -1826,6 +1843,12 @@ async def get_delta_evidence(
             conn, tenant_id=auth.tenant_id, delta_id=did,
         )
         if view is not None:
+            if not await _authorized_delta_view(
+                view,
+                principal=principal,
+                conn=conn,
+            ):
+                return _not_found()
             denial = await _delta_access_denial(conn, auth, view)
             if denial is not None:
                 return denial
@@ -2045,6 +2068,7 @@ async def correct_delta(
                 )
                 if denial is not None:
                     return denial
+                submitted_at = datetime.now(timezone.utc)
                 # Promote contested-from-any-eligible-state in one
                 # repo call. The repo enforces transition legality.
                 await dd_repo.update_status(
@@ -2156,6 +2180,11 @@ async def _next_delta_id(
             limit=25,
         )
         views = [view for view in views if view.id != exclude]
+        views = await _filter_authorized_delta_views(
+            views,
+            principal=principal,
+            conn=conn,
+        )
         visible = await _filter_visible_deltas(conn, auth, views)
     return str(visible[0].id) if visible else None
 

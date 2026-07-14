@@ -15,6 +15,7 @@ ui/src/api/today-types.ts). Backend builds that shape by:
 This module is a translator. It owns no state — every call is a fresh
 read against the substrate.
 """
+
 from __future__ import annotations
 
 import re
@@ -190,6 +191,7 @@ def _today_degraded_reasons(
 # Severity derivation
 # ---------------------------------------------------------------------
 
+
 # Severity bucketing. Two regimes are supported because the substrate
 # encodes `expected_impact` two different ways:
 #
@@ -260,6 +262,7 @@ def _derive_category(view: RecommendationView, severity: str) -> str:
 # Kind label derivation
 # ---------------------------------------------------------------------
 
+
 def _derive_stake_from_view(view: RecommendationView) -> dict[str, Any] | None:
     """Map a recommendation's expected_impact into a structured stake.
 
@@ -286,8 +289,8 @@ def _derive_stake_from_view(view: RecommendationView) -> dict[str, Any] | None:
 _OPERATION_TO_KIND_PREFIX = {
     "transition": {
         "commitment": "Commitment shift",
-        "goal":       "Goal direction",
-        "decision":   "Decision drift",
+        "goal": "Goal direction",
+        "decision": "Decision drift",
     },
     "create": {
         "goal": "Strategic · feature",
@@ -407,9 +410,9 @@ def _derive_stats(view: RecommendationView) -> list[dict[str, str]]:
 
 _OP_LABEL = {
     "transition": "Reaffirm",
-    "create":     "Adopt",
-    "archive":    "Reject",
-    "update":     "Revisit",
+    "create": "Adopt",
+    "archive": "Reject",
+    "update": "Revisit",
 }
 
 
@@ -418,7 +421,9 @@ def _derive_paths(view: RecommendationView) -> list[dict[str, str]]:
     payload = (view.proposed_change or {}).get("payload") or {}
     ref_type = (view.target_act_ref or {}).get("type")
     label = _OP_LABEL.get(op or "transition", "Reaffirm")
-    target_label = view.target_entity.title if view.target_entity else (ref_type or "this")
+    target_label = (
+        view.target_entity.title if view.target_entity else (ref_type or "this")
+    )
     primary_body: str
     if op == "transition":
         new_state = payload.get("new_state", "the new state")
@@ -435,14 +440,12 @@ def _derive_paths(view: RecommendationView) -> list[dict[str, str]]:
             f"<em>Removes it from active consideration.</em>"
         )
     elif op == "update":
-        primary_body = (
-            f"<strong>Apply the update to <em>{target_label}</em></strong>."
-        )
+        primary_body = f"<strong>Apply the update to <em>{target_label}</em></strong>."
     else:
         primary_body = "<strong>Take the recommended action</strong>."
 
     return [
-        {"id": "p-act",  "label": label,  "body_html": primary_body},
+        {"id": "p-act", "label": label, "body_html": primary_body},
         {
             "id": "p-defer",
             "label": "Wait",
@@ -479,19 +482,28 @@ async def _fetch_evidence(
     *,
     ids: list[UUID],
     tenant_id: UUID,
-    actor_id: UUID,
     conn: asyncpg.Connection,
+    actor_id: UUID | None = None,
+    principal: Principal | None = None,
 ) -> list[dict[str, str]]:
     if not ids:
         return []
     rows = await conn.fetch(_EVIDENCE_SQL, ids, tenant_id)
     out: list[dict[str, str]] = []
     for r in rows:
-        if not await _can_read_today_entity(
+        if actor_id is not None and not await _can_read_today_entity(
             actor_id=actor_id,
             kind="observation",
             entity_id=r["id"],
             tenant_id=tenant_id,
+            conn=conn,
+        ):
+            continue
+        if not await _today_authorizes(
+            principal,
+            tenant_id=tenant_id,
+            object_kind="observation",
+            object_id=r["id"],
             conn=conn,
         ):
             continue
@@ -541,16 +553,16 @@ WHERE id = ANY($1::uuid[])
 # here's the pattern, here's what worries me, here's what I expect,
 # here's what I'm asking you to do").
 _SECTION_ORDER: list[tuple[str, str]] = [
-    ("state",                 "What I'm seeing right now"),
-    ("relation",              "How the pieces connect"),
-    ("pattern",               "The pattern this fits"),
-    ("pattern_instance",      "How it shows up here"),
+    ("state", "What I'm seeing right now"),
+    ("relation", "How the pieces connect"),
+    ("pattern", "The pattern this fits"),
+    ("pattern_instance", "How it shows up here"),
     ("capability_assessment", "What this says about us"),
-    ("hypothesis",            "What I'm hypothesizing"),
-    ("concern",               "What worries me"),
-    ("prediction",            "What I think happens next"),
-    ("market_assessment",     "Market backdrop"),
-    ("environmental_trend",   "Environmental trend"),
+    ("hypothesis", "What I'm hypothesizing"),
+    ("concern", "What worries me"),
+    ("prediction", "What I think happens next"),
+    ("market_assessment", "Market backdrop"),
+    ("environmental_trend", "Environmental trend"),
 ]
 
 
@@ -600,20 +612,18 @@ def _render_reasoning_chain(
     parts: list[str] = []
 
     # Opening: short framing sentence so the reader has context.
-    target_label = (
-        _escape(view.target_entity.title) if view.target_entity else "this"
-    )
+    target_label = _escape(view.target_entity.title) if view.target_entity else "this"
     impact = view.expected_impact
     if impact:
         impact_str = _format_impact_short(impact)
         parts.append(
-            f"<p class=\"reasoning-lede\">"
+            f'<p class="reasoning-lede">'
             f"<strong>{impact_str}</strong> rides on "
             f"<em>{target_label}</em>. Here is how I got there.</p>"
         )
     else:
         parts.append(
-            f"<p class=\"reasoning-lede\">"
+            f'<p class="reasoning-lede">'
             f"Here is how I am reading <em>{target_label}</em> right now.</p>"
         )
 
@@ -630,20 +640,21 @@ def _render_reasoning_chain(
             f"<span class=\"reasoning-conf\">"
             f"({int(round(m['confidence'] * 100))}%)"
             f"</span></li>"
-            for m in items if m["natural"].strip()
+            for m in items
+            if m["natural"].strip()
         )
         if not bullets:
             continue
         parts.append(
-            f"<h4 class=\"reasoning-heading\">{_escape(heading)}</h4>"
-            f"<ul class=\"reasoning-list\">{bullets}</ul>"
+            f'<h4 class="reasoning-heading">{_escape(heading)}</h4>'
+            f'<ul class="reasoning-list">{bullets}</ul>'
         )
 
     # Closing: what I'm asking the user to do, in plain language.
     closing_action = _action_phrase(view)
     parts.append(
-        f"<h4 class=\"reasoning-heading\">What I'm asking you to do</h4>"
-        f"<p class=\"reasoning-action\">{_escape(closing_action)}</p>"
+        f'<h4 class="reasoning-heading">What I\'m asking you to do</h4>'
+        f'<p class="reasoning-action">{_escape(closing_action)}</p>'
     )
 
     return "\n".join(parts)
@@ -758,7 +769,11 @@ async def _render_diff(
     to_state = payload.get("new_state") if op == "transition" else None
 
     extras = await _fetch_target_diff_extras(
-        ref_type, ref_id, tenant_id, conn, principal=principal,
+        ref_type,
+        ref_id,
+        tenant_id,
+        conn,
+        principal=principal,
     )
 
     created_at = extras.get("created_at")
@@ -790,7 +805,11 @@ async def _render_diff(
     if owner_id is not None:
         out["owner_actor_id"] = str(owner_id)
     if created_at is not None:
-        out["created_at"] = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+        out["created_at"] = (
+            created_at.isoformat()
+            if hasattr(created_at, "isoformat")
+            else str(created_at)
+        )
     if days_idle is not None:
         out["days_idle"] = days_idle
     if acceptance:
@@ -892,7 +911,8 @@ def _calibration_kind_label(view: RecommendationView) -> str:
     ref_type = (view.target_act_ref or {}).get("type") or "?"
     payload = (view.proposed_change or {}).get("payload") or {}
     blob = " ".join(
-        str(x).lower() for x in (
+        str(x).lower()
+        for x in (
             view.proposition_text or "",
             payload.get("title") or "",
             view.target_entity.title if view.target_entity else "",
@@ -936,7 +956,12 @@ async def _render_calibration(
           AND coalesce(proposition->'proposed_change'->>'operation', $5) IS NOT DISTINCT FROM $5
           AND coalesce(proposition->'target_act_ref'->>'type', $6) IS NOT DISTINCT FROM $6
         """,
-        tenant_id, target_actor_id, cutoff, pk, op, ref_type,
+        tenant_id,
+        target_actor_id,
+        cutoff,
+        pk,
+        op,
+        ref_type,
     )
     acted = int((row or {}).get("acted") or 0)
     dismissed = int((row or {}).get("dismissed") or 0)
@@ -998,6 +1023,7 @@ async def _build_card(
         tenant_id=tenant_id,
         actor_id=target_actor_id,
         conn=conn,
+        principal=principal,
     )
     supporting_models = await _fetch_supporting_models(
         ids=view.supporting_model_ids[:12],
@@ -1064,7 +1090,10 @@ async def _build_card(
     if reasoning_groups:
         detail["reasoning"] = reasoning_groups
     detail["calibration"] = await _render_calibration(
-        view, tenant_id=tenant_id, target_actor_id=target_actor_id, conn=conn,
+        view,
+        tenant_id=tenant_id,
+        target_actor_id=target_actor_id,
+        conn=conn,
     )
     detail["falsifier"] = _render_falsifier(view)
 
@@ -1149,7 +1178,11 @@ def _derive_probe_chips(view: RecommendationView) -> list[dict[str, str]]:
 
 
 def _add_probe_markup(
-    html: str, card_id: str, *, kind_hint: Any = None, prefix: str = "h",
+    html: str,
+    card_id: str,
+    *,
+    kind_hint: Any = None,
+    prefix: str = "h",
 ) -> str:
     """Wrap each `<em>...</em>` in the given HTML with a `<span
     data-probe-id="...">` so the UI can render it as a probable phrase.
@@ -1163,12 +1196,16 @@ def _add_probe_markup(
     multiple ems are resolved by appending a 1-based index.
     """
     import re
+
     counter = {"i": 0}
 
     def repl(m: "re.Match[str]") -> str:
         counter["i"] += 1
         text = m.group(1)
-        slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:32] or f"p{counter['i']}"
+        slug = (
+            re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:32]
+            or f"p{counter['i']}"
+        )
         pid = f"{prefix}-{card_id}-{slug}-{counter['i']}"
         # Keep the <em> wrapper inside the span so the visual emphasis
         # carries through; the dotted underline lives on the span.
@@ -1217,7 +1254,9 @@ def _action_phrase(view: RecommendationView) -> str:
     op = (view.proposed_change or {}).get("operation")
     payload = (view.proposed_change or {}).get("payload") or {}
     ref_type = (view.target_act_ref or {}).get("type")
-    target_label = view.target_entity.title if view.target_entity else (ref_type or "this")
+    target_label = (
+        view.target_entity.title if view.target_entity else (ref_type or "this")
+    )
     if op == "transition":
         new_state = payload.get("new_state")
         if new_state:
@@ -1272,7 +1311,11 @@ def _render_proposed_change_text(view: RecommendationView) -> str | None:
         new_state = payload.get("new_state")
         if ref_type == "decision":
             # Decisions transition by re-ratification rather than state moves.
-            verb = "Revise" if new_state in ("revised", "rejected", "archived") else "Reaffirm"
+            verb = (
+                "Revise"
+                if new_state in ("revised", "rejected", "archived")
+                else "Reaffirm"
+            )
             text = f"{verb} {_fit_title(target_label, 50 - len(verb) - 1)}"
         elif new_state:
             head = "Transition "
@@ -1310,7 +1353,7 @@ def _fit_title(title: str, budget: int) -> str:
     cut off when the title is long."""
     title = (title or "").strip()
     if budget < 4:
-        return title[:max(budget, 0)]
+        return title[: max(budget, 0)]
     if len(title) <= budget:
         return title
     return title[: budget - 1].rstrip() + "\u2026"
@@ -1412,7 +1455,10 @@ def _derive_meta(view: RecommendationView) -> str | None:
 
 
 async def _commitments_metric(
-    *, tenant_id: UUID, target_actor: UUID, conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    target_actor: UUID,
+    conn: asyncpg.Connection,
 ) -> dict[str, Any]:
     """Fraction of active commitments whose state is on-track (active /
     proposed) vs slipping (blocked / paused). Active state buckets per
@@ -1442,9 +1488,7 @@ async def _commitments_metric(
         }
     tone = "amber" if slipping >= 3 else ("default" if slipping > 0 else "accent")
     trend = (
-        f"↓ <em>{slipping} slipped</em> this week"
-        if slipping > 0
-        else "all on track"
+        f"↓ <em>{slipping} slipped</em> this week" if slipping > 0 else "all on track"
     )
     return {
         "id": "commitments",
@@ -1456,7 +1500,10 @@ async def _commitments_metric(
 
 
 async def _calibration_metric(
-    *, tenant_id: UUID, target_actor: UUID, conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    target_actor: UUID,
+    conn: asyncpg.Connection,
 ) -> dict[str, Any]:
     """Substrate-wide calibration. We use the actor's last-30-day mean
     confidence_at_assertion on resolved Models with a resolution_outcome
@@ -1493,10 +1540,10 @@ async def _calibration_metric(
 async def _financial_resource_metric(
     *,
     tenant_id: UUID,
-    actor_id: UUID,
     conn: asyncpg.Connection,
     label: str,
     identity_match: str,
+    actor_id: UUID | None = None,
     principal: Principal | None = None,
 ) -> dict[str, Any] | None:
     rows = await conn.fetch(
@@ -1510,11 +1557,12 @@ async def _financial_resource_metric(
         ORDER BY last_updated_at DESC
         LIMIT 20
         """,
-        tenant_id, f"%{identity_match}%",
+        tenant_id,
+        f"%{identity_match}%",
     )
     row = None
     for candidate in rows:
-        if await _can_read_today_entity(
+        if actor_id is None or await _can_read_today_entity(
             actor_id=actor_id,
             kind="resource",
             entity_id=candidate["id"],
@@ -1536,6 +1584,7 @@ async def _financial_resource_metric(
     cv = row["current_value"] or {}
     if isinstance(cv, str):
         import json
+
         try:
             cv = json.loads(cv)
         except json.JSONDecodeError:
@@ -1563,39 +1612,43 @@ async def _build_signal_strip(
     conn: asyncpg.Connection,
     principal: Principal | None = None,
 ) -> list[dict[str, Any]]:
-    arr = (
-        await _financial_resource_metric(
-            tenant_id=tenant_id,
-            actor_id=target_actor,
-            conn=conn,
-            label="ARR",
-            identity_match="ARR",
-        )
-        or {
-            "id": "arr", "label": "ARR", "value": "—",
-            "trend_html": "no ARR resource configured",
-            "unavailable": True,
-        }
-    )
-    runway = (
-        await _financial_resource_metric(
-            tenant_id=tenant_id,
-            actor_id=target_actor,
-            conn=conn,
-            label="Runway",
-            identity_match="runway",
-        )
-        or {
-            "id": "runway", "label": "Runway", "value": "—",
-            "trend_html": "no runway resource configured",
-            "unavailable": True,
-        }
-    )
+    arr = await _financial_resource_metric(
+        tenant_id=tenant_id,
+        actor_id=target_actor,
+        conn=conn,
+        label="ARR",
+        identity_match="ARR",
+        principal=principal,
+    ) or {
+        "id": "arr",
+        "label": "ARR",
+        "value": "—",
+        "trend_html": "no ARR resource configured",
+        "unavailable": True,
+    }
+    runway = await _financial_resource_metric(
+        tenant_id=tenant_id,
+        actor_id=target_actor,
+        conn=conn,
+        label="Runway",
+        identity_match="runway",
+        principal=principal,
+    ) or {
+        "id": "runway",
+        "label": "Runway",
+        "value": "—",
+        "trend_html": "no runway resource configured",
+        "unavailable": True,
+    }
     commits = await _commitments_metric(
-        tenant_id=tenant_id, target_actor=target_actor, conn=conn,
+        tenant_id=tenant_id,
+        target_actor=target_actor,
+        conn=conn,
     )
     cal = await _calibration_metric(
-        tenant_id=tenant_id, target_actor=target_actor, conn=conn,
+        tenant_id=tenant_id,
+        target_actor=target_actor,
+        conn=conn,
     )
     return [arr, runway, commits, cal]
 
@@ -1615,12 +1668,12 @@ async def _build_vitals(
 ) -> list[dict[str, Any]]:
     """Five rows: what Fyralis is currently watching for the actor."""
     drift_count = sum(
-        1
-        for v in recommendations
-        if (v.target_act_ref or {}).get("type") == "decision"
+        1 for v in recommendations if (v.target_act_ref or {}).get("type") == "decision"
     )
     pattern_threshold = sum(
-        1 for v in recommendations if v.confidence >= 0.7 and v.expected_impact and v.expected_impact >= 0.5
+        1
+        for v in recommendations
+        if v.confidence >= 0.7 and v.expected_impact and v.expected_impact >= 0.5
     )
     held_model_rows = await conn.fetch(
         """
@@ -1629,7 +1682,8 @@ async def _build_vitals(
         WHERE tenant_id = $1 AND target_actor_id = $2
           AND status = 'archived' AND archive_reason = 'manual'
         """,
-        tenant_id, target_actor,
+        tenant_id,
+        target_actor,
     )
     held = await _count_authorized_ids(
         held_model_rows,
@@ -1689,25 +1743,44 @@ async def _build_vitals(
 
     rows: list[dict[str, Any]] = []
     if customer_at_risk > 0:
-        rows.append({"id": "v1", "label": "Customers at risk", "value": f"{customer_at_risk}", "tone": "warn"})
-    rows.append({
-        "id": "v2", "label": "Decision drift",
-        "value": f"{drift_count} active" if drift_count else "none",
-        "tone": "amber" if drift_count >= 2 else "default",
-    })
-    rows.append({
-        "id": "v3", "label": "Slipping commits",
-        "value": f"{slipping} of {total}",
-        "tone": "amber" if slipping > 0 else "default",
-    })
-    rows.append({
-        "id": "v4", "label": "Pattern threshold",
-        "value": f"{pattern_threshold} forming" if pattern_threshold else "—",
-    })
-    rows.append({
-        "id": "v5", "label": "Held by you",
-        "value": f"{held} items" if held else "0",
-    })
+        rows.append(
+            {
+                "id": "v1",
+                "label": "Customers at risk",
+                "value": f"{customer_at_risk}",
+                "tone": "warn",
+            }
+        )
+    rows.append(
+        {
+            "id": "v2",
+            "label": "Decision drift",
+            "value": f"{drift_count} active" if drift_count else "none",
+            "tone": "amber" if drift_count >= 2 else "default",
+        }
+    )
+    rows.append(
+        {
+            "id": "v3",
+            "label": "Slipping commits",
+            "value": f"{slipping} of {total}",
+            "tone": "amber" if slipping > 0 else "default",
+        }
+    )
+    rows.append(
+        {
+            "id": "v4",
+            "label": "Pattern threshold",
+            "value": f"{pattern_threshold} forming" if pattern_threshold else "—",
+        }
+    )
+    rows.append(
+        {
+            "id": "v5",
+            "label": "Held by you",
+            "value": f"{held} items" if held else "0",
+        }
+    )
     return rows
 
 
@@ -1717,7 +1790,9 @@ async def _build_vitals(
 
 
 def _build_page_header(
-    *, recommendations: list[RecommendationView], now: datetime,
+    *,
+    recommendations: list[RecommendationView],
+    now: datetime,
     actor_display_name: str | None = None,
 ) -> dict[str, Any]:
     crit = sum(1 for v in recommendations if _derive_severity(v) == "critical")
@@ -1770,7 +1845,7 @@ def _build_page_header(
         )
 
     # First name only — keeps the greeting personal and short.
-    first_name = (actor_display_name.split()[0] if actor_display_name else None)
+    first_name = actor_display_name.split()[0] if actor_display_name else None
     return {
         "date_label": now.strftime("%A, %B %-d.").rstrip("."),
         "state_tone": tone,
@@ -1785,34 +1860,62 @@ def _build_page_header(
 
 
 def _build_nav(
-    *, today_count: int, hold_count: int,
+    *,
+    today_count: int,
+    hold_count: int,
 ) -> list[dict[str, Any]]:
     return [
         {
             "id": "operate",
             "label": "Operate",
             "items": [
-                {"id": "today",     "label": "Today",     "active": True,  "badge": str(today_count), "shortcut": "⌘7"},
+                {
+                    "id": "today",
+                    "label": "Today",
+                    "active": True,
+                    "badge": str(today_count),
+                    "shortcut": "⌘7",
+                },
                 {"id": "structure", "label": "Structure"},
-                {"id": "history",   "label": "History"},
-                {"id": "hold",      "label": "Hold",      "badge": str(hold_count), "shortcut": "⌘3"},
+                {"id": "history", "label": "History"},
+                {
+                    "id": "hold",
+                    "label": "Hold",
+                    "badge": str(hold_count),
+                    "shortcut": "⌘3",
+                },
             ],
         },
         {
             "id": "communicate",
             "label": "Communicate",
             "items": [
-                {"id": "threads",   "label": "Threads",   "disabled": True, "badge": "soon"},
-                {"id": "people",    "label": "People",    "disabled": True, "badge": "soon"},
-                {"id": "customers", "label": "Customers", "disabled": True, "badge": "soon"},
+                {
+                    "id": "threads",
+                    "label": "Threads",
+                    "disabled": True,
+                    "badge": "soon",
+                },
+                {"id": "people", "label": "People", "disabled": True, "badge": "soon"},
+                {
+                    "id": "customers",
+                    "label": "Customers",
+                    "disabled": True,
+                    "badge": "soon",
+                },
             ],
         },
         {
             "id": "account",
             "label": "Account",
             "items": [
-                {"id": "ledger",  "label": "Ledger",  "disabled": True, "badge": "soon"},
-                {"id": "capital", "label": "Capital", "disabled": True, "badge": "soon"},
+                {"id": "ledger", "label": "Ledger", "disabled": True, "badge": "soon"},
+                {
+                    "id": "capital",
+                    "label": "Capital",
+                    "disabled": True,
+                    "badge": "soon",
+                },
             ],
         },
     ]
@@ -1888,8 +1991,12 @@ async def build_today(
 
     cards = [
         await _build_card(
-            v, now=now, tenant_id=tenant_id,
-            target_actor_id=actor_id, conn=conn, principal=principal,
+            v,
+            now=now,
+            tenant_id=tenant_id,
+            target_actor_id=actor_id,
+            conn=conn,
+            principal=principal,
         )
         for v in recommendations
     ]
@@ -1904,6 +2011,7 @@ async def build_today(
     # active watch — absent on the rest, to keep the payload tight.
     if cards:
         from services.product.recommendations.watchers import list_active_watches
+
         watched_ids = await list_active_watches(
             tenant_id=tenant_id,
             recommendation_ids=[v.id for v in recommendations],
@@ -1930,7 +2038,8 @@ async def build_today(
         principal=principal,
     )
     page = _build_page_header(
-        recommendations=recommendations, now=now,
+        recommendations=recommendations,
+        now=now,
         actor_display_name=actor_display_name,
     )
 
@@ -1941,7 +2050,8 @@ async def build_today(
         WHERE tenant_id = $1 AND target_actor_id = $2
           AND status = 'archived' AND archive_reason = 'manual'
         """,
-        tenant_id, actor_id,
+        tenant_id,
+        actor_id,
     )
     held = await _count_authorized_ids(
         held_rows,
@@ -1959,7 +2069,10 @@ async def build_today(
     # system ignored them — Think DID emit a state Model, the user
     # just had no UI feedback that anything happened.
     just_updated = await _build_just_updated(
-        tenant_id=tenant_id, actor_id=actor_id, conn=conn, now=now,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+        now=now,
     )
 
     # Calibration alert per spec §10.7 — show if mean calibration < 0.6.
@@ -1982,13 +2095,18 @@ async def build_today(
     map_data = None
 
     recent_signals = await _build_recent_signals(
-        tenant_id=tenant_id, actor_id=actor_id, conn=conn, now=now,
+        tenant_id=tenant_id,
+        actor_id=actor_id,
+        conn=conn,
+        now=now,
+        principal=principal,
     )
 
     viewer_state = {
         "previous_last_seen_at": (
             previous_last_seen_at.isoformat()
-            if previous_last_seen_at is not None else None
+            if previous_last_seen_at is not None
+            else None
         ),
         "current_visit_at": now.isoformat(),
     }
@@ -2008,8 +2126,10 @@ async def build_today(
         cleared_today=cleared_today,
         ask_suggestions=[
             "What are you least sure about?",
-            f"What's on Hold I should look at?",
-            f"Show me {actor_display_name.split()[0]}'s recent work" if actor_display_name else "Show me what's slipping",
+            "What's on Hold I should look at?",
+            f"Show me {actor_display_name.split()[0]}'s recent work"
+            if actor_display_name
+            else "Show me what's slipping",
         ],
         calibration_alert=calibration_alert,
         just_updated=just_updated,
@@ -2039,9 +2159,9 @@ _SIGNAL_SCAN_LIMIT = 40
 async def _build_recent_signals(
     *,
     tenant_id: UUID,
-    actor_id: UUID,
     conn: asyncpg.Connection,
     now: datetime,
+    actor_id: UUID | None = None,
     principal: Principal | None = None,
 ) -> dict[str, Any] | None:
     """Compose the most recent observations into a presentation feed.
@@ -2051,24 +2171,36 @@ async def _build_recent_signals(
     — false-negatives (calling everything neutral) are better than
     false-positives that alarm.
     """
-    rows = await conn.fetch(
-        """
+    rows = (
+        await conn.fetch(
+            """
         SELECT id, kind, source_channel, ingested_at, content_text
         FROM observations
         WHERE tenant_id = $1
         ORDER BY ingested_at DESC
         LIMIT $2
         """,
-        tenant_id, _SIGNAL_SCAN_LIMIT,
-    ) or []
+            tenant_id,
+            _SIGNAL_SCAN_LIMIT,
+        )
+        or []
+    )
 
     signals: list[dict[str, Any]] = []
     for r in rows:
-        if not await _can_read_today_entity(
+        if actor_id is not None and not await _can_read_today_entity(
             actor_id=actor_id,
             kind="observation",
             entity_id=r["id"],
             tenant_id=tenant_id,
+            conn=conn,
+        ):
+            continue
+        if not await _today_authorizes(
+            principal,
+            tenant_id=tenant_id,
+            object_kind="observation",
+            object_id=r["id"],
             conn=conn,
         ):
             continue
@@ -2081,21 +2213,21 @@ async def _build_recent_signals(
         if not title:
             continue
         icon, tone = _signal_icon_tone(kind, content)
-        signals.append({
-            "id": str(r["id"]),
-            "icon": icon,
-            "tone": tone,
-            "title": title,
-            "context": _signal_context(kind, channel),
-            "age_label": _relative_age(now, r["ingested_at"]),
-        })
+        signals.append(
+            {
+                "id": str(r["id"]),
+                "icon": icon,
+                "tone": tone,
+                "title": title,
+                "context": _signal_context(kind, channel),
+                "age_label": _relative_age(now, r["ingested_at"]),
+            }
+        )
         if len(signals) >= _SIGNAL_LIMIT:
             break
 
     if not signals:
         return None
-    if principal is not None:
-        total = len(signals)
     return {
         "signals": signals,
         "total": len(signals),
@@ -2111,9 +2243,14 @@ def _short_signal_title(text: str) -> str:
 
 def _signal_icon_tone(kind: str, content: str) -> tuple[str, str]:
     blob = f"{kind} {content[:200]}".lower()
-    if any(t in blob for t in ("error", "failure", "fail ", "outage", "down ", "blocked", "escalat")):
+    if any(
+        t in blob
+        for t in ("error", "failure", "fail ", "outage", "down ", "blocked", "escalat")
+    ):
         return ("alert", "critical")
-    if any(t in blob for t in ("warn", "drift", "spike", "lag", "stuck", "stale", "delay")):
+    if any(
+        t in blob for t in ("warn", "drift", "spike", "lag", "stuck", "stale", "delay")
+    ):
         return ("warning", "warning")
     if any(t in blob for t in ("growth", "expand", "win", "closed", "approved")):
         return ("trend", "positive")
@@ -2199,11 +2336,7 @@ async def _build_just_updated(
     if not items:
         return None
     body = "<br/>".join(items)
-    return {
-        "text_html": (
-            f"<strong>Just learned</strong> · {body}"
-        )
-    }
+    return {"text_html": (f"<strong>Just learned</strong> · {body}")}
 
 
 async def _today_authorizes(

@@ -38,7 +38,8 @@ from services.reasoning.relationships import (
     make_situation_candidate,
 )
 from services.reasoning.think.tests.conftest import ScriptedProvider, make_embedding
-from services.reasoning.think.observability import METRICS
+from services.reasoning.think.lanes import ThinkLane
+from services.reasoning.think.observability import METRICS, record_think_run_cost
 from services.reasoning.think.worker import ThinkWorker, WorkerConfig
 
 
@@ -202,9 +203,7 @@ async def test_worker_config_defaults_are_batch_first(monkeypatch):
 
 
 async def test_t4_lane_provider_uses_isolated_breaker_name():
-    base = CodexProvider(
-        LLMConfig(provider="codex", api_key="test", model="gpt-5.5")
-    )
+    base = CodexProvider(LLMConfig(provider="codex", api_key="test", model="gpt-5.5"))
     worker = ThinkWorker(
         None,  # type: ignore[arg-type]
         config=WorkerConfig(),
@@ -231,10 +230,7 @@ async def test_t4_lane_provider_uses_isolated_breaker_name():
     assert repair_provider is not None
     assert relationship_provider is not None
     assert repair_provider.config.circuit_breaker_name == "codex:t4:repair"
-    assert (
-        relationship_provider.config.circuit_breaker_name
-        == "codex:t4:relationship"
-    )
+    assert relationship_provider.config.circuit_breaker_name == "codex:t4:relationship"
     assert foreground_provider is base
 
 
@@ -1116,8 +1112,7 @@ async def test_t1_batch_prefers_entity_lanes(
 
     assert len(dispatched) == 2
     member_sets = {
-        frozenset(batch["payload"]["batch_member_trigger_ids"])
-        for batch in dispatched
+        frozenset(batch["payload"]["batch_member_trigger_ids"]) for batch in dispatched
     }
     assert member_sets == {
         frozenset({str(trig_a1), str(trig_a2)}),
@@ -1391,19 +1386,31 @@ async def test_downstream_batch_prefers_t2_entity_lanes(
     acme = [{"type": "customer", "id": "acme"}]
     nimbus = [{"type": "customer", "id": "nimbus"}]
     model_a1 = await _seed_model(
-        fresh_db, tenant, born_event=obs, natural="acme risk 1",
+        fresh_db,
+        tenant,
+        born_event=obs,
+        natural="acme risk 1",
         scope_entities=acme,
     )
     model_a2 = await _seed_model(
-        fresh_db, tenant, born_event=obs, natural="acme risk 2",
+        fresh_db,
+        tenant,
+        born_event=obs,
+        natural="acme risk 2",
         scope_entities=acme,
     )
     model_b1 = await _seed_model(
-        fresh_db, tenant, born_event=obs, natural="nimbus risk 1",
+        fresh_db,
+        tenant,
+        born_event=obs,
+        natural="nimbus risk 1",
         scope_entities=nimbus,
     )
     model_b2 = await _seed_model(
-        fresh_db, tenant, born_event=obs, natural="nimbus risk 2",
+        fresh_db,
+        tenant,
+        born_event=obs,
+        natural="nimbus risk 2",
         scope_entities=nimbus,
     )
     trig_a1 = await _enqueue_t2_belief_updated(
@@ -1451,8 +1458,7 @@ async def test_downstream_batch_prefers_t2_entity_lanes(
 
     assert len(dispatched) == 2
     member_sets = {
-        frozenset(batch["payload"]["batch_member_trigger_ids"])
-        for batch in dispatched
+        frozenset(batch["payload"]["batch_member_trigger_ids"]) for batch in dispatched
     }
     assert member_sets == {
         frozenset({str(trig_a1), str(trig_a2)}),
@@ -1696,7 +1702,9 @@ async def test_downstream_batch_coalesces_t4_representation_repairs(
     }
     assert len(payload["repair_batch_items"]) == 2
     assert set(payload["model_ids"]) == {str(model_a), str(model_b)}
-    assert "Batch of 2 representation repair obligations" in payload["seed_natural_text"]
+    assert (
+        "Batch of 2 representation repair obligations" in payload["seed_natural_text"]
+    )
 
     async with fresh_db.acquire() as conn:
         members = await conn.fetch(
@@ -2517,10 +2525,7 @@ async def test_per_tenant_concurrency_cap(fresh_db, tenant, tenant_cleanup):
 async def test_queue_depth_counts_pending_rows(fresh_db, tenant, tenant_cleanup):
     METRICS.reset()
     obs = await _seed_signal_observation(fresh_db, tenant)
-    trigger_ids = [
-        await _enqueue_trigger_row(fresh_db, tenant, obs)
-        for _ in range(5)
-    ]
+    trigger_ids = [await _enqueue_trigger_row(fresh_db, tenant, obs) for _ in range(5)]
     async with fresh_db.acquire() as conn:
         await conn.execute(
             """
@@ -2903,10 +2908,7 @@ async def test_mark_trigger_failed_eventually_dead_letters(
     # semantics for trigger queue is "completed_at set + attempts=N").
     assert row["attempts"] == 3
     assert row["completed_at"] is not None
-    assert (
-        METRICS.snapshot()["retry_exhausted_total"]["think_trigger_queue"]
-        == 1
-    )
+    assert METRICS.snapshot()["retry_exhausted_total"]["think_trigger_queue"] == 1
 
 
 # =====================================================================
