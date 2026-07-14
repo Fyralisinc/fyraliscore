@@ -273,6 +273,11 @@ jobs:
         uses: aquasecurity/trivy-action@v0.24.0
         with:
           image-ref: fyraliscore-ci:${{ github.sha }}
+          # Repository secrets were scanned in the preceding filesystem step.
+          # This image step enforces the OS and installed-library vulnerability
+          # boundary without re-reporting the three excluded test key fixtures
+          # after COPY places the same source tree under /app.
+          scanners: vuln
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
