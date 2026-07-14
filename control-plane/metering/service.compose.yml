@@ -1,0 +1,68 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — metering job fragment (WS-METER, FR-F2/F3)
+# ----------------------------------------------------------------------------
+# Standalone compose fragment. The integrate step merges this into the master
+# docker-compose.control-plane.yml. Do NOT edit the master file directly.
+#
+# WHAT THIS DOES
+#   The metering job reads AGGREGATE Tier-1 usage metrics out of the central
+#   Mimir (obs-per-source, think_runs, think cost_usd, ingestion volume), one
+#   tenant at a time via the X-Scope-OrgID header (C5), computes a per-tenant
+#   usage rollup over a billing period, and SIGNS it (ed25519, via
+#   control-plane/signing) so usage is tamper-evident (FR-F2). export.py then
+#   emits the signed rollups for billing (CSV/JSON).
+#
+#   It is a CONTROL-PLANE BATCH job — run on a schedule (e.g. monthly close) or
+#   on demand. It NEVER dials a data plane (I2); it only reads Mimir on cp-net.
+#
+# IMPORTANT — build context is the control-plane ROOT (.), not metering/, so the
+#   image can include signing/ (sign_bundle/verify_bundle/signing_lib).
+#
+# QUERY PATH — this fragment talks to `mimir:9009` directly on cp-net and supplies
+#   X-Scope-OrgID itself (the metering job is a trusted CP-internal reader; the
+#   header it sets is the verified tenant id it is billing). In a hardened setup
+#   point MIMIR_URL at the auth-proxy instead and let the proxy inject the header.
+#
+# SECRETS — the PRIVATE signing key (signing/keys/, gitignored) is NOT baked into
+#   the image; it is mounted read-only at runtime. Without the active key, signing
+#   fails closed (it will not emit an unsigned rollup).
+#
+# Networks (cp-net) are declared in the master compose file; referenced here as
+# external-by-merge. If running standalone, uncomment the networks: block below.
+# ============================================================================
+
+services:
+  # ---- the metering rollup job (one-shot; wrap with a scheduler for monthly close)
+  metering:
+    build:
+      context: .
+      dockerfile: metering/Dockerfile
+    image: fyralis/metering
+    environment:
+      # Mimir base (default in-cluster). Point at the auth-proxy to have the proxy
+      # inject X-Scope-OrgID from the cert SAN instead of the job setting it.
+      MIMIR_URL: "http://mimir:9009"
+    volumes:
+      # Signing key material + trust root, read-only (image carries no secret).
+      - ./signing/keys:/app/signing/keys:ro
+      - ./signing/trust_root.json:/app/signing/trust_root.json:ro
+      # Where signed rollups + billing exports land (persisted for the billing system).
+      - metering-out:/app/metering/out
+    networks:
+      - cp-net
+    # Default command runs the OFFLINE self-test (mock Mimir) so `up` proves the
+    # image is wired correctly without needing real tenant data. To bill for real,
+    # override, e.g.:
+    #   command: ["python", "/app/metering/rollup.py", "acme",
+    #             "--month", "2026-06", "--out-dir", "/app/metering/out/acme-2026-06",
+    #             "--verify"]
+    command: ["python", "/app/metering/selftest.py"]
+    restart: "no"
+
+volumes:
+  metering-out:
+
+# --- Uncomment ONLY to run this fragment standalone (outside the master compose) ---
+# networks:
+#   cp-net:
+#     driver: bridge

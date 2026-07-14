@@ -1,0 +1,97 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — fleet-SLI rules staging fragment (WS-FLEETSLI)
+# ----------------------------------------------------------------------------
+# Standalone compose fragment. The integrate step merges this into the master
+# docker-compose.control-plane.yml. Do NOT edit the master file directly.
+#
+# WHAT THIS DOES
+#   fleet-sli ships ONLY rule files (no long-running process of its own). Those
+#   rules must land in the Mimir RULER's per-tenant directory so the ruler
+#   evaluates them centrally over the whole fleet. Per mimir/mimir.yaml the ruler
+#   reads filesystem rule groups from:
+#       /data/ruler/<tenant_id>/<file>.yaml
+#   and the fleet-wide SLI rules are evaluated under the SYNTHETIC ruler tenant
+#       __fleet__
+#   (Mimir evaluates ruler groups per tenant; operator dashboards then query the
+#   resulting fleet:* / fyralis:* series with `X-Scope-OrgID: __fleet__`).
+#
+#   This one-shot service copies the fleet-sli rule files into
+#   /data/ruler/__fleet__/ on the shared `mimir-data` volume BEFORE Mimir starts.
+#
+# RELATIONSHIP TO THE MIMIR FRAGMENT (read this at integrate time)
+#   mimir/service.compose.yml ALSO declares a `mimir-ruler-bootstrap` one-shot
+#   that stages rules — BUT its copy glob is `*.yaml`, while the fleet-sli
+#   deliverables are named `*.yml` (recording_rules.yml / alert_rules.yml /
+#   slo_burnrate_rules.yml, per the WS-FLEETSLI task spec). Those `.yml` files
+#   would be MISSED by a `*.yaml`-only glob. This fragment's bootstrap globs BOTH
+#   `*.yml` AND `*.yaml`, so it is the authoritative stager for the fleet-sli set.
+#
+#   INTEGRATE OPTIONS (pick one — they are mutually exclusive on the same volume):
+#     (a) Use THIS service (`fleet-sli-ruler-bootstrap`) and DROP mimir's
+#         `mimir-ruler-bootstrap`; make `mimir` depend_on this one instead. (Recommended —
+#         covers both extensions.)
+#     (b) Keep mimir's bootstrap and widen its glob to `*.yml*` (a one-char edit
+#         in the mimir fragment, owned by the mimir agent).
+#   Either way the END STATE is identical: all three fleet-sli files staged under
+#   /data/ruler/__fleet__/. Do NOT run both bootstraps with conflicting globs.
+#
+# Networks/volumes (cp-net, mimir-data) are declared in the master compose file;
+# referenced here as external-by-merge. If running this fragment standalone,
+# uncomment the networks:/volumes: blocks at the bottom.
+# ============================================================================
+
+services:
+  # --- one-shot: stage fleet-sli rules (BOTH .yml and .yaml) into __fleet__ ---
+  fleet-sli-ruler-bootstrap:
+    image: busybox:1.36
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        DEST=/data/ruler/__fleet__
+        SRC=/etc/mimir/fleet-sli
+        mkdir -p "$$DEST"
+        # Copy ONLY the actual Prometheus/Mimir rule files — never the compose
+        # fragment or the *.md docs that also live in this directory (those are
+        # not rule groups and the ruler would fail to parse them). Enumerated
+        # explicitly so a stray file can never be staged into the ruler.
+        n=0
+        for f in recording_rules.yml alert_rules.yml slo_burnrate_rules.yml fleet_sli.rules.yaml; do
+          if [ -e "$$SRC/$$f" ]; then
+            cp -f "$$SRC/$$f" "$$DEST/"
+            n=$$((n+1))
+          else
+            echo "WARN: expected rule file $$f missing under $$SRC" >&2
+          fi
+        done
+        if [ "$$n" -eq 0 ]; then
+          echo "ERROR: no fleet-sli rule files staged — ruler will have no fleet groups" >&2
+          exit 1
+        fi
+        echo "staged $$n fleet-sli rule file(s) into $$DEST:"
+        ls -l "$$DEST"
+    volumes:
+      # Shared with the mimir service so the ruler reads the staged copies.
+      - mimir-data:/data
+      # Read-only source of the fleet-sli rule files (this directory).
+      - ./fleet-sli:/etc/mimir/fleet-sli:ro
+    networks:
+      - cp-net
+    restart: "no"
+
+  # The mimir service should depend on this bootstrap completing. The mimir
+  # fragment already declares `mimir`; at integrate time add (or merge) this
+  # depends_on so the rules exist before the ruler starts:
+  #
+  #   mimir:
+  #     depends_on:
+  #       fleet-sli-ruler-bootstrap:
+  #         condition: service_completed_successfully
+
+# --- Uncomment ONLY to run this fragment standalone (outside the master compose) ---
+# networks:
+#   cp-net:
+#     driver: bridge
+# volumes:
+#   mimir-data:

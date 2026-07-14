@@ -1,0 +1,9 @@
+# Runtime deps for the outbound-only Fyralis data-plane agent.
+# Deliberately small: crypto (ed25519 VERIFY only), the C4 record model, and the
+# single outbound https client. NO server framework — the agent has no listener (I2).
+cryptography>=42.0
+pydantic>=2.0
+requests>=2.31
+
+# Test-only (not needed to run the daemon):
+#   pytest>=8

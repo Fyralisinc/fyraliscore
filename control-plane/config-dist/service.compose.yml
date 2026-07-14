@@ -1,0 +1,87 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — config-distribution service fragment (WS-CONFIG)
+# ----------------------------------------------------------------------------
+# Standalone compose fragment. The integrate step merges this into the master
+# docker-compose.control-plane.yml. Do NOT edit the master file directly.
+#
+# WHAT THIS DOES
+#   Serves each data plane its SIGNED per-deployment config bundle (FR-C3/C4/D4):
+#   feature flags + telemetry_tier (C3) + token-rotation schedule (FR-D4). Every
+#   published version is ed25519-signed via control-plane/signing (C2/I6). The
+#   outbound-only AGENT points AGENT_CONFIG_URL at this service, GETs the bundle
+#   (config.json + .sig + .manifest.json), and VERIFIES-before-apply (I6) — which
+#   agent/config_pull.py already does. A tier change or flag flip is a NEW signed
+#   version (no redeploy); the agent picks it up on its next pull.
+#
+# IMPORTANT — build context is the control-plane ROOT (.), not config-dist/, so the
+#   image can include signing/ (sign_bundle/verify_bundle/signing_lib) + lib/, which
+#   the service imports to sign + verify configs (C2/I6).
+#
+# SIGNING KEY — this service signs configs with its own active ed25519 key, held in
+#   a config-dist signing home under the persisted /data volume (bootstrapped on
+#   first run). The PUBLIC trust root is exported at GET /trust_root.json so an
+#   installer can pin the verifier keys into the agent. In production you may instead
+#   mount the SHARED control-plane signing key so config/license/release all chain to
+#   one trust root — set CONFIG_DIST_SIGNING_HOME to a mounted keystore that already
+#   has trust_root.json + keys/<key_id>.private.pem and CONFIG_DIST_KEY_ID to match.
+#
+# NETWORKING — lives on cp-net BEHIND the auth-proxy. The agent reaches it ONLY
+#   through the proxy (outbound-only, I2): the proxy terminates the data plane's mTLS,
+#   extracts tenant_id from the cert SAN (C1), and forwards to this service. Nothing
+#   here ever dials into a customer VPC.
+#
+# Networks (cp-net) are declared in the master compose file; referenced here as
+# external-by-merge. If running standalone, uncomment the networks: block below.
+# ============================================================================
+
+services:
+  config-dist:
+    build:
+      context: .
+      dockerfile: config-dist/Dockerfile
+    image: fyralis/config-dist
+    environment:
+      CONFIG_DIST_PORT: "8090"
+      CONFIG_DIST_STORE_ROOT: /data/store
+      CONFIG_DIST_SIGNING_HOME: /data/signing-home
+      # The signing key id this service mints under (kept stable so versions chain
+      # to one key). Override + mount a shared keystore to use the CP-wide key.
+      CONFIG_DIST_KEY_ID: cp-config-dist
+    volumes:
+      # Persist the signed-config store (per-deployment versioned bundles) AND the
+      # signing home (trust_root.json + keys/) across restarts. The signing key is
+      # generated into this volume on first run; back it up / treat it as a secret.
+      - config-dist-data:/data
+    command:
+      - python
+      - -m
+      - uvicorn
+      - config_service:app
+      - --app-dir
+      - /app/config-dist
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8090"
+    # Host-publish ONLY for local/dev inspection; in production the agent reaches
+    # this ONLY through the auth-proxy on cp-net (mTLS-terminated, tenant-scoped).
+    ports:
+      - "8090:8090"
+    networks:
+      - cp-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/healthz').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  config-dist-data:
+
+# --- Uncomment ONLY to run this fragment standalone (outside the master compose) ---
+# networks:
+#   cp-net:
+#     driver: bridge

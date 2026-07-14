@@ -1,0 +1,18 @@
+# CA-local ignores. Generated PKI material and private keys never go in git.
+# (The repo-level .gitignore already covers **/keys/, **/*.key, __pycache__.)
+
+# Generated CA hierarchy + issued tenant certs (re-creatable via bootstrap_ca.py
+# / issue_cert.py). Keep secrets out even if someone runs the CLIs in-tree.
+pki/
+*.crt
+*.bundle.crt
+
+# Compiled python
+__pycache__/
+*.pyc
+
+# tenant_registry.json IS tracked (it is the revocation source of truth the
+# proxy reads). A committed empty {} seed is fine; real fingerprints are written
+# by issue_cert.py at runtime. If you prefer not to track runtime entries,
+# uncomment the next line in your deployment.
+# tenant_registry.json

@@ -36,6 +36,7 @@ from typing import Any, Awaitable, Callable, TypeVar
 
 import structlog
 
+from lib.observability.metrics import LLM_CIRCUIT_BREAKER_STATE
 from lib.shared.errors import CompanyOSError
 
 
@@ -88,6 +89,19 @@ class LLMCircuitBreaker:
     def _now(self) -> float:
         return time.monotonic()
 
+    def _publish_state(self) -> None:
+        """BYOC §12 G3: export this breaker's current state to the fleet gauge,
+        one series per (provider, state) — the active state reads 1, the other
+        two read 0 — so `state="open"` is directly alertable as "provider down,
+        all Think runs fast-failing". `name` is the provider (deepseek/codex/…)
+        which is a bounded label; never a tenant/install id."""
+        for member in CircuitState:
+            LLM_CIRCUIT_BREAKER_STATE.set(
+                1.0 if self.state == member else 0.0,
+                provider=self.name,
+                state=member.value,
+            )
+
     def _evict_old(self) -> None:
         cutoff = self._now() - self.window_seconds
         while self.events and self.events[0][0] < cutoff:
@@ -109,6 +123,7 @@ class LLMCircuitBreaker:
             # Clear the window so the next failure starts from scratch.
             self.events.clear()
             _log.info("circuit_breaker_closed", name=self.name)
+            self._publish_state()
 
     def _record_failure(self) -> None:
         self.events.append((self._now(), False))
@@ -122,6 +137,7 @@ class LLMCircuitBreaker:
                 name=self.name,
                 failure_rate=self._failure_rate(),
             )
+            self._publish_state()
             return
         # CLOSED: evaluate threshold if we have enough samples.
         if len(self.events) >= self.min_samples:
@@ -135,12 +151,14 @@ class LLMCircuitBreaker:
                     failure_rate=rate,
                     samples=len(self.events),
                 )
+                self._publish_state()
 
     def _check_half_open_transition(self) -> None:
         if self.state == CircuitState.OPEN and self.opened_at is not None:
             if self._now() - self.opened_at >= self.open_duration:
                 self.state = CircuitState.HALF_OPEN
                 _log.info("circuit_breaker_half_open", name=self.name)
+                self._publish_state()
 
     def _current_lock(self) -> asyncio.Lock:
         loop = asyncio.get_running_loop()
@@ -201,6 +219,7 @@ class LLMCircuitBreaker:
         self.events.clear()
         self._lock = None
         self._lock_loop = None
+        self._publish_state()
 
 
 # ---------------------------------------------------------------------
@@ -214,7 +233,12 @@ def get_breaker(name: str) -> LLMCircuitBreaker:
     """Return the breaker for `name` (usually 'deepseek', 'anthropic',
     'openai'). Creates one with default settings on first call."""
     if name not in _BREAKERS:
-        _BREAKERS[name] = LLMCircuitBreaker(name=name)
+        breaker = LLMCircuitBreaker(name=name)
+        # Publish the initial CLOSED state so a never-tripped provider still
+        # shows up in fyralis_llm_circuit_breaker_state (G3) — the control
+        # plane can then tell "closed/healthy" apart from "absent/unscraped".
+        breaker._publish_state()
+        _BREAKERS[name] = breaker
     return _BREAKERS[name]
 
 
@@ -223,6 +247,7 @@ def register_breaker(name: str, breaker: LLMCircuitBreaker) -> None:
     that need custom thresholds / windows without monkey-patching."""
     breaker.name = name
     _BREAKERS[name] = breaker
+    breaker._publish_state()
 
 
 def reset_breakers() -> None:

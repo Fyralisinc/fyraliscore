@@ -1,0 +1,496 @@
+# =============================================================================
+# fleet-sli / recording_rules.yml — WS-FLEETSLI
+# -----------------------------------------------------------------------------
+# Fleet recording rules that aggregate the golden-12 SLIs both PER-DEPLOYMENT
+# and FLEET-WIDE. These load into the Mimir RULER under the synthetic tenant
+# `__fleet__` (see mimir/mimir.yaml + README.md) so they evaluate CENTRALLY,
+# once, over the metrics remote-written by EVERY tenant's data plane.
+#
+# Naming conventions (do not rename — dashboards + alert_rules.yml depend on them):
+#   * fyralis:<name>           — per-deployment SLI, KEEPS deployment identity labels
+#                                (tenant_id, deployment_id, region). These mirror the
+#                                data plane's OWN recording-rule namespace so a rule
+#                                authored for a single deployment ports unchanged.
+#   * fyralis:<name>:<window>  — same, with an explicit rate/window suffix (e.g. :5m).
+#   * fleet:<name>             — FLEET-WIDE roll-up (aggregated across all deployments),
+#                                used by the cross-fleet operator view.
+#
+# Identity labels: every series remote-written by a data plane carries
+# tenant_id / deployment_id / region / telemetry_tier, stamped by the boundary
+# OTel Collector (boundary/otel-collector-config.yaml `resource` processor).
+# `by (tenant_id, deployment_id, region)` therefore yields one SLI series per
+# deployment; `without (...)` / fleet aggregations roll the fleet up.
+#
+# Metric-name provenance: every base metric referenced below is on the Tier-1
+# allowlist (boundary/redaction_allowlist.md, Gate 1) and is emitted by the
+# data plane's real instrumentation (lib/observability/metrics.py + health.py +
+# pools.py, postgres-exporter custom queries, kafka-exporter). G1/G2/G3/G5 are
+# the new gap-closing metrics (fyralis_schema_version, fyralis_oauth_token_*,
+# fyralis_llm_breaker_*, fyralis_worker_expected_present / _running).
+#
+# DEPENDENCY NOTES (rules that depend on other rules):
+#   * fyralis:embed_failure_ratio:10m  ← depends on think/embedding counters; standalone.
+#   * fleet:*                          ← every fleet roll-up depends on the matching
+#                                        per-deployment fyralis:* rule recorded ABOVE it
+#                                        in the SAME group (Prometheus/Mimir evaluate a
+#                                        group top-to-bottom each interval, so an in-group
+#                                        dependency is satisfied within one eval cycle).
+#   * alert_rules.yml + slo_burnrate_rules.yml consume fyralis:* / fleet:* by name.
+# =============================================================================
+
+groups:
+
+  # ===========================================================================
+  # GROUP 1 — Worker liveness  (golden SLI #1)
+  #   up{job=~"fyralis-.*"}, worker_heartbeat_age_seconds, worker_uptime_seconds,
+  #   fyralis_worker_expected_present / _running  (G5: expected-vs-present)
+  # ===========================================================================
+  - name: fleet_sli_worker_liveness
+    interval: 30s
+    rules:
+      # --- per-deployment: fraction of fyralis worker scrape targets that are up
+      - record: fyralis:worker_up_ratio
+        expr: |
+          avg by (tenant_id, deployment_id, region) (
+            up{job=~"fyralis-.*"}
+          )
+      # --- per-deployment: count of DOWN fyralis worker targets
+      - record: fyralis:worker_down_count
+        expr: |
+          count by (tenant_id, deployment_id, region) (
+            up{job=~"fyralis-.*"} == 0
+          ) or (0 * count by (tenant_id, deployment_id, region) (up{job=~"fyralis-.*"}))
+      # --- per-deployment: worst (max) worker heartbeat age — hung-loop detector
+      #     OR'd with the legacy ingestion_heartbeat_age_seconds family (health.py).
+      - record: fyralis:worker_heartbeat_age_max_seconds
+        expr: |
+          max by (tenant_id, deployment_id, region) (
+            worker_heartbeat_age_seconds
+            or ingestion_heartbeat_age_seconds
+          )
+      # --- G5: expected-vs-present worker classes. A missing class (e.g.
+      #     anomaly_processor / deadline_resolver coded-but-not-in-compose) shows
+      #     as missing_count > 0. Falls back to the up-derived shortfall if the
+      #     gap metric isn't emitted yet.
+      - record: fyralis:worker_missing_count
+        expr: |
+          clamp_min(
+            max by (tenant_id, deployment_id, region) (fyralis_worker_expected_present)
+            - max by (tenant_id, deployment_id, region) (fyralis_worker_expected_running),
+            0
+          )
+          or
+          fyralis:worker_down_count
+      # --- fleet-wide: deployments with at least one worker down
+      - record: fleet:deployments_with_worker_down
+        expr: |
+          count(fyralis:worker_down_count > 0) or vector(0)
+      # --- fleet-wide: total fyralis worker targets up across the whole fleet
+      - record: fleet:workers_up_total
+        expr: |
+          sum(up{job=~"fyralis-.*"}) or vector(0)
+
+  # ===========================================================================
+  # GROUP 2 — Kafka data plane  (golden SLI #2)
+  #   kafka_consumergroup_lag*, normalizer_consumer_lag_seconds, breaker_trips_total
+  # ===========================================================================
+  - name: fleet_sli_kafka
+    interval: 30s
+    rules:
+      # --- per-deployment: worst consumer-group lag (mirrors data-plane
+      #     fyralis:kafka_worst_group_lag). Tolerates either the _sum rollup or
+      #     the raw per-partition family.
+      - record: fyralis:kafka_worst_group_lag
+        expr: |
+          max by (tenant_id, deployment_id, region) (
+            kafka_consumergroup_lag_sum
+            or kafka_consumergroup_lag
+          )
+      # --- per-deployment: normalizer seconds-behind-ingress
+      - record: fyralis:normalizer_lag_seconds_max
+        expr: |
+          max by (tenant_id, deployment_id, region) (
+            normalizer_consumer_lag_seconds
+          )
+      # --- per-deployment: kafka breaker (auto-cutover-to-inline) trip rate
+      - record: fyralis:kafka_breaker_trip_rate:5m
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            rate(breaker_trips_total[5m])
+          )
+      # --- fleet-wide: worst lag anywhere in the fleet
+      - record: fleet:kafka_worst_group_lag
+        expr: |
+          max(fyralis:kafka_worst_group_lag) or vector(0)
+
+  # ===========================================================================
+  # GROUP 3 — DLQ / poison / silent-loss  (golden SLI #3 + #6)
+  #   fyralis_dlq_unresolved, fyralis_dead_letter_rows, writer.shadow_drop,
+  #   writer.poison_dlq / writer_poison_attempts
+  # ===========================================================================
+  - name: fleet_sli_dlq
+    interval: 30s
+    rules:
+      # --- per-deployment: unresolved DLQ depth (OR legacy ingestion family)
+      - record: fyralis:dlq_unresolved
+        expr: |
+          max by (tenant_id, deployment_id, region) (
+            fyralis_dlq_unresolved
+            or ingestion_dlq_writer_unresolved_depth
+          )
+      # --- per-deployment: total dead-letter (poison) rows across all tables
+      - record: fyralis:dead_letter_rows_total
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            fyralis_dead_letter_rows
+          )
+      # --- per-deployment: SHADOW-DROP rate on the backfill path. This is the
+      #     silent-data-loss invariant — it MUST be zero. (golden SLI #6)
+      - record: fyralis:shadow_drop_rate:5m
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            rate(writer_shadow_drop_total[5m])
+            or rate(writer_shadow_drop[5m])
+          )
+      # --- per-deployment: poison-cap burn rate (mig 0137 writer_poison_attempts)
+      - record: fyralis:poison_attempts_rate:5m
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            rate(writer_poison_attempts_total[5m])
+            or rate(writer_poison_dlq_total[5m])
+          )
+      # --- fleet-wide: worst DLQ depth + any-shadow-drop indicator
+      - record: fleet:dlq_unresolved_max
+        expr: |
+          max(fyralis:dlq_unresolved) or vector(0)
+      - record: fleet:deployments_with_shadow_drop
+        expr: |
+          count(fyralis:shadow_drop_rate:5m > 0) or vector(0)
+
+  # ===========================================================================
+  # GROUP 4 — Ingestion rate & backfill progress  (golden SLI #4 + #5)
+  #   writer.full_mode_writes (obs-per-source rate), fyralis_onboarding_shards,
+  #   writer.full_mode_dedup_hits (retry-storm), reconciliation_pass_count
+  # ===========================================================================
+  - name: fleet_sli_ingestion
+    interval: 30s
+    rules:
+      # --- per-deployment, per-source: observation write rate (zeroed-backfill detector)
+      - record: fyralis:ingest_write_rate:5m
+        expr: |
+          sum by (tenant_id, deployment_id, region, source) (
+            rate(writer_full_mode_writes_total[5m])
+            or rate(writer_full_mode_writes[5m])
+          )
+      # --- per-deployment: total ingest write rate (all sources)
+      - record: fyralis:ingest_write_rate_total:5m
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            rate(writer_full_mode_writes_total[5m])
+            or rate(writer_full_mode_writes[5m])
+          )
+      # --- per-deployment: dedup-hit rate (retry storm: high dedup, ~0 new writes)
+      - record: fyralis:ingest_dedup_rate:5m
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            rate(writer_full_mode_dedup_hits_total[5m])
+            or rate(writer_full_mode_dedup_hits[5m])
+          )
+      # --- per-deployment: backfill shards by status (pending / failed / complete)
+      - record: fyralis:onboarding_shards_by_status
+        expr: |
+          max by (tenant_id, deployment_id, region, status) (
+            fyralis_onboarding_shards
+          )
+      # --- per-deployment: backfill shards NOT yet complete (progress headroom)
+      - record: fyralis:onboarding_shards_incomplete
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            fyralis_onboarding_shards{status!~"complete|completed|done"}
+          ) or (0 * sum by (tenant_id, deployment_id, region) (fyralis_onboarding_shards))
+      # --- per-deployment: failed backfill shards
+      - record: fyralis:onboarding_shards_failed
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            fyralis_onboarding_shards{status=~"failed|error|dead"}
+          ) or (0 * sum by (tenant_id, deployment_id, region) (fyralis_onboarding_shards))
+      # --- per-deployment: reconciler pass rate (oscillation / stall signal)
+      - record: fyralis:reconciliation_pass_rate:10m
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            rate(reconciliation_pass_count_total[10m])
+            or rate(reconciliation_pass_count[10m])
+          )
+      # --- fleet-wide: deployments where total ingest has flat-lined to zero
+      #     while backfill shards are still incomplete (stalled-backfill detector)
+      - record: fleet:deployments_ingest_stalled
+        expr: |
+          count(
+            (fyralis:ingest_write_rate_total:5m == 0)
+            and on (tenant_id, deployment_id, region)
+            (fyralis:onboarding_shards_incomplete > 0)
+          ) or vector(0)
+      # --- fleet-wide: total fleet ingest throughput
+      - record: fleet:ingest_write_rate_total:5m
+        expr: |
+          sum(fyralis:ingest_write_rate_total:5m) or vector(0)
+
+  # ===========================================================================
+  # GROUP 5 — Reasoning / think pipeline  (golden SLI #7 + #8)
+  #   fyralis_think_queue_pending, think_runs_total/failed/latency
+  # ===========================================================================
+  - name: fleet_sli_think
+    interval: 30s
+    rules:
+      # --- per-deployment: think queue depth (backpressure)
+      - record: fyralis:think_queue_pending
+        expr: |
+          max by (tenant_id, deployment_id, region) (
+            fyralis_think_queue_pending
+          )
+      # --- per-deployment: think run throughput
+      - record: fyralis:think_runs_rate:5m
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            rate(think_runs_total[5m])
+          )
+      # --- per-deployment: think failure rate
+      - record: fyralis:think_failed_rate:5m
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            rate(think_runs_failed_total[5m])
+            or rate(think_runs_failed[5m])
+          )
+      # --- per-deployment: think FAILURE RATIO (failed / total) over 10m.
+      #     Guarded denominator so a fully-idle pipeline reports 0, not NaN.
+      - record: fyralis:think_failure_ratio:10m
+        expr: |
+          (
+            sum by (tenant_id, deployment_id, region) (rate(think_runs_failed_total[10m]) or rate(think_runs_failed[10m]))
+            /
+            clamp_min(sum by (tenant_id, deployment_id, region) (rate(think_runs_total[10m])), 1)
+          )
+      # --- fleet-wide: worst think backlog anywhere
+      - record: fleet:think_queue_pending_max
+        expr: |
+          max(fyralis:think_queue_pending) or vector(0)
+
+  # ===========================================================================
+  # GROUP 6 — Embedding dependency  (golden SLI #9)
+  #   fyralis_embedding_backlog_pending, embed failure counters
+  # ===========================================================================
+  - name: fleet_sli_embedding
+    interval: 30s
+    rules:
+      # --- per-deployment: embedding backlog depth
+      - record: fyralis:embedding_backlog_pending
+        expr: |
+          max by (tenant_id, deployment_id, region) (
+            fyralis_embedding_backlog_pending
+          )
+      # --- per-deployment: embedding FAILURE RATIO over 10m (mirrors the
+      #     data-plane fyralis:embed_failure_ratio:10m recording rule).
+      #     Guarded denominator. Depends only on embedding counters.
+      - record: fyralis:embed_failure_ratio:10m
+        expr: |
+          (
+            sum by (tenant_id, deployment_id, region) (rate(embedding_failures_total[10m]) or rate(embedding_embed_failures_total[10m]))
+            /
+            clamp_min(sum by (tenant_id, deployment_id, region) (rate(embedding_attempts_total[10m]) or rate(embedding_embed_attempts_total[10m])), 1)
+          )
+      # --- fleet-wide: worst embedding backlog anywhere
+      - record: fleet:embedding_backlog_max
+        expr: |
+          max(fyralis:embedding_backlog_pending) or vector(0)
+
+  # ===========================================================================
+  # GROUP 7 — LLM circuit-breaker + spend  (golden SLI #10)
+  #   fyralis_llm_breaker_state (G3), think_cost_recent_usd
+  # ===========================================================================
+  - name: fleet_sli_llm
+    interval: 30s
+    rules:
+      # --- per-deployment: is ANY provider's breaker OPEN? (1 = open = bad)
+      #     fyralis_llm_breaker_state is a per-(provider,state) 0/1 gauge.
+      - record: fyralis:llm_breaker_open
+        expr: |
+          max by (tenant_id, deployment_id, region) (
+            fyralis_llm_breaker_state{state="open"}
+          ) or (0 * max by (tenant_id, deployment_id, region) (fyralis_llm_breaker_state))
+      # --- per-deployment: rolling LLM spend in USD per hour (mirrors the
+      #     data-plane fyralis:llm_spend_usd_per_hour recording rule). Prefers the
+      #     ready-made 1h-window gauge; falls back to a derived hourly rate.
+      - record: fyralis:llm_spend_usd_per_hour
+        expr: |
+          max by (tenant_id, deployment_id, region) (think_cost_recent_usd_1h)
+          or
+          (sum by (tenant_id, deployment_id, region) (rate(think_cost_recent_usd_total[5m])) * 3600)
+      # --- fleet-wide: total fleet LLM spend rate ($/hr) + open-breaker count
+      - record: fleet:llm_spend_usd_per_hour
+        expr: |
+          sum(fyralis:llm_spend_usd_per_hour) or vector(0)
+      - record: fleet:deployments_with_breaker_open
+        expr: |
+          count(fyralis:llm_breaker_open > 0) or vector(0)
+
+  # ===========================================================================
+  # GROUP 8 — Database & schema integrity  (golden SLI #11)
+  #   db_pool_* (saturation), fyralis_schema_version (G1),
+  #   fyralis_partition_coverage, pg_* (postgres-exporter)
+  # ===========================================================================
+  - name: fleet_sli_db_schema
+    interval: 30s
+    rules:
+      # --- per-deployment, per-pool: pool saturation = in_use / max
+      #     (mirrors the data-plane fyralis:db_pool_saturation recording rule).
+      #     Tolerant of both the bare db_pool_* (pools.py) and fyralis_db_pool_*
+      #     prefixed shapes, and of either *_max_size or *_size as the cap.
+      - record: fyralis:db_pool_saturation
+        expr: |
+          max by (tenant_id, deployment_id, region, pool) (
+            (db_pool_in_use or db_pool_size_in_use or fyralis_db_pool_in_use)
+            /
+            clamp_min((db_pool_max_size or db_pool_size_max or fyralis_db_pool_max_size), 1)
+          )
+      # --- per-deployment: worst pool saturation across all pools
+      - record: fyralis:db_pool_saturation_max
+        expr: |
+          max by (tenant_id, deployment_id, region) (fyralis:db_pool_saturation)
+      # --- per-deployment: current applied schema version (G1 metric).
+      - record: fyralis:schema_version
+        expr: |
+          max by (tenant_id, deployment_id, region) (
+            fyralis_schema_version
+          )
+      # --- per-deployment: forward partition coverage (current + future months).
+      - record: fyralis:partition_coverage
+        expr: |
+          min by (tenant_id, deployment_id, region) (
+            fyralis_partition_coverage_months
+            or fyralis_partition_coverage
+          )
+      # --- fleet-wide: the schema version each deployment is on, surfaced as a
+      #     fleet count-by-version so drift (a laggard deployment) is one query.
+      - record: fleet:deployments_by_schema_version
+        expr: |
+          count by (schema_version) (
+            label_replace(fyralis:schema_version, "schema_version", "$1", "__name__", ".*")
+            * 0
+            + fyralis:schema_version
+          ) or count by (tenant_id) (fyralis:schema_version) * 0
+      # --- fleet-wide: the MAX schema version observed anywhere (the "expected"
+      #     current version; any deployment below it is drifting — see alert).
+      - record: fleet:schema_version_max
+        expr: |
+          max(fyralis:schema_version) or vector(0)
+      # --- fleet-wide: worst DB pool saturation in the fleet
+      - record: fleet:db_pool_saturation_max
+        expr: |
+          max(fyralis:db_pool_saturation) or vector(0)
+
+  # ===========================================================================
+  # GROUP 9 — Auth / OAuth / ingress  (golden SLI #12)
+  #   fyralis_oauth_token_* (G2), webhook_verification_failures_total,
+  #   webhook_resolver_outcomes_total, http_requests_total (gateway 5xx)
+  # ===========================================================================
+  - name: fleet_sli_auth_ingress
+    interval: 30s
+    rules:
+      # --- per-deployment: OAuth source-token refresh FAILURE rate (G2). The
+      #     "a source silently dies" signal that was previously invisible.
+      - record: fyralis:oauth_refresh_failure_rate:15m
+        expr: |
+          sum by (tenant_id, deployment_id, region, source) (
+            rate(fyralis_oauth_token_refresh_failures_total[15m])
+          )
+      # --- per-deployment: sources whose tokens expire soon (G2 expiry gauge)
+      - record: fyralis:oauth_tokens_expiring_soon
+        expr: |
+          max by (tenant_id, deployment_id, region) (
+            fyralis_oauth_token_expiring_soon
+          )
+      # --- per-deployment: webhook signature-verification failure rate (mirrors
+      #     the data-plane fyralis:webhook_failure_rate:5m recording rule).
+      - record: fyralis:webhook_failure_rate:5m
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            rate(webhook_verification_failures_total[5m])
+          )
+      # --- per-deployment: gateway 5xx error rate (mirrors fyralis:gateway_5xx_rate:5m)
+      - record: fyralis:gateway_5xx_rate:5m
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            rate(http_requests_total{status=~"5.."}[5m])
+          )
+      # --- per-deployment: total gateway request rate (5xx-ratio denominator)
+      - record: fyralis:gateway_request_rate:5m
+        expr: |
+          sum by (tenant_id, deployment_id, region) (
+            rate(http_requests_total[5m])
+          )
+      # --- per-deployment: gateway 5xx RATIO (for the SLO availability burn rate).
+      #     Guarded denominator → idle gateway reports 0, not NaN.
+      - record: fyralis:gateway_5xx_ratio:5m
+        expr: |
+          (
+            sum by (tenant_id, deployment_id, region) (rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum by (tenant_id, deployment_id, region) (rate(http_requests_total[5m])), 1)
+          )
+      # --- fleet-wide: deployments with any OAuth refresh failure
+      - record: fleet:deployments_with_oauth_failure
+        expr: |
+          count(fyralis:oauth_refresh_failure_rate:15m > 0) or vector(0)
+      # --- fleet-wide: total fleet webhook-failure rate
+      - record: fleet:webhook_failure_rate:5m
+        expr: |
+          sum(fyralis:webhook_failure_rate:5m) or vector(0)
+
+  # ===========================================================================
+  # GROUP 10 — Per-deployment ROLL-UP health colour  (FR-B4: 🟢/🟡/🔴)
+  #   A single 0/1/2 series per deployment derived from the SLIs above so the
+  #   fleet console + Grafana can render the green/yellow/red dot from ONE query.
+  #   Depends on rules recorded in groups 1–9 (evaluated each interval).
+  #   0 = green, 1 = yellow, 2 = red  (matches lib/deployment.py derive_health).
+  # ===========================================================================
+  - name: fleet_sli_health_rollup
+    interval: 30s
+    rules:
+      # --- RED conditions (any one → red): a worker down, breaker open, DLQ
+      #     over hard cap, shadow-drop on backfill, or pool fully saturated.
+      - record: fyralis:health_red
+        expr: |
+          (
+            (fyralis:worker_down_count > bool 0)
+            or (fyralis:llm_breaker_open > bool 0)
+            or (fyralis:dlq_unresolved > bool 100)
+            or (fyralis:shadow_drop_rate:5m > bool 0)
+            or (fyralis:db_pool_saturation_max >= bool 0.99)
+          )
+      # --- YELLOW conditions (any one, and not red): elevated lag, queue
+      #     backpressure, embed failure, oauth failure, pool warm.
+      - record: fyralis:health_yellow
+        expr: |
+          (
+            (fyralis:kafka_worst_group_lag > bool 1000)
+            or (fyralis:think_queue_pending > bool 500)
+            or (fyralis:embed_failure_ratio:10m > bool 0.05)
+            or (fyralis:oauth_refresh_failure_rate:15m > bool 0)
+            or (fyralis:db_pool_saturation_max > bool 0.9)
+          )
+      # --- final colour code: 2 if red, else 1 if yellow, else 0 (green)
+      - record: fyralis:health_code
+        expr: |
+          (2 * fyralis:health_red)
+          or
+          (1 * (fyralis:health_yellow > bool 0) * (fyralis:health_red == bool 0))
+      # --- fleet-wide colour census (how many deployments are red / yellow / green)
+      - record: fleet:deployments_red
+        expr: |
+          count(fyralis:health_code == 2) or vector(0)
+      - record: fleet:deployments_yellow
+        expr: |
+          count(fyralis:health_code == 1) or vector(0)
+      - record: fleet:deployments_total
+        expr: |
+          count(group by (tenant_id, deployment_id) (fyralis:schema_version)) or vector(0)
