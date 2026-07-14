@@ -243,7 +243,12 @@ jobs:
           .venv/bin/pip install pip-audit==2.7.3
 
       - name: Audit Python dependencies
-        run: .venv/bin/pip-audit --local --strict
+        # The project itself is installed editable and is not a third-party
+        # dependency published on PyPI. Audit every resolved dependency while
+        # excluding only that unauditable editable root package. Known
+        # vulnerabilities still fail the command; pip-audit 2.7.3's --strict
+        # would incorrectly fail on the intentional editable-package skip.
+        run: .venv/bin/pip-audit --local --skip-editable
 
       - name: Scan repository filesystem
         uses: aquasecurity/trivy-action@v0.24.0

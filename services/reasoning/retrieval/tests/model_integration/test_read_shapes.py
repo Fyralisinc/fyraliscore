@@ -147,6 +147,16 @@ def test_retrieval_hydrator_strips_private_query_columns() -> None:
     assert not hasattr(row, "_semantic_rank")
 
 
+def test_retrieval_hydrator_supports_pgvector_codec_shape() -> None:
+    class VectorWithToList:
+        def to_list(self) -> list[float]:
+            return [0.4, 0.5, 0.6]
+
+    row = pathways._hydrate_model(_base_record(embedding=VectorWithToList()))
+
+    assert row.embedding == [0.4, 0.5, 0.6]
+
+
 def test_repo_hydrator_wraps_validation_failures() -> None:
     with pytest.raises(RowHydrationError):
         models_repo._hydrate_row(_base_record(embedding="not-json-vector"))

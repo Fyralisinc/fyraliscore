@@ -101,8 +101,8 @@ state. Do not put either the Figma Client Secret or state-HMAC value in a
 checked-in file, browser environment variable, browser storage, support ticket,
 or chat message.
 
-The checked-in [production environment
-template](../../.env.production.example) contains the required key names and
+The checked-in production environment template
+(`.env.production.example`) contains the required key names and
 safe placeholders. Run the environment contract check as part of deployment
 validation:
 

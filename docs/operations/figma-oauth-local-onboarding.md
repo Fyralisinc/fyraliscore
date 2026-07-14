@@ -180,7 +180,7 @@ Password: company_os
 SSL mode: Prefer
 ```
 
-Run [inspect_figma.sql](../../ops/pgadmin/inspect_figma.sql) in pgAdmin to see
+Run `ops/pgadmin/inspect_figma.sql` in pgAdmin to see
 OAuth connection metadata, the selected file allowlist, snapshot observations,
 and durable blob links. These local defaults are intentionally not production
 credentials.

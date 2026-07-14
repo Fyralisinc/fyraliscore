@@ -16,7 +16,7 @@ First-class Model `semantic_terms` are implemented.
   retrieval hydration, and `claim_ops.update` all preserve the field.
 - Retrieval adds pathway `L`, mapped to lexical RRF dimension
   `DIMENSION_LEXICAL`.
-- Migration `0181_model_representation_feature_postings.sql` mirrors lexical
+- Migration `0214_model_representation_feature_postings.sql` mirrors lexical
   `semantic_terms` into a unified typed feature-posting index as
   `feature_type='lexical'`. Existing domain/retrieval/coverage tags and cheap
   grammar/structural facets share that same posting surface, while

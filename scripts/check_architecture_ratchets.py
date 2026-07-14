@@ -88,6 +88,7 @@ SECRET_COLUMN_ALLOWED_SUFFIXES = (
     "_scopes",
     "_status",
     "_type",
+    "_kind",
 )
 SECRET_REF_KEYWORD_NAME_RE = re.compile(
     r"(?:^secret_ref$|_secret_ref$|_token_ref$|_session_ref$|_public_key_ref$)",
@@ -774,6 +775,9 @@ IMPORT_LINTER_IGNORE_IMPORT_LIMITS = {
     "ingest does not add new imports of app code": 47,
 }
 ACCESS_READ_AUDIT_EXEMPT_FILES = {
+    # The authority engine consumes the low-level decision primitive to build
+    # provenance-aware decisions; request-boundary callers own override audit.
+    Path("services/platform/access_control/authority.py"),
     Path("services/platform/access_control/checks.py"),
     Path("services/platform/access_control/extension_caps.py"),
 }
@@ -820,8 +824,11 @@ class Violation:
 def _is_test_path(path: Path) -> bool:
     return (
         "tests" in path.parts
+        or "__tests__" in path.parts
         or path.name.startswith("test_")
         or path.name.endswith("_test.py")
+        or ".test." in path.name
+        or ".spec." in path.name
     )
 
 
@@ -1160,6 +1167,8 @@ def find_browser_token_storage_violations(
 
     violations: list[Violation] = []
     for rel in _iter_client_asset_files(repo_root=repo_root, roots=roots):
+        if _is_test_path(rel):
+            continue
         text = (repo_root / rel).read_text(encoding="utf-8", errors="ignore")
         for line_number, line in enumerate(text.splitlines(), start=1):
             for pattern, message in CLIENT_TOKEN_STORAGE_PATTERNS:

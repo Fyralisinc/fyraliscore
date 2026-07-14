@@ -1208,7 +1208,7 @@ EXPECTED_TABLES: dict[str, Table] = {
         },
     ),
     "model_residual_evidence": Table(
-        # 0179_model_residual_evidence.sql — non-canonical lifecycle debt
+        # 0212_model_residual_evidence.sql — non-canonical lifecycle debt
         # for model-metabolism compression misses.
         columns=dict([
             _col("id", UUID, False),
@@ -1237,7 +1237,7 @@ EXPECTED_TABLES: dict[str, Table] = {
         },
     ),
     "sage_latent_gap_hypotheses": Table(
-        # 0180_sage_latent_gap_hypotheses.sql — SAGE-owned non-canonical
+        # 0213_sage_latent_gap_hypotheses.sql — SAGE-owned non-canonical
         # hypotheses born only from measured residual missingness.
         columns=dict([
             _col("id", UUID, False),

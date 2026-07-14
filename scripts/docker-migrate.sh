@@ -19,7 +19,7 @@ if [ -n "$dupes" ]; then
   exit 1
 fi
 
-# BYOC §12 G1 — formal definition lives in db/migrations/0155_schema_migrations.sql;
+# BYOC §12 G1 — formal definition lives in db/migrations/0187_schema_migrations.sql;
 # this lazy bootstrap keeps shape parity (incl. the checksum column added by 0155
 # for drift detection) for DBs whose first migration is applied by this runner.
 psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 -q <<'SQL'

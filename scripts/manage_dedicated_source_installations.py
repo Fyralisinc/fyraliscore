@@ -150,6 +150,18 @@ SPECS: dict[str, SourceSpec] = {
         extra_output_columns=("page_id", "instagram_username", "history_lookback_days"),
         updated_at_column="updated_at",
     ),
+    "facebook_pages": SourceSpec(
+        source="facebook_pages",
+        table="facebook_page_installations",
+        scope_column="page_id",
+        ref_columns=("page_access_token_ref", "app_secret_ref", "verify_token_ref"),
+        entity_table="facebook_page_conversations",
+        entity_install_column="facebook_page_installation_id",
+        base_url_column=None,
+        extra_output_columns=("page_name",),
+        enabled_column="enabled",
+        updated_at_column="updated_at",
+    ),
     "jira": SourceSpec(
         source="jira",
         table="jira_installations",
@@ -945,7 +957,7 @@ async def _set_native_instagram_webhook_enabled(
         """
         UPDATE instagram_webhook_routes
            SET enabled = $1, updated_at = now()
-         WHERE tenant_id = $2 AND instagram_installation_id = $3
+         WHERE resolved_tenant_id = $2 AND instagram_installation_id = $3
         """,
         enabled,
         tenant_id,

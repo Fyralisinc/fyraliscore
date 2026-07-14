@@ -326,7 +326,7 @@ async def disconnect(request: Request) -> JSONResponse:
             """
             UPDATE instagram_webhook_routes
                SET enabled = FALSE, updated_at = now()
-             WHERE tenant_id = $1 AND instagram_installation_id = $2
+             WHERE resolved_tenant_id = $1 AND instagram_installation_id = $2
             """,
             tenant_id,
             row["id"],

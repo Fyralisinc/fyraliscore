@@ -29,6 +29,32 @@ from uuid import UUID
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+
+def _prefer_repo_tests_package() -> None:
+    """Discard pytest's accidental top-level alias for ``scripts/tests``.
+
+    During full-suite collection, pytest can import ``scripts/tests`` as the
+    top-level ``tests`` package before this standalone probe is loaded.  The
+    probe needs the repository's real ``tests.real_llm`` helpers instead.
+    """
+    tests_module = sys.modules.get("tests")
+    module_file = getattr(tests_module, "__file__", None)
+    if module_file is None:
+        return
+    try:
+        module_path = Path(module_file).resolve()
+        scripts_tests = (REPO_ROOT / "scripts" / "tests").resolve()
+    except OSError:
+        return
+    if (
+        module_path == scripts_tests / "__init__.py"
+        or scripts_tests in module_path.parents
+    ):
+        sys.modules.pop("tests", None)
+
+
+_prefer_repo_tests_package()
+
 os.environ.setdefault("COMPANY_OS_ENV", "test")
 
 import asyncpg

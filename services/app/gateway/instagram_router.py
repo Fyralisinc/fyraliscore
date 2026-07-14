@@ -134,7 +134,7 @@ async def _verify_token_matches_route(
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT id, tenant_id, verify_token_ref
+            SELECT id, resolved_tenant_id AS tenant_id, verify_token_ref
               FROM instagram_webhook_routes
              WHERE enabled = TRUE
             """
@@ -164,7 +164,7 @@ async def _lookup_route(pool: Any, ig_business_account_id: str) -> dict[str, Any
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT r.id, r.tenant_id, r.instagram_installation_id,
+            SELECT r.id, r.resolved_tenant_id AS tenant_id, r.instagram_installation_id,
                    r.ig_business_account_id, r.page_id, r.app_secret_ref,
                    r.verify_token_ref, r.webhook_delivery_account_id, r.enabled
               FROM instagram_webhook_routes r
@@ -228,7 +228,7 @@ async def _resolve_delivery_alias_route(
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT r.id, r.tenant_id, r.instagram_installation_id,
+            SELECT r.id, r.resolved_tenant_id AS tenant_id, r.instagram_installation_id,
                    r.ig_business_account_id, r.page_id, r.app_secret_ref,
                    r.verify_token_ref, r.webhook_delivery_account_id, r.enabled,
                    i.base_url, i.access_token_ref

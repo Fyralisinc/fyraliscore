@@ -88,7 +88,7 @@ The harness should extend existing surfaces instead of replacing them.
   events for later-requested omitted evidence, user-accepted nodes,
   user-contested nodes, model confirmation, model falsification,
   recommendation action, and recommendation ignore.
-- `db/migrations/0160_model_events_and_projection_snapshots.sql` already
+- `db/migrations/0193_model_events_and_projection_snapshots.sql` already
   defines the Model event stream and rebuildable projection snapshots.
 - `services/domain/projections/runtime.py` and
   `services/domain/projections/router.py` already expose projection routing,

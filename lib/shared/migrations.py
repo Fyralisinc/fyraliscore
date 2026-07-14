@@ -197,7 +197,7 @@ _OBSOLETE_DEMO_SCAFFOLDING_MIGRATIONS = (
 
 def _ledger_ddl(table: str) -> str:
     # `checksum` is the digest of the migration file bytes at apply time
-    # (BYOC §12 G1) — formalized in db/migrations/0155_schema_migrations.sql.
+    # (BYOC §12 G1) — formalized in db/migrations/0187_schema_migrations.sql.
     # Added here too so a DB bootstrapped purely by this lazy CREATE (tests,
     # extension ledgers) gets the same shape. ADD COLUMN IF NOT EXISTS widens
     # a pre-G1 two-column ledger created by an older runner.

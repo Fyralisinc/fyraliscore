@@ -442,7 +442,7 @@ async def finalize_install(
     async with tenant_transaction(tenant_id, pool=pool) as conn:
         collision = await conn.fetchval(
             """
-            SELECT tenant_id FROM instagram_webhook_routes
+            SELECT resolved_tenant_id FROM instagram_webhook_routes
              WHERE ig_business_account_id = $1
             """,
             ig_business_account_id,
@@ -509,7 +509,7 @@ async def finalize_install(
         await conn.execute(
             """
             INSERT INTO instagram_webhook_routes (
-                id, tenant_id, instagram_installation_id, ig_business_account_id,
+                id, resolved_tenant_id, instagram_installation_id, ig_business_account_id,
                 page_id, app_id, webhook_delivery_account_id, enabled
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
             ON CONFLICT (ig_business_account_id) DO UPDATE

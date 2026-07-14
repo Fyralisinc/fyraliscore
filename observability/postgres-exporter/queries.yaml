@@ -79,7 +79,7 @@ fyralis_think_cost_recent:
 # plane sees schema state regardless of WHICH runner applied (the shell runner
 # scripts/docker-migrate.sh records the ledger but cannot set in-process
 # Prometheus gauges; the Python runner sets fyralis_schema_* directly). Reads
-# the 0155_schema_migrations ledger: `version` = max numeric 0NNN_ prefix
+# the 0187_schema_migrations ledger: `version` = max numeric 0NNN_ prefix
 # (monotonic schema version), `applied` = row count. NULLIF/coalesce keep it
 # a 0 gauge on a brand-new empty ledger instead of NULL.
 fyralis_schema:

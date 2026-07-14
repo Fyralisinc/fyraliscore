@@ -295,6 +295,7 @@ def _hydrate_model(record: asyncpg.Record) -> ModelRow:
         record,
         drop_internal_fields=True,
         null_invalid_embedding=True,
+        use_vector_to_list=True,
     )
 
 

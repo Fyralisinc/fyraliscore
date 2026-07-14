@@ -402,7 +402,9 @@ async def test_dedup_same_slack_message_twice(
     assert r1.observation.id == r2.observation.id
     assert r2.deduped is True
     assert r1.trigger_queue_id is not None
-    assert r2.trigger_queue_id == r1.trigger_queue_id
+    # A dedup response reports no newly-created trigger. The queue count below
+    # proves the original trigger remains the only durable work item.
+    assert r2.trigger_queue_id is None
     # Single row in observations.
     count = await gateway_pool.fetchval(
         "SELECT count(*) FROM observations WHERE tenant_id = $1",

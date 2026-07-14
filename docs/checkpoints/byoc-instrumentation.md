@@ -24,7 +24,7 @@ verification. No behavioral change to ingestion, reasoning, or the writers.
 ### G1 — schema-version ledger + fleet metrics
 *Design: §9.2 Database & schema integrity, tagged 🔴 "no `schema_migrations` table".*
 
-- **Migration `db/migrations/0155_schema_migrations.sql`** — formal, checked-in
+- **Migration `db/migrations/0187_schema_migrations.sql`** — formal, checked-in
   definition of the ledger both runners already lazily created. Additively
   widens it with a `checksum` column (digest of the file bytes at apply time,
   for drift detection) alongside the existing filename PK (= `0NNN_` schema

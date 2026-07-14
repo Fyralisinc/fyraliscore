@@ -62,10 +62,10 @@ def test_model_metabolism_tables_are_in_schema_drift_contract() -> None:
 
 def test_model_metabolism_migrations_preserve_lifecycle_and_rls_invariants() -> None:
     residual_sql = (
-        ROOT / "db" / "migrations" / "0179_model_residual_evidence.sql"
+        ROOT / "db" / "migrations" / "0212_model_residual_evidence.sql"
     ).read_text(encoding="utf-8")
     latent_gap_sql = (
-        ROOT / "db" / "migrations" / "0180_sage_latent_gap_hypotheses.sql"
+        ROOT / "db" / "migrations" / "0213_sage_latent_gap_hypotheses.sql"
     ).read_text(encoding="utf-8")
 
     assert "status IN ('open', 'absorbed', 'rejected', 'expired')" in residual_sql

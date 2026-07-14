@@ -74,7 +74,7 @@ As of 2026-06-24:
 - In-card conversation Ask now forwards `actor_id` into `QueryHandler`, so it
   no longer falls back to system-style access context.
 - Phase 1/2 foundation exists in code and schema:
-  `db/migrations/0171_read_authority_plane_foundation.sql` adds
+  `db/migrations/0204_read_authority_plane_foundation.sql` adds
   `object_access_labels`, `object_provenance_edges`, `access_grant_epochs`, and
   `read_authority_grants`; `services/platform/access_control/authority.py`
   defines `Principal`, `Purpose`, `ObjectRef`, `AccessLabel`,
@@ -95,7 +95,7 @@ As of 2026-06-24:
   only when its source refs still authorize for the current viewer.
 - Persisted Ask evidence now records authority provenance and inherited labels
   as `evidence` derived artifacts at write time, with migration
-  `0175_backfill_ask_evidence_authority.sql` backfilling existing persisted
+  `0208_backfill_ask_evidence_authority.sql` backfilling existing persisted
   Ask evidence from direct source refs, projected source refs, and composed
   chain observation refs.
 - Accepted Ask-answer writeback now re-checks persisted supporting evidence
@@ -104,13 +104,13 @@ As of 2026-06-24:
   authorized supporting evidence remains.
 - Ask sessions/scopes and answers now persist compact authority snapshots:
   fingerprint, tenant, viewer, purpose, role-set hash, grant epoch, scope hash,
-  policy version, and capture time. Migration `0172_ask_authority_snapshots.sql`
+  policy version, and capture time. Migration `0205_ask_authority_snapshots.sql`
   adds `ask_answers.authority_snapshot` plus audit indexes.
 - `ModelsRepo.insert` and `ModelsRepo.insert_many` now record read-authority
   provenance edges from born-from observations, supporting observations,
   supporting Models, and contributing Models to each created Model, so derived
   Model reads can inherit source authority.
-- Migration `0173_backfill_model_authority_provenance.sql` backfills the same
+- Migration `0206_backfill_model_authority_provenance.sql` backfills the same
   provenance edges for existing Models from their evidence arrays.
 - Product and gateway model-trace reads now accept the authenticated viewer
   principal and filter trace chains plus one-hop supports/depends-on results
@@ -133,7 +133,7 @@ As of 2026-06-24:
 - Model inserts and bulk inserts now copy inherited source labels from their
   recorded provenance refs, so newly derived Models carry the source authority
   labels that Ask/model-trace authorization can evaluate.
-- Migration `0174_backfill_access_labels.sql` backfills existing resource and
+- Migration `0207_backfill_access_labels.sql` backfills existing resource and
   observation labels, observation/state-change provenance edges, and inherited
   labels for existing derived objects using recorded provenance.
 - Derived artifacts with first-class provenance, including persisted evidence,

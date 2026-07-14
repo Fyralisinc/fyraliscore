@@ -1814,7 +1814,6 @@ async def _source_provider_handoff(
                     detail={
                         "error": "slack_manifest_create_failed",
                         "slack_error": exc.slack_error,
-                        "message": str(exc),
                     },
                 ) from exc
             app_refs = await byoc_app.store_app_credentials(

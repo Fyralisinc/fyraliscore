@@ -93,7 +93,7 @@ async def _register(
         await conn.execute(
             """
             INSERT INTO instagram_webhook_routes (
-                id, tenant_id, instagram_installation_id, ig_business_account_id,
+                id, resolved_tenant_id, instagram_installation_id, ig_business_account_id,
                 page_id, app_secret_ref, verify_token_ref, enabled
             ) VALUES ($1, $2, $3, $4, 'page-1', $5, $6, TRUE)
             """,
@@ -306,7 +306,7 @@ async def test_signed_webhook_binds_meta_delivery_account_alias(
         """
         SELECT webhook_delivery_account_id
           FROM instagram_webhook_routes
-         WHERE tenant_id = $1
+         WHERE resolved_tenant_id = $1
         """,
         tenant_id,
     ) == delivery_account_id

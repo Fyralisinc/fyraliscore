@@ -76,6 +76,7 @@ async def _insert_installation(
         "app_secret_ref": "app-secret",
         "verify_token_ref": "verify-token",
         "access_token_ref": "access-token",
+        "page_access_token_ref": "page-access-token",
     }
     for column in spec.ref_columns:
         if column == "webhook_secret_ref" and not include_webhook:
@@ -1035,6 +1036,21 @@ def test_google_workspace_sources_have_no_secret_ref_lifecycle_specs() -> None:
         assert spec.native_google_watch_table is (
             source in {"google_calendar", "google_drive"}
         )
+
+
+def test_facebook_pages_lifecycle_spec_controls_the_runtime_installation() -> None:
+    spec = SPECS["facebook_pages"]
+
+    assert spec.table == "facebook_page_installations"
+    assert spec.scope_column == "page_id"
+    assert spec.enabled_column == "enabled"
+    assert spec.ref_columns == (
+        "page_access_token_ref",
+        "app_secret_ref",
+        "verify_token_ref",
+    )
+    assert spec.entity_table == "facebook_page_conversations"
+    assert spec.entity_install_column == "facebook_page_installation_id"
 
 
 def test_webhook_cleanup_status_requires_local_resolver_disable() -> None:

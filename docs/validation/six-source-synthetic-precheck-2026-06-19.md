@@ -173,10 +173,10 @@ Against `fyralis_signal_tests`, `COMPANY_OS_ENV=test`:
 
 3. **GitHub multi-page backfill stopped after the first page (silent truncation).**
    *Not* a missing re-queue — `shard_fetch`'s fetch loop (`while True` →
-   break on `FetchResult.end_of_data`, [workflows/shard_fetch.py](../../services/ingest/ingestion/workflows/shard_fetch.py))
+   break on `FetchResult.end_of_data`, `services/ingest/ingestion/workflows/shard_fetch.py`)
    already drains every page. The bug was in how the **github fetcher computed
    `end_of_data`**: `is_end = next_page is None OR len(page_records) < _DEFAULT_PER_PAGE`
-   ([fetchers/github.py](../../services/ingest/ingestion/fetchers/github.py)). GitHub's
+   (`services/ingest/ingestion/fetchers/github.py`). GitHub's
    Link-header `rel="next"` (parsed into `next_page` by the client) is the authoritative
    end signal — present iff another page exists — but the `len < _DEFAULT_PER_PAGE`
    belt **overrode** it: any short-but-not-final page (the synthetic mock caps each page
