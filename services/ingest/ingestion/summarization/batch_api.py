@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -14,10 +15,14 @@ from services.ingest.ingestion.summarization.llm import (
     DEFAULT_SUMMARIZER_MODEL,
     DocumentSummarySchema,
     SummaryResult,
+    batch_input_cap_from_env,
     build_summary_prompt,
     parse_summary_text,
     summary_limit_from_env,
 )
+
+
+log = logging.getLogger(__name__)
 
 
 BATCH_ENDPOINT = "/v1/responses"
@@ -77,6 +82,21 @@ def build_batch_request_line(
     metadata: dict[str, Any],
 ) -> str:
     max_chars = summary_limit_from_env()
+    # The Batch API is one request line per item, so true map-reduce is awkward
+    # here (deferred to Phase 2). For now the whole document is sent in a single
+    # call; if it exceeds the raised single-call cap we LOG it rather than
+    # silently truncating (docs/plans/document-memory-substrate.md §3.2).
+    input_cap = batch_input_cap_from_env()
+    if len(source_text) > input_cap:
+        log.warning(
+            "summarization.batch.input_exceeds_cap",
+            extra={
+                "custom_id": custom_id,
+                "source_chars": len(source_text),
+                "input_cap_chars": input_cap,
+                "source_channel": metadata.get("source_channel"),
+            },
+        )
     system, user = build_summary_prompt(
         source_text,
         metadata=metadata,
