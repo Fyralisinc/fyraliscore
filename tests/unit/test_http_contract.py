@@ -32,10 +32,13 @@ def test_contracted_gateway_routes_are_mounted() -> None:
     )
     demo_extension_installed = _demo_extension_installed()
     app = build_app(configure_logging=False)
+    schema = app.openapi()
     mounted = {
-        (method, route.path)
-        for route in app.routes
-        for method in (getattr(route, "methods", None) or set())
+        (method.upper(), path)
+        for path, operations in schema.get("paths", {}).items()
+        for method in operations
+        if method.upper()
+        in {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD", "TRACE"}
     }
 
     missing = [
