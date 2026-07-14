@@ -52,7 +52,6 @@ from services.platform.runtime.byoc_contract import (
 from services.platform.runtime.byoc_permissions import (
     load_byoc_aws_iam_template,
     load_byoc_permissions_manifest,
-    render_validation_errors as render_permissions_validation_errors,
     validate_aws_iam_template_contract,
     validate_permissions_manifest_contract,
 )

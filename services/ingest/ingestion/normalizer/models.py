@@ -64,6 +64,9 @@ class NormalizedEnvelope(BaseModel):
     source_actor_ref: str | None = None
     external_id: str | None = None
     entities_hint: list[dict[str, Any]] = Field(default_factory=list)
+    # Private artifact-catalog descriptors.  These intentionally do not live
+    # inside ``content`` (which is persisted verbatim to observations).
+    artifact_descriptors: list[dict[str, Any]] = Field(default_factory=list)
     # ---- Normalizer-local ----
     normalized_at: dt.datetime
     ingress_metadata: dict[str, Any] = Field(default_factory=dict)

@@ -697,10 +697,13 @@ async def build_miro_client(
 async def build_figma_client(
     install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
 ) -> Any:
-    """Figma read-client (IN-VERTICALS, PAT/Bearer REST API). API token is
-    long-lived: resolved once from the secret store via `install['secret_ref']`
-    (or preset in spammer mode). The base URL routes through the endpoint
-    resolver so backfill can point at the local spammer's `/figma` sub-path."""
+    """Figma read-client (IN-VERTICALS, PAT or OAuth Bearer REST API).
+
+    ``auth_kind`` is persisted on the install so OAuth grants use the required
+    ``Authorization: Bearer`` header while legacy PAT installs retain
+    ``X-Figma-Token``.  The base URL routes through the endpoint resolver so
+    backfill can point at the local spammer's `/figma` sub-path.
+    """
     from lib.integrations.endpoints import endpoint
     from services.ingest.integrations.figma.client import FigmaClient
 
@@ -708,6 +711,13 @@ async def build_figma_client(
     base_url = str(install["base_url"]) if "base_url" in install else ""
     secret_ref = install["secret_ref"] if "secret_ref" in install else None
     team_id = str(install["team_id"]) if "team_id" in install else ""
+    auth_kind = str(install["auth_kind"]) if "auth_kind" in install else "pat"
+    refresh_secret_ref = (
+        install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
+    )
+    token_expires_at = (
+        install["token_expires_at"] if "token_expires_at" in install else None
+    )
     client = FigmaClient(
         base_url=base_url,
         pool=await _effective_pool(pool, spammer=spammer),
@@ -718,6 +728,10 @@ async def build_figma_client(
         http_client=await _get_http(),
         api_base_url=(endpoint("figma_api") if spammer else None),
         team_id=team_id,
+        auth_kind=auth_kind,
+        install_row_id=install["id"] if "id" in install else None,
+        refresh_secret_ref=refresh_secret_ref,
+        token_expires_at=token_expires_at,
     )
     return await _wrap_source_client("figma", client)
 
@@ -921,6 +935,35 @@ async def build_linkedin_client(
     return await _wrap_source_client("linkedin", client)
 
 
+async def build_facebook_pages_client(
+    install: asyncpg.Record, *, pool: asyncpg.Pool | None = None,
+) -> Any:
+    """Facebook Pages read-client. The Page access token lives behind
+    `facebook_page_installations.page_access_token_ref`; in spammer mode a
+    deterministic token is preset and the Graph base URL points at the local
+    source mock."""
+    from services.ingest.integrations.facebook_pages.client import (
+        FacebookPagesClient,
+        graph_api_base_url,
+    )
+
+    spammer = _spammer_mode()
+    page_id = str(install["page_id"]) if "page_id" in install else ""
+    client = FacebookPagesClient(
+        base_url=graph_api_base_url(),
+        access_token=(f"spam-facebook-pages::{page_id}" if spammer else None),
+        page_access_token_ref=(
+            install["page_access_token_ref"]
+            if "page_access_token_ref" in install else None
+        ),
+        pool=await _effective_pool(pool, spammer=spammer),
+        secret_store=None if spammer else await _get_secret_store(),
+        tenant_id=install["tenant_id"],
+        http_client=await _get_http(),
+    )
+    return await _wrap_source_client("facebook_pages", client)
+
+
 # ---------------------------------------------------------------------
 # Fetcher / reconciler openers — return (client, close).
 # ---------------------------------------------------------------------
@@ -1030,6 +1073,10 @@ async def open_linkedin_client(install: asyncpg.Record) -> Opener:
     return await build_linkedin_client(install), _noop
 
 
+async def open_facebook_pages_client(install: asyncpg.Record) -> Opener:
+    return await build_facebook_pages_client(install), _noop
+
+
 async def open_signal_client(install: asyncpg.Record) -> Opener:
     return await build_signal_client(install), _noop
 
@@ -1056,6 +1103,7 @@ __all__ = [
     "build_fireflies_client", "build_miro_client", "build_figma_client",
     "build_carta_client", "build_signal_client", "build_aws_client",
     "build_hibob_client", "build_ashby_client", "build_linkedin_client",
+    "build_facebook_pages_client",
     "open_github_client", "open_slack_client", "open_slack_user_client",
     "open_discord_client",
     "open_notion_client", "open_jira_client",
@@ -1065,4 +1113,5 @@ __all__ = [
     "open_fireflies_client", "open_miro_client", "open_figma_client",
     "open_carta_client", "open_signal_client", "open_aws_client",
     "open_hibob_client", "open_ashby_client", "open_linkedin_client",
+    "open_facebook_pages_client",
 ]

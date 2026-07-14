@@ -8,6 +8,7 @@ paths so operators see the required keys before deploy time.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +74,7 @@ REQUIRED_KEYS = frozenset(
         "GATEWAY_REQUIRE_GITHUB_INTEGRATION",
         "GATEWAY_REQUIRE_INGESTION_DATA_PLANE",
         "S3_RAW_BUCKET",
+        "S3_BLOB_BUCKET",
         "S3_REGION_NAME",
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
@@ -83,6 +85,14 @@ REQUIRED_KEYS = frozenset(
         "GITHUB_APP_PRIVATE_KEY",
         "WEBHOOK_SECRET_GITHUB_SECRET_REF",
         "WEBHOOK_SECRET_GITHUB",
+        "FIGMA_OAUTH_ENABLED",
+        "FIGMA_CLIENT_ID",
+        "FIGMA_CLIENT_SECRET_SECRET_REF",
+        "FIGMA_CLIENT_SECRET",
+        "FIGMA_REDIRECT_URI",
+        "FIGMA_OAUTH_UI_BASE_URL",
+        "FIGMA_OAUTH_ALLOW_HTTP_LOOPBACK",
+        "FIGMA_OAUTH_SCOPES",
         "SLACK_CLIENT_ID",
         "SLACK_CLIENT_SECRET_SECRET_REF",
         "SLACK_CLIENT_SECRET",
@@ -166,6 +176,8 @@ REQUIRED_ALLOWED_VALUES = {
     "GATEWAY_REQUIRE_REALTIME": {"0", "1"},
     "GATEWAY_REQUIRE_GITHUB_INTEGRATION": {"0", "1"},
     "GATEWAY_START_GRT_SCHEDULER": {"0", "1"},
+    "FIGMA_OAUTH_ENABLED": {"0", "1"},
+    "FIGMA_OAUTH_ALLOW_HTTP_LOOPBACK": {"0", "1"},
 }
 FORBIDDEN_EXACT_VALUES = {
     "GRAFANA_ADMIN_PASSWORD": {"", "admin", "password", "fyralis-admin"},
@@ -178,6 +190,7 @@ REQUIRED_BLANK_SECRET_PLACEHOLDER_KEYS = frozenset(
         "CODEX_API_KEY",
         "DISCORD_BOT_TOKEN",
         "DISCORD_CLIENT_SECRET",
+        "FIGMA_CLIENT_SECRET",
         "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY",
         "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY",
         "GITHUB_APP_PRIVATE_KEY",
@@ -194,6 +207,7 @@ REQUIRED_NONEMPTY_SECRET_REF_KEYS = frozenset(
         "CODEX_API_KEY_SECRET_REF",
         "DISCORD_BOT_TOKEN_SECRET_REF",
         "DISCORD_CLIENT_SECRET_SECRET_REF",
+        "FIGMA_CLIENT_SECRET_SECRET_REF",
         "FYRALIS_BYOC_EVIDENCE_INTAKE_SIGNING_KEY_SECRET_REF",
         "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF",
         "GITHUB_APP_PRIVATE_KEY_SECRET_REF",
@@ -298,6 +312,121 @@ BYOC_REQUIRED_NONEMPTY_KEYS = frozenset(
         "FYRALIS_BYOC_EVIDENCE_READ_SIGNING_KEY_SECRET_REF",
     }
 )
+
+_FIGMA_OAUTH_CALLBACK_PATH = "/integrations/figma/oauth/callback"
+_FIGMA_OAUTH_REQUIRED_SCOPES = frozenset(
+    {
+        "current_user:read",
+        "file_metadata:read",
+        "file_content:read",
+        "file_comments:read",
+        "file_versions:read",
+    }
+)
+
+
+def _figma_oauth_url_violation(
+    *,
+    path: Path,
+    entry: "EnvEntry | None",
+    key: str,
+    callback: bool = False,
+) -> EnvContractViolation | None:
+    """Validate non-secret BYOC OAuth URLs without normalizing them.
+
+    Figma compares redirect URLs exactly, so a trailing slash or query string
+    must be caught in deployment configuration instead of after a user reaches
+    the provider consent screen.
+    """
+    if entry is None or not entry.value:
+        return EnvContractViolation(
+            path=path,
+            key=key,
+            line_number=entry.line_number if entry else None,
+            message="must be configured when FIGMA_OAUTH_ENABLED=1 in BYOC production",
+        )
+    parsed = urlparse(entry.value)
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or parsed.username
+        or parsed.password
+    ):
+        return EnvContractViolation(
+            path=path,
+            key=key,
+            line_number=entry.line_number,
+            message="must be an absolute https URL without credentials, query, or fragment",
+        )
+    if callback and parsed.path != _FIGMA_OAUTH_CALLBACK_PATH:
+        return EnvContractViolation(
+            path=path,
+            key=key,
+            line_number=entry.line_number,
+            message=(
+                "must use the exact Figma callback path "
+                f"{_FIGMA_OAUTH_CALLBACK_PATH!r}"
+            ),
+        )
+    return None
+
+
+def _append_byoc_figma_oauth_violations(
+    *,
+    path: Path,
+    values_by_key: dict[str, "EnvEntry"],
+    violations: list["EnvContractViolation"],
+) -> None:
+    """Enforce the one-app-per-BYOC-deployment Figma contract when enabled."""
+    enabled = values_by_key.get("FIGMA_OAUTH_ENABLED")
+    if enabled is None or enabled.value != "1":
+        return
+
+    client_id = values_by_key.get("FIGMA_CLIENT_ID")
+    if client_id is None or not client_id.value:
+        violations.append(
+            EnvContractViolation(
+                path=path,
+                key="FIGMA_CLIENT_ID",
+                line_number=client_id.line_number if client_id else None,
+                message="must be configured when FIGMA_OAUTH_ENABLED=1 in BYOC production",
+            )
+        )
+
+    for key, callback in (
+        ("FIGMA_REDIRECT_URI", True),
+        ("FIGMA_OAUTH_UI_BASE_URL", False),
+    ):
+        violation = _figma_oauth_url_violation(
+            path=path,
+            entry=values_by_key.get(key),
+            key=key,
+            callback=callback,
+        )
+        if violation is not None:
+            violations.append(violation)
+
+    scopes_entry = values_by_key.get("FIGMA_OAUTH_SCOPES")
+    scopes = (
+        {value for value in re.split(r"[\s,]+", scopes_entry.value) if value}
+        if scopes_entry is not None
+        else set()
+    )
+    if scopes != _FIGMA_OAUTH_REQUIRED_SCOPES:
+        violations.append(
+            EnvContractViolation(
+                path=path,
+                key="FIGMA_OAUTH_SCOPES",
+                line_number=scopes_entry.line_number if scopes_entry else None,
+                message=(
+                    "must contain exactly the enabled snapshot scopes: "
+                    + ", ".join(sorted(_FIGMA_OAUTH_REQUIRED_SCOPES))
+                ),
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -555,46 +684,46 @@ def check_env_contract(path: Path = DEFAULT_ENV_TEMPLATE) -> list[EnvContractVio
             )
 
         for key, expected in sorted(BYOC_REQUIRED_EXACT_VALUES.items()):
-            entry = values_by_key.get(key)
-            if entry is None:
+            exact_entry = values_by_key.get(key)
+            if exact_entry is None:
                 continue
-            if entry.value != expected:
+            if exact_entry.value != expected:
                 violations.append(
                     EnvContractViolation(
                         path=path,
                         key=key,
-                        line_number=entry.line_number,
-                        message=f"expected {expected!r}, found {entry.value!r}",
+                        line_number=exact_entry.line_number,
+                        message=f"expected {expected!r}, found {exact_entry.value!r}",
                     )
                 )
 
         for key, allowed_values in sorted(BYOC_REQUIRED_ALLOWED_VALUES.items()):
-            entry = values_by_key.get(key)
-            if entry is None:
+            allowed_entry = values_by_key.get(key)
+            if allowed_entry is None:
                 continue
-            if entry.value not in allowed_values:
+            if allowed_entry.value not in allowed_values:
                 allowed = ", ".join(repr(value) for value in sorted(allowed_values))
                 violations.append(
                     EnvContractViolation(
                         path=path,
                         key=key,
-                        line_number=entry.line_number,
+                        line_number=allowed_entry.line_number,
                         message=(
-                            f"expected one of {allowed}; found {entry.value!r}"
+                            f"expected one of {allowed}; found {allowed_entry.value!r}"
                         ),
                     )
                 )
 
         for key in sorted(BYOC_REQUIRED_NONEMPTY_KEYS):
-            entry = values_by_key.get(key)
-            if entry is None:
+            nonempty_entry = values_by_key.get(key)
+            if nonempty_entry is None:
                 continue
-            if not entry.value:
+            if not nonempty_entry.value:
                 violations.append(
                     EnvContractViolation(
                         path=path,
                         key=key,
-                        line_number=entry.line_number,
+                        line_number=nonempty_entry.line_number,
                         message="must not be blank for BYOC production",
                     )
                 )
@@ -620,6 +749,12 @@ def check_env_contract(path: Path = DEFAULT_ENV_TEMPLATE) -> list[EnvContractVio
                         message="must not contain credentials",
                     )
                 )
+
+        _append_byoc_figma_oauth_violations(
+            path=path,
+            values_by_key=values_by_key,
+            violations=violations,
+        )
 
     return violations
 

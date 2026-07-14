@@ -338,6 +338,7 @@ def _draft_from_envelope(env: NormalizedEnvelope) -> ObservationDraft:
         entities_hint=list(env.entities_hint),
         unresolved_phrases=[],
         raw_payload=None,
+        artifact_descriptors=list(env.artifact_descriptors),
     )
 
 

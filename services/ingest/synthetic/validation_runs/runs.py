@@ -9,8 +9,7 @@ Per-source expected observation counts (clean, single-channel/repo
 fixtures, no reshare):
   - gmail   : `messages`                         observations.
   - slack   : `messages_per_channel`             (channels=1).
-  - discord : `messages_per_channel`             (channels=1 → fully
-              sampled; M6.6's 5% sampling rounds max(1, .) to 1).
+  - discord : `channels * messages_per_channel`.
   - github  : `events_per_repo * 2`              (issues + pull_requests
               event types, repos=1).
 """

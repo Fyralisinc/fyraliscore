@@ -48,12 +48,16 @@ from lib.shared.errors import (
     StateTokenInvalidError,
 )
 from lib.shared.ids import uuid7
+from lib.shared.secrets import load_app_secret_text_from_env
 from services.ingest.integrations.notion import metrics
 from services.ingest.integrations.notion.client import short_workspace_hash
 # Reuse the IN-08 state-token primitives (provider-parameterized).
 from services.ingest.integrations.slack.oauth import (
     issue_state_token,
     verify_and_consume_state,
+)
+from services.ingest.integrations.oauth_native_connect import (
+    build_oauth_native_connect_router,
 )
 
 
@@ -133,6 +137,46 @@ async def install_handler(request: Request) -> Any:
     return RedirectResponse(url=f"{_NOTION_AUTHORIZE_URL}?{qs}", status_code=302)
 
 
+async def _connect_handoff(
+    tenant_id: UUID,
+    pool: asyncpg.Pool,
+    request: Request,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    client_id = str(body.get("client_id") or os.environ.get("NOTION_CLIENT_ID") or "").strip()
+    redirect_uri = os.environ.get("NOTION_REDIRECT_URI", "").strip()
+    missing = [
+        name
+        for name, value in {
+            "NOTION_CLIENT_ID": client_id,
+            "NOTION_REDIRECT_URI": redirect_uri,
+            "NOTION_CLIENT_SECRET": load_app_secret_text_from_env("NOTION_CLIENT_SECRET"),
+        }.items()
+        if not value
+    ]
+    install_url = None
+    if not missing:
+        from urllib.parse import urlencode
+
+        state_token = await issue_state_token(tenant_id, pool, provider="notion")
+        install_url = f"{_NOTION_AUTHORIZE_URL}?" + urlencode(
+            {
+                "client_id": client_id,
+                "response_type": "code",
+                "owner": "user",
+                "redirect_uri": redirect_uri,
+                "state": state_token,
+            }
+        )
+    return {
+        "install_url": install_url,
+        "oauth_redirect_url": redirect_uri,
+        "events_request_url": str(body.get("events_request_url") or "").strip() or None,
+        "provider_console_url": "https://www.notion.so/my-integrations",
+        "missing_configuration": missing,
+    }
+
+
 # ---------------------------------------------------------------------
 # Callback handler — GET /integrations/notion/callback
 # ---------------------------------------------------------------------
@@ -142,7 +186,7 @@ async def _exchange_code_for_token(code: str) -> dict[str, Any]:
     client_id:client_secret and returns the parsed JSON
     ({access_token, workspace_id, workspace_name, bot_id, ...})."""
     client_id = os.environ.get("NOTION_CLIENT_ID", "")
-    client_secret = os.environ.get("NOTION_CLIENT_SECRET", "")
+    client_secret = load_app_secret_text_from_env("NOTION_CLIENT_SECRET")
     redirect_uri = os.environ.get("NOTION_REDIRECT_URI", "")
     basic = base64.b64encode(
         f"{client_id}:{client_secret}".encode("utf-8"),
@@ -390,4 +434,20 @@ async def callback_handler(request: Request) -> Any:
     )
 
 
-__all__ = ["install_handler", "callback_handler"]
+router = build_oauth_native_connect_router(
+    source="notion",
+    authorization_mode="oauth",
+    provider_console_url="https://www.notion.so/my-integrations",
+    payload_fields=[
+        "workspace_id",
+        "shared_page_ids",
+        "shared_database_ids",
+        "oauth_redirect_url",
+        "events_request_url",
+        "installation_id",
+    ],
+    build_handoff=_connect_handoff,
+)
+
+
+__all__ = ["install_handler", "callback_handler", "router"]

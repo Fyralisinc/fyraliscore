@@ -56,6 +56,9 @@ from services.ingest.integrations.slack.oauth import (
 
 from services.ingest.integrations.github import metrics
 from services.ingest.integrations.github.uninstall import _short_installation_hash
+from services.ingest.integrations.oauth_native_connect import (
+    build_oauth_native_connect_router,
+)
 
 
 log = structlog.get_logger("integrations.github.oauth")
@@ -138,6 +141,55 @@ async def install_handler(request: Request) -> Any:
         url=f"{_GITHUB_INSTALL_BASE}/{app_slug}/installations/new?{qs}",
         status_code=302,
     )
+
+
+async def _connect_handoff(
+    tenant_id: UUID,
+    pool: asyncpg.Pool,
+    request: Request,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    app_slug = str(body.get("app_slug") or os.environ.get("GITHUB_APP_SLUG") or "").strip()
+    private_key_sources = [
+        name
+        for name in (
+            "GITHUB_APP_PRIVATE_KEY_SECRET_REF",
+            "GITHUB_APP_PRIVATE_KEY",
+            "GITHUB_APP_PRIVATE_KEY_PATH",
+        )
+        if os.environ.get(name, "").strip()
+    ]
+    missing = [
+        name
+        for name, configured in {
+            "GITHUB_APP_SLUG": bool(app_slug),
+            "GITHUB_APP_ID": bool(os.environ.get("GITHUB_APP_ID", "").strip()),
+            "WEBHOOK_SECRET_GITHUB": bool(
+                os.environ.get("WEBHOOK_SECRET_GITHUB_SECRET_REF", "").strip()
+                or os.environ.get("WEBHOOK_SECRET_GITHUB", "").strip()
+            ),
+        }.items()
+        if not configured
+    ]
+    if not private_key_sources:
+        missing.append("GITHUB_APP_PRIVATE_KEY_SOURCE")
+    elif len(private_key_sources) > 1:
+        missing.append("GITHUB_APP_PRIVATE_KEY_SOURCE_CONFLICT")
+    install_url = None
+    if not missing:
+        state_token = await issue_state_token(tenant_id, pool)
+        install_url = (
+            f"{_GITHUB_INSTALL_BASE}/{app_slug}/installations/new?"
+            + urlencode({"state": state_token})
+        )
+    public_url = str(request.base_url).rstrip("/")
+    return {
+        "install_url": install_url,
+        "oauth_redirect_url": f"{public_url}/integrations/github/callback",
+        "events_request_url": str(body.get("events_request_url") or "").strip() or None,
+        "provider_console_url": "https://github.com/settings/apps",
+        "missing_configuration": missing,
+    }
 
 
 # ---------------------------------------------------------------------
@@ -529,9 +581,25 @@ def _redirect_install_error(reason: str) -> RedirectResponse:
     )
 
 
+router = build_oauth_native_connect_router(
+    source="github",
+    authorization_mode="github_app",
+    provider_console_url="https://github.com/settings/apps",
+    payload_fields=[
+        "installation_id",
+        "organization",
+        "repository_selection",
+        "oauth_redirect_url",
+        "events_request_url",
+    ],
+    build_handoff=_connect_handoff,
+)
+
+
 __all__ = [
     "install_handler",
     "callback_handler",
     "issue_state_token",
     "verify_and_consume_state",
+    "router",
 ]

@@ -19,7 +19,7 @@ def build_substrate_router() -> APIRouter:
 
     @router.get("/observations")
     async def get_observations(
-        request: Request, limit: int = 50, offset: int = 0
+        request: Request, limit: int = 50, offset: int = 0, source: str | None = None
     ) -> dict[str, Any]:
         rows = await _visible_list(
             request,
@@ -36,6 +36,7 @@ def build_substrate_router() -> APIRouter:
             order_column="occurred_at",
             limit=limit,
             offset=offset,
+            source_prefix=_source_prefix(source),
         )
         return {
             "items": [
@@ -193,15 +194,26 @@ async def _visible_list(
     order_column: str,
     limit: int,
     offset: int,
+    source_prefix: str | None = None,
 ) -> list[dict[str, Any]]:
     auth = request.state.auth
     deps = _deps(request)
     select_columns = _select_columns(output_columns, access_columns)
+    source_filter = ""
+    limit_arg = 2
+    offset_arg = 3
+    query_args: list[Any] = [auth.tenant_id]
+    if source_prefix and table == "observations":
+        source_filter = "AND source_channel LIKE $2 "
+        limit_arg = 3
+        offset_arg = 4
+        query_args.append(f"{source_prefix}:%")
     query = (
         f"SELECT {select_columns} FROM {table} "
         "WHERE tenant_id = $1 "
+        f"{source_filter}"
         f"ORDER BY {order_column} DESC "
-        "LIMIT $2 OFFSET $3"
+        f"LIMIT ${limit_arg} OFFSET ${offset_arg}"
     )
     requested_limit = _clip(limit, 1, 500)
     visible_offset = max(offset, 0)
@@ -213,7 +225,7 @@ async def _visible_list(
         while len(visible) < requested_limit:
             rows = await conn.fetch(
                 query,
-                auth.tenant_id,
+                *query_args,
                 batch_size,
                 raw_offset,
             )
@@ -248,6 +260,15 @@ async def _visible_list(
             if len(rows) < batch_size:
                 break
         return visible
+
+
+def _source_prefix(source: str | None) -> str | None:
+    if not source:
+        return None
+    normalized = source.strip().lower().replace("-", "_")
+    if not normalized:
+        return None
+    return "".join(ch for ch in normalized if ch.isalnum() or ch == "_")
 
 
 def _select_columns(

@@ -77,6 +77,22 @@ def test_static_gateway_route_inventory_classifies_security_boundaries() -> None
     )
     assert by_path["/ext/oauth/token"].policy.access is RouteAccess.EXTENSION_AUTH
     assert by_path["/ext/v1/observations"].policy.access is RouteAccess.EXTENSION_AUTH
+    figma_callback = by_path["/integrations/figma/oauth/callback"].policy
+    assert figma_callback.access is RouteAccess.SELF_AUTHENTICATED
+    assert figma_callback.gateway_bearer_required is False
+    figma_oauth_start = by_path["/integrations/figma/oauth/start"].policy
+    assert figma_oauth_start.access is RouteAccess.BEARER
+    assert figma_oauth_start.gateway_bearer_required is True
+    figma_admin_readiness = by_path[
+        "/api/admin/integrations/figma/oauth/readiness"
+    ].policy
+    assert figma_admin_readiness.access is RouteAccess.ADMIN
+    assert figma_admin_readiness.gateway_bearer_required is True
+    figma_artifact = by_path[
+        "/integrations/figma/observations/{observation_id}/artifacts/{blob_id}"
+    ].policy
+    assert figma_artifact.access is RouteAccess.BEARER
+    assert figma_artifact.gateway_bearer_required is True
     byoc_intake = by_path["/byoc/control-plane/evidence-packages"].policy
     assert byoc_intake.access is RouteAccess.SELF_AUTHENTICATED
     assert byoc_intake.gateway_bearer_required is False
@@ -104,6 +120,14 @@ def test_static_gateway_route_inventory_classifies_security_boundaries() -> None
         by_path["/byoc/agent/desired-state"].policy.access
         is RouteAccess.SELF_AUTHENTICATED
     )
+    onboarding_intent = by_path["/platform/onboarding/intents"].policy
+    assert onboarding_intent.access is RouteAccess.SELF_AUTHENTICATED
+    assert onboarding_intent.gateway_bearer_required is False
+    design_partner_intake = by_path[
+        "/platform/onboarding/intents/{intent_id}/design-partner-intake"
+    ].policy
+    assert design_partner_intake.access is RouteAccess.SELF_AUTHENTICATED
+    assert design_partner_intake.gateway_bearer_required is False
     assert by_path["/api/admin/dead-letters"].policy.access is RouteAccess.ADMIN
     assert by_path["/api/admin/dead-letters"].policy.gateway_bearer_required is True
 

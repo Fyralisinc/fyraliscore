@@ -226,6 +226,44 @@ async def test_tenant_a_cannot_see_tenant_b_observations(
 
 
 @pytest.mark.asyncio
+async def test_observations_can_be_filtered_by_source_prefix(
+    client: httpx.AsyncClient,
+    gateway_pool,
+    valid_session,
+    tenant_id,
+):
+    token, actor_id = valid_session
+    for channel, text in [
+        ("slack:message", "slack historical backfill"),
+        ("github:event", "github live event"),
+    ]:
+        await gateway_pool.execute(
+            """
+            INSERT INTO observations (
+                id, tenant_id, actor_id, occurred_at, kind, source_channel,
+                content, content_text, trust_tier
+            ) VALUES ($1, $2, $3, $4, 'signal', $5,
+                      '{}'::jsonb, $6, 'authoritative')
+            """,
+            uuid7(),
+            tenant_id,
+            actor_id,
+            datetime.now(timezone.utc),
+            channel,
+            text,
+        )
+
+    response = await client.get(
+        "/observations?source=slack",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    texts = [item["content_text"] for item in response.json()["items"]]
+    assert texts == ["slack historical backfill"]
+
+
+@pytest.mark.asyncio
 async def test_mismatched_tenant_header_returns_403(
     client: httpx.AsyncClient, valid_session, tenant_id_b
 ):

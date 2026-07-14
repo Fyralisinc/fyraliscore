@@ -20,7 +20,7 @@ _VALID_SOURCES = frozenset((
     "google_drive", "jira", "mercury", "notion", "quickbooks", "grafana",
     "telegram", "brex", "ramp", "gusto", "deel",
     "fireflies", "signal", "aws", "miro", "figma", "carta",
-    "hibob", "ashby", "linkedin", "whatsapp",
+    "hibob", "ashby", "linkedin", "whatsapp", "facebook_pages",
 ))
 
 
@@ -47,8 +47,7 @@ class BackfillScenario:
         For Gmail: messages * 1 record/message. For GitHub: repos *
         events_per_repo * 2 (issues + pull_requests). For Slack:
         channels * messages_per_channel. For Discord: channels *
-        messages_per_channel (subject to 5% sampling — see Discord
-        planner). The harness's assertions read this value.
+        messages_per_channel. The harness's assertions read this value.
     """
 
     tenant_slug: str

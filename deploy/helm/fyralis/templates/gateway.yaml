@@ -1,0 +1,83 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fyralis.fullname" . }}-gateway
+  labels:
+    {{- include "fyralis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  type: {{ .Values.gateway.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.gateway.service.port }}
+      targetPort: http
+  selector:
+    {{- include "fyralis.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fyralis.fullname" . }}-gateway
+  labels:
+    {{- include "fyralis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      {{- include "fyralis.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      annotations:
+        checksum/app-env: {{ toJson .Values.app | sha256sum }}
+      labels:
+        {{- include "fyralis.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+    spec:
+      serviceAccountName: {{ include "fyralis.serviceAccountName" . }}
+      initContainers:
+        {{- include "fyralis.waitForLocalServices" . | nindent 8 }}
+      containers:
+        - name: gateway
+          image: {{ include "fyralis.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- toYaml .Values.gateway.command | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: {{ include "fyralis.appEnvConfigName" . }}
+            - secretRef:
+                name: {{ include "fyralis.appSecretName" . }}
+            {{- if and .Values.app.figmaOAuth.enabled .Values.app.figmaOAuth.existingSecret }}
+            # Customer-managed references only: FIGMA_CLIENT_SECRET_SECRET_REF
+            # and OAUTH_STATE_HMAC_KEY_SECRET_REF (plus any provider settings).
+            - secretRef:
+                name: {{ .Values.app.figmaOAuth.existingSecret }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}
+{{- end }}

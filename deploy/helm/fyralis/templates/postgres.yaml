@@ -1,0 +1,89 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fyralis.postgresName" . }}
+  labels:
+    {{- include "fyralis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+  selector:
+    {{- include "fyralis.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fyralis.postgresName" . }}
+  labels:
+    {{- include "fyralis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "fyralis.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        {{- include "fyralis.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.user | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fyralis.appSecretName" . }}
+                  key: POSTGRES_PASSWORD
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgres.user | quote }}
+                - -d
+                - {{ .Values.postgres.database | quote }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      volumes:
+        - name: data
+          {{- if .Values.postgres.storage.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "fyralis.postgresName" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+{{- if .Values.postgres.storage.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "fyralis.postgresName" . }}
+  labels:
+    {{- include "fyralis.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: {{ .Values.postgres.storage.size }}
+{{- end }}
+{{- end }}

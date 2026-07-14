@@ -41,7 +41,7 @@ import logging
 from collections.abc import Iterable
 from typing import Any
 
-from services.app.gateway.product_workflow_metrics import record_product_workflow_event
+from lib.shared.product_workflow_metrics import record_product_workflow_event
 
 from .events import ProgressEvent
 

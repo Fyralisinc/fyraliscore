@@ -8,7 +8,6 @@ import pytest
 from services.ingest.ingestion.planners import PLANNER_DISPATCH
 from services.ingest.ingestion.planners.context import PlannerContext
 from services.ingest.ingestion.planners.discord import (
-    SAMPLING_VERSION,
     SHARD_KIND_CHANNEL_WINDOW,
     plan_shards_discord,
 )
@@ -25,9 +24,18 @@ class _FakeRec:
 
 
 class _FakeDiscordClient:
-    def __init__(self, guilds, channels_by_guild):
+    def __init__(
+        self,
+        guilds,
+        channels_by_guild,
+        *,
+        active_threads_by_guild=None,
+        archived_threads_by_channel=None,
+    ):
         self.guilds = guilds
         self.channels_by_guild = channels_by_guild
+        self.active_threads_by_guild = active_threads_by_guild or {}
+        self.archived_threads_by_channel = archived_threads_by_channel or {}
 
     async def list_guilds(self):
         return self.guilds
@@ -35,30 +43,68 @@ class _FakeDiscordClient:
     async def list_guild_channels(self, guild_id):
         return self.channels_by_guild.get(guild_id, [])
 
+    async def list_active_guild_threads(self, guild_id):
+        return self.active_threads_by_guild.get(guild_id, [])
 
-def _ctx(tenant_id, guilds, channels):
+    async def list_channel_archived_threads(self, channel_id, *, archive_kind):
+        return self.archived_threads_by_channel.get((channel_id, archive_kind), [])
+
+
+def _ctx(
+    tenant_id,
+    guilds,
+    channels,
+    *,
+    active_threads=None,
+    archived_threads=None,
+):
+    install_id = str(guilds[0]["id"]) if guilds else "bot-app"
     install = _FakeRec(id=uuid4(), tenant_id=tenant_id, provider="discord",
-                       installation_id="bot-app", enabled=True)
+                       installation_id=install_id, enabled=True)
     return PlannerContext(
         tenant_id=tenant_id, install=install, conn=None,
-        source_client=_FakeDiscordClient(guilds, channels),
+        source_client=_FakeDiscordClient(
+            guilds,
+            channels,
+            active_threads_by_guild=active_threads,
+            archived_threads_by_channel=archived_threads,
+        ),
     )
 
 
-async def test_samples_approx_5_percent():
+async def test_reads_every_text_channel_regardless_server_size():
     tid = uuid4()
-    # 100 channels in one guild; expected sample = 5.
     channels = [{"id": f"c{i}", "name": f"chan{i}", "type": 0}
                 for i in range(100)]
     ctx = _ctx(tid, [{"id": "g1"}], {"g1": channels})
     shards = await plan_shards_discord(ctx)
-    # 5% of 100 = 5 (max(1, int(100*0.05)) = 5).
-    assert len(shards) == 5
+    assert len(shards) == 100
     assert all(s.shard_kind == SHARD_KIND_CHANNEL_WINDOW for s in shards)
-    assert all(s.shard_identifier["is_sampled"] is True for s in shards)
+    assert all("is_sampled" not in s.shard_identifier for s in shards)
+    assert all("sampling_version" not in s.shard_identifier for s in shards)
+    assert {s.shard_identifier["channel_id"] for s in shards} == {
+        c["id"] for c in channels
+    }
 
 
-async def test_sampling_deterministic_per_tenant():
+async def test_installed_guild_scope_only():
+    tid = uuid4()
+    ctx = _ctx(
+        tid,
+        [{"id": "installed"}, {"id": "other"}],
+        {
+            "installed": [{"id": "c-installed", "name": "general", "type": 0}],
+            "other": [{"id": "c-other", "name": "other", "type": 0}],
+        },
+    )
+
+    shards = await plan_shards_discord(ctx)
+
+    assert [s.shard_identifier["guild_id"] for s in shards] == ["installed"]
+    assert [s.shard_identifier["channel_id"] for s in shards] == ["c-installed"]
+
+
+async def test_full_coverage_deterministic_per_tenant():
     tid = uuid4()
     channels = [{"id": f"c{i}", "name": f"chan{i}", "type": 0}
                 for i in range(50)]
@@ -71,24 +117,8 @@ async def test_sampling_deterministic_per_tenant():
     assert ids_a == ids_b
 
 
-async def test_sampling_seed_is_process_stable():
-    """The seed must derive from a stable hash (sha256), not Python's
-    per-process-salted builtin hash() — otherwise the sampled set would
-    change after every restart."""
-    import hashlib
-
-    from services.ingest.ingestion.planners.discord import _stable_seed
-
-    tid = "tenant-xyz"
-    expected = int.from_bytes(
-        hashlib.sha256(f"{tid}:{SAMPLING_VERSION}".encode("utf-8")).digest()[:8],
-        "big",
-    )
-    assert _stable_seed(tid) == expected
-
-
-async def test_sampling_order_independent():
-    """Same channel universe in a different order → same sampled set."""
+async def test_full_coverage_order_independent():
+    """Same channel universe in a different order -> same selected set."""
     tid = uuid4()
     channels = [{"id": f"c{i}", "name": f"chan{i}", "type": 0}
                 for i in range(40)]
@@ -101,38 +131,87 @@ async def test_sampling_order_independent():
     }
 
 
-async def test_sampling_differs_across_tenants():
+async def test_full_coverage_same_across_tenants():
     channels = [{"id": f"c{i}", "name": f"chan{i}", "type": 0}
                 for i in range(100)]
     ctx_a = _ctx(uuid4(), [{"id": "g1"}], {"g1": channels})
     ctx_b = _ctx(uuid4(), [{"id": "g1"}], {"g1": list(channels)})
     sa = await plan_shards_discord(ctx_a)
     sb = await plan_shards_discord(ctx_b)
-    # With 100 channels × 5 samples each, near-certain to differ.
     ids_a = {s.shard_identifier["channel_id"] for s in sa}
     ids_b = {s.shard_identifier["channel_id"] for s in sb}
-    assert ids_a != ids_b
+    assert ids_a == ids_b == {c["id"] for c in channels}
 
 
-async def test_non_text_channels_filtered():
-    """Discord channel type != 0 should be excluded from sampling pool."""
+async def test_non_message_channels_filtered():
+    """Voice/category parents are excluded; announcement/thread streams remain."""
     channels = [
         {"id": "text", "type": 0, "name": "text"},
+        {"id": "announcements", "type": 5, "name": "announcements"},
         {"id": "voice", "type": 2, "name": "voice"},
-        {"id": "thread", "type": 11, "name": "thread"},
+        {"id": "thread", "type": 11, "name": "thread", "parent_id": "text"},
     ]
     ctx = _ctx(uuid4(), [{"id": "g1"}], {"g1": channels})
     shards = await plan_shards_discord(ctx)
-    # Only the text channel can be sampled. max(1, int(1*0.05)) = 1.
-    assert len(shards) == 1
-    assert shards[0].shard_identifier["channel_id"] == "text"
+    assert {shard.shard_identifier["channel_id"] for shard in shards} == {
+        "text",
+        "announcements",
+        "thread",
+    }
 
 
-async def test_sampling_version_in_identifier():
-    channels = [{"id": "c1", "type": 0}]
-    ctx = _ctx(uuid4(), [{"id": "g1"}], {"g1": channels})
+async def test_forum_media_and_archived_threads_become_shards():
+    """Forum/media parents are containers; their post threads are fetched."""
+    channels = [
+        {"id": "general", "type": 0, "name": "general"},
+        {"id": "news", "type": 5, "name": "news"},
+        {"id": "forum", "type": 15, "name": "forum"},
+        {"id": "media", "type": 16, "name": "media"},
+    ]
+    active_threads = {
+        "g1": [
+            {"id": "active-public", "type": 11, "name": "active", "parent_id": "forum"},
+            {"id": "active-private", "type": 12, "name": "private", "parent_id": "general"},
+        ]
+    }
+    archived_threads = {
+        ("news", "public"): [
+            {"id": "archived-announcement", "type": 10, "name": "older-news", "parent_id": "news"}
+        ],
+        ("forum", "public"): [
+            {"id": "forum-post", "type": 11, "name": "forum-post", "parent_id": "forum"}
+        ],
+        ("media", "public"): [
+            {"id": "media-post", "type": 11, "name": "media-post", "parent_id": "media"}
+        ],
+    }
+    ctx = _ctx(
+        uuid4(),
+        [{"id": "g1"}],
+        {"g1": channels},
+        active_threads=active_threads,
+        archived_threads=archived_threads,
+    )
+
     shards = await plan_shards_discord(ctx)
-    assert shards[0].shard_identifier["sampling_version"] == SAMPLING_VERSION
+
+    assert {shard.shard_identifier["channel_id"] for shard in shards} == {
+        "general",
+        "news",
+        "active-public",
+        "active-private",
+        "archived-announcement",
+        "forum-post",
+        "media-post",
+    }
+    assert "forum" not in {
+        shard.shard_identifier["channel_id"] for shard in shards
+    }
+    thread = next(
+        shard for shard in shards
+        if shard.shard_identifier["channel_id"] == "forum-post"
+    )
+    assert thread.shard_identifier["parent_id"] == "forum"
 
 
 async def test_empty_guilds_returns_empty():

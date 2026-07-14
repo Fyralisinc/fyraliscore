@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from dataclasses import dataclass
 from typing import AsyncIterator, Awaitable, TypeVar
 
 import asyncpg
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from lib.embeddings.ollama import OllamaClient, OllamaConfig
 from lib.shared.db import assert_pool_database_startup_safety
@@ -64,6 +66,33 @@ from services.ingest.integrations.github.gateway_wiring import (
 log = get_logger("gateway")
 
 _T = TypeVar("_T")
+
+
+def _cors_allowed_origins(settings: GatewaySettings) -> tuple[str, ...]:
+    """Browser origins allowed to call the gateway in local development."""
+    raw = os.environ.get("GATEWAY_CORS_ALLOW_ORIGINS", "").strip()
+    if raw:
+        return tuple(
+            origin.rstrip("/")
+            for origin in (part.strip() for part in raw.split(","))
+            if origin
+        )
+    if settings.is_production:
+        return ()
+    return (
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://localhost:3002",
+        "http://127.0.0.1:3002",
+        "http://localhost:3003",
+        "http://127.0.0.1:3003",
+        "http://localhost:3004",
+        "http://127.0.0.1:3004",
+        "http://localhost:3005",
+        "http://127.0.0.1:3005",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -920,6 +949,15 @@ def build_app(
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(BearerAuthMiddleware)
     app.add_middleware(RequestContextMiddleware)
+    cors_origins = _cors_allowed_origins(settings)
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(cors_origins),
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type", "X-Tenant-Id"],
+        )
 
     install_safe_error_handlers(app)
     app.add_exception_handler(IngestSizeError, ingest_size_error_handler)

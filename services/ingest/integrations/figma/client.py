@@ -4,6 +4,7 @@ Verified Figma read surface:
 
   * GET /v1/teams/{team_id}/projects
   * GET /v1/projects/{project_id}/files
+  * GET /v1/me
   * GET /v1/files/{file_key}
   * GET /v1/files/{file_key}/versions
   * GET /v1/files/{file_key}/comments
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, urlsplit
 from uuid import UUID
@@ -33,6 +35,7 @@ log = structlog.get_logger("integrations.figma.client")
 _DEFAULT_TIMEOUT_S = 30.0
 _DEFAULT_PAGE_SIZE = 50
 _MAX_VERSION_PAGE_SIZE = 50
+_OAUTH_REFRESH_SKEW_S = 5 * 60
 
 
 def _parse_retry_after(value: str | None) -> float:
@@ -59,13 +62,23 @@ class FigmaClient:
         http_client: httpx.AsyncClient | None = None,
         api_base_url: str | None = None,
         team_id: str | None = None,
+        auth_kind: str = "pat",
+        install_row_id: Any | None = None,
+        refresh_secret_ref: str | None = None,
+        token_expires_at: Any | None = None,
     ) -> None:
+        if auth_kind not in {"pat", "oauth"}:
+            raise ValueError("figma auth_kind must be 'pat' or 'oauth'")
         self._pool = pool
         self._secret_store = secret_store
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
         self._api_token_cache = SecretValueCache(preset=api_token)
         self._team_id = team_id
+        self._auth_kind = auth_kind
+        self._install_row_id = install_row_id
+        self._refresh_secret_ref = refresh_secret_ref
+        self._token_expires_at = token_expires_at
         self._token_lock = asyncio.Lock()
         self._api_base_url = (api_base_url or base_url).rstrip("/")
         self._owns_client = http_client is None
@@ -95,14 +108,57 @@ class FigmaClient:
             )
         )
 
-    async def _headers(self) -> dict[str, str]:
-        token = await self._token()
-        # Personal access tokens use X-Figma-Token. OAuth bearer tokens are also
-        # accepted by Figma, but the connect wizard stores PAT-style API tokens.
-        return {
-            "X-Figma-Token": token,
-            "Accept": "application/json",
-        }
+    async def _headers(self, token: str | None = None) -> dict[str, str]:
+        token = token or await self._token()
+        # Figma deliberately distinguishes personal/plan access tokens from
+        # OAuth access tokens.  OAuth MUST use Authorization: Bearer; sending
+        # it through X-Figma-Token makes the first post-consent file probe fail.
+        auth_header = (
+            {"Authorization": f"Bearer {token}"}
+            if self._auth_kind == "oauth"
+            else {"X-Figma-Token": token}
+        )
+        return auth_header | {"Accept": "application/json"}
+
+    async def _refresh_oauth_token(self, *, force: bool) -> str | None:
+        """Refresh under the install lifecycle's distributed advisory lock.
+
+        This local import avoids an import cycle because the OAuth callback
+        module imports FigmaClient to validate an initial grant.
+        """
+        if self._auth_kind != "oauth":
+            return None
+        from services.ingest.integrations.figma.oauth import (
+            refresh_installation_access_token,
+        )
+
+        result = await refresh_installation_access_token(
+            pool=self._pool,
+            secret_store=self._secret_store,
+            tenant_id=self._tenant_id,
+            installation_id=self._install_row_id,
+            expected_access_ref=self._secret_ref,
+            force=force,
+            http_client=self._httpx(),
+        )
+        if result is None:
+            return None
+        token, access_ref, refresh_ref, expires_at = result
+        self._secret_ref = access_ref
+        self._refresh_secret_ref = refresh_ref
+        self._token_expires_at = expires_at
+        self._api_token_cache.set(token)
+        return token
+
+    def _oauth_refresh_due(self) -> bool:
+        if self._auth_kind != "oauth":
+            return False
+        expires_at = self._token_expires_at
+        if not isinstance(expires_at, datetime):
+            return True
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return expires_at <= datetime.now(timezone.utc) + timedelta(seconds=_OAUTH_REFRESH_SKEW_S)
 
     async def _request(
         self,
@@ -115,15 +171,20 @@ class FigmaClient:
         from services.ingest.integrations.figma import metrics
 
         target = url or f"{self._api_base_url}{path}"
-        headers = await self._headers()
         max_attempts = int(os.environ.get("FIGMA_RL_MAX_ATTEMPTS", "4"))
         max_sleep = float(os.environ.get("FIGMA_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
 
         attempt = 0
+        refresh_attempted = False
+        refreshed_token: str | None = None
         log_path = path or urlsplit(target).path
         while True:
             attempt += 1
+            if attempt == 1 and self._oauth_refresh_due():
+                refreshed_token = await self._refresh_oauth_token(force=False)
+            token = refreshed_token or await self._token()
+            headers = await self._headers(token)
             try:
                 response = await client.request(
                     method, target, headers=headers, params=params,
@@ -155,6 +216,14 @@ class FigmaClient:
 
             if response.status_code in (401, 403):
                 metrics.record_request("unauthorized")
+                # Figma documents both 401 and 403 for an expired OAuth
+                # token. Retry once after the installation-scoped refresh;
+                # an actually insufficient scope simply remains a 403.
+                if response.status_code in (401, 403) and not refresh_attempted:
+                    refresh_attempted = True
+                    refreshed_token = await self._refresh_oauth_token(force=True)
+                    if refreshed_token is not None:
+                        continue
             else:
                 metrics.record_request("error")
             raise _api_error_from_response(response, log_path)
@@ -190,10 +259,17 @@ class FigmaClient:
                 files.append(item)
         return files
 
-    async def get_file(self, file_key: str) -> dict[str, Any]:
+    async def get_current_user(self) -> dict[str, Any]:
+        """`GET /v1/me` — identify the OAuth grant holder."""
+        return await self._request("GET", "/v1/me")
+
+    async def get_file(
+        self, file_key: str, *, depth: int | None = None,
+    ) -> dict[str, Any]:
         """`GET /v1/files/{key}` - file metadata/tree visible to the token."""
         return await self._request(
             "GET", f"/v1/files/{quote(file_key, safe='')}",
+            params={"depth": depth} if depth is not None else None,
         )
 
     async def list_events(
@@ -204,6 +280,12 @@ class FigmaClient:
         offset: int = 0,
         start: str | None = None,
     ) -> tuple[list[dict[str, Any]], int | None, int]:
+        """Derive local event records from Figma versions and comments.
+
+        Figma does not expose a file ``/events`` endpoint.  ``offset`` and
+        ``limit`` page the merged in-memory result so the standard shard
+        fetcher can retain its cursor contract.
+        """
         versions = await self._list_versions(file_key)
         comments = await self._list_comments(file_key)
         events = [

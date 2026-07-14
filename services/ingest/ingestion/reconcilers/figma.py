@@ -2,8 +2,9 @@
 
 After a file shard completes, its cursor carries `high_water_created` — the max
 event `createdAt` the fetcher walked. The reconciler probes the LIVE file for any
-event newer than the high-water; if one exists, a reshare is emitted for that
-file, warm-started at the high-water (incremental mode).
+event newer than the high-water; if one exists, it emits both an incremental
+event reshare and a version-aware full-document snapshot probe. The snapshot
+probe only downloads the complete design when Figma's file version changed.
 
 `external_id` parity (versioned by version/updated) means re-walked events dedup
 against what backfill already wrote — only genuinely new/changed events produce
@@ -31,6 +32,7 @@ log = logging.getLogger(__name__)
 
 
 SHARD_KIND_FILE_EVENTS = "figma_file_events"
+SHARD_KIND_FILE_SNAPSHOT = "figma_file_snapshot"
 RESHARE_RECENCY_SCORE = 1.5
 
 
@@ -75,19 +77,57 @@ async def _load_shard_high_water(pool: Any, shard_id: Any) -> str | None:
     return None
 
 
+async def _load_snapshot_state(
+    pool: Any,
+    *,
+    tenant_id: Any,
+    installation_id: Any,
+) -> dict[str, dict[str, Any]]:
+    """Load the durable snapshot high-water for active Figma files.
+
+    Event changes are the cheap signal that makes a source worth revisiting;
+    the stored version lets the snapshot fetcher avoid another full document
+    download for a comment-only change.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT file_key, file_name, project_name, snapshot_version
+          FROM figma_files
+         WHERE tenant_id = $1
+           AND figma_installation_id = $2
+           AND state = 'active'
+        """,
+        tenant_id,
+        installation_id,
+    )
+    return {
+        str(row["file_key"]): {
+            "file_name": row["file_name"],
+            "project_name": row["project_name"],
+            "snapshot_version": row["snapshot_version"],
+        }
+        for row in rows
+        if row["file_key"] is not None
+    }
+
+
 async def _check_one_shard_for_gap(
-    *, pool: Any, client: Any, shard: asyncpg.Record,
-) -> ResharedShard | None:
+    *,
+    pool: Any,
+    client: Any,
+    shard: asyncpg.Record,
+    snapshot_state: dict[str, dict[str, Any]],
+) -> list[ResharedShard]:
     identifier = _decode_identifier(shard["shard_identifier"])
     if identifier.get("shard_kind") != SHARD_KIND_FILE_EVENTS:
-        return None
+        return []
     file_key = identifier.get("file_key")
     if not file_key:
-        return None
+        return []
 
     high_water = await _load_shard_high_water(pool, shard["id"])
     if high_water is None:
-        return None  # No reference point (empty file / cursor).
+        return []  # No reference point (empty file / cursor).
 
     try:
         events, _, _ = await client.list_events(
@@ -98,7 +138,7 @@ async def _check_one_shard_for_gap(
             "reconcilers.figma.probe_failed",
             extra={"shard_id": str(shard["id"]), "error": str(exc)[:200]},
         )
-        return None
+        return []
 
     # An event strictly newer than the high-water means there's a gap.
     newest = None
@@ -108,7 +148,7 @@ async def _check_one_shard_for_gap(
             newest = created
             break
     if newest is None or newest <= high_water:
-        return None
+        return []
 
     gap_identifier = dict(identifier)
     gap_identifier["parent_shard_id"] = str(shard["id"])
@@ -116,7 +156,7 @@ async def _check_one_shard_for_gap(
     # Warm-start the reshared walk at the high-water so it only re-fetches the
     # changed tail (incremental mode in the fetcher).
     gap_identifier["event_cursor"] = high_water
-    return ResharedShard(
+    event_reshare = ResharedShard(
         shard=Shard(
             shard_kind=SHARD_KIND_FILE_EVENTS,
             shard_identifier=gap_identifier,
@@ -124,6 +164,29 @@ async def _check_one_shard_for_gap(
         ),
         parent_shard_id=shard["id"],
     )
+
+    persisted_snapshot = snapshot_state.get(str(file_key), {})
+    snapshot_identifier = {
+        "shard_kind": SHARD_KIND_FILE_SNAPSHOT,
+        "file_key": file_key,
+        "file_name": persisted_snapshot.get("file_name")
+        or identifier.get("file_name"),
+        "project_name": persisted_snapshot.get("project_name"),
+        "team_id": identifier.get("team_id"),
+        "installation_id": identifier.get("installation_id"),
+        "snapshot_version": persisted_snapshot.get("snapshot_version"),
+        "parent_shard_id": str(shard["id"]),
+        "gap_baseline_created": high_water,
+    }
+    snapshot_reshare = ResharedShard(
+        shard=Shard(
+            shard_kind=SHARD_KIND_FILE_SNAPSHOT,
+            shard_identifier=snapshot_identifier,
+            recency_score=RESHARE_RECENCY_SCORE,
+        ),
+        parent_shard_id=shard["id"],
+    )
+    return [event_reshare, snapshot_reshare]
 
 
 async def reconcile_figma(
@@ -136,7 +199,8 @@ async def reconcile_figma(
     pool = _get_pool()
     install = await pool.fetchrow(
         """
-        SELECT id, tenant_id, base_url, secret_ref, team_id, disabled_at
+        SELECT id, tenant_id, base_url, secret_ref, team_id, auth_kind,
+               refresh_secret_ref, token_expires_at, disabled_at
           FROM figma_installations
          WHERE tenant_id = $1 AND disabled_at IS NULL
          LIMIT 1
@@ -146,22 +210,33 @@ async def reconcile_figma(
     if install is None:
         return ReconciliationDecision(has_gaps=False)
 
+    snapshot_state = await _load_snapshot_state(
+        pool,
+        tenant_id=run["tenant_id"],
+        installation_id=install["id"],
+    )
+
     client, close = await _open_figma_client(install)
     try:
         new_shards: list[ResharedShard] = []
         for shard in active:
-            reshared = await _check_one_shard_for_gap(
-                pool=pool, client=client, shard=shard,
+            new_shards.extend(await _check_one_shard_for_gap(
+                pool=pool,
+                client=client,
+                shard=shard,
+                snapshot_state=snapshot_state,
             )
-            if reshared is not None:
-                new_shards.append(reshared)
+            )
     finally:
         await close()
 
     if new_shards:
         return ReconciliationDecision(
             has_gaps=True, new_shards=new_shards,
-            message=f"figma reconciler: {len(new_shards)} gap(s).",
+            message=(
+                "figma reconciler: "
+                f"{len(new_shards)} event/snapshot reshare(s)."
+            ),
         )
     return ReconciliationDecision(has_gaps=False)
 
@@ -169,4 +244,9 @@ async def reconcile_figma(
 RECONCILER_DISPATCH["figma"] = reconcile_figma
 
 
-__all__ = ["reconcile_figma", "set_pool_provider", "SHARD_KIND_FILE_EVENTS"]
+__all__ = [
+    "reconcile_figma",
+    "set_pool_provider",
+    "SHARD_KIND_FILE_EVENTS",
+    "SHARD_KIND_FILE_SNAPSHOT",
+]

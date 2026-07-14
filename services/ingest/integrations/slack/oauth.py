@@ -51,6 +51,9 @@ from lib.shared.errors import (
 from lib.shared.ids import uuid7
 from lib.shared.secrets import load_app_secret_text_from_env
 from services.ingest.integrations.slack import metrics
+from services.ingest.integrations.oauth_native_connect import (
+    build_oauth_native_connect_router,
+)
 
 
 log = structlog.get_logger("integrations.slack.oauth")
@@ -334,6 +337,48 @@ async def install_handler(request: Request) -> RedirectResponse:
     return RedirectResponse(
         url=f"{_SLACK_AUTHORIZE_URL}?{qs}", status_code=302,
     )
+
+
+async def _connect_handoff(
+    tenant_id: UUID,
+    pool: asyncpg.Pool,
+    request: Request,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    client_id = os.environ.get("SLACK_CLIENT_ID", "").strip()
+    redirect_uri = os.environ.get("SLACK_REDIRECT_URI", "").strip()
+    event_url = str(body.get("events_request_url") or "").strip() or None
+    missing = [
+        name
+        for name, value in {
+            "SLACK_CLIENT_ID": client_id,
+            "SLACK_REDIRECT_URI": redirect_uri,
+            "SLACK_CLIENT_SECRET": load_app_secret_text_from_env("SLACK_CLIENT_SECRET"),
+            "SLACK_SIGNING_SECRET": load_app_secret_text_from_env("SLACK_SIGNING_SECRET"),
+        }.items()
+        if not value
+    ]
+    install_url = None
+    if not missing:
+        from urllib.parse import urlencode
+
+        state_token = await issue_state_token(tenant_id, pool)
+        install_url = f"{_SLACK_AUTHORIZE_URL}?" + urlencode(
+            {
+                "client_id": client_id,
+                "scope": _SLACK_BOT_SCOPES,
+                "user_scope": _SLACK_USER_SCOPES,
+                "redirect_uri": redirect_uri,
+                "state": state_token,
+            }
+        )
+    return {
+        "install_url": install_url,
+        "oauth_redirect_url": redirect_uri,
+        "events_request_url": event_url,
+        "provider_console_url": "https://api.slack.com/apps",
+        "missing_configuration": missing,
+    }
 
 
 # ---------------------------------------------------------------------
@@ -802,10 +847,26 @@ async def _cleanup_prior_secrets(
             pass
 
 
+router = build_oauth_native_connect_router(
+    source="slack",
+    authorization_mode="oauth",
+    provider_console_url="https://api.slack.com/apps",
+    payload_fields=[
+        "workspace_id",
+        "approved_channel_ids",
+        "oauth_redirect_url",
+        "events_request_url",
+        "installation_id",
+    ],
+    build_handoff=_connect_handoff,
+)
+
+
 __all__ = [
     "short_team_hash",
     "issue_state_token",
     "verify_and_consume_state",
     "install_handler",
     "callback_handler",
+    "router",
 ]

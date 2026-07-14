@@ -31,7 +31,7 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
-from services.app.webhooks.provider_installations import (
+from lib.shared.provider_installations import (
     upsert_provider_installation_for_tenant,
 )
 from services.ingest.integrations.ramp import metrics

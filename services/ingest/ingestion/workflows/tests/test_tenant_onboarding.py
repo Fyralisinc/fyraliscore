@@ -69,17 +69,19 @@ async def _seed_tenant(pool: asyncpg.Pool, label: str = "orch") -> UUID:
 async def _seed_provider_install(
     pool: asyncpg.Pool, *, tenant_id: UUID, provider: str,
     enabled: bool = True,
-) -> None:
+) -> UUID:
     """Seed a provider_installations row (slack/github/discord)."""
+    install_id = uuid7()
     await pool.execute(
         """
         INSERT INTO provider_installations
             (id, tenant_id, provider, installation_id, enabled)
         VALUES ($1, $2, $3, $4, $5)
         """,
-        uuid7(), tenant_id, provider,
+        install_id, tenant_id, provider,
         f"inst-{tenant_id.hex[:8]}-{provider}", enabled,
     )
+    return install_id
 
 
 async def _seed_gmail_install(
@@ -120,22 +122,27 @@ async def _seed_onboarding_run(
 
 async def _emit_run_created_signal(
     pool: asyncpg.Pool, *, run_id: UUID, tenant_id: UUID,
+    source: str = "slack", installation_row_id: UUID | None = None,
 ) -> None:
     """Inject an onboarding_run_created signal directly (simulates
     what the poller would emit)."""
+    signal_data = {
+        "onboarding_run_id": str(run_id),
+        "tenant_id": str(tenant_id),
+        "trigger_id": str(uuid7()),
+        "source": source,
+        "trigger_kind": "install",
+    }
+    if installation_row_id is not None:
+        signal_data["installation_row_id"] = str(installation_row_id)
+
     await emit_signal(
         pool,
         workflow_kind=WORKFLOW_KIND,
         workflow_id=WORKFLOW_ID_INBOX,
         signal_kind=SIGNAL_KIND_RUN_CREATED,
         idempotency_key=str(run_id),
-        signal_data={
-            "onboarding_run_id": str(run_id),
-            "tenant_id": str(tenant_id),
-            "trigger_id": str(uuid7()),
-            "source": "slack",
-            "trigger_kind": "install",
-        },
+        signal_data=signal_data,
     )
 
 
@@ -261,6 +268,45 @@ async def test_orchestrator_handles_run_created_signal_atomically(
         "SELECT status FROM onboarding_runs WHERE id = $1", run_id,
     )
     assert run_row["status"] == "running"
+
+
+async def test_orchestrator_forwards_trigger_installation_to_matching_source(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """A provider OAuth trigger carries the exact install row downstream."""
+    tid = await _seed_tenant(fresh_db)
+    install_id = await _seed_provider_install(
+        fresh_db, tenant_id=tid, provider="discord",
+    )
+    run_id = await _seed_onboarding_run(
+        fresh_db, tenant_id=tid, source="discord",
+    )
+    await _emit_run_created_signal(
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="discord",
+        installation_row_id=install_id,
+    )
+
+    await _orch(fresh_db).run(max_ticks=1)
+
+    signal_row = await fresh_db.fetchrow(
+        "SELECT signal_data FROM workflow_signals "
+        "WHERE workflow_kind = $1 AND workflow_id = $2 "
+        "AND signal_kind = $3 AND idempotency_key = $4",
+        SOURCE_ONBOARDING_INBOX_KIND, SOURCE_ONBOARDING_INBOX_ID,
+        SIGNAL_KIND_SOURCE_REQUESTED, f"{run_id}:discord",
+    )
+    assert signal_row is not None
+    raw = signal_row["signal_data"]
+    import orjson
+    data = (
+        orjson.loads(raw) if isinstance(raw, (str, bytes, bytearray))
+        else dict(raw)
+    )
+    assert data["source"] == "discord"
+    assert data["installation_row_id"] == str(install_id)
 
 
 async def test_orchestrator_enables_kafka_path_flag_on_run_created(

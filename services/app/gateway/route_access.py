@@ -90,6 +90,14 @@ _BYOC_CONTROL_PLANE = RouteAccessPolicy(
     ),
     gateway_bearer_required=False,
 )
+_PLATFORM_ONBOARDING = RouteAccessPolicy(
+    access=RouteAccess.SELF_AUTHENTICATED,
+    reason=(
+        "customer-facing hosted onboarding entrypoint creates sanitized "
+        "commercial/BYOC setup metadata before a tenant session exists"
+    ),
+    gateway_bearer_required=False,
+)
 _INTERNAL_BEARER = RouteAccessPolicy(
     access=RouteAccess.INTERNAL,
     reason="internal API currently protected by gateway bearer auth; deployment boundary still required",
@@ -124,7 +132,15 @@ GATEWAY_BEARER_BYPASS_PATH_POLICIES: dict[str, RouteAccessPolicy] = {
     "/integrations/notion/callback": _OAUTH_CALLBACK,
     "/integrations/notion/installed": _OAUTH_CALLBACK,
     "/integrations/notion/install-error": _OAUTH_CALLBACK,
+    # Figma returns the browser here with a signed, single-use OAuth state.
+    # Keep the normal start/status/retry routes bearer-protected; only this
+    # provider callback may bypass actor-session authentication.
+    "/integrations/figma/oauth/callback": _OAUTH_CALLBACK,
     "/integrations/whatsapp/webhook": _PROVIDER_SIGNED,
+    "/integrations/facebook_pages/callback": _OAUTH_CALLBACK,
+    "/integrations/facebook_pages/installed": _OAUTH_CALLBACK,
+    "/integrations/facebook_pages/install-error": _OAUTH_CALLBACK,
+    "/integrations/facebook_pages/webhook": _PROVIDER_SIGNED,
 }
 
 GATEWAY_BEARER_BYPASS_PATHS = frozenset(GATEWAY_BEARER_BYPASS_PATH_POLICIES)
@@ -141,6 +157,7 @@ GATEWAY_BEARER_BYPASS_PREFIX_POLICIES: tuple[
     ("/ext/", _EXTENSION),
     ("/byoc/agent/", _BYOC_CONTROL_PLANE),
     ("/byoc/control-plane/", _BYOC_CONTROL_PLANE),
+    ("/platform/onboarding/", _PLATFORM_ONBOARDING),
 )
 
 GATEWAY_BEARER_BYPASS_PREFIXES = tuple(

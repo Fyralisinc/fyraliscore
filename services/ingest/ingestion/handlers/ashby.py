@@ -5,7 +5,7 @@ shape). The handler is a pure function (no DB / network) and branches on the
 input shape to produce exactly ONE observation per call:
 
   - BACKFILL / POLL: records arrive tagged with a private `_fyralis_record_type`
-    ∈ {"candidate","application","job","interview","offer"} (set by the fetcher).
+    such as candidate, application, job_posting, application_feedback, user, etc.
   - LIVE WEBHOOK: an Ashby webhook event — `{"action": "...", "data": {...}}`
     with the entity body under `data` (and `organizationId` carried for tenant
     resolution). The handler maps the entity onto the same record builder so a
@@ -29,6 +29,7 @@ Trust posture: Ashby is the recruiting system of record -> `authoritative`.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -53,17 +54,66 @@ _ENTITY_NORMALISE = {
     "job": "job",
     "interview": "interview",
     "offer": "offer",
+    "applicationfeedback": "application_feedback",
+    "application_feedback": "application_feedback",
+    "approval": "approval",
+    "candidatetag": "candidate_tag",
+    "candidate_tag": "candidate_tag",
+    "department": "department",
+    "feedbackformdefinition": "feedback_form_definition",
+    "feedback_form_definition": "feedback_form_definition",
+    "interviewplan": "interview_plan",
+    "interview_plan": "interview_plan",
+    "interviewschedule": "interview_schedule",
+    "interview_schedule": "interview_schedule",
+    "interviewstagegroup": "interview_stage_group",
+    "interview_stage_group": "interview_stage_group",
+    "jobposting": "job_posting",
+    "job_posting": "job_posting",
+    "location": "location",
+    "opening": "opening",
+    "project": "project",
+    "source": "source",
+    "sourcetrackinglink": "source_tracking_link",
+    "source_tracking_link": "source_tracking_link",
+    "surveyformdefinition": "survey_form_definition",
+    "survey_form_definition": "survey_form_definition",
+    "surveyrequest": "survey_request",
+    "survey_request": "survey_request",
+    "surveysubmission": "survey_submission",
+    "survey_submission": "survey_submission",
+    "survey_submission_candidate_experience": "survey_submission_candidate_experience",
+    "survey_submission_questionnaire": "survey_submission_questionnaire",
+    "user": "user",
 }
 
 # Recruiting-pipeline states that constitute a state_change (vs an open signal).
 _STATE_CHANGE_STATUSES = {
     "hired", "accepted", "offeraccepted", "offer_accepted",
     "rejected", "declined", "withdrawn", "archived",
-    "closed", "cancelled", "canceled", "filled",
+    "closed", "cancelled", "canceled", "filled", "approved",
+    "completed", "complete", "disabled",
 }
 
 
 ashby_entity = idempotency.ashby_entity
+
+
+def _kind_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _canonical_entity_kind(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    return _ENTITY_NORMALISE.get(value.lower()) or _ENTITY_NORMALISE.get(
+        _kind_key(value)
+    )
+
+
+def _camelish(kind: str) -> str:
+    parts = kind.split("_")
+    return parts[0] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
 
 
 def _utcnow() -> datetime:
@@ -86,7 +136,12 @@ def _parse_iso(value: Any) -> datetime | None:
 
 
 def _entity_updated(entity: dict[str, Any]) -> str | None:
-    for key in ("updatedAt", "updated_at", "createdAt", "created_at"):
+    for key in (
+        "updatedAt", "updated_at", "submittedAt", "submitted_at",
+        "publishedDate", "published_date", "openedAt", "opened_at",
+        "closedAt", "closed_at", "archivedAt", "archived_at",
+        "createdAt", "created_at",
+    ):
         v = entity.get(key)
         if isinstance(v, str) and v:
             return v
@@ -97,15 +152,30 @@ def _truncate(text: str, limit: int = 600) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _entity_id_of(entity: dict[str, Any]) -> str:
-    rid = entity.get("id") or entity.get("Id")
+def _entity_id_of(entity: dict[str, Any], entity_kind: str | None = None) -> str:
+    keys = ["id", "Id", "entityId"]
+    if entity_kind:
+        camel = _camelish(entity_kind)
+        keys.extend([f"{camel}Id", f"{entity_kind}_id"])
+    for key in keys:
+        rid = entity.get(key)
+        if rid not in (None, ""):
+            return str(rid)
+    rid = entity.get("userId") or entity.get("candidateId") or entity.get("jobId")
     return str(rid) if rid not in (None, "") else ""
 
 
 def _status_of(entity: dict[str, Any]) -> str | None:
     """The lifecycle status of a recruiting object across Ashby's entity kinds:
     application/interview `status`, offer `offerStatus`, candidate `stage`."""
-    for key in ("status", "offerStatus", "offer_status", "stage", "state"):
+    if entity.get("isArchived") is True:
+        return "archived"
+    if entity.get("isEnabled") is False:
+        return "disabled"
+    for key in (
+        "status", "offerStatus", "offer_status", "stage", "state",
+        "openingState", "stageType", "acceptanceStatus",
+    ):
         v = entity.get(key)
         if isinstance(v, str) and v:
             return v
@@ -137,14 +207,54 @@ def _person(entity: dict[str, Any]) -> tuple[str | None, dict[str, Any] | None]:
     return None, None
 
 
+def _user_hint(ref: Any, *, role: str = "ashby_user") -> tuple[str | None, dict[str, Any] | None]:
+    if not isinstance(ref, dict):
+        return None, None
+    rid = ref.get("id") or ref.get("userId")
+    name = (
+        ref.get("name")
+        or " ".join(
+            str(p) for p in (ref.get("firstName"), ref.get("lastName")) if p
+        ).strip()
+        or ref.get("email")
+    )
+    if rid in (None, "") and not name:
+        return None, None
+    actor = f"ashby:user:{rid}" if rid not in (None, "") else None
+    hint = {"type": "person", "role": role, "id": str(name or rid)}
+    if rid not in (None, ""):
+        hint["source_id"] = str(rid)
+    return actor, hint
+
+
+def _source_actor(
+    entity_kind: str, entity: dict[str, Any], candidate_actor: str | None,
+) -> str | None:
+    submitter_actor, _hint = _user_hint(entity.get("submittedByUser"))
+    if submitter_actor:
+        return submitter_actor
+    if entity_kind == "user":
+        rid = entity.get("id") or entity.get("userId")
+        return f"ashby:user:{rid}" if rid not in (None, "") else None
+    return candidate_actor
+
+
 def _label(entity_kind: str, entity: dict[str, Any]) -> str:
     """Human reference like 'Candidate Ada Lovelace' / 'Job Staff Engineer'."""
     nice = entity_kind.replace("_", " ").title()
     doc = (
-        entity.get("name")
+        " ".join(
+            str(p) for p in (entity.get("firstName"), entity.get("lastName")) if p
+        ).strip()
+        or entity.get("name")
         or entity.get("title")
         or entity.get("candidateName")
-        or _entity_id_of(entity)
+        or entity.get("identifier")
+        or entity.get("email")
+        or entity.get("departmentName")
+        or entity.get("teamName")
+        or entity.get("locationName")
+        or _entity_id_of(entity, entity_kind)
         or "?"
     )
     return f"{nice} {doc}"
@@ -170,21 +280,51 @@ def _entity_extras(entity: dict[str, Any]) -> dict[str, Any]:
     extras: dict[str, Any] = {}
     for src, dst in (
         ("jobId", "job_id"),
+        ("jobIds", "job_ids"),
         ("candidateId", "candidate_id"),
         ("applicationId", "application_id"),
         ("interviewStageId", "interview_stage_id"),
+        ("interviewId", "interview_id"),
+        ("interviewEventId", "interview_event_id"),
         ("currentInterviewStage", "current_stage"),
         ("source", "candidate_source"),
+        ("sourceId", "source_id"),
         ("location", "location"),
+        ("locationName", "location_name"),
+        ("locationIds", "location_ids"),
         ("department", "department"),
+        ("departmentName", "department_name"),
+        ("teamName", "team_name"),
         ("scheduledAt", "scheduled_at"),
+        ("submittedAt", "submitted_at"),
+        ("submittedValues", "submitted_values"),
+        ("submittedByUser", "submitted_by_user"),
         ("startDate", "start_date"),
+        ("publishedDate", "published_date"),
+        ("applicationDeadline", "application_deadline"),
+        ("employmentType", "employment_type"),
+        ("workplaceType", "workplace_type"),
+        ("openingState", "opening_state"),
+        ("latestVersion", "latest_version"),
+        ("isListed", "is_listed"),
+        ("isArchived", "is_archived"),
+        ("isEnabled", "is_enabled"),
+        ("globalRole", "global_role"),
+        ("email", "email"),
+        ("surveyType", "survey_type"),
+        ("feedbackFormDefinitionId", "feedback_form_definition_id"),
         ("title", "title"),
     ):
         v = entity.get(src)
         if v is not None:
             # Flatten Ashby's {"id","title"|"name"} refs.
-            if isinstance(v, dict):
+            if (
+                isinstance(v, dict)
+                and src not in {
+                    "submittedValues", "submittedByUser", "latestVersion",
+                    "locationIds",
+                }
+            ):
                 extras[dst] = v.get("title") or v.get("name") or v.get("value") or v.get("id")
             else:
                 extras[dst] = v
@@ -198,7 +338,7 @@ def _entity_extras(entity: dict[str, Any]) -> dict[str, Any]:
 def _entity_draft(
     entity_kind: str, entity: dict[str, Any], org_id: str,
 ) -> ObservationDraft:
-    entity_id = _entity_id_of(entity)
+    entity_id = _entity_id_of(entity, entity_kind)
     if not org_id or not entity_id:
         raise ValidationError(
             "ashby entity missing org_id/id", channel=_CHANNEL,
@@ -208,7 +348,13 @@ def _entity_draft(
     updated = _entity_updated(entity)
     occurred = _parse_iso(updated) or _utcnow()
     kind, status_word = _classify(entity)
-    actor_ref, person_hint = _person(entity)
+    candidate_actor, person_hint = _person(entity)
+    actor_ref = _source_actor(entity_kind, entity, candidate_actor)
+    submitter_actor, submitter_hint = _user_hint(
+        entity.get("submittedByUser"), role="submitter",
+    )
+    if submitter_actor and actor_ref is None:
+        actor_ref = submitter_actor
 
     label = _label(entity_kind, entity)
     who = (person_hint or {}).get("id")
@@ -223,13 +369,24 @@ def _entity_draft(
     ]
     if person_hint:
         entities.append(person_hint)
+    if submitter_hint:
+        entities.append(submitter_hint)
 
     content: dict[str, Any] = {
         "object_type": entity_kind,
         "org_id": org_id,
         "entity_id": entity_id,
         "status": status_word,
-        "name": entity.get("name") or entity.get("title"),
+        "name": (
+            entity.get("name")
+            or entity.get("title")
+            or " ".join(
+                str(p) for p in (
+                    entity.get("firstName"), entity.get("lastName"),
+                ) if p
+            ).strip()
+            or entity.get("email")
+        ),
         "last_updated": updated,
     }
     content.update(_entity_extras(entity))
@@ -300,14 +457,14 @@ def _kind_from_action(action: Any, data: dict[str, Any]) -> str | None:
     "applicationSubmit", "interviewSchedule", "offerCreate") or the data shape."""
     # Explicit object kind on the body wins.
     for key in ("resourceType", "objectType", "type"):
-        v = data.get(key)
-        if isinstance(v, str) and v.lower() in _ENTITY_NORMALISE:
-            return _ENTITY_NORMALISE[v.lower()]
+        kind = _canonical_entity_kind(data.get(key))
+        if kind is not None:
+            return kind
     if isinstance(action, str):
-        low = action.lower()
-        for k in _ENTITY_NORMALISE:
-            if low.startswith(k):
-                return _ENTITY_NORMALISE[k]
+        low = _kind_key(action)
+        for key, kind in _ENTITY_NORMALISE.items():
+            if low.startswith(_kind_key(key)):
+                return kind
     return None
 
 
@@ -325,7 +482,7 @@ async def handle_ashby_object(
     # --- BACKFILL / POLL path (fetcher-tagged records) ---
     record_type = payload.get("_fyralis_record_type")
     if isinstance(record_type, str) and record_type:
-        entity_kind = _ENTITY_NORMALISE.get(record_type.lower())
+        entity_kind = _canonical_entity_kind(record_type)
         if entity_kind is None:
             raise ValidationError(
                 f"unsupported ashby record_type {record_type!r}",
@@ -350,7 +507,7 @@ async def handle_ashby_object(
             return _entity_draft(entity_kind, body, org_id)
         return _thin_change_draft(
             entity_kind,
-            str(data.get("id") or data.get("entityId") or ""),
+            _entity_id_of(data, entity_kind),
             org_id,
             action=action if isinstance(action, str) else None,
             updated=_entity_updated(data),

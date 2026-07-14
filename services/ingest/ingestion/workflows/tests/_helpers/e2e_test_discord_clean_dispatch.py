@@ -8,7 +8,7 @@ class _FakeDC:
     async def list_guilds(self):
         return [{"id": "G1"}]
     async def list_guild_channels(self, guild_id):
-        # 1 text channel — 5% sampling rounds to max(1, 0) = 1.
+        # 1 text channel — full coverage yields 1 shard.
         return [{"id": "C1", "name": "general", "type": 0}]
     async def get_messages(self, *, channel_id, before=None, after=None, limit=None):
         if after is not None:
