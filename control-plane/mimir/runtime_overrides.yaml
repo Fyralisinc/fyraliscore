@@ -1,0 +1,63 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — Mimir RUNTIME OVERRIDES (WS-MIMIR-CARD)
+# ----------------------------------------------------------------------------
+# PER-TENANT cardinality budget overrides. This file is HOT-RELOADED by Mimir
+# every `per_tenant_override_period` (15s) — editing it changes a tenant's
+# budget WITHOUT restarting Mimir. Anything here OVERRIDES the global defaults
+# in mimir.yaml > limits for the named tenant only; tenants not listed keep the
+# defaults.
+#
+# Tenant keys are the X-Scope-OrgID values, i.e. the verified tenant_id the
+# auth-proxy injects from the client-cert SAN (spiffe://fyralis/tenant/<id>).
+#
+# C3 TIER MODEL: telemetry tiers (T1/T2/T3) gate WHAT signal classes leave the
+# customer VPC; the budgets below gate HOW MUCH metric cardinality a tenant may
+# store. They are orthogonal — a T1 (metrics-only) tenant still has a series
+# budget. We map cardinality budgets onto tenant SIZE tiers here:
+#
+#   small   ~  50k series   (a small DP: few scrape targets)
+#   default ~ 150k series   (mid-size DP — matches mimir.yaml defaults)
+#   large   ~ 500k series   (heavy DP / many workers + high-cardinality labels)
+#
+# HOW TO ADD A TENANT OVERRIDE:
+#   1. Add a block under `overrides:` keyed by the tenant_id.
+#   2. Set only the keys that differ from the global default; the rest inherit.
+#   3. Save. Within ~15s Mimir applies it (watch `cortex_runtime_config_*`
+#      metrics / the ruler+distributor logs). No restart, no data loss.
+# ============================================================================
+
+overrides:
+
+  # --- WORKED EXAMPLE: a LARGE tenant that outgrew the default budget --------
+  # `acme` runs a big data plane (many workers, high-cardinality job/instance
+  # labels) and was hitting max_global_series_per_user. We bump its budget and
+  # its ingestion rate, and allow more labels/series for richer dashboards.
+  acme:
+    max_global_series_per_user: 500000        # 150k default -> 500k
+    max_global_series_per_metric: 50000
+    ingestion_rate: 75000                     # samples/sec
+    ingestion_burst_size: 150000
+    max_label_names_per_series: 40            # 30 default -> 40
+    compactor_blocks_retention_period: 180d   # longer retention for this tenant
+
+  # --- WORKED EXAMPLE: a SMALL tenant — tighten the budget to protect the cluster
+  # `globex` is a tiny pilot deployment. We shrink its budget so a misconfigured
+  # exporter there can never consume shared ingester memory. Exceeding any of
+  # these produces backpressure (429 on push) — see cardinality.md.
+  globex:
+    max_global_series_per_user: 50000         # 150k default -> 50k
+    max_global_series_per_metric: 5000
+    ingestion_rate: 8000
+    ingestion_burst_size: 16000
+    max_label_names_per_series: 20
+
+  # --- FLEET-SLI RULER TENANT -----------------------------------------------
+  # Synthetic tenant that owns the cross-fleet recording/alerting rules loaded
+  # from control-plane/fleet-sli. Its recorded `fleet:*` series are small in
+  # number but evaluated continuously; give it a modest dedicated budget and
+  # a long lookback so burn-rate windows work.
+  __fleet__:
+    max_global_series_per_user: 20000
+    ingestion_rate: 5000
+    ingestion_burst_size: 10000
+    max_query_lookback: 0s

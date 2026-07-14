@@ -28,6 +28,7 @@ from lib.llm.provider import (
     classify_error,
     retry_policy_for,
 )
+from lib.observability.metrics import LLM_PROVIDER_ERRORS
 from lib.shared.errors import CompanyOSError
 
 from services.reasoning.retrieval.assembler import ContextBundle
@@ -203,6 +204,15 @@ async def _structured_with_reasoning_retries(
 ) -> tuple[Any, int]:
     last_err: Exception | None = None
     started = time.monotonic()
+    # BYOC §12 G3: provider for the per-provider error-class counter
+    # (fyralis_llm_provider_errors_total). `config.provider` is the bounded
+    # provider enum (codex/anthropic/openai/deepseek); never a tenant id.
+    provider_name = getattr(getattr(provider, "config", None), "provider", "unknown")
+
+    def _record_provider_error(exc: BaseException) -> None:
+        LLM_PROVIDER_ERRORS.inc(
+            provider=provider_name, error_class=classify_error(exc).value,
+        )
 
     for attempt in range(max_attempts):
         try:
@@ -217,12 +227,14 @@ async def _structured_with_reasoning_retries(
             return parsed, elapsed_ms
         except LLMParseError as e:
             # Terminal — provider already exhausted its own retries.
+            _record_provider_error(e)
             raise ReasoningFailure(
                 f"LLM output failed to parse after provider retries: {e}",
                 attempt=attempt,
             ) from e
         except LLMError as e:
             last_err = e
+            _record_provider_error(e)
             policy = retry_policy_for(e)
             total_allowed = min(max_attempts, 1 + policy.max_attempts)
             if attempt < total_allowed - 1:
@@ -244,6 +256,7 @@ async def _structured_with_reasoning_retries(
             break
         except Exception as e:
             last_err = e
+            _record_provider_error(e)
             break
 
     raise ReasoningFailure(

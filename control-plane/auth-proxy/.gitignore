@@ -1,0 +1,9 @@
+# Generated proxy server cert/key (mint with gen_server_cert.py — never commit).
+tls/
+*.key
+proxy-server.crt
+
+# Python bytecode / pytest caches.
+__pycache__/
+*.pyc
+.pytest_cache/

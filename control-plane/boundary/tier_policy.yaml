@@ -1,0 +1,255 @@
+# ============================================================================
+# Fyralis BYOC — Telemetry Tier Policy (C3)
+# ----------------------------------------------------------------------------
+# Tiers are CUMULATIVE and enforced at the boundary OTel Collector inside the
+# customer VPC. Nothing above the configured tier is wired into the running
+# pipeline, so nothing above-tier can ever leave the VPC.
+#
+#   T1  (default)  metrics only                    ZERO PII/payload  (I1)
+#   T2             T1 + redacted logs              logs redacted at boundary
+#   T3             T1 + T2 + sampled traces        traces sampled + redacted
+#
+# A tier change is CONFIG-ONLY: copy the matching `service.pipelines` block and
+# the extra receivers/processors/exporters below into otel-collector-config.yaml
+# (or layer this file with --config). The agent advertises its tier in its
+# heartbeat (C4 telemetry_tier ∈ T1|T2|T3); the operator sets FYRALIS_TELEMETRY_TIER
+# and selects the matching pipeline block. The default is T1 unless the
+# customer explicitly opts up.
+#
+# This file is structured so each tier's INCREMENT is isolated and commented.
+# The T1 metrics pipeline lives in otel-collector-config.yaml and is unchanged
+# across all tiers; T2 ADDS a logs pipeline, T3 ADDS a traces pipeline.
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# TIER SELECTOR (informational — the active pipeline set is what enforces it)
+# ----------------------------------------------------------------------------
+tier_selector:
+  active_tier: ${env:FYRALIS_TELEMETRY_TIER}   # T1 | T2 | T3 ; default T1
+  default: T1
+  contract: SPRINT_PLAN.md#C3
+
+# ============================================================================
+# T1 — METRICS ONLY (default).  Service block:
+# ============================================================================
+# service:
+#   pipelines:
+#     metrics:
+#       receivers: [prometheus]
+#       processors: [memory_limiter, filter/allowlist, transform/redact-labels,
+#                    resource, transform/identity-to-labels, batch]
+#       exporters: [prometheusremotewrite]
+#
+# (This is exactly the pipeline already wired in otel-collector-config.yaml.
+#  No logs receiver, no traces receiver → logs/traces cannot egress.)
+
+# ============================================================================
+# T2 — T1 + REDACTED LOGS.
+# ----------------------------------------------------------------------------
+# ADDS: a filelog/otlp logs receiver, a PII-stripping transform processor, and
+# a loki exporter (through the auth proxy, which injects X-Scope-OrgID — the
+# collector never sets it). Logs are redacted BEFORE they leave the VPC.
+# ============================================================================
+t2_increment:
+
+  # ---- extra receivers --------------------------------------------------
+  receivers:
+    # Tail data-plane container logs. In a real deploy this is the agent's log
+    # tap or an OTLP push from the app's logging exporter.
+    filelog/dataplane:
+      include:
+        - /var/log/fyralis/*.log
+      include_file_path: false      # the file path itself is not egressed
+      operators:
+        - type: json_parser
+          # parse structured app logs; non-JSON lines pass through as body
+
+    # Alternative: apps push logs over OTLP.
+    otlp/logs:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  # ---- extra processors: REDACT logs before egress (I1 for T2) ----------
+  processors:
+    # The contrib `redaction` processor masks values matching PII patterns and
+    # enforces an attribute allowlist. allow_all_keys=false → any attribute not
+    # in allowed_keys is REMOVED.
+    redaction/logs:
+      allow_all_keys: false
+      allowed_keys:
+        - worker
+        - job
+        - source
+        - provider
+        - state
+        - status
+        - level
+        - severity
+        - logger
+        - tenant_id
+        - deployment_id
+        - region
+        - telemetry_tier
+      # Values matching these regexes are replaced with ****** even inside the
+      # log BODY / allowed keys (e.g. an email accidentally logged in a status).
+      blocked_values:
+        - '[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}'          # email
+        - '\b\d{1,3}(\.\d{1,3}){3}\b'                                  # IPv4
+        - '(?i)bearer\s+[A-Za-z0-9._\-]+'                             # bearer token
+        - '(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*\S+'      # secret kv
+        - '\b(?:\d[ -]*?){13,19}\b'                                    # card-like number
+      summary: debug
+
+    # Body-level scrub for free-form text: keep only the level + a redacted
+    # short body. Drops the raw message body so no payload text egresses.
+    transform/logs-strip-body:
+      error_mode: ignore
+      log_statements:
+        - context: log
+          statements:
+            # Replace the body with a constant marker — at T2 we ship the fact
+            # that a log of a given level/logger occurred, NOT its free text.
+            # (Loosen this to keep a redacted body if the customer opts in.)
+            - set(body, "[redacted-T2]")
+            # stamp identity onto logs too
+            - set(attributes["tenant_id"], resource.attributes["tenant_id"]) where resource.attributes["tenant_id"] != nil
+            - set(attributes["deployment_id"], resource.attributes["deployment_id"]) where resource.attributes["deployment_id"] != nil
+            - set(attributes["region"], resource.attributes["region"]) where resource.attributes["region"] != nil
+
+  # ---- extra exporters --------------------------------------------------
+  exporters:
+    # Loki, through the auth proxy. Proxy injects X-Scope-OrgID from cert SAN.
+    loki:
+      endpoint: ${env:FYRALIS_AUTH_PROXY_URL}/loki/api/v1/push
+      tls:
+        insecure: false
+        ca_file: /etc/fyralis/ca/ca.crt
+        cert_file: /etc/fyralis/agent/client.crt
+        key_file: /etc/fyralis/agent/client.key
+      retry_on_failure:
+        enabled: true
+        max_elapsed_time: 0     # I3: buffer during CP outage
+
+  # ---- service block to ACTIVATE at T2 (metrics block stays as in T1) ----
+  service:
+    pipelines:
+      logs:
+        receivers: [filelog/dataplane, otlp/logs]
+        processors:
+          - memory_limiter
+          - redaction/logs           # mask PII values + drop non-allowlisted attrs
+          - transform/logs-strip-body # drop raw body text + stamp identity
+          - resource                 # tenant/deployment/region (shared with T1)
+          - batch
+        exporters: [loki]
+
+# ============================================================================
+# T3 — T1 + T2 + SAMPLED TRACES.
+# ----------------------------------------------------------------------------
+# ADDS: an OTLP traces receiver, tail/probabilistic sampling, a span-attribute
+# redaction pass, and an OTLP traces exporter to the central tracing backend
+# (Tempo) through the auth proxy. Traces are SAMPLED and REDACTED.
+# ============================================================================
+t3_increment:
+
+  receivers:
+    otlp/traces:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  processors:
+    # Keep volume tiny: probabilistic head sampling. Swap for tail_sampling if
+    # error/latency-biased sampling is desired.
+    probabilistic_sampler:
+      sampling_percentage: 5        # 5% of traces
+
+    # Strip PII/payload span attributes before egress — same allowlist spirit
+    # as metrics labels: keep only bounded operational attributes.
+    redaction/traces:
+      allow_all_keys: false
+      allowed_keys:
+        - service.name
+        - worker
+        - job
+        - source
+        - provider
+        - state
+        - status
+        - http.method
+        - http.status_code
+        - rpc.system
+        - db.system
+        - messaging.system
+        - tenant_id
+        - deployment_id
+        - region
+      blocked_values:
+        - '[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}'
+        - '(?i)bearer\s+[A-Za-z0-9._\-]+'
+        - '(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*\S+'
+      summary: debug
+
+    transform/traces-strip-names:
+      error_mode: ignore
+      trace_statements:
+        - context: span
+          statements:
+            # span/db statements can contain raw SQL / payloads — drop them.
+            - delete_key(attributes, "db.statement")
+            - delete_key(attributes, "http.url")
+            - delete_key(attributes, "http.target")
+            - delete_key(attributes, "url.full")
+            - delete_key(attributes, "url.path")
+            - delete_key(attributes, "messaging.message.body")
+            - set(attributes["tenant_id"], resource.attributes["tenant_id"]) where resource.attributes["tenant_id"] != nil
+            - set(attributes["deployment_id"], resource.attributes["deployment_id"]) where resource.attributes["deployment_id"] != nil
+
+  exporters:
+    otlp/traces-egress:
+      # Tempo distributor behind the auth proxy (X-Scope-OrgID injected there).
+      # OTLP/gRPC wants host:port (NO scheme, NO extra port). Set
+      # FYRALIS_AUTH_PROXY_GRPC = auth-proxy.fyralis.example:4317 (the proxy's
+      # OTLP listener that fronts Tempo). Distinct from the HTTPS push URL.
+      endpoint: ${env:FYRALIS_AUTH_PROXY_GRPC}
+      tls:
+        insecure: false
+        ca_file: /etc/fyralis/ca/ca.crt
+        cert_file: /etc/fyralis/agent/client.crt
+        key_file: /etc/fyralis/agent/client.key
+      retry_on_failure:
+        enabled: true
+        max_elapsed_time: 0
+
+  service:
+    pipelines:
+      traces:
+        receivers: [otlp/traces]
+        processors:
+          - memory_limiter
+          - probabilistic_sampler        # sample first to cut volume
+          - redaction/traces             # mask PII span values + drop non-allowlisted attrs
+          - transform/traces-strip-names # drop raw SQL/URL/body + stamp identity
+          - resource
+          - batch
+        exporters: [otlp/traces-egress]
+
+# ============================================================================
+# HOW TO SWITCH TIERS (config-only)
+# ----------------------------------------------------------------------------
+#  T1 -> T2:  set FYRALIS_TELEMETRY_TIER=T2 ; merge t2_increment.{receivers,
+#             processors,exporters} into otel-collector-config.yaml and add the
+#             t2_increment.service.pipelines.logs block. (Two --config files or
+#             a copy-paste.) The metrics pipeline is unchanged.
+#  T2 -> T3:  set FYRALIS_TELEMETRY_TIER=T3 ; ALSO merge t3_increment.* and add
+#             the traces pipeline. T3 includes T1+T2 (cumulative).
+#  Down-tier: remove the higher pipeline block(s). With the block absent the
+#             collector has no receiver/exporter for that signal class, so it
+#             physically cannot egress it — the contract is enforced by absence,
+#             not just by a flag.
+# ============================================================================

@@ -1,0 +1,11 @@
+# Agent runtime artifacts — never commit deployment state / per-deploy secrets.
+buffer.jsonl
+buffer.jsonl.*
+applied-config/
+license.json
+license.json.sig
+license.json.manifest.json
+deploy/
+__pycache__/
+*.pyc
+.pytest_cache/

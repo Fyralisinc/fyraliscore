@@ -1,0 +1,5 @@
+# control-plane / self-obs — runtime deps for cp_exporter.py (WS-SELFOBS).
+# Deliberately minimal: the exporter is pure stdlib for probing + prometheus_client
+# for exposition. No service-dir imports, no crypto beyond the stdlib `ssl` used
+# for the auth-proxy TLS-handshake probe.
+prometheus-client>=0.20

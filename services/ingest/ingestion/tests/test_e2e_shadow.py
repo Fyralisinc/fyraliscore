@@ -45,6 +45,8 @@ catches that asymmetry. Per the M2.4 review.
 """
 from __future__ import annotations
 
+import datetime as dt
+from uuid import uuid4
 
 import asyncpg
 import orjson
@@ -58,15 +60,61 @@ except ImportError:
     _HAS_TESTCONTAINERS = False
 
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.requires_docker,
-    pytest.mark.skipif(
-        not _HAS_TESTCONTAINERS,
-        reason="testcontainers / docker SDK unavailable",
-    ),
-    pytest.mark.timeout(180),
-]
+# ---------------------------------------------------------------------
+# BYOC §12 G6 — the writer shadow-drop path increments the fleet-scraped
+# fyralis_writer_shadow_drop_total{ingress_kind} counter (silent data loss is
+# now alertable, not log-only). This drives the EXACT production increment
+# site (_record_shadow_event) directly; it is pure in-memory (no Kafka, no S3,
+# no DB) so it runs in the default PR job, while the full 100-webhook
+# zero-divergence soak below stays Docker/DB-gated.
+# ---------------------------------------------------------------------
+
+
+def _normalized_envelope(ingress_kind: str):
+    from services.ingest.ingestion.normalizer.models import NormalizedEnvelope
+
+    nowts = dt.datetime.now(dt.timezone.utc)
+    return NormalizedEnvelope(
+        source="slack",
+        ingress_kind=ingress_kind,
+        tenant_id=uuid4(),
+        raw_s3_key="raw/slack/x",
+        content_hash="0" * 40,
+        raw_ingested_at=nowts,
+        source_channel="C00001",
+        content_text="hello",
+        occurred_at=nowts,
+        trust_tier="tier_b",
+        normalized_at=nowts,
+    )
+
+
+async def test_g6_shadow_drop_increments_counter_with_ingress_kind_label():
+    from lib.observability.metrics import (
+        WRITER_SHADOW_DROP,
+        reset_default_for_tests,
+    )
+    from services.ingest.ingestion.writers import (
+        observation_writer as writer_module,
+    )
+
+    reset_default_for_tests()
+    writer_module.reset_shadow_log()
+    writer_module.reset_metrics()
+
+    # A LIVE envelope dropping is by-design (the inline path persists it).
+    await writer_module._record_shadow_event(_normalized_envelope("webhook"))
+    # A BACKFILL envelope here is an INVARIANT VIOLATION (silent data loss).
+    await writer_module._record_shadow_event(_normalized_envelope("backfill"))
+    await writer_module._record_shadow_event(_normalized_envelope("backfill"))
+
+    # The label lets the control plane alert HARD on backfill loss while
+    # tolerating live drops.
+    assert WRITER_SHADOW_DROP.get(ingress_kind="webhook") == 1.0
+    assert WRITER_SHADOW_DROP.get(ingress_kind="backfill") == 2.0
+    # Sanity: the in-process shadow log still recorded all three events too.
+    assert len(writer_module.get_shadow_log()) == 3
+    reset_default_for_tests()
 
 
 def _docker_available() -> bool:
@@ -143,6 +191,13 @@ def _expected_external_id(payload: dict) -> str:
 # ---------------------------------------------------------------------
 
 
+@pytest.mark.integration
+@pytest.mark.requires_docker
+@pytest.mark.skipif(
+    not _HAS_TESTCONTAINERS,
+    reason="testcontainers / docker SDK unavailable",
+)
+@pytest.mark.timeout(180)
 @pytest.mark.skipif(not _docker_available(), reason="Docker daemon not reachable")
 async def test_e2e_shadow_100_webhooks_zero_divergence(
     fresh_db: asyncpg.Pool, monkeypatch,

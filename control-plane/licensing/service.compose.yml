@@ -1,0 +1,79 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — license service fragment (WS-LICENSE)
+# ----------------------------------------------------------------------------
+# Standalone compose fragment. The integrate step merges this into the master
+# docker-compose.control-plane.yml. Do NOT edit the master file directly.
+#
+# WHAT THIS DOES
+#   The license service mints SIGNED, EXPIRING licenses (the LICENSE JSON
+#   contract, ed25519-signed via control-plane/signing) and manages the
+#   revocation list (FR-F). It is a CONTROL-PLANE-side convenience over the CLI
+#   (issue_license.py) — the data-plane AGENT never calls it; the agent ships the
+#   trust root + revocation list and validates LOCALLY (validator.py, I2/I6).
+#
+# IMPORTANT — build context is the control-plane ROOT (.), not licensing/, so the
+#   image can include signing/ (sign_bundle/verify_bundle/signing_lib), which the
+#   service imports to sign + verify licenses (C2/I6).
+#
+# SECRETS — the PRIVATE signing key (signing/keys/, gitignored) is NOT baked into
+#   the image. It is mounted read-only at runtime; the image carries only public
+#   trust-root material at most. Mount the keys dir + trust root from the host (or
+#   a secret) so the active signing key is available to mint, and verification has
+#   the trust root. Without a key, /api/v1/licenses returns 500 (fail-closed: it
+#   will not mint an unsigned license).
+#
+# Networks (cp-net) are declared in the master compose file; referenced here as
+# external-by-merge. If running standalone, uncomment the networks: block below.
+# ============================================================================
+
+services:
+  license-service:
+    build:
+      context: .
+      dockerfile: licensing/Dockerfile
+    image: fyralis/license-service
+    # Issue/validate licenses + manage revocations. Lives on cp-net BEHIND the
+    # auth-proxy in production (operator/console traffic only — never agent inbound).
+    environment:
+      LICENSE_SERVICE_PORT: "8088"
+    volumes:
+      # The signing key material + trust root, mounted read-only so the image
+      # carries no secret. signing/keys/ is gitignored on the host; provide it via
+      # a secret/volume in real deployments. The trust root must match the key.
+      - ./signing/keys:/app/signing/keys:ro
+      - ./signing/trust_root.json:/app/signing/trust_root.json:ro
+      # Persist the revocation list across restarts (FR-F). Operators add/remove
+      # entries via POST/DELETE /api/v1/revocations or the revoke.py CLI.
+      - license-revocations:/app/licensing/revocations
+    # The revocation list path inside the container (points at the persisted volume).
+    # service.py/revoke.py default to licensing/revocations.json; override via env so
+    # the persisted copy under the volume is used.
+    command:
+      - sh
+      - -c
+      - |
+        export REVOCATIONS_PATH=/app/licensing/revocations/revocations.json
+        exec python -m uvicorn service:app --app-dir /app/licensing \
+             --host 0.0.0.0 --port 8088
+    # Host-publish ONLY for local/dev inspection; in production this is reached
+    # ONLY through the auth-proxy on cp-net (operator-authenticated).
+    ports:
+      - "8088:8088"
+    networks:
+      - cp-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8088/healthz').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  license-revocations:
+
+# --- Uncomment ONLY to run this fragment standalone (outside the master compose) ---
+# networks:
+#   cp-net:
+#     driver: bridge

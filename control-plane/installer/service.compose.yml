@@ -1,0 +1,41 @@
+# ============================================================================
+# WS-INSTALLER — integrate-step fragment
+# ----------------------------------------------------------------------------
+# The installer is NOT a vendor control-plane service: it is the CUSTOMER-VPC
+# bootstrap tool that stands up a *data-plane* deployment (data plane + boundary
+# + agent) from an agent bundle. It therefore contributes NO long-running service
+# to the vendor `docker-compose.control-plane.yml`.
+#
+# This fragment exists so the integrate step has a uniform per-dir file to read.
+# It declares a single one-shot `installer-selftest` marker service that runs the
+# installer self-test (overlay structure + sample-bundle validation + dry-run).
+# It is OPT-IN: it only runs under `--profile tools`, so a normal control-plane
+# `up` does not touch it.
+#
+# The real installer entrypoints are the scripts in this directory:
+#   install.sh <agent-bundle-dir>      — validate + render + register + launch
+#   uninstall.sh <agent-bundle-dir>    — tear down
+#   deployment.compose.yml             — the per-tenant overlay install.sh launches
+#
+# These run on a CUSTOMER host, not inside the control-plane compose project.
+# ============================================================================
+
+services:
+  installer-selftest:
+    profiles: ["tools"]
+    image: python:3.12-slim
+    container_name: cp-installer-selftest
+    working_dir: /opt/fyralis/control-plane/installer
+    # Install only what bundle_lib + make_sample_bundle need, then run the suite.
+    command:
+      - sh
+      - -c
+      - |
+        pip install --quiet cryptography pydantic pyyaml >/dev/null 2>&1
+        python selftest.py
+    volumes:
+      # The whole control-plane tree so installer/ can import ca/, signing/, lib/.
+      - ..:/opt/fyralis/control-plane:ro
+    networks:
+      - cp-net
+    restart: "no"

@@ -1,0 +1,53 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — Fleet ruler: Mimir cardinality watchdog
+# ----------------------------------------------------------------------------
+# Evaluated by the Mimir ruler under the synthetic `__fleet__` tenant. Recorded
+# series are prefixed `fleet:` and queried by operator Grafana with
+# X-Scope-OrgID: __fleet__.
+#
+# HISTORY / SCOPE
+#   This file STARTED as the WS-MIMIR placeholder seed carrying starter golden-SLI
+#   recording + burn-rate rules so the ruler had real groups to load at the P3
+#   exit gate. The full golden-12 catalog + the NFR-5 SLOs are now delivered by
+#   WS-FLEETSLI in the dedicated files in THIS directory:
+#       recording_rules.yml     — golden-12 SLIs, per-deployment + fleet-wide
+#       alert_rules.yml         — the 13 deployment alerts ported to fleet scope
+#       slo_burnrate_rules.yml  — NFR-5 multi-window burn-rate SLOs
+#   Those SUPERSEDE the seed's placeholder `fleet_sli_recording` /
+#   `fleet_sli_burn_rate` groups (which were keyed by `tenant` against a guessed
+#   99.9% SLO; the real rules are keyed by tenant_id/deployment_id/region against
+#   the NFR-5 99.5% availability + ~90s liveness SLOs). To avoid two conflicting
+#   availability burn-rate definitions in the same ruler tenant, those two seed
+#   groups were REMOVED from this file.
+#
+# WHAT REMAINS HERE
+#   Only the WS-MIMIR `fleet_cardinality_watchdog` — a Mimir-INTERNAL guardrail
+#   (it reads `cortex_ingester_memory_series`, a Mimir self-metric, NOT a data-
+#   plane SLI). It is owned by the mimir cardinality contract, is NOT one of the
+#   golden-12, and is intentionally kept so nothing from the seed is lost.
+# ============================================================================
+groups:
+  # --- Cardinality watchdog: alert when a tenant nears its series budget ------
+  # WS-MIMIR-CARD enforcement signal. Mimir exports the per-tenant in-memory
+  # active-series gauge; this fires before the hard cap rejects writes so an
+  # operator can raise the runtime override or the tenant can shed cardinality.
+  - name: fleet_cardinality_watchdog
+    interval: 30s
+    rules:
+      - record: fleet:active_series:by_tenant
+        expr: |
+          sum by (user) (cortex_ingester_memory_series{job=~".*ingester.*"})
+
+      - alert: FleetTenantNearSeriesBudget
+        # 80% of the DEFAULT budget (150k). Tenants with a higher runtime
+        # override will trip this informationally; tune per-tenant if noisy.
+        expr: |
+          fleet:active_series:by_tenant > (0.8 * 150000)
+        for: 10m
+        labels:
+          severity: warning
+          slo: cardinality
+          scope: fleet
+        annotations:
+          summary: "Tenant {{ $labels.user }} near its Mimir series budget"
+          description: "Tenant {{ $labels.user }} active series exceeded 80% of the default 150k budget. Raise its runtime_overrides budget or shed cardinality (see cardinality.md)."

@@ -39,16 +39,24 @@ expected trade-off for non-blocking index builds; callers should
 ensure such files contain a single statement so a mid-file failure
 doesn't leave a half-built artifact.
 """
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager
 from datetime import date
+import hashlib
 import logging
 import pathlib
 import re
 
 import asyncpg
+
+from lib.observability.metrics import (
+    SCHEMA_APPLIED_TOTAL,
+    SCHEMA_LAST_FAILED,
+    SCHEMA_VERSION,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -130,9 +138,7 @@ def _assert_unique_prefixes(files: Iterable[pathlib.Path]) -> None:
         else:
             seen[prefix] = path.name
     if dupes:
-        raise RuntimeError(
-            "duplicate migration prefixes detected: " + "; ".join(dupes)
-        )
+        raise RuntimeError("duplicate migration prefixes detected: " + "; ".join(dupes))
 
 
 def _needs_no_transaction(sql_text: str) -> bool:
@@ -190,12 +196,34 @@ _OBSOLETE_DEMO_SCAFFOLDING_MIGRATIONS = (
 
 
 def _ledger_ddl(table: str) -> str:
+    # `checksum` is the digest of the migration file bytes at apply time
+    # (BYOC §12 G1) — formalized in db/migrations/0155_schema_migrations.sql.
+    # Added here too so a DB bootstrapped purely by this lazy CREATE (tests,
+    # extension ledgers) gets the same shape. ADD COLUMN IF NOT EXISTS widens
+    # a pre-G1 two-column ledger created by an older runner.
     return (
         f"CREATE TABLE IF NOT EXISTS {table} (\n"
         "  filename text PRIMARY KEY,\n"
+        "  checksum text,\n"
         "  applied_at timestamptz NOT NULL DEFAULT now()\n"
-        ")"
+        ");\n"
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS checksum text"
     )
+
+
+def _migration_checksum(sql_text: str) -> str:
+    """SHA-256 of the migration file's bytes — captured at apply time so the
+    fleet control plane can detect a silently-edited applied migration (drift).
+    """
+    return hashlib.sha256(sql_text.encode("utf-8")).hexdigest()
+
+
+def _version_from_filename(filename: str) -> int:
+    """Numeric prefix of a migration filename (`0155_…` -> 155), the monotonic
+    schema version. 0 when the name has no numeric prefix (extension ledgers).
+    """
+    m = _PREFIX_RE.match(filename)
+    return int(m.group(1)) if m else 0
 
 
 async def _ensure_schema_migrations(
@@ -208,10 +236,14 @@ async def _record_applied_migration(
     conn: asyncpg.Connection,
     filename: str,
     table: str = "schema_migrations",
+    checksum: str | None = None,
 ) -> None:
     await conn.execute(
-        f"INSERT INTO {table}(filename) VALUES ($1) ON CONFLICT (filename) DO NOTHING",
+        f"INSERT INTO {table}(filename, checksum) VALUES ($1, $2) "
+        "ON CONFLICT (filename) DO UPDATE SET checksum = "
+        f"COALESCE({table}.checksum, EXCLUDED.checksum)",
         filename,
+        checksum,
     )
 
 
@@ -277,6 +309,28 @@ async def _baseline_obsolete_demo_scaffolding_if_final_state(
             already_applied.add(filename)
 
 
+async def _publish_schema_metrics(
+    conn: asyncpg.Connection, table: str = "schema_migrations"
+) -> None:
+    """Set fyralis_schema_version / _applied_count from the ledger so every
+    worker that renders the default registry exposes the deployment's schema
+    state to the fleet control plane (BYOC §12 G1). Best-effort: a read failure
+    must never break a migration run, so it is swallowed.
+    """
+    # Only the host's global line is reported as the schema version — an
+    # extension's private ledger has its own numbering and would otherwise
+    # clobber the gauge.
+    if table != "schema_migrations":
+        return
+    try:
+        rows = await conn.fetch(f"SELECT filename FROM {table}")
+    except Exception:  # noqa: BLE001 — metrics must not break migrations
+        return
+    names = [r["filename"] for r in rows]
+    SCHEMA_APPLIED_TOTAL.set(len(names))
+    SCHEMA_VERSION.set(max((_version_from_filename(n) for n in names), default=0))
+
+
 async def apply_migrations_dir(
     conn: asyncpg.Connection,
     migrations_dir: pathlib.Path,
@@ -336,12 +390,26 @@ async def apply_migrations_dir(
         for path in files:
             if path.name in already_applied:
                 continue
+            sql_text = path.read_text()
             try:
-                await apply_migration(conn, path.read_text(), name=path.name)
-                await _record_applied_migration(conn, path.name, ledger_table)
+                await apply_migration(conn, sql_text, name=path.name)
+                await _record_applied_migration(
+                    conn,
+                    path.name,
+                    ledger_table,
+                    checksum=_migration_checksum(sql_text),
+                )
                 already_applied.add(path.name)
                 applied.append(path.name)
+                # This file applied cleanly — clear any failure flag left from
+                # a prior wedged attempt on the same file (BYOC §12 G1).
+                SCHEMA_LAST_FAILED.set(0, filename=path.name)
             except MigrationError as e:
+                # BYOC §12 G1 — promote "a migration failed" to a fleet-visible
+                # gauge so the control plane can alert without log-grepping.
+                # Set BEFORE re-raising so the `stop` path (production/CI) also
+                # records which file wedged the deployment.
+                SCHEMA_LAST_FAILED.set(1, filename=e.filename)
                 if on_error == "stop":
                     raise
                 # Note: stdlib logging reserves `filename` and `module` on
@@ -349,12 +417,17 @@ async def apply_migrations_dir(
                 # "Attempt to overwrite 'filename'" KeyError.
                 logger.warning(
                     "migration_skipped: %s — %s",
-                    e.filename, str(e.cause),
+                    e.filename,
+                    str(e.cause),
                     extra={
                         "migration_filename": e.filename,
                         "migration_cause": str(e.cause),
                     },
                 )
+
+        # BYOC §12 G1 — publish the deployment's schema version + applied-count
+        # from the ledger (no-op for extension ledgers; best-effort).
+        await _publish_schema_metrics(conn, ledger_table)
 
         # Fresh test/dev DBs only get current-month + 3 partitions from the
         # foundation migration; widen the window so historical inserts work.
