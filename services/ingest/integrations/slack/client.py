@@ -439,13 +439,15 @@ class SlackUserClient(SlackClient):
     async def conversations_list(  # type: ignore[override]
         self, *, types: str = "im,mpim",
     ) -> list[dict[str, Any]]:
-        """Enumerate the consenting user's DM + group-DM conversations
-        (planner shard source for `slack_dm_window`).
+        """Enumerate conversations visible to the consenting user.
 
+        The default remains the DM/group-DM surface used by
+        `slack_dm_window`. Passing `types="public_channel,private_channel"`
+        returns channel objects for the user-visible channel backfill path.
         Cursor-paginated to completion. Each entry carries `id`,
-        `channel_type` ("im"/"mpim", derived from Slack's `is_im`/`is_mpim`
-        flags), the `user` counterpart (im only), `name`, and `team_id`.
+        `channel_type`, `user` for IM counterparts, `name`, and `team_id`.
         """
+        requested_types = {t.strip() for t in types.split(",") if t.strip()}
         out: list[dict[str, Any]] = []
         cursor: str | None = None
         while True:
@@ -458,17 +460,13 @@ class SlackUserClient(SlackClient):
             for c in data.get("channels") or []:
                 if not isinstance(c, dict):
                     continue
-                ctype = (
-                    "im" if c.get("is_im")
-                    else "mpim" if c.get("is_mpim")
-                    # Mock/spammer convenience: an explicit channel_type.
-                    else c.get("channel_type")
-                )
+                ctype = _conversation_type(c, requested_types)
                 out.append({
                     "id": c.get("id"),
                     "channel_type": ctype,
                     "user": c.get("user"),  # im counterpart; None for mpim
                     "name": c.get("name"),
+                    "is_private": c.get("is_private"),
                     "team_id": c.get("context_team_id") or self._team_id,
                 })
             cursor = (
@@ -478,6 +476,25 @@ class SlackUserClient(SlackClient):
             if not cursor:
                 break
         return out
+
+
+def _conversation_type(
+    conversation: dict[str, Any],
+    requested_types: set[str] | None = None,
+) -> str | None:
+    if conversation.get("is_im"):
+        return "im"
+    if conversation.get("is_mpim"):
+        return "mpim"
+    if conversation.get("channel_type"):
+        return str(conversation.get("channel_type"))
+    if conversation.get("is_private") or conversation.get("is_group"):
+        return "private_channel"
+    if conversation.get("is_channel") or (
+        requested_types is not None and "public_channel" in requested_types
+    ):
+        return "public_channel"
+    return None
 
 
 def _parse_retry_after(value: str | None) -> float | None:

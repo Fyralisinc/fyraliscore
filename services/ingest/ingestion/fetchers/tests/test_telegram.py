@@ -105,6 +105,7 @@ async def test_onboarding_and_reconciler_cover_telegram():
     # PeriodicReconciler services cannot drift per-source. The telegram
     # guarantee now holds iff (a) the service calls register_pool_provider and
     # (b) telegram is a dispatch entry whose module exposes set_pool_provider.
+    assert "register_pool_provider" in rec_src
     from services.ingest.ingestion.reconcilers import register_pool_provider
     from services.ingest.ingestion.reconcilers import telegram as _tg_rec
 

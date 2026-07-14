@@ -142,6 +142,7 @@ PATTERN-ALIGNMENT MAPPING
     workflows/*.py` scope; it's the established dispatch-table
     pattern (same shape as the not-yet-shipped `FETCHER_DISPATCH`).
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -185,11 +186,13 @@ WORKFLOW_ID_INBOX = "source_onboarding"  # per A13: workflow_id = inbox
 WORKFLOW_ID_DEFAULT = "default"  # for workflow_states diagnostics
 
 # Signal kinds.
-SIGNAL_KIND_REQUESTED = "source_onboarding_requested"   # consumed from M6.1
-SIGNAL_KIND_SHARD_REQUESTED = "shard_fetch_requested"   # emitted to ShardFetch
-SIGNAL_KIND_SHARD_COMPLETED = "shard_fetch_completed"   # consumed from ShardFetch
-SIGNAL_KIND_SHARDS_COMPLETED = "source_shards_completed"  # M6.2b: success path → Reconciler
-SIGNAL_KIND_COMPLETED = "source_onboarding_completed"   # failure path → M6.1 directly
+SIGNAL_KIND_REQUESTED = "source_onboarding_requested"  # consumed from M6.1
+SIGNAL_KIND_SHARD_REQUESTED = "shard_fetch_requested"  # emitted to ShardFetch
+SIGNAL_KIND_SHARD_COMPLETED = "shard_fetch_completed"  # consumed from ShardFetch
+SIGNAL_KIND_SHARDS_COMPLETED = (
+    "source_shards_completed"  # M6.2b: success path → Reconciler
+)
+SIGNAL_KIND_COMPLETED = "source_onboarding_completed"  # failure path → M6.1 directly
 
 # Downstream inbox addresses.
 SHARD_FETCH_INBOX_KIND = "shard_fetch"
@@ -203,7 +206,36 @@ DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 _FIGMA_CONNECTION_ERROR_MAX_CHARS = 512
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin", "whatsapp", "facebook_pages")
+VALID_SOURCES = (
+    "slack",
+    "github",
+    "discord",
+    "gmail",
+    "notion",
+    "google_calendar",
+    "google_drive",
+    "jira",
+    "mercury",
+    "quickbooks",
+    "grafana",
+    "telegram",
+    "brex",
+    "ramp",
+    "gusto",
+    "deel",
+    "fireflies",
+    "signal",
+    "aws",
+    "miro",
+    "figma",
+    "carta",
+    "hibob",
+    "ashby",
+    "linkedin",
+    "whatsapp",
+    "facebook_pages",
+    "instagram",
+)
 
 
 # ---------------------------------------------------------------------
@@ -747,8 +779,52 @@ SELECT id, tenant_id, page_id, page_name, page_access_token_ref,
        webhook_subscribed_at, enabled, oldest_message_at,
        backfill_exhausted_at, backfill_exhausted_reason,
        conversation_count, message_count
-  FROM facebook_page_installations
+ FROM facebook_page_installations
  WHERE id = $1 AND tenant_id = $2 AND enabled = true
+
+LIMIT 1
+"""
+
+
+# Instagram Messaging: one shard per active conversation. Conversations are
+# discovered at install time and refreshed by live/poll paths; the planner reads
+# this DB state only.
+_LOAD_INSTAGRAM_INSTALL_SQL = """
+SELECT ii.id, ii.tenant_id, ii.base_url, ii.ig_business_account_id, ii.page_id,
+       ii.access_token_ref, ii.history_lookback_days, ii.disabled_at,
+       iwr.webhook_delivery_account_id,
+       COALESCE(
+         json_agg(
+           json_build_object(
+             'conversation_id', ic.conversation_id,
+             'thread_key', ic.thread_key,
+             'provider_conversation_id', ic.provider_conversation_id,
+             'participant_id', ic.participant_id,
+             'participant_username', ic.participant_username,
+             'participant_display_name', ic.participant_display_name,
+             'last_message_at', ic.last_message_at,
+             'messages_cursor', ic.messages_cursor,
+             'high_water_message_id', ic.high_water_message_id
+           ) ORDER BY ic.last_message_at DESC NULLS LAST, ic.conversation_id
+         ) FILTER (WHERE ic.id IS NOT NULL),
+         '[]'::json
+       ) AS conversations
+  FROM instagram_installations ii
+  LEFT JOIN LATERAL (
+      SELECT webhook_delivery_account_id
+        FROM instagram_webhook_routes
+       WHERE instagram_installation_id = ii.id AND enabled = TRUE
+       ORDER BY updated_at DESC
+       LIMIT 1
+  ) iwr ON TRUE
+  LEFT JOIN instagram_conversations ic
+    ON ic.instagram_installation_id = ii.id
+       AND ic.state = 'active'
+       AND ic.provider_conversation_id IS NOT NULL
+ WHERE ii.tenant_id = $1
+   AND ii.disabled_at IS NULL
+   AND ii.connection_status = 'active'
+ GROUP BY ii.id, iwr.webhook_delivery_account_id
  LIMIT 1
 """
 
@@ -866,13 +942,19 @@ class SourceOnboardingConfig:
 # Named side-effect functions (Rule 1).
 # ---------------------------------------------------------------------
 async def _load_source_run(
-    conn: asyncpg.Connection, *, run_id: UUID, source: str,
+    conn: asyncpg.Connection,
+    *,
+    run_id: UUID,
+    source: str,
 ) -> asyncpg.Record | None:
     return await conn.fetchrow(_LOAD_SOURCE_RUN_SQL, run_id, source)
 
 
 async def _load_install(
-    conn: asyncpg.Connection, *, tenant_id: UUID, source: str,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    source: str,
     installation_row_id: UUID | None = None,
 ) -> asyncpg.Record | None:
     """Load the active install row for this (tenant, source).
@@ -918,7 +1000,9 @@ async def _load_install(
         # API origins cannot have one installation's failure reflected on
         # another installation's onboarding card.
         return await conn.fetchrow(
-            _LOAD_FIGMA_INSTALL_SQL, tenant_id, installation_row_id,
+            _LOAD_FIGMA_INSTALL_SQL,
+            tenant_id,
+            installation_row_id,
         )
     if source == "carta":
         return await conn.fetchrow(_LOAD_CARTA_INSTALL_SQL, tenant_id)
@@ -943,11 +1027,15 @@ async def _load_install(
             tenant_id,
             source,
         )
+    if source == "instagram":
+        return await conn.fetchrow(_LOAD_INSTAGRAM_INSTALL_SQL, tenant_id)
     return await conn.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
 async def _build_source_client(
-    source: str, pool: asyncpg.Pool, install: asyncpg.Record,
+    source: str,
+    pool: asyncpg.Pool,
+    install: asyncpg.Record,
 ) -> Any:
     """Construct a per-source API client for the planner's PlannerContext.
 
@@ -966,6 +1054,7 @@ async def _build_source_client(
     # spammer mode, carry a spammer-recognized identity token (no real
     # JWT / secret material needed). See services/ingest/ingestion/fetchers/_clients.py.
     from services.ingest.ingestion.fetchers import _clients
+
     if source == "github":
         return await _clients.build_github_client(install, pool=pool)
     if source == "slack":
@@ -991,6 +1080,8 @@ async def _build_source_client(
     # IN-PEOPLE: hibob/ashby/linkedin planners read DB state only (entity-type
     # list pre-aggregated by the loader, like gusto/carta), so no plan-time
     # source client is needed.
+    if source == "instagram":
+        return await _clients.build_instagram_client(install, pool=pool)
     if source in ("hibob", "ashby", "linkedin"):
         return None
     if source == "facebook_pages":
@@ -999,8 +1090,12 @@ async def _build_source_client(
 
 
 async def _insert_shard(
-    conn: asyncpg.Connection, *,
-    shard_id: UUID, run_id: UUID, tenant_id: UUID, source: str,
+    conn: asyncpg.Connection,
+    *,
+    shard_id: UUID,
+    run_id: UUID,
+    tenant_id: UUID,
+    source: str,
     shard: Shard,
 ) -> None:
     """INSERT one onboarding_shards row using the existing 0045 schema.
@@ -1010,18 +1105,24 @@ async def _insert_shard(
     N1 primitive).
     """
     import orjson
+
     await conn.execute(
         _INSERT_SHARD_SQL,
-        shard_id, run_id, tenant_id, source,
+        shard_id,
+        run_id,
+        tenant_id,
+        source,
         shard.shard_kind,
         orjson.dumps(shard.shard_identifier).decode("utf-8"),
-        shard.window_start, shard.window_end,
+        shard.window_start,
+        shard.window_end,
         shard.recency_score,
     )
 
 
 async def _load_shard(
-    conn: asyncpg.Connection, shard_id: UUID,
+    conn: asyncpg.Connection,
+    shard_id: UUID,
 ) -> asyncpg.Record | None:
     return await conn.fetchrow(_LOAD_SHARD_SQL, shard_id)
 
@@ -1040,7 +1141,9 @@ def _sanitize_figma_connection_error(failure_reason: object) -> str:
         return "Figma sync failed; retry shortly"
     redacted = redact_log_mapping({"message": raw}).get("message")
     safe = " ".join(str(redacted or "").split())
-    return safe[:_FIGMA_CONNECTION_ERROR_MAX_CHARS] or "Figma sync failed; retry shortly"
+    return (
+        safe[:_FIGMA_CONNECTION_ERROR_MAX_CHARS] or "Figma sync failed; retry shortly"
+    )
 
 
 def _figma_installation_id_from_shard(
@@ -1057,6 +1160,7 @@ def _figma_installation_id_from_shard(
     if isinstance(raw_identifier, (str, bytes, bytearray)):
         try:
             import orjson
+
             identifier = orjson.loads(raw_identifier)
         except (orjson.JSONDecodeError, TypeError, ValueError):
             return None
@@ -1130,37 +1234,57 @@ async def _mark_source_run_failed(
 
 
 async def _lock_source_run_for_rollup(
-    conn: asyncpg.Connection, *, run_id: UUID, source: str,
+    conn: asyncpg.Connection,
+    *,
+    run_id: UUID,
+    source: str,
 ) -> None:
     await conn.fetchval(_LOCK_SOURCE_RUN_FOR_ROLLUP_SQL, run_id, source)
 
 
 async def _count_unfinished_shards(
-    conn: asyncpg.Connection, *, run_id: UUID, source: str,
+    conn: asyncpg.Connection,
+    *,
+    run_id: UUID,
+    source: str,
 ) -> int:
-    return int(await conn.fetchval(
-        _COUNT_UNFINISHED_SHARDS_SQL, run_id, source,
-    ))
+    return int(
+        await conn.fetchval(
+            _COUNT_UNFINISHED_SHARDS_SQL,
+            run_id,
+            source,
+        )
+    )
 
 
 async def _any_shard_failed(
-    conn: asyncpg.Connection, *, run_id: UUID, source: str,
+    conn: asyncpg.Connection,
+    *,
+    run_id: UUID,
+    source: str,
 ) -> bool:
-    return int(await conn.fetchval(
-        _ANY_SHARD_FAILED_SQL, run_id, source,
-    )) > 0
+    return (
+        int(
+            await conn.fetchval(
+                _ANY_SHARD_FAILED_SQL,
+                run_id,
+                source,
+            )
+        )
+        > 0
+    )
 
 
 async def _collect_shard_failure_summary(
-    conn: asyncpg.Connection, *, run_id: UUID, source: str,
+    conn: asyncpg.Connection,
+    *,
+    run_id: UUID,
+    source: str,
 ) -> str:
     """Roll up failed-shard `last_error` strings into a single summary
     for the parent run's failure_reason column."""
     rows = await conn.fetch(_COLLECT_SHARD_FAILURES_SQL, run_id, source)
-    parts = [
-        f"shard {row['id']}: {row['last_error'] or '<no reason>'}"
-        for row in rows
-    ]
+    parts = [f"shard {row['id']}: {row['last_error'] or '<no reason>'}" for row in rows]
     return "; ".join(parts) if parts else "<no failed shards found>"
 
 
@@ -1213,7 +1337,8 @@ class SourceOnboarding(LongRunningService):
         `process_signal_with_serialization_retry`). Previously an unhandled
         `DeadlockDetectedError` from the signal INSERT crashed the worker."""
         return await process_signal_with_serialization_retry(
-            self._process_one_signal_once, label="source_onboarding",
+            self._process_one_signal_once,
+            label="source_onboarding",
         )
 
     async def _process_one_signal_once(self) -> bool:
@@ -1261,7 +1386,9 @@ class SourceOnboarding(LongRunningService):
         return True
 
     async def _handle_source_requested(
-        self, conn: asyncpg.Connection, sig: WorkflowSignal,
+        self,
+        conn: asyncpg.Connection,
+        sig: WorkflowSignal,
     ) -> list[ProgressEvent]:
         """Handle one `source_onboarding_requested` signal.
 
@@ -1301,7 +1428,8 @@ class SourceOnboarding(LongRunningService):
             log.warning(
                 "source_onboarding.run_missing",
                 extra={
-                    "run_id": str(run_id), "source": source,
+                    "run_id": str(run_id),
+                    "source": source,
                     "signal_id": str(sig.id),
                 },
             )
@@ -1327,7 +1455,9 @@ class SourceOnboarding(LongRunningService):
             return []
 
         install = await _load_install(
-            conn, tenant_id=tenant_id, source=source,
+            conn,
+            tenant_id=tenant_id,
+            source=source,
             installation_row_id=installation_row_id,
         )
         if install is None:
@@ -1348,7 +1478,9 @@ class SourceOnboarding(LongRunningService):
                 ),
             )
             await self._emit_source_completed(
-                conn, run_id=run_id, source=source,
+                conn,
+                run_id=run_id,
+                source=source,
                 failure_reason=failure_reason,
             )
             return []
@@ -1365,10 +1497,14 @@ class SourceOnboarding(LongRunningService):
         # (GitHub) are constructed via `_build_source_client`; sources
         # whose planner only reads `install` (Gmail) receive None.
         source_client = await _build_source_client(
-            source, self._pool, install,
+            source,
+            self._pool,
+            install,
         )
         ctx = PlannerContext(
-            tenant_id=tenant_id, install=install, conn=conn,
+            tenant_id=tenant_id,
+            install=install,
+            conn=conn,
             source_client=source_client,
         )
         try:
@@ -1386,7 +1522,9 @@ class SourceOnboarding(LongRunningService):
                 ),
             )
             await self._emit_source_completed(
-                conn, run_id=run_id, source=source,
+                conn,
+                run_id=run_id,
+                source=source,
                 failure_reason=failure_reason,
             )
             return []
@@ -1412,7 +1550,9 @@ class SourceOnboarding(LongRunningService):
                 ),
             )
             await self._emit_source_completed(
-                conn, run_id=run_id, source=source,
+                conn,
+                run_id=run_id,
+                source=source,
                 failure_reason=failure_reason,
             )
             return []
@@ -1434,13 +1574,18 @@ class SourceOnboarding(LongRunningService):
             # success paths converge on one shape; the Reconciler's
             # dispatch will return clean on an empty shard list).
             await conn.execute(
-                _MARK_SOURCE_RUN_COMPLETED_SQL, run_id, source,
+                _MARK_SOURCE_RUN_COMPLETED_SQL,
+                run_id,
+                source,
             )
             # pass_count is 0 here (the default; no Reconciler
             # re-shares have happened).
             await self._emit_shards_completed(
-                conn, run_id=run_id, source=source,
-                tenant_id=tenant_id, pass_count=0,
+                conn,
+                run_id=run_id,
+                source=source,
+                tenant_id=tenant_id,
+                pass_count=0,
             )
             return [started_event]
 
@@ -1450,8 +1595,11 @@ class SourceOnboarding(LongRunningService):
             shard_id = uuid7()
             await _insert_shard(
                 conn,
-                shard_id=shard_id, run_id=run_id,
-                tenant_id=tenant_id, source=source, shard=shard,
+                shard_id=shard_id,
+                run_id=run_id,
+                tenant_id=tenant_id,
+                source=source,
+                shard=shard,
             )
             await emit_signal(
                 conn,
@@ -1470,7 +1618,9 @@ class SourceOnboarding(LongRunningService):
         return [started_event]
 
     async def _handle_shard_completed(
-        self, conn: asyncpg.Connection, sig: WorkflowSignal,
+        self,
+        conn: asyncpg.Connection,
+        sig: WorkflowSignal,
     ) -> None:
         """Handle one `shard_fetch_completed` signal.
 
@@ -1502,19 +1652,24 @@ class SourceOnboarding(LongRunningService):
         # so the unfinished-shard count always observes earlier sibling
         # completions before deciding whether to emit the handoff.
         await _lock_source_run_for_rollup(
-            conn, run_id=run_id, source=source,
+            conn,
+            run_id=run_id,
+            source=source,
         )
 
         if status == "failed":
             await conn.execute(
                 _MARK_SHARD_FAILED_SQL,
-                shard_id, failure_reason or "<unspecified failure>",
+                shard_id,
+                failure_reason or "<unspecified failure>",
             )
         else:
             await conn.execute(_MARK_SHARD_DONE_SQL, shard_id)
 
         unfinished = await _count_unfinished_shards(
-            conn, run_id=run_id, source=source,
+            conn,
+            run_id=run_id,
+            source=source,
         )
         if unfinished > 0:
             return
@@ -1522,7 +1677,9 @@ class SourceOnboarding(LongRunningService):
         # All shards terminal — roll up to parent.
         if await _any_shard_failed(conn, run_id=run_id, source=source):
             rollup = await _collect_shard_failure_summary(
-                conn, run_id=run_id, source=source,
+                conn,
+                run_id=run_id,
+                source=source,
             )
             await _mark_source_run_failed(
                 conn,
@@ -1532,11 +1689,15 @@ class SourceOnboarding(LongRunningService):
                 failure_reason=rollup,
                 figma_installation_row_id=(
                     _figma_installation_id_from_shard(shard)
-                    if source == "figma" else None
+                    if source == "figma"
+                    else None
                 ),
             )
             await self._emit_source_completed(
-                conn, run_id=run_id, source=source, failure_reason=rollup,
+                conn,
+                run_id=run_id,
+                source=source,
+                failure_reason=rollup,
             )
             return
 
@@ -1548,20 +1709,30 @@ class SourceOnboarding(LongRunningService):
         # TenantOnboarding (failed runs have nothing to reconcile).
         # Need the run's reconciliation_pass_count for the
         # idempotency key — re-read on the same connection.
-        pass_count = int(await conn.fetchval(
-            "SELECT reconciliation_pass_count FROM source_onboarding_runs "
-            "WHERE onboarding_run_id = $1 AND source = $2",
-            run_id, source,
-        ) or 0)
+        pass_count = int(
+            await conn.fetchval(
+                "SELECT reconciliation_pass_count FROM source_onboarding_runs "
+                "WHERE onboarding_run_id = $1 AND source = $2",
+                run_id,
+                source,
+            )
+            or 0
+        )
         await self._emit_shards_completed(
-            conn, run_id=run_id, source=source,
+            conn,
+            run_id=run_id,
+            source=source,
             tenant_id=shard["tenant_id"],
             pass_count=pass_count,
         )
 
     async def _emit_shards_completed(
-        self, conn: asyncpg.Connection, *,
-        run_id: UUID, source: str, tenant_id: UUID | None,
+        self,
+        conn: asyncpg.Connection,
+        *,
+        run_id: UUID,
+        source: str,
+        tenant_id: UUID | None,
         pass_count: int,
     ) -> None:
         """Emit `source_shards_completed` to Reconciler's inbox
@@ -1592,8 +1763,12 @@ class SourceOnboarding(LongRunningService):
         )
 
     async def _emit_source_completed(
-        self, conn: asyncpg.Connection, *,
-        run_id: UUID, source: str, failure_reason: str | None,
+        self,
+        conn: asyncpg.Connection,
+        *,
+        run_id: UUID,
+        source: str,
+        failure_reason: str | None,
     ) -> None:
         """Emit `source_onboarding_completed` to M6.1's inbox.
 
@@ -1630,12 +1805,16 @@ class SourceOnboarding(LongRunningService):
             )
 
     async def _persist_scan_state(
-        self, *, signals_processed: int,
+        self,
+        *,
+        signals_processed: int,
     ) -> None:
         """Diagnostic state row. Not load-bearing; operator queries
         against workflow_states grep this for progress signals."""
         existing = await load_state(
-            self._pool, WORKFLOW_KIND, self._config.instance_name,
+            self._pool,
+            WORKFLOW_KIND,
+            self._config.instance_name,
         )
         state = WorkflowState(
             workflow_kind=WORKFLOW_KIND,
@@ -1645,8 +1824,11 @@ class SourceOnboarding(LongRunningService):
                 "last_tick_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
                 "last_signals_processed": signals_processed,
                 "lifetime_signals_processed": (
-                    (existing.state_data.get("lifetime_signals_processed", 0)
-                     if existing else 0)
+                    (
+                        existing.state_data.get("lifetime_signals_processed", 0)
+                        if existing
+                        else 0
+                    )
                     + signals_processed
                 ),
             },
@@ -1680,12 +1862,15 @@ async def _run_service() -> None:
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
     # Progress-event producer for `source.onboarding.started` (LLD §6).
-    producer = IdempotentProducer(ProducerConfig(
-        bootstrap_servers=os.environ.get(
-            "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
-        ),
-        client_id="workflow-source_onboarding",
-    ))
+    producer = IdempotentProducer(
+        ProducerConfig(
+            bootstrap_servers=os.environ.get(
+                "KAFKA_BOOTSTRAP_SERVERS",
+                "localhost:9092",
+            ),
+            client_id="workflow-source_onboarding",
+        )
+    )
     await producer.start()
     config = SourceOnboardingConfig(
         tick_interval_seconds=float(
@@ -1695,7 +1880,8 @@ async def _run_service() -> None:
             os.environ.get("SOURCE_ONBOARDING_BATCH", "50"),
         ),
         instance_name=os.environ.get(
-            "SOURCE_ONBOARDING_INSTANCE", WORKFLOW_ID_DEFAULT,
+            "SOURCE_ONBOARDING_INSTANCE",
+            WORKFLOW_ID_DEFAULT,
         ),
     )
     service = SourceOnboarding(pool, kafka_producer=producer, config=config)
@@ -1705,9 +1891,12 @@ async def _run_service() -> None:
     for s in (sig_module.SIGTERM, sig_module.SIGINT):
         loop.add_signal_handler(s, stop_event.set)
 
-    log.info("workflow.source_onboarding.started", extra={
-        "instance": config.instance_name,
-    })
+    log.info(
+        "workflow.source_onboarding.started",
+        extra={
+            "instance": config.instance_name,
+        },
+    )
     # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT).
     health_shutdown = start_workflow_health(stop_event)
     try:
@@ -1723,6 +1912,7 @@ async def _run_service() -> None:
 def main() -> None:
     import asyncio
     import os
+
     logging.basicConfig(
         level=os.environ.get("WORKFLOWS_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

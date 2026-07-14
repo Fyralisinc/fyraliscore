@@ -19,6 +19,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from lib.shared.ids import uuid7
 from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.retrieval.primary import TriggerContext
 
@@ -72,6 +73,42 @@ _CUSTOMER_RISK_RE = re.compile(
     r"path forward on pricing"
     r")\b"
 )
+
+_DECISION_PRESSURE_RE = re.compile(
+    r"(?is)\b("
+    r"risk|block(?:er|ed|ing)?|waiting|awaiting|slip|delay|trade[-\s]?off|"
+    r"churn|renewal|pricing|confidence|reliability|freshness|leverage|"
+    r"runway|capacity|security|compliance|procurement|incident|controls|"
+    r"approval|handoff|throughput|escalat(?:e|ion)|owner|decision|"
+    r"resource|allocate|prioriti[sz]e|unobserved"
+    r")\b"
+)
+
+_NON_ACTIONABLE_NOISE_RE = re.compile(
+    r"(?is)\b("
+    r"background noise|non[-\s]?actionable|lunch|chatter|duplicated dashboard|"
+    r"reminder|joke|emoji|reaction-only|no business fact"
+    r")\b"
+)
+
+_RECOMMENDATION_PRESSURE_TYPES = {
+    "capacity",
+    "trust",
+    "revenue",
+    "compliance",
+    "decision",
+    "execution",
+    "market",
+    "resource",
+}
+
+_DECISION_PRESSURE_REVISIT_TRIGGERS = {
+    "owner_assigns_action": "Owner assigns action",
+    "pressure_resolves": "Pressure resolves",
+    "pressure_not_material": (
+        "Later evidence shows the pressure is not material"
+    ),
+}
 
 
 _TRIGGER_PHRASES = [
@@ -361,6 +398,348 @@ def _claim_scopes_customer_risk(
     prop = entry.get("proposition") or {}
     text = f"{entry.get('natural') or ''} {prop}"
     return bool(_CUSTOMER_RISK_RE.search(text)) or prop.get("kind") == "concern"
+
+
+def _is_recommendation_entry(entry: dict[str, Any] | None) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    prop = entry.get("proposition") or {}
+    if not isinstance(prop, dict):
+        return False
+    return (
+        prop.get("claim_role") == "recommendation"
+        or prop.get("legacy_kind") == "recommendation"
+        or prop.get("kind") == "recommendation"
+    )
+
+
+def _has_recommendation(raw_diff: RawDiff) -> bool:
+    return any(
+        op.op == "insert" and _is_recommendation_entry(op.entry)
+        for op in raw_diff.claim_ops
+    )
+
+
+def _entry_text(entry: dict[str, Any]) -> str:
+    prop = entry.get("proposition") or {}
+    return re.sub(r"\s+", " ", f"{entry.get('natural') or ''} {prop}").strip()
+
+
+def _entry_pressure_role(entry: dict[str, Any]) -> str:
+    prop = entry.get("proposition") or {}
+    if not isinstance(prop, dict):
+        return ""
+    return str(
+        prop.get("claim_role")
+        or prop.get("legacy_kind")
+        or prop.get("kind")
+        or ""
+    )
+
+
+def _actionable_pressure_score(entry: dict[str, Any]) -> float:
+    prop = entry.get("proposition") or {}
+    if not isinstance(prop, dict):
+        return 0.0
+    role = _entry_pressure_role(entry)
+    if role not in {"situation", "concern"}:
+        return 0.0
+    text = _entry_text(entry)
+    if not text or _NON_ACTIONABLE_NOISE_RE.search(text):
+        return 0.0
+
+    score = 0.0
+    pressure_type = str(prop.get("pressure_type") or "").lower()
+    if role == "situation":
+        score += 2.0
+        if pressure_type in _RECOMMENDATION_PRESSURE_TYPES:
+            score += 2.0
+        for key in ("affected_decisions", "affected_customers", "affected_teams"):
+            if prop.get(key):
+                score += 1.0
+                break
+    else:
+        score += 1.0
+
+    if entry.get("scope_entities"):
+        score += 1.0
+    if (
+        _DECISION_PRESSURE_RE.search(text)
+        or _CUSTOMER_RISK_RE.search(text)
+        or _BLOCK_RE.search(text)
+    ):
+        score += 1.5
+    try:
+        score += min(1.0, max(0.0, float(entry.get("confidence") or 0.0)))
+    except (TypeError, ValueError):
+        pass
+    return score if score >= 3.0 else 0.0
+
+
+def _decision_pressure_title(entry: dict[str, Any]) -> str:
+    prop = entry.get("proposition") or {}
+    title = ""
+    if isinstance(prop, dict):
+        title = str(
+            prop.get("situation")
+            or prop.get("about")
+            or prop.get("summary")
+            or prop.get("nature")
+            or ""
+        )
+    if not title:
+        title = str(entry.get("natural") or "operational pressure")
+    title = re.sub(r"\s+", " ", title).strip(" .")
+    if len(title) > 90:
+        title = title[:87].rstrip() + "..."
+    return title or "operational pressure"
+
+
+def _semantic_terms_for_recommendation(title: str, pressure_type: str) -> list[str]:
+    terms: list[str] = []
+    lowered = title.lower()
+    chunks = re.findall(r"[a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*){0,3}", lowered)
+    for chunk in chunks:
+        words = [word for word in chunk.split() if len(word) >= 4]
+        if not words:
+            continue
+        phrase = " ".join(words[:4])
+        if phrase not in terms:
+            terms.append(phrase)
+        if len(terms) >= 6:
+            break
+    for phrase in (
+        "decision pressure",
+        "owner review",
+        f"{pressure_type} pressure" if pressure_type else "",
+    ):
+        if phrase and phrase not in terms:
+            terms.append(phrase)
+    return terms[:8]
+
+
+def _existing_recommendation_texts(bundle: ContextBundle) -> list[str]:
+    texts: list[str] = []
+    for model in bundle.models:
+        prop = getattr(model, "proposition", None) or {}
+        if not isinstance(prop, dict):
+            continue
+        if (
+            prop.get("claim_role") != "recommendation"
+            and prop.get("legacy_kind") != "recommendation"
+            and prop.get("kind") != "recommendation"
+        ):
+            continue
+        text = " ".join(
+            str(value or "")
+            for value in (
+                getattr(model, "natural", None),
+                getattr(model, "natural_text", None),
+                getattr(model, "summary", None),
+                prop.get("qualitative_impact"),
+                prop.get("proposed_change"),
+            )
+        )
+        if text.strip():
+            texts.append(text)
+    return texts
+
+
+def _has_create_decision_op(raw_diff: RawDiff, title: str) -> bool:
+    wanted = _decision_pressure_title({"natural": title}).lower()
+    for op in raw_diff.act_ops:
+        if op.op != "create_decision":
+            continue
+        ent = op.entity or {}
+        existing = _decision_pressure_title({
+            "natural": str(ent.get("title") or "")
+        }).lower()
+        if existing and _title_match_score(existing, wanted) >= 2:
+            return True
+    return False
+
+
+def _has_existing_decision(bundle: ContextBundle, title: str) -> bool:
+    for decision in (bundle.acts_summary.get("decisions") or []):
+        state = str(getattr(decision, "state", "") or "").lower()
+        if state in {"closed", "superseded", "archived"}:
+            continue
+        if _title_match_score(str(getattr(decision, "title", "") or ""), title) >= 2:
+            return True
+    return False
+
+
+def _trigger_actor_id(trigger: TriggerContext, bundle: ContextBundle) -> Any | None:
+    if trigger.observation_id is not None:
+        for obs in bundle.observations:
+            if getattr(obs, "id", None) == trigger.observation_id:
+                actor_id = getattr(obs, "actor_id", None)
+                if actor_id is not None:
+                    return actor_id
+                break
+    if trigger.scope_actors:
+        return trigger.scope_actors[0]
+    return None
+
+
+def _basis_placeholder_for_pressure(entry: dict[str, Any]) -> Any:
+    for key in ("model_id", "id"):
+        placeholder = entry.get(key)
+        if placeholder:
+            return placeholder
+    placeholder = uuid7()
+    entry["model_id"] = str(placeholder)
+    return placeholder
+
+
+def _maybe_inject_decision_pressure_act(
+    raw_diff: RawDiff,
+    *,
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    pressure_entry: dict[str, Any],
+    pressure_type: str,
+    title: str,
+) -> None:
+    owner_id = _trigger_actor_id(trigger, bundle)
+    scope_entities = [
+        ent for ent in (pressure_entry.get("scope_entities") or [])
+        if isinstance(ent, dict) and ent.get("id")
+    ]
+    if owner_id is None or not scope_entities:
+        return
+    if _has_create_decision_op(raw_diff, title) or _has_existing_decision(
+        bundle, title,
+    ):
+        return
+    try:
+        confidence = float(pressure_entry.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence < 0.65:
+        return
+
+    basis = _basis_placeholder_for_pressure(pressure_entry)
+    decision_title = f"Decide next action: {title}"
+    rationale = (
+        f"{pressure_type.capitalize()} pressure has a scoped owner and target; "
+        "capture the next-action decision so projections and retrieval can "
+        "track the action surface."
+    )
+    raw_diff.act_ops.append(
+        ActOp(
+            op="create_decision",
+            confidence_basis=basis,
+            entity={
+                "title": decision_title,
+                "decision_text": (
+                    f"Choose the accountable next action for {title}."
+                ),
+                "rationale": rationale,
+                "scope": {
+                    "owner_actor_id": str(owner_id),
+                    "entities": scope_entities,
+                    "source_pressure_type": pressure_type,
+                    "source": "deterministic_decision_pressure",
+                },
+                "revisit_triggers": dict(_DECISION_PRESSURE_REVISIT_TRIGGERS),
+            },
+        )
+    )
+
+
+def maybe_inject_decision_pressure_recommendation(
+    raw_diff: RawDiff,
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+) -> RawDiff:
+    """Surface one inert recommendation for accepted operational pressure.
+
+    This deliberately creates a durable recommendation Model, not an Act
+    mutation. It gives downstream projection/retrieval an action hook when Think
+    has already accepted a situation or concern, while avoiding autonomous
+    commitment creation unless the explicit create-commitment path fired.
+    """
+    if trigger.kind != "T1":
+        return raw_diff
+    if _has_recommendation(raw_diff):
+        return raw_diff
+
+    scored_entries: list[tuple[float, dict[str, Any]]] = []
+    for op in raw_diff.claim_ops:
+        if op.op != "insert" or not isinstance(op.entry, dict):
+            continue
+        score = _actionable_pressure_score(op.entry)
+        if score:
+            scored_entries.append((score, op.entry))
+    if not scored_entries:
+        return raw_diff
+    scored_entries.sort(key=lambda item: item[0], reverse=True)
+    entry = scored_entries[0][1]
+    prop = entry.get("proposition") or {}
+    pressure_type = str(prop.get("pressure_type") or "decision")
+    title = _decision_pressure_title(entry)
+
+    for text in _existing_recommendation_texts(bundle):
+        if _title_match_score(text, title) >= 3:
+            return raw_diff
+
+    born_from = entry.get("born_from_event_id") or trigger.observation_id
+    if born_from is None:
+        return raw_diff
+
+    natural = f"Review owner and next action for {title}."
+    description = (
+        "Assign an accountable owner to decide the next step for this accepted "
+        "operational pressure; do not mutate the Acts ledger automatically."
+    )
+    recommendation_entry = {
+        "born_from_event_id": str(born_from),
+        "proposition": {
+            "kind": "norm",
+            "claim_role": "recommendation",
+            "target_act_ref": None,
+            "proposed_change": {
+                "operation": "create",
+                "payload": {
+                    "title": f"Review next action: {title}",
+                    "description": description,
+                    "kind": "decision_pressure",
+                    "source_pressure_type": pressure_type,
+                },
+            },
+            "expected_impact": None,
+            "qualitative_impact": (
+                f"Turns {pressure_type} pressure into an owner-facing decision "
+                "review without inventing a commitment or transition."
+            ),
+            "target_actor_id": None,
+        },
+        "natural": natural,
+        "confidence": min(0.72, max(0.58, float(entry.get("confidence") or 0.66))),
+        "scope_actors": list(entry.get("scope_actors") or []),
+        "scope_entities": list(entry.get("scope_entities") or []),
+        "scope_temporal": dict(entry.get("scope_temporal") or {}),
+        "semantic_terms": _semantic_terms_for_recommendation(title, pressure_type),
+        "falsifier": {
+            "kind": "observation_pattern",
+            "pattern": (
+                "The pressure resolves, an owner explicitly declines action, "
+                "or later evidence shows the situation is no longer material."
+            ),
+            "within_window": "P30D",
+        },
+    }
+    raw_diff.claim_ops.append(ClaimOp(op="insert", entry=recommendation_entry))
+    _maybe_inject_decision_pressure_act(
+        raw_diff,
+        trigger=trigger,
+        bundle=bundle,
+        pressure_entry=entry,
+        pressure_type=pressure_type,
+        title=title,
+    )
+    return raw_diff
 
 
 def maybe_inject_customer_risk(
@@ -887,6 +1266,7 @@ __all__ = [
     "maybe_inject_create_commitment",
     "maybe_inject_block_transition",
     "maybe_inject_decision_revisit",
+    "maybe_inject_decision_pressure_recommendation",
     "maybe_inject_future_prediction",
     "maybe_inject_customer_risk",
 ]

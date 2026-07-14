@@ -14,6 +14,7 @@ Thread safety: each family takes one lock per mutation; rendering snapshots
 under the lock and formats outside it (same pattern as
 services/app/webhooks/metrics.py).
 """
+
 from __future__ import annotations
 
 import math
@@ -26,8 +27,19 @@ from typing import Callable, Mapping, Sequence
 # Default latency buckets (seconds). Chosen to cover sub-10ms cache hits
 # through 60s LLM/backfill calls.
 DEFAULT_BUCKETS: tuple[float, ...] = (
-    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
-    1.0, 2.5, 5.0, 10.0, 30.0, 60.0,
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.5,
+    5.0,
+    10.0,
+    30.0,
+    60.0,
 )
 FORBIDDEN_LABEL_NAMES = frozenset(
     {
@@ -56,8 +68,7 @@ FORBIDDEN_LABEL_NAMES = frozenset(
 FORBIDDEN_LABEL_SUFFIXES = ("_id", "_email", "_url", "_path")
 MAX_LABEL_VALUE_LENGTH = 128
 _UUID_RE = re.compile(
-    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
-    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-" r"[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
     re.IGNORECASE,
 )
 _EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
@@ -67,12 +78,7 @@ _SECRETISH_RE = re.compile(
 
 
 def _escape_label_value(value: str) -> str:
-    return (
-        str(value)
-        .replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-    )
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 
 
 def _format_value(v: float) -> str:
@@ -89,8 +95,7 @@ def _label_str(label_names: Sequence[str], label_values: Sequence[str]) -> str:
     if not label_names:
         return ""
     inner = ",".join(
-        f'{n}="{_escape_label_value(v)}"'
-        for n, v in zip(label_names, label_values)
+        f'{n}="{_escape_label_value(v)}"' for n, v in zip(label_names, label_values)
     )
     return "{" + inner + "}"
 
@@ -140,9 +145,7 @@ def _normalize_allowed_label_values(
             )
         allowed = frozenset(str(value) for value in values)
         if not allowed:
-            raise ValueError(
-                f"metric label {label_name!r} allowlist must not be empty"
-            )
+            raise ValueError(f"metric label {label_name!r} allowlist must not be empty")
         for value in allowed:
             validate_label_value(label_name, value)
         normalized[label_name] = allowed
@@ -324,9 +327,7 @@ class Histogram(_Family):
     def observe(self, value: float, **labels: str) -> None:
         key = self._key(labels)
         with self._lock:
-            counts, total, n = self._series.get(
-                key, ([0] * len(self.buckets), 0.0, 0)
-            )
+            counts, total, n = self._series.get(key, ([0] * len(self.buckets), 0.0, 0))
             for i, b in enumerate(self.buckets):
                 if value <= b:
                     counts[i] += 1
@@ -385,8 +386,9 @@ class Registry:
         self._families: dict[str, _Family] = {}
         self._collectors: list[Callable[[], str]] = []
 
-    def _get_or_create(self, cls: type, name: str, help_text: str,
-                       label_names: Sequence[str], **kwargs) -> _Family:
+    def _get_or_create(
+        self, cls: type, name: str, help_text: str, label_names: Sequence[str], **kwargs
+    ) -> _Family:
         with self._lock:
             existing = self._families.get(name)
             if existing is not None:
@@ -757,7 +759,8 @@ def publish_expected_worker_set() -> None:
     for worker_class, in_compose in EXPECTED_WORKER_CLASSES.items():
         WORKER_EXPECTED.set(1.0, worker_class=worker_class)
         WORKER_COMPOSE_PRESENT.set(
-            1.0 if in_compose else 0.0, worker_class=worker_class,
+            1.0 if in_compose else 0.0,
+            worker_class=worker_class,
         )
 
 

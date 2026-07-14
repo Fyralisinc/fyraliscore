@@ -2,8 +2,8 @@
 
 These tests deliberately exercise seams that are easy to miss with
 small unit tests: hostile message text, provider repair/retry behavior,
-out-of-region recovery, concurrent shared-provider accounting, durable
-failure observability, and post-commit dispatch.
+advisory retrieval regions, concurrent shared-provider accounting,
+durable failure observability, and post-commit dispatch.
 """
 
 from __future__ import annotations
@@ -251,6 +251,7 @@ async def test_self_reported_work_materializes_despite_prompt_injection(
     assert [r["action_kind"] for r in pending_actions] == [
         "broadcast_realtime",
         "discover_model_edges",
+        "materialize_projections",
     ]
 
     dispatched: list[tuple[str, UUID, UUID]] = []
@@ -265,11 +266,11 @@ async def test_self_reported_work_materializes_despite_prompt_injection(
     finally:
         reset_handlers()
 
-    assert stats.processed == 2
+    assert stats.processed == 3
     assert dispatched == [("broadcast_realtime", tenant, trigger_id)]
 
 
-async def test_out_of_region_retry_carries_expanded_region_to_success(
+async def test_model_scope_outside_initial_region_succeeds_without_retry(
     fresh_db: asyncpg.Pool,
     tenant: UUID,
     tenant_cleanup,
@@ -291,7 +292,7 @@ async def test_out_of_region_retry_carries_expanded_region_to_success(
         natural="Globex renewal risk is rising.",
         scope_entities=[{"type": "customer", "id": str(customer_id)}],
     )
-    provider = ScriptedProvider(responses=[diff, diff])
+    provider = ScriptedProvider(responses=[diff])
 
     outcome = await think(
         _t1_trigger(
@@ -303,11 +304,11 @@ async def test_out_of_region_retry_carries_expanded_region_to_success(
         ),
         fresh_db,
         llm_provider=provider,
-        max_retrieval_reruns=2,
+        max_retrieval_reruns=0,
     )
 
     assert outcome.status == "success", outcome.error
-    assert len(provider.calls) == 2
+    assert len(provider.calls) == 1
     async with fresh_db.acquire() as conn:
         model = await conn.fetchrow(
             """
@@ -318,22 +319,11 @@ async def test_out_of_region_retry_carries_expanded_region_to_success(
             tenant,
             obs_id,
         )
-        lock_log = await conn.fetchrow(
-            """
-            SELECT entity_ids
-            FROM think_region_lock_log
-            WHERE tenant_id = $1 AND think_run_id = $2
-            """,
-            tenant,
-            outcome.run_id,
-        )
 
     assert model is not None
     assert {"type": "customer", "id": str(customer_id)} in _jsonb(
         model["scope_entities"]
     )
-    assert lock_log is not None
-    assert ["customer", str(customer_id)] in _jsonb(lock_log["entity_ids"])
 
 
 class BarrierUsageProvider(LLMProvider):

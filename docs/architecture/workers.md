@@ -57,8 +57,8 @@ graph TD
     ENT -->|"resolve phrases"| LLM
     ENT -->|"alias + re-enqueue T1"| TTQ
     DL -->|"T2 prediction_overdue"| TTQ
-    PREC -->|"pattern_candidates"| PG
-    PREC -->|"T4 pattern_review"| TTQ
+    PREC -->|"weak pattern_candidates + review features"| PG
+    PREC -->|"T4 pattern_review semantic gate"| TTQ
     CAL -->|"calibration_offsets"| PG
     DRIFT -->|"drift sample"| PG
     MAINT -->|"decay · cleanup · partition extend"| PG
@@ -92,10 +92,9 @@ retrieval maintenance), `lib.llm.provider` (entity resolver), and the
 
 > **TODO(human):** This is the most decision-heavy layer to document. Capture:
 >
-> - **Why most workers are not deployed** — are anomaly/precipitation/calibration/
->   edge-drift/deadline intended for production and pending a wiring PR, or
->   deliberately dormant? (The memory of the project notes these are "coded +
->   migrated but NOT deployed.")
+> - Which expensive Housekeeper jobs should be enabled by default per environment
+>   (`topology_sweeper`, `precipitation`, relationship ontology proposals, SAGE
+>   structural features).
 > - The fate of the source-less `neighborhood_detector` and `topology_updater`
 >   packages (delete, or placeholders for re-introduction?).
-> - The intended schedule/cadence and ownership of each worker once deployed.
+> - The intended schedule/cadence and ownership of each opt-in worker once deployed.

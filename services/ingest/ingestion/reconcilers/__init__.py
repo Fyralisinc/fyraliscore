@@ -58,6 +58,7 @@ The new shard's `recency_score` defaults to a boosted value above
 backfill (per LLD §3 + HLD §6 specifications). M6.3-M6.6
 per-source reconcilers may override per source-specific concerns.
 """
+
 from __future__ import annotations
 
 from typing import Awaitable, Callable
@@ -140,8 +141,10 @@ def _not_implemented_reconciler(source: str, milestone: str) -> Reconciler:
     pattern as M6.2a planner/fetcher stubs, but defaulting to clean
     rather than raising.
     """
+
     async def stub(
-        shards: list[asyncpg.Record], run: asyncpg.Record,
+        shards: list[asyncpg.Record],
+        run: asyncpg.Record,
     ) -> ReconciliationDecision:
         return ReconciliationDecision(
             has_gaps=False,
@@ -154,6 +157,7 @@ def _not_implemented_reconciler(source: str, milestone: str) -> Reconciler:
                 f"steady state, not a regression."
             ),
         )
+
     stub.__name__ = f"_not_implemented_reconciler_{source}"
     return stub
 
@@ -167,34 +171,37 @@ def _not_implemented_reconciler(source: str, milestone: str) -> Reconciler:
 # (M6.3-M6.6) overwrite entries at module-import time; tests rebind
 # via monkeypatch.setitem.
 RECONCILER_DISPATCH: dict[str, Reconciler] = {
-    "gmail":   _not_implemented_reconciler("gmail",   "M6.3"),
-    "github":  _not_implemented_reconciler("github",  "M6.4"),
-    "slack":   _not_implemented_reconciler("slack",   "M6.5"),
+    "gmail": _not_implemented_reconciler("gmail", "M6.3"),
+    "github": _not_implemented_reconciler("github", "M6.4"),
+    "slack": _not_implemented_reconciler("slack", "M6.5"),
     "discord": _not_implemented_reconciler("discord", "M6.6"),
-    "notion":  _not_implemented_reconciler("notion",  "IN-14"),
+    "notion": _not_implemented_reconciler("notion", "IN-14"),
     "google_calendar": _not_implemented_reconciler("google_calendar", "IN-15"),
     "google_drive": _not_implemented_reconciler("google_drive", "IN-16"),
-    "jira":    _not_implemented_reconciler("jira",    "IN-17"),
+    "jira": _not_implemented_reconciler("jira", "IN-17"),
     "mercury": _not_implemented_reconciler("mercury", "IN-FIN"),
     "quickbooks": _not_implemented_reconciler("quickbooks", "IN-FIN"),
     "grafana": _not_implemented_reconciler("grafana", "IN-GRAFANA"),
     "telegram": _not_implemented_reconciler("telegram", "IN-TELEGRAM"),
-    "brex":  _not_implemented_reconciler("brex",  "IN-FIN2"),
-    "ramp":  _not_implemented_reconciler("ramp",  "IN-FIN2"),
+    "brex": _not_implemented_reconciler("brex", "IN-FIN2"),
+    "ramp": _not_implemented_reconciler("ramp", "IN-FIN2"),
     "gusto": _not_implemented_reconciler("gusto", "IN-FIN2"),
-    "deel":  _not_implemented_reconciler("deel",  "IN-FIN2"),
+    "deel": _not_implemented_reconciler("deel", "IN-FIN2"),
     "fireflies": _not_implemented_reconciler("fireflies", "IN-VERTICALS"),
-    "signal":    _not_implemented_reconciler("signal",    "IN-VERTICALS"),
-    "aws":       _not_implemented_reconciler("aws",       "IN-VERTICALS"),
-    "miro":      _not_implemented_reconciler("miro",      "IN-VERTICALS"),
-    "figma":     _not_implemented_reconciler("figma",     "IN-VERTICALS"),
-    "carta":     _not_implemented_reconciler("carta",     "IN-VERTICALS"),
-    "hibob":     _not_implemented_reconciler("hibob",     "IN-PEOPLE"),
-    "ashby":     _not_implemented_reconciler("ashby",     "IN-PEOPLE"),
-    "linkedin":  _not_implemented_reconciler("linkedin",  "IN-PEOPLE"),
+    "signal": _not_implemented_reconciler("signal", "IN-VERTICALS"),
+    "aws": _not_implemented_reconciler("aws", "IN-VERTICALS"),
+    "miro": _not_implemented_reconciler("miro", "IN-VERTICALS"),
+    "figma": _not_implemented_reconciler("figma", "IN-VERTICALS"),
+    "carta": _not_implemented_reconciler("carta", "IN-VERTICALS"),
+    "hibob": _not_implemented_reconciler("hibob", "IN-PEOPLE"),
+    "ashby": _not_implemented_reconciler("ashby", "IN-PEOPLE"),
+    "linkedin": _not_implemented_reconciler("linkedin", "IN-PEOPLE"),
+    "instagram": _not_implemented_reconciler("instagram", "IN-INSTAGRAM"),
     # WhatsApp is LIVE-only; backfill reconciliation is a deferred phase.
-    "whatsapp":  _not_implemented_reconciler("whatsapp",  "IN-WHATSAPP-BACKFILL"),
-    "facebook_pages": _not_implemented_reconciler("facebook_pages", "IN-FACEBOOK-PAGES"),
+    "whatsapp": _not_implemented_reconciler("whatsapp", "IN-WHATSAPP-BACKFILL"),
+    "facebook_pages": _not_implemented_reconciler(
+        "facebook_pages", "IN-FACEBOOK-PAGES"
+    ),
 }
 
 
@@ -223,16 +230,16 @@ def register_pool_provider(pool: asyncpg.Pool) -> list[str]:
 
     registered: list[str] = []
     for source in RECONCILER_DISPATCH:
+        module_name = f"{__name__}.{source}"
         try:
-            module = importlib.import_module(f"{__name__}.{source}")
-        except ModuleNotFoundError:
-            # Sources whose backfill reconciliation is a deferred phase keep a
-            # _not_implemented_reconciler placeholder in RECONCILER_DISPATCH but
-            # ship no per-source module (e.g. whatsapp — live-only; backfill
-            # reconciliation deferred). They have no pool provider to register;
-            # importing the package-qualified name would raise here and crash
-            # the whole reconciler/PeriodicReconciler service at startup. Skip.
-            continue
+            module = importlib.import_module(module_name)
+        except ModuleNotFoundError as exc:
+            # Deferred/live-only sources can have a dispatch placeholder but no
+            # module. Only suppress that precise absence; dependency import
+            # failures inside a real reconciler must still fail loudly.
+            if exc.name == module_name:
+                continue
+            raise
         setter = getattr(module, "set_pool_provider", None)
         if setter is not None:
             setter(pool)
@@ -277,3 +284,4 @@ from services.ingest.ingestion.reconcilers import hibob as _hibob  # noqa: E402,
 from services.ingest.ingestion.reconcilers import ashby as _ashby  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import linkedin as _linkedin  # noqa: E402,F401
 from services.ingest.ingestion.reconcilers import facebook_pages as _facebook_pages  # noqa: E402,F401
+from services.ingest.ingestion.reconcilers import instagram as _instagram  # noqa: E402,F401

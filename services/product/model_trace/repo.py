@@ -35,6 +35,13 @@ from uuid import UUID
 
 import asyncpg
 
+from services.platform.access_control.authority import (
+    ObjectRef,
+    Principal,
+    Purpose,
+    authorize_read,
+)
+
 
 # Edge kinds and their semantics for the two walks. Each entry is
 # (edge_kind, direction): direction="in" means "follow incoming edges"
@@ -119,6 +126,8 @@ async def _fetch_node(
     *,
     tenant_id: UUID,
     node_id: UUID,
+    principal: Principal | None = None,
+    purpose: Purpose = "model_trace",
 ) -> dict[str, Any] | None:
     row = await conn.fetchrow(
         f"""
@@ -128,6 +137,14 @@ async def _fetch_node(
         """,
         node_id, tenant_id,
     )
+    if row is not None and not await _model_allowed(
+        conn,
+        tenant_id=tenant_id,
+        model_id=node_id,
+        principal=principal,
+        purpose=purpose,
+    ):
+        return None
     return dict(row) if row is not None else None
 
 
@@ -169,6 +186,8 @@ async def _neighbors(
     tenant_id: UUID,
     node_id: UUID,
     edge_dirs: tuple[tuple[str, str], ...],
+    principal: Principal | None = None,
+    purpose: Purpose = "model_trace",
 ) -> list[tuple[UUID, str]]:
     """Return [(neighbor_id, via_edge_kind), ...] following each edge
     in `edge_dirs`. Active edges only; deduped on neighbor_id (keeping
@@ -206,7 +225,40 @@ async def _neighbors(
         for r in rows:
             if r["neighbor_id"] not in seen:
                 seen[r["neighbor_id"]] = r["edge_kind"]
-    return list(seen.items())
+    out: list[tuple[UUID, str]] = []
+    for neighbor_id, edge_kind in seen.items():
+        if await _model_allowed(
+            conn,
+            tenant_id=tenant_id,
+            model_id=neighbor_id,
+            principal=principal,
+            purpose=purpose,
+        ):
+            out.append((neighbor_id, edge_kind))
+    return out
+
+
+async def _model_allowed(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+    principal: Principal | None,
+    purpose: Purpose,
+) -> bool:
+    if principal is None:
+        return True
+    decision = await authorize_read(
+        principal,
+        purpose,
+        ObjectRef(
+            tenant_id=tenant_id,
+            object_kind="model",
+            object_id=model_id,
+        ),
+        conn=conn,
+    )
+    return decision.allowed
 
 
 # ---------------------------------------------------------------------
@@ -221,6 +273,8 @@ async def _walk(
     node_id: UUID,
     max_depth: int,
     edge_dirs: tuple[tuple[str, str], ...],
+    principal: Principal | None = None,
+    purpose: Purpose = "model_trace",
 ) -> list[TraceStep]:
     """BFS-with-priority walk. Picks one canonical chain by always
     expanding the lowest-id neighbor at each hop (deterministic and
@@ -233,7 +287,11 @@ async def _walk(
     if max_depth < 0:
         max_depth = 0
     seed_row = await _fetch_node(
-        conn, tenant_id=tenant_id, node_id=node_id,
+        conn,
+        tenant_id=tenant_id,
+        node_id=node_id,
+        principal=principal,
+        purpose=purpose,
     )
     if seed_row is None:
         return []
@@ -246,6 +304,8 @@ async def _walk(
             tenant_id=tenant_id,
             node_id=current,
             edge_dirs=edge_dirs,
+            principal=principal,
+            purpose=purpose,
         )
         # Drop visited so cycles don't loop forever (model_edges is
         # DAG-scoped for `supports` / `instance_of`, but other kinds
@@ -258,7 +318,11 @@ async def _walk(
         unvisited.sort(key=lambda t: str(t[0]))
         next_id, via_kind = unvisited[0]
         next_row = await _fetch_node(
-            conn, tenant_id=tenant_id, node_id=next_id,
+            conn,
+            tenant_id=tenant_id,
+            node_id=next_id,
+            principal=principal,
+            purpose=purpose,
         )
         if next_row is None:
             break
@@ -273,6 +337,9 @@ async def trace_back(
     tenant_id: UUID,
     node_id: UUID,
     max_depth: int = 4,
+    *,
+    principal: Principal | None = None,
+    purpose: Purpose = "model_trace",
 ) -> list[TraceStep]:
     """Walk evidence/supports edges upstream from `node_id`.
 
@@ -286,6 +353,8 @@ async def trace_back(
         node_id=node_id,
         max_depth=max_depth,
         edge_dirs=_BACK_EDGE_DIRS,
+        principal=principal,
+        purpose=purpose,
     )
 
 
@@ -294,6 +363,9 @@ async def trace_forward(
     tenant_id: UUID,
     node_id: UUID,
     max_depth: int = 4,
+    *,
+    principal: Principal | None = None,
+    purpose: Purpose = "model_trace",
 ) -> list[TraceStep]:
     """Walk downstream from `node_id`.
 
@@ -307,6 +379,8 @@ async def trace_forward(
         node_id=node_id,
         max_depth=max_depth,
         edge_dirs=_FORWARD_EDGE_DIRS,
+        principal=principal,
+        purpose=purpose,
     )
 
 
@@ -319,6 +393,9 @@ async def supports(
     conn: asyncpg.Connection,
     tenant_id: UUID,
     node_id: UUID,
+    *,
+    principal: Principal | None = None,
+    purpose: Purpose = "model_trace",
 ) -> list[TraceStep]:
     """Direct downstream adjacency: nodes that this node SUPPORTS or
     contributes_to_resolution for. One hop, no walk."""
@@ -338,16 +415,27 @@ async def supports(
         node_id,
         ["supports", "contributes_to_resolution"],
     )
-    return [
-        _row_to_step(dict(r), via_edge_kind=r["via_edge_kind"])
-        for r in rows
-    ]
+    out: list[TraceStep] = []
+    for r in rows:
+        if not await _model_allowed(
+            conn,
+            tenant_id=tenant_id,
+            model_id=r["id"],
+            principal=principal,
+            purpose=purpose,
+        ):
+            continue
+        out.append(_row_to_step(dict(r), via_edge_kind=r["via_edge_kind"]))
+    return out
 
 
 async def depends_on(
     conn: asyncpg.Connection,
     tenant_id: UUID,
     node_id: UUID,
+    *,
+    principal: Principal | None = None,
+    purpose: Purpose = "model_trace",
 ) -> list[TraceStep]:
     """Direct upstream adjacency: nodes this node depends on. Reverse
     of `supports`: the inbound side of supports / contributes_to_resolution,
@@ -389,6 +477,14 @@ async def depends_on(
     for r in list(rows_in) + list(rows_out):
         rid = r["id"]
         if rid in seen:
+            continue
+        if not await _model_allowed(
+            conn,
+            tenant_id=tenant_id,
+            model_id=rid,
+            principal=principal,
+            purpose=purpose,
+        ):
             continue
         seen.add(rid)
         out.append(_row_to_step(dict(r), via_edge_kind=r["via_edge_kind"]))

@@ -6,6 +6,7 @@ import every dispatch source at startup to register a shared pool; exposing the
 same setter as the implemented modules keeps that registry total without
 pretending WhatsApp has a gap-detection algorithm.
 """
+
 from __future__ import annotations
 
 from typing import Any

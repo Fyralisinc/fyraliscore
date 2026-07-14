@@ -501,7 +501,7 @@ def test_contextual_frame_overlap_allows_true_duplicate_absorption() -> None:
     assert detail["compared"] is True
 
 
-def test_inquiry_unknowns_become_durable_curiosity_hypothesis() -> None:
+def test_inquiry_unknowns_need_substrate_binding_for_curiosity_hypothesis() -> None:
     tenant_id = uuid4()
     observations = [
         _obs(
@@ -558,6 +558,86 @@ def test_inquiry_unknowns_become_durable_curiosity_hypothesis() -> None:
         for op in raw.claim_ops
         if op.entry["proposition"].get("claim_role") == "hypothesis"
     ]
+    assert curiosity == []
+    assert "curiosity skipped: no strong substrate binding" in raw.reasoning_trace
+
+
+def test_bound_inquiry_unknowns_become_low_priority_curiosity_hypothesis() -> None:
+    tenant_id = uuid4()
+    commitment_id = uuid4()
+    observations = [
+        _obs(
+            oid=uuid4(),
+            source_channel="slack:message",
+            text=f"Atlas launch blocker discussion {i}",
+            occurred_at=datetime(2026, 6, 17, 0, i, tzinfo=timezone.utc),
+        )
+        for i in range(12)
+    ]
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_id=observations[0].id,
+        observation_ids=[obs.id for obs in observations],
+    )
+    packet = {
+        "signal_summary": "Atlas launch has repeated blocker discussion.",
+        "important_unknowns": [
+            "affected commitment",
+            "responsible owner",
+            "whether the blocker is on the critical path",
+        ],
+        "question_path": [
+            {
+                "question": "Who owns the next action for Atlas launch?",
+                "primitive": "OWNERSHIP",
+                "score": 0.91,
+            },
+            {
+                "question": "Is the blocker on the critical path?",
+                "primitive": "DEPENDENCY",
+                "score": 0.88,
+            },
+        ],
+        "answer_obligations": {
+            "missing_slots": ["affected goal"],
+        },
+        "sufficiency_verdict": {
+            "remaining_unknowns": ["counterevidence"],
+        },
+    }
+    raw = RawDiff(trigger_ref=uuid4(), tenant_id=tenant_id, claim_ops=[])
+
+    enrich_raw_diff_representation(
+        raw,
+        trigger,
+        SimpleNamespace(
+            observations=observations,
+            notes={
+                "inquiry_context_packet": packet,
+                "substrate_candidates": [
+                    {
+                        "id": str(commitment_id),
+                        "kind": "commitment",
+                        "label": "Atlas launch blocker",
+                        "confidence": 0.78,
+                        "status": "proposed",
+                        "scope_ref": {
+                            "type": "candidate_commitment",
+                            "id": str(commitment_id),
+                        },
+                    }
+                ],
+            },
+        ),
+    )
+
+    curiosity = [
+        op.entry["proposition"]
+        for op in raw.claim_ops
+        if op.entry["proposition"].get("claim_role") == "hypothesis"
+    ]
     assert len(curiosity) == 1
     prop = curiosity[0]
     assert "curiosity" in prop["coverage_roles"]
@@ -569,6 +649,9 @@ def test_inquiry_unknowns_become_durable_curiosity_hypothesis() -> None:
     assert "operator_question" in prop["retrieval_tags"]
     assert "question_ownership" in prop["retrieval_tags"]
     assert "unknown_responsible_owner" in prop["retrieval_tags"]
+    assert "curiosity_low_priority" in prop["retrieval_tags"]
+    assert prop["execution_lane"] == "curiosity_low_priority"
+    assert prop["priority"] == "low"
     assert "Who owns the next action" in prop["open_questions"][0]
     assert "curiosity synthesized" in raw.reasoning_trace
 
@@ -647,12 +730,256 @@ def test_curiosity_hypothesis_binds_to_provisional_substrate_candidates() -> Non
     ][0]
     prop = curiosity["proposition"]
     scope_entities = curiosity["scope_entities"]
-    assert {"type": "candidate_actor", "id": str(candidate_actor)} in scope_entities
+    assert {"type": "candidate_actor", "id": str(candidate_actor)} not in scope_entities
     assert {
         "type": "candidate_commitment",
         "id": str(candidate_commitment),
     } in scope_entities
     assert "entity" in prop["coverage_roles"]
     assert "candidate_bound_curiosity" in prop["retrieval_tags"]
-    assert "candidate_actor_question" in prop["retrieval_tags"]
+    assert "candidate_actor_question" not in prop["retrieval_tags"]
+    assert "curiosity_low_priority" in prop["retrieval_tags"]
     assert prop["candidate_bindings"][0]["scope_ref"]["type"] == "candidate_commitment"
+
+
+def test_source_digest_binds_to_source_system_candidate_scope() -> None:
+    tenant_id = uuid4()
+    system_id = uuid4()
+    observations = [
+        _obs(
+            oid=uuid4(),
+            source_channel="aws:event",
+            text="[aws] iam:CreateAccessKey",
+            occurred_at=datetime(2026, 6, 17, 0, i, tzinfo=timezone.utc),
+        )
+        for i in range(10)
+    ]
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_id=observations[0].id,
+        observation_ids=[obs.id for obs in observations],
+    )
+    raw = RawDiff(trigger_ref=uuid4(), tenant_id=tenant_id, claim_ops=[])
+
+    enrich_raw_diff_representation(
+        raw,
+        trigger,
+        SimpleNamespace(
+            observations=observations,
+            notes={
+                "substrate_candidates": [
+                    {
+                        "id": str(system_id),
+                        "kind": "system",
+                        "label": "AWS source",
+                        "confidence": 0.65,
+                        "status": "promoted",
+                        "promotion_ref": {
+                            "type": "system",
+                            "id": str(system_id),
+                        },
+                        "metadata": {"source_root": "aws"},
+                    }
+                ]
+            },
+        ),
+    )
+
+    assert {"type": "system", "id": str(system_id)} in raw.claim_ops[0].entry["scope_entities"]
+
+
+def test_living_claim_contract_attaches_evidence_watch_and_substrate() -> None:
+    tenant_id = uuid4()
+    commitment_id = uuid4()
+    obs = _obs(
+        source_channel="github:webhook",
+        text="PR #445 moved ENG-91 closer to release.",
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=obs.id,
+    )
+    raw = RawDiff(
+        trigger_ref=uuid4(),
+        tenant_id=tenant_id,
+        claim_ops=[
+            ClaimOp(
+                op="insert",
+                entry={
+                    "born_from_event_id": obs.id,
+                    "proposition": {
+                        "kind": "belief",
+                        "claim_role": "fact",
+                        "assertion": "ENG-91 has release progress.",
+                    },
+                    "natural": "PR #445 moved ENG-91 closer to release.",
+                    "confidence": 0.68,
+                    "scope_actors": [],
+                    "scope_entities": [],
+                    "scope_temporal": {
+                        "valid_from": "2026-06-17T00:00:00+00:00",
+                        "valid_until": None,
+                    },
+                },
+            )
+        ],
+    )
+
+    enrich_raw_diff_representation(
+        raw,
+        trigger,
+        SimpleNamespace(
+            observations=[obs],
+            notes={
+                "substrate_candidates": [
+                    {
+                        "id": str(commitment_id),
+                        "kind": "commitment",
+                        "label": "ENG-91 release work",
+                        "confidence": 0.72,
+                        "status": "proposed",
+                        "scope_ref": {
+                            "type": "candidate_commitment",
+                            "id": str(commitment_id),
+                        },
+                        "evidence_observation_ids": [str(obs.id)],
+                    }
+                ]
+            },
+        ),
+    )
+
+    entry = raw.claim_ops[0].entry
+    prop = entry["proposition"]
+    assert entry["supporting_event_ids"] == [obs.id]
+    assert {
+        "type": "candidate_commitment",
+        "id": str(commitment_id),
+    } in entry["scope_entities"]
+    assert prop["evidence_contract"]["evidence_status"] == "evidence_bound"
+    assert prop["evidence_contract"]["substrate_binding_status"] == "bound"
+    assert prop["watch_selectors"]["source_channels"] == ["github_webhook"]
+    assert prop["staleness_horizon"] == "P90D"
+    assert "living_claim_contract" in prop["retrieval_tags"]
+    assert "evidence_bound" in entry["domain_tags"]
+
+
+def test_prediction_claim_contract_derives_explicit_evaluate_at() -> None:
+    tenant_id = uuid4()
+    obs = _obs(
+        source_channel="slack:message",
+        text="Team expects Atlas renewal risk to recover by June 20.",
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant_id,
+        observation_id=obs.id,
+    )
+    raw = RawDiff(
+        trigger_ref=uuid4(),
+        tenant_id=tenant_id,
+        claim_ops=[
+            ClaimOp(
+                op="insert",
+                entry={
+                    "born_from_event_id": obs.id,
+                    "proposition": {
+                        "kind": "prediction",
+                        "claim_role": "prediction",
+                        "expected": "Atlas renewal risk recovers.",
+                    },
+                    "natural": "Atlas renewal risk should recover by June 20.",
+                    "confidence": 0.66,
+                    "scope_actors": [],
+                    "scope_entities": [],
+                    "scope_temporal": {
+                        "valid_from": "2026-06-17T00:00:00+00:00",
+                        "valid_until": None,
+                    },
+                    "falsifier": {
+                        "kind": "prediction_deadline",
+                        "evaluate_at": "2026-06-20T00:00:00+00:00",
+                        "check": {"field": "renewal_risk", "state": "not_recovered"},
+                    },
+                },
+            )
+        ],
+    )
+
+    enrich_raw_diff_representation(raw, trigger, SimpleNamespace(observations=[obs]))
+
+    entry = raw.claim_ops[0].entry
+    prop = entry["proposition"]
+    assert entry["evaluate_at"].isoformat() == "2026-06-20T00:00:00+00:00"
+    assert entry["resolution_criteria"]["source"] == "think_prediction_lifecycle"
+    assert prop["evidence_contract"]["evidence_status"] == "evidence_bound"
+    assert prop["staleness_horizon"] == "P1D"
+
+
+def test_large_batch_selected_models_get_lifecycle_and_candidate_edge_pressure() -> None:
+    tenant_id = uuid4()
+    customer_id = uuid4()
+    model_a = uuid4()
+    model_b = uuid4()
+    scope = {"type": "customer", "id": str(customer_id)}
+    observations = [
+        _obs(
+            oid=uuid4(),
+            source_channel="github:webhook",
+            text=f"release signal {i}",
+            occurred_at=datetime(2026, 6, 17, 0, i, tzinfo=timezone.utc),
+        )
+        for i in range(12)
+    ]
+    trigger = TriggerContext(
+        kind="T1",
+        subkind="event_batch",
+        tenant_id=tenant_id,
+        observation_id=observations[0].id,
+        observation_ids=[obs.id for obs in observations],
+    )
+    raw = RawDiff(trigger_ref=uuid4(), tenant_id=tenant_id, claim_ops=[])
+
+    enrich_raw_diff_representation(
+        raw,
+        trigger,
+        SimpleNamespace(
+            observations=observations,
+            models=[
+                SimpleNamespace(
+                    id=model_a,
+                    status="active",
+                    claim_role="prediction",
+                    proposition={"claim_role": "prediction"},
+                    reading_contestable=True,
+                    scope_entities=[scope],
+                    scope_actors=[],
+                    supporting_event_ids=[],
+                    domain_tags=[],
+                ),
+                SimpleNamespace(
+                    id=model_b,
+                    status="active",
+                    claim_role="fact",
+                    proposition={"claim_role": "fact"},
+                    reading_contestable=True,
+                    scope_entities=[scope],
+                    scope_actors=[],
+                    supporting_event_ids=[],
+                    domain_tags=[],
+                ),
+            ],
+        ),
+    )
+
+    assert len(raw.memory_lifecycle_ops) == 1
+    assert raw.memory_lifecycle_ops[0].model_id == model_a
+    assert raw.memory_lifecycle_ops[0].action == "unchanged"
+    assert raw.memory_lifecycle_ops[0].evidence_event_ids
+    assert len(raw.edge_ops) == 1
+    assert raw.edge_ops[0].source_model_id == model_a
+    assert raw.edge_ops[0].target_model_id == model_b
+    assert raw.edge_ops[0].review_status == "candidate"

@@ -7,8 +7,6 @@ ingest/retrieval suites once the flag is set.
 """
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from lib.embeddings.mode import (

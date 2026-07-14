@@ -42,10 +42,10 @@ from lib.llm.provider import (
     set_response_cache,
     _codex_transport,
 )
-from lib.shared.ids import uuid7
 from lib.shared.migrations import apply_migrations_dir
 from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
+from services.domain.triggers import ensure_event_arrival_trigger
 from services.app.gateway.db_bootstrap import _register_codecs
 from services.ingest.synthetic.core import SyntheticSignal, inject
 from services.reasoning.think.post_commit import WorkerStats, process_batch
@@ -1308,19 +1308,11 @@ async def enqueue_t1_for_observations(
                 "scope_actors": [str(row["actor_id"])] if row["actor_id"] else [],
                 "mega_probe": {"run_id": run_id},
             }
-            await conn.execute(
-                """
-                INSERT INTO think_trigger_queue (
-                    id, tenant_id, trigger_kind, trigger_subkind,
-                    observation_id, model_id, payload
-                ) VALUES (
-                    $1, $2, 'T1', 'event_arrival', $3, NULL, $4::jsonb
-                )
-                """,
-                uuid7(),
-                tenant_id,
-                row["id"],
-                json.dumps(payload, default=str),
+            await ensure_event_arrival_trigger(
+                conn,
+                tenant_id=tenant_id,
+                observation_id=row["id"],
+                payload=payload,
             )
     return len(rows)
 
@@ -1330,7 +1322,8 @@ async def drain_post_commit_actions(
     *,
     tenant_id: UUID,
     timeout_seconds: int,
-    batch_size: int = 250,
+    batch_size: int = 25,
+    batch_timeout_seconds: float | None = None,
 ) -> dict[str, int]:
     """Drain durable post-commit actions for this tenant."""
     deadline = time.monotonic() + timeout_seconds
@@ -1355,20 +1348,42 @@ async def drain_post_commit_actions(
                 "dead_lettered": stats.dead_lettered,
                 "iterations": stats.iterations,
             }
-        if time.monotonic() >= deadline:
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
             return {
                 "processed": stats.processed,
                 "failed": stats.failed,
                 "dead_lettered": stats.dead_lettered,
                 "iterations": stats.iterations,
                 "timed_out": 1,
+                "pending": int(pending or 0),
             }
-        await process_batch(
-            pool,
-            limit=batch_size,
-            stats=stats,
-            tenant_id=tenant_id,
-        )
+        batch_timeout = remaining_seconds
+        if batch_timeout_seconds is not None:
+            batch_timeout = min(
+                remaining_seconds,
+                max(0.001, float(batch_timeout_seconds)),
+            )
+        try:
+            await asyncio.wait_for(
+                process_batch(
+                    pool,
+                    limit=max(1, int(batch_size)),
+                    stats=stats,
+                    tenant_id=tenant_id,
+                    action_timeout_seconds=batch_timeout,
+                ),
+                timeout=batch_timeout,
+            )
+        except asyncio.TimeoutError:
+            return {
+                "processed": stats.processed,
+                "failed": stats.failed,
+                "dead_lettered": stats.dead_lettered,
+                "iterations": stats.iterations,
+                "timed_out": 1,
+                "pending": int(pending or 0),
+            }
         await asyncio.sleep(0.05)
 
 
@@ -2676,6 +2691,7 @@ async def _seed_probe_models(
         "models": seeded.total_models,
         "insert_ms": round(seeded.insert_ms, 3),
         "sidecars": seeded.sidecars,
+        "timings": seeded.timings,
     }
     print(f"seed_status={json.dumps(seed_status, sort_keys=True)}", flush=True)
     return seed_status

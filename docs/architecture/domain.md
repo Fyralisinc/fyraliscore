@@ -18,8 +18,9 @@ every row carries `tenant_id` and queries scope by it.
 
 - **Observations** (`observations/repo.py`) — append-oriented signals partitioned
   monthly by `occurred_at`; composite PK `(id, occurred_at)` (so FKs are
-  application-level). Dedup on `(source_channel, external_id, occurred_at)`; HNSW
-  cosine search over the 768-d embedding; `cascade_trace` is a recursive CTE up
+  application-level). Dedup on `(source_channel, external_id, occurred_at)`; the
+  768-d embedding is retained as an optional semantic seed, while hot semantic
+  retrieval searches Models. `cascade_trace` is a recursive CTE up
   the `cause_id` chain. `state_change.emit_state_change` is the canonical helper
   every other domain write calls to record a `kind='state_change'` observation
   inside the caller's transaction — this builds the audit/cause chain. Post-commit
@@ -98,7 +99,7 @@ graph TD
 | `ModelsRepo` | `services/domain/models/repo.py` | `models`; the 9-step insert; typed-edge dual-write; audit chain. |
 | `EdgesRepo` | `services/domain/models/edges_repo.py` | `model_edges` (single writer); traversal, cycle checks, drift sample. |
 | Propositions/falsifier/calibration/decay | `services/domain/models/propositions.py` | Proposition grammar, falsifier adequacy, calibration offsets, decay. |
-| `ObservationRepository` | `services/domain/observations/repo.py` | `observations` CRUD + HNSW search + cascade trace. |
+| `ObservationRepository` | `services/domain/observations/repo.py` | `observations` CRUD + low-volume vector order + cascade trace. |
 | state_change / events / partitions | `services/domain/observations/state_change.py` | Audit-chain emitter, NOTIFY buffer, partition self-heal. |
 | Acts | `services/domain/acts/state_machines.py` | Goal/commitment/decision transition tables + invariants. |
 | Resources | `services/domain/resources/repo.py` | Resource aggregate, `apply_delta`, Bridge spine. |

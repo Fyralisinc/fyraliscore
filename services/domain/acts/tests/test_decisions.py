@@ -51,6 +51,19 @@ async def test_decision_create_requires_fields(acts_db, event_id):
         )
 
 
+async def test_decision_create_requires_object_revisit_triggers(acts_db, event_id):
+    with pytest.raises(ValidationError) as exc:
+        await decisions.create(
+            title="decide next action",
+            decision_text="choose next action",
+            revisit_triggers=["owner assigns action"],  # type: ignore[arg-type]
+            created_by_event_id=event_id,
+            tenant_id=TENANT_A,
+        )
+
+    assert exc.value.context["field"] == "revisit_triggers"
+
+
 async def test_decision_full_path(acts_db, event_id):
     d = await decisions.create(
         title="d",

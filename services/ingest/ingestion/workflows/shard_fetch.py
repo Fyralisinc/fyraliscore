@@ -226,6 +226,7 @@ PATTERN-ALIGNMENT MAPPING
     (constant-style) and outside the analyzer's `services/ingest/ingestion/
     workflows/*.py` scope.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -277,8 +278,8 @@ WORKFLOW_ID_INBOX = "shard_fetch"  # per A13: workflow_id = inbox
 WORKFLOW_ID_DEFAULT = "default"  # diagnostic instance name
 
 # Signal kinds.
-SIGNAL_KIND_REQUESTED = "shard_fetch_requested"   # consumed from SourceOnboarding
-SIGNAL_KIND_COMPLETED = "shard_fetch_completed"   # emitted to SourceOnboarding
+SIGNAL_KIND_REQUESTED = "shard_fetch_requested"  # consumed from SourceOnboarding
+SIGNAL_KIND_COMPLETED = "shard_fetch_completed"  # emitted to SourceOnboarding
 
 # Downstream inbox (per M6.2a's SourceOnboarding).
 SOURCE_ONBOARDING_INBOX_KIND = "source_onboarding"
@@ -658,6 +659,26 @@ SELECT id, tenant_id, page_id, page_name, page_access_token_ref,
        app_secret_ref, verify_token_ref, enabled
   FROM facebook_page_installations
  WHERE id = $1 AND tenant_id = $2 AND enabled = true
+
+LIMIT 1
+"""
+
+
+# Instagram Messaging: fetcher works one conversation at a time via
+# shard_identifier; the install carries Graph base URL + access token ref.
+_LOAD_INSTAGRAM_INSTALL_SQL = """
+SELECT ii.id, ii.tenant_id, ii.base_url, ii.ig_business_account_id, ii.page_id,
+       ii.access_token_ref, ii.history_lookback_days, ii.connection_status,
+       ii.disabled_at, iwr.webhook_delivery_account_id
+  FROM instagram_installations ii
+  LEFT JOIN LATERAL (
+      SELECT webhook_delivery_account_id
+        FROM instagram_webhook_routes
+       WHERE instagram_installation_id = ii.id AND enabled = TRUE
+       ORDER BY updated_at DESC
+       LIMIT 1
+  ) iwr ON TRUE
+ WHERE ii.tenant_id = $1 AND ii.disabled_at IS NULL AND ii.connection_status = 'active'
  LIMIT 1
 """
 
@@ -696,13 +717,15 @@ class ShardFetchConfig:
 # Named side-effect functions (Rule 1).
 # ---------------------------------------------------------------------
 async def _load_shard(
-    executor: asyncpg.Pool | asyncpg.Connection, shard_id: UUID,
+    executor: asyncpg.Pool | asyncpg.Connection,
+    shard_id: UUID,
 ) -> asyncpg.Record | None:
     return await executor.fetchrow(_LOAD_SHARD_SQL, shard_id)
 
 
 async def _claim_shard_for_fetch(
-    conn: asyncpg.Connection, shard_id: UUID,
+    conn: asyncpg.Connection,
+    shard_id: UUID,
 ) -> bool:
     """CLAIM-VIA-UPDATE: mark shard 'in_progress' if it's currently
     'pending'. Returns True iff this caller won the claim.
@@ -712,7 +735,8 @@ async def _claim_shard_for_fetch(
 
 
 async def _refresh_shard_lease(
-    conn: asyncpg.Connection, shard_id: UUID,
+    conn: asyncpg.Connection,
+    shard_id: UUID,
 ) -> bool:
     """Extend the lease on an orphan in-progress shard. Returns True
     iff this caller now holds the lease (the UPDATE matched a row
@@ -722,27 +746,33 @@ async def _refresh_shard_lease(
 
 
 async def _mark_shard_done(
-    executor: asyncpg.Pool | asyncpg.Connection, shard_id: UUID,
+    executor: asyncpg.Pool | asyncpg.Connection,
+    shard_id: UUID,
 ) -> None:
     await executor.execute(_MARK_SHARD_DONE_SQL, shard_id)
 
 
 async def _mark_shard_failed(
     executor: asyncpg.Pool | asyncpg.Connection,
-    shard_id: UUID, last_error: str,
+    shard_id: UUID,
+    last_error: str,
 ) -> None:
     await executor.execute(
-        _MARK_SHARD_FAILED_SQL, shard_id, last_error,
+        _MARK_SHARD_FAILED_SQL,
+        shard_id,
+        last_error,
     )
 
 
 async def _load_orphan_shards(
-    pool: asyncpg.Pool, *, lease_timeout_seconds: float, limit: int,
+    pool: asyncpg.Pool,
+    *,
+    lease_timeout_seconds: float,
+    limit: int,
 ) -> list[asyncpg.Record]:
     """Find in-progress shards whose N1 heartbeat is stale."""
-    cutoff = (
-        dt.datetime.now(tz=dt.timezone.utc)
-        - dt.timedelta(seconds=lease_timeout_seconds)
+    cutoff = dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(
+        seconds=lease_timeout_seconds
     )
     return await pool.fetch(_LOAD_ORPHAN_SHARDS_SQL, cutoff, limit)
 
@@ -752,9 +782,8 @@ async def _count_orphan_shards(
     *,
     lease_timeout_seconds: float,
 ) -> int:
-    cutoff = (
-        dt.datetime.now(tz=dt.timezone.utc)
-        - dt.timedelta(seconds=lease_timeout_seconds)
+    cutoff = dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(
+        seconds=lease_timeout_seconds
     )
     value = await pool.fetchval(_COUNT_ORPHAN_SHARDS_SQL, cutoff)
     return int(value or 0)
@@ -776,7 +805,10 @@ def parse_auto_parallelism(value: str | None, *, default: str = "auto") -> int:
 
 
 async def _load_install(
-    pool: asyncpg.Pool, *, tenant_id: UUID, source: str,
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    source: str,
     shard_identifier: dict[str, Any] | None = None,
 ) -> asyncpg.Record | None:
     """Load the active install row for this (tenant, source)."""
@@ -840,6 +872,8 @@ async def _load_install(
                 source,
                 guild_id,
             )
+    if source == "instagram":
+        return await pool.fetchrow(_LOAD_INSTAGRAM_INSTALL_SQL, tenant_id)
     return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
 
 
@@ -848,6 +882,7 @@ async def _write_record_and_build_message(
     *,
     tenant_id: UUID,
     source: str,
+    ingress_kind: str,
     shard_id: UUID,
     cursor: dict[str, Any] | None,
     record: dict[str, Any],
@@ -880,6 +915,7 @@ async def _write_record_and_build_message(
     record_body = dict(record)
     webhook_metadata = record_body.pop("webhook_metadata", {})
     blob = {
+        "_fyralis_shard_fetch_wrapper": 1,
         "record": record_body,
         "shard_context": {"shard_id": str(shard_id), "cursor": cursor},
         "webhook_metadata": webhook_metadata,
@@ -904,7 +940,7 @@ async def _write_record_and_build_message(
         raw_s3_key=s3_key,
         content_hash=content_hash,
         ingested_at=now,
-        ingress_kind="backfill",
+        ingress_kind=ingress_kind,  # type: ignore[arg-type]
     )
     return KafkaMessage(
         # Per-source raw topic so backfill traffic for one source cannot
@@ -928,7 +964,8 @@ class _FetchLoopContext:
     def from_shard(cls, shard: asyncpg.Record) -> "_FetchLoopContext":
         ident_raw = shard["shard_identifier"]
         shard_identifier = (
-            orjson.loads(ident_raw) if isinstance(ident_raw, (str, bytes))
+            orjson.loads(ident_raw)
+            if isinstance(ident_raw, (str, bytes))
             else dict(ident_raw)
         )
         return cls(
@@ -944,9 +981,16 @@ class _FetchLoopContext:
             dt.datetime.now(tz=dt.timezone.utc) - self.loop_started_at
         ).total_seconds()
 
+    def ingress_kind(self) -> str:
+        requested = str(self.shard_identifier.get("ingress_kind") or "").strip()
+        if requested in {"backfill", "poll"}:
+            return requested
+        return "backfill"
+
 
 async def _persist_initial_workflow_state(
-    conn: asyncpg.Connection, shard_id: UUID,
+    conn: asyncpg.Connection,
+    shard_id: UUID,
 ) -> None:
     state = WorkflowState(
         workflow_kind=WORKFLOW_KIND,
@@ -970,7 +1014,8 @@ def _log_fetch_install_unavailable(ctx: _FetchLoopContext) -> None:
 
 
 async def _ensure_fetch_loop_state(
-    pool: asyncpg.Pool, ctx: _FetchLoopContext,
+    pool: asyncpg.Pool,
+    ctx: _FetchLoopContext,
 ) -> None:
     # Ensure the N1 home exists before the first advance. Two paths reach this
     # point: signal-driven start bootstraps in the claim transaction;
@@ -987,7 +1032,8 @@ async def _ensure_fetch_loop_state(
 
 
 async def _load_fetch_cursor(
-    pool: asyncpg.Pool, ctx: _FetchLoopContext,
+    pool: asyncpg.Pool,
+    ctx: _FetchLoopContext,
 ) -> tuple[WorkflowState | None, dict[str, Any] | None]:
     # Re-read N1 cursor each iteration. Robust against cross-replica handoffs
     # where another replica may have advanced the cursor.
@@ -1036,6 +1082,7 @@ async def _write_fetch_page_messages(
                     s3_client,
                     tenant_id=ctx.tenant_id,
                     source=ctx.source,
+                    ingress_kind=ctx.ingress_kind(),
                     shard_id=ctx.shard_id,
                     cursor=cursor,
                     record=rec,
@@ -1077,8 +1124,12 @@ async def _advance_fetch_cursor(
             new_state_data={
                 "cursor": result.next_cursor,
                 "pages_fetched": (
-                    (current_state.state_data.get("pages_fetched", 0)
-                     if current_state else 0) + 1
+                    (
+                        current_state.state_data.get("pages_fetched", 0)
+                        if current_state
+                        else 0
+                    )
+                    + 1
                 ),
                 # Cumulative raw-record count, persisted so a resumed orphan
                 # reports the whole shard's count in `shard.fetched`.
@@ -1116,11 +1167,18 @@ async def _run_fetch_pages(
     while True:
         current_state, cursor = await _load_fetch_cursor(pool, ctx)
         result = await _fetch_page(
-            rate_limiter, ctx, install=install, cursor=cursor,
+            rate_limiter,
+            ctx,
+            install=install,
+            cursor=cursor,
         )
         ctx.records_fetched += len(result.records)
         messages = await _write_fetch_page_messages(
-            s3_client, config, ctx, cursor=cursor, records=result.records,
+            s3_client,
+            config,
+            ctx,
+            cursor=cursor,
+            records=result.records,
         )
         if messages is None:
             return False
@@ -1140,7 +1198,8 @@ async def _run_fetch_pages(
 
 
 def _log_fetch_rate_limited_exit(
-    ctx: _FetchLoopContext, exc: RateLimitWaitExceeded,
+    ctx: _FetchLoopContext,
+    exc: RateLimitWaitExceeded,
 ) -> None:
     log.warning(
         "shard_fetch.rate_limited_exit_loop",
@@ -1154,7 +1213,8 @@ def _log_fetch_rate_limited_exit(
 
 
 def _log_recoverable_fetch_error(
-    ctx: _FetchLoopContext, exc: Exception,
+    ctx: _FetchLoopContext,
+    exc: Exception,
 ) -> None:
     log.warning(
         "shard_fetch.recoverable_fetch_error_park",
@@ -1305,7 +1365,8 @@ class ShardFetch(LongRunningService):
                     # completion in the same transaction to keep the
                     # downstream consumer in sync.
                     await self._emit_shard_completed(
-                        conn, shard=shard,
+                        conn,
+                        shard=shard,
                         status=shard["state"],
                         failure_reason=None,
                     )
@@ -1313,7 +1374,8 @@ class ShardFetch(LongRunningService):
 
                 if shard["state"] == "pending":
                     is_new_claim = await _claim_shard_for_fetch(
-                        conn, shard_id,
+                        conn,
+                        shard_id,
                     )
                     if not is_new_claim:
                         # Race: another replica claimed between our
@@ -1376,7 +1438,9 @@ class ShardFetch(LongRunningService):
         return sum(int(r) for r in results)
 
     async def _bootstrap_workflow_state(
-        self, conn: asyncpg.Connection, shard_id: UUID,
+        self,
+        conn: asyncpg.Connection,
+        shard_id: UUID,
     ) -> None:
         """Initialize the N1 home for this shard.
 
@@ -1457,7 +1521,8 @@ class ShardFetch(LongRunningService):
 
         except NotImplementedError as exc:
             await self._terminate_shard(
-                shard_id=ctx.shard_id, state="failed",
+                shard_id=ctx.shard_id,
+                state="failed",
                 failure_reason=str(exc),
             )
             return
@@ -1476,7 +1541,8 @@ class ShardFetch(LongRunningService):
                 extra={"shard_id": str(ctx.shard_id)},
             )
             await self._terminate_shard(
-                shard_id=ctx.shard_id, state="failed",
+                shard_id=ctx.shard_id,
+                state="failed",
                 failure_reason=f"{type(exc).__name__}: {exc}",
             )
             return
@@ -1484,13 +1550,16 @@ class ShardFetch(LongRunningService):
         # Clean end-of-data exit. Pass the fetch metrics so the terminal
         # transition can emit the `shard.fetched` progress event.
         await self._terminate_shard(
-            shard_id=ctx.shard_id, state="done", failure_reason=None,
+            shard_id=ctx.shard_id,
+            state="done",
+            failure_reason=None,
             observation_count=ctx.records_fetched,
             fetched_in_seconds=ctx.fetched_in_seconds(),
         )
 
     async def _terminate_shard(
-        self, *,
+        self,
+        *,
         shard_id: UUID,
         state: str,  # 'done' or 'failed'
         failure_reason: str | None,
@@ -1520,28 +1589,36 @@ class ShardFetch(LongRunningService):
                     await _mark_shard_done(conn, shard_id)
                 else:
                     await _mark_shard_failed(
-                        conn, shard_id, failure_reason or "<unknown>",
+                        conn,
+                        shard_id,
+                        failure_reason or "<unknown>",
                     )
                 # Re-load to get the shard's run/source for the signal.
                 shard = await _load_shard(conn, shard_id)
                 if shard is None:
                     return
                 await self._emit_shard_completed(
-                    conn, shard=shard, status=state,
+                    conn,
+                    shard=shard,
+                    status=state,
                     failure_reason=failure_reason,
                 )
                 if state == "done" and observation_count is not None:
-                    events.append(ShardFetched(
-                        tenant_id=shard["tenant_id"],
-                        source=shard["source"],
-                        shard_id=shard["id"],
-                        observation_count=observation_count,
-                        fetched_in_seconds=fetched_in_seconds or 0.0,
-                    ))
+                    events.append(
+                        ShardFetched(
+                            tenant_id=shard["tenant_id"],
+                            source=shard["source"],
+                            shard_id=shard["id"],
+                            observation_count=observation_count,
+                            fetched_in_seconds=fetched_in_seconds or 0.0,
+                        )
+                    )
         await publish_progress_events(self._kafka_producer, events)
 
     async def _emit_shard_completed(
-        self, conn: asyncpg.Connection, *,
+        self,
+        conn: asyncpg.Connection,
+        *,
         shard: asyncpg.Record,
         status: str,
         failure_reason: str | None,
@@ -1571,13 +1648,18 @@ class ShardFetch(LongRunningService):
         )
 
     async def _persist_scan_state(
-        self, *, signals_processed: int, orphans_resumed: int,
+        self,
+        *,
+        signals_processed: int,
+        orphans_resumed: int,
     ) -> None:
         """Diagnostic state row for ops queries. Not load-bearing for
         correctness; the per-shard `workflow_states` row (keyed by
         shard_id) is the N1 home and IS load-bearing."""
         existing = await load_state(
-            self._pool, WORKFLOW_KIND, self._config.instance_name,
+            self._pool,
+            WORKFLOW_KIND,
+            self._config.instance_name,
         )
         state = WorkflowState(
             workflow_kind=WORKFLOW_KIND,
@@ -1588,13 +1670,19 @@ class ShardFetch(LongRunningService):
                 "last_signals_processed": signals_processed,
                 "last_orphans_resumed": orphans_resumed,
                 "lifetime_signals_processed": (
-                    (existing.state_data.get("lifetime_signals_processed", 0)
-                     if existing else 0)
+                    (
+                        existing.state_data.get("lifetime_signals_processed", 0)
+                        if existing
+                        else 0
+                    )
                     + signals_processed
                 ),
                 "lifetime_orphans_resumed": (
-                    (existing.state_data.get("lifetime_orphans_resumed", 0)
-                     if existing else 0)
+                    (
+                        existing.state_data.get("lifetime_orphans_resumed", 0)
+                        if existing
+                        else 0
+                    )
                     + orphans_resumed
                 ),
             },
@@ -1641,12 +1729,15 @@ async def _run_service() -> None:
     from services.ingest.ingestion.workflows.runtime import make_workflow_pool
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
-    producer = IdempotentProducer(ProducerConfig(
-        bootstrap_servers=os.environ.get(
-            "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
-        ),
-        client_id="workflow-shard_fetch",
-    ))
+    producer = IdempotentProducer(
+        ProducerConfig(
+            bootstrap_servers=os.environ.get(
+                "KAFKA_BOOTSTRAP_SERVERS",
+                "localhost:9092",
+            ),
+            client_id="workflow-shard_fetch",
+        )
+    )
     await producer.start()
 
     # Raw-tier S3 client for the backfill producer (A27.1). S3_ENDPOINT_URL
@@ -1673,7 +1764,8 @@ async def _run_service() -> None:
             os.environ.get("SHARD_FETCH_FLUSH_SEC", "5.0"),
         ),
         instance_name=os.environ.get(
-            "SHARD_FETCH_INSTANCE", DEFAULT_DIAGNOSTIC_INSTANCE,
+            "SHARD_FETCH_INSTANCE",
+            DEFAULT_DIAGNOSTIC_INSTANCE,
         ),
         ingestion_env=os.environ.get("INGESTION_ENV", DEFAULT_INGESTION_ENV),
         rate_limit_max_wait_seconds=float(
@@ -1709,7 +1801,10 @@ async def _run_service() -> None:
         log.info("workflow.shard_fetch.rate_limit_enabled")
 
     service = ShardFetch(
-        pool, producer, config=config, s3_client=s3_client,
+        pool,
+        producer,
+        config=config,
+        s3_client=s3_client,
         rate_limiter=rate_limiter,
     )
 
@@ -1732,9 +1827,12 @@ async def _run_service() -> None:
     health = start_health_server(get_metrics=dict, heartbeat=heartbeat)
     ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
 
-    log.info("workflow.shard_fetch.started", extra={
-        "instance": config.instance_name,
-    })
+    log.info(
+        "workflow.shard_fetch.started",
+        extra={
+            "instance": config.instance_name,
+        },
+    )
     try:
         await service.run(stop_event=stop_event)
     finally:
@@ -1754,6 +1852,7 @@ async def _run_service() -> None:
 def main() -> None:
     import asyncio
     import os
+
     logging.basicConfig(
         level=os.environ.get("WORKFLOWS_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

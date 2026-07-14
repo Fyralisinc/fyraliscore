@@ -14,9 +14,16 @@ import structlog
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelRow, ObservationRow
 from services.platform.access_control.audit import record_override_if_needed
-from services.platform.access_control.checks import can_read
+from services.platform.access_control.checks import can_read  # noqa: F401
 from services.domain.models.repo import _SELECT_COLS_SQL as _MODEL_SELECT_COLS_SQL
 from services.domain.models.repo import _hydrate_row as _hydrate_model_row
+from services.platform.access_control.authority import (
+    ObjectRef,
+    Principal,
+    authorize_read,
+    authority_fingerprint,
+    principal_for_actor,
+)
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.sage.reader import SynthesisReader, SynthesisReaderResult
 from services.reasoning.synthesis.query_understanding import extract_query_alternatives
@@ -75,6 +82,11 @@ class AskOrchestrator:
         body: AskSessionCreateRequest,
     ) -> AskSession:
         _, mode = classify_intent("", body.initial_scope)
+        access_snapshot = await self._authority_snapshot(
+            tenant_id=tenant_id,
+            viewer_id=viewer_id,
+            scope=body.initial_scope,
+        )
         return await self._store.create_session(
             tenant_id=tenant_id,
             viewer_id=viewer_id,
@@ -83,6 +95,7 @@ class AskOrchestrator:
             source_object_id=body.source_object_id,
             source_object_type=body.source_object_type,
             mode=mode,
+            access_snapshot=access_snapshot,
         )
 
     async def answer_turn(
@@ -100,8 +113,17 @@ class AskOrchestrator:
         if session is None:
             raise LookupError("ask session not found")
         scope = body.scope or session.current_scope
+        access_snapshot = await self._authority_snapshot(
+            tenant_id=tenant_id,
+            viewer_id=viewer_id,
+            scope=scope,
+        )
         if body.scope is not None:
-            await self._store.update_scope(session_id, scope=scope)
+            await self._store.update_scope(
+                session_id,
+                scope=scope,
+                access_snapshot=access_snapshot,
+            )
             session = session.model_copy(update={"current_scope": scope})
 
         intent, planned_mode = classify_intent(query, scope)
@@ -173,6 +195,7 @@ class AskOrchestrator:
                 mode=mode,
                 scope=scope,
                 latency_ms=latency_ms,
+                authority_snapshot=access_snapshot,
             )
             if _should_propose_state_change(query, intent, packet):
                 change = await self._store.add_proposed_state_change(
@@ -223,12 +246,23 @@ class AskOrchestrator:
         self,
         *,
         tenant_id: UUID,
+        viewer_id: UUID,
         retrieval_run_id: UUID,
     ) -> tuple[list[AskEvidenceItem], list[AskEvidenceItem]]:
-        return await self._store.list_evidence(
+        evidence, omitted = await self._store.list_evidence(
             retrieval_run_id,
             tenant_id=tenant_id,
         )
+        async with self._conn_provider() as conn:
+            principal = await _principal_for_viewer(
+                conn,
+                tenant_id=tenant_id,
+                viewer_id=viewer_id,
+            )
+            return (
+                await _filter_evidence_items(conn, principal, evidence),
+                await _filter_evidence_items(conn, principal, omitted),
+            )
 
     async def act_on_proposed_change(
         self,
@@ -263,6 +297,37 @@ class AskOrchestrator:
             feedback_type=feedback_type,
             payload=payload,
         )
+
+    async def _authority_snapshot(
+        self,
+        *,
+        tenant_id: UUID,
+        viewer_id: UUID,
+        scope: AskScope,
+    ) -> dict[str, Any]:
+        async with self._conn_provider() as conn:
+            principal = await _principal_for_viewer(
+                conn,
+                tenant_id=tenant_id,
+                viewer_id=viewer_id,
+            )
+        scope_payload = scope.model_dump(mode="json")
+        fingerprint = authority_fingerprint(
+            principal,
+            "ask",
+            scope=scope_payload,
+        )
+        return {
+            "tenant_id": str(fingerprint.tenant_id),
+            "viewer_id": str(fingerprint.actor_id),
+            "purpose": fingerprint.purpose,
+            "fingerprint": fingerprint.cache_key,
+            "role_set_hash": fingerprint.role_set_hash,
+            "active_grant_epoch": fingerprint.active_grant_epoch,
+            "scope_hash": fingerprint.scope_hash,
+            "policy_version": fingerprint.policy_version,
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     async def _retrieve_packet(
         self,
@@ -304,9 +369,20 @@ class AskOrchestrator:
             if not observations:
                 observations = await _fallback_observations(conn, tenant_id, scope)
 
-            models = await _filter_models(conn, tenant_id, viewer_id, models)
-            observations = await _filter_observations(conn, tenant_id, viewer_id, observations)
-            evidence = _evidence_from_reader(reader_result, models, observations)
+            principal = await _principal_for_viewer(
+                conn,
+                tenant_id=tenant_id,
+                viewer_id=viewer_id,
+            )
+            models = await _filter_models(conn, principal, models)
+            observations = await _filter_observations(conn, principal, observations)
+            evidence = await _evidence_from_reader(
+                conn,
+                principal,
+                reader_result,
+                models,
+                observations,
+            )
             evidence = [
                 *_composed_evidence_from_observations(query, intent, observations),
                 *evidence,
@@ -314,18 +390,7 @@ class AskOrchestrator:
             evidence = _rank_evidence_for_packet(query, intent, evidence)
             if not models and not observations and not evidence:
                 degraded_reasons.append("no_accessible_synthesis_state")
-            omitted = [
-                AskEvidenceItem(
-                    id=uuid7(),
-                    source_ref=_try_uuid(mid),
-                    source_kind="omitted_model",
-                    summary=f"Evidence projection omitted model {mid}: {reason}.",
-                    strength="unknown",
-                    omitted_reason=reason,
-                    raw_payload={"source": "sage_projection"},
-                )
-                for mid, reason in omitted_pairs
-            ]
+            omitted = await _omitted_from_reader(conn, principal, omitted_pairs)
             state_contract = compile_state_contract(
                 query,
                 _state_sources_for_packet(models, observations, evidence),
@@ -449,32 +514,28 @@ async def _fallback_observations(
 
 async def _filter_models(
     conn: asyncpg.Connection,
-    tenant_id: UUID,
-    viewer_id: UUID,
+    principal: Principal,
     models: list[ModelRow],
 ) -> list[ModelRow]:
     visible: list[ModelRow] = []
     for model in models:
-        decision = await can_read(
-            viewer_id,
-            {
-                "kind": "model",
-                "id": model.id,
-                "tenant_id": model.tenant_id,
-                "visible_to_subjects": model.visible_to_subjects,
-                "scope_actors": model.scope_actors,
-                "scope_entities": model.scope_entities,
-            },
+        decision = await authorize_read(
+            principal,
+            "ask",
+            ObjectRef(
+                tenant_id=model.tenant_id,
+                object_kind="model",
+                object_id=model.id,
+            ),
             conn=conn,
-            tenant_id=tenant_id,
         )
         await record_override_if_needed(
             decision,
-            actor_id=viewer_id,
+            actor_id=principal.actor_id,
             entity_type="model",
             entity_id=model.id,
             conn=conn,
-            tenant_id=tenant_id,
+            tenant_id=model.tenant_id,
         )
         if decision.allowed:
             visible.append(model)
@@ -483,51 +544,70 @@ async def _filter_models(
 
 async def _filter_observations(
     conn: asyncpg.Connection,
-    tenant_id: UUID,
-    viewer_id: UUID,
+    principal: Principal,
     observations: list[ObservationRow],
 ) -> list[ObservationRow]:
     visible: list[ObservationRow] = []
     for obs in observations:
-        decision = await can_read(
-            viewer_id,
-            {
-                "kind": "observation",
-                "id": obs.id,
-                "tenant_id": obs.tenant_id,
-                "actor_id": obs.actor_id,
-                "source_channel": obs.source_channel,
-                "entities_mentioned": obs.entities_mentioned,
-                "source_actor_ref": obs.source_actor_ref,
-            },
+        decision = await authorize_read(
+            principal,
+            "ask",
+            ObjectRef(
+                tenant_id=obs.tenant_id,
+                object_kind="observation",
+                object_id=obs.id,
+            ),
             conn=conn,
-            tenant_id=tenant_id,
         )
         await record_override_if_needed(
             decision,
-            actor_id=viewer_id,
+            actor_id=principal.actor_id,
             entity_type="observation",
             entity_id=obs.id,
             conn=conn,
-            tenant_id=tenant_id,
+            tenant_id=obs.tenant_id,
         )
         if decision.allowed:
             visible.append(obs)
     return visible
 
 
-def _evidence_from_reader(
+async def _principal_for_viewer(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    viewer_id: UUID,
+) -> Principal:
+    try:
+        return await principal_for_actor(
+            viewer_id,
+            conn=conn,
+            tenant_id=tenant_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("ask.principal_load_failed", error=str(exc))
+        return Principal(tenant_id=tenant_id, actor_id=viewer_id)
+
+
+async def _evidence_from_reader(
+    conn: asyncpg.Connection,
+    principal: Principal,
     reader_result: SynthesisReaderResult | None,
     models: list[ModelRow],
     observations: list[ObservationRow],
 ) -> list[AskEvidenceItem]:
     items: list[AskEvidenceItem] = []
-    obs_ids = {o.id for o in observations}
     if reader_result:
         for projected in reader_result.projected_evidence:
             ref = _try_uuid(projected.get("evidence_id") or projected.get("source_ref"))
             kind = str(projected.get("evidence_kind") or "evidence")
-            if kind == "observation" and ref not in obs_ids:
+            if not await _projected_evidence_allowed(
+                conn,
+                principal,
+                projected,
+                default_kind=kind,
+                default_ref=ref,
+            ):
                 continue
             summary = str(
                 projected.get("summary")
@@ -577,6 +657,167 @@ def _evidence_from_reader(
                 )
             )
     return items
+
+
+async def _projected_evidence_allowed(
+    conn: asyncpg.Connection,
+    principal: Principal,
+    projected: dict[str, Any],
+    *,
+    default_kind: str,
+    default_ref: UUID | None,
+) -> bool:
+    refs = _projected_source_refs(
+        projected,
+        default_kind=default_kind,
+        default_ref=default_ref,
+    )
+    if not refs:
+        return False
+    for kind, ref in refs:
+        if not await _object_ref_allowed(conn, principal, kind, ref):
+            return False
+    return True
+
+
+async def _filter_evidence_items(
+    conn: asyncpg.Connection,
+    principal: Principal,
+    items: list[AskEvidenceItem],
+) -> list[AskEvidenceItem]:
+    visible: list[AskEvidenceItem] = []
+    for item in items:
+        if await _evidence_item_allowed(conn, principal, item):
+            visible.append(item)
+    return visible
+
+
+async def _evidence_item_allowed(
+    conn: asyncpg.Connection,
+    principal: Principal,
+    item: AskEvidenceItem,
+) -> bool:
+    refs = _evidence_item_source_refs(item)
+    if not refs:
+        return False
+    for kind, ref in refs:
+        if not await _object_ref_allowed(conn, principal, kind, ref):
+            return False
+    return True
+
+
+def _evidence_item_source_refs(item: AskEvidenceItem) -> tuple[tuple[str, UUID], ...]:
+    payload = item.raw_payload if isinstance(item.raw_payload, dict) else {}
+    refs: list[tuple[str, UUID]] = []
+    if item.source_kind == "composed_chain":
+        raw_ids = payload.get("source_observation_ids") or ()
+        if isinstance(raw_ids, (list, tuple)):
+            for raw_id in raw_ids:
+                ref = _try_uuid(raw_id)
+                if ref is not None:
+                    refs.append(("observation", ref))
+
+    refs.extend(
+        _projected_source_refs(
+            payload,
+            default_kind=item.source_kind,
+            default_ref=item.source_ref,
+        )
+    )
+    seen: set[tuple[str, UUID]] = set()
+    deduped: list[tuple[str, UUID]] = []
+    for ref in refs:
+        if ref in seen:
+            continue
+        seen.add(ref)
+        deduped.append(ref)
+    return tuple(deduped)
+
+
+def _projected_source_refs(
+    projected: dict[str, Any],
+    *,
+    default_kind: str,
+    default_ref: UUID | None,
+) -> tuple[tuple[str, UUID], ...]:
+    refs: list[tuple[str, UUID]] = []
+    normalized_kind = _normalize_evidence_kind(default_kind)
+    if default_ref is not None and normalized_kind is not None:
+        refs.append((normalized_kind, default_ref))
+    for key, kind in (
+        ("source_model_id", "model"),
+        ("model_id", "model"),
+        ("fyralis_model_id", "model"),
+        ("source_observation_id", "observation"),
+        ("observation_id", "observation"),
+    ):
+        ref = _try_uuid(projected.get(key))
+        if ref is not None:
+            refs.append((kind, ref))
+    seen: set[tuple[str, UUID]] = set()
+    deduped: list[tuple[str, UUID]] = []
+    for item in refs:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return tuple(deduped)
+
+
+def _normalize_evidence_kind(kind: str) -> str | None:
+    normalized = kind.strip().lower()
+    if normalized in {"model", "fyralis_model", "synthesis_model", "omitted_model"}:
+        return "model"
+    if normalized in {"observation", "event", "signal"}:
+        return "observation"
+    if normalized in {"resource", "commitment", "goal", "decision"}:
+        return normalized
+    return None
+
+
+async def _object_ref_allowed(
+    conn: asyncpg.Connection,
+    principal: Principal,
+    object_kind: str,
+    object_id: UUID,
+) -> bool:
+    decision = await authorize_read(
+        principal,
+        "ask",
+        ObjectRef(
+            tenant_id=principal.tenant_id,
+            object_kind=object_kind,
+            object_id=object_id,
+        ),
+        conn=conn,
+    )
+    return decision.allowed
+
+
+async def _omitted_from_reader(
+    conn: asyncpg.Connection,
+    principal: Principal,
+    omitted_pairs: list[tuple[str, str]],
+) -> list[AskEvidenceItem]:
+    omitted: list[AskEvidenceItem] = []
+    for mid, reason in omitted_pairs:
+        ref = _try_uuid(mid)
+        if ref is None:
+            continue
+        if not await _object_ref_allowed(conn, principal, "model", ref):
+            continue
+        omitted.append(
+            AskEvidenceItem(
+                id=uuid7(),
+                source_ref=ref,
+                source_kind="omitted_model",
+                summary=f"Evidence projection omitted model {ref}: {reason}.",
+                strength="unknown",
+                omitted_reason=reason,
+                raw_payload={"source": "sage_projection"},
+            )
+        )
+    return omitted
 
 
 def _rank_evidence_for_packet(

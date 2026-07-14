@@ -5,7 +5,7 @@
 -- tenant-scoped table and installs a single policy named
 -- `tenant_isolation` that says:
 --
---    "If app.current_tenant is unset (empty string), allow ALL rows.
+--    "If app.current_tenant is unset or empty, allow ALL rows.
 --     Otherwise, allow only rows where tenant_id matches."
 --
 -- This is intentionally permissive: existing code paths that don't yet
@@ -89,22 +89,19 @@ BEGIN
 
     -- Recreate the policy each time so re-runs pick up edits.
     EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);
-    -- The IS NULL branch is the permissive default: when no tenant
-    -- has been bound to the connection, all rows are visible (and
-    -- writable). With FORCE RLS this branch is what keeps existing
-    -- code paths working until they migrate to TenantContext.
-    -- current_setting('foo', true) returns NULL when unset, so we
-    -- check IS NULL rather than = '' (which would be NULL = '' → NULL,
-    -- treated as FALSE by the RLS evaluator).
+    -- The NULLIF/IS NULL branch is the permissive default: when no
+    -- tenant has been bound to the connection, all rows are visible
+    -- (and writable). set_config(..., '') leaves an empty setting, so
+    -- normalize empty string to NULL before casting to uuid.
     EXECUTE format(
       'CREATE POLICY tenant_isolation ON %I '
       'USING ('
-      '  current_setting(''app.current_tenant'', true) IS NULL'
-      '  OR tenant_id = current_setting(''app.current_tenant'', true)::uuid'
+      '  NULLIF(current_setting(''app.current_tenant'', true), '''') IS NULL'
+      '  OR tenant_id = NULLIF(current_setting(''app.current_tenant'', true), '''')::uuid'
       ') '
       'WITH CHECK ('
-      '  current_setting(''app.current_tenant'', true) IS NULL'
-      '  OR tenant_id = current_setting(''app.current_tenant'', true)::uuid'
+      '  NULLIF(current_setting(''app.current_tenant'', true), '''') IS NULL'
+      '  OR tenant_id = NULLIF(current_setting(''app.current_tenant'', true), '''')::uuid'
       ')',
       t
     );

@@ -132,7 +132,8 @@ async def test_detect_dynamic_signals_finds_audit_oscillation(
 # Missing-transition (imaginary-node) detector
 #
 # The substrate invariant: for consecutive audit_events on the same Model,
-# `event_i.new_state == event_j.previous_state` (modulo volatile fields).
+# `event_i.new_state == event_j.previous_state` across fields both events
+# observed, modulo volatile/reinforcement fields.
 # A discontinuity means a mutation happened off-system between the two
 # observed states. The detector emits a signal carrying the bracketed
 # events; `fetch_missing_transition_discontinuity` reifies the latest
@@ -140,7 +141,7 @@ async def test_detect_dynamic_signals_finds_audit_oscillation(
 #
 # Test bar:
 #   - integration: end-to-end against a seeded audit chain
-#   - adversarial: race-on-occurred_at, volatile-only churn,
+#   - adversarial: race-on-occurred_at, volatile/support-only churn,
 #     create-with-NULL-previous_state, single event, no discontinuity
 #   - property-based: invariants on the pure helpers
 # =====================================================================
@@ -459,6 +460,241 @@ async def test_missing_transition_ignores_volatile_field_churn(
         )
 
     assert not [s for s in signals if s.dynamic_kind == "missing_transition"]
+
+
+# -----------------------------------------------------------------
+# Adversarial: support/evidence churn is not a hidden semantic transition.
+# -----------------------------------------------------------------
+
+
+async def test_missing_transition_ignores_reinforcement_only_churn(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    actor_id = uuid7()
+    obs_id = uuid7()
+    support_obs_id = uuid7()
+    model_id = uuid7()
+    now = datetime.now(timezone.utc)
+
+    async with fresh_db.acquire() as conn:
+        await _seed_substrate(conn, tenant_id, actor_id, obs_id, model_id)
+
+        await _insert_audit_event(
+            conn,
+            model_id=model_id, tenant_id=tenant_id,
+            occurred_at=now - timedelta(hours=6),
+            cause_id=obs_id, cause_type="field_update",
+            previous_state={
+                "signal_readings": [],
+                "supporting_event_ids": [str(obs_id)],
+                "evidential_weight": 0.5,
+                "confirmed_count": 0,
+            },
+            new_state={
+                "signal_readings": [{"kind": "confirm"}],
+                "supporting_event_ids": [str(obs_id), str(support_obs_id)],
+                "evidential_weight": 0.55,
+                "confirmed_count": 1,
+                "last_confirmed_at": "2026-07-02T00:00:00Z",
+            },
+            changed_fields=[
+                "confirmed_count",
+                "evidential_weight",
+                "last_confirmed_at",
+                "signal_readings",
+                "supporting_event_ids",
+            ],
+        )
+        await _insert_audit_event(
+            conn,
+            model_id=model_id, tenant_id=tenant_id,
+            occurred_at=now - timedelta(hours=1),
+            cause_id=support_obs_id, cause_type="field_update",
+            previous_state={
+                "signal_readings": [{"kind": "confirm"}, {"kind": "observe"}],
+                "supporting_event_ids": [
+                    str(obs_id),
+                    str(support_obs_id),
+                    str(uuid7()),
+                ],
+                "evidential_weight": 0.6,
+                "confirmed_count": 2,
+                "last_confirmed_at": "2026-07-02T01:00:00Z",
+            },
+            new_state={
+                "signal_readings": [{"kind": "confirm"}, {"kind": "observe"}],
+                "supporting_event_ids": [
+                    str(obs_id),
+                    str(support_obs_id),
+                    str(uuid7()),
+                ],
+                "evidential_weight": 0.6,
+                "confirmed_count": 2,
+                "last_confirmed_at": "2026-07-02T01:00:00Z",
+            },
+            changed_fields=[
+                "confirmed_count",
+                "evidential_weight",
+                "last_confirmed_at",
+                "signal_readings",
+                "supporting_event_ids",
+            ],
+        )
+
+        signals = await detect_dynamic_signals(
+            conn,
+            tenant_id=tenant_id,
+            model_ids=[model_id],
+            reference_time=now,
+        )
+        disc = await fetch_missing_transition_discontinuity(
+            conn,
+            tenant_id=tenant_id,
+            model_id=model_id,
+            since=now - timedelta(days=7),
+        )
+
+    assert not [s for s in signals if s.dynamic_kind == "missing_transition"]
+    assert disc is None
+
+
+async def test_missing_transition_detects_semantic_gap_with_support_noise(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    actor_id = uuid7()
+    obs_id = uuid7()
+    model_id = uuid7()
+    now = datetime.now(timezone.utc)
+
+    async with fresh_db.acquire() as conn:
+        await _seed_substrate(conn, tenant_id, actor_id, obs_id, model_id)
+
+        await _insert_audit_event(
+            conn,
+            model_id=model_id, tenant_id=tenant_id,
+            occurred_at=now - timedelta(hours=6),
+            cause_id=obs_id, cause_type="field_update",
+            previous_state={"status": "active", "supporting_event_ids": []},
+            new_state={
+                "status": "review",
+                "supporting_event_ids": [str(obs_id)],
+                "confirmed_count": 1,
+            },
+            changed_fields=["status", "supporting_event_ids", "confirmed_count"],
+        )
+        await _insert_audit_event(
+            conn,
+            model_id=model_id, tenant_id=tenant_id,
+            occurred_at=now - timedelta(hours=1),
+            cause_id=obs_id, cause_type="field_update",
+            previous_state={
+                "status": "blocked",
+                "supporting_event_ids": [str(obs_id), str(uuid7())],
+                "confirmed_count": 2,
+            },
+            new_state={
+                "status": "live",
+                "supporting_event_ids": [str(obs_id), str(uuid7())],
+                "confirmed_count": 2,
+            },
+            changed_fields=["status", "supporting_event_ids", "confirmed_count"],
+        )
+
+        signals = await detect_dynamic_signals(
+            conn,
+            tenant_id=tenant_id,
+            model_ids=[model_id],
+            reference_time=now,
+        )
+        disc = await fetch_missing_transition_discontinuity(
+            conn,
+            tenant_id=tenant_id,
+            model_id=model_id,
+            since=now - timedelta(days=7),
+        )
+
+    missing = [s for s in signals if s.dynamic_kind == "missing_transition"]
+    assert len(missing) == 1
+    assert disc is not None
+    assert disc.differing_fields == ("status",)
+
+
+async def test_missing_transition_does_not_diff_create_full_against_sparse_update(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    actor_id = uuid7()
+    obs_id = uuid7()
+    model_id = uuid7()
+    now = datetime.now(timezone.utc)
+
+    async with fresh_db.acquire() as conn:
+        await _seed_substrate(conn, tenant_id, actor_id, obs_id, model_id)
+
+        await _insert_audit_event(
+            conn,
+            model_id=model_id, tenant_id=tenant_id,
+            occurred_at=now - timedelta(hours=6),
+            cause_id=obs_id, cause_type="create",
+            previous_state=None,
+            new_state={
+                "id": str(model_id),
+                "tenant_id": str(tenant_id),
+                "born_from_event_id": str(obs_id),
+                "proposition": {"kind": "belief", "assertion": "x"},
+                "natural": "seed model",
+                "scope_actors": [str(actor_id)],
+                "scope_entities": [],
+                "confidence": 0.6,
+                "status": "active",
+                "supporting_event_ids": [str(obs_id)],
+            },
+            changed_fields=[
+                "id",
+                "tenant_id",
+                "born_from_event_id",
+                "proposition",
+                "natural",
+                "scope_actors",
+                "scope_entities",
+                "confidence",
+                "status",
+                "supporting_event_ids",
+            ],
+        )
+        await _insert_audit_event(
+            conn,
+            model_id=model_id, tenant_id=tenant_id,
+            occurred_at=now - timedelta(hours=1),
+            cause_id=obs_id, cause_type="field_update",
+            previous_state={
+                "supporting_event_ids": [str(obs_id)],
+                "confirmed_count": 0,
+            },
+            new_state={
+                "supporting_event_ids": [str(obs_id), str(uuid7())],
+                "confirmed_count": 1,
+            },
+            changed_fields=["supporting_event_ids", "confirmed_count"],
+        )
+
+        signals = await detect_dynamic_signals(
+            conn,
+            tenant_id=tenant_id,
+            model_ids=[model_id],
+            reference_time=now,
+        )
+        disc = await fetch_missing_transition_discontinuity(
+            conn,
+            tenant_id=tenant_id,
+            model_id=model_id,
+            since=now - timedelta(days=7),
+        )
+
+    assert not [s for s in signals if s.dynamic_kind == "missing_transition"]
+    assert disc is None
 
 
 # -----------------------------------------------------------------

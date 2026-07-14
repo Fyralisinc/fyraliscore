@@ -71,12 +71,12 @@ ALTER TABLE ingestion_failures FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON ingestion_failures;
 CREATE POLICY tenant_isolation ON ingestion_failures
     USING (
-        current_setting('app.current_tenant', true) IS NULL
-        OR tenant_id = current_setting('app.current_tenant', true)::uuid
+        NULLIF(current_setting('app.current_tenant', true), '') IS NULL
+        OR tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
     )
     WITH CHECK (
-        current_setting('app.current_tenant', true) IS NULL
-        OR tenant_id = current_setting('app.current_tenant', true)::uuid
+        NULLIF(current_setting('app.current_tenant', true), '') IS NULL
+        OR tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
     );
 
 COMMIT;

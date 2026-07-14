@@ -10,6 +10,7 @@ from services.product.ask.orchestrator import AskOrchestrator
 from services.product.ask.schemas import AskScope
 from services.product.ask.store import InMemoryAskStore
 from services.product.ask.tests.test_orchestrator import _ConnProvider, _FakeReader
+from services.platform.access_control.authority import AuthorityDecision
 
 
 TENANT = uuid4()
@@ -21,12 +22,12 @@ class _ProductionSettings:
 
 
 async def test_api_session_turn_and_evidence_expand(monkeypatch):
-    async def fake_can_read(*args, **kwargs):
-        return type("Decision", (), {"allowed": True})()
+    async def fake_authorize_read(*args, **kwargs):
+        return AuthorityDecision(True, "authorized")
 
     monkeypatch.setattr(
-        "services.product.ask.orchestrator.can_read",
-        fake_can_read,
+        "services.product.ask.orchestrator.authorize_read",
+        fake_authorize_read,
         raising=True,
     )
     store = InMemoryAskStore()

@@ -1080,6 +1080,9 @@ async def _sidecar_counts(conn: asyncpg.Connection, tenant_id: UUID) -> dict[str
         SELECT 'model_composition_members', COUNT(*)::int
           FROM model_composition_members WHERE tenant_id = $1
         UNION ALL
+        SELECT 'model_representation_feature_postings', COUNT(*)::int
+          FROM model_representation_feature_postings WHERE tenant_id = $1
+        UNION ALL
         SELECT 'audit_events', COUNT(*)::int
           FROM audit_events WHERE tenant_id = $1
         UNION ALL

@@ -7,12 +7,12 @@ the UI tap hits the cache instead of paying classify+retrieve+render
 latency.
 
 Flow:
-  1. Agent-GRT calls `prefetch_query_grid(tenant_id, chips)` after a
-     grid recompute.
+  1. Agent-GRT calls `prefetch_query_grid(tenant_id, viewer_id, chips)`
+     after a grid recompute for a specific viewer.
   2. We run each chip's query through `QueryHandler.answer_query` in
      parallel, tagging each with the chip's `query_id`. The handler
      writes the response to `view_ceo_cache` under the key
-     `query_prefetch:<query_id>`.
+     `query_prefetch:<authority_fingerprint>:<query_id>`.
   3. On tap, the API layer calls `handler.try_serve_from_prefetch`
      which short-circuits to the cache.
 
@@ -43,7 +43,7 @@ class PrefetchChip:
     """One chip in the query grid.
 
     `query_id` is the stable id the UI sends back on tap; the response
-    is cached under `query_prefetch:<query_id>`.
+    is cached under `query_prefetch:<authority_fingerprint>:<query_id>`.
 
     `query_text` is the actual natural-language query that goes through
     the handler.
@@ -69,6 +69,7 @@ class PrefetchResult:
 @dataclass
 class PrefetchReport:
     tenant_id: UUID
+    viewer_id: UUID
     total: int
     succeeded: int
     failed: int
@@ -105,11 +106,13 @@ class QueryPrefetcher:
     async def prefetch(
         self,
         tenant_id: UUID,
+        viewer_id: UUID,
         chips: Iterable[PrefetchChip],
     ) -> PrefetchReport:
         chips_list = list(chips)
         report = PrefetchReport(
             tenant_id=tenant_id,
+            viewer_id=viewer_id,
             total=len(chips_list),
             succeeded=0,
             failed=0,
@@ -119,7 +122,7 @@ class QueryPrefetcher:
             return report
 
         tasks = [
-            asyncio.create_task(self._run_chip(tenant_id, chip))
+            asyncio.create_task(self._run_chip(tenant_id, viewer_id, chip))
             for chip in chips_list
         ]
         done = await asyncio.gather(*tasks, return_exceptions=False)
@@ -140,6 +143,7 @@ class QueryPrefetcher:
     async def _run_chip(
         self,
         tenant_id: UUID,
+        viewer_id: UUID,
         chip: PrefetchChip,
     ) -> PrefetchResult:
         start = time.perf_counter()
@@ -147,6 +151,7 @@ class QueryPrefetcher:
             try:
                 req = AnswerQueryRequest(
                     tenant_id=tenant_id,
+                    viewer_id=viewer_id,
                     query=chip.query_text,
                     context_card_id=chip.context_card_id,
                     conversation_history=[],
@@ -194,6 +199,7 @@ class QueryPrefetcher:
 async def prefetch_query_grid(
     handler: QueryHandler,
     tenant_id: UUID,
+    viewer_id: UUID,
     chips: Iterable[PrefetchChip],
     *,
     max_concurrency: int = 3,
@@ -201,7 +207,7 @@ async def prefetch_query_grid(
     """Convenience entry point for Agent-GRT. Constructs a prefetcher
     scoped to this call and runs it."""
     prefetcher = QueryPrefetcher(handler, max_concurrency=max_concurrency)
-    return await prefetcher.prefetch(tenant_id, chips)
+    return await prefetcher.prefetch(tenant_id, viewer_id, chips)
 
 
 __all__ = [

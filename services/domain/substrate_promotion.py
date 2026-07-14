@@ -1088,13 +1088,50 @@ async def _enqueue_pattern_review_if_possible(
 ) -> UUID | None:
     if not await _table_exists(conn, "think_trigger_queue"):
         return None
+    row = await conn.fetchrow(
+        """
+        SELECT proposed_signature, observed_tendency,
+               constituent_model_ids, cluster_size, density
+        FROM pattern_candidates
+        WHERE tenant_id = $1
+          AND id = $2
+        """,
+        tenant_id,
+        pattern_candidate_id,
+    )
+    payload: dict[str, Any] = {
+        "pattern_candidate_id": str(pattern_candidate_id),
+        "source": "substrate_promotion",
+        "review_mode": "semantic_required",
+    }
+    if row is not None:
+        payload.update(
+            {
+                "proposed_signature": _json_obj_or_none(
+                    _row_get(row, "proposed_signature")
+                )
+                or {},
+                "observed_tendency": _json_obj_or_none(
+                    _row_get(row, "observed_tendency")
+                )
+                or {},
+                "constituent_model_ids": [
+                    str(model_id)
+                    for model_id in _uuid_list_from_any(
+                        _row_get(row, "constituent_model_ids")
+                    )
+                ],
+                "cluster_size": int(_row_get(row, "cluster_size") or 0),
+                "density": float(_row_get(row, "density") or 0.0),
+            }
+        )
     return await enqueue_trigger(
         conn,
         tenant_id=tenant_id,
         trigger_kind="T4",
         trigger_subkind="pattern_review",
         observation_id=observation_id,
-        payload={"pattern_candidate_id": str(pattern_candidate_id)},
+        payload=payload,
     )
 
 
@@ -1155,7 +1192,10 @@ async def auto_promote_candidate(
         return None
     if not candidate.evidence_observation_ids:
         return None
-    plan = plan_candidate_promotion(candidate, confidence_floor=confidence_floor)
+    plan = plan_candidate_promotion(
+        candidate,
+        confidence_floor=_auto_promotion_floor(candidate, default=confidence_floor),
+    )
     if plan.action == "promote_actor":
         return await promote_actor_candidate(conn, candidate=candidate, plan=plan)
     if plan.action == "promote_resource":
@@ -1173,6 +1213,39 @@ async def auto_promote_candidate(
             require_constituents=False,
         )
     return None
+
+
+def _auto_promotion_floor(
+    candidate: SubstrateCandidate,
+    *,
+    default: float,
+) -> float:
+    """Return the deterministic promotion floor for a discovered substrate.
+
+    The global floor is intentionally conservative for ambiguous people and
+    customer names. Some Alpen-scale substrate is much more concrete, though:
+    source systems, vendor integrations, repository handles, Jira work items,
+    and PR-backed commitments are deterministic enough to promote without a
+    clarification round-trip.
+    """
+
+    metadata = candidate.metadata or {}
+    basis = str(metadata.get("basis") or "")
+    kind = candidate.kind
+    if kind == "system" and basis in {
+        "source_channel",
+        "machine_source_actor_ref",
+        "repo_text",
+        "known_system_phrase",
+    }:
+        return 0.60
+    if kind == "vendor" and basis == "vendor_source":
+        return 0.68
+    if kind == "workstream" and basis in {"jira_issue_key", "entities_mentioned"}:
+        return 0.70
+    if kind == "customer" and basis in {"entities_mentioned", "external_email_domain"}:
+        return 0.60
+    return default
 
 
 async def backfill_promoted_candidate_scopes(

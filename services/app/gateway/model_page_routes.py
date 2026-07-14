@@ -41,6 +41,7 @@ from services.platform.access_control.checks import (
     can_read,
     can_read_by_id,
 )
+from services.platform.access_control.authority import Principal, principal_for_actor
 from services.product.model_trace.repo import (
     TraceStep,
     trace_back,
@@ -1550,10 +1551,27 @@ async def _build_item_trace(
             auth=auth,
             model_id=item_id,
         )
+        principal = await _principal_for_actor(
+            conn,
+            tenant_id=tenant_id,
+            actor_id=auth.actor_id,
+        )
         if direction == "cause":
-            chain = await trace_back(conn, tenant_id, item_id, depth)
+            chain = await trace_back(
+                conn,
+                tenant_id,
+                item_id,
+                depth,
+                principal=principal,
+            )
         else:
-            chain = await trace_forward(conn, tenant_id, item_id, depth)
+            chain = await trace_forward(
+                conn,
+                tenant_id,
+                item_id,
+                depth,
+                principal=principal,
+            )
         chain = await _filter_visible_trace_steps(conn, auth, chain)
 
     if not chain:
@@ -1656,6 +1674,22 @@ def _deps(request: Request):
 
 def _auth_or_none(request: Request) -> AuthContext | None:
     return getattr(request.state, "auth", None)
+
+
+async def _principal_for_actor(
+    conn: Any,
+    *,
+    tenant_id: UUID,
+    actor_id: UUID,
+) -> Principal:
+    try:
+        return await principal_for_actor(
+            actor_id,
+            conn=conn,
+            tenant_id=tenant_id,
+        )
+    except Exception:
+        return Principal(tenant_id=tenant_id, actor_id=actor_id)
 
 
 def _unauth() -> JSONResponse:

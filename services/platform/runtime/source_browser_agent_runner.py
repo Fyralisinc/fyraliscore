@@ -23,6 +23,10 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 
+_SLACK_APP_CONFIG_TOKEN_RE = re.compile(
+    r"\bxoxe[-.][A-Za-z0-9][A-Za-z0-9._-]{8,}\b"
+)
+
 RunnerStatus = Literal[
     "connected",
     "running",
@@ -1034,6 +1038,10 @@ async def _execute_browser_dom_plan(
                     timeout_ms=int(inputs.browser_timeout_s * 1000),
                     admin_approved=inputs.admin_approved,
                     interactive_admin=inputs.interactive_admin,
+                    gateway_api_base=inputs.gateway_api_base,
+                    bearer_token=inputs.bearer_token,
+                    extra_headers=inputs.extra_headers,
+                    http_timeout_s=inputs.timeout_s,
                     generated_secret_values=generated_secret_values,
                     generated_secret_refs=generated_secret_refs,
                 )
@@ -1072,6 +1080,10 @@ async def _execute_browser_dom_step(
     timeout_ms: int,
     admin_approved: bool,
     interactive_admin: bool,
+    gateway_api_base: str | None,
+    bearer_token: str | None,
+    extra_headers: dict[str, str],
+    http_timeout_s: float,
     generated_secret_values: dict[str, str],
     generated_secret_refs: dict[str, str],
 ) -> dict[str, Any]:
@@ -1113,6 +1125,18 @@ async def _execute_browser_dom_step(
             )
         if action in {"paste_or_upload_manifest", "fill_from_artifact", "apply_generated_artifact"}:
             return await _dom_apply_artifact(page, step, output_dir, timeout_ms)
+        if action == "slack_app_config_token_auto_connect":
+            return await _dom_slack_app_config_token_auto_connect(
+                page=page,
+                step=step,
+                timeout_ms=timeout_ms,
+                admin_approved=admin_approved,
+                interactive_admin=interactive_admin,
+                gateway_api_base=gateway_api_base,
+                bearer_token=bearer_token,
+                extra_headers=extra_headers,
+                http_timeout_s=http_timeout_s,
+            )
         if action == "collect_text":
             return await _dom_collect_text(page, step, output_dir, timeout_ms)
         if action == "generate_refs":
@@ -1292,6 +1316,249 @@ async def _dom_collect_text(
     path = output_dir / "browser-dom-collections.json"
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return _dom_step_result(step, "completed", f"Collected sanitized provider text into {path.name}.")
+
+
+async def _dom_slack_app_config_token_auto_connect(
+    *,
+    page: Any,
+    step: dict[str, Any],
+    timeout_ms: int,
+    admin_approved: bool,
+    interactive_admin: bool,
+    gateway_api_base: str | None,
+    bearer_token: str | None,
+    extra_headers: dict[str, str],
+    http_timeout_s: float,
+) -> dict[str, Any]:
+    target_url = str(step.get("target_url") or "")
+    if _is_external_url(target_url):
+        try:
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        except Exception:  # noqa: BLE001
+            pass
+    await _dom_click_optional_text_targets(page, step.get("text_targets") or [], timeout_ms)
+    await _dom_wait_after_provider_change(page, timeout_ms)
+
+    token = await _dom_find_slack_app_config_token(page, step, timeout_ms)
+    if not token and interactive_admin:
+        await _wait_for_interactive_admin(
+            str(step.get("id") or "slack_app_config_token"),
+            str(
+                step.get("human_reason")
+                or "Generate a Slack app configuration token, then continue."
+            ),
+        )
+        token = await _dom_find_slack_app_config_token(page, step, timeout_ms)
+    if not token and not admin_approved:
+        return _dom_step_result(
+            step,
+            "waiting",
+            (
+                "Slack app configuration token is not visible yet. Sign in to "
+                "api.slack.com, generate the token, then rerun the browser agent."
+            ),
+        )
+    if not token:
+        return _dom_step_result(
+            step,
+            "blocked",
+            "Slack app configuration token was not visible in the admin browser.",
+        )
+
+    endpoint = _slack_app_config_token_endpoint(gateway_api_base, step)
+    if endpoint is None:
+        return _dom_step_result(
+            step,
+            "blocked",
+            "Gateway endpoint for Slack app configuration token handoff is missing.",
+        )
+    payload, http_status, submit_error = await _submit_slack_app_config_token(
+        endpoint=endpoint,
+        token=token,
+        bearer_token=bearer_token,
+        extra_headers=extra_headers,
+        timeout_s=http_timeout_s,
+    )
+    if submit_error:
+        result = _dom_step_result(
+            step,
+            "failed",
+            f"Slack app configuration token handoff failed: {submit_error}.",
+        )
+        result["endpoint"] = endpoint
+        result["http_status"] = http_status
+        return result
+    install_url = _slack_install_url_from_payload(payload)
+    install_opened = False
+    if _is_external_url(install_url):
+        try:
+            await page.goto(str(install_url), wait_until="domcontentloaded", timeout=timeout_ms)
+            install_opened = True
+        except Exception:  # noqa: BLE001
+            install_opened = False
+    status = "waiting" if install_url else "completed"
+    detail = (
+        "Slack app was created through the gateway; OAuth approval is open."
+        if install_opened
+        else "Slack app was created through the gateway; OAuth approval is ready."
+        if install_url
+        else "Slack app configuration token was accepted by the gateway."
+    )
+    result = _dom_step_result(step, status, detail)
+    result["endpoint"] = endpoint
+    result["http_status"] = http_status
+    result["install_url_opened"] = install_opened
+    return result
+
+
+async def _dom_click_optional_text_targets(
+    page: Any,
+    text_targets: list[Any],
+    timeout_ms: int,
+) -> bool:
+    bounded_timeout = min(timeout_ms, 5000)
+    for text in text_targets:
+        candidate = str(text).strip()
+        if not candidate:
+            continue
+        try:
+            await _first_locator(
+                page.get_by_text(re.compile(re.escape(candidate), re.I))
+            ).click(timeout=bounded_timeout)
+            return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
+async def _dom_wait_after_provider_change(page: Any, timeout_ms: int) -> None:
+    try:
+        await page.wait_for_load_state("networkidle", timeout=min(timeout_ms, 5000))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await page.wait_for_timeout(500)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _dom_find_slack_app_config_token(
+    page: Any,
+    step: dict[str, Any],
+    timeout_ms: int,
+) -> str | None:
+    texts: list[str] = []
+    selectors = [
+        str(selector)
+        for selector in (step.get("token_selectors") or step.get("selectors") or [])
+        if str(selector).strip()
+    ]
+    for selector in selectors:
+        locator = page.locator(selector)
+        try:
+            selected_texts = await locator.all_text_contents(timeout=min(timeout_ms, 5000))
+        except TypeError:
+            try:
+                selected_texts = await locator.all_text_contents()
+            except Exception:  # noqa: BLE001
+                selected_texts = []
+        except Exception:  # noqa: BLE001
+            selected_texts = []
+        texts.extend(str(text) for text in selected_texts if str(text).strip())
+        try:
+            values = await locator.evaluate_all(
+                "(els) => els.map((el) => el.value || el.textContent || '').filter(Boolean)"
+            )
+        except Exception:  # noqa: BLE001
+            values = []
+        if isinstance(values, list):
+            texts.extend(str(value) for value in values if str(value).strip())
+    try:
+        values = await page.evaluate(
+            "() => Array.from(document.querySelectorAll('input, textarea, code, pre'))"
+            ".map((el) => el.value || el.textContent || '').filter(Boolean)"
+        )
+    except Exception:  # noqa: BLE001
+        values = []
+    if isinstance(values, list):
+        texts.extend(str(value) for value in values if str(value).strip())
+    for text in texts:
+        token = _extract_slack_app_config_token(text)
+        if token:
+            return token
+    return None
+
+
+def _extract_slack_app_config_token(text: str) -> str | None:
+    match = _SLACK_APP_CONFIG_TOKEN_RE.search(text)
+    return match.group(0) if match else None
+
+
+def _slack_app_config_token_endpoint(
+    gateway_api_base: str | None,
+    step: dict[str, Any],
+) -> str | None:
+    if not gateway_api_base:
+        return None
+    path = str(
+        step.get("gateway_finalize_path")
+        or "/platform/onboarding/sources/slack/rehearsal/browser-agent/configuration"
+    )
+    return urljoin(gateway_api_base.rstrip("/") + "/", path.lstrip("/"))
+
+
+async def _submit_slack_app_config_token(
+    *,
+    endpoint: str,
+    token: str,
+    bearer_token: str | None,
+    extra_headers: dict[str, str],
+    timeout_s: float,
+) -> tuple[dict[str, Any], int | None, str | None]:
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        **extra_headers,
+    }
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            response = await client.post(
+                endpoint,
+                json={"inputs": {"slack_app_config_token": token}},
+                headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        return {}, None, type(exc).__name__
+    payload: dict[str, Any] = {}
+    try:
+        parsed = response.json()
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        payload = parsed
+    if response.status_code >= 400:
+        error_name = "gateway_error"
+        detail = payload.get("detail")
+        if isinstance(detail, dict) and isinstance(detail.get("error"), str):
+            error_name = detail["error"]
+        elif isinstance(payload.get("error"), str):
+            error_name = str(payload["error"])
+        return payload, response.status_code, error_name
+    return payload, response.status_code, None
+
+
+def _slack_install_url_from_payload(payload: dict[str, Any]) -> str | None:
+    for candidate in (
+        payload.get("install_url"),
+        (payload.get("auto_connect") or {}).get("install_url")
+        if isinstance(payload.get("auto_connect"), dict)
+        else None,
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
 
 
 def _dom_generate_refs(

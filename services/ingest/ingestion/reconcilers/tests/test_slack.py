@@ -96,6 +96,18 @@ def _stub_client(monkeypatch, fake):
     monkeypatch.setattr(sl_rec, "_open_slack_client", fake_open)
 
 
+def _stub_user_client(monkeypatch, fake):
+    opened = {"count": 0}
+
+    async def fake_open(install, ident):
+        opened["count"] += 1
+        async def close(): return None
+        return fake, close
+
+    monkeypatch.setattr(sl_rec, "_open_slack_user_client", fake_open)
+    return opened
+
+
 def _wire_pool(monkeypatch, pool):
     monkeypatch.setattr(sl_rec, "_pool_provider", pool)
 
@@ -130,6 +142,33 @@ async def test_reshares_when_newer_messages(monkeypatch):
     assert rs.parent_shard_id == sid
     assert rs.shard.recency_score == RESHARE_RECENCY_SCORE
     assert rs.shard.shard_identifier["gap_baseline_ts"] == "1700000.999"
+
+
+async def test_user_token_channel_gap_uses_user_client(monkeypatch):
+    sid = uuid4()
+    s = _shard(shard_id=sid)
+    s._f["shard_identifier"]["consenting_user_id"] = "U_ALICE"
+    s._f["shard_identifier"]["channel_type"] = "public_channel"
+    s._f["shard_identifier"]["base_url"] = "https://slack.test/api"
+    pool = _FakePool(install=_install())
+    bot_fake = _FakeClient(newer=[])
+    user_fake = _FakeClient(newer=[{"ts": "1800000.000"}])
+    _stub_state(monkeypatch, {
+        str(sid): {"newest_seen_ts": "1700000.999"},
+    })
+    _stub_client(monkeypatch, bot_fake)
+    opened = _stub_user_client(monkeypatch, user_fake)
+    _wire_pool(monkeypatch, pool)
+
+    decision = await reconcile_slack([s], _run())
+
+    assert decision.has_gaps is True
+    assert opened["count"] == 1
+    assert bot_fake.calls == 0
+    gap = decision.new_shards[0].shard.shard_identifier
+    assert gap["consenting_user_id"] == "U_ALICE"
+    assert gap["channel_type"] == "public_channel"
+    assert gap["base_url"] == "https://slack.test/api"
 
 
 async def test_resharded_failed_excluded(monkeypatch):

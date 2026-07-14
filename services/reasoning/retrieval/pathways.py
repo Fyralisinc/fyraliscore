@@ -52,13 +52,20 @@ from lib.shared.types import (
     ObservationRow,
     ResourceRow,
 )
+from services.domain.models.read_shapes import (
+    MODEL_ROW_SELECT_COLS,
+    MODEL_ROW_SELECT_SQL,
+    hydrate_model_row,
+)
+from services.domain.models.semantic_terms import derive_query_semantic_terms
+from services.reasoning.retrieval.read_fanout import ReadFanoutBudget
 
 
 # ---------------------------------------------------------------------
 # Constants + types
 # ---------------------------------------------------------------------
 
-PathwayName = Literal["A", "B", "C", "D", "G"]
+PathwayName = Literal["A", "B", "C", "D", "G", "L"]
 
 _DEFAULT_K_SEMANTIC = 40
 _DEFAULT_TEMPORAL_WINDOW_DAYS = 7
@@ -70,6 +77,7 @@ _STRUCTURAL_MAX_SCOPE_ENTITY_FILTERS = 64
 _TEMPORAL_MAX_OBSERVATIONS = 300
 _PATTERN_MAX_INSTANCES = 200
 _TAG_RESCUE_LIMIT = 80
+_SEMANTIC_TERMS_LIMIT = 80
 _DEFAULT_EDGE_MAX_HOPS = 2
 _EDGE_MAX_MODELS = 120
 _EDGE_TRAVERSAL_KINDS = (
@@ -92,19 +100,56 @@ _EDGE_TRAVERSAL_KINDS = (
 )
 _TAGIFY_RE = re.compile(r"[^a-z0-9_]+")
 _REPRESENTATION_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("progress_signal", ("started", "picked up", "raised", "opened", "merged", "shipped", "completed", "pr", "pull request")),
+    (
+        "progress_signal",
+        (
+            "started",
+            "picked up",
+            "raised",
+            "opened",
+            "merged",
+            "shipped",
+            "completed",
+            "pr",
+            "pull request",
+        ),
+    ),
     ("review_loop", ("review", "feedback", "comment", "approval", "approved")),
-    ("delivery_risk", ("risk", "blocked", "blocker", "stalled", "slip", "delay", "missing")),
-    ("coordination_debt", ("handoff", "waiting", "unclear", "owner", "follow up", "follow-up")),
+    (
+        "delivery_risk",
+        ("risk", "blocked", "blocker", "stalled", "slip", "delay", "missing"),
+    ),
+    (
+        "coordination_debt",
+        ("handoff", "waiting", "unclear", "owner", "follow up", "follow-up"),
+    ),
     ("deployment_activity", ("deploy", "release", "rollback", "staging", "production")),
-    ("finance_flow", ("invoice", "bill", "payment", "vendor", "runway", "budget", "transaction")),
-    ("operational_churn", ("alert", "latency", "error", "aws", "lambda", "incident", "disk", "5xx")),
-    ("decision_pressure", ("decision", "revisited", "approved", "rejected", "exception")),
-    ("contextual_recurrence", ("repeat", "repeated", "recurring", "cadence", "again", "same pattern")),
+    (
+        "finance_flow",
+        ("invoice", "bill", "payment", "vendor", "runway", "budget", "transaction"),
+    ),
+    (
+        "operational_churn",
+        ("alert", "latency", "error", "aws", "lambda", "incident", "disk", "5xx"),
+    ),
+    (
+        "decision_pressure",
+        ("decision", "revisited", "approved", "rejected", "exception"),
+    ),
+    (
+        "contextual_recurrence",
+        ("repeat", "repeated", "recurring", "cadence", "again", "same pattern"),
+    ),
     ("source_code", ("github", "gitlab", "jira")),
     ("source_chat", ("slack", "telegram", "discord", "signal")),
-    ("source_docs", ("notion", "drive", "gmail", "calendar", "fireflies", "miro", "figma")),
-    ("source_finance", ("quickbooks", "ramp", "brex", "mercury", "deel", "carta", "gusto")),
+    (
+        "source_docs",
+        ("notion", "drive", "gmail", "calendar", "fireflies", "miro", "figma"),
+    ),
+    (
+        "source_finance",
+        ("quickbooks", "ramp", "brex", "mercury", "deel", "carta", "gusto"),
+    ),
     ("source_observability", ("aws", "grafana", "cloudwatch")),
     ("source_people", ("ashby", "hibob", "linkedin")),
 )
@@ -112,6 +157,20 @@ _REPRESENTATION_TAG_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 class RetrievalPathwayError(CompanyOSError):
     default_code = "retrieval_pathway_error"
+
+
+@dataclass(frozen=True)
+class _SidecarFanoutRows:
+    rows: list[asyncpg.Record]
+    fanout_chunks: int = 0
+    deferred_chunks: int = 0
+
+
+@dataclass(frozen=True)
+class _PathwayBExactCandidate:
+    id: UUID
+    activation: float
+    embedding: list[float] | None
 
 
 # Retrieval pathway Prometheus families (exposed by the worker /metrics).
@@ -156,60 +215,8 @@ def _append_timing(
     _INNER_DURATION.observe(elapsed_ms / 1000.0, stage=stage)
 
 
-# ModelRow SELECT columns must match models/repo.py._SELECT_COLS exactly
-# so that hydrated rows share shape. We copy the list verbatim — a
-# deliberate duplication (deviation (b)) noted in the BUILD-LOG; the
-# public ModelsRepo API does not yet expose a raw SQL `retrieve_by_...`
-# that returns ModelRow by scope, so retrieval composes its own queries
-# against the columns list. Wave 5 could refactor this into a thin
-# public method on ModelsRepo.
-_MODEL_SELECT_COLS = (
-    "id",
-    "tenant_id",
-    "born_from_event_id",
-    "proposition",
-    '"natural" AS natural',
-    "embedding",
-    "scope_actors",
-    "scope_entities",
-    "scope_temporal",
-    "confidence",
-    "activation",
-    "falsifier",
-    "signal_readings",
-    "reading_contestable",
-    "supporting_event_ids",
-    "supporting_model_ids",
-    "evidential_weight",
-    "status",
-    "archived_at",
-    "archive_reason",
-    "created_at",
-    "last_retrieved_at",
-    "retrieval_count",
-    "evaluate_at",
-    "resolution_criteria",
-    "contributing_models",
-    "visible_to_subjects",
-    "proposition_kind",
-    "claim_role",
-    "abstraction_level",
-    "time_mode",
-    "modality",
-    "polarity",
-    "domain_tags",
-    "memory_grammar_version",
-    "confirmed_count",
-    "contested_count",
-    "last_confirmed_at",
-    "confidence_at_assertion",
-    "resolved_at",
-    "resolution_outcome",
-    "activation_coefficient",
-    "target_actor_id",
-    "caused_act_change_id",
-)
-_MODEL_SELECT_SQL = ", ".join(_MODEL_SELECT_COLS)
+_MODEL_SELECT_COLS = MODEL_ROW_SELECT_COLS
+_MODEL_SELECT_SQL = MODEL_ROW_SELECT_SQL
 
 _OBS_SELECT_COLS = (
     "id",
@@ -263,6 +270,16 @@ class PathwayResult:
         return [m.id for m in self.models]
 
 
+@dataclass(frozen=True, slots=True)
+class ModelCandidateHit:
+    """Lightweight model candidate before full ModelRow hydration."""
+
+    model_id: UUID
+    activation: float = 0.0
+    match_count: int = 0
+    first_rank: int = 10_000
+
+
 # ---------------------------------------------------------------------
 # Row hydration helpers
 #
@@ -274,44 +291,58 @@ class PathwayResult:
 
 
 def _hydrate_model(record: asyncpg.Record) -> ModelRow:
-    raw = dict(record)
-    for key in list(raw.keys()):
-        if str(key).startswith("_"):
-            raw.pop(key, None)
-    for key in (
-        "proposition",
-        "scope_entities",
-        "scope_temporal",
-        "falsifier",
-        "signal_readings",
-        "resolution_criteria",
-    ):
-        v = raw.get(key)
-        if isinstance(v, (bytes, bytearray)):
-            v = v.decode()
-        if isinstance(v, str):
-            try:
-                raw[key] = json.loads(v)
-            except json.JSONDecodeError:
-                pass
-    emb = raw.get("embedding")
-    if emb is not None and not isinstance(emb, list):
-        # pgvector values come back as string literals like "[0.1, 0.2, ...]"
-        # when no vector codec is registered on the pool. Parse them before
-        # passing into ModelRow / ObservationRow validators.
-        if isinstance(emb, (bytes, bytearray)):
-            emb = emb.decode()
-        if isinstance(emb, str):
-            try:
-                raw["embedding"] = json.loads(emb)
-            except (json.JSONDecodeError, ValueError):
-                raw["embedding"] = None
-        else:
-            try:
-                raw["embedding"] = [float(x) for x in emb]
-            except (TypeError, ValueError):
-                raw["embedding"] = None
-    return ModelRow.model_validate(raw)
+    return hydrate_model_row(
+        record,
+        drop_internal_fields=True,
+        null_invalid_embedding=True,
+    )
+
+
+async def hydrate_active_models_by_ids(
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    model_ids: Sequence[UUID],
+    *,
+    notes: dict[str, Any] | None = None,
+    bucket: str = "models",
+) -> list[ModelRow]:
+    ordered_ids = [model_id for model_id in model_ids if model_id is not None]
+    if not ordered_ids:
+        return []
+    rows = await conn.fetch(
+        f"""
+        SELECT {_MODEL_SELECT_SQL}
+        FROM models
+        WHERE tenant_id = $1
+          AND status = 'active'
+          AND id = ANY($2::uuid[])
+        """,
+        tenant_id,
+        ordered_ids,
+    )
+    hydration_notes = notes if notes is not None else {}
+    models = _hydrate_many(rows, _hydrate_model, hydration_notes, bucket)
+    by_id = {model.id: model for model in models}
+    return [by_id[model_id] for model_id in ordered_ids if model_id in by_id]
+
+
+def _candidate_hits_from_rows(
+    rows: Sequence[asyncpg.Record],
+    *,
+    match_key: str,
+    first_rank_key: str,
+) -> list[ModelCandidateHit]:
+    hits: list[ModelCandidateHit] = []
+    for index, row in enumerate(rows, start=1):
+        hits.append(
+            ModelCandidateHit(
+                model_id=row["model_id"],
+                activation=float(row["activation"] or 0.0),
+                match_count=int(row[match_key] or 0),
+                first_rank=int(row[first_rank_key] or index),
+            )
+        )
+    return hits
 
 
 def _model_temporally_valid(model: ModelRow, *, now: datetime | None = None) -> bool:
@@ -421,6 +452,27 @@ def _hydrate_decision(record: asyncpg.Record) -> DecisionRow:
 
 def _jsonb(value: Any) -> str:
     return json.dumps(value, sort_keys=True, default=str)
+
+
+def _json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode()
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
+def _record_get(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except (KeyError, TypeError, IndexError):
+        return getattr(row, key, None)
 
 
 def _tagify(value: Any) -> str:
@@ -850,50 +902,65 @@ async def _fetch_pathway_a_entity_sidecar_rows(
 ) -> list[asyncpg.Record]:
     if not entity_ids:
         return []
-    rows: list[asyncpg.Record] = []
     per_seed_cap = max(1, int(per_seed_limit))
-    for entity_type, entity_id, seed_order, seed_priority in zip(
-        entity_types,
-        entity_ids,
-        entity_orders,
-        entity_priorities,
-        strict=False,
-    ):
-        model_id_rows = await conn.fetch(
-            """
-            SELECT model_id
-            FROM model_scope_entities
-            WHERE tenant_id = $1
-              AND entity_type = $2
-              AND entity_id = $3
-            """,
-            tenant_id,
-            str(entity_type),
-            entity_id,
-        )
-        model_ids = [row["model_id"] for row in model_id_rows]
-        if not model_ids:
-            continue
-        seed_rows = await conn.fetch(
-            f"""
-            SELECT $2::int AS _seed_priority,
-                   $3::int AS _seed_order,
-                   0::int AS _local_rank,
-                   {_MODEL_SELECT_SQL}
+    rows = await conn.fetch(
+        f"""
+        WITH seeds AS MATERIALIZED (
+          SELECT seed.entity_type::text,
+                 seed.entity_id::uuid,
+                 seed.seed_order::int,
+                 seed.seed_priority::int
+          FROM unnest(
+            $2::text[],
+            $3::uuid[],
+            $4::int[],
+            $5::int[]
+          ) AS seed(entity_type, entity_id, seed_order, seed_priority)
+        ),
+        ranked AS MATERIALIZED (
+          SELECT seeds.seed_priority AS _seed_priority,
+                 seeds.seed_order AS _seed_order,
+                 (
+                   row_number() OVER (
+                     PARTITION BY seeds.seed_order
+                     ORDER BY model_rows.activation DESC,
+                              model_rows.created_at DESC,
+                              model_rows.id
+                   ) - 1
+                 )::int AS _local_rank,
+                 model_rows.*
+          FROM seeds
+          JOIN model_scope_entities mse
+            ON mse.tenant_id = $1
+           AND mse.entity_type = seeds.entity_type
+           AND mse.entity_id = seeds.entity_id
+          JOIN LATERAL (
+            SELECT {_MODEL_SELECT_SQL}
             FROM models
-            WHERE tenant_id = $1
-              AND status = 'active'
-              AND id = ANY($4::uuid[])
-            ORDER BY activation DESC, created_at DESC
-            LIMIT $5
-            """,
-            tenant_id,
-            int(seed_priority),
-            int(seed_order),
-            model_ids,
-            per_seed_cap,
+            WHERE models.id = mse.model_id
+              AND models.tenant_id = $1
+              AND models.status = 'active'
+            LIMIT 1
+          ) model_rows ON TRUE
         )
-        rows.extend(seed_rows)
+        SELECT *
+        FROM ranked
+        WHERE _local_rank < $6
+        ORDER BY _seed_priority ASC,
+                 _local_rank ASC,
+                 _seed_order ASC,
+                 activation DESC,
+                 id ASC
+        LIMIT $7
+        """,
+        tenant_id,
+        [str(entity_type) for entity_type in entity_types],
+        list(entity_ids),
+        [int(order) for order in entity_orders],
+        [int(priority) for priority in entity_priorities],
+        per_seed_cap,
+        max(1, int(global_limit)),
+    )
     return _rank_sidecar_records(rows, limit=global_limit)
 
 
@@ -908,40 +975,55 @@ async def _fetch_pathway_a_actor_sidecar_rows(
 ) -> list[asyncpg.Record]:
     if not actor_ids:
         return []
-    rows: list[asyncpg.Record] = []
     per_seed_cap = max(1, int(per_seed_limit))
-    for actor_id, seed_order in zip(actor_ids, actor_orders, strict=False):
-        model_id_rows = await conn.fetch(
-            """
-            SELECT model_id
-            FROM model_scope_actors
-            WHERE tenant_id = $1
-              AND actor_id = $2
-            """,
-            tenant_id,
-            actor_id,
-        )
-        model_ids = [row["model_id"] for row in model_id_rows]
-        if not model_ids:
-            continue
-        seed_rows = await conn.fetch(
-            f"""
-            SELECT $2::int AS _seed_order,
-                   0::int AS _local_rank,
-                   {_MODEL_SELECT_SQL}
+    rows = await conn.fetch(
+        f"""
+        WITH seeds AS MATERIALIZED (
+          SELECT seed.actor_id::uuid,
+                 seed.seed_order::int
+          FROM unnest($2::uuid[], $3::int[])
+            AS seed(actor_id, seed_order)
+        ),
+        ranked AS MATERIALIZED (
+          SELECT 1::int AS _seed_priority,
+                 seeds.seed_order AS _seed_order,
+                 (
+                   row_number() OVER (
+                     PARTITION BY seeds.seed_order
+                     ORDER BY model_rows.activation DESC,
+                              model_rows.created_at DESC,
+                              model_rows.id
+                   ) - 1
+                 )::int AS _local_rank,
+                 model_rows.*
+          FROM seeds
+          JOIN model_scope_actors msa
+            ON msa.tenant_id = $1
+           AND msa.actor_id = seeds.actor_id
+          JOIN LATERAL (
+            SELECT {_MODEL_SELECT_SQL}
             FROM models
-            WHERE tenant_id = $1
-              AND status = 'active'
-              AND id = ANY($3::uuid[])
-            ORDER BY activation DESC, created_at DESC
-            LIMIT $4
-            """,
-            tenant_id,
-            int(seed_order),
-            model_ids,
-            per_seed_cap,
+            WHERE models.id = msa.model_id
+              AND models.tenant_id = $1
+              AND models.status = 'active'
+            LIMIT 1
+          ) model_rows ON TRUE
         )
-        rows.extend(seed_rows)
+        SELECT *
+        FROM ranked
+        WHERE _local_rank < $4
+        ORDER BY _local_rank ASC,
+                 _seed_order ASC,
+                 activation DESC,
+                 id ASC
+        LIMIT $5
+        """,
+        tenant_id,
+        list(actor_ids),
+        [int(order) for order in actor_orders],
+        per_seed_cap,
+        max(1, int(global_limit)),
+    )
     ranked = sorted(
         rows,
         key=lambda row: (
@@ -957,6 +1039,8 @@ async def _fetch_pathway_a_actor_sidecar_rows(
 async def _fetch_pathway_a_entity_sidecar_rows_fanout(
     read_pool: asyncpg.Pool,
     *,
+    fallback_conn: asyncpg.Connection | None = None,
+    read_fanout_budget: ReadFanoutBudget | None = None,
     tenant_id: UUID,
     entity_types: Sequence[str],
     entity_ids: Sequence[UUID],
@@ -965,80 +1049,258 @@ async def _fetch_pathway_a_entity_sidecar_rows_fanout(
     per_seed_limit: int,
     global_limit: int,
     chunk_size: int,
-) -> list[asyncpg.Record]:
+) -> _SidecarFanoutRows:
     type_chunks = _chunked(entity_types, chunk_size)
     id_chunks = _chunked(entity_ids, chunk_size)
     order_chunks = _chunked(entity_orders, chunk_size)
     priority_chunks = _chunked(entity_priorities, chunk_size)
+    chunk_args = list(zip(type_chunks, id_chunks, order_chunks, priority_chunks))
 
     async def fetch_chunk(
+        chunk_index: int,
         types: list[str],
         ids: list[UUID],
         orders: list[int],
         priorities: list[int],
-    ) -> list[asyncpg.Record]:
+    ) -> tuple[str, int, list[asyncpg.Record]]:
+        if read_fanout_budget is not None:
+            async with read_fanout_budget.connection_if_available() as fanout_conn:
+                if fanout_conn is None:
+                    return ("deferred", chunk_index, [])
+                return (
+                    "fanout",
+                    chunk_index,
+                    await _fetch_pathway_a_entity_sidecar_rows(
+                        fanout_conn,
+                        tenant_id=tenant_id,
+                        entity_types=types,
+                        entity_ids=ids,
+                        entity_orders=orders,
+                        entity_priorities=priorities,
+                        per_seed_limit=per_seed_limit,
+                        global_limit=min(
+                            global_limit,
+                            per_seed_limit * max(1, len(ids)),
+                        ),
+                    ),
+                )
         async with read_pool.acquire() as fanout_conn:
-            return await _fetch_pathway_a_entity_sidecar_rows(
-                fanout_conn,
-                tenant_id=tenant_id,
-                entity_types=types,
-                entity_ids=ids,
-                entity_orders=orders,
-                entity_priorities=priorities,
-                per_seed_limit=per_seed_limit,
-                global_limit=min(global_limit, per_seed_limit * max(1, len(ids))),
+            return (
+                "fanout",
+                chunk_index,
+                await _fetch_pathway_a_entity_sidecar_rows(
+                    fanout_conn,
+                    tenant_id=tenant_id,
+                    entity_types=types,
+                    entity_ids=ids,
+                    entity_orders=orders,
+                    entity_priorities=priorities,
+                    per_seed_limit=per_seed_limit,
+                    global_limit=min(global_limit, per_seed_limit * max(1, len(ids))),
+                ),
             )
 
-    chunks = await asyncio.gather(
+    chunk_results = await asyncio.gather(
         *[
-            fetch_chunk(types, ids, orders, priorities)
-            for types, ids, orders, priorities in zip(
-                type_chunks,
-                id_chunks,
-                order_chunks,
-                priority_chunks,
-            )
+            fetch_chunk(chunk_index, types, ids, orders, priorities)
+            for chunk_index, (types, ids, orders, priorities) in enumerate(chunk_args)
         ]
     )
-    return _rank_sidecar_records(
-        [row for chunk in chunks for row in chunk],
-        limit=global_limit,
+
+    rows: list[asyncpg.Record] = []
+    deferred_indices: list[int] = []
+    fanout_chunks = 0
+    for status, chunk_index, chunk_rows in chunk_results:
+        if status == "deferred":
+            deferred_indices.append(chunk_index)
+            continue
+        fanout_chunks += 1
+        rows.extend(chunk_rows)
+
+    for chunk_index in deferred_indices:
+        types, ids, orders, priorities = chunk_args[chunk_index]
+        if fallback_conn is not None:
+            rows.extend(
+                await _fetch_pathway_a_entity_sidecar_rows(
+                    fallback_conn,
+                    tenant_id=tenant_id,
+                    entity_types=types,
+                    entity_ids=ids,
+                    entity_orders=orders,
+                    entity_priorities=priorities,
+                    per_seed_limit=per_seed_limit,
+                    global_limit=min(global_limit, per_seed_limit * max(1, len(ids))),
+                )
+            )
+        elif read_fanout_budget is not None:
+            async with read_fanout_budget.connection() as fanout_conn:
+                rows.extend(
+                    await _fetch_pathway_a_entity_sidecar_rows(
+                        fanout_conn,
+                        tenant_id=tenant_id,
+                        entity_types=types,
+                        entity_ids=ids,
+                        entity_orders=orders,
+                        entity_priorities=priorities,
+                        per_seed_limit=per_seed_limit,
+                        global_limit=min(
+                            global_limit,
+                            per_seed_limit * max(1, len(ids)),
+                        ),
+                    )
+                )
+                fanout_chunks += 1
+        else:
+            async with read_pool.acquire() as fanout_conn:
+                rows.extend(
+                    await _fetch_pathway_a_entity_sidecar_rows(
+                        fanout_conn,
+                        tenant_id=tenant_id,
+                        entity_types=types,
+                        entity_ids=ids,
+                        entity_orders=orders,
+                        entity_priorities=priorities,
+                        per_seed_limit=per_seed_limit,
+                        global_limit=min(
+                            global_limit,
+                            per_seed_limit * max(1, len(ids)),
+                        ),
+                    )
+                )
+                fanout_chunks += 1
+    return _SidecarFanoutRows(
+        rows=_rank_sidecar_records(
+            rows,
+            limit=global_limit,
+        ),
+        fanout_chunks=fanout_chunks,
+        deferred_chunks=len(deferred_indices),
     )
 
 
 async def _fetch_pathway_a_actor_sidecar_rows_fanout(
     read_pool: asyncpg.Pool,
     *,
+    fallback_conn: asyncpg.Connection | None = None,
+    read_fanout_budget: ReadFanoutBudget | None = None,
     tenant_id: UUID,
     actor_ids: Sequence[UUID],
     actor_orders: Sequence[int],
     per_seed_limit: int,
     global_limit: int,
     chunk_size: int,
-) -> list[asyncpg.Record]:
+) -> _SidecarFanoutRows:
     id_chunks = _chunked(actor_ids, chunk_size)
     order_chunks = _chunked(actor_orders, chunk_size)
+    chunk_args = list(zip(id_chunks, order_chunks))
 
     async def fetch_chunk(
+        chunk_index: int,
         ids: list[UUID],
         orders: list[int],
-    ) -> list[asyncpg.Record]:
+    ) -> tuple[str, int, list[asyncpg.Record]]:
+        if read_fanout_budget is not None:
+            async with read_fanout_budget.connection_if_available() as fanout_conn:
+                if fanout_conn is None:
+                    return ("deferred", chunk_index, [])
+                return (
+                    "fanout",
+                    chunk_index,
+                    await _fetch_pathway_a_actor_sidecar_rows(
+                        fanout_conn,
+                        tenant_id=tenant_id,
+                        actor_ids=ids,
+                        actor_orders=orders,
+                        per_seed_limit=per_seed_limit,
+                        global_limit=min(
+                            global_limit,
+                            per_seed_limit * max(1, len(ids)),
+                        ),
+                    ),
+                )
         async with read_pool.acquire() as fanout_conn:
-            return await _fetch_pathway_a_actor_sidecar_rows(
-                fanout_conn,
-                tenant_id=tenant_id,
-                actor_ids=ids,
-                actor_orders=orders,
-                per_seed_limit=per_seed_limit,
-                global_limit=min(global_limit, per_seed_limit * max(1, len(ids))),
+            return (
+                "fanout",
+                chunk_index,
+                await _fetch_pathway_a_actor_sidecar_rows(
+                    fanout_conn,
+                    tenant_id=tenant_id,
+                    actor_ids=ids,
+                    actor_orders=orders,
+                    per_seed_limit=per_seed_limit,
+                    global_limit=min(global_limit, per_seed_limit * max(1, len(ids))),
+                ),
             )
 
-    chunks = await asyncio.gather(
-        *[fetch_chunk(ids, orders) for ids, orders in zip(id_chunks, order_chunks)]
+    chunk_results = await asyncio.gather(
+        *[
+            fetch_chunk(chunk_index, ids, orders)
+            for chunk_index, (ids, orders) in enumerate(chunk_args)
+        ]
     )
-    return _rank_sidecar_records(
-        [row for chunk in chunks for row in chunk],
-        limit=global_limit,
+
+    rows: list[asyncpg.Record] = []
+    deferred_indices: list[int] = []
+    fanout_chunks = 0
+    for status, chunk_index, chunk_rows in chunk_results:
+        if status == "deferred":
+            deferred_indices.append(chunk_index)
+            continue
+        fanout_chunks += 1
+        rows.extend(chunk_rows)
+
+    for chunk_index in deferred_indices:
+        ids, orders = chunk_args[chunk_index]
+        if fallback_conn is not None:
+            rows.extend(
+                await _fetch_pathway_a_actor_sidecar_rows(
+                    fallback_conn,
+                    tenant_id=tenant_id,
+                    actor_ids=ids,
+                    actor_orders=orders,
+                    per_seed_limit=per_seed_limit,
+                    global_limit=min(global_limit, per_seed_limit * max(1, len(ids))),
+                )
+            )
+        elif read_fanout_budget is not None:
+            async with read_fanout_budget.connection() as fanout_conn:
+                rows.extend(
+                    await _fetch_pathway_a_actor_sidecar_rows(
+                        fanout_conn,
+                        tenant_id=tenant_id,
+                        actor_ids=ids,
+                        actor_orders=orders,
+                        per_seed_limit=per_seed_limit,
+                        global_limit=min(
+                            global_limit,
+                            per_seed_limit * max(1, len(ids)),
+                        ),
+                    )
+                )
+                fanout_chunks += 1
+        else:
+            async with read_pool.acquire() as fanout_conn:
+                rows.extend(
+                    await _fetch_pathway_a_actor_sidecar_rows(
+                        fanout_conn,
+                        tenant_id=tenant_id,
+                        actor_ids=ids,
+                        actor_orders=orders,
+                        per_seed_limit=per_seed_limit,
+                        global_limit=min(
+                            global_limit,
+                            per_seed_limit * max(1, len(ids)),
+                        ),
+                    )
+                )
+                fanout_chunks += 1
+    return _SidecarFanoutRows(
+        rows=_rank_sidecar_records(
+            rows,
+            limit=global_limit,
+        ),
+        fanout_chunks=fanout_chunks,
+        deferred_chunks=len(deferred_indices),
     )
 
 
@@ -1139,6 +1401,7 @@ async def _fetch_pathway_a_scoped_models(
     read_fanout_enabled: bool,
     read_fanout_min_seeds: int,
     read_fanout_chunk_size: int,
+    read_fanout_budget: ReadFanoutBudget | None = None,
 ) -> list[ModelRow]:
     models_out: list[ModelRow] = []
     if not scope_entity_filters and not visited_actors:
@@ -1164,6 +1427,17 @@ async def _fetch_pathway_a_scoped_models(
     seen_ids: set[UUID] = set()
     entity_sidecar_rows: list[asyncpg.Record] = []
     actor_sidecar_rows: list[asyncpg.Record] = []
+    sidecar_read_fanout_budget = read_fanout_budget
+    if (
+        sidecar_read_fanout_budget is None
+        and read_pool is not None
+        and read_fanout_enabled
+    ):
+        sidecar_read_fanout_budget = ReadFanoutBudget.from_pool(read_pool)
+    entity_fanout_chunks = 0
+    entity_deferred_chunks = 0
+    actor_fanout_chunks = 0
+    actor_deferred_chunks = 0
     stage_started = time.perf_counter()
     if sidecar_entity_ids:
         if (
@@ -1171,8 +1445,10 @@ async def _fetch_pathway_a_scoped_models(
             and read_fanout_enabled
             and len(sidecar_entity_ids) >= int(read_fanout_min_seeds)
         ):
-            entity_sidecar_rows = await _fetch_pathway_a_entity_sidecar_rows_fanout(
+            entity_fanout = await _fetch_pathway_a_entity_sidecar_rows_fanout(
                 read_pool,
+                fallback_conn=conn,
+                read_fanout_budget=sidecar_read_fanout_budget,
                 tenant_id=tenant_id,
                 entity_types=sidecar_entity_types,
                 entity_ids=sidecar_entity_ids,
@@ -1182,6 +1458,9 @@ async def _fetch_pathway_a_scoped_models(
                 global_limit=_STRUCTURAL_MAX_MODELS,
                 chunk_size=read_fanout_chunk_size,
             )
+            entity_sidecar_rows = entity_fanout.rows
+            entity_fanout_chunks = entity_fanout.fanout_chunks
+            entity_deferred_chunks = entity_fanout.deferred_chunks
         else:
             entity_sidecar_rows = await _fetch_pathway_a_entity_sidecar_rows(
                 conn,
@@ -1206,10 +1485,13 @@ async def _fetch_pathway_a_scoped_models(
             1 for priority in sidecar_entity_priorities if priority == 0
         ),
         per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ENTITY,
-        fanout_used=(
-            read_pool is not None
-            and read_fanout_enabled
-            and len(sidecar_entity_ids) >= int(read_fanout_min_seeds)
+        fanout_used=entity_fanout_chunks > 0,
+        fanout_chunks=entity_fanout_chunks,
+        fanout_deferred_chunks=entity_deferred_chunks,
+        fanout_budget_max=(
+            sidecar_read_fanout_budget.max_concurrency
+            if sidecar_read_fanout_budget is not None
+            else None
         ),
         fanout_chunk_size=read_fanout_chunk_size,
         rows=len(entity_sidecar_rows),
@@ -1223,8 +1505,10 @@ async def _fetch_pathway_a_scoped_models(
             and read_fanout_enabled
             and len(actor_ids) >= int(read_fanout_min_seeds)
         ):
-            actor_sidecar_rows = await _fetch_pathway_a_actor_sidecar_rows_fanout(
+            actor_fanout = await _fetch_pathway_a_actor_sidecar_rows_fanout(
                 read_pool,
+                fallback_conn=conn,
+                read_fanout_budget=sidecar_read_fanout_budget,
                 tenant_id=tenant_id,
                 actor_ids=actor_ids,
                 actor_orders=actor_orders,
@@ -1232,6 +1516,9 @@ async def _fetch_pathway_a_scoped_models(
                 global_limit=_STRUCTURAL_MAX_MODELS,
                 chunk_size=read_fanout_chunk_size,
             )
+            actor_sidecar_rows = actor_fanout.rows
+            actor_fanout_chunks = actor_fanout.fanout_chunks
+            actor_deferred_chunks = actor_fanout.deferred_chunks
         else:
             actor_sidecar_rows = await _fetch_pathway_a_actor_sidecar_rows(
                 conn,
@@ -1251,10 +1538,13 @@ async def _fetch_pathway_a_scoped_models(
         stage_started,
         actors=len(visited_actors),
         per_seed_limit=_STRUCTURAL_MODELS_PER_SCOPE_ACTOR,
-        fanout_used=(
-            read_pool is not None
-            and read_fanout_enabled
-            and len(visited_actors) >= int(read_fanout_min_seeds)
+        fanout_used=actor_fanout_chunks > 0,
+        fanout_chunks=actor_fanout_chunks,
+        fanout_deferred_chunks=actor_deferred_chunks,
+        fanout_budget_max=(
+            sidecar_read_fanout_budget.max_concurrency
+            if sidecar_read_fanout_budget is not None
+            else None
         ),
         fanout_chunk_size=read_fanout_chunk_size,
         rows=len(actor_sidecar_rows),
@@ -1684,25 +1974,9 @@ async def pathway_a_structural(
     read_fanout_enabled: bool = False,
     read_fanout_min_seeds: int = 16,
     read_fanout_chunk_size: int = 8,
+    read_fanout_budget: ReadFanoutBudget | None = None,
 ) -> PathwayResult:
-    """
-    Walk the Acts graph (contributes_to / depends_on / constrained_by /
-    commitment_contributors / customer_commitments) up to `max_hops`
-    from each seed. Collect the touched entity set. Then fetch Models
-    scoped to any of those entities.
-
-    Seed shape: `[{'type': 'commitment', 'id': UUID}, ...]`. Types are
-    one of {commitment, goal, decision, actor, customer_resource,
-    resource}. Unknown types are skipped with a note.
-
-    Returns:
-      - `models`: Models whose `scope_entities` overlaps the touched
-        entity set, or whose `scope_actors` overlaps any actor seed.
-      - `acts`: dict of {goals, commitments, decisions} — every entity
-        encountered during the walk, for assembler use.
-      - `resources`: Customer and Capacity resources touched on the way.
-      - `notes`: hops_executed, seeds_by_type, entities_touched counts.
-    """
+    """Walk structural Acts context from seed entities, then fetch scoped Models."""
     notes: dict[str, Any] = {
         "seeds_by_type": {},
         "hops_executed": 0,
@@ -1778,6 +2052,7 @@ async def pathway_a_structural(
         read_fanout_enabled=read_fanout_enabled,
         read_fanout_min_seeds=read_fanout_min_seeds,
         read_fanout_chunk_size=read_fanout_chunk_size,
+        read_fanout_budget=read_fanout_budget,
     )
 
     notes["entities_touched"] = {
@@ -2029,6 +2304,65 @@ def _pathway_b_rank_exact(
     return models[:k]
 
 
+def _pathway_b_hydrate_exact_candidates(
+    rows: Sequence[asyncpg.Record],
+) -> list[_PathwayBExactCandidate]:
+    candidates: list[_PathwayBExactCandidate] = []
+    for row in rows:
+        embedding = _vector_to_float_list(row.get("embedding"))
+        if embedding is None:
+            continue
+        candidates.append(
+            _PathwayBExactCandidate(
+                id=row["id"],
+                activation=float(row.get("activation") or 0.0),
+                embedding=embedding,
+            )
+        )
+    return candidates
+
+
+def _pathway_b_rank_exact_candidates(
+    candidates: list[_PathwayBExactCandidate],
+    *,
+    vec: Sequence[float],
+    k: int,
+) -> list[UUID]:
+    candidates.sort(
+        key=lambda c: (
+            _cosine_distance(vec, c.embedding),
+            -c.activation,
+            str(c.id),
+        )
+    )
+    return [c.id for c in candidates[:k]]
+
+
+async def _pathway_b_fetch_ranked_models_by_id(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    ids: Sequence[UUID],
+    notes: dict[str, Any],
+    bucket: str,
+) -> list[ModelRow]:
+    if not ids:
+        return []
+    rows = await conn.fetch(
+        f"""
+        SELECT {_MODEL_SELECT_SQL}
+        FROM models
+        WHERE tenant_id = $1
+          AND id = ANY($2::uuid[])
+        """,
+        tenant_id,
+        list(ids),
+    )
+    models = _hydrate_many(rows, _hydrate_model, notes, bucket)
+    by_id = {model.id: model for model in models}
+    return [by_id[model_id] for model_id in ids if model_id in by_id]
+
+
 async def _pathway_b_fetch_scope_exact_fallback(
     conn: asyncpg.Connection,
     *,
@@ -2044,7 +2378,7 @@ async def _pathway_b_fetch_scope_exact_fallback(
         WITH _params AS (
           SELECT $2::vector AS _query_vector, $3::int AS _k
         )
-        SELECT {_MODEL_SELECT_SQL}
+        SELECT id, activation, embedding
         FROM models, _params
         WHERE tenant_id = $1
           AND status = 'active'
@@ -2057,11 +2391,14 @@ async def _pathway_b_fetch_scope_exact_fallback(
         time.perf_counter() - exact_started, strategy="exact_fallback"
     )
     _PGVECTOR_QUERIES.inc(strategy="exact_fallback")
-    exact_models = _hydrate_many(exact_rows, _hydrate_model, notes, "scope_exact_models")
+    exact_models = _hydrate_many(
+        exact_rows, _hydrate_model, notes, "scope_exact_models"
+    )
     models = _pathway_b_rank_exact(exact_models, vec=vec, k=k)
     notes["scope_exact_fallback"] = {
         "hnsw_rows": len(ann_rows),
         "candidate_rows": len(exact_models),
+        "hydrated_rows": len(models),
         "returned": len(models),
     }
     return models
@@ -2077,11 +2414,11 @@ async def _pathway_b_fetch_exact_fallback(
     notes: dict[str, Any],
 ) -> list[ModelRow]:
     exact_rows = await conn.fetch(
-        f"""
+        """
         WITH _params AS (
           SELECT $2::vector AS _query_vector, $3::int AS _k
         )
-        SELECT {_MODEL_SELECT_SQL}
+        SELECT id, activation, embedding
         FROM models, _params
         WHERE tenant_id = $1
           AND status = 'active'
@@ -2090,11 +2427,19 @@ async def _pathway_b_fetch_exact_fallback(
         """,
         *scope.params,
     )
-    exact_models = _hydrate_many(exact_rows, _hydrate_model, notes, "exact_models")
-    models = _pathway_b_rank_exact(exact_models, vec=vec, k=k)
+    candidates = _pathway_b_hydrate_exact_candidates(exact_rows)
+    ranked_ids = _pathway_b_rank_exact_candidates(candidates, vec=vec, k=k)
+    models = await _pathway_b_fetch_ranked_models_by_id(
+        conn,
+        tenant_id=scope.params[0],
+        ids=ranked_ids,
+        notes=notes,
+        bucket="exact_models",
+    )
     notes["exact_fallback"] = {
         "hnsw_rows": len(ann_rows),
-        "candidate_rows": len(exact_models),
+        "candidate_rows": len(candidates),
+        "hydrated_rows": len(models),
         "returned": len(models),
     }
     return models
@@ -2228,6 +2573,8 @@ async def pathway_b_representation_tags(
     *,
     seed_signature: dict[str, Any] | None = None,
     limit: int = _TAG_RESCUE_LIMIT,
+    representation_feature_postings_available: bool | None = None,
+    representation_postings_available: bool | None = None,
 ) -> PathwayResult:
     """Retrieve active models through representation tags and coverage roles."""
     seed_tags = _seed_representation_tags(seed_natural_text, seed_signature)
@@ -2240,33 +2587,222 @@ async def pathway_b_representation_tags(
     if not seed_tags and not coverage_roles:
         return PathwayResult(source_pathway="B", notes={**notes, "reason": "no_tags"})
 
-    rows = await conn.fetch(
-        f"""
-        SELECT {_MODEL_SELECT_SQL},
-               (
-                 CASE WHEN domain_tags && $2::text[] THEN 1 ELSE 0 END
-                 + CASE WHEN coalesce(proposition->'retrieval_tags', '[]'::jsonb) ?| $2::text[] THEN 1 ELSE 0 END
-                 + CASE WHEN coalesce(proposition->'coverage_roles', '[]'::jsonb) ?| $3::text[] THEN 1 ELSE 0 END
-               ) AS _tag_match_rank
-        FROM models
-        WHERE tenant_id = $1
-          AND status = 'active'
-          AND (
-               domain_tags && $2::text[]
-               OR coalesce(proposition->'retrieval_tags', '[]'::jsonb) ?| $2::text[]
-               OR coalesce(proposition->'coverage_roles', '[]'::jsonb) ?| $3::text[]
-          )
-        ORDER BY _tag_match_rank DESC,
-                 activation DESC,
-                 confirmed_count DESC,
-                 created_at DESC
-        LIMIT $4
-        """,
-        tenant_id,
-        seed_tags,
-        coverage_roles,
-        max(1, int(limit)),
-    )
+    if representation_feature_postings_available is None:
+        feature_postings_table = await conn.fetchval(
+            "SELECT to_regclass('public.model_representation_feature_postings')"
+        )
+        representation_feature_postings_available = feature_postings_table is not None
+    if representation_feature_postings_available:
+        per_tag_limit = max(32, min(240, max(1, int(limit)) * 6))
+        notes["representation_postings_index"] = True
+        notes["representation_feature_postings_index"] = True
+        notes["representation_postings_table"] = "model_representation_feature_postings"
+        notes["postings_per_tag_limit"] = per_tag_limit
+        rows = await conn.fetch(
+            f"""
+            WITH query_tags AS MATERIALIZED (
+              SELECT *
+              FROM (
+                SELECT 'domain'::text AS feature_type,
+                       tag::text AS feature,
+                       ord::int AS tag_ord
+                FROM unnest($2::text[]) WITH ORDINALITY AS q(tag, ord)
+
+                UNION ALL
+
+                SELECT 'retrieval'::text AS feature_type,
+                       tag::text AS feature,
+                       ord::int AS tag_ord
+                FROM unnest($2::text[]) WITH ORDINALITY AS q(tag, ord)
+
+                UNION ALL
+
+                SELECT 'coverage'::text AS feature_type,
+                       tag::text AS feature,
+                       (1000 + ord)::int AS tag_ord
+                FROM unnest($3::text[]) WITH ORDINALITY AS q(tag, ord)
+              ) raw
+              WHERE nullif(feature, '') IS NOT NULL
+            ),
+            tag_hits AS MATERIALIZED (
+              SELECT qt.feature_type,
+                     qt.feature,
+                     qt.tag_ord,
+                     hit.model_id
+              FROM query_tags qt
+              CROSS JOIN LATERAL (
+                SELECT post.model_id
+                FROM model_representation_feature_postings post
+                JOIN models m
+                  ON m.id = post.model_id
+                 AND m.tenant_id = $1
+                 AND m.status = 'active'
+                WHERE post.tenant_id = $1
+                  AND post.status = 'active'
+                  AND post.feature_type = qt.feature_type
+                  AND post.feature = qt.feature
+                ORDER BY m.activation DESC,
+                         m.confirmed_count DESC,
+                         m.created_at DESC,
+                         post.model_id
+                LIMIT $4
+              ) hit
+            ),
+            scored AS MATERIALIZED (
+              SELECT model_id,
+                     count(DISTINCT feature_type)::int AS _tag_match_rank,
+                     count(DISTINCT (feature_type, feature))::int AS _tag_match_count,
+                     min(tag_ord)::int AS _first_tag_ord
+              FROM tag_hits
+              GROUP BY model_id
+            )
+            SELECT {_MODEL_SELECT_SQL},
+                   scored._tag_match_rank
+            FROM scored
+            JOIN models
+              ON models.id = scored.model_id
+             AND models.tenant_id = $1
+            WHERE status = 'active'
+            ORDER BY scored._tag_match_rank DESC,
+                     scored._tag_match_count DESC,
+                     scored._first_tag_ord ASC,
+                     activation DESC,
+                     confirmed_count DESC,
+                     created_at DESC
+            LIMIT $5
+            """,
+            tenant_id,
+            seed_tags,
+            coverage_roles,
+            per_tag_limit,
+            max(1, int(limit)),
+        )
+    else:
+        notes["representation_feature_postings_index"] = False
+    if (
+        not representation_feature_postings_available
+        and representation_postings_available is None
+    ):
+        postings_table = await conn.fetchval(
+            "SELECT to_regclass('public.model_representation_tag_postings')"
+        )
+        representation_postings_available = postings_table is not None
+    if (
+        not representation_feature_postings_available
+        and representation_postings_available
+    ):
+        per_tag_limit = max(32, min(240, max(1, int(limit)) * 6))
+        notes["representation_postings_index"] = True
+        notes["representation_postings_table"] = "model_representation_tag_postings"
+        notes["postings_per_tag_limit"] = per_tag_limit
+        rows = await conn.fetch(
+            f"""
+            WITH query_tags AS MATERIALIZED (
+              SELECT *
+              FROM (
+                SELECT 'domain'::text AS tag_type,
+                       tag::text AS tag,
+                       ord::int AS tag_ord
+                FROM unnest($2::text[]) WITH ORDINALITY AS q(tag, ord)
+
+                UNION ALL
+
+                SELECT 'retrieval'::text AS tag_type,
+                       tag::text AS tag,
+                       ord::int AS tag_ord
+                FROM unnest($2::text[]) WITH ORDINALITY AS q(tag, ord)
+
+                UNION ALL
+
+                SELECT 'coverage'::text AS tag_type,
+                       tag::text AS tag,
+                       (1000 + ord)::int AS tag_ord
+                FROM unnest($3::text[]) WITH ORDINALITY AS q(tag, ord)
+              ) raw
+              WHERE nullif(tag, '') IS NOT NULL
+            ),
+            tag_hits AS MATERIALIZED (
+              SELECT qt.tag_type,
+                     qt.tag,
+                     qt.tag_ord,
+                     hit.model_id
+              FROM query_tags qt
+              CROSS JOIN LATERAL (
+                SELECT post.model_id
+                FROM model_representation_tag_postings post
+                JOIN models m
+                  ON m.id = post.model_id
+                 AND m.tenant_id = $1
+                 AND m.status = 'active'
+                WHERE post.tenant_id = $1
+                  AND post.status = 'active'
+                  AND post.tag_type = qt.tag_type
+                  AND post.tag = qt.tag
+                ORDER BY m.activation DESC,
+                         m.confirmed_count DESC,
+                         m.created_at DESC,
+                         post.model_id
+                LIMIT $4
+              ) hit
+            ),
+            scored AS MATERIALIZED (
+              SELECT model_id,
+                     count(DISTINCT tag_type)::int AS _tag_match_rank,
+                     count(DISTINCT (tag_type, tag))::int AS _tag_match_count,
+                     min(tag_ord)::int AS _first_tag_ord
+              FROM tag_hits
+              GROUP BY model_id
+            )
+            SELECT {_MODEL_SELECT_SQL},
+                   scored._tag_match_rank
+            FROM scored
+            JOIN models
+              ON models.id = scored.model_id
+             AND models.tenant_id = $1
+            WHERE status = 'active'
+            ORDER BY scored._tag_match_rank DESC,
+                     scored._tag_match_count DESC,
+                     scored._first_tag_ord ASC,
+                     activation DESC,
+                     confirmed_count DESC,
+                     created_at DESC
+            LIMIT $5
+            """,
+            tenant_id,
+            seed_tags,
+            coverage_roles,
+            per_tag_limit,
+            max(1, int(limit)),
+        )
+    elif not representation_feature_postings_available:
+        notes["representation_postings_index"] = False
+        rows = await conn.fetch(
+            f"""
+            SELECT {_MODEL_SELECT_SQL},
+                   (
+                     CASE WHEN domain_tags && $2::text[] THEN 1 ELSE 0 END
+                     + CASE WHEN coalesce(proposition->'retrieval_tags', '[]'::jsonb) ?| $2::text[] THEN 1 ELSE 0 END
+                     + CASE WHEN coalesce(proposition->'coverage_roles', '[]'::jsonb) ?| $3::text[] THEN 1 ELSE 0 END
+                   ) AS _tag_match_rank
+            FROM models
+            WHERE tenant_id = $1
+              AND status = 'active'
+              AND (
+                   domain_tags && $2::text[]
+                   OR coalesce(proposition->'retrieval_tags', '[]'::jsonb) ?| $2::text[]
+                   OR coalesce(proposition->'coverage_roles', '[]'::jsonb) ?| $3::text[]
+              )
+            ORDER BY _tag_match_rank DESC,
+                     activation DESC,
+                     confirmed_count DESC,
+                     created_at DESC
+            LIMIT $4
+            """,
+            tenant_id,
+            seed_tags,
+            coverage_roles,
+            max(1, int(limit)),
+        )
     models = _hydrate_many(rows, _hydrate_model, notes, "models")
     notes["models_returned"] = len(models)
     return PathwayResult(
@@ -2279,9 +2815,830 @@ async def pathway_b_representation_tags(
     )
 
 
+async def pathway_b_representation_tag_candidates(
+    seed_natural_text: str | None,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    seed_signature: dict[str, Any] | None = None,
+    limit: int = _TAG_RESCUE_LIMIT,
+    representation_feature_postings_available: bool | None = None,
+    representation_postings_available: bool | None = None,
+) -> tuple[list[ModelCandidateHit], dict[str, Any]]:
+    """Retrieve representation-tag candidates without hydrating ModelRows."""
+    seed_tags = _seed_representation_tags(seed_natural_text, seed_signature)
+    coverage_roles = _coverage_roles_from_seed_tags(seed_tags)
+    notes: dict[str, Any] = {
+        "seed_tags": seed_tags,
+        "coverage_roles": coverage_roles,
+        "limit": int(limit),
+        "lightweight_candidates": True,
+    }
+    if not seed_tags and not coverage_roles:
+        notes["reason"] = "no_tags"
+        return [], notes
+
+    if representation_feature_postings_available is None:
+        feature_postings_table = await conn.fetchval(
+            "SELECT to_regclass('public.model_representation_feature_postings')"
+        )
+        representation_feature_postings_available = feature_postings_table is not None
+    if representation_feature_postings_available:
+        per_tag_limit = max(32, min(240, max(1, int(limit)) * 6))
+        notes["representation_postings_index"] = True
+        notes["representation_feature_postings_index"] = True
+        notes["representation_postings_table"] = "model_representation_feature_postings"
+        notes["postings_per_tag_limit"] = per_tag_limit
+        rows = await conn.fetch(
+            """
+            WITH query_tags AS MATERIALIZED (
+              SELECT *
+              FROM (
+                SELECT 'domain'::text AS feature_type,
+                       tag::text AS feature,
+                       ord::int AS tag_ord
+                FROM unnest($2::text[]) WITH ORDINALITY AS q(tag, ord)
+
+                UNION ALL
+
+                SELECT 'retrieval'::text AS feature_type,
+                       tag::text AS feature,
+                       ord::int AS tag_ord
+                FROM unnest($2::text[]) WITH ORDINALITY AS q(tag, ord)
+
+                UNION ALL
+
+                SELECT 'coverage'::text AS feature_type,
+                       tag::text AS feature,
+                       (1000 + ord)::int AS tag_ord
+                FROM unnest($3::text[]) WITH ORDINALITY AS q(tag, ord)
+              ) raw
+              WHERE nullif(feature, '') IS NOT NULL
+            ),
+            tag_hits AS MATERIALIZED (
+              SELECT qt.feature_type,
+                     qt.feature,
+                     qt.tag_ord,
+                     hit.model_id
+              FROM query_tags qt
+              CROSS JOIN LATERAL (
+                SELECT post.model_id
+                FROM model_representation_feature_postings post
+                JOIN models m
+                  ON m.id = post.model_id
+                 AND m.tenant_id = $1
+                 AND m.status = 'active'
+                WHERE post.tenant_id = $1
+                  AND post.status = 'active'
+                  AND post.feature_type = qt.feature_type
+                  AND post.feature = qt.feature
+                ORDER BY m.activation DESC,
+                         m.confirmed_count DESC,
+                         m.created_at DESC,
+                         post.model_id
+                LIMIT $4
+              ) hit
+            ),
+            scored AS MATERIALIZED (
+              SELECT model_id,
+                     count(DISTINCT feature_type)::int AS _tag_match_rank,
+                     count(DISTINCT (feature_type, feature))::int AS _tag_match_count,
+                     min(tag_ord)::int AS _first_tag_ord
+              FROM tag_hits
+              GROUP BY model_id
+            )
+            SELECT scored.model_id,
+                   scored._tag_match_rank,
+                   scored._tag_match_count,
+                   scored._first_tag_ord,
+                   m.activation
+            FROM scored
+            JOIN models m
+              ON m.id = scored.model_id
+             AND m.tenant_id = $1
+             AND m.status = 'active'
+            ORDER BY scored._tag_match_rank DESC,
+                     scored._tag_match_count DESC,
+                     scored._first_tag_ord ASC,
+                     m.activation DESC,
+                     m.confirmed_count DESC,
+                     m.created_at DESC
+            LIMIT $5
+            """,
+            tenant_id,
+            seed_tags,
+            coverage_roles,
+            per_tag_limit,
+            max(1, int(limit)),
+        )
+    else:
+        notes["representation_feature_postings_index"] = False
+    if (
+        not representation_feature_postings_available
+        and representation_postings_available is None
+    ):
+        postings_table = await conn.fetchval(
+            "SELECT to_regclass('public.model_representation_tag_postings')"
+        )
+        representation_postings_available = postings_table is not None
+    if (
+        not representation_feature_postings_available
+        and representation_postings_available
+    ):
+        per_tag_limit = max(32, min(240, max(1, int(limit)) * 6))
+        notes["representation_postings_index"] = True
+        notes["representation_postings_table"] = "model_representation_tag_postings"
+        notes["postings_per_tag_limit"] = per_tag_limit
+        rows = await conn.fetch(
+            """
+            WITH query_tags AS MATERIALIZED (
+              SELECT *
+              FROM (
+                SELECT 'domain'::text AS tag_type,
+                       tag::text AS tag,
+                       ord::int AS tag_ord
+                FROM unnest($2::text[]) WITH ORDINALITY AS q(tag, ord)
+
+                UNION ALL
+
+                SELECT 'retrieval'::text AS tag_type,
+                       tag::text AS tag,
+                       ord::int AS tag_ord
+                FROM unnest($2::text[]) WITH ORDINALITY AS q(tag, ord)
+
+                UNION ALL
+
+                SELECT 'coverage'::text AS tag_type,
+                       tag::text AS tag,
+                       (1000 + ord)::int AS tag_ord
+                FROM unnest($3::text[]) WITH ORDINALITY AS q(tag, ord)
+              ) raw
+              WHERE nullif(tag, '') IS NOT NULL
+            ),
+            tag_hits AS MATERIALIZED (
+              SELECT qt.tag_type,
+                     qt.tag,
+                     qt.tag_ord,
+                     hit.model_id
+              FROM query_tags qt
+              CROSS JOIN LATERAL (
+                SELECT post.model_id
+                FROM model_representation_tag_postings post
+                JOIN models m
+                  ON m.id = post.model_id
+                 AND m.tenant_id = $1
+                 AND m.status = 'active'
+                WHERE post.tenant_id = $1
+                  AND post.status = 'active'
+                  AND post.tag_type = qt.tag_type
+                  AND post.tag = qt.tag
+                ORDER BY m.activation DESC,
+                         m.confirmed_count DESC,
+                         m.created_at DESC,
+                         post.model_id
+                LIMIT $4
+              ) hit
+            ),
+            scored AS MATERIALIZED (
+              SELECT model_id,
+                     count(DISTINCT tag_type)::int AS _tag_match_rank,
+                     count(DISTINCT (tag_type, tag))::int AS _tag_match_count,
+                     min(tag_ord)::int AS _first_tag_ord
+              FROM tag_hits
+              GROUP BY model_id
+            )
+            SELECT scored.model_id,
+                   scored._tag_match_rank,
+                   scored._tag_match_count,
+                   scored._first_tag_ord,
+                   m.activation
+            FROM scored
+            JOIN models m
+              ON m.id = scored.model_id
+             AND m.tenant_id = $1
+             AND m.status = 'active'
+            ORDER BY scored._tag_match_rank DESC,
+                     scored._tag_match_count DESC,
+                     scored._first_tag_ord ASC,
+                     m.activation DESC,
+                     m.confirmed_count DESC,
+                     m.created_at DESC
+            LIMIT $5
+            """,
+            tenant_id,
+            seed_tags,
+            coverage_roles,
+            per_tag_limit,
+            max(1, int(limit)),
+        )
+    elif not representation_feature_postings_available:
+        notes["representation_postings_index"] = False
+        rows = await conn.fetch(
+            """
+            SELECT models.id AS model_id,
+                   models.activation,
+                   (
+                     CASE WHEN domain_tags && $2::text[] THEN 1 ELSE 0 END
+                     + CASE WHEN coalesce(proposition->'retrieval_tags', '[]'::jsonb) ?| $2::text[] THEN 1 ELSE 0 END
+                     + CASE WHEN coalesce(proposition->'coverage_roles', '[]'::jsonb) ?| $3::text[] THEN 1 ELSE 0 END
+                   ) AS _tag_match_rank,
+                   1::int AS _tag_match_count,
+                   1::int AS _first_tag_ord
+            FROM models
+            WHERE tenant_id = $1
+              AND status = 'active'
+              AND (
+                   domain_tags && $2::text[]
+                   OR coalesce(proposition->'retrieval_tags', '[]'::jsonb) ?| $2::text[]
+                   OR coalesce(proposition->'coverage_roles', '[]'::jsonb) ?| $3::text[]
+              )
+            ORDER BY _tag_match_rank DESC,
+                     activation DESC,
+                     confirmed_count DESC,
+                     created_at DESC
+            LIMIT $4
+            """,
+            tenant_id,
+            seed_tags,
+            coverage_roles,
+            max(1, int(limit)),
+        )
+    hits = _candidate_hits_from_rows(
+        rows,
+        match_key="_tag_match_count",
+        first_rank_key="_first_tag_ord",
+    )
+    notes["models_returned"] = len(hits)
+    return hits, notes
+
+
+# =====================================================================
+# Pathway L — Lexical semantic-term overlap
+# =====================================================================
+
+
+async def pathway_l_semantic_terms(
+    seed_natural_text: str | None,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    seed_signature: dict[str, Any] | None = None,
+    scope_actors: Sequence[UUID] | None = None,
+    scope_entities: Sequence[dict[str, Any]] | None = None,
+    limit: int = _SEMANTIC_TERMS_LIMIT,
+    semantic_feature_postings_available: bool | None = None,
+    semantic_postings_available: bool | None = None,
+    semantic_postings_status_column: bool | None = None,
+) -> PathwayResult:
+    """Retrieve active Models through model-specific semantic terms."""
+    query_terms = derive_query_semantic_terms(
+        seed_natural_text,
+        seed_signature=seed_signature,
+    )
+    notes: dict[str, Any] = {
+        "query_terms": query_terms,
+        "limit": int(limit),
+    }
+    if not query_terms:
+        return PathwayResult(source_pathway="L", notes={**notes, "reason": "no_terms"})
+
+    actor_list = _pathway_b_actor_scope(scope_actors)
+    entity_list = _pathway_b_entity_scope(scope_entities)
+    params: list[Any] = [tenant_id, query_terms, max(1, int(limit))]
+    scope_clauses: list[str] = []
+    if actor_list:
+        params.append(actor_list)
+        scope_clauses.append(f"scope_actors && ${len(params)}::uuid[]")
+    for entity in entity_list:
+        params.append(_jsonb([entity]))
+        scope_clauses.append(f"scope_entities @> ${len(params)}::jsonb")
+    notes["scope_filter"] = {
+        "event_actors_count": len(actor_list),
+        "event_entities_count": len(entity_list),
+        "applied": bool(scope_clauses),
+    }
+    scope_sql = ""
+    if scope_clauses:
+        scope_sql = "  AND (" + " OR ".join(scope_clauses) + ")\n"
+
+    if semantic_feature_postings_available is None:
+        feature_postings_table = await conn.fetchval(
+            "SELECT to_regclass('public.model_representation_feature_postings')"
+        )
+        semantic_feature_postings_available = feature_postings_table is not None
+    if semantic_feature_postings_available:
+        posting_limit = max(32, min(240, max(1, int(limit)) * 6))
+        notes["postings_index"] = True
+        notes["feature_postings_index"] = True
+        notes["postings_table"] = "model_representation_feature_postings"
+        notes["postings_status_filter"] = True
+        notes["postings_per_term_limit"] = posting_limit
+        params = [tenant_id, query_terms, max(1, int(limit)), posting_limit]
+        lateral_scope_clauses = []
+        if actor_list:
+            params.append(actor_list)
+            lateral_scope_clauses.append(f"m.scope_actors && ${len(params)}::uuid[]")
+        for entity in entity_list:
+            params.append(_jsonb([entity]))
+            lateral_scope_clauses.append(f"m.scope_entities @> ${len(params)}::jsonb")
+        lateral_scope_sql = ""
+        if lateral_scope_clauses:
+            lateral_scope_sql = (
+                "                  AND (" + " OR ".join(lateral_scope_clauses) + ")\n"
+            )
+        rows = await conn.fetch(
+            f"""
+            WITH query_terms AS MATERIALIZED (
+              SELECT term::text,
+                     ord::int AS term_ord
+              FROM unnest($2::text[]) WITH ORDINALITY AS q(term, ord)
+            ),
+            term_hits AS MATERIALIZED (
+              SELECT qt.term,
+                     qt.term_ord,
+                     hit.model_id
+              FROM query_terms qt
+              CROSS JOIN LATERAL (
+                SELECT post.model_id
+                FROM model_representation_feature_postings post
+                JOIN models m
+                  ON m.id = post.model_id
+                 AND m.tenant_id = $1
+                 AND m.status = 'active'
+                WHERE post.tenant_id = $1
+                  AND post.status = 'active'
+                  AND post.feature_type = 'lexical'
+                  AND post.feature = qt.term
+{lateral_scope_sql}                ORDER BY m.activation DESC,
+                         m.confirmed_count DESC,
+                         m.created_at DESC,
+                         post.model_id
+                LIMIT $4
+              ) hit
+            ),
+            scored AS MATERIALIZED (
+              SELECT model_id,
+                     count(DISTINCT term)::int AS _semantic_term_overlap,
+                     min(term_ord)::int AS _first_term_ord
+              FROM term_hits
+              GROUP BY model_id
+            )
+            SELECT {_MODEL_SELECT_SQL},
+                   scored._semantic_term_overlap
+            FROM scored
+            JOIN models
+              ON models.id = scored.model_id
+             AND models.tenant_id = $1
+            WHERE status = 'active'
+            ORDER BY scored._semantic_term_overlap DESC,
+                     scored._first_term_ord ASC,
+                     activation DESC,
+                     confirmed_count DESC,
+                     created_at DESC
+            LIMIT $3
+            """,
+            *params,
+        )
+    else:
+        notes["feature_postings_index"] = False
+    if not semantic_feature_postings_available and semantic_postings_available is None:
+        postings_table = await conn.fetchval(
+            "SELECT to_regclass('public.model_semantic_term_postings')"
+        )
+        semantic_postings_available = postings_table is not None
+    if not semantic_feature_postings_available and semantic_postings_available:
+        if semantic_postings_status_column is None:
+            semantic_postings_status_column = bool(
+                await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                      SELECT 1
+                      FROM information_schema.columns
+                      WHERE table_schema = 'public'
+                        AND table_name = 'model_semantic_term_postings'
+                        AND column_name = 'status'
+                    )
+                    """
+                )
+            )
+        postings_status_column = bool(semantic_postings_status_column)
+        posting_limit = max(32, min(240, max(1, int(limit)) * 6))
+        notes["postings_index"] = True
+        notes["postings_table"] = "model_semantic_term_postings"
+        notes["postings_status_filter"] = postings_status_column
+        notes["postings_per_term_limit"] = posting_limit
+        params = [tenant_id, query_terms, max(1, int(limit)), posting_limit]
+        lateral_scope_clauses = []
+        if actor_list:
+            params.append(actor_list)
+            lateral_scope_clauses.append(f"m.scope_actors && ${len(params)}::uuid[]")
+        for entity in entity_list:
+            params.append(_jsonb([entity]))
+            lateral_scope_clauses.append(f"m.scope_entities @> ${len(params)}::jsonb")
+        lateral_scope_sql = ""
+        if lateral_scope_clauses:
+            lateral_scope_sql = (
+                "                  AND (" + " OR ".join(lateral_scope_clauses) + ")\n"
+            )
+        post_status_sql = (
+            "                  AND post.status = 'active'\n"
+            if postings_status_column
+            else ""
+        )
+        rows = await conn.fetch(
+            f"""
+            WITH query_terms AS MATERIALIZED (
+              SELECT term::text,
+                     ord::int AS term_ord
+              FROM unnest($2::text[]) WITH ORDINALITY AS q(term, ord)
+            ),
+            term_hits AS MATERIALIZED (
+              SELECT qt.term,
+                     qt.term_ord,
+                     hit.model_id
+              FROM query_terms qt
+              CROSS JOIN LATERAL (
+                SELECT post.model_id
+                FROM model_semantic_term_postings post
+                JOIN models m
+                  ON m.id = post.model_id
+                 AND m.tenant_id = $1
+                 AND m.status = 'active'
+                WHERE post.tenant_id = $1
+{post_status_sql}
+                  AND post.term = qt.term
+{lateral_scope_sql}                ORDER BY m.activation DESC,
+                         m.confirmed_count DESC,
+                         m.created_at DESC,
+                         post.model_id
+                LIMIT $4
+              ) hit
+            ),
+            scored AS MATERIALIZED (
+              SELECT model_id,
+                     count(DISTINCT term)::int AS _semantic_term_overlap,
+                     min(term_ord)::int AS _first_term_ord
+              FROM term_hits
+              GROUP BY model_id
+            )
+            SELECT {_MODEL_SELECT_SQL},
+                   scored._semantic_term_overlap
+            FROM scored
+            JOIN models
+              ON models.id = scored.model_id
+             AND models.tenant_id = $1
+            WHERE status = 'active'
+            ORDER BY scored._semantic_term_overlap DESC,
+                     scored._first_term_ord ASC,
+                     activation DESC,
+                     confirmed_count DESC,
+                     created_at DESC
+            LIMIT $3
+            """,
+            *params,
+        )
+    elif not semantic_feature_postings_available:
+        notes["postings_index"] = False
+        rows = await conn.fetch(
+            f"""
+            SELECT {_MODEL_SELECT_SQL},
+                   (
+                     SELECT count(*)::int
+                     FROM unnest(mst.semantic_terms) AS term
+                     WHERE term = ANY($2::text[])
+                   ) AS _semantic_term_overlap
+            FROM models
+            JOIN (
+              SELECT model_id, semantic_terms
+              FROM model_semantic_terms
+              WHERE tenant_id = $1
+            ) mst ON mst.model_id = models.id
+            WHERE tenant_id = $1
+              AND status = 'active'
+              AND mst.semantic_terms && $2::text[]
+            {scope_sql}
+            ORDER BY _semantic_term_overlap DESC,
+                     activation DESC,
+                     confirmed_count DESC,
+                     created_at DESC
+            LIMIT $3
+            """,
+            *params,
+        )
+    models = _hydrate_many(rows, _hydrate_model, notes, "models")
+    notes["models_returned"] = len(models)
+    return PathwayResult(
+        models=models,
+        observations=[],
+        acts={"goals": [], "commitments": [], "decisions": []},
+        resources=[],
+        source_pathway="L",
+        notes=notes,
+    )
+
+
+async def pathway_l_semantic_term_candidates(
+    seed_natural_text: str | None,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    seed_signature: dict[str, Any] | None = None,
+    scope_actors: Sequence[UUID] | None = None,
+    scope_entities: Sequence[dict[str, Any]] | None = None,
+    limit: int = _SEMANTIC_TERMS_LIMIT,
+    semantic_feature_postings_available: bool | None = None,
+    semantic_postings_available: bool | None = None,
+    semantic_postings_status_column: bool | None = None,
+) -> tuple[list[ModelCandidateHit], dict[str, Any]]:
+    """Retrieve semantic-term candidates without hydrating ModelRows."""
+    query_terms = derive_query_semantic_terms(
+        seed_natural_text,
+        seed_signature=seed_signature,
+    )
+    notes: dict[str, Any] = {
+        "query_terms": query_terms,
+        "limit": int(limit),
+        "lightweight_candidates": True,
+    }
+    if not query_terms:
+        notes["reason"] = "no_terms"
+        return [], notes
+
+    actor_list = _pathway_b_actor_scope(scope_actors)
+    entity_list = _pathway_b_entity_scope(scope_entities)
+    params: list[Any] = [tenant_id, query_terms, max(1, int(limit))]
+    scope_clauses: list[str] = []
+    if actor_list:
+        params.append(actor_list)
+        scope_clauses.append(f"scope_actors && ${len(params)}::uuid[]")
+    for entity in entity_list:
+        params.append(_jsonb([entity]))
+        scope_clauses.append(f"scope_entities @> ${len(params)}::jsonb")
+    notes["scope_filter"] = {
+        "event_actors_count": len(actor_list),
+        "event_entities_count": len(entity_list),
+        "applied": bool(scope_clauses),
+    }
+    scope_sql = ""
+    if scope_clauses:
+        scope_sql = "  AND (" + " OR ".join(scope_clauses) + ")\n"
+
+    if semantic_feature_postings_available is None:
+        feature_postings_table = await conn.fetchval(
+            "SELECT to_regclass('public.model_representation_feature_postings')"
+        )
+        semantic_feature_postings_available = feature_postings_table is not None
+    if semantic_feature_postings_available:
+        posting_limit = max(32, min(240, max(1, int(limit)) * 6))
+        notes["postings_index"] = True
+        notes["feature_postings_index"] = True
+        notes["postings_table"] = "model_representation_feature_postings"
+        notes["postings_status_filter"] = True
+        notes["postings_per_term_limit"] = posting_limit
+        params = [tenant_id, query_terms, max(1, int(limit)), posting_limit]
+        lateral_scope_clauses = []
+        if actor_list:
+            params.append(actor_list)
+            lateral_scope_clauses.append(f"m.scope_actors && ${len(params)}::uuid[]")
+        for entity in entity_list:
+            params.append(_jsonb([entity]))
+            lateral_scope_clauses.append(f"m.scope_entities @> ${len(params)}::jsonb")
+        lateral_scope_sql = ""
+        if lateral_scope_clauses:
+            lateral_scope_sql = (
+                "                  AND (" + " OR ".join(lateral_scope_clauses) + ")\n"
+            )
+        rows = await conn.fetch(
+            f"""
+            WITH query_terms AS MATERIALIZED (
+              SELECT term::text,
+                     ord::int AS term_ord
+              FROM unnest($2::text[]) WITH ORDINALITY AS q(term, ord)
+            ),
+            term_hits AS MATERIALIZED (
+              SELECT qt.term,
+                     qt.term_ord,
+                     hit.model_id
+              FROM query_terms qt
+              CROSS JOIN LATERAL (
+                SELECT post.model_id
+                FROM model_representation_feature_postings post
+                JOIN models m
+                  ON m.id = post.model_id
+                 AND m.tenant_id = $1
+                 AND m.status = 'active'
+                WHERE post.tenant_id = $1
+                  AND post.status = 'active'
+                  AND post.feature_type = 'lexical'
+                  AND post.feature = qt.term
+{lateral_scope_sql}                ORDER BY m.activation DESC,
+                         m.confirmed_count DESC,
+                         m.created_at DESC,
+                         post.model_id
+                LIMIT $4
+              ) hit
+            ),
+            scored AS MATERIALIZED (
+              SELECT model_id,
+                     count(DISTINCT term)::int AS _semantic_term_overlap,
+                     min(term_ord)::int AS _first_term_ord
+              FROM term_hits
+              GROUP BY model_id
+            )
+            SELECT scored.model_id,
+                   scored._semantic_term_overlap,
+                   scored._first_term_ord,
+                   m.activation
+            FROM scored
+            JOIN models m
+              ON m.id = scored.model_id
+             AND m.tenant_id = $1
+             AND m.status = 'active'
+            ORDER BY scored._semantic_term_overlap DESC,
+                     scored._first_term_ord ASC,
+                     m.activation DESC,
+                     m.confirmed_count DESC,
+                     m.created_at DESC
+            LIMIT $3
+            """,
+            *params,
+        )
+    else:
+        notes["feature_postings_index"] = False
+    if not semantic_feature_postings_available and semantic_postings_available is None:
+        postings_table = await conn.fetchval(
+            "SELECT to_regclass('public.model_semantic_term_postings')"
+        )
+        semantic_postings_available = postings_table is not None
+    if not semantic_feature_postings_available and semantic_postings_available:
+        if semantic_postings_status_column is None:
+            semantic_postings_status_column = bool(
+                await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                      SELECT 1
+                      FROM information_schema.columns
+                      WHERE table_schema = 'public'
+                        AND table_name = 'model_semantic_term_postings'
+                        AND column_name = 'status'
+                    )
+                    """
+                )
+            )
+        postings_status_column = bool(semantic_postings_status_column)
+        posting_limit = max(32, min(240, max(1, int(limit)) * 6))
+        notes["postings_index"] = True
+        notes["postings_table"] = "model_semantic_term_postings"
+        notes["postings_status_filter"] = postings_status_column
+        notes["postings_per_term_limit"] = posting_limit
+        params = [tenant_id, query_terms, max(1, int(limit)), posting_limit]
+        lateral_scope_clauses = []
+        if actor_list:
+            params.append(actor_list)
+            lateral_scope_clauses.append(f"m.scope_actors && ${len(params)}::uuid[]")
+        for entity in entity_list:
+            params.append(_jsonb([entity]))
+            lateral_scope_clauses.append(f"m.scope_entities @> ${len(params)}::jsonb")
+        lateral_scope_sql = ""
+        if lateral_scope_clauses:
+            lateral_scope_sql = (
+                "                  AND (" + " OR ".join(lateral_scope_clauses) + ")\n"
+            )
+        post_status_sql = (
+            "                  AND post.status = 'active'\n"
+            if postings_status_column
+            else ""
+        )
+        rows = await conn.fetch(
+            f"""
+            WITH query_terms AS MATERIALIZED (
+              SELECT term::text,
+                     ord::int AS term_ord
+              FROM unnest($2::text[]) WITH ORDINALITY AS q(term, ord)
+            ),
+            term_hits AS MATERIALIZED (
+              SELECT qt.term,
+                     qt.term_ord,
+                     hit.model_id
+              FROM query_terms qt
+              CROSS JOIN LATERAL (
+                SELECT post.model_id
+                FROM model_semantic_term_postings post
+                JOIN models m
+                  ON m.id = post.model_id
+                 AND m.tenant_id = $1
+                 AND m.status = 'active'
+                WHERE post.tenant_id = $1
+{post_status_sql}
+                  AND post.term = qt.term
+{lateral_scope_sql}                ORDER BY m.activation DESC,
+                         m.confirmed_count DESC,
+                         m.created_at DESC,
+                         post.model_id
+                LIMIT $4
+              ) hit
+            ),
+            scored AS MATERIALIZED (
+              SELECT model_id,
+                     count(DISTINCT term)::int AS _semantic_term_overlap,
+                     min(term_ord)::int AS _first_term_ord
+              FROM term_hits
+              GROUP BY model_id
+            )
+            SELECT scored.model_id,
+                   scored._semantic_term_overlap,
+                   scored._first_term_ord,
+                   m.activation
+            FROM scored
+            JOIN models m
+              ON m.id = scored.model_id
+             AND m.tenant_id = $1
+             AND m.status = 'active'
+            ORDER BY scored._semantic_term_overlap DESC,
+                     scored._first_term_ord ASC,
+                     m.activation DESC,
+                     m.confirmed_count DESC,
+                     m.created_at DESC
+            LIMIT $3
+            """,
+            *params,
+        )
+    elif not semantic_feature_postings_available:
+        notes["postings_index"] = False
+        rows = await conn.fetch(
+            f"""
+            SELECT models.id AS model_id,
+                   models.activation,
+                   (
+                     SELECT count(*)::int
+                     FROM unnest(mst.semantic_terms) AS term
+                     WHERE term = ANY($2::text[])
+                   ) AS _semantic_term_overlap,
+                   1::int AS _first_term_ord
+            FROM models
+            JOIN (
+              SELECT model_id, semantic_terms
+              FROM model_semantic_terms
+              WHERE tenant_id = $1
+            ) mst ON mst.model_id = models.id
+            WHERE tenant_id = $1
+              AND status = 'active'
+              AND mst.semantic_terms && $2::text[]
+            {scope_sql}
+            ORDER BY _semantic_term_overlap DESC,
+                     activation DESC,
+                     confirmed_count DESC,
+                     created_at DESC
+            LIMIT $3
+            """,
+            *params,
+        )
+    hits = _candidate_hits_from_rows(
+        rows,
+        match_key="_semantic_term_overlap",
+        first_rank_key="_first_term_ord",
+    )
+    notes["models_returned"] = len(hits)
+    return hits, notes
+
+
 # =====================================================================
 # Pathway C — Temporal recency (Observations + Models in a time window)
 # =====================================================================
+
+
+def _observation_record_matches_scope(
+    row: asyncpg.Record,
+    *,
+    actor_ids: Sequence[UUID],
+    entity_list: Sequence[dict[str, str]],
+    include_entity_mentions: bool,
+) -> bool:
+    if not actor_ids and not entity_list:
+        return True
+    actor_id = _record_get(row, "actor_id")
+    actor_values = {str(actor) for actor in actor_ids}
+    if actor_id is not None and str(actor_id) in actor_values:
+        return True
+    mentions = [
+        item
+        for item in _json_list(_record_get(row, "entities_mentioned"))
+        if isinstance(item, dict)
+    ]
+    mention_keys = {
+        (str(item.get("type") or ""), str(item.get("id") or ""))
+        for item in mentions
+        if item.get("type") is not None and item.get("id") is not None
+    }
+    if include_entity_mentions:
+        for actor in actor_values:
+            if ("actor", actor) in mention_keys:
+                return True
+    for entity in entity_list:
+        key = (str(entity.get("type") or ""), str(entity.get("id") or ""))
+        if key in mention_keys:
+            return True
+    return False
 
 
 async def pathway_c_temporal(
@@ -2295,6 +3652,7 @@ async def pathway_c_temporal(
     max_observations: int = _TEMPORAL_MAX_OBSERVATIONS,
     max_models: int = 200,
     include_entity_mentions: bool = True,
+    scope_filter_strategy: str = "indexed_or",
 ) -> PathwayResult:
     """
     Return Observations in [seed-window, seed+window] (tenant-filtered,
@@ -2328,7 +3686,9 @@ async def pathway_c_temporal(
         "max_observations": int(max_observations),
         "max_models": int(max_models),
         "include_entity_mentions": include_entity_mentions,
+        "temporal_scope_filter_strategy": scope_filter_strategy,
     }
+    timings_ms: dict[str, int] = {}
     entity_list: list[dict[str, str]] = []
     for ent in scope_entities or []:
         if not isinstance(ent, dict):
@@ -2339,41 +3699,84 @@ async def pathway_c_temporal(
             continue
         entity_list.append({"type": str(etype), "id": str(eid)})
 
-    # Observations query — tenant + time-range; optional actor/entity filter.
-    obs_sql = (
-        f"SELECT {_OBS_SELECT_SQL} FROM observations "
-        "WHERE tenant_id = $1 AND occurred_at >= $2 AND occurred_at <= $3"
+    actor_ids = list(scope_actors or [])
+    has_scope_filter = bool(actor_ids or entity_list)
+    use_time_prefilter = (
+        str(scope_filter_strategy or "").strip().lower() == "time_prefilter"
+        and has_scope_filter
     )
-    obs_params: list[Any] = [tenant_id, start, end]
-    obs_scope_clauses: list[str] = []
-    if scope_actors:
-        actor_ids = list(scope_actors)
-        obs_params.append(actor_ids)
-        if include_entity_mentions:
-            # Build a JSONB containment OR-chain so the GIN index on
-            # entities_mentioned is exploitable. Actor entries are
-            # canonical `{"type":"actor","id":"<uuid>"}`.
-            mention_clauses: list[str] = []
-            for aid in actor_ids:
-                obs_params.append(_jsonb([{"type": "actor", "id": str(aid)}]))
+    obs_query_started = time.perf_counter()
+    if use_time_prefilter:
+        prefilter_limit = min(
+            1000,
+            max(
+                int(max_observations),
+                int(max_observations) * 12,
+                (len(actor_ids) + len(entity_list)) * 48,
+            ),
+        )
+        obs_sql = (
+            f"SELECT {_OBS_SELECT_SQL} FROM observations "
+            "WHERE tenant_id = $1 AND occurred_at >= $2 AND occurred_at <= $3 "
+            "ORDER BY occurred_at DESC LIMIT " + str(prefilter_limit)
+        )
+        prefilter_rows = await conn.fetch(obs_sql, tenant_id, start, end)
+        obs_rows = [
+            row
+            for row in prefilter_rows
+            if _observation_record_matches_scope(
+                row,
+                actor_ids=actor_ids,
+                entity_list=entity_list,
+                include_entity_mentions=include_entity_mentions,
+            )
+        ][: int(max_observations)]
+        notes["observations_prefilter_limit"] = prefilter_limit
+        notes["observations_prefilter_rows"] = len(prefilter_rows)
+        notes["observations_scope_filtered_in_python"] = True
+    else:
+        # Observations query — tenant + time-range; optional actor/entity filter.
+        obs_sql = (
+            f"SELECT {_OBS_SELECT_SQL} FROM observations "
+            "WHERE tenant_id = $1 AND occurred_at >= $2 AND occurred_at <= $3"
+        )
+        obs_params: list[Any] = [tenant_id, start, end]
+        obs_scope_clauses: list[str] = []
+        if actor_ids:
+            obs_params.append(actor_ids)
+            if include_entity_mentions:
+                # Build a JSONB containment OR-chain so the GIN index on
+                # entities_mentioned is exploitable. Actor entries are
+                # canonical `{"type":"actor","id":"<uuid>"}`.
+                mention_clauses: list[str] = []
+                for aid in actor_ids:
+                    obs_params.append(_jsonb([{"type": "actor", "id": str(aid)}]))
+                    mention_clauses.append(
+                        f"entities_mentioned @> ${len(obs_params)}::jsonb"
+                    )
+                mention_sql = " OR ".join(mention_clauses)
+                obs_scope_clauses.append(
+                    f"actor_id = ANY($4::uuid[]) OR ({mention_sql})"
+                )
+            else:
+                obs_scope_clauses.append("actor_id = ANY($4::uuid[])")
+        if entity_list:
+            mention_clauses = []
+            for ent in entity_list:
+                obs_params.append(_jsonb([ent]))
                 mention_clauses.append(
                     f"entities_mentioned @> ${len(obs_params)}::jsonb"
                 )
-            mention_sql = " OR ".join(mention_clauses)
-            obs_scope_clauses.append(f"actor_id = ANY($4::uuid[]) OR ({mention_sql})")
-        else:
-            obs_scope_clauses.append("actor_id = ANY($4::uuid[])")
-    if entity_list:
-        mention_clauses = []
-        for ent in entity_list:
-            obs_params.append(_jsonb([ent]))
-            mention_clauses.append(f"entities_mentioned @> ${len(obs_params)}::jsonb")
-        obs_scope_clauses.append("(" + " OR ".join(mention_clauses) + ")")
-    if obs_scope_clauses:
-        obs_sql += " AND (" + " OR ".join(obs_scope_clauses) + ")"
-    obs_sql += " ORDER BY occurred_at DESC LIMIT " + str(int(max_observations))
-    obs_rows = await conn.fetch(obs_sql, *obs_params)
+            obs_scope_clauses.append("(" + " OR ".join(mention_clauses) + ")")
+        if obs_scope_clauses:
+            obs_sql += " AND (" + " OR ".join(obs_scope_clauses) + ")"
+        obs_sql += " ORDER BY occurred_at DESC LIMIT " + str(int(max_observations))
+        obs_rows = await conn.fetch(obs_sql, *obs_params)
+        notes["observations_scope_filtered_in_python"] = False
+    timings_ms["observations_query_ms"] = _elapsed_ms(obs_query_started)
+    obs_hydrate_started = time.perf_counter()
     observations = _hydrate_many(obs_rows, _hydrate_obs, notes, "observations")
+    timings_ms["observations_hydrate_ms"] = _elapsed_ms(obs_hydrate_started)
 
     # Models in the window (active). Overlap is COALESCE(last_retrieved_at,
     # created_at) — if a Model has been reconsolidated inside the window
@@ -2397,11 +3800,16 @@ async def pathway_c_temporal(
     model_sql += " ORDER BY COALESCE(last_retrieved_at, created_at) DESC LIMIT " + str(
         max(1, int(max_models))
     )
+    model_query_started = time.perf_counter()
     model_rows = await conn.fetch(model_sql, *model_params)
+    timings_ms["models_query_ms"] = _elapsed_ms(model_query_started)
+    model_hydrate_started = time.perf_counter()
     models = _hydrate_many(model_rows, _hydrate_model, notes, "models")
+    timings_ms["models_hydrate_ms"] = _elapsed_ms(model_hydrate_started)
 
     notes["observations_returned"] = len(observations)
     notes["models_returned"] = len(models)
+    notes["temporal_timings_ms"] = timings_ms
 
     return PathwayResult(
         models=models,
@@ -2999,11 +4407,16 @@ async def pathway_g_model_edges(
 
 
 __all__ = [
+    "ModelCandidateHit",
     "PathwayResult",
     "PathwayName",
+    "hydrate_active_models_by_ids",
     "pathway_a_structural",
     "pathway_b_semantic",
     "pathway_b_representation_tags",
+    "pathway_b_representation_tag_candidates",
+    "pathway_l_semantic_terms",
+    "pathway_l_semantic_term_candidates",
     "pathway_c_temporal",
     "pathway_d_pattern",
     "pathway_g_model_edges",

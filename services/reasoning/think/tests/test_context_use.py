@@ -102,6 +102,8 @@ def _bundle_with_selection(
 
 def test_t1_event_batch_uses_compact_historical_context_budget(monkeypatch):
     monkeypatch.delenv("THINK_BATCH_CONTEXT_MODEL_BUDGET", raising=False)
+    monkeypatch.delenv("THINK_BATCH_CONTEXT_OBSERVATION_BUDGET", raising=False)
+    monkeypatch.delenv("THINK_BATCH_CONTEXT_RAW_OBSERVATION_FLOOR", raising=False)
     monkeypatch.delenv("THINK_BATCH_HISTORICAL_OBSERVATION_CAP", raising=False)
     tenant_id = uuid4()
     first_obs = uuid4()
@@ -124,14 +126,24 @@ def test_t1_event_batch_uses_compact_historical_context_budget(monkeypatch):
         RETRIEVAL_CONFIG.historical_observation_cap,
         2,
     )
+    assert cfg.assembler_budget_observations == max(
+        RETRIEVAL_CONFIG.assembler_budget_observations,
+        20,
+    )
+    assert cfg.t1_event_batch_raw_observation_floor == min(
+        cfg.assembler_budget_observations,
+        max(RETRIEVAL_CONFIG.t1_event_batch_raw_observation_floor, 20),
+    )
     assert cfg.trigger_observation_cap == RETRIEVAL_CONFIG.trigger_observation_cap
     assert cfg.observation_context_mode == RETRIEVAL_CONFIG.observation_context_mode
 
 
 def test_large_t1_event_batch_uses_configured_context_cap(monkeypatch):
     monkeypatch.delenv("THINK_BATCH_CONTEXT_MODEL_BUDGET", raising=False)
+    monkeypatch.delenv("THINK_BATCH_CONTEXT_OBSERVATION_BUDGET", raising=False)
+    monkeypatch.delenv("THINK_BATCH_CONTEXT_RAW_OBSERVATION_FLOOR", raising=False)
     tenant_id = uuid4()
-    observation_ids = [uuid4() for _ in range(20)]
+    observation_ids = [uuid4() for _ in range(25)]
     trigger = TriggerContext(
         kind="T1",
         subkind="event_batch",
@@ -145,12 +157,18 @@ def test_large_t1_event_batch_uses_configured_context_cap(monkeypatch):
 
     assert cfg.assembler_budget_models == min(
         RETRIEVAL_CONFIG.assembler_budget_models,
-        16,
+        20,
+    )
+    assert cfg.assembler_budget_observations == max(
+        RETRIEVAL_CONFIG.assembler_budget_observations,
+        20,
     )
 
 
 def test_single_t1_keeps_default_context_budget(monkeypatch):
     monkeypatch.delenv("THINK_BATCH_CONTEXT_MODEL_BUDGET", raising=False)
+    monkeypatch.delenv("THINK_BATCH_CONTEXT_OBSERVATION_BUDGET", raising=False)
+    monkeypatch.delenv("THINK_BATCH_CONTEXT_RAW_OBSERVATION_FLOOR", raising=False)
     monkeypatch.delenv("THINK_BATCH_HISTORICAL_OBSERVATION_CAP", raising=False)
     trigger = TriggerContext(
         kind="T1",
@@ -307,6 +325,95 @@ def test_context_use_reports_unused_selected_models_for_claim_only_diff():
     assert report["referenced_observation_ids"] == [str(obs_id)]
     assert report["unused_selected_observation_ids"] == [str(unused_obs_id)]
     assert report["context_use_grade"] == "observation_context_used"
+
+
+def test_context_use_counts_situation_member_models_as_graph_context():
+    tenant_id = uuid4()
+    trigger_id = uuid4()
+    blocker = uuid4()
+    risk = uuid4()
+    obs_id = uuid4()
+    bundle = _bundle_with_selection(
+        selected=[blocker, risk],
+        graph_selected=[blocker, risk],
+        observations=[_obs(obs_id)],
+    )
+    diff = RawDiff(
+        trigger_ref=trigger_id,
+        tenant_id=tenant_id,
+        claim_ops=[
+            ClaimOp(
+                op="insert",
+                entry={
+                    "born_from_event_id": str(obs_id),
+                    "proposition": {
+                        "kind": "belief",
+                        "claim_role": "situation",
+                        "abstraction_level": "composite",
+                        "situation": "Renewal pressure has a blocker and risk",
+                        "summary": "The selected Models form one pressure.",
+                        "member_model_ids": [str(blocker), str(risk)],
+                        "evidence_model_ids": [str(blocker)],
+                        "relationship_summary": "The blocker drives risk.",
+                        "pressure_type": "revenue",
+                    },
+                    "natural": (
+                        "Renewal pressure has a blocker and downstream risk."
+                    ),
+                    "confidence": 0.72,
+                },
+            )
+        ],
+    )
+
+    report = summarize_context_use(bundle, diff)
+
+    assert report["context_use_grade"] == "graph_context_used"
+    assert report["selected_model_reference_count"] == 2
+    assert report["graph_selected_reference_count"] == 2
+    assert report["referenced_model_ids"] == sorted([str(blocker), str(risk)])
+    assert report["graph_claim_op_reference_count"] == 1
+    assert report["graph_non_relation_op_count"] == 1
+    assert report["graph_relation_contract_satisfied"] is True
+    assert report["graph_relation_contract_basis"] == "model_or_act_mutation"
+
+
+def test_context_use_counts_claim_evidence_model_ids():
+    tenant_id = uuid4()
+    trigger_id = uuid4()
+    selected_model = uuid4()
+    obs_id = uuid4()
+    bundle = _bundle_with_selection(
+        selected=[selected_model],
+        observations=[_obs(obs_id)],
+    )
+    diff = RawDiff(
+        trigger_ref=trigger_id,
+        tenant_id=tenant_id,
+        claim_ops=[
+            ClaimOp(
+                op="insert",
+                entry={
+                    "born_from_event_id": str(obs_id),
+                    "proposition": {
+                        "kind": "belief",
+                        "claim_role": "fact",
+                        "subject": "renewal",
+                        "assertion": "The selected Model is confirmed.",
+                    },
+                    "evidence_model_ids": [str(selected_model)],
+                    "natural": "The selected Model is confirmed.",
+                    "confidence": 0.7,
+                },
+            )
+        ],
+    )
+
+    report = summarize_context_use(bundle, diff)
+
+    assert report["context_use_grade"] == "model_context_used"
+    assert report["selected_model_reference_count"] == 1
+    assert report["referenced_model_ids"] == [str(selected_model)]
 
 
 def test_context_use_counts_act_confidence_basis_as_model_reference():
@@ -500,10 +607,14 @@ def test_context_use_accounts_for_selected_context_in_non_empty_diff():
 
     report = summarize_context_use(bundle, diff)
 
-    assert report["context_use_grade"] == "selected_context_accounted"
-    assert report["selected_context_used"] is False
+    assert report["context_use_grade"] == "model_context_used"
+    assert report["selected_context_used"] is True
     assert report["selected_context_accounted_for"] is True
+    assert report["model_context_used"] is True
+    assert report["selected_model_reference_count"] == 1
+    assert report["reasoning_trace_context_used"] is True
     assert report["reasoning_trace_context_accounted"] is True
+    assert report["reasoning_trace_context_decision_used"] is True
     assert report["selected_trigger_observation_count"] == 1
     assert report["selected_historical_observation_count"] == 0
 
@@ -540,6 +651,10 @@ def test_context_use_accepts_explicit_no_edge_rationale_for_graph_context():
 
     assert report["graph_selected_without_relation_ops"] is True
     assert report["graph_no_edge_rationale_present"] is True
+    assert report["graph_context_used"] is True
+    assert report["model_context_used"] is True
+    assert report["reasoning_trace_context_decision_used"] is True
+    assert report["graph_selected_reference_count"] == 1
     assert report["graph_relation_contract_satisfied"] is True
     assert report["graph_relation_contract_basis"] == "no_edge_rationale"
 

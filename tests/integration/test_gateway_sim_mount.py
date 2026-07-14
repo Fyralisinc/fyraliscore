@@ -1,24 +1,48 @@
-"""Week-5 integration: SIM router mounts cleanly on the gateway.
+"""Integration checks for a simulation gateway extension.
 
-Item 3 from the Week-5 Stabilization brief. Week-4 integration left
-`GATEWAY_MOUNT_SIM=1` opt-in because `simulation/server.py` owned its
-own pool + lifespan — mounting it inside the gateway would have
-double-created an asyncpg pool. Week-5 extracts `build_sim_router(deps)`
-from `simulation/server.py`; the gateway now constructs a `SimDeps`
-using its own pool and includes the router, with no second lifespan.
+Core no longer imports the simulation overlay directly. When an installed
+gateway extension contributes ``/simulation`` routes, these smoke tests boot
+the gateway app and assert those routes share the gateway runtime pool.
 
-These smoke tests boot the gateway app (lifespan up) and assert the
-SIM routes respond from the same host.
-
-Skipped automatically when DATABASE_URL is absent (see conftest.py).
+Skipped automatically when DATABASE_URL is absent (see conftest.py), or when
+no simulation gateway extension is installed in the current checkout.
 """
 from __future__ import annotations
 
+from uuid import UUID
 
 import pytest
 
+from lib.shared.ids import uuid7
+from services.app.gateway.auth import create_session
+
 
 pytestmark = pytest.mark.integration
+
+
+def _extension_contributes_simulation() -> bool:
+    from services.app.gateway.extensions import discovered_extensions, reset_for_tests
+
+    reset_for_tests()
+    for ext in discovered_extensions():
+        if "sim" in ext.name.lower() or "demo" in ext.name.lower():
+            return True
+        if any(prefix.startswith("/simulation") for prefix in ext.public_path_prefixes):
+            return True
+        for router in ext.routers:
+            for route in router.routes:
+                if str(getattr(route, "path", "")).startswith("/simulation"):
+                    return True
+    return False
+
+
+@pytest.fixture
+def _require_simulation_gateway_extension(_sim_mount_env):
+    if not _extension_contributes_simulation():
+        pytest.skip(
+            "simulation gateway extension is not installed; core no longer "
+            "mounts /simulation directly"
+        )
 
 
 @pytest.fixture
@@ -39,8 +63,42 @@ def _sim_mount_env(monkeypatch):
     yield
 
 
+@pytest.fixture
+async def _gateway_auth_headers(fresh_db, _require_simulation_gateway_extension):
+    tenant_id = UUID("00000000-0000-7000-8000-000000000dd1")
+    actor_id = uuid7()
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO tenants (id, name, is_demo) VALUES ($1, $2, TRUE) "
+            "ON CONFLICT (id) DO NOTHING",
+            tenant_id,
+            "simulation smoke tenant",
+        )
+        await conn.execute(
+            """
+            INSERT INTO actors (
+                id, tenant_id, type, display_name, status, metadata
+            ) VALUES ($1, $2, 'human_internal', 'Simulation Smoke Actor',
+                      'active', '{}'::jsonb)
+            ON CONFLICT (id) DO NOTHING
+            """,
+            actor_id,
+            tenant_id,
+        )
+    token, _ = await create_session(
+        fresh_db,
+        actor_id=actor_id,
+        tenant_id=tenant_id,
+    )
+    return {"Authorization": f"Bearer {token}"}
+
+
 @pytest.mark.asyncio
-async def test_sim_health_responds_through_gateway(fresh_db, _sim_mount_env):
+async def test_sim_health_responds_through_gateway(
+    fresh_db,
+    _require_simulation_gateway_extension,
+    _gateway_auth_headers,
+):
     """Boot the gateway app with the SIM router mounted; hit
     `/simulation/health` through the same ASGI transport.
     """
@@ -53,7 +111,10 @@ async def test_sim_health_responds_through_gateway(fresh_db, _sim_mount_env):
         async with httpx.AsyncClient(
             transport=transport, base_url="http://gateway"
         ) as client:
-            r = await client.get("/simulation/health")
+            r = await client.get(
+                "/simulation/health",
+                headers=_gateway_auth_headers,
+            )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True
@@ -64,7 +125,11 @@ async def test_sim_health_responds_through_gateway(fresh_db, _sim_mount_env):
 
 
 @pytest.mark.asyncio
-async def test_sim_channels_responds_through_gateway(fresh_db, _sim_mount_env):
+async def test_sim_channels_responds_through_gateway(
+    fresh_db,
+    _require_simulation_gateway_extension,
+    _gateway_auth_headers,
+):
     """Smoke-check another SIM route to prove the router is fully
     attached (not just the health endpoint).
     """
@@ -77,7 +142,10 @@ async def test_sim_channels_responds_through_gateway(fresh_db, _sim_mount_env):
         async with httpx.AsyncClient(
             transport=transport, base_url="http://gateway"
         ) as client:
-            r = await client.get("/simulation/channels")
+            r = await client.get(
+                "/simulation/channels",
+                headers=_gateway_auth_headers,
+            )
     assert r.status_code == 200, r.text
     channels = r.json()["channels"]
     handles = {c["handle"] for c in channels}
@@ -87,7 +155,11 @@ async def test_sim_channels_responds_through_gateway(fresh_db, _sim_mount_env):
 
 
 @pytest.mark.asyncio
-async def test_sim_personas_responds_through_gateway(fresh_db, _sim_mount_env):
+async def test_sim_personas_responds_through_gateway(
+    fresh_db,
+    _require_simulation_gateway_extension,
+    _gateway_auth_headers,
+):
     """Personas are loaded from the YAML registry at import; this
     proves the route is wired on the gateway mount path (no in-db
     seeding required for a GET, though the mount does seed actors).
@@ -101,7 +173,10 @@ async def test_sim_personas_responds_through_gateway(fresh_db, _sim_mount_env):
         async with httpx.AsyncClient(
             transport=transport, base_url="http://gateway"
         ) as client:
-            r = await client.get("/simulation/personas")
+            r = await client.get(
+                "/simulation/personas",
+                headers=_gateway_auth_headers,
+            )
     assert r.status_code == 200, r.text
     personas = r.json()["personas"]
     assert isinstance(personas, list)
@@ -114,7 +189,10 @@ async def test_sim_personas_responds_through_gateway(fresh_db, _sim_mount_env):
 
 
 @pytest.mark.asyncio
-async def test_gateway_does_not_double_create_pool(fresh_db, _sim_mount_env):
+async def test_gateway_does_not_double_create_pool(
+    fresh_db,
+    _require_simulation_gateway_extension,
+):
     """Regression for the Week-4 caveat: mounting SIM must not create
     a second pool. We assert the gateway deps.pool and the
     `app.state.sim_deps.pool` are the same object.

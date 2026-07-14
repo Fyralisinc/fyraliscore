@@ -37,16 +37,20 @@ from lib.shared.errors import (
     CompanyOSError,
 )
 from lib.shared.ids import uuid7
+from services.domain.triggers import enqueue_trigger
 
 from services.reasoning.retrieval.assembler import (
     AccessContext,
+    ContextBundle,
 )
 from services.reasoning.retrieval.primary import (
+    RetrievalResult,
     TriggerContext,
 )
 from services.reasoning.sage.inquiry_traces.emitter import (
     set_trace_context as _sage_set_trace_context,
 )
+from services.reasoning.sage.latent_gaps import create_latent_gap_hypotheses_for_sources
 
 from .anomaly_integration import (
     check_anomalies,
@@ -58,6 +62,8 @@ from .debug_capture import defer_transactional_captures
 from .debug_capture import capture_with_pool as debug_capture_with_pool
 from .debug_capture import flush_captures as flush_debug_captures
 from .deterministic import is_authoritative
+from .lanes import classify_trigger_lane
+from .llm_reason import build_noise_only_raw_diff
 from .observability import (
     METRICS,
     ThinkRunRecord,
@@ -77,12 +83,26 @@ from .region_locks import (
     acquire_region_lock,
     region_lock_key,
 )
+from .coherence_repair import (
+    ResidualRepairResolution,
+    enqueue_residual_repair_triggers_for_sources,
+    resolve_residual_repair_outcome,
+)
+from .reasoning_frame import ReasoningFrame
+from .residuals import (
+    ThinkResidualContext,
+    absorb_think_residuals,
+    persist_think_residuals,
+)
 from .run_pipeline import (
     _diff_reuse_on_tx_retry_enabled,  # noqa: F401
     _hash_context_bundle,  # noqa: F401
+    RawReasoningOutput,
+    ReasoningRunState,
     assert_tx_usable,
     build_raw_reasoning_output,
     prepare_reasoning_run_state,
+    record_stage_timing,
     run_cascade_for_validated_act_ops,
     validate_raw_reasoning_output,
 )
@@ -120,6 +140,27 @@ def _narrow_inferential_transaction_enabled() -> bool:
         "no",
         "off",
     }
+
+
+def _representation_repair_triggers_enabled() -> bool:
+    return os.environ.get(
+        "THINK_REPRESENTATION_REPAIR_TRIGGERS", "1"
+    ).strip().lower() in {
+        "1",
+        "on",
+        "true",
+        "yes",
+    }
+
+
+def _representation_repair_max_triggers(default: int = 3) -> int:
+    raw = os.environ.get("THINK_REPRESENTATION_REPAIR_MAX_TRIGGERS")
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return default
 
 
 @asynccontextmanager
@@ -162,6 +203,7 @@ class ThinkRunOutcome:
     llm_cache_creation_tokens: int = 0
     # Raised exception for caller's failure classification.
     exception: BaseException | None = None
+    residual_context: ThinkResidualContext | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -336,11 +378,20 @@ def _start_think_record(
     trigger_id = _trigger_ref(trigger)
     trigger_kind_full = trigger_kind_subkind or trigger.kind
     run_id = uuid7()
+    seed_payload = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
+    lane_decision = classify_trigger_lane(
+        trigger.kind,
+        trigger.subkind,
+        seed_payload,
+    )
     record = ThinkRunRecord(
         id=run_id,
         tenant_id=trigger.tenant_id,
         trigger_id=trigger_id,
         trigger_kind=trigger_kind_full,
+        lane=lane_decision.lane.value,
     )
 
     METRICS.inc_run(trigger_kind_full)
@@ -349,6 +400,8 @@ def _start_think_record(
         run_id=str(run_id),
         trigger_id=str(trigger_id),
         trigger_kind=trigger_kind_full,
+        lane=record.lane,
+        lane_reason=lane_decision.reason,
         tenant_id=str(trigger.tenant_id),
     )
     return trigger_id, trigger_kind_full, record
@@ -444,9 +497,9 @@ async def _run_think_attempt(
                     triggering_content=triggering_content,
                     reason_for_trigger=reason_for_trigger,
                     record=record,
-                        expanded_region=expanded_region,
-                        reason_cache=reason_cache,
-                    )
+                    expanded_region=expanded_region,
+                    reason_cache=reason_cache,
+                )
     await flush_debug_captures(pool, debug_scope.artifacts)
     return outcome
 
@@ -545,12 +598,321 @@ async def _finalize_successful_outcome(
         usage_agg=usage_agg,
     )
     await _record_region_lock_release(pool, trigger, run_id, outcome)
+    await _record_success_residuals(pool, outcome)
     emit(
         "think.completed",
         run_id=str(run_id),
         status=outcome.status,
         elapsed_ms=outcome.elapsed_ms,
     )
+
+
+async def _record_success_residuals(
+    pool: asyncpg.Pool,
+    outcome: ThinkRunOutcome,
+) -> None:
+    context = outcome.residual_context
+    if context is None:
+        return
+    stage_timings = _stage_timings_from_ops_summary(context.ops_applied_summary)
+    try:
+        started = time.perf_counter()
+        repair_resolution = await resolve_residual_repair_outcome(pool, context)
+    except Exception as exc:  # noqa: BLE001 - repair resolution must not fail Think
+        record_stage_timing(
+            stage_timings,
+            "residual_repair_resolution",
+            started,
+            error_type=type(exc).__name__,
+        )
+        _log.warning(
+            "think.residual_repair_resolution_failed",
+            run_id=str(outcome.run_id),
+            trigger_id=str(outcome.trigger_id),
+            error=str(exc),
+        )
+        repair_resolution = None
+    else:
+        record_stage_timing(
+            stage_timings,
+            "residual_repair_resolution",
+            started,
+            resolved=repair_resolution.resolved if repair_resolution else None,
+        )
+    if repair_resolution is not None and repair_resolution.terminal:
+        emit(
+            "think.residual_repair_resolved",
+            run_id=str(outcome.run_id),
+            trigger_id=str(outcome.trigger_id),
+            residual_id=str(repair_resolution.residual_id),
+            status=repair_resolution.status,
+            reason=repair_resolution.reason,
+            resolved=repair_resolution.resolved,
+        )
+        await _record_residual_repair_resolution_observability(
+            pool,
+            outcome,
+            repair_resolution=repair_resolution,
+            stage_timings=stage_timings,
+        )
+        return
+    absorbed_count = 0
+    residual_creation_count = 0
+    repair_trigger_count = 0
+    latent_gap_count = 0
+    try:
+        started = time.perf_counter()
+        absorbed_count = await absorb_think_residuals(pool, context)
+    except Exception as exc:  # noqa: BLE001 - residuals must not fail Think
+        record_stage_timing(
+            stage_timings,
+            "residual_absorption",
+            started,
+            error_type=type(exc).__name__,
+        )
+        _log.warning(
+            "think.residual_absorption_failed",
+            run_id=str(outcome.run_id),
+            trigger_id=str(outcome.trigger_id),
+            error=str(exc),
+        )
+    else:
+        record_stage_timing(
+            stage_timings,
+            "residual_absorption",
+            started,
+            absorbed_count=absorbed_count,
+        )
+        if absorbed_count:
+            emit(
+                "think.residuals_absorbed",
+                run_id=str(outcome.run_id),
+                trigger_id=str(outcome.trigger_id),
+                residual_count=absorbed_count,
+            )
+    try:
+        started = time.perf_counter()
+        residual_count = await persist_think_residuals(pool, context)
+    except Exception as exc:  # noqa: BLE001 - residuals must not fail Think
+        record_stage_timing(
+            stage_timings,
+            "residual_creation",
+            started,
+            error_type=type(exc).__name__,
+        )
+        _log.warning(
+            "think.residual_write_failed",
+            run_id=str(outcome.run_id),
+            trigger_id=str(outcome.trigger_id),
+            error=str(exc),
+        )
+        if stage_timings:
+            await _record_residual_post_success_observability(
+                pool,
+                outcome,
+                absorbed_count=absorbed_count,
+                residual_creation_count=0,
+                repair_trigger_count=repair_trigger_count,
+                latent_gap_count=latent_gap_count,
+                stage_timings=stage_timings,
+            )
+        return
+    else:
+        record_stage_timing(
+            stage_timings,
+            "residual_creation",
+            started,
+            residual_count=residual_count,
+        )
+    residual_creation_count = residual_count
+    if residual_count:
+        emit(
+            "think.residuals_recorded",
+            run_id=str(outcome.run_id),
+            trigger_id=str(outcome.trigger_id),
+            residual_count=residual_count,
+        )
+    try:
+        started = time.perf_counter()
+        repair_triggers = await enqueue_residual_repair_triggers_for_sources(
+            pool,
+            tenant_id=context.tenant_id,
+            source_observation_ids=context.source_observation_ids,
+            cascade_depth=_residual_repair_cascade_depth(context),
+        )
+    except Exception as exc:  # noqa: BLE001 - repair scheduling must not fail Think
+        record_stage_timing(
+            stage_timings,
+            "residual_repair_enqueue",
+            started,
+            error_type=type(exc).__name__,
+        )
+        _log.warning(
+            "think.residual_repair_enqueue_failed",
+            run_id=str(outcome.run_id),
+            trigger_id=str(outcome.trigger_id),
+            error=str(exc),
+        )
+    else:
+        repair_trigger_count = len(repair_triggers)
+        record_stage_timing(
+            stage_timings,
+            "residual_repair_enqueue",
+            started,
+            repair_trigger_count=repair_trigger_count,
+        )
+        if repair_trigger_count:
+            emit(
+                "think.residual_repairs_scheduled",
+                run_id=str(outcome.run_id),
+                trigger_id=str(outcome.trigger_id),
+                repair_trigger_count=repair_trigger_count,
+            )
+    try:
+        started = time.perf_counter()
+        latent_gaps = await create_latent_gap_hypotheses_for_sources(
+            pool,
+            tenant_id=context.tenant_id,
+            source_observation_ids=context.source_observation_ids,
+        )
+    except Exception as exc:  # noqa: BLE001 - latent gaps must not fail Think
+        record_stage_timing(
+            stage_timings,
+            "latent_gap_hypothesis_create",
+            started,
+            error_type=type(exc).__name__,
+        )
+        _log.warning(
+            "think.latent_gap_hypothesis_create_failed",
+            run_id=str(outcome.run_id),
+            trigger_id=str(outcome.trigger_id),
+            error=str(exc),
+        )
+    else:
+        latent_gap_count = len(latent_gaps)
+        record_stage_timing(
+            stage_timings,
+            "latent_gap_hypothesis_create",
+            started,
+            latent_gap_count=latent_gap_count,
+        )
+        if latent_gap_count:
+            emit(
+                "think.latent_gap_hypotheses_created",
+                run_id=str(outcome.run_id),
+                trigger_id=str(outcome.trigger_id),
+                latent_gap_count=latent_gap_count,
+            )
+    if (
+        absorbed_count
+        or residual_creation_count
+        or repair_trigger_count
+        or latent_gap_count
+        or stage_timings
+    ):
+        await _record_residual_post_success_observability(
+            pool,
+            outcome,
+            absorbed_count=absorbed_count,
+            residual_creation_count=residual_creation_count,
+            repair_trigger_count=repair_trigger_count,
+            latent_gap_count=latent_gap_count,
+            stage_timings=stage_timings,
+        )
+
+
+async def _record_residual_post_success_observability(
+    pool: asyncpg.Pool,
+    outcome: ThinkRunOutcome,
+    *,
+    absorbed_count: int,
+    residual_creation_count: int,
+    repair_trigger_count: int,
+    latent_gap_count: int,
+    stage_timings: list[dict[str, Any]] | None = None,
+) -> None:
+    context = outcome.residual_context
+    if context is None:
+        return
+    ops_summary = dict(context.ops_applied_summary or {})
+    if absorbed_count:
+        ops_summary["residual_absorptions"] = {
+            "count": absorbed_count,
+            "source": "think_success_residual_absorber",
+        }
+    if residual_creation_count:
+        ops_summary["residual_creations"] = {
+            "count": residual_creation_count,
+            "source": "think_success_residual_writer",
+        }
+    if repair_trigger_count:
+        ops_summary["residual_repair_triggers"] = {
+            "count": repair_trigger_count,
+            "source": "think_success_residual_repair_scheduler",
+        }
+    if latent_gap_count:
+        ops_summary["latent_gap_hypotheses"] = {
+            "count": latent_gap_count,
+            "source": "think_success_latent_gap_creator",
+        }
+    _attach_think_stage_timing_summary(ops_summary, stage_timings)
+    try:
+        async with pool.acquire() as conn:
+            await update_think_run(conn, outcome.run_id, ops_applied=ops_summary)
+    except Exception as exc:  # noqa: BLE001 - post-success observability only
+        _log.warning(
+            "think.residual_post_success_observability_failed",
+            run_id=str(outcome.run_id),
+            trigger_id=str(outcome.trigger_id),
+            error=str(exc),
+        )
+
+
+async def _record_residual_repair_resolution_observability(
+    pool: asyncpg.Pool,
+    outcome: ThinkRunOutcome,
+    *,
+    repair_resolution: ResidualRepairResolution,
+    stage_timings: list[dict[str, Any]] | None = None,
+) -> None:
+    context = outcome.residual_context
+    if context is None:
+        return
+    ops_summary = dict(context.ops_applied_summary or {})
+    ops_summary["residual_repair_resolution"] = {
+        "residual_id": str(repair_resolution.residual_id),
+        "status": repair_resolution.status,
+        "reason": repair_resolution.reason,
+        "resolved": repair_resolution.resolved,
+        "source": "residual_repair_resolution",
+    }
+    _attach_think_stage_timing_summary(ops_summary, stage_timings)
+    try:
+        async with pool.acquire() as conn:
+            await update_think_run(conn, outcome.run_id, ops_applied=ops_summary)
+    except Exception as exc:  # noqa: BLE001 - post-success observability only
+        _log.warning(
+            "think.residual_repair_resolution_observability_failed",
+            run_id=str(outcome.run_id),
+            trigger_id=str(outcome.trigger_id),
+            error=str(exc),
+        )
+
+
+def _residual_repair_cascade_depth(context: ThinkResidualContext) -> int:
+    if context.repair_cascade_depth is not None:
+        return max(0, int(context.repair_cascade_depth)) + 1
+    summary = context.ops_applied_summary
+    reasoning_frame = (
+        summary.get("reasoning_frame") if isinstance(summary, dict) else None
+    )
+    if not isinstance(reasoning_frame, dict):
+        return 0
+    raw = reasoning_frame.get("cascade_depth", 0)
+    try:
+        return max(0, int(raw)) + 1
+    except (TypeError, ValueError):
+        return 1
 
 
 async def _record_region_lock_release(
@@ -744,19 +1106,21 @@ async def _record_failed_run(
             await conn.execute(
                 """
                 INSERT INTO think_runs (
-                  id, tenant_id, trigger_id, trigger_kind,
+                  id, tenant_id, trigger_id, trigger_kind, lane,
                   started_at, ended_at, status, error
                 )
-                VALUES ($1, $2, $3, $4, now(), now(), 'failed', $5)
+                VALUES ($1, $2, $3, $4, $5, now(), now(), 'failed', $6)
                 ON CONFLICT (id) DO UPDATE
                 SET ended_at = now(),
                     status = 'failed',
+                    lane = COALESCE(EXCLUDED.lane, think_runs.lane),
                     error = EXCLUDED.error
                 """,
                 record.id,
                 record.tenant_id,
                 record.trigger_id,
                 record.trigger_kind,
+                record.lane,
                 (error or "failed")[:4000],
             )
     except Exception as exc:  # noqa: BLE001
@@ -792,6 +1156,59 @@ def _fail_outcome(
         exception=exc,
         elapsed_ms=(time.monotonic() - started_at) * 1000.0,
     )
+
+
+def _stage_timing_elapsed_ms(note: dict[str, Any]) -> float | None:
+    try:
+        elapsed_ms = float(note.get("elapsed_ms"))
+    except (TypeError, ValueError):
+        return None
+    return elapsed_ms if elapsed_ms >= 0 else None
+
+
+def _stage_timings_from_ops_summary(
+    ops_summary: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(ops_summary, dict):
+        return []
+    raw_timings = ops_summary.get("think_stage_timings")
+    if not isinstance(raw_timings, list):
+        return []
+    return [dict(note) for note in raw_timings if isinstance(note, dict)]
+
+
+def _attach_think_stage_timing_summary(
+    ops_summary: dict[str, Any],
+    stage_timings: list[dict[str, Any]] | None,
+) -> None:
+    if not stage_timings:
+        return
+
+    normalized: list[dict[str, Any]] = []
+    total_ms = 0.0
+    llm_ms = 0.0
+    non_llm_ms = 0.0
+    for raw_note in stage_timings:
+        if not isinstance(raw_note, dict):
+            continue
+        elapsed_ms = _stage_timing_elapsed_ms(raw_note)
+        if elapsed_ms is None:
+            continue
+        note = dict(raw_note)
+        note["elapsed_ms"] = round(elapsed_ms, 3)
+        normalized.append(note)
+        total_ms += elapsed_ms
+        if note.get("is_llm"):
+            llm_ms += elapsed_ms
+        else:
+            non_llm_ms += elapsed_ms
+
+    if not normalized:
+        return
+    ops_summary["think_stage_timings"] = normalized
+    ops_summary["think_stage_timings_ms_total"] = round(total_ms, 3)
+    ops_summary["think_llm_stage_timings_ms_total"] = round(llm_ms, 3)
+    ops_summary["think_non_llm_stage_timings_ms_total"] = round(non_llm_ms, 3)
 
 
 async def _apply_validated_diff(
@@ -900,6 +1317,7 @@ async def _record_apply_observability(
             + len(applied.get("relation_frame_ops", []))
             + len(applied["edge_ops"])
             + len(applied.get("ontology_gap_ops", []))
+            + len(applied.get("open_question_ops", []))
             + len(applied["act_ops"])
             + len(applied["resource_ops"])
         ),
@@ -935,9 +1353,7 @@ async def _record_apply_observability(
     for summary in applied.get("edge_ops", []):
         METRICS.inc_op(f"edge_{summary.get('op')}_{summary.get('edge_kind')}")
     for summary in applied.get("relation_claim_ops", []):
-        METRICS.inc_op(
-            f"relation_claim_{summary.get('op')}_{summary.get('edge_kind')}"
-        )
+        METRICS.inc_op(f"relation_claim_{summary.get('op')}_{summary.get('edge_kind')}")
     for summary in applied.get("relation_frame_ops", []):
         METRICS.inc_op(
             f"relation_frame_{summary.get('op')}_{summary.get('relation_kind')}"
@@ -946,6 +1362,10 @@ async def _record_apply_observability(
         METRICS.inc_op(
             f"ontology_gap_{summary.get('op')}_{summary.get('proposed_edge_kind')}"
         )
+    for summary in applied.get("open_question_ops", []):
+        METRICS.inc_op(
+            f"open_question_{summary.get('op')}_{summary.get('question_type')}"
+        )
     for summary in applied.get("act_ops", []):
         METRICS.inc_op(summary.get("op", "act_unknown"))
     for summary in applied.get("resource_ops", []):
@@ -953,7 +1373,9 @@ async def _record_apply_observability(
 
 
 def _primitive_from_trigger(trigger: TriggerContext) -> str | None:
-    signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    signature = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
     for key in ("question_primitive", "primitive"):
         value = signature.get(key)
         if value:
@@ -967,6 +1389,252 @@ def _primitive_from_trigger(trigger: TriggerContext) -> str | None:
         if value:
             return str(value)
     return trigger.subkind or trigger.kind
+
+
+_REPRESENTATION_REPAIR_WARNING_PRIORITY: dict[str, int] = {
+    "prediction_lifecycle_not_exercised": 10,
+    "truth_pressure_absent_for_contestable_memory": 20,
+    "missing_curiosity_coverage": 30,
+    "company_question_coverage_too_thin": 40,
+    "missing_source_coverage": 50,
+    "missing_discovered_pattern_coverage": 60,
+    "selected_raw_evidence_too_low": 70,
+    "selected_model_support_runaway": 80,
+}
+
+_REPRESENTATION_REPAIR_INTENTS: dict[str, str] = {
+    "prediction_lifecycle_not_exercised": "exercise_prediction_lifecycle",
+    "truth_pressure_absent_for_contestable_memory": "seek_counterevidence",
+    "missing_curiosity_coverage": "cover_unresolved_unknowns",
+    "company_question_coverage_too_thin": "expand_company_question_coverage",
+    "missing_source_coverage": "attach_missing_source_evidence",
+    "missing_discovered_pattern_coverage": "represent_discovered_patterns",
+    "selected_raw_evidence_too_low": "revisit_raw_evidence_selection",
+    "selected_model_support_runaway": "split_or_absorb_overloaded_memory",
+}
+
+_JUSTIFIED_NOOP_REPAIR_GRADES = {
+    "justified_noop_context_used",
+    "noop_trace_accounted",
+}
+
+_NOISE_NOOP_REPAIR_TRACE_MARKERS = (
+    "discard_as_noise",
+    "noise-only",
+    "noise only",
+    "noisy path",
+)
+
+
+def _representation_repair_payloads_from_audit(
+    trigger: TriggerContext,
+    audit: Any,
+    *,
+    max_payloads: int | None = None,
+) -> list[dict[str, Any]]:
+    if trigger.kind == "T4" and trigger.subkind == "representation_repair":
+        return []
+    if _audit_repairs_suppressed_for_justified_noop(trigger, audit):
+        return []
+    warnings = [
+        warning
+        for warning in (getattr(audit, "warnings", None) or [])
+        if isinstance(warning, dict)
+        and str(warning.get("code") or "") in _REPRESENTATION_REPAIR_WARNING_PRIORITY
+    ]
+    if not warnings:
+        return []
+    warnings.sort(
+        key=lambda warning: _REPRESENTATION_REPAIR_WARNING_PRIORITY[
+            str(warning.get("code") or "")
+        ]
+    )
+    limit = (
+        _representation_repair_max_triggers() if max_payloads is None else max_payloads
+    )
+    if limit <= 0:
+        return []
+
+    observation_ids = _trigger_observation_seed_ids(trigger)
+    model_ids = _trigger_model_seed_ids(trigger)
+    source_channels = list(getattr(audit, "source_channels", None) or [])
+    payloads: list[dict[str, Any]] = []
+    for warning in warnings[:limit]:
+        code = str(warning.get("code") or "")
+        intent = _REPRESENTATION_REPAIR_INTENTS[code]
+        repair_key = f"{getattr(audit, 'trigger_id')}:{code}"
+        payload: dict[str, Any] = {
+            "repair_key": repair_key,
+            "repair_intent": intent,
+            "audit_warning_code": code,
+            "audit_warning": warning,
+            "source_trigger_id": str(getattr(audit, "trigger_id")),
+            "source_run_id": str(getattr(audit, "run_id")),
+            "source_trigger_kind": str(getattr(audit, "trigger_kind")),
+            "seed_natural_text": _representation_repair_seed_text(
+                intent=intent,
+                warning=warning,
+                source_channels=source_channels,
+            ),
+        }
+        if trigger.seed_entity_ids:
+            payload["seed_entity_ids"] = list(trigger.seed_entity_ids)
+        if trigger.scope_actors:
+            payload["scope_actors"] = [
+                str(actor_id) for actor_id in trigger.scope_actors
+            ]
+        if observation_ids:
+            payload["observation_ids"] = [
+                str(observation_id) for observation_id in observation_ids
+            ]
+        if model_ids:
+            payload["model_ids"] = [str(model_id) for model_id in model_ids]
+        if trigger.region_spec:
+            payload["region_spec"] = trigger.region_spec
+        cascade_depth = _next_repair_cascade_depth(trigger)
+        if cascade_depth > 0:
+            payload["cascade_depth"] = cascade_depth
+        payloads.append(payload)
+    return payloads
+
+
+def _audit_repairs_suppressed_for_justified_noop(
+    trigger: TriggerContext,
+    audit: Any,
+) -> bool:
+    """Do not spend T4 repair on a correct empty/noise outcome.
+
+    The audit should still record representation pressure, but a successful
+    no-op is not itself evidence that semantic maintenance should run.
+    """
+    if trigger.kind != "T1":
+        return False
+    model_adaptiveness = _safe_int(getattr(audit, "model_adaptiveness", 0))
+    edge_adaptiveness = _safe_int(getattr(audit, "edge_adaptiveness", 0))
+    if model_adaptiveness + edge_adaptiveness > 0:
+        return False
+    metrics = getattr(audit, "metrics", None)
+    metrics = metrics if isinstance(metrics, dict) else {}
+    if _safe_int(metrics.get("state_changes_emitted")) > 0:
+        return False
+    grade = str(metrics.get("context_use_grade") or "")
+    if grade in _JUSTIFIED_NOOP_REPAIR_GRADES:
+        return True
+    trace = str(metrics.get("reasoning_trace") or "").lower()
+    return any(marker in trace for marker in _NOISE_NOOP_REPAIR_TRACE_MARKERS)
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _representation_repair_seed_text(
+    *,
+    intent: str,
+    warning: dict[str, Any],
+    source_channels: list[str],
+) -> str:
+    message = str(warning.get("message") or warning.get("code") or "representation gap")
+    channel_hint = ", ".join(source_channels[:4])
+    parts = [
+        f"Representation repair needed: {intent}.",
+        message,
+    ]
+    if channel_hint:
+        parts.append(f"Source channels: {channel_hint}.")
+    return " ".join(parts)
+
+
+def _trigger_observation_seed_ids(trigger: TriggerContext) -> list[UUID]:
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in [trigger.observation_id, *list(trigger.observation_ids or [])]:
+        if value is None or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _trigger_model_seed_ids(trigger: TriggerContext) -> list[UUID]:
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in [trigger.model_id, *list(trigger.member_model_ids or [])]:
+        if value is None or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _next_repair_cascade_depth(trigger: TriggerContext) -> int:
+    signature = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
+    raw = signature.get("cascade_depth", 0)
+    try:
+        return max(0, int(raw)) + 1
+    except (TypeError, ValueError):
+        return 1
+
+
+async def _enqueue_representation_repair_triggers(
+    *,
+    conn: asyncpg.Connection,
+    trigger: TriggerContext,
+    audit: Any,
+) -> list[dict[str, Any]]:
+    if not _representation_repair_triggers_enabled():
+        return []
+    payloads = _representation_repair_payloads_from_audit(trigger, audit)
+    queued: list[dict[str, Any]] = []
+    for payload in payloads:
+        repair_key = str(payload["repair_key"])
+        existing_id = await conn.fetchval(
+            """
+            SELECT id
+            FROM think_trigger_queue
+            WHERE tenant_id = $1
+              AND trigger_kind = 'T4'
+              AND trigger_subkind = 'representation_repair'
+              AND completed_at IS NULL
+              AND payload->>'repair_key' = $2
+            LIMIT 1
+            """,
+            audit.tenant_id,
+            repair_key,
+        )
+        if existing_id is not None:
+            queued.append(
+                {
+                    "id": str(existing_id),
+                    "repair_key": repair_key,
+                    "audit_warning_code": payload["audit_warning_code"],
+                    "deduped": True,
+                }
+            )
+            continue
+        trigger_id = await enqueue_trigger(
+            conn,
+            tenant_id=audit.tenant_id,
+            trigger_kind="T4",
+            trigger_subkind="representation_repair",
+            observation_id=trigger.observation_id,
+            model_id=trigger.model_id,
+            payload=payload,
+        )
+        queued.append(
+            {
+                "id": str(trigger_id),
+                "repair_key": repair_key,
+                "audit_warning_code": payload["audit_warning_code"],
+                "deduped": False,
+            }
+        )
+    return queued
 
 
 async def _publish_anomalies_and_enqueue_post_commit(
@@ -996,6 +1664,14 @@ async def _publish_anomalies_and_enqueue_post_commit(
         conn,
         anomalies=anomaly_dicts,
         applied_model_ids=applied.get("applied_model_ids") or [],
+        applied_open_question_ids=[
+            summary["open_question_id"]
+            for summary in applied.get("open_question_ops", [])
+            if isinstance(summary, dict)
+            and summary.get("op") == "insert"
+            and summary.get("open_question_id")
+        ],
+        applied_ops_summary=applied,
     )
     await assert_tx_usable(conn, "post_commit_enqueue")
     return anomalies
@@ -1010,7 +1686,10 @@ async def _record_representation_audit(
     validated: Any,
     bundle: Any,
     applied: dict[str, Any],
+    validated_context_use: dict[str, Any] | None = None,
 ) -> None:
+    if validated_context_use is not None and "context_use" not in applied:
+        applied["context_use"] = validated_context_use
     audit = build_representation_audit(
         trigger=trigger,
         run_id=record.id,
@@ -1023,11 +1702,20 @@ async def _record_representation_audit(
     applied["representation_audit"] = audit.to_dict()
     await persist_representation_audit(conn, audit)
     await assert_tx_usable(conn, "representation_audit")
+    repair_triggers = await _enqueue_representation_repair_triggers(
+        conn=conn,
+        trigger=trigger,
+        audit=audit,
+    )
+    if repair_triggers:
+        applied["representation_repair_triggers"] = repair_triggers
+        await assert_tx_usable(conn, "representation_repair_enqueue")
     emit(
         "think.representation_audit",
         run_id=str(record.id),
         status=audit.budget_status,
         warnings=len(audit.warnings),
+        repair_triggers=len(repair_triggers),
         model_adaptiveness=audit.model_adaptiveness,
         edge_adaptiveness=audit.edge_adaptiveness,
         coverage_roles=audit.coverage_roles,
@@ -1047,16 +1735,20 @@ async def _finalize_successful_run(
     region_tenant_hash: int,
     region_entity_hash: int,
     acquisition: RegionLockAcquisition,
+    stage_timings: list[dict[str, Any]] | None = None,
 ) -> ThinkRunOutcome:
+    started = time.perf_counter()
     casc_result = await run_cascade_for_validated_act_ops(
         conn=conn,
         trigger=trigger,
         validated=validated,
     )
+    record_stage_timing(stage_timings, "cascade", started)
     await assert_tx_usable(conn, "cascade")
     cascade_depth = casc_result.depth_reached if casc_result else 0
     if casc_result is not None:
         METRICS.observe_cascade_depth(trigger_kind_full, cascade_depth)
+    _attach_think_stage_timing_summary(applied, stage_timings)
     await update_think_run(
         conn,
         record.id,
@@ -1078,6 +1770,7 @@ async def _finalize_successful_run(
             + len(applied.get("relation_frame_ops", []))
             + len(applied["edge_ops"])
             + len(applied.get("ontology_gap_ops", []))
+            + len(applied.get("open_question_ops", []))
             + len(applied["act_ops"])
             + len(applied["resource_ops"])
         ),
@@ -1087,7 +1780,214 @@ async def _finalize_successful_run(
         region_tenant_hash=region_tenant_hash,
         region_entity_hash=region_entity_hash,
         region_acquisition=acquisition,
+        residual_context=_build_residual_context(
+            trigger=trigger,
+            record=record,
+            trigger_kind_full=trigger_kind_full,
+            validated=validated,
+            applied=applied,
+        ),
     )
+
+
+def _build_residual_context(
+    *,
+    trigger: TriggerContext,
+    record: ThinkRunRecord,
+    trigger_kind_full: str,
+    validated: Any,
+    applied: dict[str, Any],
+) -> ThinkResidualContext:
+    validation_errors = tuple(
+        str(error)
+        for error in (getattr(validated, "dropped_op_errors", None) or [])
+        if str(error).strip()
+    )
+    apply_errors = tuple(
+        str(error)
+        for error in (applied.get("apply_dropped_op_errors") or [])
+        if str(error).strip()
+    )
+    repair_payload = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
+    return ThinkResidualContext(
+        tenant_id=trigger.tenant_id,
+        think_run_id=record.id,
+        trigger_id=record.trigger_id,
+        trigger_kind=trigger_kind_full,
+        trigger_subkind=trigger.subkind,
+        source_observation_ids=tuple(_trigger_observation_seed_ids(trigger)),
+        validation_dropped_op_count=int(getattr(validated, "dropped_op_count", 0) or 0),
+        validation_dropped_op_errors=validation_errors,
+        apply_dropped_op_count=int(applied.get("apply_dropped_op_count") or 0),
+        apply_dropped_op_errors=apply_errors,
+        reasoning_trace=str(
+            applied.get("reasoning_trace")
+            or getattr(validated, "reasoning_trace", None)
+            or ""
+        ),
+        ops_applied_summary=applied,
+        repair_source=_payload_text(repair_payload, "repair_source"),
+        repair_key=_payload_text(repair_payload, "repair_key"),
+        repair_residual_id=_payload_uuid(repair_payload, "residual_id"),
+        repair_residual_kind=_payload_text(repair_payload, "residual_kind"),
+        repair_intent=_payload_text(repair_payload, "repair_intent"),
+        repair_cascade_depth=_payload_int(repair_payload, "cascade_depth"),
+    )
+
+
+def _payload_text(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _payload_uuid(payload: dict[str, Any], key: str) -> UUID | None:
+    value = _payload_text(payload, key)
+    if value is None:
+        return None
+    try:
+        return UUID(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _payload_int(payload: dict[str, Any], key: str) -> int | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _trigger_fast_noop_region(trigger: TriggerContext) -> list[tuple[str, str]]:
+    entities: set[tuple[str, str]] = set()
+    for ent in trigger.seed_entity_ids or []:
+        if not isinstance(ent, dict):
+            continue
+        ent_type = ent.get("type") or ent.get("kind")
+        ent_id = ent.get("id")
+        if ent_type is None or ent_id is None:
+            continue
+        entities.add((str(ent_type), str(ent_id)))
+    for actor_id in trigger.scope_actors or []:
+        entities.add(("actor", str(actor_id)))
+    return sorted(entities)
+
+
+def _build_noise_noop_fast_path(
+    trigger: TriggerContext,
+) -> tuple[ReasoningRunState, RawReasoningOutput] | None:
+    if is_authoritative(trigger):
+        return None
+    raw_diff = build_noise_only_raw_diff(trigger)
+    if raw_diff is None:
+        return None
+
+    retrieval_result = RetrievalResult(
+        trigger=trigger,
+        notes={
+            "fast_path": "noise_noop",
+            "retrieval_skipped": True,
+        },
+    )
+    reasoning_frame = ReasoningFrame.from_trigger(
+        trigger,
+        retrieval_result=retrieval_result,
+    )
+    bundle = ContextBundle(
+        notes={
+            "fast_path": "noise_noop",
+            "retrieval_skipped": True,
+            "reason": "noise_only_t1",
+        }
+    )
+    allowed_region = _trigger_fast_noop_region(trigger)
+
+    from .context_use import summarize_context_use
+
+    state = ReasoningRunState(
+        context_plan=None,
+        retrieval_result=retrieval_result,
+        reasoning_frame=reasoning_frame,
+        bundle=bundle,
+        allowed_region=allowed_region,
+        actor_operating_summary=None,
+        region_tenant_hash=None,
+        region_entity_hash=None,
+        acquisition=None,
+        mutation_row_inserted=False,
+    )
+    raw = RawReasoningOutput(
+        raw_diff=raw_diff,
+        raw_context_use=summarize_context_use(bundle, raw_diff),
+        allowed_region=allowed_region,
+        llm_latency_ms=0,
+    )
+    return state, raw
+
+
+async def _prepare_attempt_reasoning_output(
+    *,
+    conn: asyncpg.Connection,
+    trigger: TriggerContext,
+    llm_provider: LLMProvider | None,
+    access_context: AccessContext | None,
+    triggering_content: str | None,
+    reason_for_trigger: str | None,
+    record: ThinkRunRecord,
+    trigger_kind_full: str,
+    expanded_region: set[tuple[str, str]] | None,
+    embedder: Any | None,
+    read_pool: asyncpg.Pool | None,
+    reason_cache: dict[str, Any] | None,
+    stage_timings: list[dict[str, Any]] | None,
+) -> tuple[ReasoningRunState, RawReasoningOutput]:
+    started = time.perf_counter()
+    fast_path = _build_noise_noop_fast_path(trigger)
+    if fast_path is not None:
+        record_stage_timing(stage_timings, "noise_noop_fast_path", started)
+        state, raw = fast_path
+        emit(
+            "think.noise_noop_fast_path",
+            run_id=str(record.id),
+            trigger_ref=str(raw.raw_diff.trigger_ref),
+            observation_count=len(trigger.observation_ids or [])
+            + int(trigger.observation_id is not None),
+        )
+        return state, raw
+
+    state = await prepare_reasoning_run_state(
+        conn=conn,
+        trigger=trigger,
+        llm_provider=llm_provider,
+        access_context=access_context,
+        triggering_content=triggering_content,
+        reason_for_trigger=reason_for_trigger,
+        record=record,
+        trigger_kind_full=trigger_kind_full,
+        expanded_region=expanded_region,
+        embedder=embedder,
+        read_pool=read_pool,
+        stage_timings=stage_timings,
+    )
+    raw = await build_raw_reasoning_output(
+        conn=conn,
+        trigger=trigger,
+        llm_provider=llm_provider,
+        triggering_content=triggering_content,
+        reason_for_trigger=reason_for_trigger,
+        record=record,
+        state=state,
+        reason_cache=reason_cache,
+        stage_timings=stage_timings,
+    )
+    return state, raw
 
 
 # ---------------------------------------------------------------------
@@ -1106,19 +2006,13 @@ async def _run_once(
     record: ThinkRunRecord,
     expanded_region: set[tuple[str, str]] | None,
     embedder: Any | None = None,
+    read_pool: asyncpg.Pool | None = None,
     reason_cache: dict[str, Any] | None = None,
 ) -> ThinkRunOutcome:
-    """
-    Run one Think attempt. Called by `think()`.
-
-    If the caller has already opened a transaction, the whole attempt
-    participates in it. Otherwise, pre-mutation work runs without an
-    open transaction and this function opens a short mutation
-    transaction only for think_runs, the advisory lock, validation,
-    apply, anomalies, queueing, and cascade.
-    """
+    """Run one Think attempt, opening only the short mutation transaction here."""
     trigger_kind_full = record.trigger_kind
-    state = await prepare_reasoning_run_state(
+    stage_timings: list[dict[str, Any]] = []
+    state, raw = await _prepare_attempt_reasoning_output(
         conn=conn,
         trigger=trigger,
         llm_provider=llm_provider,
@@ -1129,16 +2023,9 @@ async def _run_once(
         trigger_kind_full=trigger_kind_full,
         expanded_region=expanded_region,
         embedder=embedder,
-    )
-    raw = await build_raw_reasoning_output(
-        conn=conn,
-        trigger=trigger,
-        llm_provider=llm_provider,
-        triggering_content=triggering_content,
-        reason_for_trigger=reason_for_trigger,
-        record=record,
-        state=state,
+        read_pool=read_pool,
         reason_cache=reason_cache,
+        stage_timings=stage_timings,
     )
 
     async with _mutation_transaction(conn):
@@ -1146,6 +2033,7 @@ async def _run_once(
         eh = state.region_entity_hash
         acquisition = state.acquisition
         if not state.mutation_row_inserted:
+            started = time.perf_counter()
             th, eh = region_lock_key(
                 trigger.tenant_id, [(t, i) for (t, i) in raw.allowed_region]
             )
@@ -1166,10 +2054,18 @@ async def _run_once(
                 trigger.tenant_id,
                 [(t, i) for (t, i) in raw.allowed_region],
             )
+            record_stage_timing(
+                stage_timings,
+                "region_lock_and_run_record",
+                started,
+                allowed_region_size=len(raw.allowed_region),
+                late_mutation_row=True,
+            )
         assert th is not None
         assert eh is not None
         assert acquisition is not None
 
+        started = time.perf_counter()
         if raw.llm_latency_ms is not None:
             await update_think_run(conn, record.id, llm_latency_ms=raw.llm_latency_ms)
         await debug_capture(
@@ -1184,8 +2080,10 @@ async def _run_once(
                 "reasoning_frame": state.reasoning_frame.to_dict(),
                 "actor_operating_context": state.actor_operating_summary,
                 "context_use": raw.raw_context_use,
+                "mutation_compile_summary": raw.mutation_compile_summary,
             },
         )
+        record_stage_timing(stage_timings, "response_observability", started)
 
         validated, validated_context_use = await validate_raw_reasoning_output(
             conn=conn,
@@ -1196,7 +2094,9 @@ async def _run_once(
             bundle=state.bundle,
             raw=raw,
             reason_cache=reason_cache,
+            stage_timings=stage_timings,
         )
+        started = time.perf_counter()
         applied, skipped = await _apply_validated_diff(
             conn=conn,
             trigger=trigger,
@@ -1208,9 +2108,11 @@ async def _run_once(
             acquisition=acquisition,
             llm_latency_ms=raw.llm_latency_ms,
         )
+        record_stage_timing(stage_timings, "apply_and_adjudication", started)
         if skipped is not None:
             return skipped
         assert applied is not None
+        started = time.perf_counter()
         await _record_representation_audit(
             conn=conn,
             trigger=trigger,
@@ -1219,7 +2121,10 @@ async def _run_once(
             validated=validated,
             bundle=state.bundle,
             applied=applied,
+            validated_context_use=validated_context_use,
         )
+        record_stage_timing(stage_timings, "representation_audit", started)
+        started = time.perf_counter()
         await _record_apply_observability(
             conn=conn,
             trigger=trigger,
@@ -1228,12 +2133,20 @@ async def _run_once(
             applied=applied,
             validated_context_use=validated_context_use,
         )
+        record_stage_timing(stage_timings, "apply_observability", started)
+        started = time.perf_counter()
         anomalies = await _publish_anomalies_and_enqueue_post_commit(
             conn=conn,
             trigger=trigger,
             record=record,
             validated=validated,
             applied=applied,
+        )
+        record_stage_timing(
+            stage_timings,
+            "post_commit_enqueue",
+            started,
+            anomaly_count=len(anomalies),
         )
         return await _finalize_successful_run(
             conn=conn,
@@ -1247,6 +2160,7 @@ async def _run_once(
             region_tenant_hash=th,
             region_entity_hash=eh,
             acquisition=acquisition,
+            stage_timings=stage_timings,
         )
 
 

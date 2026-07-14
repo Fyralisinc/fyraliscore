@@ -60,6 +60,16 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 DEFAULT_COMPLETED_GAP_SUPPRESSION_WINDOW = timedelta(
     hours=max(
         0.0,
@@ -68,6 +78,10 @@ DEFAULT_COMPLETED_GAP_SUPPRESSION_WINDOW = timedelta(
             24.0,
         ),
     )
+)
+DEFAULT_MAX_EMITTED_PER_CALL = max(
+    0,
+    _env_int("T3_MISSING_TRANSITION_MAX_EMITTED_PER_CALL", 1),
 )
 
 
@@ -82,6 +96,7 @@ async def emit_missing_transition_triggers(
         DEFAULT_COMPLETED_GAP_SUPPRESSION_WINDOW
     ),
     parent_payload: dict | None = None,
+    max_emitted: int | None = DEFAULT_MAX_EMITTED_PER_CALL,
 ) -> list[UUID]:
     """For each missing_transition signal, enqueue a T3 trigger if one
     isn't already pending. Returns the list of newly-enqueued trigger
@@ -99,8 +114,13 @@ async def emit_missing_transition_triggers(
     since = ref - lookback
     out: list[UUID] = []
     seen_keys: set[tuple[UUID, int | None]] = set()
+    emission_budget = None if max_emitted is None else max(0, int(max_emitted))
+    if emission_budget == 0:
+        return out
 
     for signal in signals:
+        if emission_budget is not None and len(out) >= emission_budget:
+            break
         if signal.dynamic_kind != "missing_transition":
             continue
         if not signal.subject_model_ids:

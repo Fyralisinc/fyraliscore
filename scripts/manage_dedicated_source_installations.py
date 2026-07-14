@@ -138,6 +138,18 @@ SPECS: dict[str, SourceSpec] = {
         entity_table="linkedin_entities",
         entity_install_column="linkedin_installation_id",
     ),
+    "instagram": SourceSpec(
+        source="instagram",
+        table="instagram_installations",
+        scope_column="ig_business_account_id",
+        # Meta app credentials are deployment-owned. The tenant installation
+        # owns only its revocable user access token.
+        ref_columns=("access_token_ref",),
+        entity_table="instagram_conversations",
+        entity_install_column="instagram_installation_id",
+        extra_output_columns=("page_id", "instagram_username", "history_lookback_days"),
+        updated_at_column="updated_at",
+    ),
     "jira": SourceSpec(
         source="jira",
         table="jira_installations",
@@ -461,6 +473,16 @@ async def run_command(
                     installation_id=_provider_installation_id(row, spec),
                     enabled=not disable,
                 )
+                webhook_row_updated = (
+                    await _set_native_instagram_webhook_enabled(
+                        conn,
+                        tenant_id=tenant_id,
+                        spec=spec,
+                        installation_row_id=row["id"],
+                        enabled=not disable,
+                    )
+                    or webhook_row_updated
+                )
                 await _record_operator_action(
                     conn,
                     tenant_id=tenant_id,
@@ -600,6 +622,16 @@ async def run_command(
                     spec=spec,
                     installation_id=provider_installation_id,
                     clear_secret_ref="webhook_secret_ref" in deleted_columns,
+                )
+                webhook_row_updated = (
+                    await _set_native_instagram_webhook_enabled(
+                        conn,
+                        tenant_id=tenant_id,
+                        spec=spec,
+                        installation_row_id=row["id"],
+                        enabled=False,
+                    )
+                    or webhook_row_updated
                 )
                 webhook_cleanup_status = _webhook_cleanup_status(
                     spec=spec,
@@ -898,11 +930,41 @@ async def _uninstall_provider_installation(
     return _rows_changed(status) > 0
 
 
+async def _set_native_instagram_webhook_enabled(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    spec: SourceSpec,
+    installation_row_id: UUID,
+    enabled: bool,
+) -> bool:
+    """Pause/resume Instagram at its route resolver, not provider_installations."""
+    if spec.source != "instagram":
+        return False
+    status = await conn.execute(
+        """
+        UPDATE instagram_webhook_routes
+           SET enabled = $1, updated_at = now()
+         WHERE tenant_id = $2 AND instagram_installation_id = $3
+        """,
+        enabled,
+        tenant_id,
+        installation_row_id,
+    )
+    return _rows_changed(status) > 0
+
+
 def _webhook_cleanup_status(
     *,
     spec: SourceSpec,
     provider_row_updated: bool,
 ) -> str:
+    if spec.source == "instagram":
+        return (
+            WEBHOOK_CLEANUP_LOCAL_RESOLVER_DISABLED
+            if provider_row_updated
+            else WEBHOOK_CLEANUP_PROVIDER_ROW_MISSING
+        )
     if "webhook_secret_ref" not in spec.ref_columns:
         return WEBHOOK_CLEANUP_NOT_APPLICABLE
     if provider_row_updated:

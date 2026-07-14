@@ -159,8 +159,13 @@ def _include_query_router(
         cache_adapter=_build_qry_cache(pool=pool),
         embedder=qry_embedder,
     )
+    default_actor = os.environ.get("DEFAULT_ACTOR_ID")
     app_.include_router(
-        build_query_router(qry_handler, default_tenant_id=default_tenant_uuid),
+        build_query_router(
+            qry_handler,
+            default_tenant_id=default_tenant_uuid,
+            default_viewer_id=UUID(default_actor) if default_actor else None,
+        ),
     )
     return qry_handler
 

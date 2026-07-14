@@ -10,7 +10,10 @@ The Company Intelligence scorecard design is documented at:
 docs/evaluation/company_intelligence_harness.md
 
 Default `--mode build-only` writes the generated scenario and gold rubric
-without touching Postgres or an LLM. Use `--mode run` for the real burn.
+without touching Postgres or an LLM. Use `--mode seed-only` to create a
+persistent seeded tenant for repeated append validation runs. Use `--mode run`
+for the real burn. Use `--mode rerender-report` to recompute a prior run's
+scorecard from saved artifacts without touching Postgres or an LLM.
 """
 
 from __future__ import annotations
@@ -25,10 +28,11 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import time
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import MISSING, asdict, dataclass, field, fields as dataclass_fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -89,6 +93,152 @@ from scripts.run_1000_signal_model_layer_probe import (
 )
 
 load_dotenv(REPO_ROOT / ".env", override=False)
+
+_POST_SEED_ANALYZE_TABLES = (
+    "models",
+    "model_scope_entities",
+    "model_scope_actors",
+    "model_sparse_terms",
+    "model_answerability_index",
+    "model_belief_addresses",
+    "model_search_documents",
+    "model_representation_feature_postings",
+    "retrieval_affordance_profiles",
+)
+_SEED_PREFLIGHT_MIN_MODELS = 1_000
+_SEED_PREFLIGHT_BLOAT_BYTES = 16 * 1024 * 1024
+_SEED_PREFLIGHT_BLOAT_TABLES = (
+    "models",
+    "model_semantic_terms",
+    "model_semantic_term_postings",
+    "model_search_documents",
+    "model_sparse_terms",
+    "model_belief_addresses",
+    "model_answerability_index",
+    "model_representation_tag_postings",
+    "model_representation_feature_postings",
+    "model_scope_entities",
+    "model_events",
+    "retrieval_affordance_profiles",
+)
+
+_RETRIEVAL_PROBE_PRIMITIVES = (
+    "GOAL_IMPACT",
+    "COMMITMENT",
+    "OWNERSHIP",
+    "DEPENDENCY",
+    "COUNTEREVIDENCE",
+)
+
+_RETRIEVAL_PROBE_STATIC_TERM_CASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("common_generic", ("customers", "customer_resource", "execution")),
+    ("operational_common", ("capacity", "billing", "support")),
+    ("focused_goal", ("goal", "impact", "commitment")),
+    (
+        "background_noise",
+        (
+            "general operational chatter",
+            "lunch logistics",
+            "duplicated dashboard links",
+            "non-actionable reminder",
+        ),
+    ),
+)
+
+_T1_BATCH_TRANSIENT_FAILURE_MARKERS = (
+    "connecttimeout",
+    "readtimeout",
+    "writetimeout",
+    "pooltimeout",
+    "timeout",
+    "timed out",
+    "temporarily unavailable",
+    "connection reset",
+    "connection aborted",
+    "connection refused",
+    "server disconnected",
+    "service unavailable",
+    "too many requests",
+    "rate limit",
+    "circuit_open",
+    "http 429",
+    "http 500",
+    "http 502",
+    "http 503",
+    "http 504",
+)
+
+_RETRIEVAL_PROBE_POSITIVE_ANSWERABILITY_CASES = frozenset(
+    {
+        "common_generic",
+        "operational_common",
+        "top_sparse_terms",
+        "top_answerability_terms",
+    }
+)
+_RETRIEVAL_PROBE_POSITIVE_SCOPED_SPARSE_CASES = frozenset(
+    {
+        "common_generic",
+        "operational_common",
+        "top_sparse_terms",
+    }
+)
+_RETRIEVAL_PROBE_SIDECAR_SPECS: tuple[dict[str, Any], ...] = (
+    {
+        "table": "model_scope_entities",
+        "required": True,
+        "min_active_model_ratio": 0.90,
+        "min_distinct_entities": 3,
+    },
+    {
+        "table": "model_sparse_terms",
+        "required": True,
+        "min_active_model_ratio": 0.98,
+        "min_rows_per_active_model": 8,
+        "min_distinct_terms": 16,
+    },
+    {
+        "table": "model_answerability_index",
+        "required": True,
+        "min_active_model_ratio": 0.98,
+        "min_distinct_terms": 16,
+        "min_probe_primitives": 3,
+    },
+    {
+        "table": "model_representation_feature_postings",
+        "required": True,
+        "min_active_model_ratio": 0.98,
+        "min_distinct_features": 16,
+        "min_feature_types": 4,
+    },
+    {
+        "table": "model_scope_actors",
+        "required": False,
+        "min_active_model_ratio": 0.0,
+    },
+    {
+        "table": "model_semantic_term_postings",
+        "required": False,
+        "min_active_model_ratio": 0.0,
+    },
+    {
+        "table": "model_operational_role_postings",
+        "required": False,
+        "min_active_model_ratio": 0.0,
+    },
+    {
+        "table": "model_representation_tag_postings",
+        "required": False,
+        "min_active_model_ratio": 0.0,
+    },
+)
+
+_DOWNSTREAM_TRIGGER_DRAIN_PREDICATE = "trigger_kind IN ('T2', 'T3', 'T4')"
+_BACKGROUND_MAINTENANCE_TRIGGER_KINDS = frozenset({"T4"})
+
+
+def _trigger_kind_family(trigger_kind: str | None) -> str:
+    return str(trigger_kind or "").split(":", 1)[0]
 
 
 @dataclass(frozen=True)
@@ -161,6 +311,7 @@ _PRODUCT_VALUE_EVAL_KEYS: tuple[str, ...] = (
     "counterfactual_trap",
     "latent_bridge_inference",
     "compression_loss",
+    "experience_metabolism",
     "negative_learning",
     "question_policy",
     "customer_value",
@@ -732,6 +883,7 @@ def _build_long_horizon_storyline_scenario(
     future_offsets = {story.id: 0 for story in STORYLINES}
     noise_offset = 0
     capability_offset = 0
+    story_cursor = 0
     horizon_end_batch = horizon_start_batch + target_t1_batches
     warmup_batches = _long_horizon_warmup_batches(horizon_end_batch)
 
@@ -740,14 +892,22 @@ def _build_long_horizon_storyline_scenario(
         if sequence_kind == "noise":
             noise_offset += signals_per_batch
         elif sequence_kind == "capability_probe":
-            capability_offset += signals_per_batch
+            story_cursor, story_counts = _long_horizon_story_filler_plan(
+                story_cursor=story_cursor,
+                signals_per_batch=signals_per_batch,
+                reserved_special_slots=1,
+            )
+            for story_id, count in story_counts.items():
+                story_offsets[story_id] += count
+            capability_offset += signals_per_batch - sum(story_counts.values())
         elif sequence_kind == "future_validation":
             for item_index in range(signals_per_batch):
                 story = STORYLINES[(batch_index + item_index) % len(STORYLINES)]
                 future_offsets[story.id] += 1
         else:
-            story = STORYLINES[batch_index % len(STORYLINES)]
+            story = STORYLINES[story_cursor % len(STORYLINES)]
             story_offsets[story.id] += signals_per_batch
+            story_cursor += 1
 
     for batch_index in range(horizon_start_batch, horizon_end_batch):
         sequence_kind = _long_horizon_sequence_kind(batch_index, warmup_batches)
@@ -766,7 +926,13 @@ def _build_long_horizon_storyline_scenario(
                 noise_offset += 1
         elif sequence_kind == "capability_probe":
             sequence_name = f"capability_probe_wave_{batch_index + 1:03d}"
-            for _item_index in range(signals_per_batch):
+            next_story_cursor, story_counts = _long_horizon_story_filler_plan(
+                story_cursor=story_cursor,
+                signals_per_batch=signals_per_batch,
+                reserved_special_slots=1,
+            )
+            special_slots = signals_per_batch - sum(story_counts.values())
+            for _item_index in range(special_slots):
                 signal = _make_capability_probe_signal(
                     signal_index,
                     capability_offset,
@@ -779,6 +945,20 @@ def _build_long_horizon_storyline_scenario(
                 signals.append(signal)
                 signal_index += 1
                 capability_offset += 1
+            for story_id, count in story_counts.items():
+                story = _storyline_by_id(story_id)
+                for _ in range(count):
+                    local_index = story_offsets[story.id]
+                    signal = _make_story_signal(story, signal_index, local_index)
+                    _decorate_long_horizon_signal(
+                        signal,
+                        batch_index=batch_index,
+                        sequence_kind=sequence_kind,
+                    )
+                    signals.append(signal)
+                    signal_index += 1
+                    story_offsets[story.id] += 1
+            story_cursor = next_story_cursor
         elif sequence_kind == "future_validation":
             sequence_name = f"future_validation_wave_{batch_index + 1:03d}"
             for item_index in range(signals_per_batch):
@@ -798,7 +978,7 @@ def _build_long_horizon_storyline_scenario(
                 signal_index += 1
                 future_offsets[story.id] += 1
         else:
-            story = STORYLINES[batch_index % len(STORYLINES)]
+            story = STORYLINES[story_cursor % len(STORYLINES)]
             sequence_name = f"{story.id}_horizon_wave_{batch_index + 1:03d}"
             for _item_index in range(signals_per_batch):
                 local_index = story_offsets[story.id]
@@ -811,6 +991,7 @@ def _build_long_horizon_storyline_scenario(
                 signals.append(signal)
                 signal_index += 1
                 story_offsets[story.id] += 1
+            story_cursor += 1
         sequences[sequence_name] = signals
 
     scenario.signal_sequences = sequences
@@ -837,6 +1018,40 @@ def _build_long_horizon_storyline_scenario(
         "storyline_gold": gold,
     }
     return scenario, gold
+
+
+def _storyline_by_id(story_id: str) -> StorylineSpec:
+    for story in STORYLINES:
+        if story.id == story_id:
+            return story
+    raise KeyError(story_id)
+
+
+def _long_horizon_story_filler_plan(
+    *,
+    story_cursor: int,
+    signals_per_batch: int,
+    reserved_special_slots: int,
+) -> tuple[int, dict[str, int]]:
+    """Use spare probe-wave slots to finish the current storyline coverage cycle."""
+
+    available_slots = max(0, signals_per_batch - max(0, reserved_special_slots))
+    story_position = story_cursor % len(STORYLINES)
+    if available_slots <= 0 or story_position == 0:
+        return story_cursor, {}
+
+    pending_stories = len(STORYLINES) - story_position
+    counts: dict[str, int] = {}
+    next_cursor = story_cursor
+    remaining_slots = available_slots
+    while pending_stories > 0 and remaining_slots > 0:
+        story = STORYLINES[next_cursor % len(STORYLINES)]
+        take = max(1, (remaining_slots + pending_stories - 1) // pending_stories)
+        counts[story.id] = take
+        remaining_slots -= take
+        pending_stories -= 1
+        next_cursor += 1
+    return next_cursor, counts
 
 
 def _long_horizon_warmup_batches(horizon_end_batch: int) -> int:
@@ -1325,6 +1540,31 @@ def _read_json_obj(path: Path) -> dict[str, Any]:
     return parsed
 
 
+def _read_json_list(path: Path) -> list[Any]:
+    try:
+        parsed = json.loads(path.read_text())
+    except FileNotFoundError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return parsed
+
+
+def _storyline_score_from_artifact(row: dict[str, Any]) -> StorylineScore:
+    payload: dict[str, Any] = {}
+    for field_info in dataclass_fields(StorylineScore):
+        name = field_info.name
+        if name in row:
+            payload[name] = row[name]
+            continue
+        has_default = field_info.default is not MISSING
+        has_default_factory = field_info.default_factory is not MISSING
+        if has_default or has_default_factory:
+            continue
+        raise ValueError(f"storyline score artifact missing required field: {name}")
+    return StorylineScore(**payload)
+
+
 def _load_append_context(args: argparse.Namespace) -> dict[str, Any] | None:
     base_run_id = getattr(args, "append_to_run_id", None)
     if not base_run_id:
@@ -1561,6 +1801,9 @@ def _resolve_storyline_run_id(args: argparse.Namespace) -> str:
     if run_id:
         return run_id
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if getattr(args, "mode", None) == "retrieval-probe":
+        base = getattr(args, "append_to_run_id", None) or "tenant"
+        return f"{base}-retrieval-probe-{timestamp}"
     if getattr(args, "append_to_run_id", None):
         return f"{args.append_to_run_id}-append-{args.target_t1_batches}-{timestamp}"
     return f"storyline-batch-{timestamp}"
@@ -1577,7 +1820,9 @@ def _build_storyline_benchmark_inputs(
         str(append_context["foundation_namespace"]) if append_context else None
     )
     horizon_start_batch = (
-        int(append_context["horizon_start_batch"]) if append_context else 0
+        int(append_context["horizon_start_batch"])
+        if append_context
+        else int(args.horizon_start_batch or 0)
     )
     scenario, gold = build_storyline_scenario(
         run_id=run_id,
@@ -1697,21 +1942,169 @@ async def _maybe_seed_storyline_models(
 
     from scripts.run_incremental_feedback_loop_stress import _seed_company
 
+    db_preflight = await _seed_database_preflight(
+        pool,
+        requested_models=args.seed_models,
+        allow_failures=bool(getattr(args, "allow_seed_db_preflight_failures", False)),
+    )
     seeded = await _seed_company(
         pool,
         tenant_id=tenant_id,
         families=args.seed_families,
         total_models=args.seed_models,
+        suppress_legacy_postings=not bool(
+            getattr(args, "keep_legacy_seed_postings", False)
+        ),
     )
+    analyze_status = await _analyze_post_seed_lookup_tables(pool)
     seeded_status = {
         "requested_models": args.seed_models,
         "families": args.seed_families,
         "models": seeded.total_models,
         "insert_ms": round(seeded.insert_ms, 3),
+        "analyze": analyze_status,
+        "db_preflight": db_preflight,
         "sidecars": seeded.sidecars,
+        "timings": seeded.timings,
     }
     print(f"seed_status={json.dumps(seeded_status, sort_keys=True)}", flush=True)
     return seeded_status
+
+
+async def _seed_database_preflight(
+    pool: asyncpg.Pool,
+    *,
+    requested_models: int,
+    allow_failures: bool = False,
+) -> dict[str, Any]:
+    if requested_models < _SEED_PREFLIGHT_MIN_MODELS:
+        return {
+            "status": "skipped",
+            "reason": "small_seed",
+            "requested_models": requested_models,
+            "min_models": _SEED_PREFLIGHT_MIN_MODELS,
+        }
+
+    async with pool.acquire() as conn:
+        test_trigger_rows = await conn.fetch(
+            """
+            SELECT tgrelid::regclass::text AS table_name,
+                   tgname AS trigger_name
+            FROM pg_trigger
+            WHERE NOT tgisinternal
+              AND tgname = '_test_auto_register_tenant'
+            ORDER BY tgrelid::regclass::text
+            LIMIT 20
+            """
+        )
+        test_trigger_count = int(
+            await conn.fetchval(
+                """
+                SELECT count(*)::int
+                FROM pg_trigger
+                WHERE NOT tgisinternal
+                  AND tgname = '_test_auto_register_tenant'
+                """
+            )
+            or 0
+        )
+        bloat_rows = await conn.fetch(
+            """
+            SELECT c.relname AS table_name,
+                   pg_total_relation_size(c.oid)::bigint AS total_bytes,
+                   pg_relation_size(c.oid)::bigint AS heap_bytes,
+                   pg_indexes_size(c.oid)::bigint AS index_bytes,
+                   COALESCE(s.n_live_tup, 0)::bigint AS live_rows
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+            WHERE n.nspname = 'public'
+              AND c.relkind = 'r'
+              AND c.relname = ANY($1::text[])
+              AND COALESCE(s.n_live_tup, 0) = 0
+              AND pg_indexes_size(c.oid) >= $2
+            ORDER BY pg_indexes_size(c.oid) DESC, c.relname
+            """,
+            list(_SEED_PREFLIGHT_BLOAT_TABLES),
+            _SEED_PREFLIGHT_BLOAT_BYTES,
+        )
+
+    failures: list[str] = []
+    warnings: list[str] = []
+    if test_trigger_count:
+        examples = [
+            f"{row['table_name']}.{row['trigger_name']}"
+            for row in test_trigger_rows[:5]
+        ]
+        failures.append(
+            "seed database has test tenant auto-register triggers installed "
+            f"(count={test_trigger_count}, examples={examples})"
+        )
+    bloat_tables = [
+        {
+            "table": str(row["table_name"]),
+            "total_bytes": int(row["total_bytes"] or 0),
+            "heap_bytes": int(row["heap_bytes"] or 0),
+            "index_bytes": int(row["index_bytes"] or 0),
+            "live_rows": int(row["live_rows"] or 0),
+        }
+        for row in bloat_rows
+    ]
+    if bloat_tables:
+        failures.append(
+            "seed database has large empty model-derived indexes; use a fresh "
+            f"or reindexed DB before a large seed (tables="
+            f"{[row['table'] for row in bloat_tables[:6]]})"
+        )
+    status = "passed" if not failures else "failed"
+    result = {
+        "status": status,
+        "requested_models": requested_models,
+        "test_auto_register_trigger_count": test_trigger_count,
+        "test_auto_register_trigger_examples": [
+            {
+                "table": str(row["table_name"]),
+                "trigger": str(row["trigger_name"]),
+            }
+            for row in test_trigger_rows
+        ],
+        "empty_index_bloat_threshold_bytes": _SEED_PREFLIGHT_BLOAT_BYTES,
+        "empty_index_bloat_tables": bloat_tables,
+        "failures": failures,
+        "warnings": warnings,
+    }
+    if failures and not allow_failures:
+        raise RuntimeError(
+            "seed database preflight failed: "
+            + "; ".join(failures)
+            + " (override with --allow-seed-db-preflight-failures for exploratory runs)"
+        )
+    if failures:
+        warnings.extend(failures)
+    return result
+
+
+async def _analyze_post_seed_lookup_tables(pool: asyncpg.Pool) -> dict[str, Any]:
+    started = time.monotonic()
+    analyzed: list[str] = []
+    table_timings_ms: dict[str, float] = {}
+    async with pool.acquire() as conn:
+        for table in _POST_SEED_ANALYZE_TABLES:
+            exists = await conn.fetchval("SELECT to_regclass($1)", f"public.{table}")
+            if exists is None:
+                continue
+            table_started = time.monotonic()
+            await conn.execute(f"ANALYZE {table}")
+            table_timings_ms[table] = round(
+                (time.monotonic() - table_started) * 1000,
+                3,
+            )
+            analyzed.append(table)
+    return {
+        "tables": analyzed,
+        "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
+        "table_timings_ms": table_timings_ms,
+    }
 
 
 def _build_storyline_worker(
@@ -1810,6 +2203,7 @@ async def _process_storyline_benchmark_waves(
                 worker,
                 tenant_id=tenant_id,
                 force_window_elapsed_s=args.t1_batch_window_s + 1.0,
+                retry_attempts=args.t1_batch_retry_attempts,
             )
         wave["t1_batch"] = t1_batch
         if args.downstream_steps_per_wave > 0:
@@ -1867,6 +2261,12 @@ async def _collect_storyline_benchmark_summary(
     model_summary["capability_probe_counts"] = await _collect_capability_probe_counts(
         pool, tenant_id=tenant_id
     )
+    model_summary["lifecycle_obligation_report"] = (
+        await _collect_lifecycle_obligation_report(
+            pool,
+            tenant_id=tenant_id,
+        )
+    )
     model_summary["edge_lifecycle"] = await _collect_edge_lifecycle_report(
         pool,
         tenant_id=tenant_id,
@@ -1882,9 +2282,32 @@ async def _collect_storyline_benchmark_summary(
         tenant_id=tenant_id,
         future_trigger_ids=_future_wave_trigger_ids(waves),
     )
+    model_summary["projection_metabolism"] = await _collect_projection_metabolism_report(
+        pool,
+        tenant_id=tenant_id,
+    )
     model_summary[
         "question_planner_reflective_report"
     ] = await _collect_question_planner_reflective_report(
+        pool,
+        tenant_id=tenant_id,
+    )
+    model_summary["latency_breakdown"] = await _collect_latency_breakdown(
+        pool,
+        tenant_id=tenant_id,
+        waves=waves,
+    )
+    model_summary["think_cost_profile"] = await _collect_think_cost_profile(
+        pool,
+        tenant_id=tenant_id,
+    )
+    model_summary[
+        "post_commit_action_profile"
+    ] = await _collect_post_commit_action_profile(
+        pool,
+        tenant_id=tenant_id,
+    )
+    model_summary["downstream_suppression"] = await _collect_downstream_suppression(
         pool,
         tenant_id=tenant_id,
     )
@@ -1943,22 +2366,1031 @@ async def _write_storyline_benchmark_outputs(
     return benchmark_summary
 
 
+async def _write_seed_only_outputs(
+    args: argparse.Namespace,
+    *,
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    scenario: Scenario,
+    run_id: str,
+    report_dir: Path,
+    run_config: dict[str, Any],
+    seed_status: dict[str, Any],
+    started: float,
+) -> dict[str, Any]:
+    async with pool.acquire() as conn:
+        active_model_count = int(
+            await conn.fetchval(
+                """
+                SELECT count(*)::bigint
+                FROM models
+                WHERE tenant_id = $1
+                  AND status = 'active'
+                """,
+                tenant_id,
+            )
+            or 0
+        )
+        observation_count = int(
+            await conn.fetchval(
+                """
+                SELECT count(*)::bigint
+                FROM observations
+                WHERE tenant_id = $1
+                """,
+                tenant_id,
+            )
+            or 0
+        )
+    summary = {
+        "mode": "seed-only",
+        "tenant_id": str(tenant_id),
+        "run_id": run_id,
+        "seed_status": seed_status,
+        "active_model_count": active_model_count,
+        "observation_count": observation_count,
+        "planned_signal_count": _signal_count(scenario),
+        "processed_signal_count": 0,
+        "append_ready": not bool(args.cleanup),
+        "append_example": (
+            "Use --mode run --append-to-run-id "
+            f"{run_id} --target-t1-batches N without --cleanup."
+        ),
+        "run_config": run_config,
+        "elapsed_seconds": round(time.monotonic() - started, 3),
+    }
+    _write_json(report_dir / "run_summary.json", summary)
+    _write_json(report_dir / "benchmark_summary.json", summary)
+    _write_json(report_dir / "storyline_scores.json", summary)
+    (report_dir / "benchmark_summary.md").write_text(
+        "\n".join(
+            [
+                "# Storyline Seed Baseline",
+                "",
+                f"- Run id: `{run_id}`",
+                f"- Tenant: `{tenant_id}`",
+                f"- Active models: {active_model_count}",
+                f"- Observations: {observation_count}",
+                f"- Append ready: {summary['append_ready']}",
+                "",
+                "This run intentionally skips signal injection, Think, scoring, "
+                "adaptive drain, and cleanup unless `--cleanup` was requested.",
+            ]
+        )
+    )
+    print(f"report_dir={report_dir}", flush=True)
+    return summary
+
+
+def _retrieval_probe_tenant_id(args: argparse.Namespace) -> UUID:
+    if getattr(args, "append_tenant_id", None):
+        return UUID(str(args.append_tenant_id))
+    append_context = _load_append_context(args)
+    if append_context is None:
+        raise SystemExit(
+            "--mode retrieval-probe requires --append-to-run-id or --append-tenant-id"
+        )
+    return UUID(str(append_context["tenant_id"]))
+
+
+async def _retrieval_probe_table_exists(
+    conn: asyncpg.Connection,
+    table: str,
+) -> bool:
+    return bool(await conn.fetchval("SELECT to_regclass($1)", f"public.{table}"))
+
+
+async def _retrieval_probe_column_exists(
+    conn: asyncpg.Connection,
+    *,
+    table: str,
+    column: str,
+) -> bool:
+    return bool(
+        await conn.fetchval(
+            """
+            SELECT EXISTS (
+              SELECT 1
+              FROM information_schema.columns
+              WHERE table_schema = 'public'
+                AND table_name = $1
+                AND column_name = $2
+            )
+            """,
+            table,
+            column,
+        )
+    )
+
+
+async def _retrieval_probe_sidecar_preflight(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+) -> dict[str, Any]:
+    active_model_count = int(
+        await conn.fetchval(
+            """
+            SELECT count(*)::bigint
+            FROM models
+            WHERE tenant_id = $1
+              AND status = 'active'
+            """,
+            tenant_id,
+        )
+        or 0
+    )
+    failures: list[str] = []
+    warnings: list[str] = []
+    tables: dict[str, Any] = {}
+    for spec in _RETRIEVAL_PROBE_SIDECAR_SPECS:
+        table = str(spec["table"])
+        required = bool(spec["required"])
+        min_active_model_ratio = float(spec["min_active_model_ratio"])
+        exists = await _retrieval_probe_table_exists(conn, table)
+        table_status: dict[str, Any] = {
+            "exists": exists,
+            "required": required,
+            "min_active_model_ratio": min_active_model_ratio,
+        }
+        tables[table] = table_status
+        if not exists:
+            message = f"retrieval sidecar table missing: {table}"
+            if required:
+                failures.append(message)
+            else:
+                warnings.append(message)
+            continue
+
+        has_status = await _retrieval_probe_column_exists(
+            conn,
+            table=table,
+            column="status",
+        )
+        active_condition = "sidecar.status = 'active'" if has_status else "TRUE"
+
+        row = await conn.fetchrow(
+            f"""
+            WITH active_models AS (
+              SELECT id, tenant_id
+              FROM models
+              WHERE tenant_id = $1
+                AND status = 'active'
+            )
+            SELECT
+              (
+                SELECT count(*)::bigint
+                FROM {table} sidecar
+                WHERE sidecar.tenant_id = $1
+              ) AS row_count,
+              (
+                SELECT count(*)::bigint
+                FROM {table} sidecar
+                WHERE sidecar.tenant_id = $1
+                  AND {active_condition}
+              ) AS active_row_count,
+              (
+                SELECT count(*)::bigint
+                FROM active_models model
+                WHERE EXISTS (
+                  SELECT 1
+                  FROM {table} sidecar
+                  WHERE sidecar.tenant_id = model.tenant_id
+                    AND sidecar.model_id = model.id
+                    AND {active_condition}
+                )
+              ) AS active_model_hit_count,
+              (
+                SELECT count(*)::bigint
+                FROM {table} sidecar
+                LEFT JOIN models model
+                  ON model.tenant_id = sidecar.tenant_id
+                 AND model.id = sidecar.model_id
+                WHERE sidecar.tenant_id = $1
+                  AND model.id IS NULL
+              ) AS orphan_row_count
+            """,
+            tenant_id,
+        )
+        row_count = int((row or {}).get("row_count") or 0)
+        active_row_count = int((row or {}).get("active_row_count") or 0)
+        active_model_hit_count = int((row or {}).get("active_model_hit_count") or 0)
+        orphan_row_count = int((row or {}).get("orphan_row_count") or 0)
+        active_model_ratio = (
+            active_model_hit_count / active_model_count
+            if active_model_count > 0
+            else 0.0
+        )
+        table_status.update(
+            {
+                "has_status": has_status,
+                "row_count": row_count,
+                "active_row_count": active_row_count,
+                "active_model_hit_count": active_model_hit_count,
+                "active_model_ratio": round(active_model_ratio, 4),
+                "orphan_row_count": orphan_row_count,
+            }
+        )
+        if int(spec.get("min_rows_per_active_model") or 0):
+            min_rows = active_model_count * int(spec["min_rows_per_active_model"])
+            table_status["min_active_rows"] = min_rows
+            if required and active_row_count < min_rows:
+                failures.append(
+                    f"required retrieval sidecar row density too low: {table} "
+                    f"{active_row_count} < {min_rows}"
+                )
+        if int(spec.get("min_distinct_entities") or 0):
+            entity_count = int(
+                await conn.fetchval(
+                    f"""
+                    SELECT count(DISTINCT entity_type || ':' || entity_id::text)::bigint
+                    FROM {table} sidecar
+                    WHERE sidecar.tenant_id = $1
+                    """,
+                    tenant_id,
+                )
+                or 0
+            )
+            table_status["distinct_entities"] = entity_count
+            if required and entity_count < int(spec["min_distinct_entities"]):
+                failures.append(
+                    f"required retrieval sidecar entity variety too low: {table} "
+                    f"{entity_count} < {int(spec['min_distinct_entities'])}"
+                )
+        if int(spec.get("min_distinct_terms") or 0):
+            term_count = int(
+                await conn.fetchval(
+                    f"""
+                    SELECT count(DISTINCT term)::bigint
+                    FROM {table} sidecar
+                    WHERE sidecar.tenant_id = $1
+                      AND {active_condition}
+                    """,
+                    tenant_id,
+                )
+                or 0
+            )
+            table_status["distinct_terms"] = term_count
+            if required and term_count < int(spec["min_distinct_terms"]):
+                failures.append(
+                    f"required retrieval sidecar term variety too low: {table} "
+                    f"{term_count} < {int(spec['min_distinct_terms'])}"
+                )
+        if int(spec.get("min_probe_primitives") or 0):
+            primitive_count = int(
+                await conn.fetchval(
+                    f"""
+                    SELECT count(DISTINCT primitive)::bigint
+                    FROM {table} sidecar
+                    WHERE sidecar.tenant_id = $1
+                      AND {active_condition}
+                      AND primitive = ANY($2::text[])
+                    """,
+                    tenant_id,
+                    list(_RETRIEVAL_PROBE_PRIMITIVES),
+                )
+                or 0
+            )
+            table_status["probe_primitive_count"] = primitive_count
+            if required and primitive_count < int(spec["min_probe_primitives"]):
+                failures.append(
+                    f"required retrieval sidecar primitive variety too low: {table} "
+                    f"{primitive_count} < {int(spec['min_probe_primitives'])}"
+                )
+        if int(spec.get("min_distinct_tags") or 0):
+            tag_count = int(
+                await conn.fetchval(
+                    f"""
+                    SELECT count(DISTINCT tag_type || ':' || tag)::bigint
+                    FROM {table} sidecar
+                    WHERE sidecar.tenant_id = $1
+                      AND {active_condition}
+                    """,
+                    tenant_id,
+                )
+                or 0
+            )
+            table_status["distinct_tags"] = tag_count
+            if required and tag_count < int(spec["min_distinct_tags"]):
+                failures.append(
+                    f"required retrieval sidecar tag variety too low: {table} "
+                    f"{tag_count} < {int(spec['min_distinct_tags'])}"
+                )
+        if int(spec.get("min_distinct_features") or 0):
+            feature_count = int(
+                await conn.fetchval(
+                    f"""
+                    SELECT count(DISTINCT feature_type || ':' || feature)::bigint
+                    FROM {table} sidecar
+                    WHERE sidecar.tenant_id = $1
+                      AND {active_condition}
+                    """,
+                    tenant_id,
+                )
+                or 0
+            )
+            table_status["distinct_features"] = feature_count
+            if required and feature_count < int(spec["min_distinct_features"]):
+                failures.append(
+                    f"required retrieval sidecar feature variety too low: {table} "
+                    f"{feature_count} < {int(spec['min_distinct_features'])}"
+                )
+        if int(spec.get("min_feature_types") or 0):
+            feature_type_count = int(
+                await conn.fetchval(
+                    f"""
+                    SELECT count(DISTINCT feature_type)::bigint
+                    FROM {table} sidecar
+                    WHERE sidecar.tenant_id = $1
+                      AND {active_condition}
+                    """,
+                    tenant_id,
+                )
+                or 0
+            )
+            table_status["feature_type_count"] = feature_type_count
+            if required and feature_type_count < int(spec["min_feature_types"]):
+                failures.append(
+                    f"required retrieval sidecar feature-type variety too low: {table} "
+                    f"{feature_type_count} < {int(spec['min_feature_types'])}"
+                )
+        if required and active_model_count > 0:
+            if active_row_count <= 0:
+                failures.append(f"required retrieval sidecar has no active rows: {table}")
+            if active_model_ratio < min_active_model_ratio:
+                failures.append(
+                    f"required retrieval sidecar coverage too low: {table} "
+                    f"{active_model_ratio:.1%} < {min_active_model_ratio:.1%}"
+                )
+        if orphan_row_count > 0:
+            message = (
+                f"retrieval sidecar has orphan rows: {table} "
+                f"orphan_rows={orphan_row_count}"
+            )
+            if required:
+                failures.append(message)
+            else:
+                warnings.append(message)
+
+    if active_model_count <= 0:
+        failures.append("retrieval probe tenant has no active Models")
+    return {
+        "status": "passed" if not failures else "failed",
+        "active_model_count": active_model_count,
+        "tables": tables,
+        "failures": failures,
+        "warnings": warnings,
+    }
+
+
+async def _retrieval_probe_seed_pairs(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+) -> tuple[list[dict[str, str]], list[tuple[str, UUID]]]:
+    from services.platform.execution.retrieval_actions import focused_seed_entity_pairs
+
+    if not await _retrieval_probe_table_exists(conn, "model_scope_entities"):
+        return [], []
+    rows = await conn.fetch(
+        """
+        SELECT entity_type, entity_id, count(*)::int AS model_count
+        FROM model_scope_entities
+        WHERE tenant_id = $1
+        GROUP BY entity_type, entity_id
+        ORDER BY model_count DESC, entity_type, entity_id
+        LIMIT 3
+        """,
+        tenant_id,
+    )
+    raw_entities = [
+        {"type": str(row["entity_type"]), "id": str(row["entity_id"])}
+        for row in rows
+        if row["entity_type"] and row["entity_id"]
+    ]
+    return raw_entities, focused_seed_entity_pairs(raw_entities)
+
+
+async def _retrieval_probe_term_cases(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+) -> list[dict[str, Any]]:
+    cases: list[dict[str, Any]] = [
+        {"name": name, "terms": list(terms), "source": "static"}
+        for name, terms in _RETRIEVAL_PROBE_STATIC_TERM_CASES
+    ]
+
+    async def add_top_terms(table: str, name: str) -> None:
+        if not await _retrieval_probe_table_exists(conn, table):
+            return
+        rows = await conn.fetch(
+            f"""
+            SELECT term, count(*)::int AS df
+            FROM {table}
+            WHERE tenant_id = $1
+              AND status = 'active'
+            GROUP BY term
+            ORDER BY df DESC, term
+            LIMIT 4
+            """,
+            tenant_id,
+        )
+        terms = [str(row["term"]) for row in rows if row["term"]]
+        if terms:
+            cases.append(
+                {
+                    "name": name,
+                    "terms": terms,
+                    "source": table,
+                    "dfs": {
+                        str(row["term"]): int(row["df"] or 0)
+                        for row in rows
+                        if row["term"]
+                    },
+                }
+            )
+
+    await add_top_terms("model_sparse_terms", "top_sparse_terms")
+    await add_top_terms("model_answerability_index", "top_answerability_terms")
+    return cases
+
+
+async def _time_retrieval_probe_call(
+    *,
+    label: str,
+    max_ms: float,
+    call: Any,
+    min_rows: int = 0,
+    max_rows: int | None = None,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    rows = await call
+    elapsed_ms = round((time.monotonic() - started) * 1000, 3)
+    row_count = len(rows or [])
+    timed_out = bool(getattr(rows, "timed_out", False))
+    latency_passed = elapsed_ms <= max_ms
+    coverage_passed = row_count >= max(0, int(min_rows))
+    max_row_count = None if max_rows is None else max(0, int(max_rows))
+    excess_passed = max_row_count is None or row_count <= max_row_count
+    timeout_passed = not timed_out
+    return {
+        "label": label,
+        "elapsed_ms": elapsed_ms,
+        "row_count": row_count,
+        "min_rows": max(0, int(min_rows)),
+        "max_rows": max_row_count,
+        "timed_out": timed_out,
+        "latency_passed": latency_passed,
+        "coverage_passed": coverage_passed,
+        "excess_passed": excess_passed,
+        "timeout_passed": timeout_passed,
+        "passed": (
+            latency_passed and coverage_passed and excess_passed and timeout_passed
+        ),
+    }
+
+
+async def _time_focused_action_probe_call(
+    *,
+    label: str,
+    max_ms: float,
+    call: Any,
+    min_rows: int,
+    min_sources: int,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    result = await call
+    elapsed_ms = round((time.monotonic() - started) * 1000, 3)
+    models = list(getattr(result, "models", []) or []) if result is not None else []
+    notes = dict(getattr(result, "notes", {}) or {}) if result is not None else {}
+    source_set: set[str] = set()
+    for hit in notes.get("top_hits") or []:
+        if not isinstance(hit, dict):
+            continue
+        raw_sources = hit.get("sources")
+        if isinstance(raw_sources, list):
+            source_set.update(str(source) for source in raw_sources)
+    scan_timeouts = notes.get("scan_timeouts") if isinstance(notes, dict) else {}
+    if not isinstance(scan_timeouts, dict):
+        scan_timeouts = {}
+    timed_out = any(bool(value) for value in scan_timeouts.values())
+    latency_passed = elapsed_ms <= max_ms
+    coverage_passed = len(models) >= max(0, int(min_rows))
+    source_passed = len(source_set) >= max(0, int(min_sources))
+    timeout_passed = not timed_out
+    return {
+        "label": label,
+        "elapsed_ms": elapsed_ms,
+        "row_count": len(models),
+        "min_rows": max(0, int(min_rows)),
+        "source_count": len(source_set),
+        "source_set": sorted(source_set),
+        "min_sources": max(0, int(min_sources)),
+        "timed_out": timed_out,
+        "latency_passed": latency_passed,
+        "coverage_passed": coverage_passed,
+        "source_passed": source_passed,
+        "timeout_passed": timeout_passed,
+        "passed": (
+            latency_passed and coverage_passed and source_passed and timeout_passed
+        ),
+        "notes": {
+            "answerability_hits": notes.get("answerability_hits"),
+            "scoped_sparse_hits": notes.get("scoped_sparse_hits"),
+            "direct_scope_hits": notes.get("direct_scope_hits"),
+            "scan_timeouts": {
+                str(key): bool(value) for key, value in scan_timeouts.items()
+            },
+            "bounded_lookup_timeout_count": int(
+                notes.get("bounded_lookup_timeout_count") or 0
+            ),
+            "merged_hits": notes.get("merged_hits"),
+            "returned_models": notes.get("returned_models"),
+            "source_set": sorted(source_set),
+        },
+    }
+
+
+async def _rollback_focused_action_probe(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    raw_seed_entities: list[dict[str, str]],
+    terms: list[str],
+    model_limit: int,
+) -> Any:
+    from services.platform.execution.config import InquiryConfig
+    from services.platform.execution.retrieval_actions import execute_focused_index_action
+    from services.platform.execution.types import RetrievalAction
+    from services.reasoning.retrieval.primary import TriggerContext
+
+    transaction = conn.transaction()
+    await transaction.start()
+    try:
+        trigger = TriggerContext(
+            kind="T1",
+            tenant_id=tenant_id,
+            seed_entity_ids=list(raw_seed_entities),
+            seed_natural_text=" ".join(terms),
+            seed_occurred_at=datetime.now(timezone.utc),
+        )
+        action = RetrievalAction(
+            question_id="Q_RETRIEVAL_PROBE",
+            path="focused_index",
+            target="focused_action_probe",
+            query=" ".join(terms),
+            filters={
+                "primitive": "DEPENDENCY",
+                "terms": terms,
+                "seed_entities": list(raw_seed_entities),
+            },
+            budget=max(1, int(model_limit)),
+        )
+        return await execute_focused_index_action(
+            action,
+            trigger,
+            conn,
+            InquiryConfig(),
+            model_limit=max(1, int(model_limit)),
+        )
+    finally:
+        await transaction.rollback()
+
+
+def _retrieval_probe_min_rows(
+    *,
+    path: str,
+    case: dict[str, Any] | None = None,
+    seed_pairs: list[tuple[str, UUID]] | None = None,
+) -> int:
+    if path == "focused_direct_scope":
+        return 1 if seed_pairs else 0
+    case_name = str((case or {}).get("name") or "")
+    if path in {"focused_answerability", "sage_answerability"}:
+        return 1 if case_name in _RETRIEVAL_PROBE_POSITIVE_ANSWERABILITY_CASES else 0
+    if path == "focused_scope_sparse":
+        return 1 if case_name in _RETRIEVAL_PROBE_POSITIVE_SCOPED_SPARSE_CASES else 0
+    return 0
+
+
+def _retrieval_probe_max_rows(
+    *,
+    path: str,
+    case: dict[str, Any] | None = None,
+) -> int | None:
+    case_name = str((case or {}).get("name") or "")
+    if path == "focused_scope_sparse" and case_name == "background_noise":
+        return 0
+    return None
+
+
+async def _run_retrieval_hot_path_probe(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    max_ms: float,
+    model_limit: int,
+    require_scope: bool = True,
+) -> dict[str, Any]:
+    from services.platform.execution.retrieval_actions import (
+        focused_answerability_index_scan,
+        focused_direct_scope_scan,
+        focused_scope_sparse_scan,
+    )
+    from services.reasoning.sage.reader import _fetch_answerability_index_matches
+
+    raw_seed_entities, seed_pairs = await _retrieval_probe_seed_pairs(
+        conn,
+        tenant_id=tenant_id,
+    )
+    cases = await _retrieval_probe_term_cases(conn, tenant_id=tenant_id)
+    results: list[dict[str, Any]] = []
+    for case in cases:
+        terms = list(case["terms"])
+        focused_answerability = await _time_retrieval_probe_call(
+            label=f"focused_answerability/{case['name']}",
+            max_ms=max_ms,
+            min_rows=_retrieval_probe_min_rows(
+                path="focused_answerability",
+                case=case,
+            ),
+            call=focused_answerability_index_scan(
+                conn,
+                tenant_id=tenant_id,
+                primitives=_RETRIEVAL_PROBE_PRIMITIVES,
+                terms=terms,
+                seed_pairs=seed_pairs,
+                limit=model_limit,
+            ),
+        )
+        focused_answerability["case"] = case
+        results.append(focused_answerability)
+
+        sage_answerability = await _time_retrieval_probe_call(
+            label=f"sage_answerability/{case['name']}",
+            max_ms=max_ms,
+            min_rows=_retrieval_probe_min_rows(
+                path="sage_answerability",
+                case=case,
+            ),
+            call=_fetch_answerability_index_matches(
+                conn,
+                tenant_id=tenant_id,
+                primitive_values=list(_RETRIEVAL_PROBE_PRIMITIVES),
+                terms=terms,
+                limit=model_limit,
+            ),
+        )
+        sage_answerability["case"] = case
+        results.append(sage_answerability)
+
+        if seed_pairs:
+            scoped_sparse = await _time_retrieval_probe_call(
+                label=f"focused_scope_sparse/{case['name']}",
+                max_ms=max_ms,
+                min_rows=_retrieval_probe_min_rows(
+                    path="focused_scope_sparse",
+                    case=case,
+                    seed_pairs=seed_pairs,
+                ),
+                max_rows=_retrieval_probe_max_rows(
+                    path="focused_scope_sparse",
+                    case=case,
+                ),
+                call=focused_scope_sparse_scan(
+                    conn,
+                    tenant_id=tenant_id,
+                    terms=terms,
+                    seed_pairs=seed_pairs,
+                    limit=model_limit,
+                ),
+            )
+            scoped_sparse["case"] = case
+            results.append(scoped_sparse)
+
+    if seed_pairs:
+        results.append(
+            await _time_retrieval_probe_call(
+                label="focused_direct_scope",
+                max_ms=max_ms,
+                min_rows=_retrieval_probe_min_rows(
+                    path="focused_direct_scope",
+                    seed_pairs=seed_pairs,
+                ),
+                call=focused_direct_scope_scan(
+                    conn,
+                    tenant_id=tenant_id,
+                    seed_pairs=seed_pairs,
+                    limit=model_limit,
+                ),
+            )
+        )
+        action_case = next(
+            (case for case in cases if case.get("name") == "common_generic"),
+            cases[0] if cases else None,
+        )
+        if action_case is not None:
+            results.append(
+                await _time_focused_action_probe_call(
+                    label="focused_action/common_generic",
+                    max_ms=max_ms,
+                    min_rows=1,
+                    min_sources=2,
+                    call=_rollback_focused_action_probe(
+                        conn,
+                        tenant_id=tenant_id,
+                        raw_seed_entities=raw_seed_entities,
+                        terms=list(action_case["terms"]),
+                        model_limit=model_limit,
+                    ),
+                )
+            )
+
+    failed = [result for result in results if not result["passed"]]
+    timeout_paths = [
+        str(result.get("label"))
+        for result in results
+        if bool(result.get("timed_out"))
+    ]
+    source_family_counts: dict[str, int] = {}
+    for result in results:
+        raw_sources = result.get("source_set")
+        if not isinstance(raw_sources, list):
+            raw_sources = (result.get("notes") or {}).get("source_set")
+        if not isinstance(raw_sources, list):
+            continue
+        for source in raw_sources:
+            key = str(source)
+            source_family_counts[key] = source_family_counts.get(key, 0) + 1
+    coverage_failures: list[str] = []
+    if require_scope and not seed_pairs:
+        coverage_failures.append(
+            "no model_scope_entities seed pairs found; scoped retrieval paths "
+            "were not exercised"
+        )
+    return {
+        "status": "passed" if not failed and not coverage_failures else "failed",
+        "tenant_id": str(tenant_id),
+        "max_ms": max_ms,
+        "model_limit": model_limit,
+        "require_scope": require_scope,
+        "seed_entities": raw_seed_entities,
+        "seed_pair_count": len(seed_pairs),
+        "case_count": len(cases),
+        "results": results,
+        "failures": failed,
+        "coverage_failures": coverage_failures,
+        "bounded_lookup_timeout_count": len(timeout_paths),
+        "bounded_lookup_timeout_paths": timeout_paths,
+        "source_family_counts": source_family_counts,
+    }
+
+
+def _render_retrieval_probe_markdown(summary: dict[str, Any]) -> str:
+    lines = [
+        "# Retrieval Hot Path Probe",
+        "",
+        f"- Tenant: `{summary['tenant_id']}`",
+        f"- Status: `{summary['status']}`",
+        f"- Max allowed latency: {summary['max_ms']}ms",
+        f"- Seed scope pairs: {summary['seed_pair_count']}",
+        "",
+        "| Path | ms | Rows | Sources | Status |",
+        "| --- | ---: | ---: | ---: | --- |",
+    ]
+    for result in summary.get("results", []):
+        status = (
+            "timeout"
+            if result.get("timed_out")
+            else ("pass" if result.get("passed") else "fail")
+        )
+        row_text = str(result["row_count"])
+        min_rows = int(result.get("min_rows") or 0)
+        if min_rows:
+            row_text = f"{row_text} / min {min_rows}"
+        max_rows = result.get("max_rows")
+        if max_rows is not None:
+            row_text = f"{row_text} / max {int(max_rows)}"
+        source_text = "-"
+        min_sources = int(result.get("min_sources") or 0)
+        if "source_count" in result:
+            source_text = str(result.get("source_count", 0))
+            if min_sources:
+                source_text = f"{source_text} / min {min_sources}"
+            raw_source_set = result.get("source_set") or (
+                result.get("notes") or {}
+            ).get("source_set")
+            if isinstance(raw_source_set, list) and raw_source_set:
+                source_text = f"{source_text} ({', '.join(map(str, raw_source_set))})"
+        lines.append(
+            "| "
+            f"{result['label']} | "
+            f"{result['elapsed_ms']:.3f} | "
+            f"{row_text} | "
+            f"{source_text} | "
+            f"{status} |"
+        )
+    timeout_paths = [
+        str(item) for item in summary.get("bounded_lookup_timeout_paths") or []
+    ]
+    if timeout_paths:
+        lines.extend(
+            [
+                "",
+                "## Bounded Lookup Timeouts",
+                *[f"- {item}" for item in timeout_paths],
+            ]
+        )
+    readiness = summary.get("sidecar_readiness") or {}
+    if isinstance(readiness, dict) and readiness:
+        lines.extend(
+            [
+                "",
+                "## Sidecar Readiness",
+                "",
+                f"- Status: `{readiness.get('status', 'unknown')}`",
+                f"- Active Models: {readiness.get('active_model_count', 0)}",
+                "",
+                "| Surface | Active Rows | Active Models | Required | Status |",
+                "| --- | ---: | ---: | --- | --- |",
+            ]
+        )
+        readiness_failures = [str(item) for item in readiness.get("failures") or []]
+        for table, item in sorted((readiness.get("tables") or {}).items()):
+            if not isinstance(item, dict):
+                continue
+            table_status = "fail" if any(table in failure for failure in readiness_failures) else "pass"
+            active_models = item.get("active_model_hit_count")
+            ratio = item.get("active_model_ratio")
+            active_model_text = "-"
+            if active_models is not None:
+                active_model_text = str(active_models)
+                if ratio is not None:
+                    active_model_text = f"{active_model_text} ({float(ratio):.1%})"
+            active_rows = item.get("active_row_count", "-")
+            lines.append(
+                "| "
+                f"{table} | "
+                f"{active_rows} | "
+                f"{active_model_text} | "
+                f"{'yes' if item.get('required') else 'no'} | "
+                f"{table_status} |"
+            )
+        if readiness_failures:
+            lines.extend(["", "### Readiness Failures"])
+            lines.extend(f"- {item}" for item in readiness_failures)
+        readiness_warnings = [str(item) for item in readiness.get("warnings") or []]
+        if readiness_warnings:
+            lines.extend(["", "### Readiness Warnings"])
+            lines.extend(f"- {item}" for item in readiness_warnings)
+    if summary.get("failures"):
+        lines.extend(
+            [
+                "",
+                "## Failures",
+                *[
+                    (
+                        f"- {item['label']} took {item['elapsed_ms']:.3f}ms "
+                        f"and returned {item.get('row_count', 0)} rows"
+                        + (
+                            f" below min {item['min_rows']}"
+                            if int(item.get("min_rows") or 0)
+                            and not bool(item.get("coverage_passed", True))
+                            else ""
+                        )
+                        + (
+                            f"; rows {item.get('row_count', 0)} above max "
+                            f"{item['max_rows']}"
+                            if item.get("max_rows") is not None
+                            and not bool(item.get("excess_passed", True))
+                            else ""
+                        )
+                        + (
+                            "; bounded lookup timed out"
+                            if bool(item.get("timed_out"))
+                            else ""
+                        )
+                        + (
+                            f"; sources {item.get('source_count', 0)} below min "
+                            f"{item['min_sources']}"
+                            if int(item.get("min_sources") or 0)
+                            and not bool(item.get("source_passed", True))
+                            else ""
+                        )
+                    )
+                    for item in summary["failures"]
+                ],
+            ]
+        )
+    if summary.get("coverage_failures"):
+        lines.extend(
+            [
+                "",
+                "## Coverage Failures",
+                *[f"- {item}" for item in summary["coverage_failures"]],
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
+async def run_retrieval_probe(args: argparse.Namespace) -> dict[str, Any]:
+    run_id = _resolve_storyline_run_id(args)
+    report_dir = args.report_root / run_id
+    report_dir.mkdir(parents=True, exist_ok=True)
+    tenant_id = _retrieval_probe_tenant_id(args)
+    runtime = await _open_storyline_benchmark_runtime(args)
+    try:
+        if not args.skip_migrations:
+            async with runtime.pool.acquire() as conn:
+                await apply_migrations_dir(
+                    conn,
+                    REPO_ROOT / "db" / "migrations",
+                    on_error="warn",
+                )
+        async with runtime.pool.acquire() as conn:
+            model_count = int(
+                await conn.fetchval(
+                    """
+                    SELECT count(*)::bigint
+                    FROM models
+                    WHERE tenant_id = $1
+                    """,
+                    tenant_id,
+                )
+                or 0
+            )
+            observation_count = int(
+                await conn.fetchval(
+                    """
+                    SELECT count(*)::bigint
+                    FROM observations
+                    WHERE tenant_id = $1
+                    """,
+                    tenant_id,
+                )
+                or 0
+            )
+            if model_count <= 0 and observation_count <= 0:
+                raise SystemExit(
+                    "retrieval probe tenant has no Models or observations in the "
+                    f"current database: {tenant_id}"
+                )
+            sidecar_readiness = await _retrieval_probe_sidecar_preflight(
+                conn,
+                tenant_id=tenant_id,
+            )
+            if sidecar_readiness["status"] == "passed":
+                summary = await _run_retrieval_hot_path_probe(
+                    conn,
+                    tenant_id=tenant_id,
+                    max_ms=float(args.retrieval_probe_max_ms),
+                    model_limit=int(args.retrieval_probe_model_limit),
+                    require_scope=not bool(args.retrieval_probe_allow_missing_scope),
+                )
+            else:
+                summary = {
+                    "status": "failed",
+                    "tenant_id": str(tenant_id),
+                    "max_ms": float(args.retrieval_probe_max_ms),
+                    "model_limit": int(args.retrieval_probe_model_limit),
+                    "require_scope": not bool(
+                        args.retrieval_probe_allow_missing_scope
+                    ),
+                    "seed_entities": [],
+                    "seed_pair_count": 0,
+                    "case_count": 0,
+                    "results": [],
+                    "failures": [],
+                    "coverage_failures": list(sidecar_readiness["failures"]),
+                }
+            summary["sidecar_readiness"] = sidecar_readiness
+            summary["model_count"] = model_count
+            summary["active_model_count"] = sidecar_readiness["active_model_count"]
+            summary["observation_count"] = observation_count
+    finally:
+        await runtime.pool.close()
+    summary["run_id"] = run_id
+    summary["report_dir"] = str(report_dir)
+    _write_json(report_dir / "retrieval_probe_summary.json", summary)
+    _write_json(report_dir / "run_summary.json", summary)
+    (report_dir / "retrieval_probe_summary.md").write_text(
+        _render_retrieval_probe_markdown(summary)
+    )
+    if summary["status"] != "passed":
+        summary["exit_code"] = 1
+    return summary
+
+
 async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     run_id = _resolve_storyline_run_id(args)
     benchmark_inputs = _build_storyline_benchmark_inputs(args, run_id=run_id)
     if args.mode == "build-only":
-        return {
-            "mode": args.mode,
-            "run_id": run_id,
-            "report_dir": str(benchmark_inputs.report_dir),
-            "signals": _signal_count(benchmark_inputs.scenario),
-            "storylines": len(STORYLINES),
-        }
+        return _build_only_summary(args, run_id, benchmark_inputs)
 
     runtime = await _open_storyline_benchmark_runtime(args)
     started = time.monotonic()
     tenant_id: UUID | None = None
-    topology_status: dict[str, Any] = {"status": "skipped"}
     try:
         prepared = await _prepare_storyline_benchmark_tenant(
             args,
@@ -1976,6 +3408,18 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             append_context=benchmark_inputs.append_context,
             seed_status=prepared.seed_status,
         )
+        if args.mode == "seed-only":
+            return await _write_seed_only_outputs(
+                args,
+                pool=runtime.pool,
+                tenant_id=tenant_id,
+                scenario=benchmark_inputs.scenario,
+                run_id=run_id,
+                report_dir=benchmark_inputs.report_dir,
+                run_config=benchmark_inputs.run_config,
+                seed_status=seed_status,
+                started=started,
+            )
         worker = _build_storyline_worker(
             args,
             pool=runtime.pool,
@@ -2032,14 +3476,37 @@ async def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             started=started,
         )
     finally:
-        if args.cleanup and tenant_id is not None:
-            from scripts.run_20000_model_4000_signal_company_probe import (
-                _cleanup_probe_tenant,
-            )
-
-            cleanup = await _cleanup_probe_tenant(runtime.pool, tenant_id)
-            print(f"cleanup={json.dumps(cleanup, sort_keys=True)}", flush=True)
+        await _cleanup_benchmark_tenant(args, runtime.pool, tenant_id)
         await runtime.pool.close()
+
+
+def _build_only_summary(
+    args: argparse.Namespace,
+    run_id: str,
+    benchmark_inputs: _BenchmarkInputs,
+) -> dict[str, Any]:
+    return {
+        "mode": args.mode,
+        "run_id": run_id,
+        "report_dir": str(benchmark_inputs.report_dir),
+        "signals": _signal_count(benchmark_inputs.scenario),
+        "storylines": len(STORYLINES),
+    }
+
+
+async def _cleanup_benchmark_tenant(
+    args: argparse.Namespace,
+    pool: asyncpg.Pool,
+    tenant_id: UUID | None,
+) -> None:
+    if not args.cleanup or tenant_id is None:
+        return
+    from scripts.run_20000_model_4000_signal_company_probe import (
+        _cleanup_probe_tenant,
+    )
+
+    cleanup = await _cleanup_probe_tenant(pool, tenant_id)
+    print(f"cleanup={json.dumps(cleanup, sort_keys=True)}", flush=True)
 
 
 async def _process_one_t1_batch(
@@ -2048,6 +3515,7 @@ async def _process_one_t1_batch(
     *,
     tenant_id: UUID,
     force_window_elapsed_s: float,
+    retry_attempts: int = 0,
 ) -> dict[str, Any]:
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -2068,16 +3536,151 @@ async def _process_one_t1_batch(
     if len(rows) != 1:
         raise RuntimeError(f"expected one T1 batch row, got {len(rows)}")
     started = time.monotonic()
-    await worker._dispatch_trigger(rows[0])
-    run = await _run_for_trigger(pool, rows[0]["id"])
+    run, attempt_history = await _dispatch_t1_batch_with_retries(
+        pool,
+        worker,
+        rows[0],
+        retry_attempts=retry_attempts,
+    )
     payload = rows[0]["payload"] or {}
     return {
         "trigger_id": str(rows[0]["id"]),
         "member_count": len(payload.get("batch_member_trigger_ids") or []),
         "observation_count": len(payload.get("batch_observation_ids") or []),
         "elapsed_s": round(time.monotonic() - started, 3),
+        "retry_count": max(0, len(attempt_history) - 1),
+        "attempt_history": attempt_history,
         "run": run,
     }
+
+
+async def _dispatch_t1_batch_with_retries(
+    pool: asyncpg.Pool,
+    worker: ThinkWorker,
+    row: asyncpg.Record | dict[str, Any],
+    *,
+    retry_attempts: int,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    trigger_id = row["id"]
+    attempt_history: list[dict[str, Any]] = []
+    current_row: asyncpg.Record | dict[str, Any] | None = row
+    max_attempts = 1 + max(0, int(retry_attempts))
+
+    for attempt_index in range(1, max_attempts + 1):
+        if current_row is None:
+            break
+        attempt_started = time.monotonic()
+        await worker._dispatch_trigger(current_row)
+        run = await _run_for_trigger(pool, trigger_id)
+        queue_state = await _t1_batch_queue_state(pool, trigger_id=trigger_id)
+        retryable = _is_retryable_t1_batch_run(run)
+        attempt_history.append(
+            {
+                "attempt": attempt_index,
+                "elapsed_s": round(time.monotonic() - attempt_started, 3),
+                "status": (run or {}).get("status"),
+                "error": (run or {}).get("error"),
+                "retryable": retryable,
+                "queue_attempts": queue_state.get("attempts"),
+                "queue_completed": queue_state.get("completed"),
+            }
+        )
+        if run and run.get("status") == "success":
+            final_run = dict(run)
+            final_run["attempt_count"] = len(attempt_history)
+            final_run["retry_count"] = max(0, len(attempt_history) - 1)
+            final_run["recovered_after_retry"] = len(attempt_history) > 1
+            final_run["attempt_history"] = attempt_history
+            return final_run, attempt_history
+        if not retryable or attempt_index >= max_attempts:
+            final_run = dict(run) if run else None
+            if final_run is not None:
+                final_run["attempt_count"] = len(attempt_history)
+                final_run["retry_count"] = max(0, len(attempt_history) - 1)
+                final_run["recovered_after_retry"] = False
+                final_run["attempt_history"] = attempt_history
+            return final_run, attempt_history
+        if queue_state.get("completed"):
+            break
+        current_row = await _lock_t1_batch_for_retry(
+            pool,
+            worker=worker,
+            trigger_id=trigger_id,
+        )
+
+    run = await _run_for_trigger(pool, trigger_id)
+    final_run = dict(run) if run else None
+    if final_run is not None:
+        final_run["attempt_count"] = len(attempt_history)
+        final_run["retry_count"] = max(0, len(attempt_history) - 1)
+        final_run["recovered_after_retry"] = False
+        final_run["attempt_history"] = attempt_history
+    return final_run, attempt_history
+
+
+async def _lock_t1_batch_for_retry(
+    pool: asyncpg.Pool,
+    *,
+    worker: ThinkWorker,
+    trigger_id: UUID,
+) -> asyncpg.Record | None:
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            return await conn.fetchrow(
+                """
+                UPDATE think_trigger_queue
+                SET locked_by = $2,
+                    locked_at = now(),
+                    scheduled_for = now()
+                WHERE id = $1
+                  AND completed_at IS NULL
+                  AND attempts < $3
+                  AND (
+                    locked_by IS NULL
+                    OR locked_by = $2
+                    OR locked_at < now() - ($4 || ' seconds')::interval
+                  )
+                RETURNING id, tenant_id, trigger_kind, trigger_subkind,
+                          observation_id, model_id, payload, attempts,
+                          enqueued_at
+                """,
+                trigger_id,
+                worker.config.worker_id,
+                worker.config.trigger_max_attempts,
+                str(worker.config.trigger_lock_timeout_s),
+            )
+
+
+async def _t1_batch_queue_state(
+    pool: asyncpg.Pool,
+    *,
+    trigger_id: UUID,
+) -> dict[str, Any]:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT attempts, completed_at
+            FROM think_trigger_queue
+            WHERE id = $1
+            """,
+            trigger_id,
+        )
+    if row is None:
+        return {"attempts": None, "completed": True}
+    return {
+        "attempts": int(row["attempts"] or 0),
+        "completed": row["completed_at"] is not None,
+    }
+
+
+def _is_retryable_t1_batch_run(run: dict[str, Any] | None) -> bool:
+    if not run or run.get("status") == "success":
+        return False
+    error = str(run.get("error") or "")
+    if not error:
+        return False
+    lowered = error.lower()
+    return any(marker in lowered for marker in _T1_BATCH_TRANSIENT_FAILURE_MARKERS)
 
 
 def _merge_numeric_tree(items: list[Any]) -> dict[str, Any]:
@@ -2220,39 +3823,31 @@ async def _drain_downstream_limited(
     out: list[dict[str, Any]] = []
     for step in range(max(0, steps)):
         async with pool.acquire() as conn:
-            pending = await conn.fetchval(
-                """
-                SELECT COUNT(*)::bigint
+            trigger_rows = await conn.fetch(
+                f"""
+                SELECT id, trigger_kind, trigger_subkind, payload, attempts
                 FROM think_trigger_queue
                 WHERE tenant_id = $1
                   AND completed_at IS NULL
                   AND batch_parent_id IS NULL
-                  AND (
-                    (trigger_kind = 'T2' AND trigger_subkind = 'belief_updated')
-                    OR (trigger_kind = 'T3'
-                        AND trigger_subkind = 'missing_transition')
-                    OR (trigger_kind = 'T4'
-                        AND trigger_subkind = 'latent_relationship_candidate')
-                  )
+                  AND {_DOWNSTREAM_TRIGGER_DRAIN_PREDICATE}
+                ORDER BY enqueued_at ASC, id ASC
                 """,
                 tenant_id,
             )
-            if int(pending or 0) == 0:
+            trigger_summaries = [
+                _compact_downstream_trigger_summary(row) for row in trigger_rows
+            ]
+            if not trigger_summaries:
                 break
             await conn.execute(
-                """
+                f"""
                 UPDATE think_trigger_queue
                 SET enqueued_at = now() - ($2 || ' seconds')::interval
                 WHERE tenant_id = $1
                   AND completed_at IS NULL
                   AND batch_parent_id IS NULL
-                  AND (
-                    (trigger_kind = 'T2' AND trigger_subkind = 'belief_updated')
-                    OR (trigger_kind = 'T3'
-                        AND trigger_subkind = 'missing_transition')
-                    OR (trigger_kind = 'T4'
-                        AND trigger_subkind = 'latent_relationship_candidate')
-                  )
+                  AND {_DOWNSTREAM_TRIGGER_DRAIN_PREDICATE}
                 """,
                 tenant_id,
                 str(max(0.0, force_window_elapsed_s)),
@@ -2261,13 +3856,194 @@ async def _drain_downstream_limited(
         await worker._poll_and_dispatch()
         if worker._in_flight:
             await asyncio.gather(*list(worker._in_flight), return_exceptions=False)
+        downstream_runs = await _downstream_run_summaries(pool, trigger_summaries)
         out.append(
             {
                 "step": step + 1,
                 "elapsed_s": round(time.monotonic() - before, 3),
+                "pending_trigger_count_before_step": len(trigger_summaries),
+                "pending_triggers_before_step": trigger_summaries[:50],
+                "downstream_runs": downstream_runs,
                 "queue_counts": await _queue_counts(pool, tenant_id),
             }
         )
+    return out
+
+
+def _compact_downstream_trigger_summary(row: Any) -> dict[str, Any]:
+    payload = _json_obj(row["payload"])
+    trigger_kind = str(row["trigger_kind"] or "")
+    trigger_subkind = row["trigger_subkind"]
+    return {
+        "id": str(row["id"]),
+        "trigger_kind": (
+            f"{trigger_kind}:{trigger_subkind}" if trigger_subkind else trigger_kind
+        ),
+        "trigger_kind_family": _trigger_kind_family(trigger_kind),
+        "trigger_subkind": trigger_subkind,
+        "attempts": int(row["attempts"] or 0),
+        "payload": _compact_downstream_trigger_payload(payload),
+    }
+
+
+def _compact_downstream_trigger_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "repair_key",
+        "repair_intent",
+        "repair_source",
+        "repair_residual_id",
+        "residual_id",
+        "residual_kind",
+        "audit_warning_code",
+        "open_question_key",
+        "question_primitive",
+        "cascade_depth",
+        "source_trigger_kind",
+        "source_trigger_subkind",
+        "source_model_id",
+        "model_id",
+    )
+    out = {key: _jsonable(payload[key]) for key in keys if payload.get(key) is not None}
+    seed_signature = payload.get("seed_signature")
+    if isinstance(seed_signature, dict):
+        seed_out = {
+            key: _jsonable(seed_signature[key])
+            for key in keys
+            if seed_signature.get(key) is not None
+        }
+        if seed_out:
+            out["seed_signature"] = seed_out
+    return out
+
+
+async def _downstream_run_summaries(
+    pool: asyncpg.Pool,
+    trigger_summaries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for trigger in trigger_summaries:
+        trigger_id = UUID(str(trigger["id"]))
+        run = await _run_for_trigger(pool, trigger_id)
+        if run is None:
+            out.append({"trigger": trigger, "run": None, "ops_summary": {}})
+            continue
+        out.append(
+            {
+                "trigger": trigger,
+                "run": run,
+                "ops_summary": _compact_ops_applied(run.get("ops_applied")),
+            }
+        )
+    return out
+
+
+def _compact_ops_applied(value: Any) -> dict[str, Any]:
+    ops = _json_obj(value)
+    if not ops:
+        return {}
+    out: dict[str, Any] = {}
+    for key in (
+        "state_changes_emitted",
+        "apply_dropped_op_count",
+        "validation_error_count",
+    ):
+        if isinstance(ops.get(key), (int, float)) and not isinstance(ops.get(key), bool):
+            out[key] = int(ops[key])
+    dropped_errors = ops.get("apply_dropped_op_errors")
+    if isinstance(dropped_errors, list):
+        out["apply_dropped_op_errors"] = [_jsonable(item) for item in dropped_errors[:3]]
+    applied_model_ids = ops.get("applied_model_ids")
+    if isinstance(applied_model_ids, list):
+        out["applied_model_count"] = len(applied_model_ids)
+        out["applied_model_ids"] = [str(item) for item in applied_model_ids[:12]]
+    for key in (
+        "claim_ops",
+        "relation_claim_ops",
+        "relation_frame_ops",
+        "edge_ops",
+        "memory_lifecycle_ops",
+        "open_question_ops",
+        "act_ops",
+        "resource_ops",
+        "ontology_gap_ops",
+        "formation_resolutions",
+        "synthesis_decisions",
+    ):
+        value = ops.get(key)
+        if isinstance(value, list):
+            out[f"{key}_count"] = len(value)
+
+    memory = _json_obj(ops.get("memory_aggregation"))
+    if memory:
+        out["memory_aggregation"] = {
+            key: memory[key]
+            for key in (
+                "model_inserts",
+                "model_updates",
+                "model_archives",
+                "evidence_attachments",
+                "near_duplicate_absorptions",
+                "situation_model_inserts",
+                "situation_model_updates",
+                "situation_member_additions",
+                "new_model_pressure",
+                "absorption_ratio",
+            )
+            if key in memory
+        }
+    context_use = _json_obj(ops.get("context_use"))
+    if context_use:
+        out["context_use"] = {
+            key: context_use[key]
+            for key in (
+                "context_use_grade",
+                "selected_context_reference_ratio",
+                "model_context_used",
+                "graph_context_used",
+                "observation_context_used",
+                "justified_noop_context_used",
+                "reasoning_trace_context_used",
+                "graph_relation_contract_satisfied",
+            )
+            if key in context_use
+        }
+    representation_audit = _json_obj(ops.get("representation_audit"))
+    if representation_audit:
+        out["representation_audit"] = {
+            key: representation_audit[key]
+            for key in (
+                "budget_status",
+                "claim_insert_count",
+                "model_update_count",
+                "edge_op_count",
+                "relation_claim_count",
+                "relation_frame_count",
+                "evidence_attachment_count",
+                "near_duplicate_absorption_count",
+            )
+            if key in representation_audit
+        }
+    mutation_summary = _json_obj(
+        ops.get("mutation_compile_summary")
+        or ops.get("mutation_compiler")
+        or ops.get("compile_summary")
+    )
+    if mutation_summary:
+        out["mutation_compile_summary"] = {
+            key: mutation_summary[key]
+            for key in (
+                "accepted",
+                "rejected",
+                "blocked",
+                "dropped",
+                "repair_triggers",
+                "repair_residuals",
+            )
+            if key in mutation_summary
+        }
+    repair_triggers = ops.get("representation_repair_triggers")
+    if isinstance(repair_triggers, list):
+        out["representation_repair_trigger_count"] = len(repair_triggers)
     return out
 
 
@@ -2354,17 +4130,21 @@ async def _drain_adaptive_work_to_quiescence(
     for cycle in range(max_cycles):
         before_triggers = await _pending_trigger_count(pool, tenant_id=tenant_id)
         before_post_commit = await _pending_post_commit_count(pool, tenant_id=tenant_id)
+        downstream_step_budget = max(0, int(args.adaptive_drain_steps_per_cycle))
         downstream = await _drain_downstream_limited(
             pool,
             worker,
             tenant_id=tenant_id,
-            steps=max(0, int(args.adaptive_drain_steps_per_cycle)),
+            steps=downstream_step_budget,
             force_window_elapsed_s=args.downstream_batch_window_s + 1.0,
         )
+        remaining_downstream_steps = max(0, downstream_step_budget - len(downstream))
         post_commit = await drain_post_commit_actions(
             pool,
             tenant_id=tenant_id,
             timeout_seconds=args.post_commit_timeout,
+            batch_size=args.post_commit_batch_size,
+            batch_timeout_seconds=args.post_commit_batch_timeout,
         )
         _merge_numeric_status(post_commit_status, post_commit)
         topology: dict[str, Any] = {
@@ -2385,28 +4165,83 @@ async def _drain_adaptive_work_to_quiescence(
             )
             _merge_numeric_status(topology_status, topology, metric_key="metrics")
             topology_status["status"] = topology.get("status", topology_status["status"])
+        post_commit_downstream: list[dict[str, Any]] = []
+        if remaining_downstream_steps > 0:
+            post_commit_downstream = await _drain_downstream_limited(
+                pool,
+                worker,
+                tenant_id=tenant_id,
+                steps=remaining_downstream_steps,
+                force_window_elapsed_s=args.downstream_batch_window_s + 1.0,
+            )
+        tail_post_commit: dict[str, Any] = {
+            "processed": 0,
+            "failed": 0,
+            "dead_lettered": 0,
+            "iterations": 0,
+        }
+        if post_commit_downstream and await _pending_post_commit_count(
+            pool,
+            tenant_id=tenant_id,
+        ):
+            tail_post_commit = await drain_post_commit_actions(
+                pool,
+                tenant_id=tenant_id,
+                timeout_seconds=args.post_commit_timeout,
+                batch_size=args.post_commit_batch_size,
+                batch_timeout_seconds=args.post_commit_batch_timeout,
+            )
+            _merge_numeric_status(post_commit_status, tail_post_commit)
         after_triggers = await _pending_trigger_count(pool, tenant_id=tenant_id)
         after_post_commit = await _pending_post_commit_count(pool, tenant_id=tenant_id)
+        cycle_post_commit_processed = int(post_commit.get("processed") or 0) + int(
+            tail_post_commit.get("processed") or 0
+        )
         cycle_status = {
             "cycle": cycle + 1,
             "before_triggers": before_triggers,
             "after_triggers": after_triggers,
             "before_post_commit": before_post_commit,
             "after_post_commit": after_post_commit,
-            "downstream_steps": len(downstream),
-            "post_commit_processed": int(post_commit.get("processed") or 0),
+            "downstream_steps": len(downstream) + len(post_commit_downstream),
+            "downstream_steps_before_post_commit": len(downstream),
+            "downstream_steps_after_post_commit": len(post_commit_downstream),
+            "post_commit_processed": cycle_post_commit_processed,
+            "post_commit_processed_before_downstream": int(
+                post_commit.get("processed") or 0
+            ),
+            "post_commit_processed_after_downstream": int(
+                tail_post_commit.get("processed") or 0
+            ),
+            "post_commit_timed_out": bool(
+                post_commit.get("timed_out") or tail_post_commit.get("timed_out")
+            ),
+            "post_commit_pending": int(
+                tail_post_commit.get("pending")
+                or post_commit.get("pending")
+                or after_post_commit
+                or 0
+            ),
             "topology_processed": int(topology.get("processed") or 0),
         }
         cycles.append(cycle_status)
+        print(
+            "adaptive_drain_cycle="
+            f"{json.dumps(cycle_status, sort_keys=True)}",
+            flush=True,
+        )
+        if cycle_status["post_commit_timed_out"]:
+            break
         if after_triggers == 0 and after_post_commit == 0:
             break
         if (
             cycle > 0
             and before_triggers == after_triggers
             and before_post_commit == after_post_commit
-            and int(post_commit.get("processed") or 0) == 0
+            and cycle_post_commit_processed == 0
             and int(topology.get("processed") or 0) == 0
             and not downstream
+            and not post_commit_downstream
         ):
             break
     return {
@@ -2490,6 +4325,285 @@ async def _collect_capability_probe_counts(
         if isinstance(kind, str) and kind:
             counts[kind] += 1
     return dict(counts)
+
+
+_LIFECYCLE_OBLIGATION_PATTERNS: dict[str, re.Pattern[str]] = {
+    "prediction": re.compile(
+        r"\b("
+        r"forecast|predict(?:ion|ed)?|expected|likely|eta|deadline|due|"
+        r"target(?:ing)?|will\s+(?:ship|slip|delay|miss|deliver|merge|"
+        r"deploy|launch|renew|churn|finish|complete|move|close|resolve|happen)|"
+        r"by\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+        r"tomorrow|today|tonight|next\s+week|\d{1,2}(?::\d{2})?)"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    "resource": re.compile(
+        r"\b("
+        r"capacity|bandwidth|budget|hours?|quota|limit|resource|availability|"
+        r"staff(?:ing)?|headcount|constrained|overloaded|under[-\s]?resourced|"
+        r"depleted|exhausted|no\s+room|down\s+to\s+\w+\s+hours?"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    "question_policy": re.compile(
+        r"\b("
+        r"missing\s+context|needs?\s+clarification|unclear|unknown|ambiguous|"
+        r"who\s+owns|which\s+owner|owner\s+(?:is\s+)?(?:unclear|unknown|missing)|"
+        r"approval\s+owner|approver\s+(?:is\s+)?(?:unclear|unknown|missing)|"
+        r"confirm\s+before|ask\s+before|source\s+of\s+truth"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    "evidence_attachment": re.compile(
+        r"\b("
+        r"felt|feels|review|retro|feedback|concern|worried|rough|pushback|"
+        r"complaint|friction|again|repeated|yesterday|today|sentiment"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    "staleness_review": re.compile(
+        r"\b("
+        r"stale|outdated|obsolete|no\s+longer\s+true|superseded|replaced|"
+        r"retire|archive|changed\s+since"
+        r")\b",
+        re.IGNORECASE,
+    ),
+    "ambiguity_review": re.compile(
+        r"\b("
+        r"alias|same\s+as|different\s+from|not\s+the\s+same|same\s+customer|"
+        r"counterfactual|what\s+if|if\s+.+\s+had|ambiguit(?:y|ies)|ambiguous"
+        r")\b",
+        re.IGNORECASE,
+    ),
+}
+_LIFECYCLE_TRACE_RE = re.compile(
+    r"lifecycle_obligations:\s*injected\s+([^\n]+)",
+    re.IGNORECASE,
+)
+_LIFECYCLE_KINDS = tuple(_LIFECYCLE_OBLIGATION_PATTERNS)
+
+
+def _lifecycle_opportunity_counts_from_texts(texts: list[str]) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for text in texts:
+        if "capability_probe" in text.lower():
+            continue
+        for kind, pattern in _LIFECYCLE_OBLIGATION_PATTERNS.items():
+            if pattern.search(text):
+                counts[kind] += 1
+    return {kind: int(counts.get(kind) or 0) for kind in _LIFECYCLE_KINDS}
+
+
+def _lifecycle_injected_kinds_from_trace(trace: str) -> list[str]:
+    kinds: list[str] = []
+    for match in _LIFECYCLE_TRACE_RE.finditer(trace or ""):
+        for raw_kind in match.group(1).split(","):
+            kind = raw_kind.strip().lower()
+            if kind in _LIFECYCLE_OBLIGATION_PATTERNS:
+                kinds.append(kind)
+    return kinds
+
+
+def _lifecycle_conversion_rates(
+    *,
+    numerator: dict[str, int],
+    denominator: dict[str, int],
+) -> dict[str, float]:
+    return {
+        kind: _ratio(int(numerator.get(kind) or 0), int(denominator.get(kind) or 0))
+        for kind in _LIFECYCLE_KINDS
+    }
+
+
+def _lifecycle_bottleneck_notes(
+    *,
+    opportunities: dict[str, int],
+    injected: dict[str, int],
+    persisted: dict[str, int],
+) -> list[str]:
+    notes: list[str] = []
+    labels = {
+        "prediction": "prediction lifecycle",
+        "resource": "resource operations",
+        "question_policy": "question-policy learning",
+        "evidence_attachment": "evidence attachment",
+        "staleness_review": "staleness review",
+        "ambiguity_review": "alias/counterfactual ambiguity review",
+    }
+    for kind in _LIFECYCLE_KINDS:
+        opportunity_count = int(opportunities.get(kind) or 0)
+        injected_count = int(injected.get(kind) or 0)
+        persisted_count = int(persisted.get(kind) or 0)
+        label = labels[kind]
+        if opportunity_count and not injected_count:
+            notes.append(
+                f"{label}: {opportunity_count} explicit opportunity signal(s), "
+                "but Think injected no lifecycle obligation."
+            )
+        elif injected_count and not persisted_count:
+            notes.append(
+                f"{label}: {injected_count} obligation injection(s), but none "
+                "persisted through validate/apply."
+            )
+        elif opportunity_count and persisted_count < injected_count:
+            notes.append(
+                f"{label}: {persisted_count}/{injected_count} injected "
+                "obligations persisted; inspect validator/apply drops."
+            )
+    return notes
+
+
+async def _collect_lifecycle_obligation_report(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+) -> dict[str, Any]:
+    opportunity_counts: dict[str, int] = {kind: 0 for kind in _LIFECYCLE_KINDS}
+    injected_counts: Counter[str] = Counter()
+    persisted_counts: Counter[str] = Counter()
+    trace_run_count = 0
+    successful_think_runs = 0
+
+    async with pool.acquire() as conn:
+        observation_rows = await conn.fetch(
+            """
+            SELECT content
+            FROM observations
+            WHERE tenant_id = $1
+              AND content->>'benchmark' = 'storyline_batch'
+            """,
+            tenant_id,
+        )
+        texts: list[str] = []
+        for row in observation_rows:
+            content = _json_obj(row["content"])
+            texts.append(str(content.get("text") or ""))
+        opportunity_counts = _lifecycle_opportunity_counts_from_texts(texts)
+
+        think_rows = await conn.fetch(
+            """
+            SELECT ops_applied
+            FROM think_runs
+            WHERE tenant_id = $1
+              AND status = 'success'
+            """,
+            tenant_id,
+        )
+        successful_think_runs = len(think_rows)
+        for row in think_rows:
+            ops = _json_obj(row["ops_applied"])
+            trace = str(ops.get("reasoning_trace") or "")
+            kinds = _lifecycle_injected_kinds_from_trace(trace)
+            if not kinds:
+                continue
+            trace_run_count += 1
+            injected_counts.update(kinds)
+
+        prediction_count = await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM models
+            WHERE tenant_id = $1
+              AND proposition->>'kind' = 'prediction'
+              AND domain_tags @> ARRAY['lifecycle_obligation']::text[]
+            """,
+            tenant_id,
+        )
+        persisted_counts["prediction"] = int(prediction_count or 0)
+
+        question_policy_count = await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM models
+            WHERE tenant_id = $1
+              AND domain_tags @> ARRAY[
+                    'question_policy',
+                    'lifecycle_obligation'
+                  ]::text[]
+            """,
+            tenant_id,
+        )
+        persisted_counts["question_policy"] = int(question_policy_count or 0)
+
+        resource_count = await conn.fetchval(
+            """
+            SELECT COUNT(*)::bigint
+            FROM resources
+            WHERE tenant_id = $1
+              AND metadata->>'source' = 'lifecycle_obligation'
+            """,
+            tenant_id,
+        )
+        persisted_counts["resource"] = int(resource_count or 0)
+
+        if await _table_exists(conn, "model_signal_readings"):
+            evidence_count = await conn.fetchval(
+                """
+                SELECT COUNT(*)::bigint
+                FROM model_signal_readings
+                WHERE tenant_id = $1
+                  AND detail->'proposition'->>'subject'
+                    = 'lifecycle review evidence'
+                """,
+                tenant_id,
+            )
+            persisted_counts["evidence_attachment"] = int(evidence_count or 0)
+
+        if await _table_exists(conn, "model_open_questions"):
+            rows = await conn.fetch(
+                """
+                SELECT question_type, COUNT(*)::bigint AS count
+                FROM model_open_questions
+                WHERE tenant_id = $1
+                  AND expected_resolution_signal->>'source'
+                    = 'lifecycle_obligation'
+                GROUP BY question_type
+                """,
+                tenant_id,
+            )
+            for row in rows:
+                question_type = str(row["question_type"] or "")
+                count = int(row["count"] or 0)
+                if question_type == "temporal_status":
+                    persisted_counts["staleness_review"] += count
+                elif question_type == "contradiction_check":
+                    persisted_counts["ambiguity_review"] += count
+
+    persisted = {
+        kind: int(persisted_counts.get(kind) or 0) for kind in _LIFECYCLE_KINDS
+    }
+    injected = {
+        kind: int(injected_counts.get(kind) or 0) for kind in _LIFECYCLE_KINDS
+    }
+    return {
+        "source": "storyline observations + successful think_runs + persisted lifecycle surfaces",
+        "opportunities": {
+            "total_signals": int(len(observation_rows)),
+            "by_kind": opportunity_counts,
+        },
+        "injections": {
+            "successful_think_runs": successful_think_runs,
+            "runs_with_lifecycle_trace": trace_run_count,
+            "by_kind": injected,
+        },
+        "persisted": {"by_kind": persisted},
+        "conversion": {
+            "opportunity_to_injection_by_kind": _lifecycle_conversion_rates(
+                numerator=injected,
+                denominator=opportunity_counts,
+            ),
+            "injection_to_persisted_by_kind": _lifecycle_conversion_rates(
+                numerator=persisted,
+                denominator=injected,
+            ),
+        },
+        "bottlenecks": _lifecycle_bottleneck_notes(
+            opportunities=opportunity_counts,
+            injected=injected,
+            persisted=persisted,
+        ),
+    }
 
 
 async def _collect_edge_lifecycle_report(
@@ -2859,6 +4973,1060 @@ async def _fetch_reflective_action_timing_summary(
     return _record_to_dict(row)
 
 
+def _latency_ms_stats(values: list[Any]) -> dict[str, Any]:
+    numeric = sorted(
+        float(value)
+        for value in values
+        if value is not None and isinstance(value, (int, float)) and float(value) >= 0
+    )
+    if not numeric:
+        return {
+            "count": 0,
+            "total_ms": 0.0,
+            "min_ms": 0.0,
+            "avg_ms": 0.0,
+            "p50_ms": 0.0,
+            "p90_ms": 0.0,
+            "p95_ms": 0.0,
+            "max_ms": 0.0,
+        }
+
+    def percentile(fraction: float) -> float:
+        index = min(len(numeric) - 1, max(0, math.ceil(len(numeric) * fraction) - 1))
+        return numeric[index]
+
+    return {
+        "count": len(numeric),
+        "total_ms": round(sum(numeric), 3),
+        "min_ms": round(numeric[0], 3),
+        "avg_ms": round(sum(numeric) / len(numeric), 3),
+        "p50_ms": round(percentile(0.50), 3),
+        "p90_ms": round(percentile(0.90), 3),
+        "p95_ms": round(percentile(0.95), 3),
+        "max_ms": round(numeric[-1], 3),
+    }
+
+
+def _numeric_ms(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
+def _summarize_think_stage_timings(
+    ops_value: Any,
+    stage_groups: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    ops = _json_obj(ops_value)
+    notes = _json_list(ops.get("think_stage_timings"))
+    total_ms = 0.0
+    llm_ms = 0.0
+    non_llm_ms = 0.0
+    stage_count = 0
+    top_stage: str | None = None
+    top_stage_ms = 0.0
+
+    for note in notes:
+        if not isinstance(note, dict):
+            continue
+        elapsed_ms = _numeric_ms(note.get("elapsed_ms"))
+        if elapsed_ms is None:
+            continue
+        stage_count += 1
+        total_ms += elapsed_ms
+        is_llm = bool(note.get("is_llm"))
+        if is_llm:
+            llm_ms += elapsed_ms
+        else:
+            non_llm_ms += elapsed_ms
+        stage = str(note.get("stage") or "<missing>")
+        if elapsed_ms >= top_stage_ms:
+            top_stage = stage
+            top_stage_ms = elapsed_ms
+        if stage_groups is not None:
+            _accumulate_latency_note(
+                stage_groups,
+                stage,
+                elapsed_ms,
+                extra_count_key="llm_stage_count" if is_llm else "non_llm_stage_count",
+            )
+
+    return {
+        "has_stage_timings": stage_count > 0,
+        "stage_count": stage_count,
+        "total_ms": round(total_ms, 3),
+        "llm_ms": round(llm_ms, 3),
+        "non_llm_ms": round(non_llm_ms, 3),
+        "top_stage": top_stage,
+        "top_stage_ms": round(top_stage_ms, 3) if top_stage else None,
+    }
+
+
+def _accumulate_latency_note(
+    groups: dict[str, dict[str, Any]],
+    key: str,
+    elapsed_ms: float | None,
+    *,
+    work_ms: float | None = None,
+    wait_ms: float | None = None,
+    extra_count_key: str | None = None,
+) -> None:
+    if elapsed_ms is None:
+        return
+    group = groups.setdefault(
+        key,
+        {
+            "count": 0,
+            "elapsed_values": [],
+            "elapsed_ms_total": 0.0,
+            "work_ms_total": 0.0,
+            "wait_ms_total": 0.0,
+        },
+    )
+    group["count"] += 1
+    group["elapsed_values"].append(elapsed_ms)
+    group["elapsed_ms_total"] += elapsed_ms
+    if work_ms is not None:
+        group["work_ms_total"] += work_ms
+    if wait_ms is not None:
+        group["wait_ms_total"] += wait_ms
+    if extra_count_key:
+        group[extra_count_key] = int(group.get(extra_count_key) or 0) + 1
+
+
+def _finalize_latency_groups(groups: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    finalized: dict[str, Any] = {}
+    for key, raw in sorted(groups.items()):
+        values = raw.pop("elapsed_values", [])
+        finalized[key] = {
+            **raw,
+            "elapsed_ms_total": round(float(raw.get("elapsed_ms_total") or 0.0), 3),
+            "work_ms_total": round(float(raw.get("work_ms_total") or 0.0), 3),
+            "wait_ms_total": round(float(raw.get("wait_ms_total") or 0.0), 3),
+            "elapsed_ms_stats": _latency_ms_stats(values),
+        }
+    return finalized
+
+
+def _wave_latency_breakdown(waves: list[dict[str, Any]]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    wall_values: list[float] = []
+    llm_values: list[float] = []
+    non_llm_values: list[float] = []
+    stage_total_values: list[float] = []
+    stage_llm_values: list[float] = []
+    stage_non_llm_values: list[float] = []
+    stage_groups: dict[str, dict[str, Any]] = {}
+    waves_with_stage_timings = 0
+    for wave in waves:
+        batch = wave.get("t1_batch") or {}
+        run = batch.get("run") or {}
+        wall_ms = _numeric_ms(batch.get("elapsed_s"))
+        wall_ms = wall_ms * 1000.0 if wall_ms is not None else None
+        llm_ms = _numeric_ms(run.get("llm_latency_ms"))
+        non_llm_ms = (
+            max(0.0, wall_ms - llm_ms)
+            if wall_ms is not None and llm_ms is not None
+            else None
+        )
+        if wall_ms is not None:
+            wall_values.append(wall_ms)
+        if llm_ms is not None:
+            llm_values.append(llm_ms)
+        if non_llm_ms is not None:
+            non_llm_values.append(non_llm_ms)
+        stage_summary = _summarize_think_stage_timings(
+            run.get("ops_applied"),
+            stage_groups,
+        )
+        if stage_summary["has_stage_timings"]:
+            waves_with_stage_timings += 1
+            stage_total_values.append(float(stage_summary["total_ms"]))
+            stage_llm_values.append(float(stage_summary["llm_ms"]))
+            stage_non_llm_values.append(float(stage_summary["non_llm_ms"]))
+        rows.append(
+            {
+                "wave": wave.get("wave"),
+                "sequence": wave.get("sequence"),
+                "status": run.get("status"),
+                "trigger_id": batch.get("trigger_id"),
+                "run_id": run.get("id"),
+                "wall_ms": round(wall_ms, 3) if wall_ms is not None else None,
+                "llm_ms": round(llm_ms, 3) if llm_ms is not None else None,
+                "non_llm_residual_ms": (
+                    round(non_llm_ms, 3) if non_llm_ms is not None else None
+                ),
+                "stage_timings_ms": stage_summary["total_ms"],
+                "llm_stage_timings_ms": stage_summary["llm_ms"],
+                "non_llm_stage_timings_ms": stage_summary["non_llm_ms"],
+                "stage_timing_count": stage_summary["stage_count"],
+                "top_stage": stage_summary["top_stage"],
+                "top_stage_ms": stage_summary["top_stage_ms"],
+                "retrieval_model_count": run.get("retrieval_model_count"),
+                "retrieval_observation_count": run.get("retrieval_observation_count"),
+                "validation_error_count": run.get("validation_error_count"),
+                "error": run.get("error"),
+            }
+        )
+    return {
+        "t1_batches": len(rows),
+        "successful_t1_batches": sum(1 for row in rows if row.get("status") == "success"),
+        "failed_t1_batches": sum(1 for row in rows if row.get("status") == "failed"),
+        "wall_ms": _latency_ms_stats(wall_values),
+        "llm_ms": _latency_ms_stats(llm_values),
+        "non_llm_residual_ms": _latency_ms_stats(non_llm_values),
+        "waves_with_stage_timings": waves_with_stage_timings,
+        "stage_timings_ms": _latency_ms_stats(stage_total_values),
+        "llm_stage_timings_ms": _latency_ms_stats(stage_llm_values),
+        "non_llm_stage_timings_ms": _latency_ms_stats(stage_non_llm_values),
+        "stage_timings_by_stage": _finalize_latency_groups(stage_groups),
+        "waves": rows,
+    }
+
+
+def _think_run_latency_breakdown(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    elapsed_values: list[float] = []
+    llm_values: list[float] = []
+    non_llm_values: list[float] = []
+    stage_total_values: list[float] = []
+    stage_llm_values: list[float] = []
+    stage_non_llm_values: list[float] = []
+    stage_groups: dict[str, dict[str, Any]] = {}
+    by_kind: dict[str, dict[str, Any]] = {}
+    status_counts: Counter[str] = Counter()
+    runs_with_stage_timings = 0
+    for row in rows:
+        status = str(row.get("status") or "<missing>")
+        status_counts[status] += 1
+        elapsed_ms = _numeric_ms(row.get("elapsed_ms"))
+        llm_ms = _numeric_ms(row.get("llm_latency_ms"))
+        non_llm_ms = (
+            max(0.0, elapsed_ms - llm_ms)
+            if elapsed_ms is not None and llm_ms is not None
+            else None
+        )
+        if elapsed_ms is not None:
+            elapsed_values.append(elapsed_ms)
+        if llm_ms is not None:
+            llm_values.append(llm_ms)
+        if non_llm_ms is not None:
+            non_llm_values.append(non_llm_ms)
+        stage_summary = _summarize_think_stage_timings(
+            row.get("ops_applied"),
+            stage_groups,
+        )
+        if stage_summary["has_stage_timings"]:
+            runs_with_stage_timings += 1
+            stage_total_values.append(float(stage_summary["total_ms"]))
+            stage_llm_values.append(float(stage_summary["llm_ms"]))
+            stage_non_llm_values.append(float(stage_summary["non_llm_ms"]))
+        kind = str(row.get("trigger_kind") or "<missing>")
+        group = by_kind.setdefault(
+            kind,
+            {
+                "count": 0,
+                "elapsed_values": [],
+                "llm_values": [],
+                "non_llm_values": [],
+                "stage_total_values": [],
+                "stage_llm_values": [],
+                "stage_non_llm_values": [],
+                "runs_with_stage_timings": 0,
+                "status_counts": Counter(),
+            },
+        )
+        group["count"] += 1
+        group["status_counts"][status] += 1
+        if elapsed_ms is not None:
+            group["elapsed_values"].append(elapsed_ms)
+        if llm_ms is not None:
+            group["llm_values"].append(llm_ms)
+        if non_llm_ms is not None:
+            group["non_llm_values"].append(non_llm_ms)
+        if stage_summary["has_stage_timings"]:
+            group["runs_with_stage_timings"] += 1
+            group["stage_total_values"].append(float(stage_summary["total_ms"]))
+            group["stage_llm_values"].append(float(stage_summary["llm_ms"]))
+            group["stage_non_llm_values"].append(float(stage_summary["non_llm_ms"]))
+
+    return {
+        "run_count": len(rows),
+        "status_counts": dict(status_counts),
+        "elapsed_ms": _latency_ms_stats(elapsed_values),
+        "llm_ms": _latency_ms_stats(llm_values),
+        "non_llm_residual_ms": _latency_ms_stats(non_llm_values),
+        "runs_with_stage_timings": runs_with_stage_timings,
+        "stage_timings_ms": _latency_ms_stats(stage_total_values),
+        "llm_stage_timings_ms": _latency_ms_stats(stage_llm_values),
+        "non_llm_stage_timings_ms": _latency_ms_stats(stage_non_llm_values),
+        "stage_timings_by_stage": _finalize_latency_groups(stage_groups),
+        "by_trigger_kind": {
+            kind: {
+                "count": data["count"],
+                "status_counts": dict(data["status_counts"]),
+                "elapsed_ms": _latency_ms_stats(data["elapsed_values"]),
+                "llm_ms": _latency_ms_stats(data["llm_values"]),
+                "non_llm_residual_ms": _latency_ms_stats(data["non_llm_values"]),
+                "runs_with_stage_timings": data["runs_with_stage_timings"],
+                "stage_timings_ms": _latency_ms_stats(data["stage_total_values"]),
+                "llm_stage_timings_ms": _latency_ms_stats(
+                    data["stage_llm_values"]
+                ),
+                "non_llm_stage_timings_ms": _latency_ms_stats(
+                    data["stage_non_llm_values"]
+                ),
+            }
+            for kind, data in sorted(by_kind.items())
+        },
+    }
+
+
+def _inquiry_latency_breakdown(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    runtime_values: list[float] = []
+    action_total_values: list[float] = []
+    stage_total_values: list[float] = []
+    unaccounted_values: list[float] = []
+    work_unaccounted_values: list[float] = []
+    runtime_totals: Counter[str] = Counter()
+    stage_groups: dict[str, dict[str, Any]] = {}
+    action_groups: dict[str, dict[str, Any]] = {}
+    action_subtiming_groups: dict[str, dict[str, Any]] = {}
+    question_planning_modes: Counter[str] = Counter()
+    sessions_with_runtime = 0
+    sessions_with_action_timings = 0
+    sessions_with_stage_timings = 0
+
+    for row in rows:
+        notes = _json_obj(row.get("notes"))
+        runtime = _json_obj(notes.get("retrieval_runtime"))
+        if runtime:
+            sessions_with_runtime += 1
+            for key in (
+                "total_ms",
+                "retrieval_action_timings_ms_total",
+                "retrieval_action_work_timings_ms_total",
+                "retrieval_action_wait_timings_ms_total",
+                "retrieval_stage_timings_ms_total",
+                "measured_ms_total",
+                "non_wait_measured_ms_total",
+                "parallel_wait_overcount_ms",
+                "unaccounted_ms",
+                "work_unaccounted_ms",
+            ):
+                value = _numeric_ms(runtime.get(key))
+                if value is not None:
+                    runtime_totals[key] += value
+            if (value := _numeric_ms(runtime.get("total_ms"))) is not None:
+                runtime_values.append(value)
+            if (
+                value := _numeric_ms(runtime.get("retrieval_action_timings_ms_total"))
+            ) is not None:
+                action_total_values.append(value)
+            if (
+                value := _numeric_ms(runtime.get("retrieval_stage_timings_ms_total"))
+            ) is not None:
+                stage_total_values.append(value)
+            if (value := _numeric_ms(runtime.get("unaccounted_ms"))) is not None:
+                unaccounted_values.append(value)
+            if (value := _numeric_ms(runtime.get("work_unaccounted_ms"))) is not None:
+                work_unaccounted_values.append(value)
+
+        action_timings = _json_list(notes.get("retrieval_action_timings"))
+        if action_timings:
+            sessions_with_action_timings += 1
+        for note in action_timings:
+            if not isinstance(note, dict):
+                continue
+            elapsed_ms = _numeric_ms(note.get("elapsed_ms"))
+            work_ms = _numeric_ms(note.get("work_elapsed_ms"))
+            wait_ms = _numeric_ms(note.get("wait_elapsed_ms"))
+            path = str(note.get("path") or "<missing>")
+            extra = "cache_hits" if note.get("cache_hit") else None
+            _accumulate_latency_note(
+                action_groups,
+                path,
+                elapsed_ms,
+                work_ms=work_ms,
+                wait_ms=wait_ms,
+                extra_count_key=extra,
+            )
+            semantic_subtimings = _json_obj(
+                note.get("semantic_substrate_timings_ms")
+            )
+            for subkey, raw_value in semantic_subtimings.items():
+                value = _numeric_ms(raw_value)
+                if value is None:
+                    continue
+                _accumulate_latency_note(
+                    action_subtiming_groups,
+                    f"{path}.{subkey}",
+                    value,
+                    work_ms=value,
+                )
+            temporal_subtimings = _json_obj(note.get("temporal_timings_ms"))
+            for subkey, raw_value in temporal_subtimings.items():
+                value = _numeric_ms(raw_value)
+                if value is None:
+                    continue
+                _accumulate_latency_note(
+                    action_subtiming_groups,
+                    f"{path}.{subkey}",
+                    value,
+                    work_ms=value,
+                )
+
+        stage_timings = _json_list(notes.get("retrieval_stage_timings"))
+        if stage_timings:
+            sessions_with_stage_timings += 1
+        for note in stage_timings:
+            if not isinstance(note, dict):
+                continue
+            _accumulate_latency_note(
+                stage_groups,
+                str(note.get("stage") or "<missing>"),
+                _numeric_ms(note.get("elapsed_ms")),
+            )
+
+        for note in _json_list(notes.get("question_planning")):
+            if isinstance(note, dict):
+                question_planning_modes[str(note.get("mode") or "<missing>")] += 1
+
+    return {
+        "session_count": len(rows),
+        "sessions_with_runtime": sessions_with_runtime,
+        "sessions_with_action_timings": sessions_with_action_timings,
+        "sessions_with_stage_timings": sessions_with_stage_timings,
+        "runtime_ms": _latency_ms_stats(runtime_values),
+        "retrieval_action_total_ms": _latency_ms_stats(action_total_values),
+        "retrieval_stage_total_ms": _latency_ms_stats(stage_total_values),
+        "unaccounted_ms": _latency_ms_stats(unaccounted_values),
+        "work_unaccounted_ms": _latency_ms_stats(work_unaccounted_values),
+        "runtime_totals": {
+            key: round(float(value), 3) for key, value in sorted(runtime_totals.items())
+        },
+        "action_timings_by_path": _finalize_latency_groups(action_groups),
+        "action_subtimings_by_key": _finalize_latency_groups(action_subtiming_groups),
+        "stage_timings_by_stage": _finalize_latency_groups(stage_groups),
+        "question_planning_modes": dict(question_planning_modes),
+    }
+
+
+def _compose_latency_breakdown(
+    *,
+    waves: list[dict[str, Any]],
+    think_rows: list[dict[str, Any]],
+    inquiry_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    wave_report = _wave_latency_breakdown(waves)
+    think_report = _think_run_latency_breakdown(think_rows)
+    inquiry_report = _inquiry_latency_breakdown(inquiry_rows)
+    t1_wall_total = float((wave_report["wall_ms"] or {}).get("total_ms") or 0.0)
+    t1_llm_total = float((wave_report["llm_ms"] or {}).get("total_ms") or 0.0)
+    t1_non_llm_total = float(
+        (wave_report["non_llm_residual_ms"] or {}).get("total_ms") or 0.0
+    )
+    t1_non_llm_stage_total = float(
+        (wave_report["non_llm_stage_timings_ms"] or {}).get("total_ms") or 0.0
+    )
+    t1_non_llm_unaccounted_total = max(
+        0.0,
+        t1_non_llm_total - t1_non_llm_stage_total,
+    )
+    t1_unclassified_total = max(
+        0.0,
+        t1_wall_total - t1_llm_total - t1_non_llm_total,
+    )
+    inquiry_runtime_total = float(
+        (inquiry_report.get("runtime_totals") or {}).get("total_ms") or 0.0
+    )
+    return {
+        "available": bool(waves or think_rows or inquiry_rows),
+        "scope": "tenant_wide_consistent_with_model_layer_summary",
+        "units": "milliseconds",
+        "t1_wave_wall_clock": wave_report,
+        "think_runs": think_report,
+        "adaptive_inquiry": inquiry_report,
+        "critical_path_summary": {
+            "t1_wall_ms_total": round(t1_wall_total, 3),
+            "t1_llm_ms_total": round(t1_llm_total, 3),
+            "t1_non_llm_residual_ms_total": round(t1_non_llm_total, 3),
+            "t1_measured_non_llm_stage_ms_total": round(t1_non_llm_stage_total, 3),
+            "t1_non_llm_unaccounted_stage_ms_total": round(
+                t1_non_llm_unaccounted_total,
+                3,
+            ),
+            "t1_unclassified_or_failed_ms_total": round(t1_unclassified_total, 3),
+            "adaptive_inquiry_runtime_ms_total": round(inquiry_runtime_total, 3),
+            "adaptive_inquiry_share_of_t1_wall": round(
+                _ratio(inquiry_runtime_total, t1_wall_total),
+                4,
+            ),
+            "main_llm_share_of_t1_wall": round(
+                _ratio(t1_llm_total, t1_wall_total),
+                4,
+            ),
+            "non_main_llm_share_of_t1_wall": round(
+                _ratio(t1_non_llm_total, t1_wall_total),
+                4,
+            ),
+            "measured_non_llm_stage_share_of_non_llm_residual": round(
+                _ratio(t1_non_llm_stage_total, t1_non_llm_total),
+                4,
+            ),
+            "unclassified_or_failed_share_of_t1_wall": round(
+                _ratio(t1_unclassified_total, t1_wall_total),
+                4,
+            ),
+        },
+        "instrumentation_notes": [
+            "T1 wall-clock is measured by the benchmark around worker._dispatch_trigger.",
+            "think_runs elapsed_ms is computed from started_at/ended_at in Postgres.",
+            "llm_ms is the main Think llm_reason latency persisted on think_runs.",
+            "Think internal stage timings come from think_runs.ops_applied.think_stage_timings on newly instrumented runs.",
+            "Think stage timings classify main_llm_reason as LLM; all other stages explain the non-main-LLM residual.",
+            "adaptive_inquiry timings come from inquiry_sessions.notes.",
+            "Action timing totals can overcount parallel branches; use work/wait fields and wave wall-clock for critical-path reasoning.",
+            "Post-commit drain is not part of T1 wave wall-clock; it is reported separately by post_commit_status and topology_optimizer_status.",
+        ],
+    }
+
+
+async def _collect_latency_breakdown(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    waves: list[dict[str, Any]],
+) -> dict[str, Any]:
+    async with pool.acquire() as conn:
+        think_rows = [
+            _record_to_dict(row)
+            for row in await conn.fetch(
+                """
+                SELECT id, trigger_id, trigger_kind, status, error,
+                       retrieval_model_count, retrieval_observation_count,
+                       llm_latency_ms, validation_error_count,
+                       ops_applied,
+                       CASE
+                         WHEN ended_at IS NOT NULL
+                         THEN EXTRACT(EPOCH FROM (ended_at - started_at)) * 1000.0
+                         ELSE NULL
+                       END AS elapsed_ms
+                FROM think_runs
+                WHERE tenant_id = $1
+                ORDER BY started_at
+                """,
+                tenant_id,
+            )
+        ]
+        inquiry_rows: list[dict[str, Any]] = []
+        if await _table_exists(conn, "inquiry_sessions"):
+            inquiry_rows = [
+                _record_to_dict(row)
+                for row in await conn.fetch(
+                    """
+                    SELECT id, route, status, stop_status, round_count,
+                           question_count, evidence_count, context_packet, notes
+                    FROM inquiry_sessions
+                    WHERE tenant_id = $1
+                    ORDER BY completed_at
+                    """,
+                    tenant_id,
+                )
+            ]
+    return _compose_latency_breakdown(
+        waves=waves,
+        think_rows=think_rows,
+        inquiry_rows=inquiry_rows,
+    )
+
+
+async def _collect_think_cost_profile(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+) -> dict[str, Any]:
+    async with pool.acquire() as conn:
+        if not await _table_exists(conn, "think_run_costs"):
+            return {"available": False}
+        rows = await conn.fetch(
+            """
+            WITH cost_by_trigger AS (
+              SELECT trigger_id,
+                     COALESCE(sum(llm_calls_count), 0)::int AS llm_calls,
+                     COALESCE(sum(llm_cost_usd), 0)::float8 AS cost_usd
+              FROM think_run_costs
+              WHERE tenant_id = $1
+              GROUP BY trigger_id
+            )
+            SELECT
+              r.trigger_kind,
+              COALESCE(q.trigger_subkind, '') AS trigger_subkind,
+              COUNT(*)::int AS runs,
+              COALESCE(SUM(c.llm_calls), 0)::int AS llm_calls,
+              COALESCE(SUM(c.cost_usd), 0)::float8 AS cost_usd
+            FROM think_runs r
+            LEFT JOIN think_trigger_queue q ON q.id = r.trigger_id
+            LEFT JOIN cost_by_trigger c ON c.trigger_id = r.trigger_id
+            WHERE r.tenant_id = $1
+            GROUP BY r.trigger_kind, COALESCE(q.trigger_subkind, '')
+            ORDER BY r.trigger_kind, COALESCE(q.trigger_subkind, '')
+            """,
+            tenant_id,
+        )
+        t4_rows = await conn.fetch(
+            """
+            WITH cost_by_trigger AS (
+              SELECT trigger_id,
+                     COALESCE(sum(llm_calls_count), 0)::int AS llm_calls,
+                     COALESCE(sum(llm_input_tokens_total), 0)::bigint AS input_tokens,
+                     COALESCE(sum(llm_output_tokens_total), 0)::bigint AS output_tokens,
+                     COALESCE(sum(llm_cost_usd), 0)::float8 AS cost_usd
+              FROM think_run_costs
+              WHERE tenant_id = $1
+              GROUP BY trigger_id
+            )
+            SELECT
+              r.trigger_id,
+              r.trigger_kind,
+              r.status,
+              r.ops_applied,
+              COALESCE(q.trigger_subkind, '') AS trigger_subkind,
+              q.payload,
+              COALESCE(c.llm_calls, 0)::int AS llm_calls,
+              COALESCE(c.input_tokens, 0)::bigint AS input_tokens,
+              COALESCE(c.output_tokens, 0)::bigint AS output_tokens,
+              COALESCE(c.cost_usd, 0)::float8 AS cost_usd
+            FROM think_runs r
+            LEFT JOIN think_trigger_queue q ON q.id = r.trigger_id
+            LEFT JOIN cost_by_trigger c ON c.trigger_id = r.trigger_id
+            WHERE r.tenant_id = $1
+              AND split_part(r.trigger_kind, ':', 1) = 'T4'
+            ORDER BY r.started_at ASC
+            """,
+            tenant_id,
+        )
+        audit_rows = await conn.fetch(
+            """
+            SELECT r.ops_applied
+            FROM think_runs r
+            WHERE r.tenant_id = $1
+              AND split_part(r.trigger_kind, ':', 1) = 'T1'
+              AND r.ops_applied ? 'representation_audit'
+            ORDER BY r.started_at ASC
+            """,
+            tenant_id,
+        )
+    by_kind: dict[str, dict[str, Any]] = {}
+    product_path = {"runs": 0, "llm_calls": 0, "cost_usd": 0.0}
+    background = {"runs": 0, "llm_calls": 0, "cost_usd": 0.0}
+    total = {"runs": 0, "llm_calls": 0, "cost_usd": 0.0}
+    for row in rows:
+        trigger_kind = str(row["trigger_kind"] or "")
+        trigger_family = _trigger_kind_family(trigger_kind)
+        trigger_subkind = str(row["trigger_subkind"] or "")
+        key = f"{trigger_kind}:{trigger_subkind}"
+        entry = {
+            "trigger_kind": trigger_kind,
+            "trigger_family": trigger_family,
+            "trigger_subkind": trigger_subkind,
+            "runs": int(row["runs"] or 0),
+            "llm_calls": int(row["llm_calls"] or 0),
+            "cost_usd": round(float(row["cost_usd"] or 0.0), 6),
+        }
+        by_kind[key] = entry
+        target = (
+            background
+            if trigger_family in _BACKGROUND_MAINTENANCE_TRIGGER_KINDS
+            else product_path
+        )
+        for bucket in (target, total):
+            bucket["runs"] += entry["runs"]
+            bucket["llm_calls"] += entry["llm_calls"]
+            bucket["cost_usd"] += float(entry["cost_usd"])
+    for bucket in (product_path, background, total):
+        bucket["cost_usd"] = round(float(bucket["cost_usd"]), 6)
+    return {
+        "available": True,
+        "efficiency_scope": "product_path_excludes_t4_background_maintenance",
+        "background_maintenance_trigger_kinds": sorted(
+            _BACKGROUND_MAINTENANCE_TRIGGER_KINDS
+        ),
+        "product_path": product_path,
+        "background_maintenance": background,
+        "total": total,
+        "by_kind": by_kind,
+        "t4_roi": _build_t4_roi_profile(t4_rows, audit_rows),
+    }
+
+
+_REPAIR_WARNING_CODES = frozenset(
+    {
+        "prediction_lifecycle_not_exercised",
+        "truth_pressure_absent_for_contestable_memory",
+        "missing_curiosity_coverage",
+        "company_question_coverage_too_thin",
+        "missing_source_coverage",
+        "missing_discovered_pattern_coverage",
+        "selected_raw_evidence_too_low",
+        "selected_model_support_runaway",
+    }
+)
+
+
+def _build_t4_roi_profile(
+    t4_rows: list[Any],
+    audit_rows: list[Any],
+) -> dict[str, Any]:
+    by_subkind: dict[str, dict[str, Any]] = {}
+    total = {
+        "runs": 0,
+        "llm_calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_usd": 0.0,
+        "batch_runs": 0,
+        "batched_member_count": 0,
+        "estimated_calls_saved_by_batching": 0,
+        "durable_outcome_runs": 0,
+    }
+    repair_warning_codes: Counter[str] = Counter()
+    repair_intents: Counter[str] = Counter()
+    open_question_searches = 0
+    latent_candidate_reviews = 0
+
+    for row in t4_rows:
+        trigger_kind = str(_row_value(row, "trigger_kind", "") or "")
+        if _trigger_kind_family(trigger_kind) != "T4":
+            continue
+        subkind = str(_row_value(row, "trigger_subkind", "") or "")
+        payload = _json_obj(_row_value(row, "payload", {}))
+        ops = _json_obj(_row_value(row, "ops_applied", {}))
+        llm_calls = _intish(_row_value(row, "llm_calls", 0))
+        input_tokens = _intish(_row_value(row, "input_tokens", 0))
+        output_tokens = _intish(_row_value(row, "output_tokens", 0))
+        cost_usd = float(_row_value(row, "cost_usd", 0.0) or 0.0)
+        bucket = by_subkind.setdefault(
+            subkind,
+            {
+                "runs": 0,
+                "llm_calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost_usd": 0.0,
+                "batch_runs": 0,
+                "batched_member_count": 0,
+                "estimated_calls_saved_by_batching": 0,
+                "durable_outcome_runs": 0,
+            },
+        )
+        member_count = _batch_member_count(payload)
+        is_batch = member_count > 1 or payload.get("batch") is True
+        durable = _ops_has_durable_outcome(ops)
+        for target in (bucket, total):
+            target["runs"] += 1
+            target["llm_calls"] += llm_calls
+            target["input_tokens"] += input_tokens
+            target["output_tokens"] += output_tokens
+            target["cost_usd"] += cost_usd
+            if is_batch:
+                target["batch_runs"] += 1
+                target["batched_member_count"] += member_count
+                target["estimated_calls_saved_by_batching"] += max(0, member_count - 1)
+            if durable:
+                target["durable_outcome_runs"] += 1
+        if subkind == "representation_repair":
+            for item in _repair_items_from_payload(payload):
+                warning = str(item.get("audit_warning_code") or "")
+                intent = str(item.get("repair_intent") or "")
+                if warning:
+                    repair_warning_codes[warning] += 1
+                if intent:
+                    repair_intents[intent] += 1
+        elif subkind == "open_question_search":
+            open_question_searches += max(
+                1,
+                len(_json_list(payload.get("open_question_batch_items")))
+                or len(_json_list(payload.get("open_question_keys"))),
+            )
+        elif subkind == "latent_relationship_candidate":
+            latent_candidate_reviews += max(
+                1,
+                len(_json_list(payload.get("relationship_candidate_ids"))),
+            )
+
+    for bucket in [total, *by_subkind.values()]:
+        bucket["cost_usd"] = round(float(bucket["cost_usd"]), 6)
+    suppressed = _suppressed_noop_repair_profile(audit_rows)
+    return {
+        "available": True,
+        "total": total,
+        "by_subkind": by_subkind,
+        "representation_repair": {
+            "warning_codes": dict(sorted(repair_warning_codes.items())),
+            "repair_intents": dict(sorted(repair_intents.items())),
+        },
+        "open_question_search": {
+            "question_search_items": open_question_searches,
+        },
+        "latent_relationship_candidate": {
+            "candidate_review_items": latent_candidate_reviews,
+        },
+        "suppressed_justified_noop_repairs": suppressed,
+    }
+
+
+def _suppressed_noop_repair_profile(rows: list[Any]) -> dict[str, Any]:
+    audits = 0
+    warnings = 0
+    by_warning: Counter[str] = Counter()
+    for row in rows:
+        ops = _json_obj(_row_value(row, "ops_applied", {}))
+        audit = _json_obj(ops.get("representation_audit"))
+        if not audit:
+            continue
+        audit_warnings = [
+            warning
+            for warning in _json_list(audit.get("warnings"))
+            if isinstance(warning, dict)
+            and str(warning.get("code") or "") in _REPAIR_WARNING_CODES
+        ]
+        if not audit_warnings:
+            continue
+        if _json_list(ops.get("representation_repair_triggers")):
+            continue
+        metrics = _json_obj(audit.get("metrics"))
+        grade = str(metrics.get("context_use_grade") or "")
+        trace = str(metrics.get("reasoning_trace") or "").lower()
+        no_state = _intish(metrics.get("state_changes_emitted")) <= 0
+        no_adaptiveness = (
+            _intish(audit.get("model_adaptiveness"))
+            + _intish(audit.get("edge_adaptiveness"))
+            <= 0
+        )
+        justified = grade in {"justified_noop_context_used", "noop_trace_accounted"}
+        noisy = any(
+            marker in trace
+            for marker in ("discard_as_noise", "noise-only", "noise only", "noisy path")
+        )
+        if not (no_state and no_adaptiveness and (justified or noisy)):
+            continue
+        audits += 1
+        warnings += len(audit_warnings)
+        for warning in audit_warnings:
+            by_warning[str(warning.get("code") or "unknown")] += 1
+    return {
+        "audit_runs": audits,
+        "repair_warnings_suppressed": warnings,
+        "by_warning_code": dict(sorted(by_warning.items())),
+    }
+
+
+def _repair_items_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    items = [
+        item for item in _json_list(payload.get("repair_batch_items"))
+        if isinstance(item, dict)
+    ]
+    if items:
+        return items
+    return [
+        {
+            "audit_warning_code": payload.get("audit_warning_code"),
+            "repair_intent": payload.get("repair_intent"),
+        }
+    ]
+
+
+def _batch_member_count(payload: dict[str, Any]) -> int:
+    for key in (
+        "batch_member_trigger_ids",
+        "member_trigger_ids",
+        "repair_batch_items",
+        "open_question_batch_items",
+        "relationship_candidate_ids",
+    ):
+        values = _json_list(payload.get(key))
+        if values:
+            return len(values)
+    return 1
+
+
+def _ops_has_durable_outcome(ops: dict[str, Any]) -> bool:
+    if _intish(ops.get("state_changes_emitted")) > 0:
+        return True
+    for key in (
+        "claim_ops",
+        "memory_lifecycle_ops",
+        "relation_claim_ops",
+        "relation_frame_ops",
+        "edge_ops",
+        "ontology_gap_ops",
+        "open_question_ops",
+        "act_ops",
+        "resource_ops",
+    ):
+        if _json_list(ops.get(key)):
+            return True
+    memory = _json_obj(ops.get("memory_aggregation"))
+    return any(
+        _intish(memory.get(key)) > 0
+        for key in (
+            "model_inserts",
+            "model_updates",
+            "model_archives",
+            "evidence_attachments",
+            "near_duplicate_absorptions",
+        )
+    )
+
+
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+
+
+def _intish(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _collect_post_commit_action_profile(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+) -> dict[str, Any]:
+    async with pool.acquire() as conn:
+        if not await _table_exists(conn, "pending_post_commit_actions"):
+            return {"available": False}
+        by_kind_rows = await conn.fetch(
+            """
+            WITH profiled AS (
+              SELECT
+                action_kind,
+                processed_at,
+                dead_lettered_at,
+                COALESCE(action_payload->>'source_trigger_kind', '') AS source_kind,
+                COALESCE(action_payload->>'source_trigger_subkind', '') AS source_subkind,
+                COALESCE(action_payload->>'selector', '') AS selector,
+                COALESCE((action_payload->>'enqueue_think')::boolean, false)
+                  AS enqueue_think,
+                CASE
+                  WHEN jsonb_typeof(action_payload->'model_ids') = 'array'
+                  THEN jsonb_array_length(action_payload->'model_ids')
+                  ELSE 0
+                END AS model_id_count
+              FROM pending_post_commit_actions
+              WHERE tenant_id = $1
+            )
+            SELECT
+              action_kind,
+              COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE processed_at IS NOT NULL)::int AS processed,
+              COUNT(*) FILTER (WHERE dead_lettered_at IS NOT NULL)::int AS dead_lettered,
+              COALESCE(SUM(model_id_count), 0)::int AS model_ids_total,
+              COALESCE(MAX(model_id_count), 0)::int AS max_model_ids,
+              COUNT(*) FILTER (WHERE enqueue_think)::int AS enqueue_think_true,
+              COUNT(*) FILTER (WHERE NOT enqueue_think)::int AS enqueue_think_false
+            FROM profiled
+            GROUP BY action_kind
+            ORDER BY action_kind
+            """,
+            tenant_id,
+        )
+        source_rows = await conn.fetch(
+            """
+            SELECT
+              action_kind,
+              COALESCE(action_payload->>'source_trigger_kind', '') AS source_kind,
+              COALESCE(action_payload->>'source_trigger_subkind', '') AS source_subkind,
+              COALESCE(action_payload->>'selector', '') AS selector,
+              COUNT(*)::int AS total,
+              COALESCE(
+                SUM(
+                  CASE
+                    WHEN jsonb_typeof(action_payload->'model_ids') = 'array'
+                    THEN jsonb_array_length(action_payload->'model_ids')
+                    ELSE 0
+                  END
+                ),
+                0
+              )::int AS model_ids_total,
+              COUNT(*) FILTER (
+                WHERE COALESCE((action_payload->>'enqueue_think')::boolean, false)
+              )::int AS enqueue_think_true
+            FROM pending_post_commit_actions
+            WHERE tenant_id = $1
+              AND action_kind IN ('discover_model_edges', 'materialize_projections')
+            GROUP BY action_kind, source_kind, source_subkind, selector
+            ORDER BY action_kind, total DESC, source_kind, source_subkind, selector
+            """,
+            tenant_id,
+        )
+    by_kind = {str(row["action_kind"]): _record_to_dict(row) for row in by_kind_rows}
+    return {
+        "available": True,
+        "by_kind": by_kind,
+        "source_profile": [_record_to_dict(row) for row in source_rows],
+    }
+
+
+async def _collect_downstream_suppression(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+) -> dict[str, Any]:
+    async with pool.acquire() as conn:
+        if not await _table_exists(conn, "think_trigger_queue"):
+            return {"available": False}
+        reason_rows = await conn.fetch(
+            """
+            SELECT
+              trigger_kind || ':' || COALESCE(trigger_subkind, '') AS trigger_kind,
+              payload->>'auto_completed_reason' AS reason,
+              COUNT(*)::int AS total
+            FROM think_trigger_queue
+            WHERE tenant_id = $1
+              AND completed_at IS NOT NULL
+              AND payload ? 'auto_completed_reason'
+            GROUP BY trigger_kind, trigger_subkind, reason
+            ORDER BY total DESC, trigger_kind, reason
+            """,
+            tenant_id,
+        )
+        trigger_rows = await conn.fetch(
+            """
+            SELECT
+              trigger_kind || ':' || COALESCE(trigger_subkind, '') AS trigger_kind,
+              COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE payload ? 'auto_completed_reason')::int
+                AS auto_completed,
+              COUNT(*) FILTER (WHERE payload->>'batch' = 'true')::int AS batches,
+              COUNT(*) FILTER (WHERE batch_parent_id IS NOT NULL)::int
+                AS batched_members,
+              COUNT(*) FILTER (WHERE completed_at IS NULL)::int AS pending
+            FROM think_trigger_queue
+            WHERE tenant_id = $1
+            GROUP BY trigger_kind, trigger_subkind
+            ORDER BY trigger_kind
+            """,
+            tenant_id,
+        )
+    reason_counts = [_record_to_dict(row) for row in reason_rows]
+    return {
+        "available": True,
+        "auto_completed_total": sum(int(row["total"] or 0) for row in reason_counts),
+        "auto_completed_by_reason": reason_counts,
+        "trigger_profile": [_record_to_dict(row) for row in trigger_rows],
+    }
+
+
 async def _fetch_reflective_rule_lifecycle(
     conn: asyncpg.Connection,
     tenant_id: UUID,
@@ -2958,6 +6126,182 @@ async def _fetch_reflective_attribution_report(
     report = _record_to_dict(row)
     report["available"] = True
     return report
+
+
+_REQUIRED_ENTITY_PROJECTION_FAMILIES = {
+    "employees": "employee_profiles",
+    "commitments": "commitments",
+    "customers": "customers",
+    "goals": "goals",
+    "decisions": "decisions",
+    "resources": "resources",
+}
+
+
+async def _collect_projection_metabolism_report(
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+) -> dict[str, Any]:
+    async with pool.acquire() as conn:
+        if not await _table_exists(conn, "projection_snapshots"):
+            return {
+                "available": False,
+                "reason": "projection_snapshots_table_missing",
+            }
+
+        snapshot_rows = await conn.fetch(
+            """
+            SELECT
+              projection_name,
+              split_part(subject_key, ':', 1) AS subject_prefix,
+              COUNT(*)::bigint AS snapshot_count,
+              COUNT(DISTINCT subject_key)::bigint AS subject_count
+            FROM projection_snapshots
+            WHERE tenant_id = $1
+            GROUP BY 1, 2
+            ORDER BY 1, 2
+            """,
+            tenant_id,
+        )
+        snapshots_by_family: Counter[str] = Counter()
+        subject_prefix_matrix: dict[str, dict[str, int]] = {}
+        for row in snapshot_rows:
+            projection_name = str(row["projection_name"] or "")
+            subject_prefix = str(row["subject_prefix"] or "")
+            snapshot_count = int(row["snapshot_count"] or 0)
+            snapshots_by_family[projection_name] += snapshot_count
+            subject_prefix_matrix.setdefault(projection_name, {})[
+                subject_prefix
+            ] = int(row["subject_count"] or 0)
+
+        total_snapshots = sum(snapshots_by_family.values())
+        total_refresh_jobs = 0
+        pending_refresh_jobs = 0
+        failed_refresh_jobs = 0
+        job_status_counts: dict[str, dict[str, int]] = {}
+        max_refresh_subject: dict[str, Any] | None = None
+        if await _table_exists(conn, "projection_refresh_jobs"):
+            job_rows = await conn.fetch(
+                """
+                SELECT projection_name, status, COUNT(*)::bigint AS job_count
+                FROM projection_refresh_jobs
+                WHERE tenant_id = $1
+                GROUP BY 1, 2
+                ORDER BY 1, 2
+                """,
+                tenant_id,
+            )
+            for row in job_rows:
+                projection_name = str(row["projection_name"] or "")
+                status = str(row["status"] or "")
+                count = int(row["job_count"] or 0)
+                total_refresh_jobs += count
+                if status in {"pending", "leased"}:
+                    pending_refresh_jobs += count
+                if status in {"failed", "dead_letter"}:
+                    failed_refresh_jobs += count
+                job_status_counts.setdefault(projection_name, {})[status] = count
+
+            max_row = await conn.fetchrow(
+                """
+                SELECT projection_name, subject_key, COUNT(*)::bigint AS refresh_jobs
+                FROM projection_refresh_jobs
+                WHERE tenant_id = $1
+                GROUP BY 1, 2
+                ORDER BY refresh_jobs DESC, projection_name ASC, subject_key ASC
+                LIMIT 1
+                """,
+                tenant_id,
+            )
+            if max_row is not None:
+                max_refresh_subject = _record_to_dict(max_row)
+
+        relation_projection_report = await _collect_relation_projection_report(
+            conn,
+            tenant_id=tenant_id,
+        )
+
+    entity_coverage: dict[str, dict[str, Any]] = {}
+    missing: list[str] = []
+    for entity_name, projection_name in _REQUIRED_ENTITY_PROJECTION_FAMILIES.items():
+        snapshot_count = int(snapshots_by_family.get(projection_name) or 0)
+        covered = snapshot_count > 0
+        if not covered:
+            missing.append(entity_name)
+        entity_coverage[entity_name] = {
+            "projection_name": projection_name,
+            "snapshot_count": snapshot_count,
+            "covered": covered,
+        }
+
+    covered_count = len(_REQUIRED_ENTITY_PROJECTION_FAMILIES) - len(missing)
+    jobs_to_snapshots_ratio = (
+        round(total_refresh_jobs / total_snapshots, 4) if total_snapshots else None
+    )
+    status = (
+        "ok"
+        if not missing and pending_refresh_jobs == 0 and failed_refresh_jobs == 0
+        else "watch"
+    )
+    return {
+        "available": True,
+        "status": status,
+        "required_entity_projection_families": dict(
+            _REQUIRED_ENTITY_PROJECTION_FAMILIES
+        ),
+        "entity_projection_coverage": entity_coverage,
+        "entity_projection_coverage_ratio": round(
+            covered_count / len(_REQUIRED_ENTITY_PROJECTION_FAMILIES),
+            4,
+        ),
+        "missing_entity_projection_families": missing,
+        "snapshot_count": total_snapshots,
+        "snapshot_count_by_family": dict(sorted(snapshots_by_family.items())),
+        "subject_prefix_matrix": subject_prefix_matrix,
+        "refresh_job_count": total_refresh_jobs,
+        "refresh_job_status_by_family": job_status_counts,
+        "pending_refresh_jobs": pending_refresh_jobs,
+        "failed_refresh_jobs": failed_refresh_jobs,
+        "jobs_to_snapshots_ratio": jobs_to_snapshots_ratio,
+        "max_refresh_subject": max_refresh_subject or {},
+        "relation_projection_report": relation_projection_report,
+    }
+
+
+async def _collect_relation_projection_report(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+) -> dict[str, Any]:
+    if not await _table_exists(conn, "relation_instances"):
+        return {"available": False, "reason": "relation_instances_table_missing"}
+    if not await _table_exists(conn, "relation_edge_projections"):
+        return {"available": False, "reason": "relation_edge_projections_table_missing"}
+    row = await conn.fetchrow(
+        """
+        SELECT
+          COUNT(*) FILTER (
+            WHERE ri.status = 'accepted'
+              AND ri.write_policy = 'project_edges'
+          )::bigint AS projectable_relation_frames,
+          COUNT(DISTINCT rep.id) FILTER (
+            WHERE rep.status = 'active'
+          )::bigint AS active_relation_edge_projections,
+          COUNT(DISTINCT rep.edge_kind) FILTER (
+            WHERE rep.status = 'active'
+          )::bigint AS active_projection_kind_count
+        FROM relation_instances ri
+        LEFT JOIN relation_edge_projections rep
+          ON rep.tenant_id = ri.tenant_id
+         AND rep.relation_id = ri.id
+        WHERE ri.tenant_id = $1
+        """,
+        tenant_id,
+    )
+    out = _record_to_dict(row)
+    out["available"] = True
+    return out
 
 
 async def _table_exists(conn: asyncpg.Connection, table_name: str) -> bool:
@@ -3225,10 +6569,11 @@ def _score_latent_bridge(
             continue
         model_count += 1
         support_ids = set(map(str, model.get("supporting_event_ids") or []))
-        support_phases = {
-            transition_phase_by_observation.get(observation_id)
-            for observation_id in support_ids
-        }
+        support_phases = _bridge_support_phases(
+            model,
+            support_ids=support_ids,
+            transition_phase_by_observation=transition_phase_by_observation,
+        )
         transition_supported = "before_state" in support_phases and (
             "after_state" in support_phases or "gap_review" in support_phases
         )
@@ -3266,6 +6611,33 @@ def _score_latent_bridge(
         epistemic_marker_hits=epistemic_marker_hits,
         forbidden_detail_hits=forbidden_detail_hits,
     )
+
+
+def _bridge_support_phases(
+    model: dict[str, Any],
+    *,
+    support_ids: set[str],
+    transition_phase_by_observation: dict[str, str],
+) -> set[str]:
+    phases = {
+        transition_phase_by_observation.get(observation_id)
+        for observation_id in support_ids
+    }
+    phases.discard(None)
+
+    proposition = _json_obj(model.get("proposition"))
+    transition_support = _json_obj(proposition.get("transition_support"))
+    if not transition_support:
+        transition_support = _json_obj(model.get("transition_support"))
+    phase_fields = {
+        "before_state": "before_state_event_ids",
+        "after_state": "after_state_event_ids",
+        "gap_review": "gap_review_event_ids",
+    }
+    for phase, support_field in phase_fields.items():
+        if _json_list(transition_support.get(support_field)):
+            phases.add(phase)
+    return {str(phase) for phase in phases if phase}
 
 
 def _score_storyline_edges_and_review(
@@ -4256,6 +7628,12 @@ def _adaptive_lifecycle_dimension(
     question_policy_updates: float,
     negative_learning_events: float,
     future_relation_evolution_events: float,
+    experience_loop_closed: float,
+    experience_closure_score: float,
+    experience_policy_effects: float,
+    experience_evaluation_events: float,
+    experience_future_behavior_levers: float,
+    experience_direct_policy_effects: float,
     post_commit_processed: int,
     post_commit_dead_lettered: int,
 ) -> dict[str, Any]:
@@ -4283,6 +7661,12 @@ def _adaptive_lifecycle_dimension(
             "question_policy_updates": question_policy_updates,
             "negative_learning_events": negative_learning_events,
             "future_relation_evolution_events": future_relation_evolution_events,
+            "experience_loop_closed": experience_loop_closed,
+            "experience_closure_score": experience_closure_score,
+            "experience_policy_effects": experience_policy_effects,
+            "experience_evaluation_events": experience_evaluation_events,
+            "experience_future_behavior_levers": experience_future_behavior_levers,
+            "experience_direct_policy_effects": experience_direct_policy_effects,
             "post_commit_processed": post_commit_processed,
             "post_commit_dead_lettered": post_commit_dead_lettered,
         },
@@ -4349,6 +7733,11 @@ def _efficiency_dimension(
     llm_calls_per_signal: float,
     max_t1_elapsed_s: float,
     cost_per_signal: float,
+    efficiency_scope: str,
+    background_maintenance_runs: int,
+    background_maintenance_llm_calls: int,
+    background_maintenance_cost_usd: float,
+    t4_roi: dict[str, Any],
 ) -> dict[str, Any]:
     return _dimension(
         score=_avg(
@@ -4364,9 +7753,15 @@ def _efficiency_dimension(
             "llm_calls_per_signal": llm_calls_per_signal,
             "max_t1_elapsed_s": max_t1_elapsed_s,
             "cost_per_signal_usd": cost_per_signal,
+            "efficiency_scope": efficiency_scope,
+            "background_maintenance_think_runs": background_maintenance_runs,
+            "background_maintenance_llm_calls": background_maintenance_llm_calls,
+            "background_maintenance_cost_usd": background_maintenance_cost_usd,
+            "t4_roi": t4_roi,
         },
         findings=[
             "Rewards calm processing: low trigger amplification, low calls, bounded latency.",
+            "Product-path efficiency excludes T4 background maintenance; maintenance overhead is reported separately.",
         ],
     )
 
@@ -4395,6 +7790,9 @@ def _company_scorecard_base_metrics(
         "capability_probe_counts": _json_obj(
             model_summary.get("capability_probe_counts")
         ),
+        "lifecycle_obligation_report": _json_obj(
+            model_summary.get("lifecycle_obligation_report")
+        ),
         "graph_health": _json_obj(model_summary.get("graph_health")),
         "context_distribution": _json_obj(
             model_summary.get("context_use_distribution")
@@ -4422,6 +7820,7 @@ def _company_scorecard_base_metrics(
         ),
         "post_commit_status": _json_obj(model_summary.get("post_commit_status")),
         "cost": _json_obj(model_summary.get("cost")),
+        "think_cost_profile": _json_obj(model_summary.get("think_cost_profile")),
     }
 
 
@@ -4662,6 +8061,86 @@ def _company_memory_context_metrics(
     }
 
 
+def _combined_sage_experience_metrics(
+    *,
+    topology_metrics: dict[str, Any],
+    ops: dict[str, float],
+) -> dict[str, float]:
+    def metric(source: dict[str, Any], key: str) -> float:
+        try:
+            return float(source.get(key) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    think_negative_memory_inserts = metric(ops, "negative_memory_inserts")
+    think_question_policy_updates = metric(ops, "question_policy_updates")
+    direct_policy_effects = (
+        think_negative_memory_inserts + think_question_policy_updates
+    )
+    direct_evaluation_events = direct_policy_effects
+
+    raw_topology_effects = {
+        "affordance_policy": metric(topology_metrics, "affordance_reinforces")
+        + metric(topology_metrics, "affordance_decays"),
+        "shortcut_policy": metric(topology_metrics, "shortcut_creates_or_bumps")
+        + metric(topology_metrics, "shortcut_decays"),
+        "negative_memory": metric(topology_metrics, "negative_memory_inserts"),
+        "question_policy": metric(topology_metrics, "question_policy_updates"),
+        "region_summaries": metric(topology_metrics, "region_refreshes"),
+        "structural_features": metric(topology_metrics, "structural_models_written")
+        + metric(topology_metrics, "structural_edges_written"),
+    }
+    if think_negative_memory_inserts > 0:
+        raw_topology_effects["negative_memory"] += think_negative_memory_inserts
+    if think_question_policy_updates > 0:
+        raw_topology_effects["question_policy"] += think_question_policy_updates
+
+    derived_policy_effects = sum(raw_topology_effects.values())
+    topology_policy_effects = metric(topology_metrics, "experience_policy_effects")
+    policy_effects = max(topology_policy_effects, derived_policy_effects)
+    evaluation_events = max(
+        metric(topology_metrics, "experience_evaluation_events"),
+        direct_evaluation_events,
+    )
+    outcome_events = max(
+        metric(topology_metrics, "experience_outcome_events"),
+        evaluation_events,
+    )
+    future_behavior_levers = max(
+        metric(topology_metrics, "experience_future_behavior_levers"),
+        float(sum(1 for value in raw_topology_effects.values() if value > 0)),
+    )
+    closure_score = max(
+        metric(topology_metrics, "experience_closure_score"),
+        (
+            (0.20 if outcome_events > 0 else 0.0)
+            + (0.30 if evaluation_events > 0 else 0.0)
+            + (0.30 if policy_effects > 0 else 0.0)
+            + (0.20 if future_behavior_levers > 0 else 0.0)
+        ),
+    )
+    loop_closed = max(
+        metric(topology_metrics, "experience_loop_closed"),
+        1.0
+        if (
+            outcome_events > 0
+            and evaluation_events > 0
+            and policy_effects > 0
+            and future_behavior_levers > 0
+        )
+        else 0.0,
+    )
+    return {
+        "experience_outcome_events": outcome_events,
+        "experience_evaluation_events": evaluation_events,
+        "experience_policy_effects": policy_effects,
+        "experience_future_behavior_levers": future_behavior_levers,
+        "experience_closure_score": round(_clamp01(closure_score), 4),
+        "experience_loop_closed": loop_closed,
+        "experience_direct_policy_effects": direct_policy_effects,
+    }
+
+
 def _company_reasoning_temporal_operational_metrics(
     *,
     model_summary: dict[str, Any],
@@ -4731,25 +8210,60 @@ def _company_reasoning_temporal_operational_metrics(
     topology_missing_model_skips = float(
         topology_metrics.get("shortcut_missing_model_skips") or 0.0
     ) + float(topology_metrics.get("structural_missing_model_skips") or 0.0)
-    think_runs_per_signal = _ratio(metrics["think_runs"], metrics["total_signals"])
-    llm_calls_per_signal = _ratio(
-        int(metrics["cost"].get("llm_calls") or 0),
-        metrics["total_signals"],
+    cost_profile = metrics["think_cost_profile"]
+    product_cost_profile = _json_obj(cost_profile.get("product_path"))
+    background_cost_profile = _json_obj(cost_profile.get("background_maintenance"))
+    t4_roi = _json_obj(cost_profile.get("t4_roi"))
+    efficiency_scope = str(
+        cost_profile.get("efficiency_scope")
+        or "all_think_runs_legacy_cost_profile_unavailable"
     )
-    negative_learning_events = float(
-        metrics["discovery_counts"].get("negative_memory") or 0
-    ) + float(topology_metrics.get("negative_memory_inserts") or 0)
-    question_policy_update_events = float(
+    efficiency_think_runs = int(
+        product_cost_profile.get("runs") or 0
+        if product_cost_profile
+        else metrics["think_runs"]
+    )
+    efficiency_llm_calls = int(
+        product_cost_profile.get("llm_calls") or 0
+        if product_cost_profile
+        else metrics["cost"].get("llm_calls") or 0
+    )
+    efficiency_cost_usd = float(
+        product_cost_profile.get("cost_usd") or 0.0
+        if product_cost_profile
+        else metrics["cost"].get("cost_usd") or 0.0
+    )
+    think_runs_per_signal = _ratio(efficiency_think_runs, metrics["total_signals"])
+    llm_calls_per_signal = _ratio(efficiency_llm_calls, metrics["total_signals"])
+    negative_memory_rows = float(metrics["discovery_counts"].get("negative_memory") or 0)
+    topology_negative_memory_inserts = float(
+        topology_metrics.get("negative_memory_inserts") or 0
+    )
+    think_negative_memory_inserts = float(ops.get("negative_memory_inserts") or 0)
+    negative_memory_write_events = (
+        topology_negative_memory_inserts + think_negative_memory_inserts
+    )
+    negative_learning_events = max(negative_memory_rows, negative_memory_write_events)
+    topology_question_policy_updates = float(
         topology_metrics.get("question_policy_updates") or 0
+    )
+    think_question_policy_updates = float(ops.get("question_policy_updates") or 0)
+    question_policy_update_events = (
+        topology_question_policy_updates + think_question_policy_updates
     )
     question_policy_stats = float(
         metrics["discovery_counts"].get("question_policy_stats") or 0
+    )
+    question_policy_events = max(question_policy_stats, question_policy_update_events)
+    experience_metrics = _combined_sage_experience_metrics(
+        topology_metrics=topology_metrics,
+        ops=ops,
     )
     shortcut_events = float(topology_metrics.get("shortcut_creates_or_bumps") or 0)
     affordance_events = float(topology_metrics.get("affordance_reinforces") or 0)
     adaptive_feedback_events = (
         negative_learning_events
-        + question_policy_update_events
+        + question_policy_events
         + shortcut_events
         + affordance_events
     )
@@ -4797,10 +8311,7 @@ def _company_reasoning_temporal_operational_metrics(
     amplification_score = 1.0 - _clamp01(think_runs_per_signal / 0.20)
     llm_call_score = 1.0 - _clamp01(llm_calls_per_signal / 0.20)
     latency_score = 1.0 - _clamp01((wave_stats["max_t1_elapsed_s"] - 90.0) / 810.0)
-    cost_per_signal = _ratio(
-        float(metrics["cost"].get("cost_usd") or 0.0),
-        metrics["total_signals"],
-    )
+    cost_per_signal = _ratio(efficiency_cost_usd, metrics["total_signals"])
     cost_score = 1.0 - _clamp01(cost_per_signal / 0.01)
     efficiency_guardrail_score = _avg(
         [amplification_score, llm_call_score, latency_score, cost_score]
@@ -4853,12 +8364,33 @@ def _company_reasoning_temporal_operational_metrics(
         "llm_call_score": llm_call_score,
         "cost_per_signal": cost_per_signal,
         "cost_score": cost_score,
+        "efficiency_scope": efficiency_scope,
+        "background_maintenance_runs": int(
+            background_cost_profile.get("runs") or 0
+        ),
+        "background_maintenance_llm_calls": int(
+            background_cost_profile.get("llm_calls") or 0
+        ),
+        "background_maintenance_cost_usd": float(
+            background_cost_profile.get("cost_usd") or 0.0
+        ),
+        "t4_roi": t4_roi,
         "adaptive_feedback_events": adaptive_feedback_events,
         "adaptive_feedback_score": feedback_learning_score,
         "policy_feedback_score": policy_feedback_score,
         "negative_learning_events": negative_learning_events,
+        "negative_memory_rows": negative_memory_rows,
+        "negative_memory_inserts": negative_memory_write_events,
+        "negative_memory_write_events": negative_memory_write_events,
+        "think_negative_memory_inserts": think_negative_memory_inserts,
+        "topology_negative_memory_inserts": topology_negative_memory_inserts,
         "negative_learning_score": negative_learning_score,
+        "question_policy_updates": question_policy_update_events,
         "question_policy_update_events": question_policy_update_events,
+        "question_policy_events": question_policy_events,
+        "think_question_policy_updates": think_question_policy_updates,
+        "topology_question_policy_updates": topology_question_policy_updates,
+        **experience_metrics,
         "relation_adaptation_score": relation_adaptation_score,
         "temporal_closure_score": temporal_closure_score,
         "future_relation_evolution_events": future_relation_evolution_events,
@@ -4953,6 +8485,16 @@ def _company_scorecard_dimensions(
             future_relation_evolution_events=metrics[
                 "future_relation_evolution_events"
             ],
+            experience_loop_closed=metrics["experience_loop_closed"],
+            experience_closure_score=metrics["experience_closure_score"],
+            experience_policy_effects=metrics["experience_policy_effects"],
+            experience_evaluation_events=metrics["experience_evaluation_events"],
+            experience_future_behavior_levers=metrics[
+                "experience_future_behavior_levers"
+            ],
+            experience_direct_policy_effects=metrics[
+                "experience_direct_policy_effects"
+            ],
             post_commit_processed=metrics["post_commit_processed"],
             post_commit_dead_lettered=metrics["post_commit_dead_lettered"],
         ),
@@ -4979,6 +8521,15 @@ def _company_scorecard_dimensions(
             llm_calls_per_signal=metrics["llm_calls_per_signal"],
             max_t1_elapsed_s=metrics["wave_stats"]["max_t1_elapsed_s"],
             cost_per_signal=metrics["cost_per_signal"],
+            efficiency_scope=metrics["efficiency_scope"],
+            background_maintenance_runs=metrics["background_maintenance_runs"],
+            background_maintenance_llm_calls=metrics[
+                "background_maintenance_llm_calls"
+            ],
+            background_maintenance_cost_usd=metrics[
+                "background_maintenance_cost_usd"
+            ],
+            t4_roi=metrics["t4_roi"],
         ),
     }
 
@@ -5117,11 +8668,31 @@ def _company_scorecard_proof_coverage(
         "memory_lifecycle_ops": int(metrics["ops"]["memory_lifecycle_ops"]),
         "resource_ops": int(metrics["ops"]["resource_ops"]),
         "ontology_gap_ops": int(metrics["ops"]["ontology_gap_ops"]),
-        "negative_memory_inserts": float(
-            metrics["topology_metrics"].get("negative_memory_inserts") or 0
+        "negative_memory_inserts": float(metrics["negative_memory_inserts"]),
+        "think_negative_memory_inserts": float(
+            metrics["think_negative_memory_inserts"]
         ),
-        "question_policy_updates": float(
-            metrics["topology_metrics"].get("question_policy_updates") or 0
+        "topology_negative_memory_inserts": float(
+            metrics["topology_negative_memory_inserts"]
+        ),
+        "question_policy_updates": float(metrics["question_policy_updates"]),
+        "think_question_policy_updates": float(
+            metrics["think_question_policy_updates"]
+        ),
+        "topology_question_policy_updates": float(
+            metrics["topology_question_policy_updates"]
+        ),
+        "experience_loop_closed": float(metrics["experience_loop_closed"]),
+        "experience_closure_score": float(metrics["experience_closure_score"]),
+        "experience_policy_effects": float(metrics["experience_policy_effects"]),
+        "experience_evaluation_events": float(
+            metrics["experience_evaluation_events"]
+        ),
+        "experience_future_behavior_levers": float(
+            metrics["experience_future_behavior_levers"]
+        ),
+        "experience_direct_policy_effects": float(
+            metrics["experience_direct_policy_effects"]
         ),
         "adaptive_lifecycle": dimensions["adaptive_lifecycle"]["metrics"],
         "shortcut_missing_model_skips": float(
@@ -5144,7 +8715,6 @@ def _company_intelligence_scorecard(
     retrieval_observation_counts: list[int],
     validation_errors: int,
 ) -> dict[str, Any]:
-    """Score whether the run behaved like durable company intelligence."""
     metrics = _company_scorecard_base_metrics(
         model_summary=model_summary,
         waves=waves,
@@ -5184,10 +8754,7 @@ def _company_intelligence_scorecard(
         metrics=metrics,
     )
     weights = _company_scorecard_weights()
-    overall = round(
-        sum(dimensions[name]["score"] * weight for name, weight in weights.items()),
-        4,
-    )
+    overall = round(sum(dimensions[name]["score"] * weight for name, weight in weights.items()), 4)
     proof_gaps = _company_intelligence_proof_gaps(
         model_summary=model_summary,
         dimensions=dimensions,
@@ -5237,6 +8804,8 @@ def _aggregate_wave_ops(waves: list[dict[str, Any]]) -> dict[str, float]:
         "situation_member_additions": 0,
         "near_duplicate_absorptions": 0,
         "evidence_attachments": 0,
+        "negative_memory_inserts": 0,
+        "question_policy_updates": 0,
     }
     for wave in waves:
         ops = ((wave.get("t1_batch") or {}).get("run") or {}).get("ops_applied") or {}
@@ -5269,6 +8838,14 @@ def _aggregate_wave_ops(waves: list[dict[str, Any]]) -> dict[str, float]:
             "evidence_attachments",
         ):
             totals[key] += float(aggregation.get(key) or 0)
+        totals["negative_memory_inserts"] += float(
+            ops.get("negative_memory_inserts")
+            or len(ops.get("negative_memory_ops") or [])
+            or 0
+        )
+        totals["question_policy_updates"] += float(
+            ops.get("question_policy_updates") or 0
+        )
     return totals
 
 
@@ -5589,6 +9166,9 @@ def _product_value_proof_gaps(
     latent_avg: float,
     concrete_latent_ratio: float,
     model_context_score: float,
+    experience_loop_closed: float,
+    experience_closure_score: float,
+    experience_future_behavior_levers: float,
     negative_learning_events: int,
     question_policy_events: int,
     customer_scope_count: int,
@@ -5596,6 +9176,7 @@ def _product_value_proof_gaps(
     precise_edge_coverage: float,
     relation_frame_score: float,
     capability_probe_counts: dict[str, Any],
+    lifecycle_obligation_report: dict[str, Any],
 ) -> list[str]:
     proof_gaps: list[str] = []
     def probed(kind: str) -> bool:
@@ -5603,6 +9184,22 @@ def _product_value_proof_gaps(
             return int(capability_probe_counts.get(kind) or 0) > 0
         except (TypeError, ValueError):
             return False
+
+    lifecycle_opportunities = _json_obj(
+        _json_obj(lifecycle_obligation_report.get("opportunities")).get("by_kind")
+    )
+    lifecycle_injections = _json_obj(
+        _json_obj(lifecycle_obligation_report.get("injections")).get("by_kind")
+    )
+    lifecycle_persisted = _json_obj(
+        _json_obj(lifecycle_obligation_report.get("persisted")).get("by_kind")
+    )
+
+    def lifecycle_count(bucket: dict[str, Any], kind: str) -> int:
+        try:
+            return int(bucket.get(kind) or 0)
+        except (TypeError, ValueError):
+            return 0
 
     if recommendation_coverage < 0.75 or act_ops == 0:
         proof_gaps.append(
@@ -5613,6 +9210,17 @@ def _product_value_proof_gaps(
             proof_gaps.append(
                 "Decision impact eval ran a resource/action-resource probe but produced no resource ops."
             )
+        elif lifecycle_count(lifecycle_injections, "resource"):
+            proof_gaps.append(
+                "Decision impact eval detected resource obligations, but no "
+                "resource ops persisted; inspect lifecycle_obligation_report "
+                "resource conversion."
+            )
+        elif lifecycle_count(lifecycle_opportunities, "resource"):
+            proof_gaps.append(
+                "Decision impact eval had explicit resource opportunities, but "
+                "Think injected no resource lifecycle obligation."
+            )
         else:
             proof_gaps.append(
                 "Decision impact eval did not exercise resource or action-resource operations."
@@ -5621,6 +9229,16 @@ def _product_value_proof_gaps(
         if probed("archive"):
             proof_gaps.append(
                 "Memory lifecycle eval ran an archive probe but produced no archival cleanup."
+            )
+        elif lifecycle_count(lifecycle_persisted, "staleness_review"):
+            proof_gaps.append(
+                "Memory lifecycle eval persisted stale-memory review obligations "
+                "but did not resolve them into archival cleanup."
+            )
+        elif lifecycle_count(lifecycle_opportunities, "staleness_review"):
+            proof_gaps.append(
+                "Memory lifecycle eval saw stale-memory opportunities, but no "
+                "staleness review obligation persisted."
             )
         else:
             proof_gaps.append(
@@ -5631,6 +9249,16 @@ def _product_value_proof_gaps(
             proof_gaps.append(
                 "Memory lifecycle eval ran an evidence probe but produced no evidence attachment."
             )
+        elif lifecycle_count(lifecycle_injections, "evidence_attachment"):
+            proof_gaps.append(
+                "Memory lifecycle eval injected evidence-attachment obligations "
+                "but no evidence attachment survived apply."
+            )
+        elif lifecycle_count(lifecycle_opportunities, "evidence_attachment"):
+            proof_gaps.append(
+                "Memory lifecycle eval had evidence-attachment opportunities, "
+                "but Think injected no evidence obligation."
+            )
         else:
             proof_gaps.append(
                 "Memory lifecycle eval did not exercise evidence attachment behavior."
@@ -5639,6 +9267,11 @@ def _product_value_proof_gaps(
         if probed("prediction"):
             proof_gaps.append(
                 "Prediction lifecycle eval ran a prediction probe but still has too few Prediction models for company-scale proof."
+            )
+        elif lifecycle_count(lifecycle_persisted, "prediction"):
+            proof_gaps.append(
+                "Prediction lifecycle obligations produced Prediction models, "
+                "but volume is still thin for company-scale proof."
             )
         else:
             proof_gaps.append(
@@ -5655,6 +9288,15 @@ def _product_value_proof_gaps(
     elif alias_needs_review_count == 0 and alias_review_candidate_count > 0:
         proof_gaps.append(
             "Counterfactual/trap eval saw alias candidates but no explicit review deferral."
+        )
+    elif (
+        alias_score is not None
+        and alias_needs_review_count == 0
+        and lifecycle_count(lifecycle_persisted, "ambiguity_review")
+    ):
+        proof_gaps.append(
+            "Counterfactual/trap eval persisted ambiguity review obligations, "
+            "but storyline review debt still needs closure."
         )
     if noise_score < 0.75:
         proof_gaps.append(
@@ -5696,6 +9338,14 @@ def _product_value_proof_gaps(
         proof_gaps.append(
             "Compression loss eval found later reasoning was not mostly using compressed Model/graph context."
         )
+    if experience_loop_closed < 1.0:
+        proof_gaps.append(
+            "SAGE experience metabolism eval did not prove outcomes became future-behavior policy."
+        )
+    elif experience_closure_score < 0.8 or experience_future_behavior_levers < 2:
+        proof_gaps.append(
+            "SAGE experience metabolism eval closed a loop, but policy leverage was still thin."
+        )
     if negative_learning_events == 0:
         proof_gaps.append(
             "Negative learning eval did not create durable negative memory."
@@ -5704,6 +9354,16 @@ def _product_value_proof_gaps(
         if probed("question_policy"):
             proof_gaps.append(
                 "Question policy eval ran a probe but did not produce policy stats or updates."
+            )
+        elif lifecycle_count(lifecycle_persisted, "question_policy"):
+            proof_gaps.append(
+                "Question policy lifecycle obligations persisted, but SAGE "
+                "policy stats/updates did not credit them."
+            )
+        elif lifecycle_count(lifecycle_opportunities, "question_policy"):
+            proof_gaps.append(
+                "Question policy opportunities existed, but no policy-learning "
+                "obligation persisted."
             )
         else:
             proof_gaps.append(
@@ -5811,14 +9471,31 @@ def _product_value_learning_scope_metrics(
     model_kind_distribution: dict[str, Any],
     discovery_counts: dict[str, Any],
     topology_metrics: dict[str, Any],
+    ops: dict[str, float],
 ) -> dict[str, Any]:
     prediction_models = int(model_kind_distribution.get("prediction") or 0)
     negative_memory_count = int(discovery_counts.get("negative_memory") or 0)
-    negative_memory_inserts = int(topology_metrics.get("negative_memory_inserts") or 0)
-    negative_learning_events = negative_memory_count + negative_memory_inserts
+    topology_negative_memory_inserts = int(
+        topology_metrics.get("negative_memory_inserts") or 0
+    )
+    think_negative_memory_inserts = int(ops.get("negative_memory_inserts") or 0)
+    negative_memory_inserts = (
+        topology_negative_memory_inserts + think_negative_memory_inserts
+    )
+    negative_learning_events = max(negative_memory_count, negative_memory_inserts)
     question_policy_count = int(discovery_counts.get("question_policy_stats") or 0)
-    question_policy_updates = int(topology_metrics.get("question_policy_updates") or 0)
-    question_policy_events = question_policy_count + question_policy_updates
+    topology_question_policy_updates = int(
+        topology_metrics.get("question_policy_updates") or 0
+    )
+    think_question_policy_updates = int(ops.get("question_policy_updates") or 0)
+    question_policy_updates = (
+        topology_question_policy_updates + think_question_policy_updates
+    )
+    question_policy_events = max(question_policy_count, question_policy_updates)
+    experience_metrics = _combined_sage_experience_metrics(
+        topology_metrics=topology_metrics,
+        ops=ops,
+    )
     capability_probe_counts = _json_obj(model_summary.get("capability_probe_counts"))
 
     customer_scope_rows = _json_list(model_summary.get("top_customer_model_scopes"))
@@ -5842,12 +9519,32 @@ def _product_value_learning_scope_metrics(
         "prediction_models": prediction_models,
         "negative_memory_count": negative_memory_count,
         "negative_memory_inserts": negative_memory_inserts,
+        "think_negative_memory_inserts": think_negative_memory_inserts,
+        "topology_negative_memory_inserts": topology_negative_memory_inserts,
         "negative_learning_events": negative_learning_events,
         "question_policy_count": question_policy_count,
         "question_policy_updates": question_policy_updates,
+        "think_question_policy_updates": think_question_policy_updates,
+        "topology_question_policy_updates": topology_question_policy_updates,
         "question_policy_events": question_policy_events,
         "question_policy_probe_count": int(
             capability_probe_counts.get("question_policy") or 0
+        ),
+        **experience_metrics,
+        "experience_policy_effect_score": _clamp01(
+            _ratio(
+                experience_metrics["experience_policy_effects"],
+                max(1, len(STORYLINES)),
+            )
+        ),
+        "experience_evaluation_score": _clamp01(
+            _ratio(
+                experience_metrics["experience_evaluation_events"],
+                max(1, len(STORYLINES)),
+            )
+        ),
+        "experience_future_behavior_score": _clamp01(
+            _ratio(experience_metrics["experience_future_behavior_levers"], 4)
         ),
         "customer_scope_rows": customer_scope_rows,
         "customer_scope_count": customer_scope_count,
@@ -5882,8 +9579,12 @@ def _product_value_alias_bridge_metrics(
     alias_accepted_candidate_count = (
         int(alias_score.accepted_candidate_count) if alias_score else 0
     )
+    alias_deferred_candidate_count = max(
+        0,
+        alias_review_candidate_count - alias_accepted_candidate_count,
+    )
     alias_review_deferral_score = (
-        _ratio(alias_needs_review_count, alias_review_candidate_count)
+        _ratio(alias_deferred_candidate_count, alias_review_candidate_count)
         if alias_review_candidate_count
         else (0.5 if alias_score else 0.0)
     )
@@ -5939,6 +9640,7 @@ def _product_value_alias_bridge_metrics(
         "alias_storyline_score": alias_storyline_score,
         "alias_review_candidate_count": alias_review_candidate_count,
         "alias_needs_review_count": alias_needs_review_count,
+        "alias_deferred_candidate_count": alias_deferred_candidate_count,
         "alias_accepted_candidate_count": alias_accepted_candidate_count,
         "alias_review_deferral_score": alias_review_deferral_score,
         "alias_strong_acceptance_pressure": alias_strong_acceptance_pressure,
@@ -6065,6 +9767,9 @@ def _product_value_metrics(
         "capability_probe_counts": _json_obj(
             model_summary.get("capability_probe_counts")
         ),
+        "lifecycle_obligation_report": _json_obj(
+            model_summary.get("lifecycle_obligation_report")
+        ),
         "recommendation_coverage": recommendation_coverage,
         "situation_coverage": situation_coverage,
         "accepted_edge_coverage": accepted_edge_coverage,
@@ -6101,6 +9806,7 @@ def _product_value_metrics(
             model_kind_distribution=model_kind_distribution,
             discovery_counts=discovery_counts,
             topology_metrics=topology_metrics,
+            ops=ops,
         )
     )
     metrics.update(_product_value_alias_bridge_metrics(storyline_scores))
@@ -6250,6 +9956,9 @@ def _product_value_counterfactual_bridge_compression_evals(
                 "alias_needs_review_candidate_count": (
                     metrics["alias_needs_review_count"]
                 ),
+                "alias_deferred_candidate_count": (
+                    metrics["alias_deferred_candidate_count"]
+                ),
                 "alias_accepted_candidate_count": (
                     metrics["alias_accepted_candidate_count"]
                 ),
@@ -6334,6 +10043,41 @@ def _product_value_learning_customer_evals(
     metrics: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
     return {
+        "experience_metabolism": _dimension(
+            score=(
+                0.45 * metrics["experience_closure_score"]
+                + 0.20 * metrics["experience_policy_effect_score"]
+                + 0.20 * metrics["experience_future_behavior_score"]
+                + 0.15 * metrics["experience_evaluation_score"]
+            ),
+            metrics={
+                "experience_closure_score": metrics["experience_closure_score"],
+                "experience_loop_closed": metrics["experience_loop_closed"],
+                "experience_policy_effects": metrics["experience_policy_effects"],
+                "experience_evaluation_events": (
+                    metrics["experience_evaluation_events"]
+                ),
+                "experience_future_behavior_levers": (
+                    metrics["experience_future_behavior_levers"]
+                ),
+                "experience_direct_policy_effects": (
+                    metrics["experience_direct_policy_effects"]
+                ),
+                "experience_policy_effect_score": (
+                    metrics["experience_policy_effect_score"]
+                ),
+                "experience_future_behavior_score": (
+                    metrics["experience_future_behavior_score"]
+                ),
+                "experience_evaluation_score": (
+                    metrics["experience_evaluation_score"]
+                ),
+            },
+            findings=[
+                "Tests whether SAGE turned observed outcomes into future-behavior policy.",
+                "Scattered adaptive activity does not count unless the experience loop closes.",
+            ],
+        ),
         "negative_learning": _dimension(
             score=(
                 0.45 * metrics["negative_memory_score"]
@@ -6350,6 +10094,12 @@ def _product_value_learning_customer_evals(
             metrics={
                 "negative_memory_count": metrics["negative_memory_count"],
                 "negative_memory_inserts": metrics["negative_memory_inserts"],
+                "think_negative_memory_inserts": (
+                    metrics["think_negative_memory_inserts"]
+                ),
+                "topology_negative_memory_inserts": (
+                    metrics["topology_negative_memory_inserts"]
+                ),
                 "negative_learning_events": metrics["negative_learning_events"],
                 "noise_noop_score": metrics["noise_score"],
                 "unused_selected_context_count": metrics["unused_context"],
@@ -6371,6 +10121,12 @@ def _product_value_learning_customer_evals(
             metrics={
                 "question_policy_stats": metrics["question_policy_count"],
                 "question_policy_updates": metrics["question_policy_updates"],
+                "think_question_policy_updates": (
+                    metrics["think_question_policy_updates"]
+                ),
+                "topology_question_policy_updates": (
+                    metrics["topology_question_policy_updates"]
+                ),
                 "question_policy_events": metrics["question_policy_events"],
                 "question_policy_probe_count": metrics["question_policy_probe_count"],
                 "context_use_score": metrics["context_use_score"],
@@ -6486,40 +10242,7 @@ def _product_value_evals(
         **_product_value_counterfactual_bridge_compression_evals(metrics),
         **_product_value_learning_customer_evals(metrics),
     }
-    proof_gaps = _product_value_proof_gaps(
-        recommendation_coverage=metrics["recommendation_coverage"],
-        act_ops=metrics["act_ops"],
-        resource_ops=metrics["resource_ops"],
-        model_archives=metrics["model_archives"],
-        evidence_attachments=metrics["evidence_attachments"],
-        prediction_models=metrics["prediction_models"],
-        future_validation_events=metrics["future_validation_events"],
-        total_storylines=metrics["total_storylines"],
-        alias_score=metrics["alias_score"],
-        alias_needs_review_count=metrics["alias_needs_review_count"],
-        alias_review_candidate_count=metrics["alias_review_candidate_count"],
-        noise_score=metrics["noise_score"],
-        bridge_story=metrics["bridge_story"],
-        bridge_model_count=metrics["bridge_model_count"],
-        bridge_transition_supported_count=(
-            metrics["bridge_transition_supported_count"]
-        ),
-        bridge_epistemic_marker_count=metrics["bridge_epistemic_marker_count"],
-        unsupported_bridge_specific_claims=(
-            metrics["unsupported_bridge_specific_claims"]
-        ),
-        bridge_future_confirmed_count=metrics["bridge_future_confirmed_count"],
-        latent_avg=metrics["latent_avg"],
-        concrete_latent_ratio=metrics["concrete_latent_ratio"],
-        model_context_score=metrics["model_context_score"],
-        negative_learning_events=metrics["negative_learning_events"],
-        question_policy_events=metrics["question_policy_events"],
-        customer_scope_count=metrics["customer_scope_count"],
-        customer_scoped_models=metrics["customer_scoped_models"],
-        precise_edge_coverage=metrics["precise_edge_coverage"],
-        relation_frame_score=metrics["relation_frame_score"],
-        capability_probe_counts=metrics["capability_probe_counts"],
-    )
+    proof_gaps = _product_value_proof_gaps_from_metrics(metrics)
 
     overall = round(
         _avg(
@@ -6537,6 +10260,43 @@ def _product_value_evals(
         "evals": evals,
         "proof_gaps": proof_gaps,
     }
+
+
+def _product_value_proof_gaps_from_metrics(metrics: dict[str, Any]) -> list[str]:
+    return _product_value_proof_gaps(
+        recommendation_coverage=metrics["recommendation_coverage"],
+        act_ops=metrics["act_ops"],
+        resource_ops=metrics["resource_ops"],
+        model_archives=metrics["model_archives"],
+        evidence_attachments=metrics["evidence_attachments"],
+        prediction_models=metrics["prediction_models"],
+        future_validation_events=metrics["future_validation_events"],
+        total_storylines=metrics["total_storylines"],
+        alias_score=metrics["alias_score"],
+        alias_needs_review_count=metrics["alias_needs_review_count"],
+        alias_review_candidate_count=metrics["alias_review_candidate_count"],
+        noise_score=metrics["noise_score"],
+        bridge_story=metrics["bridge_story"],
+        bridge_model_count=metrics["bridge_model_count"],
+        bridge_transition_supported_count=metrics["bridge_transition_supported_count"],
+        bridge_epistemic_marker_count=metrics["bridge_epistemic_marker_count"],
+        unsupported_bridge_specific_claims=metrics["unsupported_bridge_specific_claims"],
+        bridge_future_confirmed_count=metrics["bridge_future_confirmed_count"],
+        latent_avg=metrics["latent_avg"],
+        concrete_latent_ratio=metrics["concrete_latent_ratio"],
+        model_context_score=metrics["model_context_score"],
+        experience_loop_closed=metrics["experience_loop_closed"],
+        experience_closure_score=metrics["experience_closure_score"],
+        experience_future_behavior_levers=metrics["experience_future_behavior_levers"],
+        negative_learning_events=metrics["negative_learning_events"],
+        question_policy_events=metrics["question_policy_events"],
+        customer_scope_count=metrics["customer_scope_count"],
+        customer_scoped_models=metrics["customer_scoped_models"],
+        precise_edge_coverage=metrics["precise_edge_coverage"],
+        relation_frame_score=metrics["relation_frame_score"],
+        capability_probe_counts=metrics["capability_probe_counts"],
+        lifecycle_obligation_report=metrics["lifecycle_obligation_report"],
+    )
 
 
 def _named_count_total(rows: list[Any]) -> int:
@@ -6866,6 +10626,39 @@ def _benchmark_summary(
             "think_runs_failed": model_summary.get("think_runs_failed"),
             "validation_error_count": validation_errors,
         },
+        "run_health": {
+            "min_efficiency_score": (
+                _json_obj(model_summary.get("run_config")).get(
+                    "min_efficiency_score"
+                )
+            ),
+            "max_background_maintenance_llm_calls": (
+                _json_obj(model_summary.get("run_config")).get(
+                    "max_background_maintenance_llm_calls"
+                )
+            ),
+            "background_maintenance_llm_calls": _json_obj(
+                _json_obj(model_summary.get("think_cost_profile")).get(
+                    "background_maintenance"
+                )
+            ).get("llm_calls"),
+            "pending_triggers": model_summary.get("pending_triggers"),
+            "pending_post_commit_actions": model_summary.get(
+                "pending_post_commit_actions"
+            ),
+            "dead_lettered_post_commit_actions": model_summary.get(
+                "dead_lettered_post_commit_actions"
+            ),
+            "failed_post_commit_actions": (
+                _json_obj(model_summary.get("post_commit_status")).get("failed")
+            ),
+            "failed_topology_optimizer_runs": (
+                _json_obj(model_summary.get("topology_optimizer_status")).get("failed")
+            ),
+            "think_runs_success": model_summary.get("think_runs_success"),
+            "think_runs_failed": model_summary.get("think_runs_failed"),
+        },
+        "t1_retry": _t1_retry_report(waves),
         "retrieval_fitness_proxy": {
             "avg_models_per_t1_batch": _avg(retrieval_model_counts),
             "avg_observations_per_t1_batch": _avg(retrieval_observation_counts),
@@ -6886,6 +10679,7 @@ def _benchmark_summary(
             "active_models": model_summary.get("active_models"),
             "archived_models": model_summary.get("archived_models"),
             "model_edges": model_summary.get("model_edges"),
+            "projection_metabolism": model_summary.get("projection_metabolism"),
             "relation_frame_lifecycle": model_summary.get(
                 "relation_frame_lifecycle"
             ),
@@ -6910,6 +10704,13 @@ def _benchmark_summary(
             "question_planner_reflective_report"
         )
         or {},
+        "latency_breakdown": model_summary.get("latency_breakdown") or {},
+        "post_commit_action_profile": model_summary.get(
+            "post_commit_action_profile"
+        )
+        or {},
+        "projection_metabolism": model_summary.get("projection_metabolism") or {},
+        "downstream_suppression": model_summary.get("downstream_suppression") or {},
         "waves": waves,
     }
     summary["company_intelligence_scorecard"] = _company_intelligence_scorecard(
@@ -6920,15 +10721,151 @@ def _benchmark_summary(
         retrieval_observation_counts=retrieval_observation_counts,
         validation_errors=validation_errors,
     )
+    required_failures = _benchmark_required_run_failures(summary)
+    summary["required_run_failures"] = required_failures
+    summary["status"] = "failed" if required_failures else "passed"
     return summary
+
+
+def _fmt_latency_ms(value: Any) -> str:
+    number = _numeric_ms(value)
+    if number is None:
+        return "-"
+    if number >= 1000.0:
+        return f"{number / 1000.0:.3f}s"
+    return f"{number:.1f}ms"
+
+
+def _fmt_ratio(value: Any) -> str:
+    try:
+        return f"{float(value) * 100.0:.1f}%"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _top_latency_groups(
+    groups: dict[str, Any],
+    *,
+    limit: int = 8,
+) -> list[tuple[str, Any]]:
+    return sorted(
+        groups.items(),
+        key=lambda item: float((item[1] or {}).get("elapsed_ms_total") or 0.0),
+        reverse=True,
+    )[:limit]
+
+
+def _t1_retry_report(waves: list[dict[str, Any]]) -> dict[str, Any]:
+    recovered = 0
+    exhausted = 0
+    retry_attempts = 0
+    retry_waves: list[dict[str, Any]] = []
+    for wave in waves:
+        batch = wave.get("t1_batch") or {}
+        retry_count = int(batch.get("retry_count") or 0)
+        if retry_count <= 0:
+            continue
+        run = batch.get("run") or {}
+        retry_attempts += retry_count
+        if run.get("status") == "success":
+            recovered += 1
+        else:
+            exhausted += 1
+        retry_waves.append(
+            {
+                "wave": wave.get("wave"),
+                "sequence": wave.get("sequence"),
+                "trigger_id": batch.get("trigger_id"),
+                "retry_count": retry_count,
+                "final_status": run.get("status"),
+                "final_error": run.get("error"),
+            }
+        )
+    return {
+        "retry_attempts": retry_attempts,
+        "recovered_t1_batches": recovered,
+        "exhausted_t1_batches": exhausted,
+        "retry_waves": retry_waves,
+    }
+
+
+def _benchmark_required_run_failures(summary: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    for wave in summary.get("waves") or []:
+        batch = wave.get("t1_batch") or {}
+        if not batch:
+            continue
+        run = batch.get("run") or {}
+        if run.get("status") == "success":
+            continue
+        label = wave.get("sequence") or f"wave {wave.get('wave')}"
+        trigger_id = batch.get("trigger_id") or "<unknown>"
+        error = run.get("error") or "no successful Think run recorded"
+        failures.append(
+            f"required T1 batch failed: {label} trigger={trigger_id} error={error}"
+        )
+    health = summary.get("run_health") or {}
+    pending_triggers = int(health.get("pending_triggers") or 0)
+    if pending_triggers:
+        failures.append(f"trigger queue did not drain: pending={pending_triggers}")
+    pending_post_commit = int(health.get("pending_post_commit_actions") or 0)
+    if pending_post_commit:
+        failures.append(
+            f"post-commit queue did not drain: pending={pending_post_commit}"
+        )
+    dead_lettered = int(health.get("dead_lettered_post_commit_actions") or 0)
+    if dead_lettered:
+        failures.append(
+            f"post-commit actions dead-lettered: dead_lettered={dead_lettered}"
+        )
+    failed_post_commit = int(health.get("failed_post_commit_actions") or 0)
+    if failed_post_commit:
+        failures.append(f"post-commit actions failed: failed={failed_post_commit}")
+    failed_topology = int(health.get("failed_topology_optimizer_runs") or 0)
+    if failed_topology:
+        failures.append(f"topology optimizer failed: failed={failed_topology}")
+    min_efficiency = health.get("min_efficiency_score")
+    if min_efficiency is not None:
+        min_efficiency_score = float(min_efficiency or 0.0)
+        efficiency = (
+            (summary.get("company_intelligence_scorecard") or {})
+            .get("dimensions", {})
+            .get("efficiency", {})
+            .get("score")
+        )
+        if efficiency is not None and float(efficiency) < min_efficiency_score:
+            failures.append(
+                "efficiency score below required floor: "
+                f"{float(efficiency):.4f} < {min_efficiency_score:.4f}"
+            )
+    max_background_llm = health.get("max_background_maintenance_llm_calls")
+    if max_background_llm is not None:
+        max_background_llm_calls = int(max_background_llm)
+        if max_background_llm_calls >= 0:
+            actual_background_llm_calls = int(
+                health.get("background_maintenance_llm_calls") or 0
+            )
+            if actual_background_llm_calls > max_background_llm_calls:
+                failures.append(
+                    "background maintenance LLM calls above required ceiling: "
+                    f"{actual_background_llm_calls} > "
+                    f"{max_background_llm_calls}"
+                )
+    return failures
 
 
 def _render_benchmark_markdown(summary: dict[str, Any]) -> str:
     append = summary.get("append") or {}
+    latency = summary.get("latency_breakdown") or {}
+    critical_latency = latency.get("critical_path_summary") or {}
+    t1_latency = latency.get("t1_wave_wall_clock") or {}
+    think_latency = latency.get("think_runs") or {}
+    inquiry_latency = latency.get("adaptive_inquiry") or {}
     lines = [
         "# Storyline Batch Benchmark",
         "",
         f"- Run: `{summary.get('run_id')}`",
+        f"- Status: `{summary.get('status', 'unknown')}`",
         f"- Tenant: `{summary.get('tenant_id')}`",
         f"- Signals: {summary.get('signals')}",
         f"- Storylines: {summary.get('storyline_count')}",
@@ -6971,6 +10908,85 @@ def _render_benchmark_markdown(summary: dict[str, Any]) -> str:
                 f"{append.get('horizon_end_batch')}",
             ]
         )
+    rerender = summary.get("rerender") or {}
+    if rerender:
+        lines.extend(
+            [
+                f"- Rerender source: `{rerender.get('source_run_id')}`",
+                f"- Artifact-only rerender: {rerender.get('artifact_only')}",
+                f"- Product-value delta: {rerender.get('product_value_delta')}",
+            ]
+        )
+    readiness = summary.get("rerun_readiness") or {}
+    if readiness:
+        lines.extend(
+            [
+                "",
+                "## Rerun Readiness",
+                "",
+                f"- Ready for fresh 10-batch: "
+                f"{readiness.get('ready_for_fresh_10batch')}",
+                f"- Recommended next step: "
+                f"`{readiness.get('recommended_next_step')}`",
+                f"- Product-value overall: "
+                f"{readiness.get('product_value_overall')} "
+                f"(floor {readiness.get('min_product_value')})",
+                f"- Eval floor: {readiness.get('min_eval_score')}",
+            ]
+        )
+        low_eval_scores = readiness.get("low_eval_scores") or {}
+        if low_eval_scores:
+            lines.extend(
+                [
+                    "",
+                    "Low eval scores:",
+                    *[
+                        f"- {key}: {value}"
+                        for key, value in sorted(low_eval_scores.items())
+                    ],
+                ]
+            )
+        gate_failures = readiness.get("gate_failures") or []
+        if gate_failures:
+            lines.extend(
+                [
+                    "",
+                    "Gate failures:",
+                    *[f"- {item}" for item in gate_failures],
+                ]
+            )
+        targeted_db_command = readiness.get("targeted_db_proof_command")
+        optional_canary_command = readiness.get("optional_small_canary_command")
+        if targeted_db_command or optional_canary_command:
+            lines.extend(["", "Targeted proof commands:"])
+            if targeted_db_command:
+                lines.extend(["", "```bash", str(targeted_db_command), "```"])
+            if optional_canary_command:
+                lines.extend(["", "Optional health canary:", "", "```bash"])
+                lines.extend([str(optional_canary_command), "```"])
+            if readiness.get("small_canary_scope_note"):
+                lines.extend(["", str(readiness.get("small_canary_scope_note"))])
+    if summary.get("required_run_failures"):
+        lines.extend(
+            [
+                "",
+                "## Required Run Failures",
+                "",
+                *[f"- {item}" for item in summary["required_run_failures"]],
+            ]
+        )
+    retry_report = summary.get("t1_retry") or {}
+    if retry_report:
+        lines.extend(
+            [
+                "",
+                "## T1 Retry Recovery",
+                "",
+                "```json",
+                json.dumps(retry_report, indent=2, sort_keys=True),
+                "```",
+            ]
+        )
     lines.extend(
         [
             "",
@@ -6979,6 +10995,177 @@ def _render_benchmark_markdown(summary: dict[str, Any]) -> str:
             "```json",
             json.dumps(planner_report, indent=2, sort_keys=True, default=str),
             "```",
+            "",
+            "## Latency Breakdown",
+            "",
+            "| Critical Path Metric | Value |",
+            "| --- | ---: |",
+            "| T1 wall-clock total | "
+            f"{_fmt_latency_ms(critical_latency.get('t1_wall_ms_total'))} |",
+            "| Main Think LLM total | "
+            f"{_fmt_latency_ms(critical_latency.get('t1_llm_ms_total'))} |",
+            "| Non-main-LLM residual total | "
+            f"{_fmt_latency_ms(critical_latency.get('t1_non_llm_residual_ms_total'))} |",
+            "| Measured T1 internal non-main stage total | "
+            f"{_fmt_latency_ms(critical_latency.get('t1_measured_non_llm_stage_ms_total'))} |",
+            "| Unaccounted T1 non-main residual | "
+            f"{_fmt_latency_ms(critical_latency.get('t1_non_llm_unaccounted_stage_ms_total'))} |",
+            "| Unclassified or failed T1 wall total | "
+            f"{_fmt_latency_ms(critical_latency.get('t1_unclassified_or_failed_ms_total'))} |",
+            "| Adaptive inquiry runtime total | "
+            f"{_fmt_latency_ms(critical_latency.get('adaptive_inquiry_runtime_ms_total'))} |",
+            "| Main Think LLM share of T1 wall | "
+            f"{_fmt_ratio(critical_latency.get('main_llm_share_of_t1_wall'))} |",
+            "| Non-main-LLM share of T1 wall | "
+            f"{_fmt_ratio(critical_latency.get('non_main_llm_share_of_t1_wall'))} |",
+            "| Measured internal share of non-main residual | "
+            f"{_fmt_ratio(critical_latency.get('measured_non_llm_stage_share_of_non_llm_residual'))} |",
+            "| Unclassified or failed share of T1 wall | "
+            f"{_fmt_ratio(critical_latency.get('unclassified_or_failed_share_of_t1_wall'))} |",
+            "| Adaptive inquiry share of T1 wall | "
+            f"{_fmt_ratio(critical_latency.get('adaptive_inquiry_share_of_t1_wall'))} |",
+            "",
+            "### T1 Waves",
+            "",
+            "| Wave | Sequence | Status | Wall | Main LLM | Non-main Residual | Measured Non-main | Top Stage | Models | Observations | Error |",
+            "| ---: | --- | --- | ---: | ---: | ---: | ---: | --- | ---: | ---: | --- |",
+        ]
+    )
+    for wave in t1_latency.get("waves") or []:
+        lines.append(
+            "| {wave} | {sequence} | {status} | {wall} | {llm} | {residual} | "
+            "{measured} | {top_stage} | {models} | {observations} | {error} |".format(
+                wave=wave.get("wave") or "-",
+                sequence=wave.get("sequence") or "-",
+                status=wave.get("status") or "-",
+                wall=_fmt_latency_ms(wave.get("wall_ms")),
+                llm=_fmt_latency_ms(wave.get("llm_ms")),
+                residual=_fmt_latency_ms(wave.get("non_llm_residual_ms")),
+                measured=_fmt_latency_ms(wave.get("non_llm_stage_timings_ms")),
+                top_stage=wave.get("top_stage") or "-",
+                models=wave.get("retrieval_model_count")
+                if wave.get("retrieval_model_count") is not None
+                else "-",
+                observations=wave.get("retrieval_observation_count")
+                if wave.get("retrieval_observation_count") is not None
+                else "-",
+                error=wave.get("error") or "-",
+            )
+        )
+    lines.extend(
+        [
+            "",
+            "### Think Internal Stages",
+            "",
+            "| Metric | Value |",
+            "| --- | ---: |",
+            f"| Think runs | {think_latency.get('run_count') or 0} |",
+            "| Runs with stage timings | "
+            f"{think_latency.get('runs_with_stage_timings') or 0} |",
+            "| Stage timing total | "
+            f"{_fmt_latency_ms((think_latency.get('stage_timings_ms') or {}).get('total_ms'))} |",
+            "| Non-main stage timing total | "
+            f"{_fmt_latency_ms((think_latency.get('non_llm_stage_timings_ms') or {}).get('total_ms'))} |",
+            "| Main LLM stage timing total | "
+            f"{_fmt_latency_ms((think_latency.get('llm_stage_timings_ms') or {}).get('total_ms'))} |",
+            "",
+            "### Top Think Internal Stages",
+            "",
+            "| Stage | Count | Non-main Count | Main LLM Count | Total | P95 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for stage, data in _top_latency_groups(
+        think_latency.get("stage_timings_by_stage") or {}
+    ):
+        stats = (data or {}).get("elapsed_ms_stats") or {}
+        lines.append(
+            f"| {stage} | {data.get('count') or 0} | "
+            f"{data.get('non_llm_stage_count') or 0} | "
+            f"{data.get('llm_stage_count') or 0} | "
+            f"{_fmt_latency_ms(data.get('elapsed_ms_total'))} | "
+            f"{_fmt_latency_ms(stats.get('p95_ms'))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "### Adaptive Inquiry Runtime",
+            "",
+            "| Metric | Value |",
+            "| --- | ---: |",
+            f"| Sessions | {inquiry_latency.get('session_count') or 0} |",
+            "| Sessions with runtime | "
+            f"{inquiry_latency.get('sessions_with_runtime') or 0} |",
+            "| Runtime total | "
+            f"{_fmt_latency_ms((inquiry_latency.get('runtime_ms') or {}).get('total_ms'))} |",
+            "| Runtime p95 | "
+            f"{_fmt_latency_ms((inquiry_latency.get('runtime_ms') or {}).get('p95_ms'))} |",
+            "| Action timing total | "
+            f"{_fmt_latency_ms((inquiry_latency.get('retrieval_action_total_ms') or {}).get('total_ms'))} |",
+            "| Stage timing total | "
+            f"{_fmt_latency_ms((inquiry_latency.get('retrieval_stage_total_ms') or {}).get('total_ms'))} |",
+            "| Unaccounted total | "
+            f"{_fmt_latency_ms((inquiry_latency.get('unaccounted_ms') or {}).get('total_ms'))} |",
+            "",
+            "### Top Inquiry Action Paths",
+            "",
+            "| Path | Count | Total | Work | Wait | P95 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for path, data in _top_latency_groups(
+        inquiry_latency.get("action_timings_by_path") or {}
+    ):
+        stats = (data or {}).get("elapsed_ms_stats") or {}
+        lines.append(
+            f"| {path} | {data.get('count') or 0} | "
+            f"{_fmt_latency_ms(data.get('elapsed_ms_total'))} | "
+            f"{_fmt_latency_ms(data.get('work_ms_total'))} | "
+            f"{_fmt_latency_ms(data.get('wait_ms_total'))} | "
+            f"{_fmt_latency_ms(stats.get('p95_ms'))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "### Top Inquiry Stages",
+            "",
+            "| Stage | Count | Total | P95 |",
+            "| --- | ---: | ---: | ---: |",
+        ]
+    )
+    for stage, data in _top_latency_groups(
+        inquiry_latency.get("stage_timings_by_stage") or {}
+    ):
+        stats = (data or {}).get("elapsed_ms_stats") or {}
+        lines.append(
+            f"| {stage} | {data.get('count') or 0} | "
+            f"{_fmt_latency_ms(data.get('elapsed_ms_total'))} | "
+            f"{_fmt_latency_ms(stats.get('p95_ms'))} |"
+        )
+    lines.extend(
+        [
+            "",
+            "### Instrumentation Notes",
+        ]
+    )
+    latency_notes = latency.get("instrumentation_notes") or []
+    if latency_notes:
+        lines.extend([f"- {note}" for note in latency_notes])
+    else:
+        lines.append("- No latency instrumentation notes were emitted.")
+    lines.extend(
+        _render_downstream_budget_markdown(
+            summary.get("post_commit_action_profile") or {},
+            summary.get("downstream_suppression") or {},
+        )
+    )
+    lines.extend(
+        _render_projection_metabolism_markdown(
+            summary.get("projection_metabolism") or {}
+        )
+    )
+    lines.extend(
+        [
             "",
             "## Storyline Scores",
             "| Storyline | Score | Pattern | Pattern Models | Models | Situations | Recommendations | Edges | Frames | Edge Kinds Hit | Missing Edge Kinds | Review Debt | Missing Keywords |",
@@ -7116,6 +11303,134 @@ def _render_benchmark_markdown(summary: dict[str, Any]) -> str:
         ]
     )
     return "\n".join(lines)
+
+
+def _render_projection_metabolism_markdown(
+    projection_report: dict[str, Any],
+) -> list[str]:
+    if not projection_report:
+        return []
+    if projection_report.get("available") is False:
+        return [
+            "",
+            "## Projection Metabolism",
+            "",
+            f"- Projection metrics unavailable: {projection_report.get('reason') or 'unknown'}.",
+        ]
+    coverage = projection_report.get("entity_projection_coverage") or {}
+    lines = [
+        "",
+        "## Projection Metabolism",
+        "",
+        f"- Status: `{projection_report.get('status') or 'unknown'}`",
+        f"- Entity coverage: {projection_report.get('entity_projection_coverage_ratio')}",
+        f"- Refresh jobs / snapshots: {projection_report.get('jobs_to_snapshots_ratio')}",
+        "",
+        "| Entity Surface | Projection | Snapshots | Covered |",
+        "| --- | --- | ---: | --- |",
+    ]
+    for entity_name, row in sorted(coverage.items()):
+        lines.append(
+            f"| {entity_name} | {row.get('projection_name')} | "
+            f"{row.get('snapshot_count', 0)} | {bool(row.get('covered'))} |"
+        )
+    missing = projection_report.get("missing_entity_projection_families") or []
+    if missing:
+        lines.extend(["", "Missing entity surfaces: " + ", ".join(map(str, missing))])
+    return lines
+
+
+def _render_downstream_budget_markdown(
+    post_commit_profile: dict[str, Any],
+    downstream_suppression: dict[str, Any],
+) -> list[str]:
+    if not post_commit_profile and not downstream_suppression:
+        return []
+    lines = [
+        "",
+        "## Downstream Budget",
+        "",
+    ]
+    by_kind = post_commit_profile.get("by_kind") or {}
+    if by_kind:
+        lines.extend(
+            [
+                "### Post-Commit Actions",
+                "",
+                "| Action | Total | Processed | Model IDs | Enqueue Think | No Think |",
+                "| --- | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for action, row in sorted(by_kind.items()):
+            lines.append(
+                f"| {action} | {row.get('total', 0)} | "
+                f"{row.get('processed', 0)} | {row.get('model_ids_total', 0)} | "
+                f"{row.get('enqueue_think_true', 0)} | "
+                f"{row.get('enqueue_think_false', 0)} |"
+            )
+
+    source_profile = post_commit_profile.get("source_profile") or []
+    if source_profile:
+        lines.extend(
+            [
+                "",
+                "### Edge/Projection Source Profile",
+                "",
+                "| Action | Source | Selector | Rows | Model IDs | Enqueue Think |",
+                "| --- | --- | --- | ---: | ---: | ---: |",
+            ]
+        )
+        for row in source_profile[:12]:
+            source = ":".join(
+                part
+                for part in [
+                    str(row.get("source_kind") or "-"),
+                    str(row.get("source_subkind") or ""),
+                ]
+                if part
+            )
+            lines.append(
+                f"| {row.get('action_kind')} | {source} | "
+                f"{row.get('selector') or '-'} | {row.get('total', 0)} | "
+                f"{row.get('model_ids_total', 0)} | "
+                f"{row.get('enqueue_think_true', 0)} |"
+            )
+
+    suppression_rows = downstream_suppression.get("auto_completed_by_reason") or []
+    if suppression_rows:
+        lines.extend(
+            [
+                "",
+                "### Auto-Completed Triggers",
+                "",
+                "| Trigger | Reason | Count |",
+                "| --- | --- | ---: |",
+            ]
+        )
+        for row in suppression_rows[:12]:
+            lines.append(
+                f"| {row.get('trigger_kind')} | {row.get('reason')} | "
+                f"{row.get('total', 0)} |"
+            )
+
+    trigger_profile = downstream_suppression.get("trigger_profile") or []
+    if trigger_profile:
+        lines.extend(
+            [
+                "",
+                "### Trigger Profile",
+                "",
+                "| Trigger | Total | Auto-Completed | Batches | Batched Members | Pending |",
+                "| --- | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for row in trigger_profile:
+            lines.append(
+                f"| {row.get('trigger_kind')} | {row.get('total', 0)} | "
+                f"{row.get('auto_completed', 0)} | {row.get('batches', 0)} | "
+                f"{row.get('batched_members', 0)} | {row.get('pending', 0)} |"
+            )
+    return lines
 
 
 def build_variance_report(report_root: Path, run_ids: list[str]) -> dict[str, Any]:
@@ -7318,6 +11633,239 @@ def run_variance_report(args: argparse.Namespace) -> dict[str, Any]:
     return report
 
 
+def _nested_float(payload: dict[str, Any], path: tuple[str, ...]) -> float | None:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if current is None:
+        return None
+    try:
+        return float(current)
+    except (TypeError, ValueError):
+        return None
+
+
+_LIVE_ONLY_PRODUCT_GAP_MARKERS = (
+    "noise",
+    "negative memory",
+    "question policy",
+    "latent bridge",
+    "compression loss",
+    "decision impact",
+    "sage experience",
+    "experience metabolism",
+)
+
+
+def _rerun_readiness_report(
+    summary: dict[str, Any],
+    *,
+    min_product_value: float,
+    min_eval_score: float,
+) -> dict[str, Any]:
+    scorecard = _json_obj(summary.get("company_intelligence_scorecard"))
+    product_value = _json_obj(scorecard.get("product_value_evals"))
+    evals = _json_obj(product_value.get("evals"))
+    eval_scores: dict[str, float] = {}
+    for key, payload in evals.items():
+        if not isinstance(payload, dict):
+            continue
+        try:
+            eval_scores[str(key)] = float(payload.get("score") or 0.0)
+        except (TypeError, ValueError):
+            eval_scores[str(key)] = 0.0
+    product_overall = float(product_value.get("overall_score") or 0.0)
+    low_eval_scores = {
+        key: round(score, 4)
+        for key, score in sorted(eval_scores.items())
+        if score < min_eval_score
+    }
+    proof_gaps = [str(gap) for gap in _json_list(product_value.get("proof_gaps"))]
+    live_only_gaps = [
+        gap
+        for gap in proof_gaps
+        if any(marker in gap.lower() for marker in _LIVE_ONLY_PRODUCT_GAP_MARKERS)
+    ]
+    gate_failures: list[str] = []
+    if summary.get("status") != "passed":
+        gate_failures.append("source run status is not passed")
+    required_failures = _json_list(summary.get("required_run_failures"))
+    if required_failures:
+        gate_failures.append("source run has required-run failures")
+    if product_overall < min_product_value:
+        gate_failures.append(
+            "product-value overall below rerun floor: "
+            f"{product_overall:.4f} < {min_product_value:.4f}"
+        )
+    if low_eval_scores:
+        gate_failures.append(
+            "product evals below rerun floor: "
+            + ", ".join(f"{key}={value:.4f}" for key, value in low_eval_scores.items())
+        )
+    if summary.get("rerender", {}).get("artifact_only") and live_only_gaps:
+        gate_failures.append(
+            "artifact-only rerender still has live-only proof gaps; run a smaller "
+            "DB/canary proof before spending a fresh 10-batch"
+        )
+
+    source_run_id = str(
+        _json_obj(summary.get("rerender")).get("source_run_id")
+        or summary.get("run_id")
+        or "storyline-run"
+    )
+    targeted_db_command = (
+        "DATABASE_URL=<postgres-url> .venv/bin/python -m pytest "
+        "services/reasoning/think/tests/test_reason.py::"
+        "test_think_noise_only_t1_fast_path_skips_retrieval_and_llm "
+        "services/reasoning/think/tests/test_applier.py::"
+        "test_question_policy_probe_feedback_reaches_policy_stats "
+        "services/reasoning/think/tests/test_applier.py::"
+        "test_noise_noop_negative_memory_emits_sage_experience_event "
+        "-q --tb=short"
+    )
+    capability_noise_canary_command = (
+        "RUN_REAL_LLM=1 LLM_PROVIDER=codex CODEX_TRANSPORT=cli "
+        ".venv/bin/python scripts/run_storyline_batch_benchmark.py "
+        f"--mode run --run-id {source_run_id}-capability-noise-canary "
+        "--target-t1-batches 2 --horizon-start-batch 8 "
+        "--signals-per-storyline 20 "
+        "--future-validation-signals-per-storyline 3 --noise-signals 5 "
+        "--min-efficiency-score 0.5 "
+        "--max-background-maintenance-llm-calls 4"
+    )
+    return {
+        "ready_for_fresh_10batch": not gate_failures,
+        "gate_failures": gate_failures,
+        "min_product_value": min_product_value,
+        "min_eval_score": min_eval_score,
+        "product_value_overall": round(product_overall, 4),
+        "low_eval_scores": low_eval_scores,
+        "live_only_product_proof_gaps": live_only_gaps,
+        "recommended_next_step": (
+            "fresh_10batch"
+            if not gate_failures
+            else "targeted_db_or_capability_noise_canary_before_10batch"
+        ),
+        "targeted_db_proof_command": targeted_db_command,
+        "optional_small_canary_command": capability_noise_canary_command,
+        "small_canary_scope_note": (
+            "This 2-batch canary starts at horizon batch 8 to exercise "
+            "capability_probe_wave_009 and background_noise_wave_010. It is a "
+            "live health smoke for probe/noise routing, not a replacement for "
+            "the targeted DB assertions or fresh 10-batch product proof."
+        ),
+    }
+
+
+def rerender_existing_report(args: argparse.Namespace) -> dict[str, Any]:
+    source_run_id = str(args.append_to_run_id or "")
+    if not source_run_id:
+        raise SystemExit("--mode rerender-report requires --append-to-run-id")
+    source_dir = args.report_root / source_run_id
+    model_summary = _read_json_obj(source_dir / "run_summary.json")
+    if not model_summary:
+        raise SystemExit(f"missing source run_summary.json for {source_run_id}")
+
+    prior_summary = _read_json_obj(source_dir / "benchmark_summary.json")
+    score_rows = prior_summary.get("storyline_scores")
+    if not isinstance(score_rows, list):
+        score_rows = _read_json_obj(source_dir / "storyline_scores.json").get(
+            "storyline_scores"
+        )
+    if not isinstance(score_rows, list) or not score_rows:
+        raise SystemExit(f"missing source storyline_scores for {source_run_id}")
+    scores = [
+        _storyline_score_from_artifact(row)
+        for row in score_rows
+        if isinstance(row, dict)
+    ]
+    if len(scores) != len(score_rows):
+        raise SystemExit(f"invalid source storyline_scores for {source_run_id}")
+
+    waves = _read_json_list(source_dir / "waves.json")
+    if not waves:
+        prior_waves = prior_summary.get("waves")
+        waves = prior_waves if isinstance(prior_waves, list) else []
+
+    elapsed_seconds = float(
+        model_summary.get("elapsed_seconds")
+        or prior_summary.get("elapsed_seconds")
+        or 0.0
+    )
+    summary = _benchmark_summary(
+        model_summary=model_summary,
+        storyline_scores=scores,
+        waves=waves,
+        elapsed_seconds=elapsed_seconds,
+    )
+
+    output_id = args.run_id or (
+        f"{source_run_id}-rerender-"
+        + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    )
+    output_dir = args.report_root / output_id
+    if output_dir.resolve() == source_dir.resolve():
+        raise SystemExit("--run-id for rerender-report must differ from source run id")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    source_company = _nested_float(
+        prior_summary, ("company_intelligence_scorecard", "overall_score")
+    )
+    new_company = _nested_float(
+        summary, ("company_intelligence_scorecard", "overall_score")
+    )
+    source_product = _nested_float(
+        prior_summary,
+        ("company_intelligence_scorecard", "product_value_evals", "overall_score"),
+    )
+    new_product = _nested_float(
+        summary,
+        ("company_intelligence_scorecard", "product_value_evals", "overall_score"),
+    )
+    summary["run_id"] = output_id
+    summary["rerender"] = {
+        "source_run_id": source_run_id,
+        "source_report_dir": str(source_dir),
+        "artifact_only": True,
+        "postgres_used": False,
+        "llm_used": False,
+        "source_status": prior_summary.get("status"),
+        "source_company_intelligence_overall": source_company,
+        "rerendered_company_intelligence_overall": new_company,
+        "company_intelligence_delta": (
+            round(new_company - source_company, 4)
+            if source_company is not None and new_company is not None
+            else None
+        ),
+        "source_product_value_overall": source_product,
+        "rerendered_product_value_overall": new_product,
+        "product_value_delta": (
+            round(new_product - source_product, 4)
+            if source_product is not None and new_product is not None
+            else None
+        ),
+    }
+    summary["rerun_readiness"] = _rerun_readiness_report(
+        summary,
+        min_product_value=float(getattr(args, "rerun_min_product_value", 0.75)),
+        min_eval_score=float(getattr(args, "rerun_min_product_eval_score", 0.6)),
+    )
+    run_config = _read_json_obj(source_dir / "run_config.json")
+    run_config["mode"] = "rerender-report"
+    run_config["run_id"] = output_id
+    run_config["source_run_id"] = source_run_id
+    _write_json(output_dir / "run_config.json", run_config)
+    _write_json(output_dir / "benchmark_summary.json", summary)
+    _write_json(output_dir / "storyline_scores.json", summary)
+    (output_dir / "benchmark_summary.md").write_text(
+        _render_benchmark_markdown(summary)
+    )
+    summary["report_dir"] = str(output_dir)
+    return summary
+
+
 def _write_build_artifacts(
     report_dir: Path,
     scenario: Scenario,
@@ -7383,6 +11931,7 @@ def _run_config(
     keys = (
         "mode",
         "target_t1_batches",
+        "horizon_start_batch",
         "signals_per_storyline",
         "future_validation_signals_per_storyline",
         "noise_signals",
@@ -7391,6 +11940,7 @@ def _run_config(
         "t1_batch_window_s",
         "t1_batch_min_size",
         "t1_batch_max_size",
+        "t1_batch_retry_attempts",
         "downstream_batch_window_s",
         "downstream_batch_min_size",
         "t2_batch_max_size",
@@ -7398,8 +11948,13 @@ def _run_config(
         "downstream_steps_per_wave",
         "adaptive_drain_cycles",
         "adaptive_drain_steps_per_cycle",
+        "post_commit_batch_size",
+        "post_commit_batch_timeout",
         "skip_migrations",
         "skip_topology_optimizer",
+        "allow_degraded_exit_zero",
+        "min_efficiency_score",
+        "max_background_maintenance_llm_calls",
         "enable_thesis_judge",
         "thesis_judge_limit",
     )
@@ -7582,7 +12137,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--mode",
-        choices=("build-only", "run", "variance-report"),
+        choices=(
+            "build-only",
+            "seed-only",
+            "retrieval-probe",
+            "rerender-report",
+            "run",
+            "variance-report",
+        ),
         default="build-only",
     )
     parser.add_argument(
@@ -7599,11 +12161,38 @@ def parse_args() -> argparse.Namespace:
         "--future-validation-signals-per-storyline", type=int, default=3
     )
     parser.add_argument("--noise-signals", type=int, default=25)
-    parser.add_argument("--seed-models", type=int, default=15000)
-    parser.add_argument("--seed-families", type=int, default=120)
+    parser.add_argument("--seed-models", type=int, default=5000)
+    parser.add_argument("--seed-families", type=int, default=100)
+    parser.add_argument(
+        "--keep-legacy-seed-postings",
+        action="store_true",
+        help=(
+            "During synthetic seed, keep legacy compatibility posting triggers "
+            "for model_semantic_term_postings and model_representation_tag_postings. "
+            "Default is to seed only the current retrieval surfaces."
+        ),
+    )
+    parser.add_argument(
+        "--allow-seed-db-preflight-failures",
+        action="store_true",
+        help=(
+            "Allow large seed runs to continue even when the DB preflight detects "
+            "test-only triggers or large empty model-derived indexes."
+        ),
+    )
     parser.add_argument("--t1-batch-window-s", type=float, default=0.1)
     parser.add_argument("--t1-batch-min-size", type=int, default=20)
     parser.add_argument("--t1-batch-max-size", type=int, default=30)
+    parser.add_argument(
+        "--t1-batch-retry-attempts",
+        type=int,
+        default=1,
+        help=(
+            "Additional attempts for a required T1 batch when the first Think "
+            "run fails with a retryable provider/transport error. The worker's "
+            "trigger_max_attempts remains the hard dead-letter cap."
+        ),
+    )
     parser.add_argument(
         "--unbatched-run",
         action="store_true",
@@ -7651,6 +12240,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--worker-poll-batch", type=int, default=6)
     parser.add_argument("--run-timeout", type=float, default=900.0)
     parser.add_argument("--post-commit-timeout", type=int, default=600)
+    parser.add_argument(
+        "--post-commit-batch-size",
+        type=int,
+        default=25,
+        help=(
+            "Maximum durable post-commit actions to process in one transaction. "
+            "Keep this modest so final adaptive drain has visible progress and "
+            "cannot pin the benchmark behind one giant batch."
+        ),
+    )
+    parser.add_argument(
+        "--post-commit-batch-timeout",
+        type=float,
+        default=60.0,
+        help=(
+            "Maximum seconds allowed for a single post-commit batch during final "
+            "adaptive drain."
+        ),
+    )
     parser.add_argument("--topology-optimizer-timeout", type=int, default=900)
     parser.add_argument("--topology-optimizer-batch-size", type=int, default=250)
     parser.add_argument("--topology-optimizer-lookback-hours", type=int, default=72)
@@ -7672,7 +12280,75 @@ def parse_args() -> argparse.Namespace:
         help="Maximum storylines to judge when enabled; 0 judges all storylines.",
     )
     parser.add_argument("--cleanup", action="store_true")
+    parser.add_argument(
+        "--allow-degraded-exit-zero",
+        action="store_true",
+        help=(
+            "For exploratory benchmark runs only: write a failed/degraded "
+            "summary but still return process exit 0 in --mode run."
+        ),
+    )
+    parser.add_argument(
+        "--min-efficiency-score",
+        type=float,
+        default=0.5,
+        help=(
+            "Minimum Company Intelligence efficiency dimension required for "
+            "--mode run to pass. Use 0 to disable the efficiency gate."
+        ),
+    )
+    parser.add_argument(
+        "--max-background-maintenance-llm-calls",
+        type=int,
+        default=-1,
+        help=(
+            "Maximum allowed T4/background-maintenance LLM calls for --mode run. "
+            "Use -1 to disable the overhead gate."
+        ),
+    )
+    parser.add_argument(
+        "--rerun-min-product-value",
+        type=float,
+        default=0.75,
+        help=(
+            "Minimum artifact-only product-value overall score for the "
+            "rerender-report readiness recommendation to allow a fresh 10-batch."
+        ),
+    )
+    parser.add_argument(
+        "--rerun-min-product-eval-score",
+        type=float,
+        default=0.6,
+        help=(
+            "Minimum per-product-eval score for the rerender-report readiness "
+            "recommendation to allow a fresh 10-batch."
+        ),
+    )
     parser.add_argument("--pool-max-size", type=int, default=8)
+    parser.add_argument(
+        "--retrieval-probe-max-ms",
+        type=float,
+        default=1000.0,
+        help=(
+            "Maximum allowed latency for each retrieval hot-path probe query. "
+            "Used only with --mode retrieval-probe."
+        ),
+    )
+    parser.add_argument(
+        "--retrieval-probe-model-limit",
+        type=int,
+        default=16,
+        help="Model limit passed to each retrieval hot-path probe query.",
+    )
+    parser.add_argument(
+        "--retrieval-probe-allow-missing-scope",
+        action="store_true",
+        help=(
+            "Allow retrieval-probe to pass when the tenant has no scope sidecars. "
+            "Use only for tiny local smoke tests; full retrieval gates should "
+            "exercise scoped paths."
+        ),
+    )
     parser.add_argument("--run-id")
     parser.add_argument(
         "--append-to-run-id",
@@ -7690,8 +12366,8 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help=(
-            "Absolute zero-based T1 batch offset for append generation. "
-            "Defaults to the base run's target_t1_batches."
+            "Absolute zero-based T1 batch offset for long-horizon generation. "
+            "Append runs default to the base run's target_t1_batches."
         ),
     )
     parser.add_argument(
@@ -7719,16 +12395,60 @@ def parse_args() -> argparse.Namespace:
         raise SystemExit("--future-validation-signals-per-storyline must be >= 0")
     if args.thesis_judge_limit < 0:
         raise SystemExit("--thesis-judge-limit must be >= 0")
+    if args.retrieval_probe_max_ms <= 0:
+        raise SystemExit("--retrieval-probe-max-ms must be > 0")
+    if args.retrieval_probe_model_limit < 1:
+        raise SystemExit("--retrieval-probe-model-limit must be positive")
     if args.adaptive_drain_cycles < 1:
         raise SystemExit("--adaptive-drain-cycles must be >= 1")
     if args.adaptive_drain_steps_per_cycle < 0:
         raise SystemExit("--adaptive-drain-steps-per-cycle must be >= 0")
+    if args.post_commit_batch_size < 1:
+        raise SystemExit("--post-commit-batch-size must be >= 1")
+    if args.post_commit_batch_timeout <= 0:
+        raise SystemExit("--post-commit-batch-timeout must be > 0")
+    if args.t1_batch_retry_attempts < 0:
+        raise SystemExit("--t1-batch-retry-attempts must be >= 0")
+    if args.min_efficiency_score < 0.0 or args.min_efficiency_score > 1.0:
+        raise SystemExit("--min-efficiency-score must be between 0 and 1")
+    if args.max_background_maintenance_llm_calls < -1:
+        raise SystemExit("--max-background-maintenance-llm-calls must be >= -1")
+    if args.rerun_min_product_value < 0.0 or args.rerun_min_product_value > 1.0:
+        raise SystemExit("--rerun-min-product-value must be between 0 and 1")
+    if (
+        args.rerun_min_product_eval_score < 0.0
+        or args.rerun_min_product_eval_score > 1.0
+    ):
+        raise SystemExit("--rerun-min-product-eval-score must be between 0 and 1")
     if args.mode == "variance-report":
         if len(args.variance_run_ids or []) < 2:
             raise SystemExit(
                 "--mode variance-report requires at least two --variance-run-ids"
             )
         return args
+    if args.mode == "rerender-report":
+        if not args.append_to_run_id:
+            raise SystemExit("--mode rerender-report requires --append-to-run-id")
+        if args.target_t1_batches != 0:
+            raise SystemExit("--mode rerender-report requires --target-t1-batches 0")
+        if args.cleanup:
+            raise SystemExit("--cleanup is not allowed with rerender-report")
+        return args
+    if args.mode == "seed-only":
+        if args.append_to_run_id:
+            raise SystemExit("--mode seed-only cannot be combined with append mode")
+        if args.target_t1_batches != 0:
+            raise SystemExit("--mode seed-only requires --target-t1-batches 0")
+    if args.mode == "retrieval-probe":
+        if not args.append_to_run_id and not args.append_tenant_id:
+            raise SystemExit(
+                "--mode retrieval-probe requires --append-to-run-id "
+                "or --append-tenant-id"
+            )
+        if args.target_t1_batches != 0:
+            raise SystemExit("--mode retrieval-probe requires --target-t1-batches 0")
+        if args.cleanup:
+            raise SystemExit("--cleanup is not allowed with retrieval-probe")
     if args.mode == "run":
         if args.append_to_run_id and args.target_t1_batches <= 0:
             raise SystemExit("--append-to-run-id requires --target-t1-batches > 0")
@@ -7764,9 +12484,23 @@ async def main() -> int:
     args = parse_args()
     if args.mode == "variance-report":
         summary = run_variance_report(args)
+    elif args.mode == "rerender-report":
+        summary = rerender_existing_report(args)
+    elif args.mode == "retrieval-probe":
+        summary = await run_retrieval_probe(args)
     else:
         summary = await run_benchmark(args)
     print(json.dumps(summary, indent=2, sort_keys=True, default=str))
+    if args.mode == "rerender-report" and summary.get("status") != "passed":
+        return 1
+    if args.mode == "retrieval-probe" and summary.get("status") != "passed":
+        return 1
+    if (
+        args.mode == "run"
+        and not args.allow_degraded_exit_zero
+        and summary.get("status") != "passed"
+    ):
+        return 1
     return 0
 
 

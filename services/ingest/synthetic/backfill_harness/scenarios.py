@@ -5,6 +5,7 @@ which source, what fixture shape to build, what FaultProfile applies
 to the per-source client, and the expected observation count (for
 assertion validation).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -15,13 +16,38 @@ from services.ingest.synthetic.fault_profiles import HAPPY_PATH, FaultProfile
 
 # Sources the harness supports. Mirrors the M6 dispatch keys — all 25
 # production ingestion sources (RawEnvelope.SourceLiteral).
-_VALID_SOURCES = frozenset((
-    "gmail", "slack", "github", "discord", "google_calendar",
-    "google_drive", "jira", "mercury", "notion", "quickbooks", "grafana",
-    "telegram", "brex", "ramp", "gusto", "deel",
-    "fireflies", "signal", "aws", "miro", "figma", "carta",
-    "hibob", "ashby", "linkedin", "whatsapp", "facebook_pages",
-))
+_VALID_SOURCES = frozenset(
+    (
+        "gmail",
+        "slack",
+        "github",
+        "discord",
+        "google_calendar",
+        "google_drive",
+        "jira",
+        "mercury",
+        "notion",
+        "quickbooks",
+        "grafana",
+        "telegram",
+        "brex",
+        "ramp",
+        "gusto",
+        "deel",
+        "fireflies",
+        "signal",
+        "aws",
+        "miro",
+        "figma",
+        "carta",
+        "hibob",
+        "ashby",
+        "linkedin",
+        "whatsapp",
+        "facebook_pages",
+        "instagram",
+    )
+)
 
 
 @dataclass(frozen=True)

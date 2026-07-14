@@ -74,6 +74,7 @@ def build_source_browser_agent_run(
     gates = list(human_steps or [])
     actions = [str(item) for item in (automated_actions or []) if str(item)]
     state = _agent_state(
+        source=normalized_source,
         auto_state=auto_state,
         installed=installed,
         missing_configuration=missing,
@@ -213,6 +214,7 @@ def _sanitized_deployment_context(
 
 def _agent_state(
     *,
+    source: str,
     auto_state: dict[str, Any] | None,
     installed: bool,
     missing_configuration: list[str],
@@ -224,13 +226,32 @@ def _agent_state(
         return "connected"
     if installed:
         return "connected"
-    if missing_configuration or (auto_state and auto_state.get("state") == "blocked"):
+    missing_blocks = _missing_configuration_blocks_agent(source, missing_configuration)
+    auto_blocked = bool(auto_state and auto_state.get("state") == "blocked")
+    if missing_blocks or (auto_blocked and not _missing_configuration_agent_assisted(source, missing_configuration)):
         return "blocked"
     if auto_state and auto_state.get("state") == "admin_gate":
         return "waiting_for_admin"
     if install_url or finalize_mode == "provider_callback" or human_steps:
         return "waiting_for_admin"
     return "running"
+
+
+def _missing_configuration_blocks_agent(source: str, missing_configuration: list[str]) -> bool:
+    return bool(missing_configuration) and not _missing_configuration_agent_assisted(
+        source,
+        missing_configuration,
+    )
+
+
+def _missing_configuration_agent_assisted(
+    source: str,
+    missing_configuration: list[str],
+) -> bool:
+    normalized_missing = {
+        str(name).strip().lower() for name in missing_configuration if str(name).strip()
+    }
+    return source == "slack" and normalized_missing == {"slack_app_config_token"}
 
 
 def _action_queue(

@@ -24,6 +24,8 @@ from .diff_schema import (
     ActOp,
     ClaimOp,
     EdgeOp,
+    MemoryLifecycleAction,
+    MemoryLifecycleOp,
     OntologyGapOp,
     RawDiff,
     RelationClaimOp,
@@ -50,6 +52,7 @@ BatchMemoryOperation = Literal[
     "situation_and_edge",
     "claim_and_act",
     "act",
+    "memory_lifecycle",
     "no_op",
 ]
 BatchClaimRole = Literal["fact", "concern", "pattern", "situation"]
@@ -98,6 +101,11 @@ class BatchMemoryCandidateDecision(BaseModel):
     act_type: BatchActType | None = None
     act_target_id: UUID | None = None
     act_new_state: str | None = Field(default=None, max_length=40)
+    lifecycle_action: MemoryLifecycleAction | None = None
+    confidence_delta: float | None = Field(default=None, ge=-1.0, le=1.0)
+    resolution_outcome: bool | None = None
+    archive_reason: str | None = Field(default=None, max_length=60)
+    superseded_by_model_id: UUID | None = None
     reason: str = Field(min_length=1, max_length=700)
 
 
@@ -363,6 +371,7 @@ class CompiledBatchMemoryDecisionRequest:
         edge_ops: list[EdgeOp] = []
         relation_claim_ops: list[RelationClaimOp] = []
         act_ops: list[ActOp] = []
+        memory_lifecycle_ops: list[MemoryLifecycleOp] = []
         accepted = 0
         rejected = 0
         blocked = 0
@@ -385,7 +394,26 @@ class CompiledBatchMemoryDecisionRequest:
                 continue
 
             claim_placeholder: UUID | None = None
-            if decision.operation == "claim_update":
+            if decision.operation == "memory_lifecycle":
+                lifecycle_op, block_reason = _memory_lifecycle_op_from_batch_decision(
+                    candidate,
+                    decision,
+                )
+                if lifecycle_op is None:
+                    blocked += 1
+                    trace_parts.append(
+                        f"{decision.candidate_id}: lifecycle not promoted - "
+                        f"{block_reason}"
+                    )
+                    continue
+                memory_lifecycle_ops.append(lifecycle_op)
+                accepted += 1
+                trace_parts.append(
+                    f"{decision.candidate_id}: accepted {decision.operation} "
+                    f"confidence={decision.confidence:.2f}"
+                )
+                continue
+            elif decision.operation == "claim_update":
                 claim_update_op, claim_placeholder, block_reason = (
                     _claim_update_op_from_batch_decision(candidate, decision)
                 )
@@ -524,6 +552,7 @@ class CompiledBatchMemoryDecisionRequest:
             act_ops=act_ops,
             resource_ops=[],
             new_predictions=[],
+            memory_lifecycle_ops=memory_lifecycle_ops,
             reasoning_trace=base_trace,
         )
         if _relation_lifecycle_should_skip_packet_obligations(
@@ -589,6 +618,7 @@ class CompiledBatchMemoryDecisionRequest:
             act_ops=act_ops,
             resource_ops=[],
             new_predictions=[],
+            memory_lifecycle_ops=memory_lifecycle_ops,
             reasoning_trace="; ".join(part for part in trace_parts if part),
         )
 
@@ -770,11 +800,12 @@ def _build_batch_memory_decision_user_prompt(
         "- claim_and_act: emit one atomic claim, then one act transition for act_target_id",
         "- edge: emit one relation claim only between source_model_id and target_model_id",
         "- act: emit one act transition only",
+        "- memory_lifecycle: reconcile an existing model_id with new evidence",
         "- no_op: no world-model mutation",
         "Operational edge kinds to prefer when evidenced: blocks, explains, weakens, contradicts, early_warning_for, contributes_to_resolution, enables, supports.",
         "Similarity edge kinds are weak/review-only: same_issue_as, analogous_to, co_occurs_with. Use them only when no operational relation is true.",
         "Allowed edge kinds: " + ", ".join(sorted(EDGE_REGISTRY.keys())),
-        "Do not emit resource writes, prediction lifecycle ops, or ontology gaps here.",
+        "Do not emit resource writes or ontology gaps here.",
         "</compiled_batch_memory_task>",
         "<batch_summary>",
         _trunc(str(packet.get("signal_summary") or ""), 1000),
@@ -909,6 +940,7 @@ def _build_batch_memory_decision_user_prompt(
             "<decision_rules>",
             "For claim/claim_and_edge/claim_and_act, claim_text must be a single durable atomic sentence under 500 chars.",
             "Use claim_update when the candidate mainly confirms, weakens, or adds evidence to an existing target/evidence Model.",
+            "Use memory_lifecycle when the candidate tests, confirms, falsifies, revises, archives, or supersedes an existing model_id; provide lifecycle_action.",
             "Use situation when the batch exposes a composite condition across multiple signals or selected Models; provide 2-8 situation_member_model_ids when available.",
             "Use claim_role=concern for blockers, risks, waiting states, churn, trust, or negative pressure.",
             "Use claim_role=fact for neutral observed progress or state.",
@@ -3230,6 +3262,79 @@ def _claim_update_op_from_batch_decision(
     if evidence_event_ids:
         changes["supporting_event_ids"] = evidence_event_ids
     return ClaimOp(op="update", model_id=model_id, changes=changes), model_id, ""
+
+
+def _memory_lifecycle_op_from_batch_decision(
+    candidate: dict[str, Any],
+    decision: BatchMemoryCandidateDecision,
+) -> tuple[MemoryLifecycleOp | None, str]:
+    confidence_floor = _env_float("THINK_COMPILED_BATCH_LIFECYCLE_MIN_CONFIDENCE", 0.52)
+    if decision.confidence < confidence_floor:
+        return None, "decision confidence below lifecycle floor"
+    model_id = (
+        decision.model_id
+        or decision.target_model_id
+        or _first_uuid(candidate.get("target_model_ids"))
+        or _first_uuid(candidate.get("evidence_model_ids"))
+    )
+    if model_id is None:
+        return None, "missing model_id for lifecycle reconciliation"
+    action = decision.lifecycle_action or _infer_batch_lifecycle_action(candidate, decision)
+    evidence_event_ids = _uuid_values(candidate.get("source_observation_ids"))
+    evidence_model_ids = _dedupe_uuids(
+        [
+            *_uuid_values(candidate.get("evidence_model_ids")),
+            *_uuid_values(candidate.get("target_model_ids")),
+        ]
+    )
+    if model_id in evidence_model_ids:
+        evidence_model_ids = [value for value in evidence_model_ids if value != model_id]
+    metadata = {
+        "source": "compiled_batch_memory_candidate",
+        "candidate_id": decision.candidate_id,
+        "operation": decision.operation,
+    }
+    op = MemoryLifecycleOp(
+        op="reconcile",
+        model_id=model_id,
+        action=action,
+        evidence_event_ids=evidence_event_ids,
+        evidence_model_ids=evidence_model_ids,
+        confidence_delta=decision.confidence_delta,
+        confidence=min(0.95, max(0.05, float(decision.confidence))),
+        resolution_outcome=decision.resolution_outcome,
+        rationale=_trunc(decision.reason, 700),
+        reason=decision.archive_reason,
+        superseded_by_model_id=decision.superseded_by_model_id,
+        metadata=metadata,
+    )
+    return op, ""
+
+
+def _infer_batch_lifecycle_action(
+    candidate: dict[str, Any],
+    decision: BatchMemoryCandidateDecision,
+) -> MemoryLifecycleAction:
+    text = " ".join(
+        str(value or "")
+        for value in (
+            decision.reason,
+            candidate.get("proposed_text"),
+            candidate.get("evidence_text"),
+            candidate.get("summary"),
+        )
+    ).lower()
+    if any(token in text for token in ("supersed", "replaced by", "obsolete because")):
+        return "supersede"
+    if any(token in text for token in ("archive", "stale", "no longer relevant")):
+        return "archive"
+    if any(token in text for token in ("falsif", "contradict", "violat", "disprov")):
+        return "falsify"
+    if any(token in text for token in ("revise", "partial", "weaken", "less likely")):
+        return "revise"
+    if any(token in text for token in ("confirm", "reinforce", "resolved", "holds")):
+        return "confirm"
+    return "unchanged"
 
 
 def _batch_claim_proposition(

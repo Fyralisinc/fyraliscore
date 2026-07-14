@@ -169,7 +169,6 @@ EXPECTED_TABLES: dict[str, Table] = {
         indexes={
             "observations_pkey",
             "observations_tenant_source_external_occurred_key",
-            "obs_embedding_idx",
             "obs_actor_time_idx",
             "obs_channel_time_idx",
             "obs_kind_idx",
@@ -724,6 +723,7 @@ EXPECTED_TABLES: dict[str, Table] = {
             _col("tenant_id", UUID, False),
             _col("trigger_id", UUID, False),
             _col("trigger_kind", TEXT, False),
+            _col("lane", TEXT, True),
             _col("started_at", TS, False, default=True),
             _col("ended_at", TS, True),
             _col("status", TEXT, False, default=True),
@@ -742,6 +742,7 @@ EXPECTED_TABLES: dict[str, Table] = {
             "think_runs_tenant_time_idx",
             "think_runs_trigger_idx",
             "think_runs_status_idx",
+            "think_runs_lane_time_idx",
         },
     ),
     "model_reeval_dead_letter": Table(
@@ -1204,6 +1205,67 @@ EXPECTED_TABLES: dict[str, Table] = {
         indexes={
             "think_feedback_stats_pkey",
             "think_feedback_stats_surface_idx",
+        },
+    ),
+    "model_residual_evidence": Table(
+        # 0179_model_residual_evidence.sql — non-canonical lifecycle debt
+        # for model-metabolism compression misses.
+        columns=dict([
+            _col("id", UUID, False),
+            _col("tenant_id", UUID, False),
+            _col("source_observation_id", UUID, True),
+            _col("think_run_id", UUID, True),
+            _col("trigger_id", UUID, True),
+            _col("model_id", UUID, True),
+            _col("residual_kind", TEXT, False),
+            _col("compact_summary", TEXT, False),
+            _col("reason", TEXT, False),
+            _col("status", TEXT, False, default=True),
+            _col("absorption_object_kind", TEXT, True),
+            _col("absorption_object_id", UUID, True),
+            _col("metadata", JSONB, False, default=True),
+            _col("created_at", TS, False, default=True),
+            _col("updated_at", TS, False, default=True),
+            _col("resolved_at", TS, True),
+        ]),
+        indexes={
+            "model_residual_evidence_pkey",
+            "model_residual_evidence_open_dedup_idx",
+            "model_residual_evidence_open_idx",
+            "model_residual_evidence_observation_idx",
+            "model_residual_evidence_model_idx",
+        },
+    ),
+    "sage_latent_gap_hypotheses": Table(
+        # 0180_sage_latent_gap_hypotheses.sql — SAGE-owned non-canonical
+        # hypotheses born only from measured residual missingness.
+        columns=dict([
+            _col("id", UUID, False),
+            _col("tenant_id", UUID, False),
+            _col("gap_kind", TEXT, False),
+            _col("status", TEXT, False, default=True),
+            _col("residual_cluster_hash", TEXT, False),
+            _col("supporting_residual_ids", ARRAY, False),
+            _col("supporting_observation_ids", ARRAY, False, default=True),
+            _col("missing_evidence_statement", TEXT, False),
+            _col("falsifier", TEXT, False),
+            _col("next_evidence_needed", TEXT, False),
+            _col("confidence", FLOAT, False),
+            _col("hypothesis_text", TEXT, False),
+            _col("metadata", JSONB, False, default=True),
+            _col("resolution_object_kind", TEXT, True),
+            _col("resolution_object_id", UUID, True),
+            _col("resolution_reason", TEXT, True),
+            _col("created_at", TS, False, default=True),
+            _col("updated_at", TS, False, default=True),
+            _col("resolved_at", TS, True),
+        ]),
+        indexes={
+            "sage_latent_gap_hypotheses_pkey",
+            "sage_latent_gap_hypotheses_active_dedup_idx",
+            "sage_latent_gap_hypotheses_tenant_status_idx",
+            "sage_latent_gap_hypotheses_residual_ids_idx",
+            "sage_latent_gap_hypotheses_observation_ids_idx",
         },
     ),
 }

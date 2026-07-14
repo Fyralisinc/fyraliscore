@@ -747,13 +747,15 @@ async def _run_service() -> None:
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
     # Progress-event producer for `source.onboarding.complete` (LLD §6).
-    producer = IdempotentProducer(ProducerConfig(
-        bootstrap_servers=os.environ.get(
-            "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
-        ),
-        client_id="workflow-reconciler",
-    ))
-    await producer.start()
+    producer = None
+    if os.environ.get("RECONCILER_DISABLE_KAFKA") != "1":
+        producer = IdempotentProducer(ProducerConfig(
+            bootstrap_servers=os.environ.get(
+                "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
+            ),
+            client_id="workflow-reconciler",
+        ))
+        await producer.start()
     # M6.3: per-source reconcilers may need pool access for auxiliary reads
     # (e.g., Gmail reads workflow_states for each shard's final_history_id).
     # Register the pool with every per-source module via the shared helper —
@@ -793,7 +795,8 @@ async def _run_service() -> None:
     finally:
         log.info("workflow.reconciler.shutting_down")
         await health_shutdown()
-        await producer.stop()
+        if producer is not None:
+            await producer.stop()
         await pool.close()
     log.info("workflow.reconciler.exited")
 

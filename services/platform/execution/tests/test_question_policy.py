@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from uuid import uuid4
+
 from services.platform.execution import inquiry, question_policy
 from services.platform.execution.types import InquiryQuestion, QuestionPolicySignal
+from services.reasoning.sage.company_profile import CompanyLearningProfile, LearningPrior
 
 
 def _question(
@@ -87,6 +91,51 @@ def test_apply_question_policy_and_budget_multiplier() -> None:
     assert question_policy.policy_budget(100, signal) < 100
 
 
+def test_apply_question_policy_uses_company_profile_question_prior() -> None:
+    question = _question("Q_RECURRENCE", "RECURRENCE", score=0.4)
+    profile = CompanyLearningProfile(
+        tenant_id=uuid4(),
+        built_at=datetime.now(timezone.utc),
+        priors=(
+            LearningPrior(
+                kind="question",
+                key="RECURRENCE",
+                score=0.9,
+                confidence=0.8,
+                sample_count=7,
+            ),
+        ),
+        sample_count=7,
+        confidence=0.8,
+    )
+
+    adjusted = question_policy.apply_question_policy(
+        [question],
+        question_policy={},
+        company_profile=profile,
+    )[0]
+
+    assert adjusted.score > question.score
+    assert adjusted.expected_value > question.expected_value
+    assert adjusted.expected_cost < question.expected_cost
+
+
+def test_apply_question_policy_uses_planner_profile_primitive_weights() -> None:
+    owner = _question("Q_OWNER", "OWNERSHIP", score=0.4)
+    recurrence = _question("Q_RECURRENCE", "RECURRENCE", score=0.4)
+
+    adjusted = question_policy.apply_question_policy(
+        [owner, recurrence],
+        question_policy={},
+        primitive_weights={"RECURRENCE": 0.18},
+    )
+
+    assert adjusted[0] == owner
+    assert adjusted[1].score > recurrence.score
+    assert adjusted[1].expected_value > recurrence.expected_value
+    assert adjusted[1].expected_cost < recurrence.expected_cost
+
+
 def test_select_questions_prioritizes_high_value_questions() -> None:
     candidates = [
         _question("Q_OWNER", "OWNERSHIP", score=0.8, expected_value=0.72),
@@ -106,3 +155,29 @@ def test_select_questions_prioritizes_high_value_questions() -> None:
         "OWNERSHIP",
     ]
     assert {question.round_index for question in selected} == {3}
+
+
+def test_select_questions_preserves_owner_and_counterevidence_in_bounded_round() -> None:
+    candidates = [
+        _question("Q_OWNER", "OWNERSHIP", score=0.65, expected_value=0.72),
+        _question(
+            "Q_COUNTEREVIDENCE",
+            "COUNTEREVIDENCE",
+            score=0.69,
+            expected_value=0.84,
+            expected_cost=0.30,
+        ),
+        _question("Q_CONSTRAINT", "CONSTRAINT", score=0.81, expected_value=0.90),
+    ]
+
+    selected = question_policy.select_questions(
+        candidates,
+        questions_per_round=3,
+        round_index=1,
+        already_asked=set(),
+    )
+
+    assert [question.primitive for question in selected] == [
+        "OWNERSHIP",
+        "COUNTEREVIDENCE",
+    ]

@@ -341,7 +341,13 @@ def test_sage_only_retrieval_results_preserves_reader_sourced_results() -> None:
 def test_action_cache_summary_counts_hits_misses_and_path_timings() -> None:
     summary = sage_reader_notes.action_cache_summary(
         [
-            {"path": "semantic", "elapsed_ms": 12, "cache_hit": True},
+            {
+                "path": "semantic",
+                "elapsed_ms": 12,
+                "cache_hit": True,
+                "timing_kind": "in_flight_wait",
+                "in_flight_wait": True,
+            },
             {"path": "semantic", "elapsed_ms": 8, "cache_hit": False},
             {"path": "sage_reader", "elapsed_ms": 5, "cache_hit": False},
             {"path": "temporal", "elapsed_ms": "3", "cache_hit": True},
@@ -350,11 +356,20 @@ def test_action_cache_summary_counts_hits_misses_and_path_timings() -> None:
 
     assert summary == {
         "hits": 2,
+        "in_flight_waits": 1,
         "misses": 1,
         "elapsed_ms_by_path": {
             "sage_reader": 5,
             "semantic": 20,
             "temporal": 3,
+        },
+        "work_elapsed_ms_by_path": {
+            "sage_reader": 5,
+            "semantic": 8,
+            "temporal": 3,
+        },
+        "wait_elapsed_ms_by_path": {
+            "semantic": 12,
         },
         "cache_hits_by_path": {
             "semantic": 1,

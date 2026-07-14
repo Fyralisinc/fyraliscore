@@ -118,6 +118,8 @@ services:
     profiles: ["full"]
   circuit_breaker:
     profiles: ["full"]
+  # Signal is not one of the six sandbox sources and its base definition
+  # inherits `.env.production`; park it so the sandbox boots cleanly.
   signal_gateway_worker:
     profiles: ["full"]
   gmail_watch_scheduler:

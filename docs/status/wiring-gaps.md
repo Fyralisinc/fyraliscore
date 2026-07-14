@@ -70,7 +70,7 @@ See [Ingest](../architecture/ingest.md).
 
 | File | What it is | Why not in flow |
 |------|------------|-----------------|
-| `reasoning/retrieval/maintenance.py` | `background_relationship_maintenance` nightly worker | Imported only by `workers/maintenance/weekly.py`, which has no launcher/compose service. |
+| ~~`reasoning/retrieval/maintenance.py`~~ | `background_relationship_maintenance` nightly worker | ✅ **Wired (2026-06-12).** Called through Housekeeper's `relationship_maintenance` job. |
 
 ## Product surfaces
 
@@ -90,6 +90,7 @@ here until a launch or removal decision lands. See [Legacy & test-only](dead-leg
 | `0009_signal_memory_fabric.sql` | `signal_memory_fabric` | Owned by the production-wired `anomaly_processor_worker`; maintenance cleanup policy remains a future lifecycle item. |
 | `0013_orphan_log.sql` | `orphan_log` | Written by maintenance daily cleanup through `housekeeper_worker`; retention/reporting ownership still needs a runbook. |
 
-> **TODO(human):** For each cluster, decide *wire it up* (add launcher/route/flag)
-> vs. *leave staged* vs. *remove*. The worker fabric is one decision (deploy the
-> Wave-4 workers) that clears most of this page at once.
+> **TODO(human):** For each remaining cluster, decide *wire it up*
+> (add launcher/route/flag) vs. *leave staged* vs. *remove*. The worker-fabric
+> default path is now deployed; the open decisions are mostly expensive jobs and
+> full maintenance cadence.

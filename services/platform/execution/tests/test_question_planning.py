@@ -6,21 +6,34 @@ from uuid import uuid4
 
 import pytest
 
-from services.platform.execution import inquiry, question_planning
+from services.platform.execution import (
+    inquiry,
+    question_planning,
+    question_planning_provider,
+)
 from services.platform.execution.config import InquiryConfig
 from services.platform.execution.question_planning_schemas import (
     LLMBeliefDeltaSpec,
     LLMCompactBeliefDeltaSpec,
     LLMCompactQuestionPlan,
     LLMCompactQuestionSpec,
+    LLMInquiryQuestionPlan,
     LLMInquiryQuestionSpec,
 )
 from services.platform.execution.types import (
+    EvidenceCard,
     Hypothesis,
     InquiryQuestion,
     ReconstructionState,
 )
 from services.reasoning.retrieval.primary import RetrievalResult, TriggerContext
+
+
+@pytest.fixture(autouse=True)
+def _reset_question_planning_provider_health():
+    question_planning_provider.reset_question_planning_provider_health()
+    yield
+    question_planning_provider.reset_question_planning_provider_health()
 
 
 def _trigger(
@@ -268,6 +281,59 @@ def test_merge_llm_and_safety_questions_keeps_counterevidence_and_stronger_score
     assert goal.score == pytest.approx(0.83)
 
 
+def test_merge_llm_and_safety_questions_force_includes_high_value_ownership() -> None:
+    llm_questions = [
+        _question(
+            primitive="CONSTRAINT",
+            question_id="Q_CONSTRAINT",
+            question="Which constraint is binding?",
+            expected_value=0.90,
+            expected_cost=0.24,
+            score=0.78,
+        ),
+        _question(
+            primitive="COUNTEREVIDENCE",
+            question_id="Q_COUNTEREVIDENCE",
+            question="What counterevidence exists?",
+            expected_value=0.84,
+            expected_cost=0.30,
+            score=0.66,
+        ),
+        _question(
+            primitive="DEPENDENCY",
+            question_id="Q_CRITICAL_PATH",
+            question="Is this a dependency?",
+            expected_value=0.88,
+            expected_cost=0.24,
+            score=0.76,
+        ),
+        _question(
+            primitive="COMMITMENT",
+            question_id="Q_ACTIVE_COMMITMENT",
+            question="Which commitment changes?",
+            expected_value=0.78,
+            expected_cost=0.18,
+            score=0.72,
+        ),
+    ]
+    owner = _question(
+        primitive="OWNERSHIP",
+        question_id="Q_OWNER",
+        question="Who owns the next action?",
+        expected_value=0.72,
+        expected_cost=0.22,
+        score=0.65,
+    )
+
+    merged, added = question_planning.merge_llm_and_safety_questions(
+        llm_questions,
+        [owner],
+    )
+
+    assert added == 1
+    assert "OWNERSHIP" in {question.primitive for question in merged}
+
+
 @pytest.mark.asyncio
 async def test_candidate_questions_for_round_falls_back_when_disabled() -> None:
     trigger = _trigger("HarborRail renewal blocker has owner risk")
@@ -288,12 +354,498 @@ async def test_candidate_questions_for_round_falls_back_when_disabled() -> None:
         "mode": "deterministic_fallback",
         "reason": "disabled_by_config",
         "candidate_count": len(questions),
+        "planner_profile": "default",
+        "llm_question_planning_allowed_for_trigger_kind": True,
+        "llm_question_planning_trigger_kinds": ["T1"],
+        "configured_max_rounds": 2,
+        "configured_questions_per_round": 3,
     }
     assert {question.primitive for question in questions} >= {
         "COUNTEREVIDENCE",
         "DEPENDENCY",
         "OWNERSHIP",
     }
+
+
+@pytest.mark.asyncio
+async def test_candidate_questions_keeps_default_t4_deterministic() -> None:
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="representation_repair",
+        tenant_id=uuid4(),
+        seed_natural_text="Repair validator dropped a malformed update.",
+    )
+
+    questions, note = await question_planning.candidate_questions_for_round(
+        trigger,
+        RetrievalResult(trigger=trigger),
+        (_hypothesis(),),
+        {},
+        {"valid mutation shape"},
+        llm_provider=object(),  # type: ignore[arg-type]
+        config=InquiryConfig(),
+        round_index=1,
+    )
+
+    assert questions
+    assert note["mode"] == "deterministic_fallback"
+    assert note["reason"] == "llm_planning_disabled_for_trigger_kind"
+    assert note["llm_question_planning_allowed_for_trigger_kind"] is False
+    assert note["llm_question_planning_trigger_kinds"] == ["T1"]
+
+
+@pytest.mark.asyncio
+async def test_candidate_questions_allows_investigative_t4_profile(monkeypatch) -> None:
+    class Provider:
+        config = SimpleNamespace(provider="test", model="planner-test")
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def structured(self, **_kwargs: object):
+            self.calls += 1
+            return LLMInquiryQuestionPlan(
+                rationale="Recurring ownership and counterevidence decide the pattern.",
+                belief_deltas=[],
+                questions=[
+                    LLMInquiryQuestionSpec(
+                        primitive="RECURRENCE",
+                        question="Where has this blocker recurred before?",
+                        retrieval_target="pattern+model_edges",
+                        expected_value=0.92,
+                        expected_cost=0.20,
+                        tests_hypotheses=["H1"],
+                        stop_condition="recurrence found or ruled out",
+                    )
+                ],
+            )
+
+    provider = Provider()
+    monkeypatch.setattr(
+        question_planning,
+        "select_question_planning_provider",
+        lambda selected: selected,
+    )
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="open_question_search",
+        tenant_id=uuid4(),
+        seed_natural_text="Find whether this ownership blocker is a recurring pattern.",
+    )
+
+    questions, note = await question_planning.candidate_questions_for_round(
+        trigger,
+        RetrievalResult(trigger=trigger),
+        (_hypothesis(),),
+        {},
+        {"recurrence"},
+        llm_provider=provider,  # type: ignore[arg-type]
+        config=InquiryConfig(
+            planner_profile="investigative_pattern",
+            llm_question_planning_trigger_kinds=("T4",),
+            utility_governor_enabled=False,
+        ),
+        round_index=1,
+    )
+
+    assert provider.calls == 1
+    assert note["mode"] == "llm"
+    assert note["planner_profile"] == "investigative_pattern"
+    assert note["llm_question_planning_allowed_for_trigger_kind"] is True
+    assert "RECURRENCE" in {question.primitive for question in questions}
+
+
+@pytest.mark.asyncio
+async def test_candidate_questions_governor_skips_llm_when_context_is_sufficient(
+    monkeypatch,
+) -> None:
+    trigger = _trigger("HarborRail renewal risk has enough audit evidence")
+    evidence_by_key = {
+        ("model", str(index)): EvidenceCard(
+            evidence_id=uuid4(),
+            source_type="model",
+            source_ref=f"model-{index}",
+            source_ref_id=uuid4(),
+            summary="Durable evidence already covers ownership and counterevidence.",
+            trust_tier=None,
+            timestamp=None,
+        )
+        for index in range(16)
+    }
+    baseline = RetrievalResult(trigger=trigger)
+    baseline.models = [object() for _ in range(7)]  # type: ignore[list-item]
+
+    monkeypatch.setattr(
+        question_planning,
+        "select_question_planning_provider",
+        lambda _provider: pytest.fail("governor should skip provider selection"),
+    )
+
+    questions, note = await question_planning.candidate_questions_for_round(
+        trigger,
+        baseline,
+        (_hypothesis(),),
+        evidence_by_key,
+        {"counterevidence"},
+        llm_provider=SimpleNamespace(config=SimpleNamespace(provider="codex")),  # type: ignore[arg-type]
+        config=InquiryConfig(),
+        round_index=2,
+    )
+
+    assert questions
+    assert note["mode"] == "deterministic_fallback"
+    assert note["reason"] == "execution_utility_governor"
+    assert note["utility_governor"]["decision"] == "suppress"
+
+
+@pytest.mark.asyncio
+async def test_candidate_questions_retries_codex_question_planner_quota(
+    monkeypatch,
+) -> None:
+    class UsageLimitedProvider:
+        config = SimpleNamespace(
+            provider="codex",
+            model="gpt-5.3-codex-spark",
+            reasoning_effort="low",
+            timeout_s=24,
+        )
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def structured(self, **_kwargs: object):
+            self.calls += 1
+            raise RuntimeError("You've hit your usage limit for GPT-5.3-Codex-Spark")
+
+    class FallbackProvider:
+        config = SimpleNamespace(
+            provider="codex",
+            model="gpt-5.5",
+            reasoning_effort="low",
+            timeout_s=60,
+        )
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def structured(self, **_kwargs: object):
+            self.calls += 1
+            return LLMInquiryQuestionPlan(
+                rationale="Counterevidence still decides the update.",
+                belief_deltas=[],
+                questions=[
+                    LLMInquiryQuestionSpec(
+                        primitive="COUNTEREVIDENCE",
+                        question="What evidence weakens the HarborRail audit blocker?",
+                        retrieval_target="semantic_counterevidence",
+                        expected_value=0.91,
+                        expected_cost=0.22,
+                        tests_hypotheses=["H1"],
+                        stop_condition="counterevidence found or ruled out",
+                    )
+                ],
+            )
+
+    failed = UsageLimitedProvider()
+    fallback = FallbackProvider()
+    source = SimpleNamespace(config=SimpleNamespace(provider="codex"))
+
+    monkeypatch.setattr(
+        question_planning,
+        "select_question_planning_provider",
+        lambda provider: failed,
+    )
+    monkeypatch.setattr(
+        question_planning,
+        "select_question_planning_fallback_provider",
+        lambda provider, failed_provider: fallback,
+    )
+
+    questions, note = await question_planning.candidate_questions_for_round(
+        _trigger("HarborRail audit evidence is still blocking procurement."),
+        RetrievalResult(trigger=_trigger()),
+        (_hypothesis(),),
+        {},
+        {"counterevidence"},
+        llm_provider=source,  # type: ignore[arg-type]
+        config=InquiryConfig(),
+        round_index=1,
+    )
+
+    assert failed.calls == 1
+    assert fallback.calls == 1
+    assert note["mode"] == "llm"
+    assert note["llm_model"] == "gpt-5.5"
+    assert note["planner_retry_count"] == 1
+    assert note["planner_retry_errors"][0]["llm_model"] == "gpt-5.3-codex-spark"
+    assert questions[0].primitive == "COUNTEREVIDENCE"
+
+
+@pytest.mark.asyncio
+async def test_candidate_questions_records_fallback_planner_failure(
+    monkeypatch,
+) -> None:
+    class UsageLimitedProvider:
+        config = SimpleNamespace(
+            provider="codex",
+            model="gpt-5.3-codex-spark",
+            reasoning_effort="low",
+            timeout_s=24,
+        )
+
+        async def structured(self, **_kwargs: object):
+            raise RuntimeError(
+                "codex cli exited 1: :loader: ignoring interface.icon_small\n"
+                "ERROR: You've hit your usage limit for GPT-5.3-Codex-Spark"
+            )
+
+    class FailingFallbackProvider:
+        config = SimpleNamespace(
+            provider="codex",
+            model="gpt-5.5",
+            reasoning_effort="low",
+            timeout_s=60,
+        )
+
+        async def structured(self, **_kwargs: object):
+            raise TimeoutError("fallback planner exceeded 60s")
+
+    failed = UsageLimitedProvider()
+    fallback = FailingFallbackProvider()
+    source = SimpleNamespace(config=SimpleNamespace(provider="codex"))
+
+    monkeypatch.setattr(
+        question_planning,
+        "select_question_planning_provider",
+        lambda provider: failed,
+    )
+    monkeypatch.setattr(
+        question_planning,
+        "select_question_planning_fallback_provider",
+        lambda provider, failed_provider: fallback,
+    )
+
+    questions, note = await question_planning.candidate_questions_for_round(
+        _trigger("HarborRail audit evidence is still blocking procurement."),
+        RetrievalResult(trigger=_trigger()),
+        (_hypothesis(),),
+        {},
+        {"counterevidence"},
+        llm_provider=source,  # type: ignore[arg-type]
+        config=InquiryConfig(),
+        round_index=1,
+    )
+
+    assert questions
+    assert note["mode"] == "deterministic_fallback"
+    assert note["llm_model"] == "gpt-5.5"
+    assert note["reason"] == "TimeoutError"
+    assert "fallback planner exceeded 60s" in note["detail"]
+    assert note["planner_retry_count"] == 2
+    assert [error["llm_model"] for error in note["planner_retry_errors"]] == [
+        "gpt-5.3-codex-spark",
+        "gpt-5.5",
+    ]
+    assert ":loader:" not in note["planner_retry_errors"][0]["detail"]
+    assert "usage limit" in note["planner_retry_errors"][0]["detail"]
+
+
+@pytest.mark.asyncio
+async def test_candidate_questions_skips_planner_when_primary_and_fallback_are_unhealthy(
+    monkeypatch,
+) -> None:
+    class UsageLimitedProvider:
+        config = SimpleNamespace(
+            provider="codex",
+            api_key="test-key",
+            model="gpt-5.3-codex-spark",
+            reasoning_effort="low",
+            timeout_s=24,
+            max_retries=0,
+        )
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def structured(self, **_kwargs: object):
+            self.calls += 1
+            raise RuntimeError("You've hit your usage limit for GPT-5.3-Codex-Spark")
+
+    class TimeoutFallbackProvider:
+        config = SimpleNamespace(
+            provider="codex",
+            api_key="test-key",
+            model="gpt-5.4-mini",
+            reasoning_effort="low",
+            timeout_s=36,
+            max_retries=0,
+        )
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def structured(self, **_kwargs: object):
+            self.calls += 1
+            raise TimeoutError("fallback planner exceeded 36s")
+
+    primary = UsageLimitedProvider()
+    fallback = TimeoutFallbackProvider()
+    source = SimpleNamespace(config=SimpleNamespace(provider="codex"))
+
+    monkeypatch.setattr(
+        question_planning,
+        "select_question_planning_provider",
+        lambda provider: primary,
+    )
+    monkeypatch.setattr(
+        question_planning,
+        "select_question_planning_fallback_provider",
+        lambda provider, failed_provider: fallback,
+    )
+
+    trigger = _trigger("HarborRail audit evidence still has ambiguous ownership.")
+    first_questions, first_note = await question_planning.candidate_questions_for_round(
+        trigger,
+        RetrievalResult(trigger=trigger),
+        (_hypothesis(),),
+        {},
+        {"owner"},
+        llm_provider=source,  # type: ignore[arg-type]
+        config=InquiryConfig(),
+        round_index=1,
+    )
+    second_questions, second_note = (
+        await question_planning.candidate_questions_for_round(
+            trigger,
+            RetrievalResult(trigger=trigger),
+            (_hypothesis(),),
+            {},
+            {"owner"},
+            llm_provider=source,  # type: ignore[arg-type]
+            config=InquiryConfig(),
+            round_index=2,
+        )
+    )
+
+    assert first_questions
+    assert second_questions
+    assert primary.calls == 1
+    assert fallback.calls == 1
+    assert first_note["mode"] == "deterministic_fallback"
+    assert first_note["planner_retry_count"] == 2
+    assert first_note["planner_provider_backoffs"][0]["backoff_kind"] == "quota"
+    assert first_note["planner_provider_backoffs"][1]["backoff_kind"] == "timeout"
+    assert second_note["mode"] == "deterministic_fallback"
+    assert second_note["reason"] == "question_planning_provider_in_backoff"
+    assert [note["llm_model"] for note in second_note["planner_provider_backoffs"]] == [
+        "gpt-5.3-codex-spark",
+        "gpt-5.4-mini",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_candidate_questions_skips_unhealthy_primary_planner(
+    monkeypatch,
+) -> None:
+    class PrimaryProvider:
+        config = SimpleNamespace(
+            provider="codex",
+            api_key="test-key",
+            model="gpt-5.3-codex-spark",
+            reasoning_effort="low",
+            timeout_s=24,
+            max_retries=0,
+        )
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def structured(self, **_kwargs: object):
+            self.calls += 1
+            raise RuntimeError("codex app-server turn ended with status 'failed'")
+
+    class FallbackProvider:
+        config = SimpleNamespace(
+            provider="codex",
+            api_key="test-key",
+            model="gpt-5.4-mini",
+            reasoning_effort="low",
+            timeout_s=36,
+            max_retries=0,
+        )
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def structured(self, **_kwargs: object):
+            self.calls += 1
+            return LLMInquiryQuestionPlan(
+                rationale="Fallback planner stayed available.",
+                belief_deltas=[],
+                questions=[
+                    LLMInquiryQuestionSpec(
+                        primitive="OWNERSHIP",
+                        question="Who owns the HarborRail audit evidence?",
+                        retrieval_target="owner_evidence",
+                        expected_value=0.9,
+                        expected_cost=0.2,
+                        tests_hypotheses=["H1"],
+                        stop_condition="owner identified",
+                    )
+                ],
+            )
+
+    primary = PrimaryProvider()
+    fallback = FallbackProvider()
+    source = SimpleNamespace(config=SimpleNamespace(provider="codex"))
+
+    monkeypatch.setattr(
+        question_planning,
+        "select_question_planning_provider",
+        lambda provider: primary,
+    )
+    monkeypatch.setattr(
+        question_planning,
+        "select_question_planning_fallback_provider",
+        lambda provider, failed_provider: fallback,
+    )
+
+    trigger = _trigger("HarborRail audit evidence needs an owner.")
+    first_questions, first_note = await question_planning.candidate_questions_for_round(
+        trigger,
+        RetrievalResult(trigger=trigger),
+        (_hypothesis(),),
+        {},
+        {"owner"},
+        llm_provider=source,  # type: ignore[arg-type]
+        config=InquiryConfig(),
+        round_index=1,
+    )
+    second_questions, second_note = (
+        await question_planning.candidate_questions_for_round(
+            trigger,
+            RetrievalResult(trigger=trigger),
+            (_hypothesis(),),
+            {},
+            {"owner"},
+            llm_provider=source,  # type: ignore[arg-type]
+            config=InquiryConfig(),
+            round_index=2,
+        )
+    )
+
+    assert primary.calls == 1
+    assert fallback.calls == 2
+    assert first_note["mode"] == "llm"
+    assert second_note["mode"] == "llm"
+    assert first_note["planner_retry_count"] == 1
+    assert "planner_provider_backoffs" in first_note
+    assert "planner_provider_backoffs" in second_note
+    assert second_note["planner_provider_backoffs"][0]["llm_model"] == (
+        "gpt-5.3-codex-spark"
+    )
+    assert "OWNERSHIP" in {question.primitive for question in first_questions}
+    assert "OWNERSHIP" in {question.primitive for question in second_questions}
 
 
 @pytest.mark.asyncio
@@ -353,3 +905,58 @@ async def test_generate_llm_question_plan_includes_reconstruction_state() -> Non
         "counterevidence",
     ]
     assert provider.payload["recon"]["known_model_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_generate_llm_question_plan_includes_profile_instruction() -> None:
+    class Provider:
+        config = SimpleNamespace(provider="codex", model="gpt-5.3-codex-spark")
+
+        def __init__(self) -> None:
+            self.system = ""
+            self.payload: dict[str, object] = {}
+
+        async def structured(
+            self,
+            *,
+            system: str,
+            user: str,
+            schema: object,
+            **_kwargs: object,
+        ):
+            self.system = system
+            self.payload = json.loads(user)
+            return LLMCompactQuestionPlan(
+                r="Recurrence matters.",
+                d=[],
+                q=[
+                    LLMCompactQuestionSpec(
+                        p="RECURRENCE",
+                        q="Where has this blocker recurred before?",
+                        v=0.9,
+                        c=0.2,
+                    )
+                ],
+            )
+
+    provider = Provider()
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="open_question_search",
+        tenant_id=uuid4(),
+        seed_natural_text="Find whether this ownership blocker is recurring.",
+    )
+
+    await question_planning.generate_llm_question_plan(
+        trigger,
+        RetrievalResult(trigger=trigger),
+        (_hypothesis(),),
+        {},
+        {"recurrence"},
+        llm_provider=provider,
+        config=InquiryConfig(planner_profile="investigative_pattern"),
+    )
+
+    assert "Investigative pattern profile" in provider.system
+    assert provider.payload["planner_profile"] == "investigative_pattern"
+    assert "profile_instruction" in provider.payload

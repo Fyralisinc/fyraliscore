@@ -515,6 +515,7 @@ export async function autoConnectSourceRehearsal({
   apiBase,
   deploymentContext,
   accessMode,
+  inputs,
 }: {
   sourceId: string;
   apiBase?: string;
@@ -523,6 +524,7 @@ export async function autoConnectSourceRehearsal({
     awsAssumingPrincipalArn?: string;
   };
   accessMode?: SourceConnectAccessMode;
+  inputs?: Record<string, string>;
 }): Promise<SourceAutoConnectResponse> {
   const resolvedApiBase = resolveGatewayApiBase(apiBase);
   const requestBody: Record<string, unknown> = {};
@@ -534,6 +536,9 @@ export async function autoConnectSourceRehearsal({
   }
   if (accessMode) {
     requestBody.access_mode = accessMode;
+  }
+  if (sourceId === "slack" || (inputs && Object.keys(inputs).length)) {
+    requestBody.inputs = inputs ?? {};
   }
   const hasRequestBody = Object.keys(requestBody).length > 0;
   const response = await fetch(

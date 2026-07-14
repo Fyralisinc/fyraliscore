@@ -103,7 +103,9 @@ nav:
   - Glossary: glossary.md
   - Codebase reference:
       - Architecture & module map: reference/CODEBASE-ARCHITECTURE.md
+      - Core system architecture: reference/CORE-SYSTEM-ARCHITECTURE.md
       - Codebase management (the why): reference/CODEBASE-MANAGEMENT.md
+      - Codex learning log: reference/CODEX-LEARNING-LOG.md
       - Comprehensive reference: reference/FYRALIS.md
       - Architecture repair plan: reference/ARCHITECTURE-REPAIR-PLAN.md
       - Capability plan: reference/CAPABILITY-PLAN.md
@@ -200,4 +202,5 @@ nav:
               - Google Drive: ingestion/sources/google-drive.md
               - Jira: ingestion/sources/jira.md
               - Grafana: ingestion/sources/grafana.md
+              - Instagram Direct Messages: ingestion/sources/instagram.md
               - Telegram (MTProto): ingestion/sources/telegram.md

@@ -372,6 +372,81 @@ class OntologyGapOp(BaseModel):
 
 
 # =====================================================================
+# OpenQuestionOp — unresolved uncertainty attached to a Model.
+# =====================================================================
+
+
+class OpenQuestionOp(BaseModel):
+    """
+    A mutation over the Model open-question facet.
+
+    Open questions are not proposition kinds. They attach to a concrete Model
+    and describe evidence that would materially improve, falsify, scope, or
+    project that belief. Post-commit workers can turn open questions into T4
+    system-wide search triggers.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["insert", "resolve", "archive"]
+    # For insert, `id` may predeclare the question row id. For resolve/archive,
+    # `question_id` is preferred and `id` is accepted as a compatibility alias.
+    id: UUID | None = None
+    question_id: UUID | None = None
+    model_id: UUID | None = None
+    question: str | None = None
+    question_type: str = "evidence_gap"
+    rationale: str | None = None
+    priority: float = 0.5
+    expected_resolution_signal: dict[str, Any] = Field(default_factory=dict)
+    search_signature: dict[str, Any] = Field(default_factory=dict)
+    source_model_ids: list[UUID] = Field(default_factory=list)
+    resolution_model_id: UUID | None = None
+    resolution_note: str | None = None
+    status: Literal[
+        "resolved",
+        "stale",
+        "superseded",
+        "duplicate",
+        "archived",
+    ] | None = None
+
+
+# =====================================================================
+# FormationResolutionOp — explicit resolution of formation candidates.
+# =====================================================================
+
+
+FormationResolutionDecision = Literal[
+    "formed",
+    "updated",
+    "deferred",
+    "rejected",
+    "already_covered",
+]
+
+
+class FormationResolutionOp(BaseModel):
+    """
+    A non-mutating resolution for a Model Formation Contract candidate.
+
+    Formation candidates are generated from retrieved evidence before Think.
+    This op records how Think resolved that obligation. Durable belief changes
+    still flow through ordinary claim_ops or memory_lifecycle_ops; this object
+    is accountability, not a second Model store.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["resolve"] = "resolve"
+    candidate_id: str
+    resolution: FormationResolutionDecision
+    rationale: str
+    output_model_ids: list[UUID] = Field(default_factory=list)
+    follow_up_question: str | None = None
+
+
+# =====================================================================
 # ValidatedDiff — the top-level container.
 # =====================================================================
 
@@ -396,6 +471,8 @@ class ValidatedDiff(BaseModel):
     relation_frame_ops: list[RelationFrameOp] = Field(default_factory=list)
     edge_ops: list[EdgeOp] = Field(default_factory=list)
     ontology_gap_ops: list[OntologyGapOp] = Field(default_factory=list)
+    open_question_ops: list[OpenQuestionOp] = Field(default_factory=list)
+    formation_resolutions: list[FormationResolutionOp] = Field(default_factory=list)
     act_ops: list[ActOp] = Field(default_factory=list)
     resource_ops: list[ResourceOp] = Field(default_factory=list)
     # Predictions that should be scheduled with the deadline resolver
@@ -436,6 +513,8 @@ class RawDiff(BaseModel):
     relation_frame_ops: list[RelationFrameOp] = Field(default_factory=list)
     edge_ops: list[EdgeOp] = Field(default_factory=list)
     ontology_gap_ops: list[OntologyGapOp] = Field(default_factory=list)
+    open_question_ops: list[OpenQuestionOp] = Field(default_factory=list)
+    formation_resolutions: list[FormationResolutionOp] = Field(default_factory=list)
     act_ops: list[ActOp] = Field(default_factory=list)
     resource_ops: list[ResourceOp] = Field(default_factory=list)
     new_predictions: list[ClaimOp] = Field(default_factory=list)
@@ -454,6 +533,7 @@ class RawDiffClaimsOnly(BaseModel):
     trigger_ref: UUID
     tenant_id: UUID
     claim_ops: list[ClaimOp] = Field(default_factory=list)
+    formation_resolutions: list[FormationResolutionOp] = Field(default_factory=list)
     reasoning_trace: str | None = None
 
 
@@ -468,6 +548,9 @@ __all__ = [
     "RelationFrameOp",
     "RelationFrameParticipantOp",
     "OntologyGapOp",
+    "OpenQuestionOp",
+    "FormationResolutionDecision",
+    "FormationResolutionOp",
     "ResourceOp",
     "ResourceOpKind",
     "ValidatedDiff",

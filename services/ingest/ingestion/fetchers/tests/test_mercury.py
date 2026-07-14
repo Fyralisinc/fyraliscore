@@ -72,6 +72,7 @@ async def test_full_backfill_emits_snapshot_plus_transactions(monkeypatch):
     res = await fetch_page_mercury(_FakeInst(), shard, None)
 
     # 1 account_snapshot + 2 transactions.
+    assert client.calls[0]["start"] is not None
     kinds = [r["_fyralis_record_type"] for r in res.records]
     assert kinds.count("account_snapshot") == 1
     assert kinds.count("transaction") == 2

@@ -11,12 +11,17 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import asyncpg
 import pytest
 
 from services.workers.precipitation.clustering import (
+    ClusterMember,
+    ClusterResult,
+    attach_cross_cluster_counterexamples,
     cluster_active_models,
+    synthesize_candidate_payload,
 )
 from services.workers.precipitation.proposer import (
     enqueue_pattern_review_triggers,
@@ -44,6 +49,15 @@ def _jittered(base, *, seed, jitter):
     v = [x + rng.gauss(0.0, jitter) for x in base]
     norm = sum(x * x for x in v) ** 0.5
     return [x / norm for x in v] if norm else v
+
+
+def _json_obj(value):
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode()
+    if isinstance(value, str):
+        value = json.loads(value)
+    assert isinstance(value, dict)
+    return value
 
 
 async def _add_hypothesis_cluster(
@@ -130,6 +144,135 @@ async def _add_noise_hypotheses(
 # ---------------------------------------------------------------------
 # Cluster detection
 # ---------------------------------------------------------------------
+
+
+def test_synthesize_candidate_payload_includes_richer_review_features() -> None:
+    tenant_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    customer_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    cluster = ClusterResult(
+        tenant_id=tenant_id,
+        density=0.82,
+        members=(
+            ClusterMember(
+                model_id=uuid.uuid4(),
+                proposition_kind="concern",
+                natural="Approval review blocked renewal commitment",
+                proposition={"observed_outcome": "blocked_commitment_delay"},
+                created_at=now - timedelta(days=3),
+                scope_actors=(actor_id,),
+                scope_entities=(f"customer:{customer_id}",),
+                domain_tags=("sales",),
+            ),
+            ClusterMember(
+                model_id=uuid.uuid4(),
+                proposition_kind="concern",
+                natural="Approval review blocked enterprise commitment",
+                proposition={"observed_outcome": "blocked_commitment_delay"},
+                created_at=now - timedelta(days=1),
+                scope_actors=(actor_id,),
+                scope_entities=(f"customer:{customer_id}",),
+                domain_tags=("support",),
+            ),
+            ClusterMember(
+                model_id=uuid.uuid4(),
+                proposition_kind="concern",
+                natural="Approval review blocked contract commitment",
+                proposition={"observed_outcome": "blocked_commitment_delay"},
+                created_at=now,
+                scope_actors=(actor_id,),
+                scope_entities=(f"customer:{customer_id}",),
+                domain_tags=("legal",),
+            ),
+        ),
+    )
+
+    signature, tendency = synthesize_candidate_payload(cluster)
+
+    features = tendency["review_features"]
+    assert signature["review_feature_axes"] == features["feature_axes"]
+    assert "lexical_recurrence" in features["feature_axes"]
+    assert "shared_actors" in features["feature_axes"]
+    assert "shared_entities" in features["feature_axes"]
+    assert "outcome_recurrence" in features["feature_axes"]
+    assert "cross_domain" in features["feature_axes"]
+    assert "temporal_recurrence" in features["feature_axes"]
+    assert "outcome:blocked_commitment_delay" in features["shared_outcome_refs"]
+    assert features["candidate_counterexample_count"] == 0
+    assert features["temporal_span_days"] >= 3.0
+    assert str(actor_id) in features["shared_actor_refs"]
+    assert f"customer:{customer_id}" in features["shared_entity_refs"]
+
+
+def test_cross_cluster_counterexample_search_enriches_candidate_payload() -> None:
+    tenant_id = uuid.uuid4()
+    actor_id = uuid.uuid4()
+    customer_id = uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    members = (
+        ClusterMember(
+            model_id=uuid.uuid4(),
+            proposition_kind="concern",
+            natural="Approval review blocked renewal commitment",
+            proposition={"observed_outcome": "blocked_commitment_delay"},
+            created_at=now - timedelta(days=4),
+            scope_actors=(actor_id,),
+            scope_entities=(f"customer:{customer_id}",),
+            domain_tags=("sales",),
+        ),
+        ClusterMember(
+            model_id=uuid.uuid4(),
+            proposition_kind="concern",
+            natural="Approval review blocked enterprise commitment",
+            proposition={"observed_outcome": "blocked_commitment_delay"},
+            created_at=now - timedelta(days=2),
+            scope_actors=(actor_id,),
+            scope_entities=(f"customer:{customer_id}",),
+            domain_tags=("support",),
+        ),
+        ClusterMember(
+            model_id=uuid.uuid4(),
+            proposition_kind="concern",
+            natural="Approval review blocked contract commitment",
+            proposition={"observed_outcome": "blocked_commitment_delay"},
+            created_at=now,
+            scope_actors=(actor_id,),
+            scope_entities=(f"customer:{customer_id}",),
+            domain_tags=("legal",),
+        ),
+    )
+    counterexample = ClusterMember(
+        model_id=uuid.uuid4(),
+        proposition_kind="concern",
+        natural="Approval review resolved renewal commitment without delay",
+        proposition={"observed_outcome": "resolved_without_delay"},
+        created_at=now,
+        scope_actors=(actor_id,),
+        scope_entities=(f"customer:{customer_id}",),
+        domain_tags=("sales",),
+    )
+    cluster = ClusterResult(tenant_id=tenant_id, density=0.82, members=members)
+
+    enriched = attach_cross_cluster_counterexamples(
+        [cluster],
+        all_members=(*members, counterexample),
+    )[0]
+    _signature, tendency = synthesize_candidate_payload(enriched)
+
+    features = tendency["review_features"]
+    assert len(enriched.counterexamples) == 1
+    assert enriched.counterexamples[0].model_id == counterexample.model_id
+    assert "cross_cluster_counterexamples" in features["feature_axes"]
+    assert features["cross_cluster_counterexample_count"] == 1
+    assert features["counterexample_count"] == 1
+    payload = features["cross_cluster_counterexamples"][0]
+    assert payload["model_id"] == str(counterexample.model_id)
+    assert payload["reason"] == "shared_shape_conflicting_observed_outcome"
+    assert payload["observed_outcome"] == "resolved_without_delay"
+    assert "approval" in payload["shared_terms"]
+    assert str(actor_id) in payload["shared_actor_refs"]
+    assert f"customer:{customer_id}" in payload["shared_entity_refs"]
 
 
 @pytest.mark.asyncio
@@ -278,8 +421,8 @@ async def test_candidate_enqueues_t4_trigger_and_think_t4_promotes(
          tight inserts; HDBSCAN may surface additional spurious
          clusters from the noise set — those are filtered out here).
       3. enqueue_pattern_review_triggers → one T4 trigger_queue row.
-      4. Think T4 calls promote_pattern_candidate → Pattern Model
-         inserted; promoted_at populated.
+      4. Explicit accepted-review simulation calls promote_pattern_candidate
+         → Pattern Model inserted; promoted_at populated.
     """
     tight_ids = await _add_hypothesis_cluster(
         tx_conn, tenant=tenant, born_from_event_id=born_from_event,
@@ -318,8 +461,19 @@ async def test_candidate_enqueues_t4_trigger_and_think_t4_promotes(
     if isinstance(payload, str):
         payload = json.loads(payload)
     assert payload["pattern_candidate_id"] == str(cand_ids[0])
+    assert payload["review_mode"] == "semantic_required"
+    assert payload["source"] == "precipitation_cluster"
+    assert payload["cluster_size"] == 3
+    assert payload["constituent_model_ids"]
+    assert payload["proposed_signature"]
+    assert payload["observed_tendency"]
+    assert "review_feature_axes" in payload["proposed_signature"]
+    assert "review_features" in payload["observed_tendency"]
+    assert "lexical_recurrence" in (
+        payload["observed_tendency"]["review_features"]["feature_axes"]
+    )
 
-    # Now simulate Think T4 pattern_review: call promote_pattern_candidate.
+    # Now simulate an explicit semantic reviewer accepting the candidate.
     from services.domain.models.repo import ModelsRepo
     repo = ModelsRepo(pool=None)
     pattern_id = await promote_pattern_candidate(
@@ -356,6 +510,24 @@ async def test_candidate_enqueues_t4_trigger_and_think_t4_promotes(
     )
     assert len(con) == 3
 
+    shortcut = await tx_conn.fetchrow(
+        """
+        SELECT to_model_id, utility_score, from_signature
+        FROM discovery_shortcuts
+        WHERE tenant_id=$1
+          AND to_model_id=$2
+          AND from_signature->>'signal_type'='pattern_review'
+        """,
+        tenant,
+        pattern_id,
+    )
+    assert shortcut is not None
+    assert shortcut["to_model_id"] == pattern_id
+    assert float(shortcut["utility_score"]) > 0
+    signature = _json_obj(shortcut["from_signature"])
+    assert signature["question_primitive"] == "RECURRENCE"
+    assert f"pattern_candidate:{cand_ids[0]}" in signature["entities"]
+
 
 @pytest.mark.asyncio
 async def test_reject_pattern_candidate_is_idempotent(
@@ -386,6 +558,26 @@ async def test_reject_pattern_candidate_is_idempotent(
     assert row["rejected_at"] is not None
     assert row["rejection_reason"] == "too speculative"
     assert row["promoted_at"] is None
+    memory = await tx_conn.fetchrow(
+        """
+        SELECT memory_type, signature, rejected_claim, reason, expires_at
+        FROM negative_memory
+        WHERE tenant_id=$1
+          AND memory_type='rejected_hypothesis'
+          AND signature->>'signal_type'='pattern_review'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        tenant,
+    )
+    assert memory is not None
+    assert memory["memory_type"] == "rejected_hypothesis"
+    signature = _json_obj(memory["signature"])
+    assert signature["question_primitive"] == "RECURRENCE"
+    assert f"pattern_candidate:{cand_ids[0]}" in signature["entities"]
+    assert "Rejected pattern candidate" in memory["rejected_claim"]
+    assert memory["reason"] == "too speculative"
+    assert memory["expires_at"] is not None
     # Idempotency: a second call should be a no-op.
     first_reject = row["rejected_at"]
     await reject_pattern_candidate(tx_conn, cand_ids[0], reason="other")
@@ -395,6 +587,17 @@ async def test_reject_pattern_candidate_is_idempotent(
     )
     assert row2["rejected_at"] == first_reject
     assert row2["rejection_reason"] == "too speculative"
+    count = await tx_conn.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM negative_memory
+        WHERE tenant_id=$1
+          AND memory_type='rejected_hypothesis'
+          AND signature->>'signal_type'='pattern_review'
+        """,
+        tenant,
+    )
+    assert count == 1
 
 
 @pytest.mark.asyncio

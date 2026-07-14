@@ -28,9 +28,10 @@ Rules enforced:
      lightweight shape validation here (non-empty resource_id for
      non-create, delta matches kind, etc.).
 
-  7. Out-of-region containment: if an op mutates an entity whose id is
-     not in the pre-declared region, raise `OutOfRegionError`. The
-     caller re-runs retrieval with the expanded set (max 2 attempts).
+  7. Region containment is advisory. Retrieval regions describe the
+     context Think initially saw; they do not constrain valid tenant-local
+     mutations. Tenant-bound existence checks below are the hard safety
+     boundary.
 
   8. Partial-accept: keep every op that passes, drop ones that fail,
      and record the dropped count + error messages on the returned
@@ -43,8 +44,9 @@ commitments table to verify the ref exists.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
-from typing import Any, get_args
+from typing import Any, Sequence, get_args
 from uuid import UUID
 
 import asyncpg
@@ -68,6 +70,12 @@ from services.domain.acts.invariants import (
 )
 from services.domain.models.calibration import apply_calibration
 from services.domain.models.falsifier import is_adequate_falsifier
+from services.domain.models.open_questions import (
+    OPEN_QUESTION_STATUSES,
+    dedupe_key_for_question,
+    normalize_question_text,
+    normalize_question_type,
+)
 from services.domain.models.propositions import validate_proposition
 from services.domain.resources.transactions import VALID_TRANSACTION_TYPES
 
@@ -75,8 +83,10 @@ from .diff_schema import (
     ActOp,
     ClaimOp,
     EdgeOp,
+    FormationResolutionOp,
     MemoryLifecycleOp,
     OntologyGapOp,
+    OpenQuestionOp,
     RawDiff,
     RelationClaimOp,
     RelationFrameOp,
@@ -309,6 +319,21 @@ def _classify_ontology_gap_drop_reason(exc: Exception) -> str:
     return "unclassified"
 
 
+def _classify_open_question_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "missing model" in msg or "not found" in msg:
+        return "missing_model_reference"
+    if "inactive" in msg or "active" in msg:
+        return "inactive_model_reference"
+    if "question" in msg and ("requires" in msg or "short" in msg):
+        return "invalid_shape"
+    if "priority" in msg:
+        return "invalid_priority"
+    if "json" in msg or "signature" in msg:
+        return "invalid_shape"
+    return "unclassified"
+
+
 _CONFIDENCE_MIN = 0.05
 _CONFIDENCE_MAX = 0.95
 _FALSIFIER_REQUIRED_ABOVE = 0.7
@@ -355,8 +380,10 @@ class ValidationFailure(CompanyOSError):
 
 class OutOfRegionError(CompanyOSError):
     """
-    The LLM's diff mutates an entity outside the pre-declared region.
-    The caller re-runs retrieval with the expanded set.
+    Legacy error for pre-2026 strict retrieval-region validation.
+
+    The current validator treats retrieval regions as advisory and relies
+    on tenant-bound existence checks for the hard safety boundary.
     """
     default_code = "out_of_region_mutation"
 
@@ -490,10 +517,11 @@ def _normalize_hypothesis_assertion_alias(entry: dict[str, Any]) -> None:
 
 def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
     """
-    Every entity id this diff mutates. Used by the out-of-region check.
+    Every entity id this diff mutates.
 
-    Lists (kind, id-as-str) tuples so we can compare against
-    `region_locks.touched_entity_ids(...)` output.
+    Lists (kind, id-as-str) tuples so region lock/log compatibility can
+    still describe what a diff touched. This is no longer a validation
+    boundary.
     """
     out: list[tuple[str, str]] = []
     pending_model_event_ids: set[UUID] = set()
@@ -553,6 +581,15 @@ def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
             if _coerce_uuid(model_id) in pending_model_event_ids:
                 continue
             out.append(("model", str(model_id)))
+    for op in diff.open_question_ops:
+        for model_id in (
+            op.model_id,
+            op.resolution_model_id,
+            *op.source_model_ids,
+        ):
+            if model_id is None or _coerce_uuid(model_id) in pending_model_event_ids:
+                continue
+            out.append(("model", str(model_id)))
     for op in diff.act_ops:
         ent = op.entity or {}
         if op.op in (
@@ -605,6 +642,8 @@ def _iter_entity_ids_touched(diff: RawDiff) -> list[tuple[str, str]]:
 async def _load_basis_model(
     conn: asyncpg.Connection,
     basis_id: UUID | None,
+    *,
+    tenant_id: UUID,
 ) -> dict[str, Any] | None:
     """
     Minimal basis load: confidence + proposition_kind + scope_actors.
@@ -618,8 +657,10 @@ async def _load_basis_model(
         SELECT id, tenant_id, confidence, proposition_kind,
                scope_actors, status
         FROM models
-        WHERE id = $1
+        WHERE tenant_id = $1
+          AND id = $2
         """,
+        tenant_id,
         basis_id,
     )
     if row is None:
@@ -630,6 +671,8 @@ async def _load_basis_model(
 async def _verify_doneverified_evidence(
     conn: asyncpg.Connection,
     resolved_by_event_ids: list[UUID],
+    *,
+    tenant_id: UUID,
 ) -> None:
     """
     C3 adjunct + spec §7: doneverified requires >=1 resolved_by_event_id
@@ -645,8 +688,10 @@ async def _verify_doneverified_evidence(
     rows = await conn.fetch(
         """
         SELECT id, trust_tier FROM observations
-        WHERE id = ANY($1::uuid[])
+        WHERE tenant_id = $1
+          AND id = ANY($2::uuid[])
         """,
+        tenant_id,
         list(resolved_by_event_ids),
     )
     found_ids = {r["id"] for r in rows}
@@ -682,6 +727,56 @@ async def _verify_doneverified_evidence(
 # =====================================================================
 
 
+@dataclass(slots=True)
+class _ValidatedOpGroups:
+    claim_ops: list[ClaimOp]
+    memory_lifecycle_ops: list[MemoryLifecycleOp]
+    relation_claim_ops: list[RelationClaimOp]
+    relation_frame_ops: list[RelationFrameOp]
+    edge_ops: list[EdgeOp]
+    ontology_gap_ops: list[OntologyGapOp]
+    open_question_ops: list[OpenQuestionOp]
+    formation_resolutions: list[FormationResolutionOp]
+    act_ops: list[ActOp]
+    resource_ops: list[ResourceOp]
+    neutralized_edge_count: int
+    neutralized_act_count: int
+
+    def failure_check_groups(self) -> tuple[Sequence[Any], ...]:
+        return (
+            self.claim_ops,
+            self.memory_lifecycle_ops,
+            self.relation_claim_ops,
+            self.relation_frame_ops,
+            self.edge_ops,
+            self.ontology_gap_ops,
+            self.open_question_ops,
+            self.formation_resolutions,
+            self.act_ops,
+            self.resource_ops,
+        )
+
+    def to_validated_diff(self, diff: RawDiff, errors: list[str]) -> ValidatedDiff:
+        return ValidatedDiff(
+            trigger_ref=diff.trigger_ref,
+            tenant_id=diff.tenant_id,
+            claim_ops=self.claim_ops,
+            memory_lifecycle_ops=self.memory_lifecycle_ops,
+            relation_claim_ops=self.relation_claim_ops,
+            relation_frame_ops=self.relation_frame_ops,
+            edge_ops=self.edge_ops,
+            ontology_gap_ops=self.ontology_gap_ops,
+            open_question_ops=self.open_question_ops,
+            formation_resolutions=self.formation_resolutions,
+            act_ops=self.act_ops,
+            resource_ops=self.resource_ops,
+            new_predictions=[],
+            reasoning_trace=diff.reasoning_trace,
+            dropped_op_count=len(errors),
+            dropped_op_errors=errors[:25],
+        )
+
+
 async def validate(
     diff: RawDiff,
     retrieval_result: Any,
@@ -689,24 +784,9 @@ async def validate(
     *,
     allowed_region: list[tuple[str, str]] | None = None,
     strict_region: bool = True,
+    formation_candidate_ids: set[str] | frozenset[str] | None = None,
 ) -> ValidatedDiff:
-    """
-    Validate `diff` against the retrieved context + DB invariants.
-
-    Returns a ValidatedDiff containing only the passing ops. Bad ops
-    are dropped, and their count + error messages are attached to the
-    returned diff (`dropped_op_count`, `dropped_op_errors`) so the
-    caller can record partial-accept observability. Raises
-    `ValidationFailure` only when the LLM submitted ops and every one
-    of them failed (no-survivors); raises `OutOfRegionError` when
-    `strict_region=True` and the LLM touched an entity outside
-    `allowed_region`.
-
-    `allowed_region` is None-or-list of (type, id-str) tuples produced
-    by `region_locks.touched_entity_ids(retrieval_result)` pre-lock. If
-    None, region containment is not enforced (tests that don't care
-    about region can pass None).
-    """
+    """Validate `diff` against retrieved context and DB invariants."""
     errors: list[str] = []
     claim_ops = [*diff.claim_ops, *diff.new_predictions]
     total_ops = _count_submitted_ops(diff, claim_ops)
@@ -717,79 +797,87 @@ async def validate(
         strict_region=strict_region,
     )
 
-    validated_claim_ops = await _validate_claim_ops(
-        diff, claim_ops, retrieval_result, conn, errors
+    groups = await _validate_diff_op_groups(
+        diff=diff,
+        claim_ops=claim_ops,
+        retrieval_result=retrieval_result,
+        conn=conn,
+        errors=errors,
+        formation_candidate_ids=formation_candidate_ids,
     )
-    validated_memory_lifecycle_ops = await _validate_memory_lifecycle_ops(
-        diff, conn, errors
-    )
-    pending_claim_basis_confidence = _pending_claim_basis_confidence(
-        validated_claim_ops
-    )
-    validated_edge_ops, neutralized_edge_count = await _validate_edge_ops(
-        diff,
-        conn,
-        errors,
-        pending_claim_basis_confidence=pending_claim_basis_confidence,
-    )
-    validated_relation_claim_ops = await _validate_relation_claim_ops(
-        diff,
-        conn,
-        errors,
-        pending_model_event_ids=set(pending_claim_basis_confidence),
-    )
-    validated_relation_frame_ops = await _validate_relation_frame_ops(
-        diff,
-        conn,
-        errors,
-        pending_model_event_ids=set(pending_claim_basis_confidence),
-    )
-    validated_ontology_gap_ops = await _validate_ontology_gap_ops(
-        diff,
-        conn,
-        errors,
-        pending_claim_basis_confidence=pending_claim_basis_confidence,
-    )
-    validated_act_ops, neutralized_act_count = await _validate_act_ops(
-        diff,
-        retrieval_result,
-        conn,
-        errors,
-        pending_claim_basis_confidence=pending_claim_basis_confidence,
-    )
-    validated_resource_ops = await _validate_resource_ops(diff, conn, errors)
 
     _raise_if_every_op_failed(
         total_ops=total_ops,
         errors=errors,
-        neutralized_op_count=neutralized_edge_count + neutralized_act_count,
-        validated_groups=(
-            validated_claim_ops,
-            validated_memory_lifecycle_ops,
-            validated_relation_claim_ops,
-            validated_relation_frame_ops,
-            validated_edge_ops,
-            validated_ontology_gap_ops,
-            validated_act_ops,
-            validated_resource_ops,
-        ),
+        neutralized_op_count=groups.neutralized_edge_count + groups.neutralized_act_count,
+        validated_groups=groups.failure_check_groups(),
     )
 
-    return ValidatedDiff(
-        trigger_ref=diff.trigger_ref,
-        tenant_id=diff.tenant_id,
+    return groups.to_validated_diff(diff, errors)
+
+
+async def _validate_diff_op_groups(
+    *,
+    diff: RawDiff,
+    claim_ops: list[ClaimOp],
+    retrieval_result: Any,
+    conn: asyncpg.Connection,
+    errors: list[str],
+    formation_candidate_ids: set[str] | frozenset[str] | None,
+) -> _ValidatedOpGroups:
+    validated_claim_ops = await _validate_claim_ops(
+        diff, claim_ops, retrieval_result, conn, errors
+    )
+    memory_lifecycle_ops = await _validate_memory_lifecycle_ops(diff, conn, errors)
+    pending_confidence = _pending_claim_basis_confidence(validated_claim_ops)
+    pending_event_ids = set(pending_confidence)
+    edge_ops, neutralized_edge_count = await _validate_edge_ops(
+        diff,
+        conn,
+        errors,
+        pending_claim_basis_confidence=pending_confidence,
+    )
+    relation_claim_ops = await _validate_relation_claim_ops(
+        diff, conn, errors, pending_model_event_ids=pending_event_ids
+    )
+    relation_frame_ops = await _validate_relation_frame_ops(
+        diff, conn, errors, pending_model_event_ids=pending_event_ids
+    )
+    ontology_gap_ops = await _validate_ontology_gap_ops(
+        diff,
+        conn,
+        errors,
+        pending_claim_basis_confidence=pending_confidence,
+    )
+    open_question_ops = await _validate_open_question_ops(
+        diff, conn, errors, pending_model_event_ids=pending_event_ids
+    )
+    formation_resolutions = await _validate_formation_resolutions(
+        diff,
+        conn,
+        errors,
+        formation_candidate_ids=formation_candidate_ids,
+    )
+    act_ops, neutralized_act_count = await _validate_act_ops(
+        diff,
+        retrieval_result,
+        conn,
+        errors,
+        pending_claim_basis_confidence=pending_confidence,
+    )
+    return _ValidatedOpGroups(
         claim_ops=validated_claim_ops,
-        memory_lifecycle_ops=validated_memory_lifecycle_ops,
-        relation_claim_ops=validated_relation_claim_ops,
-        relation_frame_ops=validated_relation_frame_ops,
-        edge_ops=validated_edge_ops,
-        ontology_gap_ops=validated_ontology_gap_ops,
-        act_ops=validated_act_ops,
-        resource_ops=validated_resource_ops,
-        new_predictions=[],
-        reasoning_trace=diff.reasoning_trace,
-        dropped_op_count=len(errors),
-        dropped_op_errors=errors[:25],
+        memory_lifecycle_ops=memory_lifecycle_ops,
+        relation_claim_ops=relation_claim_ops,
+        relation_frame_ops=relation_frame_ops,
+        edge_ops=edge_ops,
+        ontology_gap_ops=ontology_gap_ops,
+        open_question_ops=open_question_ops,
+        formation_resolutions=formation_resolutions,
+        act_ops=act_ops,
+        resource_ops=await _validate_resource_ops(diff, conn, errors),
+        neutralized_edge_count=neutralized_edge_count,
+        neutralized_act_count=neutralized_act_count,
     )
 
 
@@ -801,6 +889,8 @@ def _count_submitted_ops(diff: RawDiff, claim_ops: list[ClaimOp]) -> int:
         + len(diff.relation_frame_ops)
         + len(diff.edge_ops)
         + len(diff.ontology_gap_ops)
+        + len(diff.open_question_ops)
+        + len(diff.formation_resolutions)
         + len(diff.act_ops)
         + len(diff.resource_ops)
     )
@@ -813,18 +903,10 @@ def _enforce_region_containment(
     allowed_region: list[tuple[str, str]] | None,
     strict_region: bool,
 ) -> None:
-    if allowed_region is None or not strict_region:
-        return
-    allowed = set(allowed_region)
-    touched = _iter_entity_ids_touched(diff.model_copy(update={"claim_ops": claim_ops}))
-    missing = [t for t in touched if t not in allowed]
-    if missing:
-        raise OutOfRegionError(
-            "diff touches entities outside the pre-declared region",
-            missing=missing[:10],
-            touched=len(touched),
-            allowed_size=len(allowed),
-        )
+    # Region membership is no longer a hard validation boundary. The
+    # initial region is a retrieval/observability artifact; the hard
+    # gates are tenant-bound existence checks and per-domain invariants.
+    return
 
 
 async def _record_validation_drop(
@@ -882,7 +964,7 @@ async def _validate_claim_ops(
                 original_op=op,
             )
             continue
-        if await _claim_target_missing(v_op, conn):
+        if await _claim_target_missing(v_op, conn, tenant_id=diff.tenant_id):
             err_msg = f"model {v_op.model_id} not found"
             errors.append(f"claim_op {v_op.op}: {err_msg}")
             await _record_validation_drop(
@@ -899,10 +981,19 @@ async def _validate_claim_ops(
     return validated
 
 
-async def _claim_target_missing(op: ClaimOp, conn: asyncpg.Connection) -> bool:
+async def _claim_target_missing(
+    op: ClaimOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+) -> bool:
     if op.op not in ("update", "archive") or op.model_id is None:
         return False
-    exists = await conn.fetchval("SELECT 1 FROM models WHERE id = $1", op.model_id)
+    exists = await conn.fetchval(
+        "SELECT 1 FROM models WHERE tenant_id = $1 AND id = $2",
+        tenant_id,
+        op.model_id,
+    )
     return not bool(exists)
 
 
@@ -1093,6 +1184,74 @@ async def _validate_ontology_gap_ops(
     return validated
 
 
+async def _validate_open_question_ops(
+    diff: RawDiff,
+    conn: asyncpg.Connection,
+    errors: list[str],
+    *,
+    pending_model_event_ids: set[UUID],
+) -> list[OpenQuestionOp]:
+    validated: list[OpenQuestionOp] = []
+    for op in diff.open_question_ops:
+        try:
+            v_op = await _validate_open_question_op(
+                op,
+                conn,
+                tenant_id=diff.tenant_id,
+                pending_model_event_ids=pending_model_event_ids,
+            )
+        except ValidationError as e:
+            reason = _classify_open_question_drop_reason(e)
+            msg = getattr(e, "message", None) or str(e)
+            errors.append(f"open_question_op {op.op}: {msg}")
+            await _record_validation_drop(
+                diff,
+                conn,
+                op_type="open_question",
+                op_kind=op.op,
+                reason=reason,
+                error_message=msg,
+                original_op=op,
+            )
+            continue
+        validated.append(v_op)
+    return validated
+
+
+async def _validate_formation_resolutions(
+    diff: RawDiff,
+    conn: asyncpg.Connection,
+    errors: list[str],
+    *,
+    formation_candidate_ids: set[str] | frozenset[str] | None,
+) -> list[FormationResolutionOp]:
+    validated: list[FormationResolutionOp] = []
+    known_ids = formation_candidate_ids
+    for op in diff.formation_resolutions:
+        try:
+            v_op = await _validate_formation_resolution(
+                op,
+                conn,
+                tenant_id=diff.tenant_id,
+                formation_candidate_ids=known_ids,
+            )
+        except ValidationError as e:
+            msg = getattr(e, "message", None) or str(e)
+            errors.append(f"formation_resolution {op.candidate_id}: {msg}")
+            await _record_validation_drop(
+                diff,
+                conn,
+                op_type="formation_resolution",
+                op_kind=op.resolution,
+                reason="invalid_formation_resolution",
+                error_message=msg,
+                original_op=op,
+            )
+            continue
+        validated.append(v_op)
+    return validated
+
+
 async def _validate_act_ops(
     diff: RawDiff,
     retrieval_result: Any,
@@ -1109,6 +1268,7 @@ async def _validate_act_ops(
                 op,
                 retrieval_result,
                 conn,
+                tenant_id=diff.tenant_id,
                 pending_claim_basis_confidence=pending_claim_basis_confidence,
             )
         except (ValidationError, InvariantViolation, TrustTierError) as e:
@@ -1397,12 +1557,13 @@ async def _validate_act_op(
     retrieval_result: Any,
     conn: asyncpg.Connection,
     *,
+    tenant_id: UUID,
     pending_claim_basis_confidence: dict[UUID, float] | None = None,
 ) -> ActOp | None:
     """
     Threshold + state-machine validation for an Act op.
     """
-    basis = await _load_basis_model(conn, op.confidence_basis)
+    basis = await _load_basis_model(conn, op.confidence_basis, tenant_id=tenant_id)
     pending_claim_basis_confidence = pending_claim_basis_confidence or {}
     if basis is None and op.confidence_basis in pending_claim_basis_confidence:
         basis = {"confidence": pending_claim_basis_confidence[op.confidence_basis]}
@@ -1431,6 +1592,14 @@ async def _validate_act_op(
             fallback = ent.get("rationale") or title
             ent["decision_text"] = str(fallback).strip()
             ent["canonicalized_missing_decision_text"] = True
+        scope = ent.get("scope")
+        if scope is not None and not isinstance(scope, dict):
+            raise ValidationError("create_decision entity.scope must be an object")
+        revisit_triggers = ent.get("revisit_triggers")
+        if revisit_triggers is not None and not isinstance(revisit_triggers, dict):
+            raise ValidationError(
+                "create_decision entity.revisit_triggers must be an object"
+            )
         op = op.model_copy(update={"entity": ent})
 
     # Transition legality.
@@ -1442,7 +1611,9 @@ async def _validate_act_op(
                 "transition_commitment requires entity.id and entity.new_state",
             )
         row = await conn.fetchrow(
-            "SELECT state FROM commitments WHERE id = $1", cid
+            "SELECT state FROM commitments WHERE tenant_id = $1 AND id = $2",
+            tenant_id,
+            cid,
         )
         if row is None:
             raise ValidationError(
@@ -1511,7 +1682,11 @@ async def _validate_act_op(
                     raise ValidationError(
                         f"resolved_by_event_ids contains non-UUID: {eid!r}",
                     )
-            await _verify_doneverified_evidence(conn, resolved_uuids)
+            await _verify_doneverified_evidence(
+                conn,
+                resolved_uuids,
+                tenant_id=tenant_id,
+            )
 
     if op.op == "transition_goal":
         gid = op.entity.get("id")
@@ -1521,7 +1696,9 @@ async def _validate_act_op(
                 "transition_goal requires entity.id and entity.new_state",
             )
         row = await conn.fetchrow(
-            "SELECT state FROM goals WHERE id = $1", gid
+            "SELECT state FROM goals WHERE tenant_id = $1 AND id = $2",
+            tenant_id,
+            gid,
         )
         if row is None:
             raise ValidationError(f"goal {gid} not found")
@@ -1543,7 +1720,9 @@ async def _validate_act_op(
                 "transition_decision requires entity.id and entity.new_state",
             )
         row = await conn.fetchrow(
-            "SELECT state FROM decisions WHERE id = $1", did
+            "SELECT state FROM decisions WHERE tenant_id = $1 AND id = $2",
+            tenant_id,
+            did,
         )
         if row is None:
             raise ValidationError(f"decision {did} not found")
@@ -1702,6 +1881,42 @@ async def _validate_edge_op(
     return op
 
 
+def _relation_ref_model_id(ref: Any) -> UUID | None:
+    if not isinstance(ref, dict) or ref.get("kind") != "model":
+        return None
+    raw_model_id = ref.get("model_id")
+    if raw_model_id is None:
+        return None
+    try:
+        return UUID(str(raw_model_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_relation_claim_endpoints(op: RelationClaimOp) -> RelationClaimOp:
+    source_model_id = op.source_model_id or _relation_ref_model_id(op.subject_ref)
+    target_model_id = op.target_model_id or _relation_ref_model_id(op.object_ref)
+    if source_model_id is not None and target_model_id is not None:
+        endpoint_binding_status = "bound"
+    elif source_model_id is not None or target_model_id is not None:
+        endpoint_binding_status = "partially_bound"
+    else:
+        endpoint_binding_status = "unbound"
+    if (
+        source_model_id == op.source_model_id
+        and target_model_id == op.target_model_id
+        and endpoint_binding_status == op.endpoint_binding_status
+    ):
+        return op
+    return op.model_copy(
+        update={
+            "source_model_id": source_model_id,
+            "target_model_id": target_model_id,
+            "endpoint_binding_status": endpoint_binding_status,
+        }
+    )
+
+
 async def _validate_relation_claim_op(
     op: RelationClaimOp,
     conn: asyncpg.Connection,
@@ -1730,6 +1945,7 @@ async def _validate_relation_claim_op(
             "relation_claim_op binding_confidence must be in [0, 1]",
             binding_confidence=op.binding_confidence,
         )
+    op = _normalize_relation_claim_endpoints(op)
     if (
         op.source_model_id is not None
         and op.target_model_id is not None
@@ -1802,19 +2018,15 @@ async def _validate_relation_claim_op(
     if has_bound_endpoints and op.endpoint_binding_status != "bound":
         update["endpoint_binding_status"] = "bound"
         update["binding_confidence"] = max(float(op.binding_confidence), 0.8)
-    specificity_needs_review = (
-        isinstance(op.metadata, dict)
-        and op.metadata.get("review_status_downgraded_by")
-        == "edge_specificity_guard"
-    )
-    if specificity_needs_review and op.write_policy == "accepted_edge":
+    forced_review = _relation_claim_forced_review(op)
+    if forced_review and op.write_policy == "accepted_edge":
         update["write_policy"] = "needs_review"
         update["status"] = "needs_review"
     elif (
         has_bound_endpoints
         and op.write_policy in {"candidate", "needs_review"}
         and float(op.confidence) >= 0.68
-        and not specificity_needs_review
+        and not forced_review
         and _relation_claim_can_auto_accept_as_edge(op)
         and _relation_claim_has_evidence(op)
     ):
@@ -1898,10 +2110,23 @@ async def _canonicalize_relation_claim_semantics(
         update["explanation"] = refined.explanation
     if refined.metadata != edge_proxy.metadata:
         update["metadata"] = refined.metadata
-    if refined.review_status == "accepted" and op.write_policy != "accepted_edge":
+    if (
+        refined.review_status == "accepted"
+        and op.write_policy != "accepted_edge"
+        and not _relation_claim_forced_review(op)
+    ):
         update["write_policy"] = "accepted_edge"
         update["status"] = "accepted"
     return op.model_copy(update=update) if update else op
+
+
+def _relation_claim_forced_review(op: RelationClaimOp) -> bool:
+    if not isinstance(op.metadata, dict):
+        return False
+    return op.metadata.get("review_status_downgraded_by") in {
+        "edge_specificity_guard",
+        "mutation_compiler_cycle_guard",
+    } or bool(op.metadata.get("mutation_compiler_cycle_guard"))
 
 
 def _relation_claim_semantic_text(op: RelationClaimOp) -> str:
@@ -2139,6 +2364,172 @@ async def _validate_ontology_gap_op(
             "dropped_dimensions": dropped,
         }
     )
+
+
+async def _validate_open_question_op(
+    op: OpenQuestionOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    pending_model_event_ids: set[UUID] | None = None,
+) -> OpenQuestionOp:
+    pending_model_event_ids = pending_model_event_ids or set()
+    if op.model_id is None:
+        raise ValidationError("open_question_op requires model_id")
+    model_id = op.model_id
+    if model_id not in pending_model_event_ids:
+        row = await conn.fetchrow(
+            """
+            SELECT id, status
+            FROM models
+            WHERE tenant_id = $1
+              AND id = $2
+            """,
+            tenant_id,
+            model_id,
+        )
+        if row is None:
+            raise ValidationError("open_question_op references missing model")
+        if row["status"] != "active" and op.op == "insert":
+            raise ValidationError("open_question_op insert requires active model")
+
+    updates: dict[str, Any] = {}
+    question_type = normalize_question_type(op.question_type)
+    if question_type != op.question_type:
+        updates["question_type"] = question_type
+
+    for field_name in ("expected_resolution_signal", "search_signature"):
+        if not isinstance(getattr(op, field_name), dict):
+            raise ValidationError(f"open_question_op {field_name} must be JSON object")
+
+    if op.op == "insert":
+        question = normalize_question_text(op.question)
+        if len(question) < 12:
+            raise ValidationError("open_question_op insert requires question text")
+        if not (0.0 <= float(op.priority) <= 1.0):
+            raise ValidationError("open_question_op priority must be in [0, 1]")
+        source_model_ids = _dedupe_uuid_sequence(op.source_model_ids)
+        missing = await _missing_model_ids(
+            conn,
+            tenant_id=tenant_id,
+            model_ids=source_model_ids,
+            pending_model_event_ids=pending_model_event_ids,
+        )
+        if missing:
+            raise ValidationError(
+                f"open_question_op references {len(missing)} missing model(s)",
+                missing=[str(mid) for mid in missing],
+            )
+        if question != op.question:
+            updates["question"] = question
+        if source_model_ids != op.source_model_ids:
+            updates["source_model_ids"] = source_model_ids
+        # Force normalization to run during validation so invalid all-punctuation
+        # questions cannot collapse to an empty active dedupe key at apply time.
+        if not dedupe_key_for_question(question):
+            raise ValidationError("open_question_op question is too low-signal")
+        return op.model_copy(update=updates) if updates else op
+
+    question_id = op.question_id or op.id
+    if question_id is None:
+        raise ValidationError(f"open_question_op {op.op} requires question_id")
+    question_row = await conn.fetchrow(
+        """
+        SELECT id, model_id, status
+        FROM model_open_questions
+        WHERE tenant_id = $1
+          AND id = $2
+        """,
+        tenant_id,
+        question_id,
+    )
+    if question_row is None:
+        raise ValidationError("open_question_op references missing open question")
+    if question_row["model_id"] != model_id:
+        raise ValidationError("open_question_op model_id does not match question")
+    if question_row["status"] != "open":
+        raise ValidationError("open_question_op target question is not open")
+    if op.question_id is None:
+        updates["question_id"] = question_id
+    status = op.status or ("resolved" if op.op == "resolve" else "archived")
+    if status == "open" or status not in OPEN_QUESTION_STATUSES:
+        raise ValidationError("open_question_op terminal status is invalid")
+    updates["status"] = status
+    if op.resolution_model_id is not None:
+        missing = await _missing_model_ids(
+            conn,
+            tenant_id=tenant_id,
+            model_ids=[op.resolution_model_id],
+            pending_model_event_ids=pending_model_event_ids,
+        )
+        if missing:
+            raise ValidationError("open_question_op resolution_model_id not found")
+    return op.model_copy(update=updates) if updates else op
+
+
+async def _validate_formation_resolution(
+    op: FormationResolutionOp,
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    formation_candidate_ids: set[str] | frozenset[str] | None,
+) -> FormationResolutionOp:
+    candidate_id = str(op.candidate_id or "").strip()
+    if not candidate_id:
+        raise ValidationError("formation_resolution requires candidate_id")
+    if formation_candidate_ids is not None and candidate_id not in formation_candidate_ids:
+        raise ValidationError("formation_resolution references unknown candidate_id")
+    if not str(op.rationale or "").strip():
+        raise ValidationError("formation_resolution requires rationale")
+    updates: dict[str, Any] = {}
+    output_model_ids = _dedupe_uuid_sequence(op.output_model_ids or [])
+    if len(output_model_ids) != len(op.output_model_ids or []):
+        updates["output_model_ids"] = output_model_ids
+    if output_model_ids:
+        missing = await _missing_model_ids(
+            conn,
+            tenant_id=tenant_id,
+            model_ids=output_model_ids,
+            pending_model_event_ids=set(),
+        )
+        if missing:
+            raise ValidationError("formation_resolution output_model_ids not found")
+    return op.model_copy(update=updates) if updates else op
+
+
+def _dedupe_uuid_sequence(values: Sequence[UUID]) -> list[UUID]:
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+async def _missing_model_ids(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_ids: Sequence[UUID],
+    pending_model_event_ids: set[UUID],
+) -> list[UUID]:
+    ids = [mid for mid in dict.fromkeys(model_ids) if mid not in pending_model_event_ids]
+    if not ids:
+        return []
+    rows = await conn.fetch(
+        """
+        SELECT id
+        FROM models
+        WHERE tenant_id = $1
+          AND id = ANY($2::uuid[])
+        """,
+        tenant_id,
+        ids,
+    )
+    found = {row["id"] for row in rows}
+    return [mid for mid in ids if mid not in found]
 
 
 async def _edge_would_create_cycle(

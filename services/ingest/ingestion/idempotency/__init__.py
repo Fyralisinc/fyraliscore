@@ -410,6 +410,45 @@ def whatsapp_status(phone_number_id: object, wamid: str, status: str) -> str:
     return f"whatsapp:{phone_number_id}:status:{wamid}:{status}"
 
 
+# --- Instagram Messaging (DM webhooks + conversation backfill) -------
+def instagram_message(ig_business_account_id: object, message_id: str) -> str:
+    """`instagram:{business}:message:{message}` — IMMUTABLE. The message id
+    comes from Meta's webhook/Conversations APIs; namespacing by the connected
+    Instagram Professional account prevents cross-tenant collisions in the
+    global observations uniqueness surface."""
+    return f"instagram:{ig_business_account_id}:message:{message_id}"
+
+
+def instagram_status(
+    ig_business_account_id: object,
+    message_id: str,
+    state: str,
+    watermark: object,
+) -> str:
+    """`instagram:{business}:status:{message}:{state}:{watermark}` — VERSIONED
+    by status/read-delivery watermark so state progressions land as distinct
+    observations while webhook redeliveries dedup."""
+    return f"instagram:{ig_business_account_id}:status:{message_id}:{state}:{watermark}"
+
+
+def instagram_event(
+    ig_business_account_id: object,
+    event_type: str,
+    event_id: str,
+    version: object,
+) -> str:
+    """Version an Instagram interaction that is not the base DM itself.
+
+    Reactions, edits, deletes, postbacks, and seen events can reference a
+    message's ``mid``. They must therefore not reuse ``instagram_message`` or
+    they would be silently deduplicated against the original DM.
+    """
+    return (
+        f"instagram:{ig_business_account_id}:event:{event_type}:"
+        f"{event_id}:{version}"
+    )
+
+
 ADOPTED_VERBATIM_KEYS = {
     "calendar:event": "first-party calendar event id",
     "email:message": "RFC-5322 Message-ID",
@@ -450,6 +489,9 @@ __all__ = [
     "gusto_entity",
     "hibob_change",
     "hibob_entity",
+    "instagram_message",
+    "instagram_event",
+    "instagram_status",
     "jira_comment",
     "jira_issue",
     "jira_transition",

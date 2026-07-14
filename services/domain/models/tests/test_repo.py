@@ -26,7 +26,7 @@ import pytest
 from lib.shared.errors import FalsifierInadequateError, ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import ModelCreate
-from services.domain.models.repo import ModelsRepo
+from services.domain.models.repo import ModelsRepo, _hydrate_row
 from services.domain.models.propositions import canonicalize_proposition
 from services.domain.observations.events import notify_scope
 from services.domain.models.tests.conftest import (
@@ -66,6 +66,29 @@ def _mc(
         confidence_at_assertion=kwargs.pop("confidence_at_assertion", confidence),
         **kwargs,
     )
+
+
+def test_hydrate_row_accepts_pgvector_vector() -> None:
+    from pgvector import Vector
+
+    now = datetime.now(timezone.utc)
+    row = _hydrate_row(
+        {
+            "id": uuid7(),
+            "tenant_id": uuid7(),
+            "born_from_event_id": uuid7(),
+            "proposition": {"kind": "state", "text": "Slack signal landed"},
+            "natural": "Slack signal landed",
+            "embedding": Vector([0.1, 0.2, 0.3]),
+            "scope_temporal": {"type": "now"},
+            "confidence": 0.5,
+            "activation": 1.0,
+            "created_at": now,
+            "confidence_at_assertion": 0.5,
+        }
+    )
+
+    assert row.embedding == pytest.approx([0.1, 0.2, 0.3])
 
 
 # =====================================================================
@@ -109,6 +132,45 @@ async def test_insert_low_confidence_without_falsifier_succeeds(
     assert row.resolved_at is None
     assert row.resolution_outcome is None
     assert row.activation_coefficient == 1.0
+
+
+async def test_insert_persists_model_semantic_terms(
+    repo: ModelsRepo,
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    actor_id: uuid.UUID,
+    born_from_event: uuid.UUID,
+) -> None:
+    natural = "Partial refund edge case creates duplicate invoice reversal."
+    row = await repo.insert(
+        _mc(
+            tenant=tenant,
+            born_from_event=born_from_event,
+            actor_id=actor_id,
+            proposition=state_proposition(
+                subject="Beacon",
+                assertion="partial refund edge case creates duplicate invoice reversal",
+            ),
+            natural=natural,
+            embedding=make_embedding(natural),
+            confidence=0.6,
+            semantic_terms=[
+                "partial refund edge case",
+                "duplicate invoice reversal",
+            ],
+        ),
+        conn=tx_conn,
+    )
+
+    assert "partial refund edge case" in row.semantic_terms
+    assert "duplicate invoice reversal" in row.semantic_terms
+    assert "semantic_terms" not in row.proposition
+    stored = await tx_conn.fetchval(
+        "SELECT semantic_terms FROM model_semantic_terms WHERE model_id = $1",
+        row.id,
+    )
+    assert "partial refund edge case" in stored
+    assert "duplicate invoice reversal" in stored
 
 
 async def test_insert_high_confidence_without_falsifier_rejected(

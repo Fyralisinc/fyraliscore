@@ -39,6 +39,7 @@ expected trade-off for non-blocking index builds; callers should
 ensure such files contain a single statement so a mid-file failure
 doesn't leave a half-built artifact.
 """
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Iterable
@@ -137,9 +138,7 @@ def _assert_unique_prefixes(files: Iterable[pathlib.Path]) -> None:
         else:
             seen[prefix] = path.name
     if dupes:
-        raise RuntimeError(
-            "duplicate migration prefixes detected: " + "; ".join(dupes)
-        )
+        raise RuntimeError("duplicate migration prefixes detected: " + "; ".join(dupes))
 
 
 def _needs_no_transaction(sql_text: str) -> bool:
@@ -418,7 +417,8 @@ async def apply_migrations_dir(
                 # "Attempt to overwrite 'filename'" KeyError.
                 logger.warning(
                     "migration_skipped: %s — %s",
-                    e.filename, str(e.cause),
+                    e.filename,
+                    str(e.cause),
                     extra={
                         "migration_filename": e.filename,
                         "migration_cause": str(e.cause),

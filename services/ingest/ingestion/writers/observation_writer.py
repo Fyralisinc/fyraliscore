@@ -74,6 +74,7 @@ the flag — otherwise a flag flip mid-backfill would silently drop rows the
 shard cursor has already moved past. Backfill is single-path, so writing it
 unconditionally cannot double-write.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -108,7 +109,10 @@ from services.ingest.ingestion.handlers import (
     ObservationDraft,
 )
 from services.ingest.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
-from services.ingest.ingestion.kafka.shutdown import install_shutdown_event, next_or_stop
+from services.ingest.ingestion.kafka.shutdown import (
+    install_shutdown_event,
+    next_or_stop,
+)
 from services.ingest.ingestion.kafka.topics import consumer_group, subscribe_topics
 from services.ingest.ingestion.observability import (
     Heartbeat,
@@ -124,9 +128,7 @@ from services.domain.observations.partitions import ensure_partitions
 # Permanent errors are DLQ'd inside `_handle_message`; only transient/
 # unknown errors escape to the loop, so retrying them in place is safe
 # (the offset is not committed until the message succeeds).
-_TRANSIENT_MAX_ATTEMPTS = int(
-    os.environ.get("WRITER_TRANSIENT_MAX_ATTEMPTS", "5")
-)
+_TRANSIENT_MAX_ATTEMPTS = int(os.environ.get("WRITER_TRANSIENT_MAX_ATTEMPTS", "5"))
 _TRANSIENT_BACKOFF_BASE_S = float(
     os.environ.get("WRITER_TRANSIENT_BACKOFF_BASE_SEC", "0.5")
 )
@@ -436,7 +438,9 @@ async def _attempt_partition_self_heal(
     # race and surfacing DuplicateTableError despite IF NOT EXISTS.
     try:
         created = await ensure_partitions(
-            config.pool, as_of=occurred.date(), months_ahead=0,
+            config.pool,
+            as_of=occurred.date(),
+            months_ahead=0,
         )
     except asyncpg.exceptions.DuplicateTableError:
         created = []  # another writer created it first — treat as success
@@ -799,8 +803,7 @@ async def _handle_message(
         if exc.constraint_name is not None:
             raise
         occurred = (
-            env.occurred_at.isoformat()
-            if env.occurred_at is not None else "<none>"
+            env.occurred_at.isoformat() if env.occurred_at is not None else "<none>"
         )
         try:
             status = await _attempt_partition_self_heal(
@@ -895,14 +898,14 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
                     break
                 consumed += 1
                 await _handle_message_with_retry(
-                    msg, config=config, dlq_producer=dlq_producer,
-                    embedding_producer=embedding_producer, stop_event=stop_event,
+                    msg,
+                    config=config,
+                    dlq_producer=dlq_producer,
+                    embedding_producer=embedding_producer,
+                    stop_event=stop_event,
                 )
                 await consumer.commit()
-                if (
-                    config.stop_after is not None
-                    and consumed >= config.stop_after
-                ):
+                if config.stop_after is not None and consumed >= config.stop_after:
                     break
         else:
             sem = asyncio.Semaphore(max(1, config.max_batch_concurrency))
@@ -937,10 +940,7 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
                 for partition_messages in batches.values():
                     messages.extend(partition_messages)
                 if not messages:
-                    if (
-                        config.stop_after is not None
-                        and consumed >= config.stop_after
-                    ):
+                    if config.stop_after is not None and consumed >= config.stop_after:
                         break
                     continue
 
@@ -968,10 +968,7 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
                 # observation-level dedup handles already-inserted rows.
                 await consumer.commit()
 
-                if (
-                    config.stop_after is not None
-                    and consumed >= config.stop_after
-                ):
+                if config.stop_after is not None and consumed >= config.stop_after:
                     break
     finally:
         ticker.cancel()
@@ -1023,7 +1020,10 @@ async def _bump_durable_poison_attempts(
             return int(
                 await conn.fetchval(
                     _POISON_BUMP_SQL,
-                    msg.topic, int(msg.partition), int(msg.offset), last_error,
+                    msg.topic,
+                    int(msg.partition),
+                    int(msg.offset),
+                    last_error,
                 )
             )
     except Exception as exc:  # noqa: BLE001 — bookkeeping must never crash the writer
@@ -1052,7 +1052,9 @@ async def _clear_durable_poison_attempts(config: WriterConfig, msg: Any) -> None
         async with config.pool.acquire() as conn:
             await conn.execute(
                 _POISON_CLEAR_SQL,
-                msg.topic, int(msg.partition), int(msg.offset),
+                msg.topic,
+                int(msg.partition),
+                int(msg.offset),
             )
     except Exception as exc:  # noqa: BLE001
         log.warning(
@@ -1111,7 +1113,8 @@ async def _handle_message_with_retry(
                 # non-shutdown give-up counts toward the durable poison cap.
                 if not stop_event.is_set():
                     durable = await _bump_durable_poison_attempts(
-                        config, msg,
+                        config,
+                        msg,
                         last_error=f"{type(exc).__name__}: {str(exc)[:200]}",
                     )
                     if 0 < _POISON_MAX_DURABLE_ATTEMPTS <= durable:
@@ -1192,7 +1195,8 @@ def main() -> None:
         group = os.environ.get("WRITER_CONSUMER_GROUP", _WRITER_GROUP)
         config = WriterConfig(
             bootstrap_servers=os.environ.get(
-                "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
+                "KAFKA_BOOTSTRAP_SERVERS",
+                "localhost:9092",
             ),
             consumer_group=group,
             source=source,
@@ -1218,9 +1222,7 @@ def main() -> None:
                 # worker (or M3.3 backlog drainer) picks them up.
                 embedder=None,
                 batch_size=int(os.environ.get("WRITER_BATCH_SIZE", "1")),
-                batch_timeout_ms=int(
-                    os.environ.get("WRITER_BATCH_TIMEOUT_MS", "500")
-                ),
+                batch_timeout_ms=int(os.environ.get("WRITER_BATCH_TIMEOUT_MS", "500")),
                 max_batch_concurrency=int(
                     os.environ.get("WRITER_MAX_CONCURRENCY", "1")
                 ),

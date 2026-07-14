@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from typing import Any
 
 from .types import InquiryQuestion, QuestionPolicySignal
 
@@ -99,29 +100,49 @@ def apply_question_policy(
     candidates: list[InquiryQuestion],
     *,
     question_policy: dict[str, QuestionPolicySignal],
+    company_profile: Any | None = None,
+    primitive_weights: dict[str, float] | None = None,
 ) -> list[InquiryQuestion]:
-    if not question_policy:
+    if not question_policy and company_profile is None and not primitive_weights:
         return candidates
     out: list[InquiryQuestion] = []
     for question in candidates:
         signal = question_policy.get(question.primitive)
-        if signal is None or signal.attempts <= 0:
+        profile_boost = company_profile_question_boost(
+            company_profile,
+            question.primitive,
+        )
+        primitive_boost = clamp_float(
+            float((primitive_weights or {}).get(question.primitive, 0.0)),
+            -0.24,
+            0.24,
+        )
+        if (
+            (signal is None or signal.attempts <= 0)
+            and profile_boost == 0.0
+            and primitive_boost == 0.0
+        ):
             out.append(question)
             continue
-        policy_boost = question_policy_score_boost(signal)
+        policy_boost = question_policy_score_boost(signal) if signal is not None else 0.0
+        total_boost = clamp_float(
+            policy_boost + profile_boost + primitive_boost,
+            -0.30,
+            0.42,
+        )
         value = clamp_float(
-            question.expected_value + policy_boost * 0.35,
+            question.expected_value + total_boost * 0.35,
             0.0,
             1.0,
         )
         cost = clamp_float(
             question.expected_cost
-            - max(0.0, policy_boost) * 0.12
-            + max(0.0, -policy_boost) * 0.10,
+            - max(0.0, total_boost) * 0.12
+            + max(0.0, -total_boost) * 0.10,
             0.02,
             1.0,
         )
-        score = round(value - cost + policy_boost, 4)
+        score = round(value - cost + total_boost, 4)
         out.append(
             replace(
                 question,
@@ -131,6 +152,23 @@ def apply_question_policy(
             )
         )
     return out
+
+
+def company_profile_question_boost(
+    company_profile: Any | None,
+    primitive: str,
+) -> float:
+    if company_profile is None:
+        return 0.0
+    best_prior = getattr(company_profile, "best_prior", None)
+    if not callable(best_prior):
+        return 0.0
+    prior = best_prior(kind="question", key=str(primitive or "").upper())
+    if prior is None or getattr(prior, "confidence", 0.0) < 0.20:
+        return 0.0
+    effective_score = getattr(prior, "effective_score", None)
+    score = float(effective_score if effective_score is not None else prior.score)
+    return clamp_float(score * 0.24, -0.18, 0.24)
 
 
 def question_policy_score_boost(signal: QuestionPolicySignal) -> float:
@@ -198,19 +236,35 @@ def select_questions(
 
     by_id = {q.question_id: q for q in candidates}
     priority_ids: list[str] = []
+    owner = by_id.get("Q_OWNER")
+    counter = by_id.get("Q_COUNTEREVIDENCE")
+    owner_is_priority = (
+        owner is not None
+        and owner.expected_value >= 0.70
+        and "OWNERSHIP" not in already_asked
+    )
+    counter_is_priority = (
+        questions_per_round >= 2
+        and counter is not None
+        and counter.expected_value >= 0.82
+        and "COUNTEREVIDENCE" not in already_asked
+    )
+    if questions_per_round <= 3 and owner_is_priority and counter_is_priority:
+        for question_id in ("Q_OWNER", "Q_COUNTEREVIDENCE"):
+            question = by_id.get(question_id)
+            if question is not None:
+                add(question, priority=True)
+        if len(selected) >= 2:
+            return selected
     constraint = by_id.get("Q_CONSTRAINT")
     if (
         constraint is not None
         and constraint.expected_value >= 0.86
         and "CONSTRAINT" not in already_asked
+        and "Q_CONSTRAINT" not in priority_ids
     ):
         priority_ids.append("Q_CONSTRAINT")
-    owner = by_id.get("Q_OWNER")
-    if (
-        owner is not None
-        and owner.expected_value >= 0.70
-        and "OWNERSHIP" not in already_asked
-    ):
+    if owner_is_priority and "Q_OWNER" not in priority_ids:
         priority_ids.append("Q_OWNER")
     recurrence = by_id.get("Q_RECURRENCE")
     if (
@@ -219,13 +273,7 @@ def select_questions(
         and "RECURRENCE" not in already_asked
     ):
         priority_ids.append("Q_RECURRENCE")
-    counter = by_id.get("Q_COUNTEREVIDENCE")
-    if (
-        questions_per_round >= 2
-        and counter is not None
-        and counter.expected_value >= 0.82
-        and "COUNTEREVIDENCE" not in already_asked
-    ):
+    if counter_is_priority and "Q_COUNTEREVIDENCE" not in priority_ids:
         priority_ids.append("Q_COUNTEREVIDENCE")
     dependency = by_id.get("Q_CRITICAL_PATH")
     if (
@@ -266,6 +314,7 @@ def select_questions(
 __all__ = [
     "apply_question_policy",
     "clamp_float",
+    "company_profile_question_boost",
     "policy_budget",
     "question_information_facets",
     "question_marginal_score",

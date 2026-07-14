@@ -51,8 +51,15 @@ def moto_s3_server():
     restores them on teardown; creates the raw bucket up front. The
     spawned M6 subprocesses read these env vars at startup (A27.4).
     """
-    import boto3
-    from moto.server import ThreadedMotoServer
+    boto3 = pytest.importorskip(
+        "boto3",
+        reason="boto3 required for workflow S3 subprocess tests",
+    )
+    moto_server = pytest.importorskip(
+        "moto.server",
+        reason="moto[s3,server] required for workflow S3 subprocess tests",
+    )
+    ThreadedMotoServer = moto_server.ThreadedMotoServer
 
     prev = {k: os.environ.get(k) for k in _ENV_KEYS}
     port = _pick_port(_DEFAULT_PORT)

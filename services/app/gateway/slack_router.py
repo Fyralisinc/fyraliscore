@@ -62,7 +62,10 @@ log = structlog.get_logger("gateway.slack")
 
 
 _CHANNEL = "slack:message"
-_SLACK_USER_SCOPES = "im:history,mpim:history,im:read,mpim:read,users:read"
+_SLACK_USER_SCOPES = (
+    "channels:read,channels:history,groups:read,groups:history,"
+    "im:history,mpim:history,im:read,mpim:read,users:read"
+)
 
 
 # ---------------------------------------------------------------------

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from services.reasoning.retrieval.primary import TriggerContext
 
 from .config import InquiryConfig
@@ -11,13 +13,38 @@ from .reflective_rules import (
     ReflectiveRetrievalRule,
     apply_reflective_rules_to_actions,
 )
-from .routing import trigger_text
 from .types import (
     InquiryQuestion,
     LearnedRetrievalMotif,
     QuestionPolicySignal,
     RetrievalAction,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _RetrievalQueryContext:
+    focused_terms: tuple[str, ...]
+    compact_terms: tuple[str, ...]
+
+
+def _build_retrieval_query_context(
+    question: InquiryQuestion,
+    trigger: TriggerContext,
+    cfg: InquiryConfig,
+) -> _RetrievalQueryContext:
+    focused_limit = max(1, int(cfg.focused_index_terms))
+    compact_limit = max(4, min(12, focused_limit + 4))
+    terms = tuple(
+        focused_index_terms(
+            question.question,
+            trigger,
+            max_terms=max(focused_limit, compact_limit),
+        )
+    )
+    return _RetrievalQueryContext(
+        focused_terms=terms[:focused_limit],
+        compact_terms=terms[:compact_limit],
+    )
 
 
 def compile_retrieval_plan(
@@ -64,9 +91,8 @@ def compile_static_retrieval_plan(
     *,
     policy_signal: QuestionPolicySignal | None = None,
 ) -> list[RetrievalAction]:
-    q = question.question
-    seed_text = trigger_text(trigger)
-    semantic_query = f"{q} {seed_text}".strip()
+    query_context = _build_retrieval_query_context(question, trigger, cfg)
+    semantic_query = compact_action_query(question, trigger, cfg, query_context=query_context)
     common = {"seed_entities": list(trigger.seed_entity_ids)}
     semantic_budget = policy_budget(cfg.semantic_budget, policy_signal)
     focused_actions = focused_index_actions(
@@ -74,9 +100,115 @@ def compile_static_retrieval_plan(
         trigger,
         cfg,
         policy_signal=policy_signal,
+        query_context=query_context,
     )
 
+    def semantic_terms_action(target: str, *, query: str | None = None) -> RetrievalAction:
+        return RetrievalAction(
+            question.question_id,
+            "semantic_terms",
+            target,
+            query=query or semantic_query,
+            filters={
+                **common,
+                "_sage_policy_stage": 1,
+                "_sage_policy_mode": "preferred",
+                "_sage_policy_reason": "semantic_terms_first",
+            },
+            budget=semantic_budget,
+        )
+
+    def dense_semantic_fallback(
+        target: str,
+        *,
+        query: str,
+        min_models: int | None = None,
+    ) -> RetrievalAction:
+        return RetrievalAction(
+            question.question_id,
+            "semantic",
+            target,
+            query=query,
+            filters={
+                "_sage_policy_stage": 2,
+                "_sage_policy_mode": "probe",
+                "_sage_policy_reason": "dense_semantic_fallback_after_semantic_terms",
+                "_semantic_fallback_after_terms": True,
+                "_bind_previous_scope": True,
+                "_fallback_min_semantic_terms_models": (
+                    int(min_models)
+                    if min_models is not None
+                    else int(cfg.semantic_terms_fallback_min_models)
+                ),
+                "_fallback_min_cheap_context_models": max(
+                    6,
+                    int(cfg.semantic_terms_fallback_min_models) * 2,
+                ),
+            },
+            budget=semantic_budget,
+        )
+
+    def temporal_nearby_action(
+        target: str,
+        *,
+        budget: int,
+    ) -> RetrievalAction:
+        return RetrievalAction(
+            question.question_id,
+            "temporal",
+            target,
+            query=semantic_query,
+            filters={
+                "window_days": max(1, int(cfg.temporal_nearby_window_days)),
+                "_temporal_lane": "nearby",
+                "_temporal_nearby_fallback_after_cheap_context": True,
+                "_fallback_min_temporal_semantic_terms_models": max(
+                    1,
+                    int(cfg.semantic_terms_fallback_min_models),
+                ),
+                "_fallback_min_temporal_cheap_context_models": max(
+                    8,
+                    int(cfg.semantic_terms_fallback_min_models) * 2,
+                ),
+                "_temporal_scope_filter_strategy": "time_prefilter",
+                "_temporal_include_entity_mentions": True,
+                "_sage_policy_stage": 2,
+                "_sage_policy_mode": "probe",
+                "_sage_policy_reason": "narrow_temporal_after_cheap_context",
+            },
+            budget=budget,
+        )
+
+    def temporal_broad_fallback(
+        target: str,
+        *,
+        budget: int,
+    ) -> RetrievalAction:
+        return RetrievalAction(
+            question.question_id,
+            "temporal",
+            target,
+            query=semantic_query,
+            filters={
+                "window_days": max(1, int(cfg.temporal_broad_window_days)),
+                "_temporal_lane": "broad",
+                "_temporal_scope_filter_strategy": "indexed_or",
+                "_temporal_include_entity_mentions": True,
+                "_sage_policy_stage": 3,
+                "_sage_policy_mode": "probe",
+                "_sage_policy_reason": "broad_temporal_fallback_after_nearby",
+                "_temporal_broad_fallback_after_nearby": True,
+                "_fallback_min_temporal_records": max(
+                    1,
+                    int(cfg.temporal_broad_fallback_min_records),
+                ),
+                "_bind_previous_scope": True,
+            },
+            budget=budget,
+        )
+
     if question.primitive == "DEPENDENCY":
+        dependency_query = semantic_query
         return focused_actions + [
             RetrievalAction(
                 question.question_id, "structural", "commitment_graph", filters=common
@@ -88,54 +220,66 @@ def compile_static_retrieval_plan(
                 filters=common,
                 budget=policy_budget(60, policy_signal),
             ),
-            RetrievalAction(
-                question.question_id,
-                "temporal",
+            temporal_nearby_action(
                 "recent_observations",
-                query=semantic_query,
-                filters={"window_days": cfg.temporal_window_days},
                 budget=policy_budget(40, policy_signal),
             ),
-            RetrievalAction(
-                question.question_id,
-                "semantic",
+            semantic_terms_action("dependency_semantic_terms", query=dependency_query),
+            dense_semantic_fallback(
                 "dependency_evidence",
-                query=semantic_query,
-                budget=semantic_budget,
+                query=dependency_query,
             ),
         ]
     if question.primitive == "COMMITMENT":
+        commitment_query = compact_action_query(
+            question,
+            trigger,
+            cfg,
+            prefix="active commitment promised outcome",
+            query_context=query_context,
+        )
         return focused_actions + [
             RetrievalAction(
                 question.question_id, "structural", "active_commitments", filters=common
             ),
-            RetrievalAction(
-                question.question_id,
-                "semantic",
+            semantic_terms_action("commitment_semantic_terms", query=commitment_query),
+            dense_semantic_fallback(
                 "commitment_evidence",
-                query=f"active commitment promised outcome {seed_text}",
-                budget=semantic_budget,
+                query=commitment_query,
             ),
         ]
     if question.primitive == "COUNTEREVIDENCE":
+        counter_query = compact_action_query(
+            question,
+            trigger,
+            cfg,
+            prefix="alternate explanation counterevidence not blocked not caused",
+            query_context=query_context,
+        )
         return focused_actions + [
-            RetrievalAction(
-                question.question_id,
-                "semantic",
-                "counterevidence",
-                query=f"alternate explanation counterevidence not blocked not caused {seed_text}",
-                budget=semantic_budget,
-            ),
-            RetrievalAction(
-                question.question_id,
-                "temporal",
-                "recent_counterevidence",
-                query=semantic_query,
-                filters={"window_days": cfg.temporal_window_days},
+            temporal_nearby_action(
+                "nearby_counterevidence",
                 budget=policy_budget(30, policy_signal),
+            ),
+            temporal_broad_fallback(
+                "recent_counterevidence",
+                budget=policy_budget(30, policy_signal),
+            ),
+            semantic_terms_action("counterevidence_semantic_terms", query=counter_query),
+            dense_semantic_fallback(
+                "counterevidence",
+                query=counter_query,
+                min_models=max(4, int(cfg.semantic_terms_fallback_min_models)),
             ),
         ]
     if question.primitive == "CONSTRAINT":
+        constraint_query = compact_action_query(
+            question,
+            trigger,
+            cfg,
+            prefix="constraint scarce resource capacity quota policy blocker",
+            query_context=query_context,
+        )
         return focused_actions + [
             RetrievalAction(
                 question.question_id,
@@ -150,39 +294,42 @@ def compile_static_retrieval_plan(
                 filters=common,
                 budget=policy_budget(60, policy_signal),
             ),
-            RetrievalAction(
-                question.question_id,
-                "temporal",
+            temporal_nearby_action(
                 "recent_constraint_observations",
-                query=semantic_query,
-                filters={"window_days": cfg.temporal_window_days},
                 budget=policy_budget(30, policy_signal),
             ),
-            RetrievalAction(
-                question.question_id,
-                "semantic",
+            semantic_terms_action("constraint_semantic_terms", query=constraint_query),
+            dense_semantic_fallback(
                 "constraint_evidence",
-                query=(
-                    "constraint scarce resource capacity quota policy blocker "
-                    f"{seed_text}"
-                ),
-                budget=semantic_budget,
+                query=constraint_query,
             ),
         ]
     if question.primitive == "OWNERSHIP":
+        owner_query = compact_action_query(
+            question,
+            trigger,
+            cfg,
+            prefix="owner responsible assigned owns dependency",
+            query_context=query_context,
+        )
         return focused_actions + [
             RetrievalAction(
                 question.question_id, "structural", "ownership_graph", filters=common
             ),
-            RetrievalAction(
-                question.question_id,
-                "semantic",
+            semantic_terms_action("owner_semantic_terms", query=owner_query),
+            dense_semantic_fallback(
                 "owner_evidence",
-                query=f"owner responsible assigned owns dependency {seed_text}",
-                budget=semantic_budget,
+                query=owner_query,
             ),
         ]
     if question.primitive == "RECURRENCE":
+        recurrence_query = compact_action_query(
+            question,
+            trigger,
+            cfg,
+            prefix="recurring pattern repeated similar issue",
+            query_context=query_context,
+        )
         return focused_actions + [
             RetrievalAction(
                 question.question_id,
@@ -198,14 +345,19 @@ def compile_static_retrieval_plan(
                 filters=common,
                 budget=policy_budget(80, policy_signal),
             ),
-            RetrievalAction(
-                question.question_id,
-                "semantic",
+            semantic_terms_action("recurrence_semantic_terms", query=recurrence_query),
+            dense_semantic_fallback(
                 "recurrence_evidence",
-                query=f"recurring pattern repeated similar issue {seed_text}",
-                budget=semantic_budget,
+                query=recurrence_query,
             ),
         ]
+    goal_query = compact_action_query(
+        question,
+        trigger,
+        cfg,
+        prefix="goal customer resource impact",
+        query_context=query_context,
+    )
     return focused_actions + [
         RetrievalAction(
             question.question_id, "structural", "goal_resource_bridge", filters=common
@@ -217,14 +369,41 @@ def compile_static_retrieval_plan(
             filters=common,
             budget=policy_budget(60, policy_signal),
         ),
-        RetrievalAction(
-            question.question_id,
-            "semantic",
+        semantic_terms_action("goal_customer_resource_semantic_terms", query=goal_query),
+        dense_semantic_fallback(
             "goal_customer_resource_evidence",
-            query=f"goal customer resource impact {seed_text}",
-            budget=semantic_budget,
+            query=goal_query,
         ),
     ]
+
+
+def compact_action_query(
+    question: InquiryQuestion,
+    trigger: TriggerContext,
+    cfg: InquiryConfig,
+    *,
+    prefix: str = "",
+    query_context: _RetrievalQueryContext | None = None,
+) -> str:
+    """Build a short retrieval query from the question plus material anchors."""
+    anchors = (
+        list(query_context.compact_terms)
+        if query_context is not None
+        else focused_index_terms(
+            question.question,
+            trigger,
+            max_terms=max(4, min(12, int(cfg.focused_index_terms) + 4)),
+        )
+    )
+    parts: list[str] = []
+    for raw in (prefix, question.question, " ".join(anchors)):
+        clean = " ".join(str(raw or "").split())
+        if clean and clean not in parts:
+            parts.append(clean)
+    query = " ".join(parts).strip()
+    if len(query) <= 420:
+        return query
+    return query[:420].rsplit(" ", 1)[0].strip()
 
 
 def compile_motif_retrieval_plan(
@@ -293,13 +472,18 @@ def focused_index_actions(
     cfg: InquiryConfig,
     *,
     policy_signal: QuestionPolicySignal | None,
+    query_context: _RetrievalQueryContext | None = None,
 ) -> list[RetrievalAction]:
     if not cfg.focused_index_enabled:
         return []
-    terms = focused_index_terms(
-        question.question,
-        trigger,
-        max_terms=int(cfg.focused_index_terms),
+    terms = list(
+        query_context.focused_terms
+        if query_context is not None
+        else focused_index_terms(
+            question.question,
+            trigger,
+            max_terms=int(cfg.focused_index_terms),
+        )
     )
     return [
         RetrievalAction(

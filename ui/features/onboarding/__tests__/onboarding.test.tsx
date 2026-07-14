@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -476,6 +476,73 @@ describe("onboarding workflow contract", () => {
         "Grant the Fyralis bot role View Channel and Read Message History in #moderator-only.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("shows Slack configuration token only as fallback after automation trouble", async () => {
+    const user = userEvent.setup();
+    const slack = ONBOARDING_SNAPSHOT.sources.find(
+      (source) => source.id === "slack"
+    );
+    expect(slack).toBeDefined();
+    const fetchMock = vi.fn().mockRejectedValue(new Error("Slack setup failed"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <StepView
+        stepId="source-catalog"
+        props={stepViewProps({ selectedSource: slack! })}
+      />
+    );
+
+    expect(screen.queryByText("Slack app configuration token")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Connect Slack" }));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:8000/platform/onboarding/sources/slack/rehearsal/auto-connect",
+      expect.objectContaining({
+        body: JSON.stringify({ inputs: {} }),
+        method: "POST"
+      })
+    );
+    expect(
+      await screen.findByText("Slack app configuration token")
+    ).toBeInTheDocument();
+  });
+
+  it("opens Slack handoff without marking connected when browser automation did not run", async () => {
+    const user = userEvent.setup();
+    const slack = ONBOARDING_SNAPSHOT.sources.find(
+      (source) => source.id === "slack"
+    );
+    expect(slack).toBeDefined();
+    const props = stepViewProps({ selectedSource: slack! });
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(slackArtifactOnlyPreparePayload()), {
+        status: 200
+      })
+    );
+    const openMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "open").mockImplementation(openMock);
+
+    render(<StepView stepId="source-catalog" props={props} />);
+
+    await user.click(screen.getByRole("button", { name: "Connect Slack" }));
+
+    expect(await screen.findByText("Not connected")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Slack app configuration token")
+    ).not.toBeInTheDocument();
+    expect(openMock).toHaveBeenCalledWith(
+      expect.stringMatching(/^https:\/\/api\.slack\.com\/apps#fyralis_agent=/),
+      "_blank",
+      "noopener,noreferrer"
+    );
+    expect(props.updateConnection).toHaveBeenCalledWith(
+      "slack",
+      expect.objectContaining({ status: "error" })
+    );
   });
 
   it("does not seed fake source connection statuses", () => {
@@ -1014,6 +1081,144 @@ function stepViewProps({
   };
 }
 
+function slackArtifactOnlyPreparePayload() {
+  const browserAgentRun = {
+    schema_version: "fyralis.byoc.source.browser_agent_run.v1",
+    source: "slack",
+    state: "waiting_for_admin",
+    launch_mode: "customer_cloud_admin_present_browser",
+    can_start: true,
+    handoff_url: "https://api.slack.com/apps",
+    handoff_kind: "provider_console",
+    provider_console_url: "https://api.slack.com/apps",
+    oauth_redirect_url: "https://fyralis-ingress.acme.example/integrations/slack/callback",
+    events_request_url: "https://fyralis-ingress.acme.example/webhooks/slack/events",
+    settings_targets: ["Slack app configuration token"],
+    agent_collects: [],
+    agent_generates: [],
+    human_gates: [],
+    completion_checks: [],
+    action_queue: [],
+    current_action: null,
+    automated_action_count: 3,
+    human_action_count: 2
+  };
+  const automationRun = {
+    schema_version: "fyralis.byoc.source.auto_connect_run.v1",
+    source: "slack",
+    status: "blocked",
+    launch_mode: "customer_cloud_admin_present_browser",
+    can_start: true,
+    handoff_url: "https://api.slack.com/apps",
+    current_action_id: "open_provider_settings",
+    automated_action_count: 3,
+    human_action_count: 2,
+    native_connect_kind: null,
+    native_payload_template_path_hint: null,
+    provider_setup_output_dir_hint:
+      ".fyralis/sources/slack/browser-agent-provider-setup",
+    receipt_path_hint: ".fyralis/sources/slack/browser-agent-receipt.json",
+    background_status: "blocked",
+    background_queued_at: "2026-07-01T10:29:00Z",
+    background_started_at: "2026-07-01T10:29:05Z",
+    background_finished_at: "2026-07-01T10:29:06Z",
+    background_runner_mode: "artifact_materialization",
+    run_artifact_path_hint: ".fyralis/sources/slack/connection.json",
+    command_preview:
+      "fyralis byoc source browser-agent --workdir .fyralis --source slack --execute-browser-dom --interactive-admin --gateway-api-base http://localhost:8000",
+    command_args: [
+      "fyralis",
+      "byoc",
+      "source",
+      "browser-agent",
+      "--workdir",
+      ".fyralis",
+      "--source",
+      "slack",
+      "--execute-browser-dom",
+      "--interactive-admin",
+      "--gateway-api-base",
+      "http://localhost:8000"
+    ]
+  };
+  return {
+    enabled: true,
+    source: "slack",
+    tenant_id: "00000000-0000-7000-8000-000000000001",
+    actor_id: "00000000-0000-7000-8000-000000000002",
+    gateway_api_base: "http://localhost:8000",
+    provider_ingress_url: "https://fyralis-ingress.acme.example",
+    oauth_redirect_url:
+      "https://fyralis-ingress.acme.example/integrations/slack/callback",
+    events_request_url:
+      "https://fyralis-ingress.acme.example/webhooks/slack/events",
+    install_url: null,
+    provider_console_url: "https://api.slack.com/apps",
+    authorization_mode: "oauth",
+    missing_configuration: ["slack_app_config_token"],
+    required_inputs: ["slack_app_config_token"],
+    optional_inputs: [],
+    finalize_mode: "provider_callback",
+    automation_profile: {
+      automation_level: "automated_after_provider_authorization",
+      method: "oauth",
+      minimum_human_inputs: ["slack_app_config_token"],
+      optional_hints: [],
+      automated_actions: ["prepare provider handoff and gateway routes"],
+      human_steps: [],
+      agent_discovery_target: "workspace and channels",
+      post_connect_actions: ["poll for observations"],
+      human_step_count: 0
+    },
+    browser_agent: {
+      source: "slack",
+      provider_console_url: "https://api.slack.com/apps",
+      settings_targets: ["Slack app configuration token"],
+      agent_collects: [],
+      agent_generates: [],
+      human_gates: ["admin signs in and completes MFA when prompted"],
+      completion_checks: ["source install status is pollable"]
+    },
+    browser_agent_run: browserAgentRun,
+    bearer_token: "session-token",
+    session_expires_at: "2026-07-01T10:30:00Z",
+    state_expires_in_seconds: 600,
+    status: {
+      source: "slack",
+      installed: false,
+      installation: null,
+      trigger_count: 0,
+      consumed_trigger_count: 0,
+      run_status_counts: {},
+      shard_state_counts: {},
+      observation_count: 0,
+      observations: [],
+      unresolved_failure_count: 0,
+      bearer_token: "session-token",
+      session_expires_at: "2026-07-01T10:30:00Z",
+      next_action: "Slack is not connected."
+    },
+    auto_connect: {
+      state: "blocked",
+      label: "Not connected",
+      message: "Slack was not connected.",
+      human_step_count: 1,
+      human_steps: [
+        {
+          id: "generate_slack_app_config_token",
+          label: "Generate a Slack app configuration token in the admin browser.",
+          reason: "Slack requires an authenticated workspace admin session.",
+          can_agent_complete: true
+        }
+      ],
+      automated_actions: ["prepare provider handoff and gateway routes"],
+      browser_agent_run: browserAgentRun,
+      automation_run: automationRun,
+      install_url: null
+    }
+  };
+}
+
 function rampNativePreparePayload() {
   return {
     enabled: true,
@@ -1227,6 +1432,24 @@ function rampConnectedStatusPayload() {
       currentActionId: null,
     }),
     next_action: "Ramp is connected.",
+  };
+}
+
+function rampMissingInstallStatusPayload() {
+  return {
+    source: "ramp",
+    installed: false,
+    installation: null,
+    trigger_count: 0,
+    consumed_trigger_count: 0,
+    run_status_counts: {},
+    shard_state_counts: {},
+    observation_count: 0,
+    observations: [],
+    unresolved_failure_count: 0,
+    bearer_token: null,
+    session_expires_at: null,
+    next_action: "Approve Ramp in the provider browser window."
   };
 }
 
@@ -1740,11 +1963,17 @@ describe("onboarding service recovery", () => {
     const prepared = await autoConnectSourceRehearsal({
       apiBase: "https://fyralis-ingress.acme.example",
       sourceId: "google-calendar",
+      inputs: { slack_app_config_token: "test-config-token" },
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://fyralis-ingress.acme.example/platform/onboarding/sources/google_calendar/rehearsal/auto-connect",
-      expect.anything(),
+      expect.objectContaining({
+        body: JSON.stringify({
+          inputs: { slack_app_config_token: "test-config-token" }
+        }),
+        method: "POST"
+      })
     );
     expect(prepared.sourceId).toBe("google-calendar");
     expect(prepared.status.sourceId).toBe("google-calendar");

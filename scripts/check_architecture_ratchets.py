@@ -753,8 +753,6 @@ BYOC_AGENT_NO_RAW_TOKEN_MODELS = (
 
 RAW_THINK_TRIGGER_INSERT_ALLOWED_FILES = {
     Path("services/domain/triggers.py"),
-    # Scale/probe harness that intentionally hand-builds batched rows.
-    Path("scripts/run_1000_signal_model_layer_probe.py"),
 }
 RAW_MODEL_REEVAL_INSERT_ALLOWED_FILES = {
     Path("services/domain/triggers.py"),

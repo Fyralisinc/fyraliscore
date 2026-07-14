@@ -97,6 +97,8 @@ class RetrievalConfig:
     semantic_k: int = 20
     # HNSW ef_search bumped from typical 40 to 80 (audit §3 arg 4).
     semantic_hnsw_ef_search: int = 80
+    semantic_terms_enabled: bool = True
+    semantic_terms_k: int = 40
 
     # ---- Pathway C (temporal) ----
     temporal_window_minutes: int = 60
@@ -158,6 +160,17 @@ class RetrievalConfig:
     # Optional age-based score decay. 0 disables decay. When positive,
     # model scores are multiplied by 0.5 every N days since created_at.
     recency_decay_half_life_days: float = 0.0
+    # Projection-first retrieval. Typed projection snapshots are a compact
+    # pre-pass over canonical Models; the normal pathways still run as fallback.
+    projection_context_enabled: bool = True
+    projection_context_max_snapshots: int = 8
+    projection_context_max_models: int = 24
+    primary_pathway_parallel_enabled: bool = True
+    # SAGE policy is a non-canonical adaptive controller over the primary
+    # pathway mix. Shadow mode records the plan without applying gates.
+    sage_retrieval_policy_enabled: bool = True
+    sage_retrieval_policy_shadow_mode: bool = False
+    sage_retrieval_policy_exploration_rate: float = 0.0
 
     # ---- Second-pass ----
     second_pass_sparse_threshold: int = 5
