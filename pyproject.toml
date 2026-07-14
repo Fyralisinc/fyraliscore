@@ -28,7 +28,7 @@ dependencies = [
     "pyjwt[crypto]>=2.8",        # IN-13: GitHub App JWT (RS256) minting
     "zstandard>=0.22",           # Gmail/general payload compression
     "google-auth>=2.29",         # IN-Gmail: Google OAuth/OIDC verification
-    "redis>=5.0",                # M1.3: rate limiter (Lua EVALSHA on Redis); LLD §13
+    "redis>=8.0.1",                # M1.3: rate limiter (Lua EVALSHA on Redis); LLD §13
     # --- Ingestion M1.4 (LLD §9 dependency adds) ---
     "temporalio>=1.5",                          # Temporal Python SDK
     "confluent-kafka>=2.3",                     # idempotent producer
