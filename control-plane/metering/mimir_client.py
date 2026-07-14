@@ -40,7 +40,7 @@ client instance can roll up the whole fleet.
 from __future__ import annotations
 
 import datetime as _dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 import httpx

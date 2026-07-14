@@ -18,7 +18,6 @@ from services.ingest.ingestion.handlers import (
 )
 from services.ingest.integrations.instagram.records import (
     CHANNEL,
-    MESSAGE_RECORD_TYPE,
     STATUS_RECORD_TYPE,
     parse_record,
 )

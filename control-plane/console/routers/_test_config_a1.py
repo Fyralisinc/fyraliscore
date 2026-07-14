@@ -15,10 +15,9 @@ from control-plane/ .
 
 from __future__ import annotations
 
-import os
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -34,7 +33,7 @@ for p in (str(ROOT), str(CONSOLE_DIR), str(SIGNING_DIR)):
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.testclient import TestClient
 
-from lib.desired_state import DesiredState, compute_drift
+from lib.desired_state import DesiredState
 from deps import build_signer  # the REAL signer wrapper
 import config as config_router  # console/routers/config.py
 

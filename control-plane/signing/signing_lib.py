@@ -30,7 +30,7 @@ import datetime as _dt
 import hashlib
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Optional
 
 from cryptography.exceptions import InvalidSignature

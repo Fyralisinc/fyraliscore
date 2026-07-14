@@ -18,7 +18,6 @@ from lib.observability.metrics import (
     reset_default_for_tests,
 )
 from services.ingest.integrations.oauth_refresh import (
-    REFRESH_CONFIGS,
     OAuthRefreshError,
     REFRESH_CONFIGS,
     ensure_fresh_access_token,

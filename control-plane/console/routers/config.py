@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import html
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from fastapi import Body, Depends, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse

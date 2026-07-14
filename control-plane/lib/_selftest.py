@@ -32,7 +32,6 @@ from lib import (
     tier_policy,
 )
 from lib.errors import (
-    TenantInactiveError,
     TenantNotFoundError,
     TenantRevokedError,
 )

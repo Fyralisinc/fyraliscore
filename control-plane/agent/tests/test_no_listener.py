@@ -18,7 +18,6 @@ from __future__ import annotations
 import socket
 from pathlib import Path
 
-import pytest
 
 from agent import Agent
 from config import load_agent_config

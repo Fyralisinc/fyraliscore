@@ -40,15 +40,12 @@ import os
 import signal
 import sys
 import threading
-import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable
 
 import _bootstrap  # noqa: F401  (side-effect: sys.path for lib + signing)
-from lib import DeploymentRecord, TelemetryTier
-from lib.desired_state import DesiredState
-from lib.primitives import to_rfc3339, utcnow
+from lib import DeploymentRecord
+from lib.primitives import utcnow
 
 from buffer import HeartbeatBuffer
 from config import AgentConfig, load_agent_config

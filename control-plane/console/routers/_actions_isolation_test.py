@@ -21,7 +21,7 @@ for _p in (str(_ROOT), str(_ROOT / "agent"), str(_ROOT / "console")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from fastapi import Depends, FastAPI, HTTPException, Header  # noqa: E402
+from fastapi import FastAPI, HTTPException, Header  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from lib.desired_state import DesiredState, compute_drift  # noqa: E402

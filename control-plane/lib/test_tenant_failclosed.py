@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import sys
-import tempfile
 from pathlib import Path
 
 # Ensure THIS control-plane/ is the first place ``lib`` resolves from. The git

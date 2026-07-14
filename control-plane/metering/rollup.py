@@ -46,7 +46,7 @@ import datetime as _dt
 import json
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 # --- import the committed siblings: signing/ (flat modules) -------------------

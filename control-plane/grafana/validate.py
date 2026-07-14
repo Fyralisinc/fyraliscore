@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import yaml
 
@@ -36,7 +37,7 @@ TENANT_SCOPE_VALUE = "${tenant_scope}"
 FLEET_ORG_DEFAULT = "__fleet__"
 
 
-def _fail(msg: str) -> "NoReturn":  # type: ignore[name-defined]
+def _fail(msg: str) -> NoReturn:
     print(f"  FAIL: {msg}")
     sys.exit(1)
 

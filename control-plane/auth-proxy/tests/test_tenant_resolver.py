@@ -23,7 +23,6 @@ for p in (str(_AUTH_DIR), str(_CA_DIR)):
         sys.path.insert(0, p)
 
 import ca_lib  # noqa: E402
-import registry as ca_registry  # noqa: E402
 from cryptography import x509  # noqa: E402
 from cryptography.hazmat.primitives import serialization  # noqa: E402
 

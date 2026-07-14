@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import html as _html
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List
 
 from fastapi.responses import HTMLResponse, JSONResponse
 

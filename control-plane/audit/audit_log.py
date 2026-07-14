@@ -51,7 +51,7 @@ import json
 import os
 import sys
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Iterator, Optional
 
 # --- import the REAL signing lib (reuse; never re-implement crypto) ----------------------- #

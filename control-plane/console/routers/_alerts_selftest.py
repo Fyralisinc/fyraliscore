@@ -11,7 +11,6 @@ Run:  cd control-plane && /home/prajwal-adhikari/Desktop/v2/fyraliscore/.venv/bi
 
 from __future__ import annotations
 
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path

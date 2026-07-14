@@ -24,7 +24,6 @@ from lib.observability.metrics import (
     DOC_MEMORY_ENRICHED_T1,
     DOC_MEMORY_MAPREDUCE_SECTIONS,
     DOC_MEMORY_MINT_FAILURE,
-    DOC_MEMORY_MODELS_MINTED,
     DOC_MEMORY_SCOPE_UNRESOLVED,
     doc_memory_source_label,
     record_doc_memory_model_minted,

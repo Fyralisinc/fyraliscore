@@ -25,9 +25,7 @@ from lib.shared.errors import (
     SecretStoreError,
     ValidationError,
 )
-from lib.shared.ids import uuid7
 from lib.shared.secrets import build_secret_store, load_app_secret_text_from_env
-from lib.shared.tenant_context import tenant_transaction
 from services.app.gateway.deps import get_gateway_deps
 from services.ingest.ingestion.core import ingest
 from services.ingest.ingestion.kafka.flush_batcher import coalesced_flush

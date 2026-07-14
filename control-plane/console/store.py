@@ -39,7 +39,6 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import Iterable
 
 # Make the control-plane root importable so ``import lib...`` resolves whether the
 # console runs as ``python app.py``, under uvicorn, inside the container (where
@@ -66,10 +65,9 @@ from lib.deployment import (  # noqa: E402
     DEFAULT_RED_AFTER_S,
     DEFAULT_YELLOW_AFTER_S,
     DeploymentRecord,
-    Health,
 )
 from lib.desired_state import DesiredState  # noqa: E402
-from lib.primitives import to_rfc3339, utcnow  # noqa: E402
+from lib.primitives import utcnow  # noqa: E402
 
 __all__ = [
     "DeploymentStore",

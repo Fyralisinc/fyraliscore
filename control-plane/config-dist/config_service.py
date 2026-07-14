@@ -62,7 +62,6 @@ for _p in (str(_CP_ROOT), str(_CP_ROOT / "signing")):
         sys.path.insert(0, _p)
 
 from store import (  # noqa: E402
-    CONFIG_FILENAME,
     ConfigStore,
     ConfigStoreError,
     ConfigVersion,

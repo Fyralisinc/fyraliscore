@@ -38,7 +38,7 @@ import rollout as ro  # noqa: E402
 import verify_bundle as vb  # noqa: E402  (the agent's enforcement point)
 from signing_ctx import SigningContext  # noqa: E402
 
-from lib.deployment import DeploymentRecord, derive_health  # noqa: E402
+from lib.deployment import DeploymentRecord  # noqa: E402
 from lib.primitives import utcnow  # noqa: E402
 
 

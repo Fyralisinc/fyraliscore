@@ -49,7 +49,7 @@ import json
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Optional, Protocol
+from typing import Callable, Iterable, Protocol
 
 import _bootstrap  # noqa: F401  (side-effect: sys.path for lib + signing)
 
