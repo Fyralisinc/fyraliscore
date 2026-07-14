@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from fakeredis import aioredis as fake_aioredis
 
 from services.ingest.ingestion.rate_limit import RateLimiter
 
@@ -28,6 +27,10 @@ async def limiter():
     in M1.3 installation. If the dep is missing, evalsha raises
     NotImplementedError and the test fails loudly.
     """
+    fake_aioredis = pytest.importorskip(
+        "fakeredis.aioredis",
+        reason="fakeredis with [lua] not available",
+    )
     redis = fake_aioredis.FakeRedis()
     rl = RateLimiter(redis)
     try:

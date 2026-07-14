@@ -27,6 +27,7 @@ def test_strict_schema_exposes_resource_ops_and_new_predictions() -> None:
         "memory_lifecycle_ops",
         "relation_claim_ops",
         "relation_frame_ops",
+        "formation_resolutions",
         "resource_ops",
         "new_predictions",
     } <= required
@@ -41,6 +42,16 @@ def test_strict_schema_exposes_resource_ops_and_new_predictions() -> None:
     ]
     assert properties["relation_claim_ops"]["type"] == "array"
     assert properties["relation_frame_ops"]["type"] == "array"
+    assert properties["formation_resolutions"]["type"] == "array"
+    assert properties["formation_resolutions"]["items"]["properties"]["resolution"][
+        "enum"
+    ] == [
+        "formed",
+        "updated",
+        "deferred",
+        "rejected",
+        "already_covered",
+    ]
     assert properties["resource_ops"]["type"] == "array"
     assert properties["new_predictions"]["type"] == "array"
     assert properties["new_predictions"]["items"]["properties"]["op"]["enum"] == ["insert"]

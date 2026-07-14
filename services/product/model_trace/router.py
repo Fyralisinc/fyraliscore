@@ -97,6 +97,17 @@ def _parse_max_depth(raw: str | None, default: int = 4) -> int | None:
     return depth
 
 
+async def _principal_for_auth(conn: Any, auth: Any) -> Principal:
+    try:
+        return await principal_for_actor(
+            auth.actor_id,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+    except Exception:
+        return Principal(tenant_id=auth.tenant_id, actor_id=auth.actor_id)
+
+
 # ---------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------
@@ -125,7 +136,13 @@ async def get_trace(node_id: str, request: Request) -> JSONResponse:
         if access is not None:
             return access
         if direction == "back":
-            chain = await trace_back(conn, auth.tenant_id, nid, max_depth)
+            chain = await trace_back(
+                conn,
+                auth.tenant_id,
+                nid,
+                max_depth,
+                principal=principal,
+            )
         else:
             chain = await trace_forward(conn, auth.tenant_id, nid, max_depth)
         chain = await _filter_visible_steps(conn, auth, chain)

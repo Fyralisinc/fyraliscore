@@ -22,6 +22,13 @@ import asyncpg
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from services.platform.access_control.authority import (
+    ObjectRef,
+    Principal,
+    authorize_read,
+    principal_for_actor,
+)
+
 
 class OntologyProposalReviewRequest(BaseModel):
     status: Literal["accepted", "rejected", "superseded"]
@@ -91,6 +98,71 @@ async def _pool_from_request(req: Request) -> asyncpg.Pool:
     if pool is not None:
         return pool
     raise HTTPException(status_code=500, detail="service_unavailable")
+
+
+async def _debug_principal(
+    req: Request,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+) -> Principal:
+    auth = getattr(req.state, "auth", None)
+    actor_id = getattr(auth, "actor_id", None)
+    if actor_id is None:
+        raise HTTPException(status_code=401, detail="debug auth required")
+    try:
+        return await principal_for_actor(
+            actor_id,
+            conn=conn,
+            tenant_id=tenant_id,
+        )
+    except Exception:
+        return Principal(tenant_id=tenant_id, actor_id=actor_id)
+
+
+async def _can_debug_read(
+    conn: asyncpg.Connection,
+    *,
+    principal: Principal,
+    tenant_id: UUID,
+    object_kind: str,
+    object_id: UUID,
+) -> bool:
+    decision = await authorize_read(
+        principal,
+        "debug",
+        ObjectRef(
+            tenant_id=tenant_id,
+            object_kind=object_kind,
+            object_id=object_id,
+        ),
+        conn=conn,
+    )
+    return decision.allowed
+
+
+async def _filter_debug_rows(
+    conn: asyncpg.Connection,
+    *,
+    principal: Principal,
+    tenant_id: UUID,
+    object_kind: str,
+    rows: list[Any],
+) -> list[Any]:
+    visible = []
+    for row in rows:
+        if await _can_debug_read(
+            conn,
+            principal=principal,
+            tenant_id=tenant_id,
+            object_kind=object_kind,
+            object_id=row["id"],
+        ):
+            visible.append(row)
+    return visible
+
+
+def _can_debug_peek_cache(principal: Principal) -> bool:
+    return bool({"admin", "leadership"} & set(principal.roles))
 
 
 # --------------------------------------------------------------------
@@ -216,7 +288,15 @@ async def list_signals(
         f"LIMIT {limit}"
     )
     async with pool.acquire() as conn:
+        principal = await _debug_principal(req, conn, tid)
         rows = await conn.fetch(q, *args)
+        rows = await _filter_debug_rows(
+            conn,
+            principal=principal,
+            tenant_id=tid,
+            object_kind="observation",
+            rows=list(rows),
+        )
     return {"signals": [_jsonify(r) for r in rows]}
 
 
@@ -238,6 +318,15 @@ async def get_signal(observation_id: str, req: Request):
             tid,
         )
         if obs is None:
+            raise HTTPException(status_code=404, detail="not found")
+        principal = await _debug_principal(req, conn, tid)
+        if not await _can_debug_read(
+            conn,
+            principal=principal,
+            tenant_id=tid,
+            object_kind="observation",
+            object_id=oid,
+        ):
             raise HTTPException(status_code=404, detail="not found")
         triggers = await conn.fetch(
             "SELECT id, trigger_kind, trigger_subkind, enqueued_at, "
@@ -544,6 +633,7 @@ async def list_models(
         args.append(min_confidence)
         where.append(f"confidence >= ${len(args)}")
     async with pool.acquire() as conn:
+        principal = await _debug_principal(req, conn, tid)
         rows = await conn.fetch(
             "SELECT id, proposition_kind, status, confidence, "
             "       confidence_at_assertion, confirmed_count, "
@@ -552,6 +642,13 @@ async def list_models(
             f"FROM models WHERE {' AND '.join(where)} "
             f"ORDER BY created_at DESC LIMIT {limit}",
             *args,
+        )
+        rows = await _filter_debug_rows(
+            conn,
+            principal=principal,
+            tenant_id=tid,
+            object_kind="model",
+            rows=list(rows),
         )
     return {"models": [_jsonify(r) for r in rows]}
 
@@ -578,6 +675,15 @@ async def get_model(model_id: str, req: Request):
         )
         if model is None:
             raise HTTPException(status_code=404, detail="not found")
+        principal = await _debug_principal(req, conn, tid)
+        if not await _can_debug_read(
+            conn,
+            principal=principal,
+            tenant_id=tid,
+            object_kind="model",
+            object_id=mid,
+        ):
+            raise HTTPException(status_code=404, detail="not found")
         status_notes = await conn.fetch(
             "SELECT id, note, authored_by, authored_at, kind "
             "FROM model_status_notes "
@@ -593,6 +699,13 @@ async def get_model(model_id: str, req: Request):
                 "FROM observations WHERE id = ANY($1::uuid[])",
                 list(support_ids),
             )
+            erows = await _filter_debug_rows(
+                conn,
+                principal=principal,
+                tenant_id=tid,
+                object_kind="observation",
+                rows=list(erows),
+            )
             supporting_events = [_jsonify(r) for r in erows]
         supporting_models: list[dict] = []
         sm_ids = model["supporting_model_ids"] or []
@@ -601,6 +714,13 @@ async def get_model(model_id: str, req: Request):
                 "SELECT id, proposition_kind, status, confidence, proposition "
                 "FROM models WHERE id = ANY($1::uuid[])",
                 list(sm_ids),
+            )
+            mrows = await _filter_debug_rows(
+                conn,
+                principal=principal,
+                tenant_id=tid,
+                object_kind="model",
+                rows=list(mrows),
             )
             supporting_models = [_jsonify(r) for r in mrows]
     return {
@@ -626,10 +746,18 @@ async def list_acts(
         "resource": "resources",
     }[kind]
     async with pool.acquire() as conn:
+        principal = await _debug_principal(req, conn, tid)
         rows = await conn.fetch(
             f"SELECT * FROM {table} WHERE tenant_id = $1 "
             f"ORDER BY created_at DESC LIMIT {limit}",
             tid,
+        )
+        rows = await _filter_debug_rows(
+            conn,
+            principal=principal,
+            tenant_id=tid,
+            object_kind=kind,
+            rows=list(rows),
         )
     return {"kind": kind, "rows": [_jsonify(r) for r in rows]}
 
@@ -676,6 +804,9 @@ async def list_cache(req: Request):
     tid = _resolve_tenant(req)
     pool = await _pool_from_request(req)
     async with pool.acquire() as conn:
+        principal = await _debug_principal(req, conn, tid)
+        if not _can_debug_peek_cache(principal):
+            raise HTTPException(status_code=403, detail="debug cache authority required")
         rows = await conn.fetch(
             "SELECT cache_key, cached_at, "
             "       extract(epoch from (now() - cached_at))::int as age_seconds, "

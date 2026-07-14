@@ -17,6 +17,7 @@ surface, mirroring the way the spec separates the two columns at §22.1.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 
@@ -50,6 +51,7 @@ class OptimizationRunReport:
     canonical_promote_candidates: tuple[dict, ...]
     canonical_demote_candidates: tuple[dict, ...]
     metrics: dict[str, float]
+    experience_loop: dict[str, Any] | None = None
 
 
 __all__ = ["OptimizationRunReport"]

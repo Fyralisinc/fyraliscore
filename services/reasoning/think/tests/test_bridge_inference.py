@@ -59,12 +59,22 @@ def test_maybe_inject_latent_bridge_from_structured_batch_fragments():
     assert entry["supporting_event_ids"] == [str(oid) for oid in obs_ids]
     assert entry["confidence"] == 0.58
     validate_proposition(entry["proposition"])
+    transition_support = entry["proposition"]["transition_support"]
+    assert str(obs_ids[0]) in transition_support["before_state_event_ids"]
+    assert str(obs_ids[1]) in transition_support["after_state_event_ids"]
+    assert str(obs_ids[2]) in transition_support["gap_review_event_ids"]
     text = f"{entry['natural']} {entry['proposition']}".lower()
     assert "northstar" in text
     assert "blocked" in text
     assert "exception-pricing" in text
     assert "off-sensor" in text
     assert "bounded" in text
+    assert "before evidence" in text
+    assert "after evidence" in text
+    assert "gap evidence" in text
+    assert "hallway" not in text
+    assert "verbal approval" not in text
+    assert "sponsor confirmed" not in text
     assert "deterministic_bridge_inference" in out.reasoning_trace
 
 

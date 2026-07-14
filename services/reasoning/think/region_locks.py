@@ -340,6 +340,15 @@ def touched_entity_ids_from_diff(
         for model_id in getattr(op, "evidence_model_ids", None) or []:
             entities.add(("model", str(model_id)))
 
+    for op in (getattr(diff, "open_question_ops", []) or []):
+        for model_id in (
+            getattr(op, "model_id", None),
+            getattr(op, "resolution_model_id", None),
+            *(getattr(op, "source_model_ids", None) or []),
+        ):
+            if model_id is not None:
+                entities.add(("model", str(model_id)))
+
     for op in (getattr(diff, "act_ops", []) or []):
         ent = getattr(op, "entity", None) or {}
         op_kind = getattr(op, "op", "") or ""

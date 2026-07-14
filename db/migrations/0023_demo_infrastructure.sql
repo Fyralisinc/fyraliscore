@@ -52,18 +52,22 @@ CREATE TABLE IF NOT EXISTS demo_configs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Re-run safety: 0093_drop_demo_scaffolding drops this column (the `tenants`
--- table itself survives), so on a full re-apply the `CREATE TABLE IF NOT EXISTS
--- tenants` above is a no-op and the column is NOT restored. Restore it
--- explicitly before the FK so re-application (test fixtures, harness, the
--- synthetic gate on a non-fresh DB) does not fail with "column demo_config_id
--- referenced in foreign key constraint does not exist". No-op on a fresh apply.
-ALTER TABLE tenants ADD COLUMN IF NOT EXISTS demo_config_id UUID;
-
--- FK back to tenants.demo_config_id once both tables exist.
+-- Re-run safety: 0093_drop_demo_scaffolding later drops this column while
+-- keeping the `tenants` table. Do not re-add it on modern post-demo schemas:
+-- repeated add/drop cycles consume PostgreSQL's dropped-column slots. Fresh
+-- databases still get the historical column from CREATE TABLE above.
+--
+-- Add the FK only when the column exists.
 DO $$
 BEGIN
-  IF NOT EXISTS (
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'tenants'
+      AND column_name = 'demo_config_id'
+  )
+  AND NOT EXISTS (
     SELECT 1 FROM pg_constraint
     WHERE conname = 'tenants_demo_config_id_fkey'
   ) THEN

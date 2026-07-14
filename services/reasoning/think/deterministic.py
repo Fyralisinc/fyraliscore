@@ -5,7 +5,8 @@ Spec §7 "Authoritative vs inferential triggers":
   * T2 prediction_overdue / prediction_deadline → resolution handler
   * T2 belief_updated → deterministic no-op unless it has prediction shape
   * T4 background_maintenance / entity_resolution_proposal → per-subkind
-    deterministic handlers
+    deterministic handlers. `pattern_review` is inferential and must not
+    promote precipitation clusters deterministically.
 
 All produce RawDiff. These paths do NOT call the LLM; they close the
 loop cheaply for signals whose response is mechanically determinable.
@@ -68,7 +69,6 @@ def is_authoritative(trigger: TriggerContext) -> bool:
     if trigger.kind == "T4" and trigger.subkind in (
         "background_maintenance",
         "entity_resolution_proposal",
-        "pattern_review",
     ):
         return True
     return False
@@ -408,8 +408,8 @@ async def _handle_t4_background(
         cause_kind from the model_reeval_queue consumer and nudge the
         dependent Model's confidence.
 
-    Other subkinds (`entity_resolution_proposal`, `pattern_review`)
-    return empty RawDiff — those paths arrive with Wave 4-C.
+    `pattern_review` is guarded here for direct-call safety, but normal queue
+    routing sends it to inferential Think review rather than this reflex lane.
     """
     claim_ops: list[ClaimOp] = []
 
@@ -488,69 +488,20 @@ async def _handle_t4_background(
                     ClaimOp(op="archive", model_id=tmid, reason="decay")
                 )
 
+    pattern_review_trace: str | None = None
     if trigger.subkind == "pattern_review":
-        # Wave 4-C: precipitation worker enqueued a candidate. We
-        # promote it inline (insert the Pattern Model + flip
-        # promoted_at). This branch does NOT go through the
-        # claim_ops/apply path — the Pattern insertion is a
-        # self-contained side effect tied to the candidate row, and
-        # does not need the applier's validation envelope.
+        # Precipitation clusters are weak statistical evidence. The
+        # deterministic path must not convert them directly into Pattern
+        # Models; a semantic Think review has to decide whether the latent
+        # regularity is stable, useful, explainable, falsifiable, and
+        # action-shaping before normal Pattern Model grammar is used.
         sig = trigger.seed_signature or {}
         candidate_id_raw = sig.get("pattern_candidate_id")
-        if candidate_id_raw is not None:
-            try:
-                candidate_id = UUID(str(candidate_id_raw))
-            except (ValueError, TypeError):
-                candidate_id = None
-            if candidate_id is not None:
-                from services.domain.models.repo import ModelsRepo
-                from services.workers.precipitation.proposer import (
-                    promote_pattern_candidate,
-                    reject_pattern_candidate,
-                )
-                # A Pattern Model requires a born_from_event_id. We
-                # reuse the trigger's observation_id if present;
-                # otherwise emit a lightweight state_change now.
-                born_event = trigger.observation_id
-                if born_event is None:
-                    from services.domain.observations.state_change import (
-                        emit_state_change,
-                    )
-                    born_event = await emit_state_change(
-                        conn,
-                        kind="pattern_review_triggered",
-                        entity_id=candidate_id,
-                        entity_kind="pattern_candidate",
-                        tenant_id=trigger.tenant_id,
-                    )
-                # ModelsRepo without a pool — every path it takes
-                # uses the caller-supplied conn.
-                repo = ModelsRepo(pool=None)
-                try:
-                    async with conn.transaction():
-                        await promote_pattern_candidate(
-                            conn,
-                            candidate_id,
-                            models_repo=repo,
-                            born_from_event_id=born_event,
-                        )
-                except Exception as e:
-                    # If promotion fails (e.g., constituent Models
-                    # vanished between enqueue and promote), mark the
-                    # candidate rejected so Think doesn't retry
-                    # forever.
-                    try:
-                        async with conn.transaction():
-                            await reject_pattern_candidate(
-                                conn,
-                                candidate_id,
-                                reason=(
-                                    "promotion failed: "
-                                    f"{type(e).__name__}: {e}"
-                                ),
-                            )
-                    except Exception:
-                        pass
+        candidate_id = _safe_uuid(candidate_id_raw)
+        pattern_review_trace = await _pattern_review_requires_semantic_review(
+            conn,
+            candidate_id=candidate_id,
+        )
 
     return RawDiff(
         trigger_ref=_trigger_ref(trigger),
@@ -558,7 +509,52 @@ async def _handle_t4_background(
         claim_ops=claim_ops,
         act_ops=[],
         resource_ops=[],
-        reasoning_trace=f"T4 deterministic handler; subkind={trigger.subkind}",
+        reasoning_trace=(
+            pattern_review_trace
+            or f"T4 deterministic handler; subkind={trigger.subkind}"
+        ),
+    )
+
+
+async def _pattern_review_requires_semantic_review(
+    conn: asyncpg.Connection,
+    *,
+    candidate_id: UUID | None,
+) -> str:
+    if candidate_id is None:
+        return (
+            "T4 pattern_review: missing or invalid pattern_candidate_id; "
+            "no canonical write"
+        )
+    row = await conn.fetchrow(
+        """
+        SELECT cluster_size, density, promoted_at, rejected_at
+        FROM pattern_candidates
+        WHERE id = $1
+        """,
+        candidate_id,
+    )
+    if row is None:
+        return (
+            f"T4 pattern_review: pattern_candidate {candidate_id} not found; "
+            "no canonical write"
+        )
+    if row["promoted_at"] is not None:
+        return (
+            f"T4 pattern_review: pattern_candidate {candidate_id} already promoted; "
+            "no canonical write"
+        )
+    if row["rejected_at"] is not None:
+        return (
+            f"T4 pattern_review: pattern_candidate {candidate_id} already rejected; "
+            "no canonical write"
+        )
+    return (
+        "T4 pattern_review: precipitation cluster requires semantic Think "
+        "review before Pattern Model promotion; "
+        f"candidate_id={candidate_id}; "
+        f"cluster_size={row['cluster_size']}; density={float(row['density']):.4f}; "
+        "no canonical write"
     )
 
 

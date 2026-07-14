@@ -22,11 +22,19 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from lib.shared.ids import uuid7
+from lib.shared.types import ModelCreate
+from services.domain.models.open_questions import (
+    ModelOpenQuestionCreate,
+    ModelOpenQuestionsRepo,
+)
+from services.domain.models.repo import ModelsRepo
 from services.reasoning.edge_intelligence import (
     EdgeIntelligenceRepo,
     PairEvidenceObservation,
 )
-from services.reasoning.think.diff_schema import ClaimOp, ValidatedDiff
+from services.reasoning.retrieval.primary import TriggerContext
+from services.reasoning.think.diff_schema import ClaimOp, OpenQuestionOp, ValidatedDiff
 from services.reasoning.think.post_commit import (
     BACKOFF_BASE_SECONDS,
     MAX_ATTEMPTS,
@@ -37,6 +45,7 @@ from services.reasoning.think.post_commit import (
     register_handler,
     reset_handlers,
     _compute_backoff,
+    _projection_names_for_apply_summary,
 )
 
 
@@ -132,6 +141,89 @@ def test_compute_backoff_exponential():
     assert _compute_backoff(5) == BACKOFF_BASE_SECONDS * 16
     # Cap at 300s regardless of exponent blowing up.
     assert _compute_backoff(20) == 300
+
+
+def test_projection_names_include_decision_surfaces_for_decision_pressure_summary():
+    names = _projection_names_for_apply_summary(
+        {
+            "claim_ops": [
+                {
+                    "op": "insert",
+                    "model_id": str(uuid.uuid4()),
+                    "claim_role": "recommendation",
+                    "domain_tags": ["customers", "execution"],
+                }
+            ]
+        }
+    )
+
+    assert names == ["constraints", "customers", "decision_surfaces"]
+
+
+def test_projection_names_include_decision_surfaces_for_decision_act_summary():
+    names = _projection_names_for_apply_summary(
+        {
+            "act_ops": [
+                {
+                    "op": "create_decision",
+                    "decision_id": str(uuid.uuid4()),
+                }
+            ]
+        }
+    )
+
+    assert names == ["constraints", "decision_surfaces", "decisions"]
+
+
+def test_projection_names_include_entity_first_families_for_scoped_summary():
+    commitment_id = uuid.uuid4()
+    customer_id = uuid.uuid4()
+    goal_id = uuid.uuid4()
+
+    names = _projection_names_for_apply_summary(
+        {
+            "claim_ops": [
+                {
+                    "op": "insert",
+                    "model_id": str(uuid.uuid4()),
+                    "claim_role": "situation",
+                    "domain_tags": ["commitment", "customer", "goal"],
+                    "scope_entities": [
+                        {"type": "commitment", "id": str(commitment_id)},
+                        {"type": "customer_resource", "id": str(customer_id)},
+                        {"type": "goal", "id": str(goal_id)},
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert names == [
+        "commitments",
+        "constraints",
+        "customers",
+        "goals",
+    ]
+
+
+def test_projection_names_include_employee_profiles_only_for_people_signal():
+    actor_id = uuid.uuid4()
+
+    names = _projection_names_for_apply_summary(
+        {
+            "claim_ops": [
+                {
+                    "op": "insert",
+                    "model_id": str(uuid.uuid4()),
+                    "claim_role": "recommendation",
+                    "domain_tags": ["workload"],
+                    "scope_actors": [str(actor_id)],
+                }
+            ]
+        }
+    )
+
+    assert names == ["constraints", "employee_profiles"]
 
 
 # ---------------------------------------------------------------------
@@ -248,7 +340,7 @@ async def test_enqueue_discovers_edges_for_applied_models(
                 applied_model_ids=[model_a, model_b, model_a],
             )
 
-    assert len(inserted) == 2
+    assert len(inserted) == 3
     async with db_pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -263,6 +355,7 @@ async def test_enqueue_discovers_edges_for_applied_models(
     assert [r["action_kind"] for r in rows] == [
         "broadcast_realtime",
         "discover_model_edges",
+        "materialize_projections",
     ]
     payload_text = await db_pool.fetchval(
         """
@@ -273,6 +366,308 @@ async def test_enqueue_discovers_edges_for_applied_models(
         trigger_ref,
     )
     assert json.loads(payload_text) == [str(model_a), str(model_b)]
+    projection_payload = await db_pool.fetchval(
+        """
+        SELECT action_payload
+        FROM pending_post_commit_actions
+        WHERE trigger_id = $1 AND action_kind = 'materialize_projections'
+        """,
+        trigger_ref,
+    )
+    projection_payload = json.loads(projection_payload)
+    assert projection_payload["model_ids"] == [str(model_a), str(model_b)]
+    assert projection_payload["projection_names"] == ["all"]
+    assert projection_payload["limit"] == 24
+
+
+async def test_enqueue_edge_discovery_uses_insert_summary_and_suppresses_downstream_think(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    trigger_ref = uuid.uuid4()
+    inserted_model = uuid.uuid4()
+    updated_model = uuid.uuid4()
+    diff = ValidatedDiff(
+        trigger_ref=trigger_ref,
+        tenant_id=tenant,
+        claim_ops=[],
+        act_ops=[],
+        resource_ops=[],
+        new_predictions=[],
+    )
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await enqueue_post_commit_actions(
+                trigger=TriggerContext(
+                    kind="T4",
+                    tenant_id=tenant,
+                    subkind="latent_relationship_candidate",
+                ),
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[],
+                applied_model_ids=[inserted_model, updated_model],
+                applied_ops_summary={
+                    "claim_ops": [
+                        {"op": "insert", "model_id": str(inserted_model)},
+                        {"op": "update", "model_id": str(updated_model)},
+                    ]
+                },
+            )
+
+    payload = await db_pool.fetchval(
+        """
+        SELECT action_payload
+        FROM pending_post_commit_actions
+        WHERE trigger_id = $1 AND action_kind = 'discover_model_edges'
+        """,
+        trigger_ref,
+    )
+    payload = json.loads(payload)
+    assert payload["model_ids"] == [str(inserted_model)]
+    assert payload["selector"] == "claim_insert_models"
+    assert payload["source_trigger_kind"] == "T4"
+    assert payload["source_trigger_subkind"] == "latent_relationship_candidate"
+    assert payload["enqueue_think"] is False
+    assert payload["think_enqueue_budget"] == 0
+
+    projection_payload = await db_pool.fetchval(
+        """
+        SELECT action_payload
+        FROM pending_post_commit_actions
+        WHERE trigger_id = $1 AND action_kind = 'materialize_projections'
+        """,
+        trigger_ref,
+    )
+    projection_payload = json.loads(projection_payload)
+    assert projection_payload["model_ids"] == [
+        str(inserted_model),
+        str(updated_model),
+    ]
+    assert projection_payload["selector"] == "all_applied_models"
+    assert projection_payload["projection_names"] == ["constraints"]
+
+
+async def test_enqueue_t1_edge_discovery_caps_immediate_topology_think_budget(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    trigger_ref = uuid.uuid4()
+    models = [uuid.uuid4() for _ in range(4)]
+    diff = ValidatedDiff(
+        trigger_ref=trigger_ref,
+        tenant_id=tenant,
+        claim_ops=[],
+        act_ops=[],
+        resource_ops=[],
+        new_predictions=[],
+    )
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await enqueue_post_commit_actions(
+                trigger=TriggerContext(kind="T1", tenant_id=tenant),
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[],
+                applied_model_ids=models,
+                applied_ops_summary={
+                    "claim_ops": [
+                        {"op": "insert", "model_id": str(model_id)}
+                        for model_id in models
+                    ]
+                },
+            )
+
+    payload = await db_pool.fetchval(
+        """
+        SELECT action_payload
+        FROM pending_post_commit_actions
+        WHERE trigger_id = $1 AND action_kind = 'discover_model_edges'
+        """,
+        trigger_ref,
+    )
+    payload = json.loads(payload)
+    assert payload["model_ids"] == [str(model_id) for model_id in models]
+    assert payload["enqueue_think"] is True
+    assert payload["think_enqueue_budget"] == 2
+
+
+async def test_enqueue_searches_applied_open_questions(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    trigger_ref = uuid.uuid4()
+    model_id = uuid.uuid4()
+    question_id = uuid.uuid4()
+    diff = ValidatedDiff(
+        trigger_ref=trigger_ref,
+        tenant_id=tenant,
+        open_question_ops=[
+            OpenQuestionOp(
+                op="insert",
+                model_id=model_id,
+                question="Which signal resolves the cash runway boundary?",
+                question_type="constraint_boundary",
+            ),
+        ],
+    )
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            await enqueue_post_commit_actions(
+                trigger=None,
+                validated_diff=diff,
+                conn=conn,
+                anomalies=[],
+                applied_model_ids=[model_id],
+                applied_open_question_ids=[question_id],
+            )
+
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT action_payload
+            FROM pending_post_commit_actions
+            WHERE tenant_id = $1
+              AND trigger_id = $2
+              AND action_kind = 'search_open_questions'
+            """,
+            tenant,
+            trigger_ref,
+        )
+
+    assert row is not None
+    payload = row["action_payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    assert payload["model_ids"] == [str(model_id)]
+    assert payload["open_question_ids"] == [str(question_id)]
+    assert payload["limit"] >= 20
+
+
+async def test_materialize_projections_handler_consumes_model_events(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    trigger_ref = uuid.uuid4()
+    born_from_event = uuid7()
+    repo = ModelsRepo(db_pool, embedder=None, run_topology_on_insert=False)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO observations (
+              id, tenant_id, occurred_at, kind, source_channel,
+              source_actor_ref, content, content_text, embedding_pending,
+              trust_tier, external_id, entities_mentioned
+            ) VALUES (
+              $1, $2, now(), 'signal', 'test', 'test:actor',
+              '{}'::jsonb, 'cash runway pressure', TRUE,
+              'authoritative', $3, '[]'::jsonb
+            )
+            """,
+            born_from_event,
+            tenant,
+            f"post-commit-projection-{born_from_event}",
+        )
+        model = await repo.insert(
+            ModelCreate(
+                tenant_id=tenant,
+                born_from_event_id=born_from_event,
+                proposition={
+                    "kind": "belief",
+                    "claim_role": "concern",
+                    "assertion": "Cash runway is the active planning constraint.",
+                    "domain_tags": ["runway", "financial_capacity", "constraint"],
+                },
+                natural="Cash runway is the active planning constraint.",
+                embedding=[0.0] * 768,
+                scope_actors=[],
+                scope_entities=[{"type": "company", "id": str(tenant)}],
+                scope_temporal={"type": "current"},
+                confidence=0.68,
+                confidence_at_assertion=0.68,
+                domain_tags=["runway", "financial_capacity", "constraint"],
+            ),
+            conn=conn,
+        )
+        await conn.execute(
+            """
+            INSERT INTO pending_post_commit_actions (
+              tenant_id, trigger_id, action_kind, action_payload
+            ) VALUES ($1, $2, 'materialize_projections', $3::jsonb)
+            """,
+            tenant,
+            trigger_ref,
+            json.dumps({"model_ids": [str(model.id)], "limit": 100}),
+        )
+
+    stats = await process_batch(db_pool, limit=5, tenant_id=tenant)
+
+    async with db_pool.acquire() as conn:
+        processed = await conn.fetchval(
+            """
+            SELECT processed_at
+            FROM pending_post_commit_actions
+            WHERE tenant_id = $1
+              AND trigger_id = $2
+              AND action_kind = 'materialize_projections'
+            """,
+            tenant,
+            trigger_ref,
+        )
+        constraint_snapshot = await conn.fetchrow(
+            """
+            SELECT payload, source_model_ids
+            FROM projection_snapshots
+            WHERE tenant_id = $1
+              AND projection_name = 'constraints'
+              AND projection_version = 'v1'
+              AND subject_key = 'company:runway'
+            """,
+            tenant,
+        )
+        resource_snapshot = await conn.fetchrow(
+            """
+            SELECT payload, source_model_ids
+            FROM projection_snapshots
+            WHERE tenant_id = $1
+              AND projection_name = 'resources'
+              AND projection_version = 'v1'
+              AND subject_key = 'company:financial'
+            """,
+            tenant,
+        )
+        decision_surface_snapshot = await conn.fetchrow(
+            """
+            SELECT payload, source_model_ids
+            FROM projection_snapshots
+            WHERE tenant_id = $1
+              AND projection_name = 'decision_surfaces'
+              AND projection_version = 'v1'
+              AND subject_key = $2
+            """,
+            tenant,
+            f"company:{tenant}:decision_surface",
+        )
+
+    assert stats.processed == 1
+    assert stats.failed == 0
+    assert processed is not None
+    assert constraint_snapshot is not None
+    assert resource_snapshot is not None
+    assert decision_surface_snapshot is not None
+    assert str(model.id) in {str(mid) for mid in constraint_snapshot["source_model_ids"]}
+    assert str(model.id) in {str(mid) for mid in resource_snapshot["source_model_ids"]}
+    assert str(model.id) in {
+        str(mid) for mid in decision_surface_snapshot["source_model_ids"]
+    }
 
 
 async def test_discover_model_edges_promotes_scoped_pair_evidence(
@@ -791,6 +1186,69 @@ async def test_worker_retries_on_handler_failure(
     # scheduled_at should be in the future using the shared queue backoff.
     now = await _db_now(db_pool)
     assert row["scheduled_at"] > now
+
+
+async def test_process_batch_commits_fast_action_when_later_action_times_out(
+    db_pool: asyncpg.Pool,
+    tenant,
+    clean_queue,
+):
+    fast_trigger_ref = uuid.uuid4()
+    slow_trigger_ref = uuid.uuid4()
+    calls: list[str] = []
+
+    async def _fast(payload, tid, trid):
+        calls.append("fast")
+
+    async def _slow(payload, tid, trid):
+        calls.append("slow")
+        await asyncio.sleep(0.2)
+
+    register_handler("broadcast_realtime", _fast)
+    register_handler("publish_anomalies", _slow)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO pending_post_commit_actions (
+              tenant_id, trigger_id, action_kind, action_payload, scheduled_at
+            ) VALUES
+              ($1, $2, 'broadcast_realtime', '{}'::jsonb, now() - interval '2 seconds'),
+              ($1, $3, 'publish_anomalies', '{}'::jsonb, now() - interval '1 second')
+            """,
+            tenant,
+            fast_trigger_ref,
+            slow_trigger_ref,
+        )
+
+    stats = await process_batch(
+        db_pool,
+        limit=2,
+        tenant_id=tenant,
+        action_timeout_seconds=0.01,
+    )
+
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT trigger_id, action_kind, attempts, processed_at, last_error
+            FROM pending_post_commit_actions
+            WHERE tenant_id = $1
+              AND trigger_id = ANY($2::uuid[])
+            ORDER BY action_kind
+            """,
+            tenant,
+            [fast_trigger_ref, slow_trigger_ref],
+        )
+
+    by_kind = {row["action_kind"]: row for row in rows}
+    assert calls == ["fast", "slow"]
+    assert stats.processed == 1
+    assert stats.failed == 1
+    assert by_kind["broadcast_realtime"]["processed_at"] is not None
+    assert by_kind["publish_anomalies"]["processed_at"] is None
+    assert by_kind["publish_anomalies"]["attempts"] == 1
+    assert "TimeoutError" in (by_kind["publish_anomalies"]["last_error"] or "")
 
 
 async def test_worker_dead_letters_after_max_attempts(

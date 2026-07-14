@@ -429,6 +429,7 @@ class ThinkRunRecord:
     tenant_id: UUID
     trigger_id: UUID
     trigger_kind: str
+    lane: str | None = None
     started_at: float = field(default_factory=time.monotonic)
 
     def elapsed_ms(self) -> float:
@@ -450,15 +451,16 @@ async def insert_think_run(
     await conn.execute(
         """
         INSERT INTO think_runs
-          (id, tenant_id, trigger_id, trigger_kind,
+          (id, tenant_id, trigger_id, trigger_kind, lane,
            started_at, status,
            region_tenant_hash, region_entity_hash)
-        VALUES ($1, $2, $3, $4, now(), 'running', $5, $6)
+        VALUES ($1, $2, $3, $4, $5, now(), 'running', $6, $7)
         """,
         record.id,
         record.tenant_id,
         record.trigger_id,
         record.trigger_kind,
+        record.lane,
         region_tenant_hash,
         region_entity_hash,
     )

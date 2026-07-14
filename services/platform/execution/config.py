@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
@@ -43,6 +43,14 @@ def _env_literal(name: str, default: str, allowed: set[str]) -> str:
     return default
 
 
+def _env_csv_tuple(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    values = tuple(part.strip() for part in raw.split(",") if part.strip())
+    return values or default
+
+
 @dataclass(frozen=True, slots=True)
 class InquiryConfig:
     max_rounds: int = 2
@@ -61,7 +69,11 @@ class InquiryConfig:
     reasoning_packet_token_budget: int = 24000
     context_packet_evidence_mode: str = "model_first"
     temporal_window_days: int = 30
+    temporal_nearby_window_days: int = 3
+    temporal_broad_window_days: int = 30
+    temporal_broad_fallback_min_records: int = 2
     semantic_budget: int = 30
+    semantic_terms_fallback_min_models: int = 3
     semantic_hybrid_lexical_enabled: bool = True
     semantic_hybrid_lexical_max_candidates: int = 24
     semantic_hybrid_lexical_terms: int = 8
@@ -79,6 +91,8 @@ class InquiryConfig:
     reflective_rule_limit: int = 5
     reflective_rule_match_threshold: float = 0.42
     reflective_rule_score_boost: float = 0.12
+    read_prep_parallel_enabled: bool = True
+    round_action_pipeline_enabled: bool = True
     question_action_parallel_enabled: bool = True
     question_action_parallelism: int = 6
     structural_max_hops: int = 2
@@ -87,6 +101,12 @@ class InquiryConfig:
     structural_read_fanout_chunk_size: int = 8
     model_edge_max_hops: int = 2
     llm_question_planning_enabled: bool = True
+    utility_governor_enabled: bool = True
+    utility_governor_planner_skip_threshold: float = 0.68
+    adaptive_question_budget_enabled: bool = True
+    adaptive_strong_context_question_limit: int = 2
+    adaptive_strong_context_min_evidence: int = 18
+    adaptive_strong_context_min_models: int = 8
     llm_question_temperature: float = 0.0
     llm_question_max_tokens: int = 900
     sage_reader_enabled: bool = True
@@ -95,12 +115,27 @@ class InquiryConfig:
     sage_reader_parallel_enabled: bool = True
     sage_reader_parallelism: int = 2
     sage_reader_gate_broad_actions: bool = True
+    sage_retrieval_policy_enabled: bool = True
+    sage_retrieval_policy_shadow_mode: bool = False
+    sage_retrieval_policy_semantic_budget_floor: int = 8
     persist_full_sage_reader_notes: bool = False
     persist: bool = True
+    planner_profile: str = "default"
+    llm_question_planning_trigger_kinds: tuple[str, ...] = ("T1",)
+    question_primitive_weights: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls) -> "InquiryConfig":
         return cls(
+            planner_profile=os.environ.get(
+                "INQUIRY_PLANNER_PROFILE",
+                "default",
+            ).strip()
+            or "default",
+            llm_question_planning_trigger_kinds=_env_csv_tuple(
+                "INQUIRY_LLM_QUESTION_PLANNING_TRIGGER_KINDS",
+                ("T1",),
+            ),
             max_rounds=int(os.environ.get("INQUIRY_MAX_ROUNDS", "2")),
             questions_per_round=int(os.environ.get("INQUIRY_QUESTIONS_PER_ROUND", "3")),
             evidence_reservoir_limit=int(
@@ -145,7 +180,27 @@ class InquiryConfig:
             temporal_window_days=int(
                 os.environ.get("INQUIRY_TEMPORAL_WINDOW_DAYS", "30")
             ),
+            temporal_nearby_window_days=_env_int(
+                "INQUIRY_TEMPORAL_NEARBY_WINDOW_DAYS",
+                3,
+                minimum=1,
+            ),
+            temporal_broad_window_days=_env_int(
+                "INQUIRY_TEMPORAL_BROAD_WINDOW_DAYS",
+                int(os.environ.get("INQUIRY_TEMPORAL_WINDOW_DAYS", "30")),
+                minimum=1,
+            ),
+            temporal_broad_fallback_min_records=_env_int(
+                "INQUIRY_TEMPORAL_BROAD_FALLBACK_MIN_RECORDS",
+                2,
+                minimum=1,
+            ),
             semantic_budget=int(os.environ.get("INQUIRY_SEMANTIC_BUDGET", "30")),
+            semantic_terms_fallback_min_models=_env_int(
+                "INQUIRY_SEMANTIC_TERMS_FALLBACK_MIN_MODELS",
+                3,
+                minimum=1,
+            ),
             semantic_hybrid_lexical_enabled=_env_bool(
                 "INQUIRY_SEMANTIC_HYBRID_LEXICAL_ENABLED", True
             ),
@@ -213,6 +268,12 @@ class InquiryConfig:
             reflective_rule_score_boost=float(
                 os.environ.get("INQUIRY_REFLECTIVE_RULE_SCORE_BOOST", "0.12")
             ),
+            read_prep_parallel_enabled=_env_bool(
+                "INQUIRY_READ_PREP_PARALLEL_ENABLED", True
+            ),
+            round_action_pipeline_enabled=_env_bool(
+                "INQUIRY_ROUND_ACTION_PIPELINE_ENABLED", True
+            ),
             question_action_parallel_enabled=_env_bool(
                 "INQUIRY_QUESTION_ACTION_PARALLEL_ENABLED", True
             ),
@@ -243,6 +304,34 @@ class InquiryConfig:
             .strip()
             .lower()
             not in {"0", "false", "no", "off"},
+            utility_governor_enabled=_env_bool(
+                "INQUIRY_UTILITY_GOVERNOR_ENABLED",
+                True,
+            ),
+            utility_governor_planner_skip_threshold=_env_float(
+                "INQUIRY_UTILITY_GOVERNOR_PLANNER_SKIP_THRESHOLD",
+                0.68,
+                minimum=0.0,
+            ),
+            adaptive_question_budget_enabled=_env_bool(
+                "INQUIRY_ADAPTIVE_QUESTION_BUDGET_ENABLED",
+                True,
+            ),
+            adaptive_strong_context_question_limit=_env_int(
+                "INQUIRY_ADAPTIVE_STRONG_CONTEXT_QUESTION_LIMIT",
+                2,
+                minimum=1,
+            ),
+            adaptive_strong_context_min_evidence=_env_int(
+                "INQUIRY_ADAPTIVE_STRONG_CONTEXT_MIN_EVIDENCE",
+                18,
+                minimum=1,
+            ),
+            adaptive_strong_context_min_models=_env_int(
+                "INQUIRY_ADAPTIVE_STRONG_CONTEXT_MIN_MODELS",
+                8,
+                minimum=1,
+            ),
             llm_question_temperature=float(
                 os.environ.get("INQUIRY_LLM_QUESTION_TEMPERATURE", "0.0")
             ),
@@ -281,6 +370,23 @@ class InquiryConfig:
             .strip()
             .lower()
             not in {"0", "false", "no", "off", ""},
+            sage_retrieval_policy_enabled=os.environ.get(
+                "SAGE_RETRIEVAL_POLICY_ENABLED", "1"
+            )
+            .strip()
+            .lower()
+            not in {"0", "false", "no", "off", ""},
+            sage_retrieval_policy_shadow_mode=os.environ.get(
+                "SAGE_RETRIEVAL_POLICY_SHADOW_MODE", "0"
+            )
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"},
+            sage_retrieval_policy_semantic_budget_floor=_env_int(
+                "SAGE_RETRIEVAL_POLICY_SEMANTIC_BUDGET_FLOOR",
+                8,
+                minimum=1,
+            ),
             persist_full_sage_reader_notes=os.environ.get(
                 "SAGE_READER_PERSIST_FULL_NOTES", "0"
             )

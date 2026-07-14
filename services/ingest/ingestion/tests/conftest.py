@@ -93,7 +93,11 @@ class _DeterministicEmbedder:
 
 async def _run_migrations(conn: asyncpg.Connection) -> None:
     from lib.shared.migrations import apply_migrations_dir
-    await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+    await apply_migrations_dir(
+        conn,
+        REPO_ROOT / "db" / "migrations",
+        on_error="warn",
+    )
 
 
 async def _truncate_all(conn: asyncpg.Connection) -> None:
@@ -104,6 +108,8 @@ async def _truncate_all(conn: asyncpg.Connection) -> None:
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p')
           AND c.relispartition = FALSE
+          AND c.relname <> 'schema_migrations'
+          AND c.relname NOT LIKE 'schema_migrations_ext_%'
         """
     )
     tables = [r["relname"] for r in rows]

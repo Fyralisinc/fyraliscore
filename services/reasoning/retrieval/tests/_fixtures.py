@@ -35,6 +35,19 @@ from lib.shared.types import ModelCreate, ObservationCreate
 
 from services.domain.models.repo import ModelsRepo
 
+
+async def _ensure_tenant(conn: asyncpg.Connection, tenant_id: uuid.UUID) -> None:
+    await conn.execute(
+        """
+        INSERT INTO tenants (id, name, is_demo)
+        VALUES ($1, $2, TRUE)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        tenant_id,
+        f"retrieval-fixture-{tenant_id}",
+    )
+
+
 # ---------------------------------------------------------------------
 # Deterministic embedding helper — copied from Models conftest so the
 # retrieval fixture is self-contained.
@@ -295,6 +308,7 @@ async def build_fixture(
     a pool constructor arg — we still pass `conn=conn` per call so the
     work happens on the test's connection.
     """
+    await _ensure_tenant(conn, tenant_id)
     fs = FixtureSet(tenant_id=tenant_id)
     mod_repo = ModelsRepo(
         pool=pool,

@@ -339,7 +339,18 @@ async def _bootstrap_schema(pool: asyncpg.Pool) -> None:
     from lib.shared.migrations import apply_migrations_dir
     from services.domain.observations.partitions import ensure_partitions
     async with pool.acquire() as conn:
-        await apply_migrations_dir(conn, _REPO_ROOT / "db" / "migrations")
+        try:
+            await apply_migrations_dir(conn, _REPO_ROOT / "db" / "migrations")
+        except Exception as exc:  # noqa: BLE001
+            if (
+                'permission denied to create extension "vector"' in str(exc)
+                or "Must be superuser to create this extension" in str(exc)
+            ):
+                pytest.skip(
+                    "Google Workspace e2e needs a DB user that can create "
+                    "the pgvector extension in the throwaway database"
+                )
+            raise
     await ensure_partitions(pool, months_ahead=3)
     await pool.execute(
         "INSERT INTO tenants (id, name) VALUES ($1, 'workspace-e2e') "
@@ -403,6 +414,14 @@ async def _drain(pool, fetch_fn, channel, install_row, shard_identifier) -> list
 async def test_google_workspace_org_ingestion_e2e():
     if not os.environ.get("DATABASE_URL"):
         pytest.skip("DATABASE_URL not set")
+    from services.platform.extensions.tests._migration_test_helpers import (
+        require_pgvector_server_privilege_or_skip,
+    )
+
+    await require_pgvector_server_privilege_or_skip(
+        _admin_url(),
+        feature="Google Workspace e2e",
+    )
     await _run_e2e(verbose=False)
 
 

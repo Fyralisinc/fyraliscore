@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import os
 from functools import wraps
 from typing import Callable
 
@@ -20,28 +21,70 @@ def real_llm_test(
     """Mark a test as real-LLM with retry semantics and flake tracking."""
 
     def decorator(test_func: Callable):
-        clamped_threshold = min(pass_threshold, attempts)
+        effective_attempts, clamped_threshold = _effective_retry_policy(
+            attempts,
+            pass_threshold,
+        )
         is_async = inspect.iscoroutinefunction(test_func)
 
         if is_async:
             @wraps(test_func)
             async def wrapper(*args, **kwargs):
-                await _run_with_retries(test_func, args, kwargs, attempts, clamped_threshold, is_async=True)
+                await _run_with_retries(
+                    test_func,
+                    args,
+                    kwargs,
+                    effective_attempts,
+                    clamped_threshold,
+                    is_async=True,
+                )
         else:
             @wraps(test_func)
             def wrapper(*args, **kwargs):
-                _run_with_retries_sync(test_func, args, kwargs, attempts, clamped_threshold)
+                _run_with_retries_sync(
+                    test_func,
+                    args,
+                    kwargs,
+                    effective_attempts,
+                    clamped_threshold,
+                )
 
         wrapped = wrapper
-        wrapped = pytest.mark.timeout(timeout_seconds * attempts)(wrapped)
+        wrapped = pytest.mark.timeout(timeout_seconds * effective_attempts)(wrapped)
         wrapped = pytest.mark.real_llm(wrapped)
         wrapped._real_llm_tags = list(tags) if tags else []
-        wrapped._real_llm_attempts = attempts
+        wrapped._real_llm_attempts = effective_attempts
         wrapped._real_llm_pass_threshold = clamped_threshold
         wrapped._real_llm_timeout_seconds = timeout_seconds
         return wrapped
 
     return decorator
+
+
+def _effective_retry_policy(attempts: int, pass_threshold: int) -> tuple[int, int]:
+    """Return the retry policy after env overrides used by live eval runs.
+
+    The decorator retries inside one pytest fixture instance, so DB-backed
+    tests are not attempt-isolated. Keep source defaults intact, but allow
+    focused validation runs to clamp to one clean attempt.
+    """
+    effective_attempts = attempts
+    override = os.environ.get("REAL_LLM_ATTEMPTS")
+    if override:
+        try:
+            effective_attempts = max(1, int(override))
+        except ValueError:
+            effective_attempts = attempts
+    effective_attempts = min(effective_attempts, attempts)
+
+    effective_threshold = pass_threshold
+    threshold_override = os.environ.get("REAL_LLM_PASS_THRESHOLD")
+    if threshold_override:
+        try:
+            effective_threshold = max(1, int(threshold_override))
+        except ValueError:
+            effective_threshold = pass_threshold
+    return effective_attempts, min(effective_threshold, effective_attempts)
 
 
 async def _run_with_retries(test_func, args, kwargs, attempts, pass_threshold, *, is_async):
@@ -52,7 +95,7 @@ async def _run_with_retries(test_func, args, kwargs, attempts, pass_threshold, *
     for attempt in range(1, attempts + 1):
         try:
             await test_func(*args, **kwargs)
-        except (AssertionError, pytest.fail.Exception) as e:
+        except (AssertionError, pytest.fail.Exception, TimeoutError) as e:
             failures.append((attempt, str(e)))
             flake_tracker.record_attempt(name, attempt, "fail", str(e))
         except BaseException:
@@ -77,7 +120,7 @@ def _run_with_retries_sync(test_func, args, kwargs, attempts, pass_threshold):
     for attempt in range(1, attempts + 1):
         try:
             test_func(*args, **kwargs)
-        except (AssertionError, pytest.fail.Exception) as e:
+        except (AssertionError, pytest.fail.Exception, TimeoutError) as e:
             failures.append((attempt, str(e)))
             flake_tracker.record_attempt(name, attempt, "fail", str(e))
         except BaseException:

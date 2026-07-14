@@ -31,7 +31,7 @@ expensive or non-selected jobs still need deliberate deployment decisions. See
 | Deadline → `T2` generation | `deadline_resolver` polls overdue predictions → `T2` | ✅ **Resolved (2026-06-12).** Housekeeper runs `DeadlineResolver.run_once()` on `HOUSEKEEPER_DEADLINE_RESOLVER_INTERVAL_S`. | ✅ resolved |
 | Deferred entity resolution | `entity_resolver` resolves `_unresolved_phrases` → aliases + `T1` re-enqueue | ✅ **Resolved (2026-06-24).** `entity_resolver_worker` is now production-wired with bounded polling, LLM budget controls, health/metrics, and terminal phrase cleanup so completed aliases do not burn repeated LLM calls. | ✅ resolved |
 | Calibration pipeline | `calibration_updater` refreshes `calibration_offsets` weekly | ✅ **Resolved (2026-06-12).** Housekeeper runs `calibration_updater.run_once()` weekly by default, so offsets are no longer test/manual-only. | ✅ resolved |
-| Precipitation pattern formation | Nightly clustering writes `pattern_candidates` + `T4` | Partially wired: housekeeper can run precipitation, but it is disabled by default behind `HOUSEKEEPER_ENABLE_PRECIPITATION` / `HOUSEKEEPER_ENABLE_EXPENSIVE_JOBS` until runtime cost is characterized. | medium |
+| Precipitation pattern formation | Nightly clustering writes weak `pattern_candidates` + `T4` review triggers | Partially wired: housekeeper can run precipitation, but it is disabled by default behind `HOUSEKEEPER_ENABLE_PRECIPITATION` / `HOUSEKEEPER_ENABLE_EXPENSIVE_JOBS`. `pattern_review` is no longer deterministic promotion; semantic Think review must justify any Pattern Model. Broad enablement now has an explicit quality gate and remains blocked until representative shadow evidence reaches `enablement_candidate`. | medium |
 | `edge_drift` parity check | Worker samples `model_edges` vs. legacy arrays to catch divergence | ✅ **Resolved (2026-06-12).** Housekeeper runs `edge_drift.run_once()` on `HOUSEKEEPER_EDGE_DRIFT_INTERVAL_S`. | ✅ resolved |
 | `entity_aliases` slow path | `insert_alias`/`record_usage`/`list_ambiguous` driven by `entity_resolver` | ✅ **Resolved (2026-06-24).** The production `entity_resolver_worker` drives alias insert/usage, `entity_review_queue`, clarification creation, and material `T1` re-enqueue. | ✅ resolved |
 | `actor_visible_*` matview refresh | Daily `refresh_all` keeps scope views current; `checks.py` reads them | ✅ **Resolved (2026-06-24).** Housekeeper now schedules `access_matview_refresh` daily through the production housekeeper process, reusing the existing `maintenance.daily.access_matview_refresh` implementation. | ✅ resolved |
@@ -112,9 +112,10 @@ Mostly polish, cosmetics, and small inconsistencies. Notable clusters:
 - **Dead/duplicate code:** a duplicate `@app.get('/v1/history')` handler (the second
   is shadowed/unreachable).
 - **Orphaned helpers:** `query/prefetch.py` (named caller "Agent-GRT" doesn't exist).
-- **Schema/migration tidy-ups:** orphan tables from `0021` (`anomaly_thresholds`,
-  `dedup_keys_seen`); tables for undeployed workers
-  (`entity_review_queue`, `signal_memory_fabric`, `orphan_log`).
+- **Schema/migration tidy-ups:** remaining staged maintenance table
+  (`orphan_log`). `entity_review_queue` and `signal_memory_fabric` are now owned
+  by deployed workers. Orphan `0021` tables were dropped by `0155`; host-owned
+  GitHub/code-intel residue was dropped by `0156`.
 
 These are itemized in [Wiring gaps](wiring-gaps.md) and
 [Legacy & test-only](dead-legacy.md).

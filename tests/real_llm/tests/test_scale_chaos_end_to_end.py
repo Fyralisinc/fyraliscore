@@ -183,13 +183,40 @@ async def _run_think_until_drain(
             cfg.trigger_max_attempts,
         )
     )
+    cfg.tenant_filter = tenant_id
+    cfg.t1_batch_window_s = float(
+        os.environ.get("REAL_LLM_T1_BATCH_WINDOW_S", 0.0)
+    )
+    cfg.downstream_batch_window_s = float(
+        os.environ.get("REAL_LLM_DOWNSTREAM_BATCH_WINDOW_S", 0.0)
+    )
+    cfg.process_background_triggers = (
+        os.environ.get("REAL_LLM_PROCESS_BACKGROUND_TRIGGERS", "0")
+        .strip()
+        .lower()
+        not in {"0", "false", "no", "off"}
+    )
     worker = ThinkWorker(pool=pool, config=cfg, llm_provider=provider)
 
     async def _noop_promote() -> None:
         return None
 
-    worker._promote_reeval_rows = _noop_promote  # type: ignore[assignment]
+    if not cfg.process_background_triggers:
+        worker._promote_reeval_rows = _noop_promote  # type: ignore[assignment]
     task = asyncio.create_task(worker.run())
+    from services.reasoning.think.post_commit import post_commit_worker
+
+    post_commit_stop = asyncio.Event()
+    post_commit_task = asyncio.create_task(
+        post_commit_worker(
+            pool,
+            poll_interval=float(
+                os.environ.get("REAL_LLM_POST_COMMIT_POLL_INTERVAL_S", 0.05)
+            ),
+            stop_event=post_commit_stop,
+            tenant_id=tenant_id,
+        )
+    )
     try:
         await wait_for_think_to_drain(
             tenant_id,
@@ -198,6 +225,15 @@ async def _run_think_until_drain(
             poll_interval_s=0.5,
         )
     finally:
+        post_commit_stop.set()
+        try:
+            await asyncio.wait_for(post_commit_task, timeout=10)
+        except asyncio.TimeoutError:
+            post_commit_task.cancel()
+            try:
+                await post_commit_task
+            except (asyncio.CancelledError, Exception):
+                pass
         await worker.stop()
         try:
             await asyncio.wait_for(task, timeout=10)

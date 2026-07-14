@@ -1026,6 +1026,7 @@ async def _summary_counts(
     auth: AuthContext,
     since: datetime,
     now: datetime,
+    principal: Principal,
 ) -> dict[str, Any]:
     """Compute the summary strip from actor-visible deltas only."""
     async with pool.acquire() as conn:
@@ -1135,6 +1136,214 @@ def _maybe_json(raw: Any) -> dict[str, Any] | None:
         if isinstance(v, dict):
             return v
     return None
+
+
+# =====================================================================
+# Authority filtering
+# =====================================================================
+
+
+def _delta_source_refs(
+    *,
+    tenant_id: UUID,
+    source_recommendation_id: UUID | None,
+    target_node_kind: str | None,
+    target_node_id: UUID | None,
+) -> tuple[ObjectRef, ...]:
+    refs: list[ObjectRef] = []
+    if source_recommendation_id is not None:
+        refs.append(ObjectRef(
+            tenant_id=tenant_id,
+            object_kind="model",
+            object_id=source_recommendation_id,
+        ))
+    target_kind = _authority_kind_for_target(target_node_kind)
+    if target_kind is not None and target_node_id is not None:
+        refs.append(ObjectRef(
+            tenant_id=tenant_id,
+            object_kind=target_kind,
+            object_id=target_node_id,
+        ))
+    return _dedupe_refs(refs)
+
+
+def _authority_kind_for_target(target_node_kind: str | None) -> str | None:
+    if not target_node_kind:
+        return None
+    return _TARGET_KIND_TO_AUTHORITY_KIND.get(target_node_kind.strip().lower())
+
+
+def _dedupe_refs(refs: list[ObjectRef]) -> tuple[ObjectRef, ...]:
+    out: list[ObjectRef] = []
+    seen: set[tuple[UUID, str, UUID]] = set()
+    for ref in refs:
+        marker = (ref.tenant_id, ref.object_kind, ref.object_id)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        out.append(ref)
+    return tuple(out)
+
+
+async def _authorized_ref(
+    ref: ObjectRef,
+    *,
+    principal: Principal,
+    conn: asyncpg.Connection,
+) -> bool:
+    decision = await authorize_read(
+        principal,
+        "today",
+        ref,
+        conn=conn,
+    )
+    return decision.allowed
+
+
+async def _authorized_refs(
+    refs: tuple[ObjectRef, ...],
+    *,
+    principal: Principal,
+    conn: asyncpg.Connection,
+) -> bool:
+    for ref in refs:
+        if not await _authorized_ref(ref, principal=principal, conn=conn):
+            return False
+    return True
+
+
+async def _authorized_delta_view(
+    view: dd_repo.DecisionDeltaView,
+    *,
+    principal: Principal,
+    conn: asyncpg.Connection,
+) -> bool:
+    refs = _delta_source_refs(
+        tenant_id=view.tenant_id,
+        source_recommendation_id=view.source_recommendation_id,
+        target_node_kind=view.target_node_kind,
+        target_node_id=view.target_node_id,
+    )
+    if not refs:
+        return True
+    return await _authorized_refs(refs, principal=principal, conn=conn)
+
+
+async def _filter_authorized_delta_views(
+    views: list[dd_repo.DecisionDeltaView],
+    *,
+    principal: Principal,
+    conn: asyncpg.Connection,
+) -> list[dd_repo.DecisionDeltaView]:
+    out: list[dd_repo.DecisionDeltaView] = []
+    for view in views:
+        if await _authorized_delta_view(view, principal=principal, conn=conn):
+            out.append(view)
+    return out
+
+
+async def _authorized_delta_fields(
+    *,
+    tenant_id: UUID,
+    source_recommendation_id: UUID | None,
+    target_node_kind: str | None,
+    target_node_id: UUID | None,
+    principal: Principal,
+    conn: asyncpg.Connection,
+) -> bool:
+    refs = _delta_source_refs(
+        tenant_id=tenant_id,
+        source_recommendation_id=source_recommendation_id,
+        target_node_kind=target_node_kind,
+        target_node_id=target_node_id,
+    )
+    if not refs:
+        return True
+    return await _authorized_refs(refs, principal=principal, conn=conn)
+
+
+async def _count_authorized_observations(
+    *,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    since: datetime,
+    principal: Principal,
+) -> int:
+    rows = await conn.fetch(
+        """
+        SELECT id FROM observations
+        WHERE tenant_id = $1 AND ingested_at >= $2
+        """,
+        tenant_id, since,
+    )
+    count = 0
+    for row in rows:
+        if await _authorized_ref(
+            ObjectRef(
+                tenant_id=tenant_id,
+                object_kind="observation",
+                object_id=row["id"],
+            ),
+            principal=principal,
+            conn=conn,
+        ):
+            count += 1
+    return count
+
+
+async def _count_authorized_topology_events(
+    *,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
+    since: datetime,
+    principal: Principal,
+) -> int:
+    rows = await conn.fetch(
+        """
+        SELECT payload
+        FROM topology_events
+        WHERE tenant_id = $1 AND occurred_at >= $2
+        """,
+        tenant_id, since,
+    )
+    count = 0
+    for row in rows:
+        payload = _maybe_json(row["payload"]) or {}
+        refs = _topology_event_refs(tenant_id=tenant_id, payload=payload)
+        if not refs or await _authorized_refs(refs, principal=principal, conn=conn):
+            count += 1
+    return count
+
+
+def _topology_event_refs(
+    *,
+    tenant_id: UUID,
+    payload: dict[str, Any],
+) -> tuple[ObjectRef, ...]:
+    refs: list[ObjectRef] = []
+    for kind_key, id_key in (
+        ("target_kind", "target_id"),
+        ("target_node_kind", "target_node_id"),
+        ("entity_kind", "entity_id"),
+    ):
+        kind = _authority_kind_for_target(_optional_str(payload.get(kind_key)))
+        object_id = _maybe_uuid(payload.get(id_key))
+        if kind is not None and object_id is not None:
+            refs.append(ObjectRef(
+                tenant_id=tenant_id,
+                object_kind=kind,
+                object_id=object_id,
+            ))
+    return _dedupe_refs(refs)
+
+
+def _maybe_uuid(raw: Any) -> UUID | None:
+    if raw is None:
+        return None
+    try:
+        return raw if isinstance(raw, UUID) else UUID(str(raw))
+    except (ValueError, TypeError):
+        return None
 
 
 # =====================================================================
@@ -1429,6 +1638,11 @@ async def get_today(request: Request) -> JSONResponse:
 
     resolution_by_delta: dict[UUID, resolution_repo.ResolutionThread] = {}
     async with pool.acquire() as conn:
+        principal = await principal_for_actor(
+            auth.actor_id,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
         # We list ALL non-archived deltas, then rank in Python.
         views_proposed = await dd_repo.list_deltas(
             conn,
@@ -1529,6 +1743,7 @@ async def get_today(request: Request) -> JSONResponse:
         auth=auth,
         since=since,
         now=now,
+        principal=principal,
     )
 
     payload: dict[str, Any] = {
@@ -1560,6 +1775,11 @@ async def get_delta(delta_id: str, request: Request) -> JSONResponse:
         return _bad_request("invalid_delta_id")
     pool = _deps(request).pool
     async with pool.acquire() as conn:
+        principal = await principal_for_actor(
+            auth.actor_id,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
         view = await dd_repo.get_delta(
             conn, tenant_id=auth.tenant_id, delta_id=did,
         )
@@ -1597,6 +1817,11 @@ async def get_delta_evidence(
         return _bad_request("invalid_delta_id")
     pool = _deps(request).pool
     async with pool.acquire() as conn:
+        principal = await principal_for_actor(
+            auth.actor_id,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
         view = await dd_repo.get_delta(
             conn, tenant_id=auth.tenant_id, delta_id=did,
         )
@@ -1839,12 +2064,32 @@ async def correct_delta(
                         "supporting_link":    supporting,
                         "apply_to_related":   apply_related,
                         "by":                 str(auth.actor_id),
-                        "at":                 _now_iso(),
+                        "at":                 submitted_at.isoformat(),
                     },
                 )
                 view = await dd_repo.get_delta(
                     conn, tenant_id=auth.tenant_id, delta_id=did,
                 )
+                if view is not None:
+                    fact = human_correction_outcome_fact(
+                        tenant_id=auth.tenant_id,
+                        delta_id=did,
+                        actor_id=auth.actor_id,
+                        correction_type=ctype,
+                        explanation=explanation,
+                        supporting_link=supporting,
+                        apply_to_related=apply_related,
+                        occurred_at=submitted_at,
+                        main_assertion=view.main_assertion,
+                        target_node_kind=view.target_node_kind,
+                        target_node_id=view.target_node_id,
+                        evidence=view.evidence,
+                    )
+                    await enqueue_outcome_representation_repair(
+                        conn,
+                        tenant_id=auth.tenant_id,
+                        fact=fact,
+                    )
     except dd_repo.DeltaNotFoundError:
         return _not_found()
     except dd_repo.InvalidStatusTransitionError:
@@ -1901,6 +2146,7 @@ async def _next_delta_id(
     pool: asyncpg.Pool,
     auth: AuthContext,
     exclude: UUID,
+    principal: Principal,
 ) -> str | None:
     async with pool.acquire() as conn:
         views = await dd_repo.list_deltas(

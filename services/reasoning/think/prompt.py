@@ -31,6 +31,7 @@ from typing import Any
 
 from services.reasoning.retrieval.assembler import ContextBundle
 from services.reasoning.retrieval.primary import TriggerContext
+from services.domain.models.formation import build_model_formation_candidates
 
 from .reasoning_frame import ReasoningFrame, reasoning_job_from_trigger
 
@@ -117,6 +118,11 @@ Core discipline:
   candidate, accept it through the right op, update/merge/reject it, or no-op it
   in reasoning_trace. Add a missing op only when the packet missed a durable
   memory change.
+- If <model_formation_candidates> appears, each listed candidate is a required
+  belief-formation decision. For every candidate, emit exactly one
+  formation_resolutions item with resolution formed, updated, deferred,
+  rejected, or already_covered. Use claim_ops/memory_lifecycle_ops for any
+  durable Model change; formation_resolutions is accountability, not a write.
 - If <inquiry_context_packet> says mode=compiled_memory_decision_boundary, do
   not reconstruct the hidden planner path. The packet has already compressed the
   batch; adjudicate the listed candidates, use the minimal cited evidence/model
@@ -148,6 +154,8 @@ Diff schema (you produce EXACTLY this JSON shape):
   "relation_frame_ops": [],
   "edge_ops": [],
   "ontology_gap_ops": [],
+  "open_question_ops": [],
+  "formation_resolutions": [],
   "act_ops": [],
   "resource_ops": [],
   "new_predictions": [],
@@ -165,12 +173,18 @@ claim_ops.insert entry shape (you produce EXACTLY these fields):
     "scope_actors": ["<uuid>", ...],
     "scope_entities": [{"type":"customer|commitment|goal|decision|resource|candidate_actor|candidate_actor_alias|candidate_customer|candidate_workstream|candidate_system|candidate_vendor|candidate_commitment|candidate_pattern","id":"<uuid>"}],
     "scope_temporal": {"valid_from":"<ISO-8601>","valid_until":"<ISO-8601|null>"},
+    "semantic_terms": ["<specific lexical phrase>", ...],
     "falsifier": {"kind":"<falsifier kind>", "...":"..."} | null
   }
 }
 Do NOT include title, description, embedding, id, claim, or unknown fields.
 - update: {"op":"update","model_id":"<uuid>","changes":{...}}
 - archive: {"op":"archive","model_id":"<uuid>","reason":"decay|falsifier_triggered|contested_incorrect|contested_reading_incorrect|superseded|manual|resolved_confirmed|resolved_violated|severe_drift|deprecated|acted_upon|dismissed_by_user"}
+
+formation_resolutions item shape:
+{"op":"resolve","candidate_id":"<candidate_id from model_formation_candidates>","resolution":"formed|updated|deferred|rejected|already_covered","rationale":"<why>","output_model_ids":["<existing model uuid>",...],"follow_up_question":"<question|null>"}
+For newly inserted Models, do not invent output_model_ids; leave it empty and
+cite the created claim in rationale.
 
 Proposition stance and grammar:
 - `kind` has only four valid values: observation, belief, prediction, norm.
@@ -199,6 +213,20 @@ Payload examples:
 - norm/recommendation -> {"kind":"norm","claim_role":"recommendation","target_act_ref":{"type":"goal|commitment|decision|resource","id":"<uuid or null>"}|null,"proposed_change":{"operation":"create|update|archive|transition","payload":{...}},"expected_impact":<number|null>,"qualitative_impact":"<string|null>","target_actor_id":"<uuid|null>"}
 Do NOT invent new proposition kinds. Preserve nuance with `claim_role`,
 `domain_tags`, and the other grammar axes.
+
+Semantic terms:
+- `semantic_terms` are top-level Model fields, not proposition fields.
+- Add 6-16 compact lexical handles that make this exact belief findable by
+  surface-language retrieval, e.g. "partial refund edge case",
+  "idempotency key collision", "founder review bandwidth", "enterprise
+  renewal delay".
+- Prefer specific 2-4 word phrases over broad categories.
+- Do NOT include actor names, customer/company/system/vendor names, UUIDs,
+  PR/ticket handles, source channels, dates/times, exact `domain_tags`,
+  `claim_role`, or anything already represented in `scope_actors`,
+  `scope_entities`, or grammar axes.
+- Every term must be grounded in the claim's natural text, proposition,
+  falsifier, or resolution criteria. Do not invent SEO-like keywords.
 
 Situation compositional fields (mandatory when emitting `kind="belief", claim_role="situation"`):
 - `pressure_type` MUST be one of capacity, trust, revenue, compliance,
@@ -262,6 +290,15 @@ Model Scope:
 - Actor claims must be evidenced. Do not psychologize from a single signal:
   write capability/constraint/support claims only when the signal directly says
   so or the retrieved actor context shows a repeated pattern.
+- Employee formation lens: when selected observations or <actor_context> show
+  repeated evidence about the same internal actor, form actor-scoped Models that
+  make the operating profile useful. Use `capability` for demonstrated skills
+  or capacity, `relation` for stable work-style/preferences/collaboration
+  contexts, `concern` for support needs or load risks, and `pattern` for
+  recurring behavior. Prefer specific operational claims ("needs uninterrupted
+  design blocks before architecture review") over personality labels. If new
+  evidence weakens an older employee belief, use lifecycle/supersession instead
+  of adding a conflicting sibling.
 - scope_entities: {"type":"customer|commitment|goal|decision|resource",
   "id":"<uuid>"} from <acts>, <resources>, or customer_context. Resolve PR/ticket
   handles (PR #847, ENG-501) to the matching commitment UUID in <acts>. Customer
@@ -393,6 +430,34 @@ memory_lifecycle_ops:
   when a selected memory was explicitly evaluated and remains valid.
 - Use action="archive" only with a registered lifecycle reason. Use
   action="supersede" with superseded_by_model_id when a replacement Model exists.
+
+open_question_ops:
+{ "op":"insert|resolve|archive",
+  "id":"<optional question uuid for insert|null>",
+  "question_id":"<existing question uuid for resolve/archive|null>",
+  "model_id":"<target model uuid or same-diff born_from_event_id>",
+  "question":"<specific unresolved question|null>",
+  "question_type":"evidence_gap|temporal_status|causal_mechanism|constraint_boundary|owner_or_decision|impact_scope|contradiction_check|projection_gap|other",
+  "rationale":"<why answering this materially improves the belief|null>",
+  "priority":0.0-1.0,
+  "expected_resolution_signal":{"signal_shape":"<what kind of evidence would answer it>"},
+  "search_signature":{"semantic_terms":["<specific phrase>",...],"hints":["<search hint>",...]},
+  "source_model_ids":["<model uuid>",...],
+  "resolution_model_id":"<model uuid that answers it|null>",
+  "resolution_note":"<why it is resolved/archived|null>",
+  "status":"resolved|stale|superseded|duplicate|archived|null" }
+- Use open_question_ops only when an unresolved question would materially change
+  confidence, scope, falsifiability, projection, or actionability of a Model.
+  Do not write generic "need more data" questions.
+- Do not duplicate information already represented by scope_actors,
+  scope_entities, domain_tags, semantic_terms, or grammar axes. The question is
+  the missing evidence boundary, not another label for the Model.
+- `search_signature` should contain specific lexical handles and search hints
+  for retrieval. Avoid actor/customer/company/system names, UUIDs, source
+  channels, broad categories, and fields already represented elsewhere.
+- Prefer question_type="constraint_boundary" for missing resource/runway/owner
+  limits, "temporal_status" for stale current-state uncertainty, and
+  "contradiction_check" when the next useful search is for counterevidence.
 
 relation_claim_ops:
 { "op":"upsert",
@@ -596,6 +661,7 @@ Return exactly this JSON shape:
   "trigger_ref": "<uuid echoed from triggering_event>",
   "tenant_id": "<uuid echoed from triggering_event>",
   "claim_ops": [],
+  "formation_resolutions": [],
   "reasoning_trace": "<brief rationale>"
 }
 
@@ -610,10 +676,17 @@ claim_ops.insert entry shape:
     "scope_actors": ["<uuid>", ...],
     "scope_entities": [{"type":"customer|commitment|goal|decision|resource|candidate_actor|candidate_actor_alias|candidate_customer|candidate_workstream|candidate_system|candidate_vendor|candidate_commitment|candidate_pattern","id":"<uuid>"}],
     "scope_temporal": {"valid_from":"<ISO-8601>","valid_until":"<ISO-8601|null>"},
+    "semantic_terms": ["<specific lexical phrase>", ...],
     "falsifier": {"kind":"<falsifier kind>", "...":"..."} | null
   }
 }
 Do NOT include title, description, embedding, id, claim, or unknown fields.
+
+formation_resolutions item shape:
+{"op":"resolve","candidate_id":"<candidate_id from model_formation_candidates>","resolution":"formed|updated|deferred|rejected|already_covered","rationale":"<why>","output_model_ids":["<existing model uuid>",...],"follow_up_question":"<question|null>"}
+If <model_formation_candidates> appears, every candidate requires exactly one
+formation_resolutions item. Use claim_ops.insert for formed beliefs; do not
+invent Model UUIDs for new inserts.
 
 Proposition stance:
 - `kind` has only four valid values: observation, belief, prediction, norm.
@@ -639,6 +712,11 @@ edge case/customer pushback/missing evidence; prediction=dated plan, ETA, future
 deploy, expected slip, conditional outcome; relation=dependency or causal link;
 hypothesis=uncertain explanation needing investigation; situation=composite
 condition across multiple selected Models. Do not flatten every claim into fact.
+Semantic terms: add 6-16 top-level `semantic_terms` per inserted claim. They
+must be specific belief phrases, not actor/entity names, UUIDs, PR/ticket
+handles, source channels, dates, exact `domain_tags`, `claim_role`, or anything
+already captured by scope/grammar. Prefer phrases like "partial refund edge
+case", "idempotency key collision", "founder review bandwidth".
 
 Falsifier kinds:
 - observation_pattern: {"kind":"observation_pattern","pattern":"specific signal shape, >=20 chars","within_window":"ISO-8601 duration"}
@@ -665,6 +743,12 @@ Scope:
   commitment owner, or <actors_in_context>. External senders usually use [].
 - Actor claims must be directly evidenced or supported by repeated actor
   context; do not infer motives or hidden psychology from one message.
+- Employee formation lens: when there is repeated evidence about one internal
+  actor, create specific actor-scoped Models for demonstrated capability,
+  work-style/preference, support need, load risk, relationship/collaboration
+  pattern, or recurring behavior. Avoid generic personality labels. If the new
+  signal changes an older employee belief, prefer lifecycle/supersession over a
+  duplicate conflicting sibling.
 - scope_entities comes from <acts>, <resources>, customer_context, or exact
   candidate refs in <candidate_substrate>. Resolve PR numbers and ticket IDs to
   matching commitment UUIDs in <acts>; customer names to relational resources;
@@ -711,6 +795,252 @@ Return only well-formed JSON, no prose outside the JSON object.
 class PromptPair:
     system: str
     user: str
+
+
+@dataclass(frozen=True)
+class PromptSurface:
+    """Static prompt bucket selected for one Think call."""
+
+    packs: tuple[str, ...]
+    claims_only: bool = False
+    lean_output_contract: bool = False
+
+    def includes(self, pack: str) -> bool:
+        return pack in self.packs
+
+    def to_prompt_section(self) -> str:
+        lines = [
+            "<prompt_surface>",
+            "  version: surface_aware_v1",
+            f"  schema: {'claims_only' if self.claims_only else 'full'}",
+            "  packs: " + ", ".join(self.packs),
+        ]
+        if self.lean_output_contract:
+            lines.append("  lean_output_contract: true")
+        lines.append("</prompt_surface>")
+        return "\n".join(lines)
+
+
+_SURFACE_PROMPT_FLAG = "THINK_SURFACE_AWARE_PROMPT"
+
+_SURFACE_CORE_PROMPT = """\
+You are the reasoning component of Company OS. Produce the smallest useful JSON
+diff for the triggering event. This surface-aware prompt is assembled from a
+small invariant core plus only the operation packs that this call can use.
+
+Core contract:
+- Return only JSON matching the selected schema. No prose outside the object.
+- The LLM proposes; validators constrain; appliers mutate durable state. Do not
+  rely on prompt text as the final authority for schema or lifecycle safety.
+- Observations are immutable evidence. Models are the semantic memory backbone.
+  Acts and Resources are operational sidecars that change only through their
+  explicit packs.
+- Every emitted operation must be grounded in the triggering event, selected
+  Observations, selected Models, Acts, Resources, candidate_substrate, or the
+  reasoning_frame. Do not invent UUIDs, entities, edge kinds, states, or hidden
+  facts.
+- Respect <reasoning_frame> allowed_ops and budgets when present. If a pack is
+  absent, mention any tempting but unavailable operation only in reasoning_trace.
+- Keep diffs small. Empty diffs are valid when selected memory already captures
+  the signal, the signal is non-substantive, or the available context does not
+  support a durable write.
+- Never silently ignore selected context. If selected context matters, cite full
+  UUIDs in the relevant operation. If it does not matter, cite at least one full
+  selected UUID in reasoning_trace and say why no state, edge, action, or
+  resource change is warranted.
+- Confidence is epistemic, not importance. Direct observed facts usually fit
+  0.75-0.9; hearsay, hedging, missing context, future plans, aspirations, and
+  conditional language usually stay <=0.7 unless independent evidence removes
+  uncertainty.
+- Models above 0.7 confidence require an adequate falsifier unless the schema
+  or validator rejects falsifiers for that operation.
+
+Falsifier kinds:
+- observation_pattern: pattern plus within_window
+- commitment_outcome: commitment_ref plus contradicting_state
+- prediction_deadline: evaluate_at plus check
+- resource_threshold: resource_ref plus threshold
+- explicit_contestation: contesting_actors
+"""
+
+_SURFACE_FULL_SCHEMA_PROMPT = """\
+Output schema for the full RawDiff pass:
+{
+  "trigger_ref": "<uuid echoed from triggering_event>",
+  "tenant_id": "<uuid echoed from triggering_event>",
+  "claim_ops": [],
+  "memory_lifecycle_ops": [],
+  "relation_claim_ops": [],
+  "relation_frame_ops": [],
+  "edge_ops": [],
+  "ontology_gap_ops": [],
+  "open_question_ops": [],
+  "formation_resolutions": [],
+  "act_ops": [],
+  "resource_ops": [],
+  "new_predictions": [],
+  "reasoning_trace": "<brief rationale>"
+}
+Use exactly these top-level fields. Leave unavailable operation arrays empty.
+"""
+
+_SURFACE_CLAIMS_ONLY_SCHEMA_PROMPT = """\
+Output schema for the compact claims-only pass:
+{
+  "trigger_ref": "<uuid echoed from triggering_event>",
+  "tenant_id": "<uuid echoed from triggering_event>",
+  "claim_ops": [],
+  "formation_resolutions": [],
+  "reasoning_trace": "<brief rationale>"
+}
+Do not emit edge_ops, act_ops, resource_ops, memory_lifecycle_ops,
+open_question_ops, or predictions in this pass. Explain omitted non-claim work
+briefly in reasoning_trace when it matters.
+"""
+
+_SURFACE_MODEL_MEMORY_PACK = """\
+Surface pack: Model memory and claim formation.
+- claim_ops.insert creates one scoped Model for one durable belief, observation,
+  prediction, norm, relation, concern, capability, pattern, or situation.
+- Insert entry fields: born_from_event_id, proposition, natural, confidence,
+  scope_actors, scope_entities, scope_temporal, semantic_terms, falsifier.
+  Do not include title, description, embedding, id, claim, or unknown fields.
+- Proposition kind is only observation, belief, prediction, or norm. Put meaning
+  into grammar fields such as claim_role, abstraction_level, time_mode,
+  modality, polarity, and domain_tags.
+- Use top-level semantic_terms: 6-16 specific lexical phrases grounded in the
+  claim. Avoid names, UUIDs, dates, source channels, exact domain_tags,
+  claim_role, and data already represented by scope fields or grammar axes.
+- Scope every inserted Model using actor_id, existing Model scopes, Acts,
+  Resources, customer_context, actors_in_context, or exact candidate_substrate
+  scope_ref values. Never invent UUIDs.
+- Prefer updating, reconciling, or no-oping selected existing Models over
+  duplicate siblings. Insert only what materially changes retrieval, judgment,
+  prediction, or action.
+- If <model_formation_candidates> appears, emit exactly one formation_resolutions
+  item for each candidate: formed, updated, deferred, rejected, or
+  already_covered. Formation resolutions are accountability, not writes.
+"""
+
+_SURFACE_LIFECYCLE_PACK = """\
+Surface pack: Model lifecycle, uncertainty, and questions.
+- memory_lifecycle_ops reconcile selected Models when triggering evidence
+  confirms, falsifies, revises, leaves unchanged, archives, or supersedes them.
+- Use lifecycle over duplicate inserts when selected memory already captures the
+  subject but its confidence, status, support, or resolution changed.
+- Archive only with registered reasons such as decay, superseded,
+  contested_incorrect, resolved_confirmed, resolved_violated, severe_drift,
+  deprecated, acted_upon, or dismissed_by_user.
+- open_question_ops are for missing evidence boundaries that would materially
+  change confidence, scope, falsifiability, projection, or actionability. Do not
+  write generic "need more data" questions.
+- Predictions whose outcome is now known should use lifecycle confirm/falsify
+  when possible; otherwise use a targeted update and explain the remaining
+  uncertainty.
+"""
+
+_SURFACE_GRAPH_PACK = """\
+Surface pack: Model graph and relationship topology.
+- Relationship writes connect Models to Models. Edge endpoints must be existing
+  Model ids from <models> or the born_from_event_id of a claim_ops.insert in the
+  same diff. Never use observation, customer, commitment, goal, decision, or
+  resource UUIDs as edge endpoints.
+- Prefer relation_claim_ops for relationship-bearing facts. A precise accepted
+  relation can project a durable edge while keeping relation evidence available
+  for future review.
+- Use relation_frame_ops when one relation needs 3+ typed participant roles. Use
+  relation_claim_ops for simple pairwise relationships.
+- Registered edge kinds include supports, contradicts, weakens, causes,
+  explains, predicts, blocks, enables, same_issue_as, co_occurs_with,
+  analogous_to, alternative_to, early_warning_for, instance_of,
+  contributes_to_resolution, and superseded_by.
+- Prefer sharp operational semantics over weak similarity. If the evidence only
+  shows surface similarity, write no edge or a candidate with a clear reason.
+- ontology_gap_ops propose pre-truth edge types only when a real useful relation
+  is grounded but no registered edge kind preserves its decision semantics.
+- Relationship decision contract: for important graph anchors, emit the sharpest
+  relation/edge/frame, propose an ontology gap, update/archive a Model if that
+  is stronger, or write `no edge:` with full UUIDs in reasoning_trace.
+"""
+
+_SURFACE_ACTS_PACK = """\
+Surface pack: Acts and recommendations.
+- act_ops mutate Goals, Commitments, and Decisions only when the signal itself
+  warrants the state change. Do not create operational mutations from topology
+  or selected context alone.
+- Common commitment transitions: merged/deployed/closed work can move to
+  doneunverified; independent evidence moves doneunverified to doneverified;
+  explicit waiting/hold signals can pause active work; explicit unsatisfied
+  dependencies can block active work.
+- confidence_basis must be an existing Model id from <models> or the
+  born_from_event_id of a same-diff claim_ops.insert. The applier rewrites
+  same-diff event ids to inserted Model ids. Do not use arbitrary observation ids.
+- Recommendations are norm Models for concrete human-approved Act or Resource
+  changes. Do not recommend routine bookkeeping that validators/appliers can do.
+- New self-reported in-flight work with no matching commitment should usually
+  emit both a fact Model and a recommendation whose proposed_change creates a
+  commitment with target_act_ref {"type":"commitment","id":null}.
+"""
+
+_SURFACE_RESOURCES_PACK = """\
+Surface pack: Resources.
+- resource_ops mutate durable resources, holdings, allocations, deployments,
+  releases, valuations, or transactions only from explicit resource evidence.
+- Scope claims to resource UUIDs from <resources> when a signal mentions budget,
+  runway, capacity, vendor, license, tool, account, dataset, asset, contract, or
+  infrastructure already present in context.
+- For uncertain resource implications, prefer a scoped claim or open question
+  over inventing a resource identity, transaction, valuation, or deployment.
+- Resource falsifiers should use resource_threshold when a metric boundary would
+  contradict the claim.
+"""
+
+_SURFACE_BATCH_PACK = """\
+Surface pack: Batch compression.
+- Read the whole batch as evidence, but do not emit one operation per signal.
+  Promote only batch-level facts, concerns, predictions, situations, edges,
+  recommendations, or lifecycle changes whose absence would make durable memory
+  materially less useful.
+- Preserve background, duplicate, and noisy signals in reasoning_trace when they
+  explain why no write was emitted.
+- If <inquiry_context_packet> includes memory_decision_candidates, treat them as
+  advisory decisions. Accept, update, reject, merge, or no-op each material
+  candidate through the available operations; only add missing ops for durable
+  changes the packet missed.
+- In compiled memory decision mode, do not reconstruct hidden planner paths. Use
+  the compressed signal summary, candidate evidence, and listed source ids.
+"""
+
+_SURFACE_TOPOLOGY_CANDIDATE_PACK = """\
+Surface pack: Topology and pattern candidates.
+- Topology, precipitation, and SAGE candidates are pre-truth evidence, not
+  mandates. Promote only when the candidate adds decision-relevant structure:
+  a grounded edge, an explanatory situation, a useful pattern, a targeted
+  lifecycle update, or a concrete ontology gap.
+- For latent relationship candidates, inspect member Models and explain what
+  changes if the candidate is true: flow, pressure, customer, actor,
+  commitment, resource, or decision meaning.
+- For pattern_review, promote a Pattern Model only when evidence is stable,
+  useful, explainable, falsifiable, and action-shaping. If evidence is thin,
+  counterexamples are unresolved, or the candidate is surface similarity,
+  return an empty diff or a targeted open question.
+"""
+
+_SURFACE_PACKS: dict[str, str] = {
+    "model_memory": _SURFACE_MODEL_MEMORY_PACK,
+    "lifecycle": _SURFACE_LIFECYCLE_PACK,
+    "graph": _SURFACE_GRAPH_PACK,
+    "acts": _SURFACE_ACTS_PACK,
+    "resources": _SURFACE_RESOURCES_PACK,
+    "batch": _SURFACE_BATCH_PACK,
+    "topology_candidate": _SURFACE_TOPOLOGY_CANDIDATE_PACK,
+}
+
+
+def _surface_aware_prompt_enabled() -> bool:
+    return os.environ.get(_SURFACE_PROMPT_FLAG, "0").strip().lower() in {
+        "1", "on", "true", "yes",
+    }
 
 
 def _strict_lean_prompt_enabled() -> bool:
@@ -800,6 +1130,8 @@ _DIFF_SHAPE_SKELETON = """Diff schema (you produce EXACTLY this JSON shape):
   "relation_frame_ops": [],
   "edge_ops": [],
   "ontology_gap_ops": [],
+  "open_question_ops": [],
+  "formation_resolutions": [],
   "act_ops": [],
   "resource_ops": [],
   "new_predictions": [],
@@ -810,9 +1142,9 @@ _DIFF_SHAPE_POINTER = (
     "Diff schema: the strict tool schema enforces the exact top-level shape "
     "(trigger_ref, tenant_id, claim_ops, memory_lifecycle_ops, relation_claim_ops, "
     "relation_frame_ops, edge_ops, "
-    "ontology_gap_ops, resource_ops, new_predictions, reasoning_trace). Act ops "
-    "are available in the full RawDiff schema but omitted from this strict tool "
-    "surface."
+    "ontology_gap_ops, open_question_ops, formation_resolutions, resource_ops, "
+    "new_predictions, reasoning_trace). Act ops are available in the full "
+    "RawDiff schema but omitted from this strict tool surface."
 )
 
 
@@ -823,6 +1155,267 @@ def _lean_strict_base(base: str) -> str:
     if _DIFF_SHAPE_SKELETON in base:
         return base.replace(_DIFF_SHAPE_SKELETON, _DIFF_SHAPE_POINTER)
     return base
+
+
+def select_prompt_surface(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    *,
+    reasoning_frame: ReasoningFrame | None = None,
+    claims_only: bool = False,
+    lean_output_contract: bool = False,
+    compiled_decision_mode: bool = False,
+) -> PromptSurface:
+    """Choose the static prompt packs for a Think call.
+
+    The selector is intentionally conservative: it removes large operation
+    contracts from simple claim-only calls, while keeping the relevant pack when
+    the trigger, retrieval notes, or reasoning job makes that operation likely.
+    """
+
+    frame = reasoning_frame or ReasoningFrame.from_trigger(trigger)
+    allowed_ops = set(frame.allowed_ops)
+    packs: list[str] = ["model_memory"]
+    text = _trigger_surface_text(trigger)
+    notes = bundle.notes if isinstance(bundle.notes, dict) else {}
+    job = reasoning_job_from_trigger(trigger)
+
+    if trigger.is_batch or compiled_decision_mode or _has_batch_signature(trigger):
+        packs.append("batch")
+
+    if not claims_only:
+        if bundle.models or job.family == "internal_reflection" or trigger.kind in {"T2", "T3", "T4", "T6"}:
+            packs.append("lifecycle")
+
+        if "relation_claim_ops" in allowed_ops and _has_graph_surface(trigger, bundle, notes):
+            packs.append("graph")
+
+        if "act_ops" in allowed_ops and _has_act_surface(trigger, bundle, text):
+            packs.append("acts")
+
+        if "resource_ops" in allowed_ops and _has_resource_surface(bundle, text):
+            packs.append("resources")
+
+        if _has_topology_candidate_surface(trigger, notes):
+            if "graph" not in packs:
+                packs.append("graph")
+            packs.append("topology_candidate")
+    elif _has_topology_candidate_surface(trigger, notes):
+        packs.append("topology_candidate")
+
+    return PromptSurface(
+        packs=tuple(dict.fromkeys(packs)),
+        claims_only=claims_only,
+        lean_output_contract=lean_output_contract,
+    )
+
+
+def _build_surface_aware_system_prompt(surface: PromptSurface) -> str:
+    schema_prompt = (
+        _SURFACE_CLAIMS_ONLY_SCHEMA_PROMPT
+        if surface.claims_only
+        else _SURFACE_FULL_SCHEMA_PROMPT
+    )
+    parts = [_SURFACE_CORE_PROMPT, schema_prompt]
+    for pack in surface.packs:
+        pack_prompt = _SURFACE_PACKS.get(pack)
+        if pack_prompt:
+            parts.append(pack_prompt)
+    if surface.lean_output_contract and _strict_lean_prompt_enabled():
+        parts.append(
+            "Strict schema mode: the provider enforces the JSON shape server-side; "
+            "the semantic grounding, scoping, and operation-pack rules above remain "
+            "load-bearing."
+        )
+    return "\n\n".join(parts)
+
+
+def prompt_static_size_report() -> dict[str, Any]:
+    """Return static prompt size estimates for regression tests and reports."""
+
+    baseline_full = _SYSTEM_PROMPT
+    baseline_claims = _CLAIMS_ONLY_SYSTEM_PROMPT
+    canonical_surfaces = {
+        "surface_claims_only": PromptSurface(("model_memory",), claims_only=True),
+        "surface_full_model_graph": PromptSurface(
+            ("model_memory", "lifecycle", "graph"),
+            claims_only=False,
+        ),
+        "surface_full_all_packs": PromptSurface(
+            (
+                "model_memory",
+                "lifecycle",
+                "graph",
+                "acts",
+                "resources",
+                "batch",
+                "topology_candidate",
+            ),
+            claims_only=False,
+        ),
+    }
+
+    def _stats(text: str) -> dict[str, float]:
+        return {
+            "chars": len(text),
+            "estimated_tokens_char4": round(len(text) / 4, 2),
+        }
+
+    report: dict[str, Any] = {
+        "baseline_full": _stats(baseline_full),
+        "baseline_claims_only": _stats(baseline_claims),
+    }
+    for name, surface in canonical_surfaces.items():
+        report[name] = _stats(_build_surface_aware_system_prompt(surface))
+    return report
+
+
+def _trigger_surface_text(trigger: TriggerContext) -> str:
+    signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    pieces = [
+        trigger.kind,
+        trigger.subkind or "",
+        trigger.seed_natural_text or "",
+        trigger.topology_event_kind or "",
+    ]
+    for key in (
+        "source_channel",
+        "signal_type",
+        "observation_kind",
+        "relationship_candidate",
+        "relationship_candidates",
+        "pattern_candidate_id",
+        "proposed_signature",
+        "observed_tendency",
+        "assessment",
+    ):
+        value = signature.get(key)
+        if isinstance(value, str):
+            pieces.append(value)
+        elif isinstance(value, (dict, list)):
+            pieces.append(json.dumps(value, default=str)[:2000])
+    return " ".join(pieces).lower()
+
+
+def _has_batch_signature(trigger: TriggerContext) -> bool:
+    signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    return bool(
+        signature.get("batch_observation_ids")
+        or signature.get("member_trigger_ids")
+        or signature.get("batch_size")
+    )
+
+
+def _has_graph_surface(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    notes: dict[str, Any],
+) -> bool:
+    _selected, graph_models = _selected_model_sets(bundle)
+    if graph_models:
+        return True
+    if trigger.kind == "T6" or trigger.topology_event_kind:
+        return True
+    if trigger.kind == "T4" and trigger.subkind in {
+        "latent_relationship_candidate",
+        "pattern_review",
+        "representation_repair",
+    }:
+        return True
+    signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    if signature.get("relationship_candidate") or signature.get("relationship_candidates"):
+        return True
+    if trigger.member_model_ids and len(trigger.member_model_ids) >= 2:
+        return True
+    topology = bundle.topology_context or {}
+    if topology.get("neighborhoods") or topology.get("recent_phase_events"):
+        return True
+    selection = notes.get("model_selection")
+    if isinstance(selection, dict):
+        selected = selection.get("selected_model_ids") or []
+        return len(selected) >= 2 and len(bundle.models) >= 2
+    return len(bundle.models) >= 2 and trigger.kind in {"T2", "T3", "T4", "T6"}
+
+
+def _has_act_surface(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+    surface_text: str,
+) -> bool:
+    if _has_acts(bundle):
+        return True
+    if trigger.kind == "T2" and trigger.subkind == "belief_updated":
+        return True
+    if trigger.kind != "T1":
+        return False
+    return _surface_mentions(
+        surface_text,
+        (
+            "commitment",
+            "goal",
+            "decision",
+            "started",
+            "kicking off",
+            "picked up",
+            "working on",
+            "building",
+            "deliver",
+            "blocked",
+            "waiting on",
+            "paused",
+            "done",
+            "merged",
+            "deployed",
+            "approved",
+        ),
+    )
+
+
+def _has_resource_surface(bundle: ContextBundle, surface_text: str) -> bool:
+    if bundle.resources_summary:
+        return True
+    return _surface_mentions(
+        surface_text,
+        (
+            "resource",
+            "runway",
+            "budget",
+            "capacity",
+            "vendor",
+            "license",
+            "quota",
+            "tooling",
+            "infrastructure",
+            "contract",
+            "asset",
+            "dataset",
+            "allocation",
+        ),
+    )
+
+
+def _has_topology_candidate_surface(
+    trigger: TriggerContext,
+    notes: dict[str, Any],
+) -> bool:
+    if trigger.kind == "T4" and trigger.subkind in {
+        "latent_relationship_candidate",
+        "pattern_review",
+    }:
+        return True
+    signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    if signature.get("relationship_candidate") or signature.get("relationship_candidates"):
+        return True
+    if signature.get("pattern_candidate_id"):
+        return True
+    packet = notes.get("inquiry_context_packet")
+    if isinstance(packet, dict):
+        return bool(packet.get("memory_decision_candidates"))
+    return False
+
+
+def _surface_mentions(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term in text for term in terms)
 
 
 def _trigger_metadata(trigger: TriggerContext) -> dict[str, str]:
@@ -1076,12 +1669,27 @@ def build_prompt(
         compiled_decision_mode=compiled_decision_mode,
         suppress_raw_observations=suppress_raw_trigger_text,
     )
-    instructions = _build_instructions(trigger)
-    base = _CLAIMS_ONLY_SYSTEM_PROMPT if claims_only else _SYSTEM_PROMPT
-    # Cost-plan §1.2: lean only when the caller says the provider enforces the
-    # schema AND the flag is on. Hint-only providers keep the full prose.
-    if lean_output_contract and _strict_lean_prompt_enabled():
-        base = _lean_strict_base(base)
+    prompt_surface: PromptSurface | None = None
+    if _surface_aware_prompt_enabled():
+        prompt_surface = select_prompt_surface(
+            trigger,
+            bundle,
+            reasoning_frame=reasoning_frame,
+            claims_only=claims_only,
+            lean_output_contract=(
+                lean_output_contract and _strict_lean_prompt_enabled()
+            ),
+            compiled_decision_mode=compiled_decision_mode,
+        )
+        base = _build_surface_aware_system_prompt(prompt_surface)
+        instructions = _build_surface_operating_instructions(trigger, prompt_surface)
+    else:
+        instructions = _build_instructions(trigger)
+        base = _CLAIMS_ONLY_SYSTEM_PROMPT if claims_only else _SYSTEM_PROMPT
+        # Cost-plan §1.2: lean only when the caller says the provider enforces the
+        # schema AND the flag is on. Hint-only providers keep the full prose.
+        if lean_output_contract and _strict_lean_prompt_enabled():
+            base = _lean_strict_base(base)
     profile = _build_reasoning_profile(trigger, bundle, claims_only=claims_only)
 
     # Stable system prefix: static base + per-trigger-kind operating
@@ -1089,6 +1697,8 @@ def build_prompt(
     # message so provider prefix caches can reuse the system bucket.
     system_prompt = f"{base}\n\n{instructions}"
     parts = [profile, triggering]
+    if prompt_surface:
+        parts.insert(1, prompt_surface.to_prompt_section())
     if frame:
         parts.append(frame)
     parts.append(context)
@@ -1189,10 +1799,52 @@ def _build_triggering_section(
         candidate = signature.get("relationship_candidate")
         if isinstance(candidate, dict):
             lines.extend(_relationship_candidate_lines(candidate))
+    if trigger.kind == "T4" and trigger.subkind == "pattern_review":
+        lines.extend(_pattern_review_candidate_lines(signature))
     if reason:
         lines.append(f"  reason: {reason}")
     lines.append("</triggering_event>")
     return "\n".join(lines)
+
+
+def _pattern_review_candidate_lines(signature: dict[str, Any]) -> list[str]:
+    candidate_id = signature.get("pattern_candidate_id")
+    if not candidate_id:
+        return []
+    lines = ["  <pattern_review_candidate>"]
+    lines.append(f"    id: {candidate_id}")
+    lines.append("    source: precipitation_or_sage_latent_pattern")
+    lines.append("    status: weak_evidence_requires_semantic_review")
+    for key in (
+        "cluster_size",
+        "density",
+        "promotion_readiness_score",
+        "surface_domain_count",
+        "counterexample_count",
+    ):
+        if key in signature:
+            lines.append(f"    {key}: {signature[key]}")
+    for key in (
+        "constituent_model_ids",
+        "support_source_refs",
+        "shared_facets",
+    ):
+        value = signature.get(key)
+        if isinstance(value, list) and value:
+            lines.append(f"    {key}: {_trunc(json.dumps(value, default=str), 700)}")
+    for key in (
+        "proposed_signature",
+        "observed_tendency",
+        "assessment",
+        "rubric",
+    ):
+        value = signature.get(key)
+        if isinstance(value, dict) and value:
+            lines.append(
+                f"    {key}: {_trunc(json.dumps(value, sort_keys=True, default=str), 900)}"
+            )
+    lines.append("  </pattern_review_candidate>")
+    return lines
 
 
 def _relationship_candidate_lines(candidate: dict[str, Any]) -> list[str]:
@@ -1380,6 +2032,10 @@ def _build_context_section(
     )
     if inquiry_packet:
         lines.extend(inquiry_packet)
+
+    formation_candidates = _build_model_formation_candidates_section(trigger, bundle)
+    if formation_candidates:
+        lines.extend(formation_candidates)
 
     # Observations
     if compiled_decision_mode:
@@ -1678,6 +2334,32 @@ def _build_candidate_substrate_section(bundle: ContextBundle) -> list[str]:
         lines.append(piece)
         used += len(piece)
     lines.append("  </candidate_substrate>")
+    return lines
+
+
+def _build_model_formation_candidates_section(
+    trigger: TriggerContext,
+    bundle: ContextBundle,
+) -> list[str]:
+    candidates = build_model_formation_candidates(trigger, bundle)
+    if not candidates:
+        return []
+    lines = ["  <model_formation_candidates>"]
+    lines.append(f"    required_decision_count: {len(candidates)}")
+    used = 0
+    for candidate in candidates:
+        payload = candidate.to_prompt_dict()
+        rendered = json.dumps(payload, sort_keys=True, default=str)
+        if used + len(rendered) > _CANDIDATES_CHAR_BUDGET and used > 0:
+            remaining = len(candidates) - len(lines) + 2
+            if remaining > 0:
+                lines.append(
+                    f"    [truncated - {remaining} formation candidates omitted]"
+                )
+            break
+        lines.append(f"    - {rendered}")
+        used += len(rendered)
+    lines.append("  </model_formation_candidates>")
     return lines
 
 
@@ -2207,6 +2889,7 @@ def _build_inquiry_context_packet_section(
     verdict = packet.get("sufficiency_verdict")
     hypotheses = packet.get("hypotheses") or []
     decision_candidates = _decision_candidates_from_packet(packet)
+    residual_spine = packet.get("model_residual_spine") or []
     questions = packet.get("question_path") or []
     tiers = packet.get("tiers") or {}
     decisive = tiers.get("decisive_evidence") or []
@@ -2286,6 +2969,18 @@ def _build_inquiry_context_packet_section(
         lines.append("    memory_decision_candidates:")
         for candidate in decision_candidates[:5]:
             lines.extend(_format_memory_decision_candidate(candidate))
+    if isinstance(residual_spine, list) and residual_spine:
+        lines.append(
+            "    model_residual_spine: non-canonical compact compression debt; "
+            "repair or absorb only with ordinary model-layer evidence."
+        )
+        for residual in residual_spine[:5]:
+            if not isinstance(residual, dict):
+                continue
+            lines.append(
+                "      - "
+                + _trunc(json.dumps(residual, sort_keys=True, default=str), 520)
+            )
     if compiled_decision_mode:
         evidence_lines = _format_candidate_evidence(packet, decision_candidates)
         if evidence_lines:
@@ -2577,6 +3272,47 @@ def _internal_reflection_instructions(trigger: TriggerContext) -> str:
             "  - Explain the consequence: which flow/pressure/customer/"
             "actor/commitment changes meaning if this candidate is true."
         )
+    if job.intent == "repair_representation_gap":
+        signature = trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+        warning_code = str(signature.get("audit_warning_code") or "unknown")
+        repair_intent = str(signature.get("repair_intent") or "repair")
+        return (
+            header
+            + "\n\n"
+            "Intent: repair a representation gap detected by a previous "
+            "Think run's audit or by an authoritative outcome oracle. "
+            "The trigger payload names "
+            f"audit_warning_code={warning_code!r} and "
+            f"repair_intent={repair_intent!r}.\n"
+            "\n"
+            "If the trigger payload contains repair_batch_items, treat each "
+            "item as a separate repair obligation sharing one reasoning pass. "
+            "Prefer one compact diff that resolves the supported obligations; "
+            "leave unsupported items as no-op rationale in reasoning_trace.\n"
+            "\n"
+            "Use selected observations and Models to exercise the missing "
+            "loop directly:\n"
+            "  - human_correction_submitted / apply_human_correction: treat "
+            "oracle_outcome_fact as authoritative user feedback. Update, "
+            "archive, contest, split, or attach counterevidence to the matching "
+            "Models instead of restating the submitted correction.\n"
+            "  - prediction_lifecycle_not_exercised: emit "
+            "memory_lifecycle_ops action='confirm', 'falsify', 'revise', "
+            "'archive', or 'unchanged' for the selected prediction-like Model.\n"
+            "  - truth_pressure_absent_for_contestable_memory: emit a "
+            "counterevidence relation, negative lifecycle op, or contested "
+            "claim update only when supported by evidence.\n"
+            "  - missing_curiosity_coverage: emit a bounded curiosity/unknown "
+            "claim tied to concrete entities or commitments.\n"
+            "  - missing_source_coverage, selected_raw_evidence_too_low, or "
+            "selected_model_support_runaway: attach evidence, split overloaded "
+            "claims, absorb near-duplicates, or no-op if the audit was already "
+            "satisfied.\n"
+            "\n"
+            "Do not create recap facts solely to appease the audit. If the "
+            "retrieved context does not support a repair, return an empty diff "
+            "and explain the missing evidence in reasoning_trace."
+        )
     if job.intent == "reorganize_memory":
         return (
             header
@@ -2588,6 +3324,106 @@ def _internal_reflection_instructions(trigger: TriggerContext) -> str:
             "creating a sibling Model."
         )
     return header
+
+
+def _build_surface_operating_instructions(
+    trigger: TriggerContext,
+    surface: PromptSurface,
+) -> str:
+    body = [
+        "<operating_instructions>",
+        "Produce the minimal diff supported by this surface:",
+        "  (1) claim_ops for durable reality and scoped recommendations;",
+    ]
+    if surface.includes("lifecycle"):
+        body.append("  (2) memory_lifecycle_ops/open_question_ops for selected memory review;")
+    if surface.includes("graph"):
+        body.append("  (3) relation/edge/frame/ontology ops for grounded Model relationships;")
+    if surface.includes("acts"):
+        body.append("  (4) act_ops only for explicit Goal/Commitment/Decision changes;")
+    if surface.includes("resources"):
+        body.append("  (5) resource_ops only for explicit resource changes;")
+
+    if trigger.kind == "T1":
+        body.append(
+            "This is a T1 new signal. If it contains a concrete new fact, "
+            "progress update, review result, approval, blocker, concern, "
+            "customer stance, or dated plan not already captured by selected "
+            "memory, emit a grounded claim_ops.insert. Do not no-op merely "
+            "because no Act transition is available."
+        )
+        if surface.claims_only:
+            body.append(
+                "In this compact pass, represent warranted recommendations as "
+                "claim_ops.insert norm/recommendation Models; do not emit "
+                "act_ops, resource_ops, edge_ops, or lifecycle ops."
+            )
+        if surface.includes("acts"):
+            body.append(
+                "If the signal reports new in-flight work and <acts> has no "
+                "matching commitment, co-emit a fact Model and a recommendation "
+                "to create a commitment with target_act_ref "
+                '{"type":"commitment","id":null}.'
+            )
+        if surface.includes("graph"):
+            body.append(
+                "When graph-anchor Models are selected, test whether the new "
+                "claim confirms, weakens, contradicts, blocks, enables, "
+                "explains, or advances them before creating unrelated siblings."
+            )
+    elif trigger.kind == "T4" and trigger.subkind == "pattern_review":
+        body.append(
+            "This is a T4 pattern_review trigger. Treat the candidate as weak "
+            "evidence. Promote only when it is stable, useful, explainable, "
+            "falsifiable, and action-shaping; otherwise no-op or ask a targeted "
+            "open question when that operation is available."
+        )
+    elif reasoning_job_from_trigger(trigger).family == "internal_reflection":
+        job = reasoning_job_from_trigger(trigger)
+        body.append(
+            "This is internal reflection. The trigger is asking how existing "
+            f"memory should change for intent={job.intent}; prefer revise, "
+            "connect, downgrade, promote, explain, or no-op over duplicate recap "
+            "facts."
+        )
+        if job.intent == "adjudicate_candidate":
+            body.append(
+                "For latent relationship candidates, topology is evidence, not "
+                "truth. Promote only a real relation, situation, ontology gap, "
+                "or targeted lifecycle change."
+            )
+    elif trigger.kind == "T6":
+        body.append(
+            "This is a legacy topology shift. Use only member Model ids from "
+            "<models>, <reasoning_frame>, or the trigger payload; do not emit "
+            "Act mutations from topology alone."
+        )
+
+    if surface.includes("batch"):
+        body.append(
+            "Batch discipline: compress the batch into the few durable updates "
+            "that change memory or action; cite duplicate/background signals in "
+            "reasoning_trace instead of writing one op per signal."
+        )
+    if surface.includes("resources"):
+        body.append(
+            "Resource discipline: mutate Resources only from explicit resource "
+            "evidence; otherwise use a scoped claim or question."
+        )
+
+    body.append(
+        "For every claim_ops.insert, populate scope_actors and scope_entities "
+        "from context UUIDs only, and add 6-16 top-level semantic_terms grounded "
+        "in the claim text. Do not include names, UUIDs, handles, source "
+        "channels, dates, exact domain_tags, claim_role, or data already stored "
+        "in scope or grammar fields."
+    )
+    body.append(
+        "Return ONLY a single JSON object. Use trigger_ref and tenant_id exactly "
+        "as given in the triggering event metadata."
+    )
+    body.append("</operating_instructions>")
+    return "\n".join(body)
 
 
 def _build_instructions(trigger: TriggerContext) -> str:
@@ -2632,6 +3468,39 @@ def _build_instructions(trigger: TriggerContext) -> str:
             "ledger. Co-emit the fact Model AND the recommendation; "
             "they are not redundant. Use the create-commitment payload "
             "shape in the system prompt."
+        )
+    elif trigger.kind == "T4" and trigger.subkind == "pattern_review":
+        body.append(
+            "This is a T4 pattern_review trigger. The candidate comes from "
+            "SAGE or precipitation and is weak evidence, not accepted truth. "
+            "Review it like a latent regularity asking to become explicit "
+            "company memory.\n"
+            "\n"
+            "Apply this promotion rubric before emitting any Pattern Model:\n"
+            "  - stable: repeated behavior is supported by selected Models or "
+            "Observations, not merely embedding density;\n"
+            "  - useful: accepting it would change retrieval, judgment, "
+            "action, escalation, or interpretation;\n"
+            "  - explainable: the shared mechanism can be stated in ordinary "
+            "company language;\n"
+            "  - falsifiable: a concrete future signal could weaken or break "
+            "the pattern;\n"
+            "  - action-shaping: the pattern changes what the system should "
+            "ask, retrieve, prioritize, or recommend.\n"
+            "\n"
+            "If the candidate passes, emit a normal `claim_ops.insert` with "
+            "`kind=\"belief\"`, `claim_role=\"pattern\"`, "
+            "`abstraction_level=\"pattern\"`, and `time_mode=\"recurring\"`. "
+            "Cite selected evidence UUIDs in the claim text, natural text, "
+            "supporting context, or reasoning_trace. Include a falsifier. "
+            "If the candidate is only an active composite condition, prefer "
+            "`claim_role=\"situation\"` instead of pattern.\n"
+            "\n"
+            "If evidence is thin, counterexamples are unresolved, or the "
+            "candidate is only surface similarity, return an empty diff or a "
+            "targeted open_question_op. In reasoning_trace, name the missing "
+            "evidence or counterexample. Do not promote solely from "
+            "cluster_size, density, or candidate_id."
         )
     elif reasoning_job_from_trigger(trigger).family == "internal_reflection":
         body.append(_internal_reflection_instructions(trigger))
@@ -2692,6 +3561,13 @@ def _build_instructions(trigger: TriggerContext) -> str:
         "from <candidate_substrate>. Do NOT invent UUIDs."
     )
     body.append(
+        "Also populate top-level semantic_terms for every claim_ops.insert: "
+        "6-16 specific lexical phrases grounded in the claim text that improve "
+        "surface-language retrieval. Do not include names/UUIDs/handles/source "
+        "channels/dates, exact domain_tags, claim_role, or anything already "
+        "stored in scope_actors, scope_entities, or grammar axes."
+    )
+    body.append(
         "Retrieval discipline: when <retrieval_priority> names selected or "
         "graph-anchor Models, do not ignore them by default. Prefer updating "
         "an existing selected Model, adding an edge between existing Models, "
@@ -2713,4 +3589,10 @@ def _build_instructions(trigger: TriggerContext) -> str:
     return "\n".join(body)
 
 
-__all__ = ["build_prompt", "PromptPair"]
+__all__ = [
+    "PromptPair",
+    "PromptSurface",
+    "build_prompt",
+    "prompt_static_size_report",
+    "select_prompt_surface",
+]

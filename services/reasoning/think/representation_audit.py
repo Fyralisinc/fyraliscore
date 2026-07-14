@@ -102,6 +102,7 @@ def build_representation_audit(
     relation_claim_count = len(getattr(validated, "relation_claim_ops", []) or [])
     relation_frame_count = len(getattr(validated, "relation_frame_ops", []) or [])
     edge_op_count = len(getattr(validated, "edge_ops", []) or [])
+    open_question_count = len(getattr(validated, "open_question_ops", []) or [])
     source_digest_count = _source_digest_count(validated)
     curiosity_count = _curiosity_count(validated)
     coverage_roles = _collect_claim_list_values(validated, "coverage_roles")
@@ -115,6 +116,9 @@ def build_representation_audit(
         retrieval_tags=retrieval_tags,
     )
     truth_stats = _truth_maintenance_stats(validated, getattr(bundle, "models", []) or [])
+    context_use = applied.get("context_use") if isinstance(applied, dict) else {}
+    if not isinstance(context_use, dict):
+        context_use = {}
 
     lifecycle_count = len(getattr(validated, "memory_lifecycle_ops", []) or [])
     model_adaptiveness = (
@@ -123,6 +127,7 @@ def build_representation_audit(
         + evidence_attachment_count
         + near_duplicate_absorption_count
         + lifecycle_count
+        + open_question_count
     )
     edge_adaptiveness = (
         edge_op_count
@@ -135,6 +140,7 @@ def build_representation_audit(
     metrics = {
         "lifecycle_ops": lifecycle_count,
         "ontology_gap_ops": len(getattr(validated, "ontology_gap_ops", []) or []),
+        "open_question_ops": open_question_count,
         "act_ops": len(getattr(validated, "act_ops", []) or []),
         "resource_ops": len(getattr(validated, "resource_ops", []) or []),
         "claim_ops_validated": len(getattr(validated, "claim_ops", []) or []),
@@ -149,6 +155,15 @@ def build_representation_audit(
         "avg_selected_model_supporting_events": support_stats["avg"],
         "question_coverage": question_coverage,
         "truth_maintenance": truth_stats,
+        "context_use_grade": context_use.get("context_use_grade"),
+        "reasoning_trace": (
+            str(applied.get("reasoning_trace") or getattr(validated, "reasoning_trace", "") or "")
+            if isinstance(applied, dict)
+            else str(getattr(validated, "reasoning_trace", "") or "")
+        ),
+        "state_changes_emitted": _int(applied.get("state_changes_emitted"))
+        if isinstance(applied, dict)
+        else 0,
     }
     warnings = _budget_warnings(
         trigger=trigger,

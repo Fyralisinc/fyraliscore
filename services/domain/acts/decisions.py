@@ -56,6 +56,13 @@ async def create(
             f"decision cannot be created in state {state!r}",
             field="state",
         )
+    if scope is not None and not isinstance(scope, dict):
+        raise ValidationError("decision scope must be an object", field="scope")
+    if revisit_triggers is not None and not isinstance(revisit_triggers, dict):
+        raise ValidationError(
+            "decision revisit_triggers must be an object",
+            field="revisit_triggers",
+        )
 
     async def _do(tx: asyncpg.Connection) -> DecisionRow:
         decision_id = uuid7()

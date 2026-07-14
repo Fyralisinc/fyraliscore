@@ -27,6 +27,7 @@ from uuid import UUID
 import asyncpg
 import pytest
 
+from lib.llm.provider import CodexProvider, LLMConfig
 from lib.shared.ids import uuid7
 
 from services.reasoning.relationships import (
@@ -181,6 +182,11 @@ async def test_worker_config_defaults_are_batch_first(monkeypatch):
     monkeypatch.delenv("THINK_DOWNSTREAM_BATCH_MIN_SIZE", raising=False)
     monkeypatch.delenv("THINK_T2_BATCH_MAX_SIZE", raising=False)
     monkeypatch.delenv("THINK_T4_BATCH_MAX_SIZE", raising=False)
+    monkeypatch.delenv("THINK_T4_LANE_CIRCUIT_ISOLATION", raising=False)
+    monkeypatch.delenv("LLM_DAILY_BUDGET_USD_PER_T4_LANE", raising=False)
+    monkeypatch.delenv("LLM_DAILY_BUDGET_USD_PER_T4_REPAIR_LANE", raising=False)
+    monkeypatch.delenv("LLM_DAILY_BUDGET_USD_PER_T4_RELATIONSHIP_LANE", raising=False)
+    monkeypatch.delenv("LLM_DAILY_BUDGET_USD_PER_T4_DEEP_SYNTHESIS_LANE", raising=False)
 
     cfg = WorkerConfig.from_env()
 
@@ -191,6 +197,118 @@ async def test_worker_config_defaults_are_batch_first(monkeypatch):
     assert cfg.downstream_batch_min_size == 2
     assert cfg.t2_batch_max_size == 8
     assert cfg.t4_batch_max_size == 4
+    assert cfg.process_background_triggers is True
+    assert cfg.isolate_t4_lane_circuit_breakers is True
+
+
+async def test_t4_lane_provider_uses_isolated_breaker_name():
+    base = CodexProvider(
+        LLMConfig(provider="codex", api_key="test", model="gpt-5.5")
+    )
+    worker = ThinkWorker(
+        None,  # type: ignore[arg-type]
+        config=WorkerConfig(),
+        llm_provider=base,
+        embedder=object(),
+    )
+
+    repair_provider = worker._provider_for_trigger(
+        trigger_kind="T4",
+        trigger_subkind="representation_repair",
+        payload={"repair_key": "repair-a"},
+    )
+    relationship_provider = worker._provider_for_trigger(
+        trigger_kind="T4",
+        trigger_subkind="latent_relationship_candidate",
+        payload={"relationship_candidate_id": str(uuid7())},
+    )
+    foreground_provider = worker._provider_for_trigger(
+        trigger_kind="T1",
+        trigger_subkind="event_arrival",
+        payload={},
+    )
+
+    assert repair_provider is not None
+    assert relationship_provider is not None
+    assert repair_provider.config.circuit_breaker_name == "codex:t4:repair"
+    assert (
+        relationship_provider.config.circuit_breaker_name
+        == "codex:t4:relationship"
+    )
+    assert foreground_provider is base
+
+
+async def test_t4_lane_daily_budget_is_lane_scoped(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    trigger_id = await _enqueue_t4_representation_repair(
+        fresh_db,
+        tenant,
+        repair_key="source-a:missing_source_coverage",
+    )
+    await record_think_run_cost(
+        fresh_db,
+        trigger_id=trigger_id,
+        tenant_id=tenant,
+        trigger_kind="T4:representation_repair",
+        outcome="success",
+        llm_calls_count=1,
+        llm_input_tokens_total=1000,
+        llm_output_tokens_total=100,
+        llm_cost_usd=0.05,
+        latency_total_ms=100,
+        model_name="gpt-5.5",
+    )
+    deep_trigger_id = uuid7()
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO think_trigger_queue
+              (id, tenant_id, trigger_kind, trigger_subkind, payload)
+            VALUES ($1, $2, 'T4', NULL, $3::jsonb)
+            """,
+            deep_trigger_id,
+            tenant,
+            json.dumps({"trigger_id": str(deep_trigger_id)}),
+        )
+    await record_think_run_cost(
+        fresh_db,
+        trigger_id=deep_trigger_id,
+        tenant_id=tenant,
+        trigger_kind="T4",
+        outcome="success",
+        llm_calls_count=1,
+        llm_input_tokens_total=500,
+        llm_output_tokens_total=50,
+        llm_cost_usd=0.05,
+        latency_total_ms=100,
+        model_name="gpt-5.5",
+    )
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            tenant_filter=tenant,
+            t4_repair_lane_daily_budget_usd=0.01,
+            t4_relationship_lane_daily_budget_usd=0.01,
+            t4_deep_synthesis_lane_daily_budget_usd=0.01,
+        ),
+        embedder=object(),
+    )
+
+    assert await worker._tenant_over_t4_lane_daily_budget(
+        tenant,
+        type("Decision", (), {"lane": ThinkLane.REPAIR})(),
+    )
+    assert not await worker._tenant_over_t4_lane_daily_budget(
+        tenant,
+        type("Decision", (), {"lane": ThinkLane.RELATIONSHIP})(),
+    )
+    assert await worker._tenant_over_t4_lane_daily_budget(
+        tenant,
+        type("Decision", (), {"lane": ThinkLane.DEEP_SYNTHESIS})(),
+    )
 
 
 async def _seed_model(
@@ -295,6 +413,75 @@ async def _enqueue_t4_latent_candidate(
     return trigger_id
 
 
+async def _enqueue_t4_representation_repair(
+    pool,
+    tenant: UUID,
+    *,
+    repair_key: str,
+    repair_intent: str = "attach_missing_source_evidence",
+    audit_warning_code: str = "missing_source_coverage",
+    model_ids: list[UUID] | None = None,
+) -> UUID:
+    trigger_id = uuid7()
+    payload = {
+        "trigger_id": str(trigger_id),
+        "repair_key": repair_key,
+        "repair_intent": repair_intent,
+        "audit_warning_code": audit_warning_code,
+        "model_ids": [str(mid) for mid in model_ids or []],
+        "seed_natural_text": f"repair {repair_key}",
+    }
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO think_trigger_queue
+              (id, tenant_id, trigger_kind, trigger_subkind, payload)
+            VALUES ($1, $2, 'T4', 'representation_repair', $3::jsonb)
+            """,
+            trigger_id,
+            tenant,
+            json.dumps(payload),
+        )
+    return trigger_id
+
+
+async def _enqueue_t4_open_question_search(
+    pool,
+    tenant: UUID,
+    *,
+    model_id: UUID,
+    question_id: UUID,
+    question: str,
+) -> UUID:
+    trigger_id = uuid7()
+    key = f"{model_id}:{question_id}"
+    payload = {
+        "trigger_id": str(trigger_id),
+        "open_question_key": key,
+        "open_question_id": str(question_id),
+        "source_model_id": str(model_id),
+        "source_model_ids": [str(model_id)],
+        "model_ids": [str(model_id)],
+        "question": question,
+        "question_type": "truth",
+        "priority": 0.7,
+        "seed_natural_text": f"Open question search: {question}",
+    }
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO think_trigger_queue
+              (id, tenant_id, trigger_kind, trigger_subkind, model_id, payload)
+            VALUES ($1, $2, 'T4', 'open_question_search', $3, $4::jsonb)
+            """,
+            trigger_id,
+            tenant,
+            model_id,
+            json.dumps(payload),
+        )
+    return trigger_id
+
+
 # =====================================================================
 # Dequeue — FOR UPDATE SKIP LOCKED
 # =====================================================================
@@ -335,6 +522,55 @@ async def test_poll_dequeues_pending_rows(fresh_db, tenant, tenant_cleanup):
             tenant,
         )
     assert n == 2
+
+
+async def test_lane_filtered_worker_only_leases_allowed_lane(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs = await _seed_signal_observation(fresh_db, tenant)
+    t1 = await _enqueue_trigger_row(fresh_db, tenant, obs)
+    t4 = await _enqueue_t4_latent_candidate(
+        fresh_db,
+        tenant,
+        candidate_id=uuid7(),
+        member_model_ids=[],
+    )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="relationship-only",
+            tenant_filter=tenant,
+            allowed_lanes=frozenset({ThinkLane.RELATIONSHIP}),
+            t1_batch_window_s=0.0,
+            downstream_batch_window_s=0.0,
+        ),
+    )
+    dispatched: list[UUID] = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row["id"])
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    assert dispatched == [t4]
+    async with fresh_db.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT id, locked_by
+            FROM think_trigger_queue
+            WHERE id = ANY($1::uuid[])
+            """,
+            [t1, t4],
+        )
+    locked_by = {row["id"]: row["locked_by"] for row in rows}
+    assert locked_by[t1] is None
+    assert locked_by[t4] == "relationship-only"
 
 
 async def test_poll_reclaims_stale_locked_rows(
@@ -1395,6 +1631,162 @@ async def test_downstream_batch_coalesces_t4_latent_candidates(
     assert "Batch of 2 latent relationship candidates" in payload["seed_natural_text"]
 
 
+async def test_downstream_batch_coalesces_t4_representation_repairs(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    model_a = uuid7()
+    model_b = uuid7()
+    trig_a = await _enqueue_t4_representation_repair(
+        fresh_db,
+        tenant,
+        repair_key="source-a:missing_source_coverage",
+        model_ids=[model_a],
+    )
+    trig_b = await _enqueue_t4_representation_repair(
+        fresh_db,
+        tenant,
+        repair_key="source-b:missing_source_coverage",
+        model_ids=[model_b],
+    )
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET enqueued_at = now() - interval '2 seconds'
+            WHERE id = ANY($1::uuid[])
+            """,
+            [trig_a, trig_b],
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="t4-repair-batcher",
+            tenant_filter=tenant,
+            allowed_lanes=frozenset({ThinkLane.REPAIR}),
+            downstream_batch_window_s=1.0,
+            downstream_batch_min_size=2,
+            t4_batch_max_size=4,
+            prune_low_value_downstream_triggers=False,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    assert len(dispatched) == 1
+    batch = dispatched[0]
+    assert batch["trigger_kind"] == "T4"
+    assert batch["trigger_subkind"] == "representation_repair"
+    payload = batch["payload"]
+    assert payload["batch"] is True
+    assert payload["audit_warning_code"] == "missing_source_coverage"
+    assert payload["repair_intent"] == "attach_missing_source_evidence"
+    assert set(payload["repair_keys"]) == {
+        "source-a:missing_source_coverage",
+        "source-b:missing_source_coverage",
+    }
+    assert len(payload["repair_batch_items"]) == 2
+    assert set(payload["model_ids"]) == {str(model_a), str(model_b)}
+    assert "Batch of 2 representation repair obligations" in payload["seed_natural_text"]
+
+    async with fresh_db.acquire() as conn:
+        members = await conn.fetch(
+            """
+            SELECT id, batch_parent_id, completed_at
+            FROM think_trigger_queue
+            WHERE id = ANY($1::uuid[])
+            """,
+            [trig_a, trig_b],
+        )
+    assert {row["batch_parent_id"] for row in members} == {batch["id"]}
+    assert all(row["completed_at"] is None for row in members)
+
+
+async def test_downstream_batch_coalesces_t4_open_question_searches(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs = await _seed_signal_observation(fresh_db, tenant)
+    model_id = await _seed_model(
+        fresh_db,
+        tenant,
+        born_event=obs,
+        natural="renewal risk has an open truth question",
+    )
+    question_a = uuid7()
+    question_b = uuid7()
+    trig_a = await _enqueue_t4_open_question_search(
+        fresh_db,
+        tenant,
+        model_id=model_id,
+        question_id=question_a,
+        question="Did renewal risk resolve?",
+    )
+    trig_b = await _enqueue_t4_open_question_search(
+        fresh_db,
+        tenant,
+        model_id=model_id,
+        question_id=question_b,
+        question="Did the blocker get counterevidence?",
+    )
+    async with fresh_db.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE think_trigger_queue
+            SET enqueued_at = now() - interval '2 seconds'
+            WHERE id = ANY($1::uuid[])
+            """,
+            [trig_a, trig_b],
+        )
+
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=10,
+            worker_id="t4-open-question-batcher",
+            tenant_filter=tenant,
+            allowed_lanes=frozenset({ThinkLane.DEEP_SYNTHESIS}),
+            downstream_batch_window_s=1.0,
+            downstream_batch_min_size=2,
+            t4_batch_max_size=4,
+            prune_low_value_downstream_triggers=False,
+        ),
+    )
+    dispatched: list = []
+
+    async def fake_dispatch(row):
+        dispatched.append(row)
+
+    worker._dispatch_trigger = fake_dispatch  # type: ignore[method-assign]
+    await worker._poll_and_dispatch()
+    await asyncio.sleep(0.01)
+
+    assert len(dispatched) == 1
+    batch = dispatched[0]
+    assert batch["trigger_kind"] == "T4"
+    assert batch["trigger_subkind"] == "open_question_search"
+    payload = batch["payload"]
+    assert payload["batch"] is True
+    assert payload["question_primitive"] == "OPEN_QUESTION_BATCH"
+    assert set(payload["open_question_keys"]) == {
+        f"{model_id}:{question_a}",
+        f"{model_id}:{question_b}",
+    }
+    assert len(payload["open_question_batch_items"]) == 2
+    assert payload["model_ids"] == [str(model_id)]
+    assert "Batch of 2 open question searches" in payload["seed_natural_text"]
+
+
 async def test_downstream_batch_keeps_t4_edge_and_situation_lanes_separate(
     fresh_db,
     tenant,
@@ -1748,6 +2140,7 @@ async def test_worker_prunes_low_value_topology_t4_candidate_trigger(
             poll_batch=10,
             worker_id="t4-low-value-pruner",
             tenant_filter=tenant,
+            allowed_lanes=frozenset({ThinkLane.RELATIONSHIP}),
             downstream_batch_window_s=0.0,
         ),
     )
@@ -2142,6 +2535,62 @@ async def test_queue_depth_counts_pending_rows(fresh_db, tenant, tenant_cleanup)
     depth = await worker._queue_depth()
     assert depth >= 5
     assert METRICS.snapshot()["stale_trigger_locks"] >= 1
+
+
+async def test_queue_depth_ignores_t4_when_background_disabled(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    obs = await _seed_signal_observation(fresh_db, tenant)
+    await _enqueue_trigger_row(fresh_db, tenant, obs)
+    for _ in range(7):
+        await _enqueue_t4_latent_candidate(
+            fresh_db,
+            tenant,
+            candidate_id=uuid7(),
+            member_model_ids=[],
+        )
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            tenant_filter=tenant,
+            process_background_triggers=False,
+        ),
+    )
+    depth = await worker._queue_depth()
+    assert depth == 1
+
+
+async def test_poll_skips_t4_when_background_disabled(
+    fresh_db,
+    tenant,
+    tenant_cleanup,
+):
+    trigger_id = await _enqueue_t4_latent_candidate(
+        fresh_db,
+        tenant,
+        candidate_id=uuid7(),
+        member_model_ids=[],
+    )
+    worker = ThinkWorker(
+        fresh_db,
+        config=WorkerConfig(
+            poll_batch=5,
+            tenant_filter=tenant,
+            process_background_triggers=False,
+        ),
+    )
+
+    await worker._poll_and_dispatch()
+
+    assert not worker._in_flight
+    async with fresh_db.acquire() as conn:
+        locked_by = await conn.fetchval(
+            "SELECT locked_by FROM think_trigger_queue WHERE id = $1",
+            trigger_id,
+        )
+    assert locked_by is None
 
 
 async def test_backpressure_does_not_prevent_enqueue(

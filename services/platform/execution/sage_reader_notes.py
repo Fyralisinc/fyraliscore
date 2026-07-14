@@ -275,22 +275,40 @@ def sage_only_retrieval_results(
 
 def action_cache_summary(action_timings: list[dict[str, Any]]) -> dict[str, Any]:
     hits = sum(1 for note in action_timings if note.get("cache_hit"))
+    in_flight_waits = sum(
+        1
+        for note in action_timings
+        if note.get("in_flight_wait") or note.get("timing_kind") == "in_flight_wait"
+    )
     misses = sum(
         1
         for note in action_timings
         if not note.get("cache_hit") and note.get("path") != "sage_reader"
     )
     elapsed_by_path: Counter[str] = Counter()
+    work_elapsed_by_path: Counter[str] = Counter()
+    wait_elapsed_by_path: Counter[str] = Counter()
     cached_by_path: Counter[str] = Counter()
     for note in action_timings:
         path = str(note.get("path") or "")
         if path:
-            elapsed_by_path[path] += int(note.get("elapsed_ms") or 0)
+            elapsed_ms = int(note.get("elapsed_ms") or 0)
+            elapsed_by_path[path] += elapsed_ms
+            if (
+                note.get("in_flight_wait")
+                or note.get("timing_kind") == "in_flight_wait"
+            ):
+                wait_elapsed_by_path[path] += elapsed_ms
+            else:
+                work_elapsed_by_path[path] += elapsed_ms
             if note.get("cache_hit"):
                 cached_by_path[path] += 1
     return {
         "hits": hits,
+        "in_flight_waits": in_flight_waits,
         "misses": misses,
         "elapsed_ms_by_path": dict(sorted(elapsed_by_path.items())),
+        "work_elapsed_ms_by_path": dict(sorted(work_elapsed_by_path.items())),
+        "wait_elapsed_ms_by_path": dict(sorted(wait_elapsed_by_path.items())),
         "cache_hits_by_path": dict(sorted(cached_by_path.items())),
     }

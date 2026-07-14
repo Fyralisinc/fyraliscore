@@ -401,13 +401,19 @@ async def test_dedup_same_slack_message_twice(
     )
     assert r1.observation.id == r2.observation.id
     assert r2.deduped is True
-    assert r2.trigger_queue_id is None  # second call doesn't enqueue T1
+    assert r1.trigger_queue_id is not None
+    assert r2.trigger_queue_id == r1.trigger_queue_id
     # Single row in observations.
     count = await gateway_pool.fetchval(
         "SELECT count(*) FROM observations WHERE tenant_id = $1",
         tenant_id,
     )
     assert count == 1
+    trigger_count = await gateway_pool.fetchval(
+        "SELECT count(*) FROM think_trigger_queue WHERE tenant_id = $1",
+        tenant_id,
+    )
+    assert trigger_count == 1
 
 
 @pytest.mark.asyncio

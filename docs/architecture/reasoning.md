@@ -61,6 +61,36 @@ and topology optimization. It lives in the reasoning layer because it changes
 how retrieval and synthesis inspect the model graph; it is not a separate
 top-level service namespace.
 
+SAGE is tenant/company-specific adaptive policy memory, not canonical truth. It
+learns route utility, question utility, salience, source/path dead ends,
+negative memory, source/actor reliability, structural features, residuals,
+drift, and latent pattern priors. Those priors may change what the system
+retrieves, asks, budgets, or prioritizes, but they do not assert facts about the
+company and they never grant read authority. Source/actor reliability priors are
+salience-only (`authority_effect="none"`), and surfaced company-profile notes
+redact raw evidence refs by default while preserving aggregate provenance.
+When profile-shaped retrieval actions run, inquiry persistence records
+`sage_profile_prior_outcomes` in notes so later audits can see whether the prior
+actually produced selected context, skipped low-value work, or aligned with
+downstream outcome reward. Contradicted prior outcomes are also written
+best-effort to `model_residual_evidence` as non-canonical compression debt when
+that table exists.
+
+The promotion bridge is deliberately narrow:
+
+```text
+SAGE latent signal -> Think semantic judgment -> Pattern/Situation Model
+```
+
+Retrieval motifs, route utilities, discovery shortcuts, negative memory,
+company profiles, and latent pattern candidates are optimization memory. They
+must carry the same conceptual boundary as `canonical_write=false`. Explicit
+organizational memory belongs in Models/model_edges/etc. and enters through the
+ordinary Think validator/applier path. When a latent regularity becomes stable,
+useful, explainable, falsifiable, and action-shaping, Think may promote it as a
+normal `claim_role="pattern"` Model, or as `claim_role="situation"` when it is
+only an active composite condition.
+
 `topology/field.py::LatentTopologyService` converts a new/changed Model into an
 `ImpactSignature` (flows/pressures/surfaces/stakes/time-shape), searches bounded
 neighbor pools, scores consequence interactions, and persists high-yield
@@ -77,6 +107,37 @@ provides the shared `judgment_leverage` attention score.
 `None` below 5 samples). `contestability/` implements first-person belief override
 (`contest_model`, reached via gateway `POST /contest/{model_id}`). `dynamics/`
 emits ephemeral signals only — no new truth table.
+
+### Critical TODO: budget latent topology as background inquiry
+
+> **TODO(critical):** Give topology-discovered latent T4 work a first-class,
+> budgeted hypothesis lifecycle instead of treating it like foreground queue work.
+>
+> The structural weakness is lifecycle confusion. Foreground Think work is finite:
+> signals enter, Models update, projections materialize, and product-visible state
+> should drain. Latent topology is different: it is open-ended search pressure over
+> the model field. Better Models and better retrieval naturally create more
+> non-obvious relationship candidates, which is useful intelligence, but it is not
+> a bounded product request.
+>
+> The fix is to separate the phases explicitly:
+>
+> 1. **Discovery:** broad, cheap, noisy pattern search creates candidate pressure.
+> 2. **Triage:** deterministic scoring/dedupe/budgeting decides which candidates are
+>    worth expensive adjudication.
+> 3. **Adjudication:** only high-expected-value candidates become LLM-backed T4 work.
+> 4. **Materialization:** accepted candidates become durable edges, situation Models,
+>    or ontology gaps.
+>
+> Product E2E gates should require foreground Think, projection materialization, and
+> product-visible post-commit work to drain. They should not require exploratory
+> topology/search/open-question background inquiry to reach zero. Full maintenance
+> drains can exist as separate health checks with explicit budgets, priority, and
+> timeout semantics.
+>
+> This is one of the highest-priority architecture debts because it decides whether
+> improving retrieval/model quality creates compounding intelligence or unbounded
+> queue pressure.
 
 ## How it's wired
 

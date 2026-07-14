@@ -25,6 +25,11 @@ from uuid import UUID
 
 import asyncpg
 
+from services.platform.access_control.authority import (
+    ObjectRef,
+    Principal,
+    authorize_read,
+)
 from services.product.recommendations.repo import RecommendationView, list_for_actor
 from services.platform.access_control.audit import OverrideKind, record_override
 from services.platform.access_control.checks import (
@@ -696,13 +701,25 @@ _DIFF_SQL_BY_TYPE: dict[str, str] = {
 
 
 async def _fetch_target_diff_extras(
-    ref_type: str, ref_id: UUID, tenant_id: UUID, conn: asyncpg.Connection,
+    ref_type: str,
+    ref_id: UUID,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    principal: Principal | None = None,
 ) -> dict[str, Any]:
     """Single SELECT per card pulling the entity row + owner display
     name (for commitments) for the diff band. Per-type SQL strings only
     reference columns confirmed to exist on the table."""
     sql = _DIFF_SQL_BY_TYPE.get(ref_type)
     if sql is None:
+        return {}
+    if not await _today_authorizes(
+        principal,
+        tenant_id=tenant_id,
+        object_kind=ref_type,
+        object_id=ref_id,
+        conn=conn,
+    ):
         return {}
     row = await conn.fetchrow(sql, ref_id, tenant_id)
     if row is None:
@@ -716,6 +733,7 @@ async def _render_diff(
     now: datetime,
     tenant_id: UUID,
     conn: asyncpg.Connection,
+    principal: Principal | None = None,
 ) -> dict[str, Any] | None:
     ref = view.target_act_ref
     if ref is None:
@@ -739,7 +757,9 @@ async def _render_diff(
     op = (view.proposed_change or {}).get("operation")
     to_state = payload.get("new_state") if op == "transition" else None
 
-    extras = await _fetch_target_diff_extras(ref_type, ref_id, tenant_id, conn)
+    extras = await _fetch_target_diff_extras(
+        ref_type, ref_id, tenant_id, conn, principal=principal,
+    )
 
     created_at = extras.get("created_at")
     updated_at = extras.get("updated_at") or created_at
@@ -969,6 +989,7 @@ async def _build_card(
     tenant_id: UUID,
     target_actor_id: UUID,
     conn: asyncpg.Connection,
+    principal: Principal | None = None,
 ) -> dict[str, Any]:
     severity = _derive_severity(view)
     category = _derive_category(view, severity)
@@ -1028,7 +1049,11 @@ async def _build_card(
     # UX-3 expanded-card bands. Each renderer is a pure addition to
     # `detail`; older clients keep parsing the legacy fields above.
     diff_panel = await _render_diff(
-        view, now=now, tenant_id=tenant_id, conn=conn,
+        view,
+        now=now,
+        tenant_id=tenant_id,
+        conn=conn,
+        principal=principal,
     )
     if diff_panel is not None:
         detail["diff"] = diff_panel
@@ -1472,6 +1497,7 @@ async def _financial_resource_metric(
     conn: asyncpg.Connection,
     label: str,
     identity_match: str,
+    principal: Principal | None = None,
 ) -> dict[str, Any] | None:
     rows = await conn.fetch(
         """
@@ -1499,6 +1525,14 @@ async def _financial_resource_metric(
             break
     if row is None:
         return None
+    if not await _today_authorizes(
+        principal,
+        tenant_id=tenant_id,
+        object_kind="resource",
+        object_id=row["id"],
+        conn=conn,
+    ):
+        return None
     cv = row["current_value"] or {}
     if isinstance(cv, str):
         import json
@@ -1523,7 +1557,11 @@ async def _financial_resource_metric(
 
 
 async def _build_signal_strip(
-    *, tenant_id: UUID, target_actor: UUID, conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    target_actor: UUID,
+    conn: asyncpg.Connection,
+    principal: Principal | None = None,
 ) -> list[dict[str, Any]]:
     arr = (
         await _financial_resource_metric(
@@ -1573,6 +1611,7 @@ async def _build_vitals(
     target_actor: UUID,
     recommendations: list[RecommendationView],
     conn: asyncpg.Connection,
+    principal: Principal | None = None,
 ) -> list[dict[str, Any]]:
     """Five rows: what Fyralis is currently watching for the actor."""
     drift_count = sum(
@@ -1583,42 +1622,70 @@ async def _build_vitals(
     pattern_threshold = sum(
         1 for v in recommendations if v.confidence >= 0.7 and v.expected_impact and v.expected_impact >= 0.5
     )
-    held = await conn.fetchval(
+    held_model_rows = await conn.fetch(
         """
-        SELECT count(*)
+        SELECT id
         FROM models
         WHERE tenant_id = $1 AND target_actor_id = $2
           AND status = 'archived' AND archive_reason = 'manual'
         """,
         tenant_id, target_actor,
-    ) or 0
-    slipping = await conn.fetchval(
+    )
+    held = await _count_authorized_ids(
+        held_model_rows,
+        object_kind="model",
+        tenant_id=tenant_id,
+        conn=conn,
+        principal=principal,
+    )
+    slipping_rows = await conn.fetch(
         """
-        SELECT count(*)
+        SELECT id
         FROM commitments
         WHERE tenant_id = $1 AND state IN ('blocked','paused')
           AND terminal_at IS NULL
         """,
         tenant_id,
-    ) or 0
-    total = await conn.fetchval(
+    )
+    slipping = await _count_authorized_ids(
+        slipping_rows,
+        object_kind="commitment",
+        tenant_id=tenant_id,
+        conn=conn,
+        principal=principal,
+    )
+    total_rows = await conn.fetch(
         """
-        SELECT count(*)
+        SELECT id
         FROM commitments
         WHERE tenant_id = $1 AND terminal_at IS NULL
         """,
         tenant_id,
-    ) or 0
-    customer_at_risk = await conn.fetchval(
+    )
+    total = await _count_authorized_ids(
+        total_rows,
+        object_kind="commitment",
+        tenant_id=tenant_id,
+        conn=conn,
+        principal=principal,
+    )
+    customer_at_risk_rows = await conn.fetch(
         """
-        SELECT count(*)
+        SELECT id
         FROM resources
         WHERE tenant_id = $1 AND kind = 'relational'
           AND (metadata->>'health' = 'at_risk' OR utilization_state = 'depleted')
           AND archived_at IS NULL
         """,
         tenant_id,
-    ) or 0
+    )
+    customer_at_risk = await _count_authorized_ids(
+        customer_at_risk_rows,
+        object_kind="resource",
+        tenant_id=tenant_id,
+        conn=conn,
+        principal=principal,
+    )
 
     rows: list[dict[str, Any]] = []
     if customer_at_risk > 0:
@@ -1800,6 +1867,7 @@ async def build_today(
     days_since_inception: int = 1,
     cleared_today: int = 0,
     previous_last_seen_at: datetime | None = None,
+    principal: Principal | None = None,
 ) -> TodayPayload:
     """Read the substrate; return the full Today payload for one actor."""
     now = datetime.now(timezone.utc)
@@ -1809,6 +1877,7 @@ async def build_today(
         target_actor_id=actor_id,
         limit=limit,
         conn=conn,
+        principal=principal,
     )
     recommendations = await _filter_visible_recommendations(
         recommendations,
@@ -1820,7 +1889,7 @@ async def build_today(
     cards = [
         await _build_card(
             v, now=now, tenant_id=tenant_id,
-            target_actor_id=actor_id, conn=conn,
+            target_actor_id=actor_id, conn=conn, principal=principal,
         )
         for v in recommendations
     ]
@@ -1848,28 +1917,39 @@ async def build_today(
                     card["detail"]["is_watched"] = True
 
     signal_strip = await _build_signal_strip(
-        tenant_id=tenant_id, target_actor=actor_id, conn=conn,
+        tenant_id=tenant_id,
+        target_actor=actor_id,
+        conn=conn,
+        principal=principal,
     )
     vitals = await _build_vitals(
         tenant_id=tenant_id,
         target_actor=actor_id,
         recommendations=recommendations,
         conn=conn,
+        principal=principal,
     )
     page = _build_page_header(
         recommendations=recommendations, now=now,
         actor_display_name=actor_display_name,
     )
 
-    held = await conn.fetchval(
+    held_rows = await conn.fetch(
         """
-        SELECT count(*)
+        SELECT id
         FROM models
         WHERE tenant_id = $1 AND target_actor_id = $2
           AND status = 'archived' AND archive_reason = 'manual'
         """,
         tenant_id, actor_id,
-    ) or 0
+    )
+    held = await _count_authorized_ids(
+        held_rows,
+        object_kind="model",
+        tenant_id=tenant_id,
+        conn=conn,
+        principal=principal,
+    )
 
     nav = _build_nav(today_count=len(cards), hold_count=held)
 
@@ -1962,6 +2042,7 @@ async def _build_recent_signals(
     actor_id: UUID,
     conn: asyncpg.Connection,
     now: datetime,
+    principal: Principal | None = None,
 ) -> dict[str, Any] | None:
     """Compose the most recent observations into a presentation feed.
 
@@ -2013,6 +2094,8 @@ async def _build_recent_signals(
 
     if not signals:
         return None
+    if principal is not None:
+        total = len(signals)
     return {
         "signals": signals,
         "total": len(signals),
@@ -2121,3 +2204,51 @@ async def _build_just_updated(
             f"<strong>Just learned</strong> · {body}"
         )
     }
+
+
+async def _today_authorizes(
+    principal: Principal | None,
+    *,
+    tenant_id: UUID,
+    object_kind: str,
+    object_id: UUID,
+    conn: asyncpg.Connection,
+) -> bool:
+    if principal is None:
+        return True
+    if principal.tenant_id != tenant_id:
+        return False
+    decision = await authorize_read(
+        principal,
+        "today",
+        ObjectRef(
+            tenant_id=tenant_id,
+            object_kind=object_kind,
+            object_id=object_id,
+        ),
+        conn=conn,
+    )
+    return decision.allowed
+
+
+async def _count_authorized_ids(
+    rows: list[Any],
+    *,
+    object_kind: str,
+    tenant_id: UUID,
+    conn: asyncpg.Connection,
+    principal: Principal | None,
+) -> int:
+    if principal is None:
+        return len(rows)
+    count = 0
+    for row in rows:
+        if await _today_authorizes(
+            principal,
+            tenant_id=tenant_id,
+            object_kind=object_kind,
+            object_id=row["id"],
+            conn=conn,
+        ):
+            count += 1
+    return count

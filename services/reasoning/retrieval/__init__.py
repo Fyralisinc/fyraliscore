@@ -10,6 +10,8 @@ Public API is curated in submodules:
   - second_pass.py: second_pass_expand
   - assembler.py  : AccessContext, ContextBundle, assemble_context
   - maintenance.py: MaintenanceReport, background_relationship_maintenance
+  - projection_context.py: load_constraint_context / load_projection_context
+  - projection_pathway.py: projection-first Model candidates
 
 Retrieval is READ-ONLY except for two write side-effects:
   1. Reconsolidation via ModelsRepo.retrieve(ids) — bumps activation,

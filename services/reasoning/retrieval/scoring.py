@@ -29,6 +29,7 @@ amplifies top ranks.
 Our dimensions:
   - "structural" — pathway A rank
   - "semantic"   — pathway B rank
+  - "lexical"    — pathway L semantic-term overlap rank
   - "temporal"   — pathway C rank
   - "pattern"    — pathway D rank
   - "model_edge" — pathway G typed graph rank
@@ -43,6 +44,7 @@ emphasis:
 
   structural    1.0
   semantic      0.85
+  lexical       0.65
   temporal      0.5
   pattern       0.5
   model_edge    0.9
@@ -69,6 +71,7 @@ RRF_K_DEFAULT = 60
 # Canonical dimension names. If you add one, update DIMENSION_WEIGHTS.
 DIMENSION_STRUCTURAL = "structural"
 DIMENSION_SEMANTIC = "semantic"
+DIMENSION_LEXICAL = "lexical"
 DIMENSION_TEMPORAL = "temporal"
 DIMENSION_PATTERN = "pattern"
 DIMENSION_MODEL_EDGE = "model_edge"  # typed Model graph traversal
@@ -78,6 +81,7 @@ DIMENSION_PROVENANCE = "provenance"  # merged trust_tier + source_boost
 DIMENSION_WEIGHTS: dict[str, float] = {
     DIMENSION_STRUCTURAL: 1.0,
     DIMENSION_SEMANTIC: 0.85,
+    DIMENSION_LEXICAL: 0.65,
     DIMENSION_TEMPORAL: 0.5,
     DIMENSION_PATTERN: 0.5,
     DIMENSION_MODEL_EDGE: 0.9,
@@ -89,6 +93,7 @@ DIMENSION_WEIGHTS: dict[str, float] = {
 PATHWAY_TO_DIMENSION: dict[str, str] = {
     "A": DIMENSION_STRUCTURAL,
     "B": DIMENSION_SEMANTIC,
+    "L": DIMENSION_LEXICAL,
     "C": DIMENSION_TEMPORAL,
     "D": DIMENSION_PATTERN,
     "G": DIMENSION_MODEL_EDGE,
@@ -366,6 +371,7 @@ __all__ = [
     "RRF_K_DEFAULT",
     "DIMENSION_STRUCTURAL",
     "DIMENSION_SEMANTIC",
+    "DIMENSION_LEXICAL",
     "DIMENSION_TEMPORAL",
     "DIMENSION_PATTERN",
     "DIMENSION_ACTIVATION",

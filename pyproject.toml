@@ -238,8 +238,6 @@ ignore_imports = [
     "services.domain.models.repo -> services.reasoning.think.audit",
     "services.domain.models.repo -> services.reasoning.topology",
     "services.domain.models.repo -> services.reasoning.topology.anchor",
-    "services.domain.models.tests.test_batch -> services.reasoning.retrieval.config",
-    "services.domain.models.tests.test_batch -> services.reasoning.retrieval.primary",
     "services.domain.models.tests.test_model_quality_suite -> services.reasoning.relationships.candidates",
     "services.domain.models.tests.test_model_quality_suite -> services.reasoning.think.applier",
     "services.domain.models.tests.test_model_quality_suite -> services.reasoning.think.diff_schema",

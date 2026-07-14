@@ -23,13 +23,26 @@ UPDATE demo_sessions
    WHERE company_id IN ('truss', 'northwind', 'meridian')
  );
 
--- Detach tenants from legacy configs.
-UPDATE tenants
-   SET demo_config_id = NULL
- WHERE demo_config_id IN (
-   SELECT id FROM demo_configs
-   WHERE company_id IN ('truss', 'northwind', 'meridian')
- );
+-- Detach tenants from legacy configs. Modern post-demo core schemas no
+-- longer have tenants.demo_config_id (dropped by 0093), so guard the
+-- historical cleanup for long-lived DBs that replay migrations.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'tenants'
+      AND column_name = 'demo_config_id'
+  ) THEN
+    UPDATE tenants
+       SET demo_config_id = NULL
+     WHERE demo_config_id IN (
+       SELECT id FROM demo_configs
+       WHERE company_id IN ('truss', 'northwind', 'meridian')
+     );
+  END IF;
+END $$;
 
 DELETE FROM demo_session_costs
  WHERE demo_session_id IN (

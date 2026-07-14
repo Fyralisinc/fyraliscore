@@ -203,9 +203,9 @@ python scripts/manage_extension.py install --tenant <uuid> \
 **4. Enforcement is now real.** The ingest seam runs the inline enricher only for
 tenants where `enricher_allowed` passes (enabled + granted) — a tenant *without* the
 grant gets the **raw** github signal, no `content["intelligence"]`. The background
-worker (FSM state + `github_signal_enrichment` + code reindex) is supervised by the
-generic launcher; in compose it is the **`extension_workers`** service
-(`python -m lib.extensions.run_workers`).
+worker and its FSM/code-intel read models are extension-owned; core no longer keeps
+host-owned GitHub/code-intel tables. In compose the generic launcher is the
+**`extension_workers`** service (`python -m lib.extensions.run_workers`).
 
 !!! warning "trust_tier is operator-asserted, not manifest-asserted"
     A manifest's `trust_tier` is self-declared, so it is **not** trusted on its own.
@@ -231,8 +231,8 @@ Open pgAdmin (`admin@fyralis.com` / `admin`), expand **Fyralis — extension dem
 fyralis_ext_demo**, and run [`ops/pgadmin/inspect_github_intel.sql`](https://github.com/Fyralisinc/fyraliscore/blob/main/ops/pgadmin/inspect_github_intel.sql).
 The evidence the extension is live: the `extension_grants` row, `tenant_flags`,
 `observations.content->'intelligence'` (enriched for the installed tenant, **absent**
-for the control tenant — enforcement proof), the `github_signal_enrichment`
-system-of-record, the FSM `github_*_state`, and the `code_snapshots` graph.
+for the control tenant — enforcement proof), plus the extension-owned
+system-of-record, FSM state, and code graph.
 
 ## Design rationale
 

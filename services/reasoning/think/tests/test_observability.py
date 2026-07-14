@@ -40,6 +40,7 @@ async def test_insert_think_run_creates_running_row(fresh_db, tenant, tenant_cle
         tenant_id=tenant,
         trigger_id=uuid7(),
         trigger_kind="T1",
+        lane="batch_memory",
     )
     async with fresh_db.acquire() as conn:
         async with conn.transaction():
@@ -55,6 +56,7 @@ async def test_insert_think_run_creates_running_row(fresh_db, tenant, tenant_cle
     assert row["status"] == "running"
     assert row["ended_at"] is None
     assert row["trigger_kind"] == "T1"
+    assert row["lane"] == "batch_memory"
     assert row["tenant_id"] == tenant
     assert row["region_tenant_hash"] == 1234
     assert row["region_entity_hash"] == 5678

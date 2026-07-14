@@ -175,6 +175,7 @@ async def test_plan_context_builds_frame_and_preserves_retrieval_notes(
         *,
         embedder=None,
         llm_provider=None,
+        read_pool=None,
         mode=None,
         config=None,
     ):
@@ -182,6 +183,7 @@ async def test_plan_context_builds_frame_and_preserves_retrieval_notes(
         assert conn == "conn"
         assert embedder == "embedder"
         assert llm_provider is None
+        assert read_pool is None
         assert mode == "deep"
         assert config.context_packet_evidence_mode == "models_only"
         return retrieval_result
@@ -287,12 +289,14 @@ async def test_assemble_reasoning_context_expands_region_with_augmented_acts(
         conn,
         *,
         config=None,
+        read_pool=None,
     ):
         assert retrieval_result_arg is retrieval_result
         assert isinstance(access, AccessContext)
         assert access.tenant_id == trigger.tenant_id
         assert isinstance(conn, FakeConn)
         assert config is not None
+        assert read_pool is None
         return bundle
 
     async def fake_load_actor_operating_context(*args, **kwargs):

@@ -24,6 +24,11 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.errors import CompanyOSError
+from services.platform.access_control.authority import (
+    ObjectRef,
+    Principal,
+    authorize_read,
+)
 from services.product.recommendations.consequence_preview import (
     build_consequence_preview,
 )
@@ -158,6 +163,7 @@ async def list_for_actor(
     target_actor_id: UUID,
     limit: int = 15,
     conn: asyncpg.Connection,
+    principal: Principal | None = None,
 ) -> list[RecommendationView]:
     """
     Return ranked active recommendations for one actor.
@@ -257,7 +263,34 @@ async def list_for_actor(
 
     out: list[RecommendationView] = []
     for r, proposition, ref in parsed:
+        if principal is not None:
+            decision = await authorize_read(
+                principal,
+                "today",
+                ObjectRef(
+                    tenant_id=tenant_id,
+                    object_kind="model",
+                    object_id=r["id"],
+                ),
+                conn=conn,
+            )
+            if not decision.allowed:
+                continue
+
         if ref is not None:
+            if principal is not None:
+                target_decision = await authorize_read(
+                    principal,
+                    "today",
+                    ObjectRef(
+                        tenant_id=tenant_id,
+                        object_kind=ref["type"],
+                        object_id=ref["id"],
+                    ),
+                    conn=conn,
+                )
+                if not target_decision.allowed:
+                    continue
             # Filter out recommendations whose target was archived OR whose
             # target Commitment reached a terminal state (closed/doneverified).
             target: TargetEntitySummary | None = target_index.get((ref["type"], ref["id"]))

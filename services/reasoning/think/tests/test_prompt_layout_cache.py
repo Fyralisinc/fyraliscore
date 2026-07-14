@@ -56,3 +56,41 @@ def test_candidates_char_budget_caps_tail(monkeypatch):
     user = build_prompt(trigger, ContextBundle()).user
     assert "relationship_candidate_omitted_count:" in user
     assert 1 <= user.count("<relationship_candidate>") < 5
+
+
+def test_pattern_review_prompt_renders_candidate_and_rubric():
+    candidate_id = uuid7()
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="pattern_review",
+        tenant_id=uuid7(),
+        seed_signature={
+            "pattern_candidate_id": str(candidate_id),
+            "source": "precipitation_cluster",
+            "review_mode": "semantic_required",
+            "cluster_size": 3,
+            "density": 0.74,
+            "constituent_model_ids": [str(uuid7()), str(uuid7()), str(uuid7())],
+            "proposed_signature": {"kind": "cluster_signature"},
+            "observed_tendency": {
+                "exemplars": ["approval review blocked"],
+                "review_features": {
+                    "feature_axes": ["lexical_recurrence", "shared_actors"],
+                    "evidence_axis_count": 2,
+                },
+            },
+        },
+    )
+
+    prompt = build_prompt(trigger, ContextBundle())
+
+    assert "<pattern_review_candidate>" in prompt.user
+    assert f"id: {candidate_id}" in prompt.user
+    assert "weak_evidence_requires_semantic_review" in prompt.user
+    assert "review_features" in prompt.user
+    assert "lexical_recurrence" in prompt.user
+    assert "This is a T4 pattern_review trigger" in prompt.system
+    assert "stable: repeated behavior" in prompt.system
+    assert "Do not promote solely from cluster_size, density, or candidate_id" in (
+        prompt.system
+    )

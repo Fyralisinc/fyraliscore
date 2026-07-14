@@ -351,6 +351,7 @@ async def test_scripted_think_creates_model_audit_state_change_and_post_commit(
     assert [r["action_kind"] for r in post_commit_kinds] == [
         "broadcast_realtime",
         "discover_model_edges",
+        "materialize_projections",
     ]
 
 

@@ -34,6 +34,7 @@ from services.domain.models.propositions import (
     ensure_situation_compositional_defaults,
     validate_proposition,
 )
+from services.domain.models.semantic_terms import derive_semantic_terms
 from services.reasoning.synthesis.operational_facets import (
     enrich_operational_model_proposition,
 )
@@ -71,6 +72,7 @@ class ModelProjection:
     scope_actors: tuple[UUID, ...] = ()
     scope_entities: tuple[dict[str, Any], ...] = ()
     domain_tags: tuple[str, ...] = ()
+    semantic_terms: tuple[str, ...] = ()
     operational_roles: tuple[str, ...] = ()
 
 
@@ -172,10 +174,24 @@ def construct_model(proposed: ModelCreate) -> ConstructedModel:
     ])
     if domain_tags:
         canonical_prop["domain_tags"] = domain_tags
+    suggested_semantic_terms = _dedupe_text([
+        *list(proposed.semantic_terms or ()),
+        *_string_list(canonical_prop.pop("semantic_terms", [])),
+    ])
+    semantic_terms = derive_semantic_terms(
+        natural=proposed.natural,
+        proposition=canonical_prop,
+        falsifier=proposed.falsifier,
+        resolution_criteria=proposed.resolution_criteria,
+        scope_entities=proposed.scope_entities,
+        domain_tags=domain_tags,
+        suggested_terms=suggested_semantic_terms,
+    )
 
     normalized = proposed.model_copy(update={
         "proposition": canonical_prop,
         "domain_tags": domain_tags,
+        "semantic_terms": semantic_terms,
     })
 
     projection = ModelProjection(
@@ -188,6 +204,7 @@ def construct_model(proposed: ModelCreate) -> ConstructedModel:
             if isinstance(item, Mapping)
         ),
         domain_tags=tuple(domain_tags),
+        semantic_terms=tuple(semantic_terms),
         operational_roles=tuple(
             str(role)
             for role in canonical_prop.get("operational_roles", [])
@@ -300,6 +317,14 @@ def _dedupe_text(values: list[str]) -> list[str]:
             seen.add(clean)
             out.append(clean)
     return out
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return [item for item in value if isinstance(item, str)]
+    return []
 
 
 __all__ = [

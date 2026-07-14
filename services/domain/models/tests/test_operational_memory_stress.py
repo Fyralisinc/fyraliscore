@@ -176,6 +176,23 @@ async def test_operational_memory_model_insert_and_search_projection_stress(
     assert role_counts["delta"] >= 30
     assert role_counts["sequence"] >= 30
     assert role_counts["property"] >= 60
+    posting_counts = {
+        row["role"]: row["count"]
+        for row in await tx_conn.fetch(
+            """
+            SELECT role, count(*)::int AS count
+            FROM model_operational_role_postings
+            WHERE tenant_id = $1
+              AND model_id = ANY($2::uuid[])
+            GROUP BY role
+            """,
+            tenant,
+            inserted_ids,
+        )
+    }
+    assert posting_counts["delta"] == role_counts["delta"]
+    assert posting_counts["sequence"] == role_counts["sequence"]
+    assert posting_counts["property"] == role_counts["property"]
 
     ssd_matches = await _operational_matches(
         tx_conn,
@@ -242,27 +259,63 @@ async def _operational_matches(
     assert seed_roles == ["delta"]
     return list(await conn.fetch(
         """
-        SELECT m.id, role_matches.role_match_count, lexical.lexical_match_count
-        FROM model_search_documents msd
-        JOIN models m
-          ON m.id = msd.model_id
-         AND m.tenant_id = msd.tenant_id
-        JOIN LATERAL (
-          SELECT count(*)::int AS role_match_count
-          FROM unnest($3::text[]) AS role(value)
-          WHERE coalesce(m.proposition->'operational_roles', '[]'::jsonb)
-                ? role.value
-        ) role_matches ON role_matches.role_match_count > 0
-        LEFT JOIN LATERAL (
-          SELECT count(*)::int AS lexical_match_count
+        WITH seed_roles AS MATERIALIZED (
+          SELECT role::text,
+                 ord::int AS role_ord
+          FROM unnest($3::text[]) WITH ORDINALITY AS r(role, ord)
+        ),
+        query_terms AS MATERIALIZED (
+          SELECT term::text
           FROM unnest($4::text[]) AS term(value)
-          WHERE strpos(msd.search_text, term.value) > 0
-        ) lexical ON TRUE
-        WHERE msd.tenant_id = $1
-          AND msd.status = 'active'
-          AND m.status = 'active'
-        ORDER BY role_matches.role_match_count DESC,
-                 lexical.lexical_match_count DESC,
+          WHERE nullif(term.value, '') IS NOT NULL
+        ),
+        role_hits AS MATERIALIZED (
+          SELECT sr.role,
+                 sr.role_ord,
+                 morp.model_id,
+                 coalesce(lexical.lexical_match_count, 0)::int
+                   AS lexical_match_count
+          FROM seed_roles sr
+          JOIN model_operational_role_postings morp
+            ON morp.tenant_id = $1
+           AND morp.status = 'active'
+           AND morp.role = sr.role
+          JOIN models m
+            ON m.id = morp.model_id
+           AND m.tenant_id = $1
+           AND m.status = 'active'
+          LEFT JOIN model_search_documents msd
+            ON msd.model_id = morp.model_id
+           AND msd.tenant_id = $1
+           AND msd.status = 'active'
+          LEFT JOIN LATERAL (
+            SELECT count(*)::int AS lexical_match_count
+            FROM query_terms term
+            WHERE strpos(coalesce(msd.search_text, ''), term.term) > 0
+          ) lexical ON TRUE
+        ),
+        scored AS MATERIALIZED (
+          SELECT model_id,
+                 array_agg(DISTINCT role ORDER BY role) AS matched_roles,
+                 count(DISTINCT role)::int AS role_match_count,
+                 min(role_ord)::int AS first_role_ord,
+                 max(lexical_match_count)::int AS lexical_match_count
+          FROM role_hits
+          GROUP BY model_id
+        )
+        SELECT m.id,
+               m."natural",
+               scored.matched_roles,
+               scored.role_match_count,
+               scored.lexical_match_count
+        FROM scored
+        JOIN models m
+          ON m.id = scored.model_id
+         AND m.tenant_id = $1
+        WHERE m.status = 'active'
+        ORDER BY scored.role_match_count DESC,
+                 scored.lexical_match_count DESC,
+                 scored.first_role_ord ASC,
                  m.activation DESC,
                  m.created_at DESC
         LIMIT $2

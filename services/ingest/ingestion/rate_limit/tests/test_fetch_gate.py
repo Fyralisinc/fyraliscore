@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from fakeredis import aioredis as fake_aioredis
 
 from services.ingest.ingestion.rate_limit import (
     BUCKET_DEFAULTS,
@@ -26,6 +25,10 @@ from services.ingest.ingestion.rate_limit import (
 
 @pytest.fixture
 async def redis():
+    fake_aioredis = pytest.importorskip(
+        "fakeredis.aioredis",
+        reason="fakeredis with [lua] not available",
+    )
     r = fake_aioredis.FakeRedis()
     try:
         yield r

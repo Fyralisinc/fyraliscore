@@ -134,6 +134,45 @@ async def test_insert_low_confidence_without_falsifier_succeeds(
     assert row.activation_coefficient == 1.0
 
 
+async def test_insert_persists_model_semantic_terms(
+    repo: ModelsRepo,
+    tx_conn: asyncpg.Connection,
+    tenant: uuid.UUID,
+    actor_id: uuid.UUID,
+    born_from_event: uuid.UUID,
+) -> None:
+    natural = "Partial refund edge case creates duplicate invoice reversal."
+    row = await repo.insert(
+        _mc(
+            tenant=tenant,
+            born_from_event=born_from_event,
+            actor_id=actor_id,
+            proposition=state_proposition(
+                subject="Beacon",
+                assertion="partial refund edge case creates duplicate invoice reversal",
+            ),
+            natural=natural,
+            embedding=make_embedding(natural),
+            confidence=0.6,
+            semantic_terms=[
+                "partial refund edge case",
+                "duplicate invoice reversal",
+            ],
+        ),
+        conn=tx_conn,
+    )
+
+    assert "partial refund edge case" in row.semantic_terms
+    assert "duplicate invoice reversal" in row.semantic_terms
+    assert "semantic_terms" not in row.proposition
+    stored = await tx_conn.fetchval(
+        "SELECT semantic_terms FROM model_semantic_terms WHERE model_id = $1",
+        row.id,
+    )
+    assert "partial refund edge case" in stored
+    assert "duplicate invoice reversal" in stored
+
+
 async def test_insert_high_confidence_without_falsifier_rejected(
     repo: ModelsRepo,
     tx_conn: asyncpg.Connection,
