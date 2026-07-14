@@ -460,7 +460,7 @@ SELECT id, tenant_id, base_url, secret_ref, disabled_at
 # (access token) + refresh_secret_ref the QuickBooksClient needs.
 _LOAD_QUICKBOOKS_INSTALL_SQL = """
 SELECT id, tenant_id, realm_id, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
+       token_expires_at, disabled_at
   FROM quickbooks_installations
  WHERE tenant_id = $1 AND disabled_at IS NULL
  LIMIT 1
@@ -512,7 +512,7 @@ SELECT id, tenant_id, base_url, secret_ref, disabled_at
 # secret_ref (access token) + refresh_secret_ref the RampClient needs.
 _LOAD_RAMP_INSTALL_SQL = """
 SELECT id, tenant_id, business_id, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
+       token_expires_at, disabled_at
   FROM ramp_installations
  WHERE tenant_id = $1 AND disabled_at IS NULL
  LIMIT 1
@@ -523,7 +523,7 @@ SELECT id, tenant_id, business_id, base_url, secret_ref, refresh_secret_ref,
 # base_url + secret_ref (access token) + refresh_secret_ref the GustoClient needs.
 _LOAD_GUSTO_INSTALL_SQL = """
 SELECT id, tenant_id, company_uuid, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
+       token_expires_at, disabled_at
   FROM gusto_installations
  WHERE tenant_id = $1 AND disabled_at IS NULL
  LIMIT 1
@@ -604,7 +604,7 @@ SELECT id, tenant_id, base_url, team_id, secret_ref, auth_kind,
 # base_url + secret_ref (access token) + refresh_secret_ref the CartaClient needs.
 _LOAD_CARTA_INSTALL_SQL = """
 SELECT id, tenant_id, firm_id, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
+       token_expires_at, disabled_at
   FROM carta_installations
  WHERE tenant_id = $1 AND disabled_at IS NULL
  LIMIT 1

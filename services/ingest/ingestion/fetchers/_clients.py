@@ -472,11 +472,14 @@ async def build_quickbooks_client(
         access_token=("spam-quickbooks" if spammer else None),
         http_client=await _get_http(),
         api_base_url=(endpoint("quickbooks_api") if spammer else None),
-        # Phase 3: reactive OAuth re-mint on 401 (inert in spammer mode — the
-        # preset token + no secret_store mean refresh_on_unauthorized no-ops).
+        # Phase 3: proactive (token_expires_at skew) + reactive (401) OAuth
+        # re-mint (inert in spammer mode — preset token + no secret_store no-op).
         install_row_id=install["id"] if "id" in install else None,
         refresh_secret_ref=(
             install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
+        ),
+        token_expires_at=(
+            install["token_expires_at"] if "token_expires_at" in install else None
         ),
     )
     return await _wrap_source_client("quickbooks", client)
@@ -574,6 +577,9 @@ async def build_ramp_client(
         refresh_secret_ref=(
             install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
         ),
+        token_expires_at=(
+            install["token_expires_at"] if "token_expires_at" in install else None
+        ),
     )
     return await _wrap_source_client("ramp", client)
 
@@ -608,6 +614,9 @@ async def build_gusto_client(
         install_row_id=install["id"] if "id" in install else None,
         refresh_secret_ref=(
             install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
+        ),
+        token_expires_at=(
+            install["token_expires_at"] if "token_expires_at" in install else None
         ),
     )
     return await _wrap_source_client("gusto", client)
@@ -766,6 +775,9 @@ async def build_carta_client(
         install_row_id=install["id"] if "id" in install else None,
         refresh_secret_ref=(
             install["refresh_secret_ref"] if "refresh_secret_ref" in install else None
+        ),
+        token_expires_at=(
+            install["token_expires_at"] if "token_expires_at" in install else None
         ),
     )
     return await _wrap_source_client("carta", client)

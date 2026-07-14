@@ -559,6 +559,56 @@ async def ensure_fresh_access_token(
     return token
 
 
+async def maybe_proactive_refresh(
+    *,
+    provider: str,
+    pool: Any,
+    secret_store: Any,
+    http: httpx.AsyncClient,
+    tenant_id: Any,
+    install_row_id: Any,
+    refresh_secret_ref: str | None,
+    token_expires_at: datetime | None,
+    now: datetime | None = None,
+    skew_seconds: int = DEFAULT_REFRESH_SKEW_SECONDS,
+) -> str | None:
+    """Proactive refresh BEFORE a fetch when the access token is within the
+    expiry skew — avoids spending the first request on a guaranteed 401.
+
+    Returns the new access-token plaintext if it refreshed, else None (token
+    still valid, expiry unknown, not refreshable, or the refresh failed). NEVER
+    raises: a known-expired token where the refresh fails still falls through to
+    the reactive 401 path, which marks the shard degraded.
+
+    A NULL `token_expires_at` is treated as "don't refresh proactively" — we
+    can't prove it's expired, so we let the reactive path catch a real expiry
+    rather than refresh on every poll cycle.
+    """
+    if not (pool is not None and secret_store is not None
+            and tenant_id is not None and install_row_id is not None):
+        return None
+    if provider not in REFRESH_CONFIGS:
+        return None
+    if token_expires_at is None:
+        return None
+    now = now or datetime.now(timezone.utc)
+    if not needs_refresh(token_expires_at, now=now, skew_seconds=skew_seconds):
+        return None
+    try:
+        refreshed = await refresh_and_persist(
+            provider=provider, pool=pool, secret_store=secret_store, http=http,
+            tenant_id=tenant_id, install_row_id=install_row_id,
+            refresh_secret_ref=refresh_secret_ref, now=now,
+        )
+        return refreshed.access_token
+    except OAuthRefreshError as exc:
+        log.warning(
+            "oauth_refresh.proactive_failed",
+            provider=provider, status=exc.status,
+        )
+        return None
+
+
 async def refresh_on_unauthorized(
     *,
     provider: str,
@@ -627,4 +677,5 @@ __all__ = [
     "refresh_and_persist",
     "ensure_fresh_access_token",
     "refresh_on_unauthorized",
+    "maybe_proactive_refresh",
 ]

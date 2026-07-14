@@ -96,6 +96,7 @@ class RampClient:
         api_base_url: str | None = None,
         install_row_id: Any | None = None,
         refresh_secret_ref: str | None = None,
+        token_expires_at: Any | None = None,
         client_id: str | None = None,
         client_secret: str | None = None,
         scopes: str | None = None,
@@ -105,9 +106,12 @@ class RampClient:
         self._tenant_id = tenant_id
         self._secret_ref = secret_ref
         self._business_id = business_id
-        # Phase 3: reactive OAuth re-mint on 401 (inert in spammer mode).
+        # Phase 3: proactive (expiry skew) + reactive (401) OAuth re-mint
+        # (inert in spammer mode).
         self._install_row_id = install_row_id
         self._refresh_secret_ref = refresh_secret_ref
+        self._token_expires_at = token_expires_at
+        self._proactive_checked = False
         self._access_token_cache = SecretValueCache(preset=access_token)
         self._token_lock = asyncio.Lock()
         # Client-credentials mint material. New installs can store a JSON
@@ -284,6 +288,7 @@ class RampClient:
     ) -> dict[str, Any]:
         from services.ingest.integrations.ramp import metrics
         from services.ingest.integrations.oauth_refresh import (
+            maybe_proactive_refresh,
             refresh_on_unauthorized,
         )
 
@@ -293,6 +298,18 @@ class RampClient:
         max_attempts = int(os.environ.get("RAMP_RL_MAX_ATTEMPTS", "4"))
         max_sleep = float(os.environ.get("RAMP_RL_MAX_SLEEP_SEC", "30"))
         client = self._httpx()
+
+        if not self._proactive_checked:
+            self._proactive_checked = True
+            proactive = await maybe_proactive_refresh(
+                provider="ramp", pool=self._pool,
+                secret_store=self._secret_store, http=client,
+                tenant_id=self._tenant_id, install_row_id=self._install_row_id,
+                refresh_secret_ref=self._refresh_secret_ref,
+                token_expires_at=self._token_expires_at,
+            )
+            if proactive is not None:
+                self._access_token_cache.set(proactive)
 
         attempt = 0
         reminted = False
