@@ -36,7 +36,7 @@ jobs:
   architecture:
     name: Architecture (static contracts)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -44,12 +44,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
-      # import-linter builds a static import graph (grimp) — it parses the
-      # source tree and only needs `lib`/`services` importable from the repo
-      # root, so the heavy runtime deps are not required here.
-      - name: Install import-linter
-        run: pip install "import-linter>=2.0"
+      # Most checks are static, while the route inventory imports the mounted
+      # FastAPI application to inspect its real production surface.
+      - name: Install project and import-linter
+        run: pip install -e ".[dev]" "import-linter>=2.0"
 
       # Enforces the layer-boundary contracts declared in pyproject.toml
       # ([tool.importlinter]). Green today; a failure means a new import
@@ -258,6 +258,11 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+          # pip-audit covers the installed environment. Keep the repository
+          # scan on source/lockfiles and exclude three test harnesses that
+          # dynamically generate throwaway service-account keys at runtime.
+          skip-dirs: .venv
+          skip-files: scripts/sandbox_google_calendar.py,scripts/sandbox_google_drive.py,services/ingest/synthetic/backfill_harness/harness.py
 
       - name: Build scan image
         run: docker build -t fyraliscore-ci:${{ github.sha }} .
