@@ -15,6 +15,11 @@ from services.domain.models.tests.conftest import make_embedding, state_proposit
 from services.domain.observations.events import notify_scope
 
 
+# This test lives outside the models test subtree to avoid pytest module-name
+# collisions, so explicitly expose that subtree's database fixtures here.
+pytest_plugins = ("services.domain.models.tests.conftest",)
+
+
 def _draft(
     *,
     tenant: uuid.UUID | None = None,

@@ -265,7 +265,9 @@ jobs:
           skip-files: scripts/sandbox_google_calendar.py,scripts/sandbox_google_drive.py,services/ingest/synthetic/backfill_harness/harness.py
 
       - name: Build scan image
-        run: docker build -t fyraliscore-ci:${{ github.sha }} .
+        # github-intel is a separately packaged private extension. The security
+        # job scans the supported bare core image without requiring repo auth.
+        run: docker build --build-arg GITHUB_INTEL_REF= -t fyraliscore-ci:${{ github.sha }} .
 
       - name: Scan container image
         uses: aquasecurity/trivy-action@v0.24.0
