@@ -16,10 +16,10 @@ RUN mkdir -p /root/.codex
 COPY pyproject.toml README.md ./
 ARG INSTALL_BROWSER_AGENT=1
 RUN if [ "$INSTALL_BROWSER_AGENT" = "1" ]; then \
-      pip install --no-cache-dir ".[browser-agent]" && \
+      pip install --no-cache-dir ".[browser-agent,telegram]" && \
       python -m playwright install --with-deps chromium; \
     else \
-      pip install --no-cache-dir .; \
+      pip install --no-cache-dir ".[telegram]"; \
     fi
 
 COPY . .

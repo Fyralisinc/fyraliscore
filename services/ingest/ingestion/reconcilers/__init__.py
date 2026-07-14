@@ -234,6 +234,9 @@ def register_pool_provider(pool: asyncpg.Pool) -> list[str]:
         try:
             module = importlib.import_module(module_name)
         except ModuleNotFoundError as exc:
+            # Deferred/live-only sources can have a dispatch placeholder but no
+            # module. Only suppress that precise absence; dependency import
+            # failures inside a real reconciler must still fail loudly.
             if exc.name == module_name:
                 continue
             raise

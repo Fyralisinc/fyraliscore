@@ -98,10 +98,14 @@ services:
   embedding_worker: { <<: *sb-envfile }
   embedding_backlog: { <<: *sb-envfile }
 
-  # ---- live source worker (real Discord gateway WSS) -----------------
-  discord_gateway_worker:
-    <<: *sb-envfile
-    profiles: ["full"]
+  # ---- live source workers -------------------------------------------
+  # Real Discord gateway (WSS) + real Telegram gateway (MTProto). Both need
+  # the sandbox env_file (the base defs inherit `.env.production`, absent
+  # here). Telethon ships in the image (Dockerfile `[telegram]` extra); the
+  # worker no-ops cleanly until a telegram_installations row exists
+  # (scripts/sandbox_telegram_install.py).
+  discord_gateway_worker: { <<: *sb-envfile }
+  telegram_gateway_worker: { <<: *sb-envfile }
 
   # ---- one-shots that load creds (env_file) --------------------------
   migrate: { <<: *sb-envfile }
@@ -114,8 +118,8 @@ services:
     profiles: ["full"]
   circuit_breaker:
     profiles: ["full"]
-  telegram_gateway_worker:
-    profiles: ["full"]
+  # Signal is not one of the six sandbox sources and its base definition
+  # inherits `.env.production`; park it so the sandbox boots cleanly.
   signal_gateway_worker:
     profiles: ["full"]
   gmail_watch_scheduler:
